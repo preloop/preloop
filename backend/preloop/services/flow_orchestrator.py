@@ -25,7 +25,8 @@ from preloop.models.crud import (
 from preloop.models.models.flow import Flow
 from preloop.models.models.flow_execution import (
     MATRIX_OVERRIDES_KEY,
-    resolve_matrix_agent_selection,
+    ROUTING_RECORD_KEY,
+    resolve_execution_agent_selection,
 )
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.runtime_session import RuntimeSession
@@ -1096,13 +1097,12 @@ class FlowExecutionOrchestrator:
         if not self.flow:
             raise ValueError(f"Flow with id {self.flow_id} not found")
 
-        # Apply per-cell matrix overrides (batch fan-out) without mutating the
-        # shared flow row: a matrix trigger stores its cell's agent_type /
-        # ai_model_id inside trigger_event_details under MATRIX_OVERRIDES_KEY.
+        # Apply per-cell matrix overrides or a controller-written routing
+        # record without mutating the shared flow row.
         matrix_overrides = (self.trigger_event_data or {}).get(
             MATRIX_OVERRIDES_KEY
         ) or {}
-        self.agent_type, effective_ai_model_id = resolve_matrix_agent_selection(
+        self.agent_type, effective_ai_model_id = resolve_execution_agent_selection(
             self.trigger_event_data,
             flow_agent_type=self.flow.agent_type,
             flow_ai_model_id=self.flow.ai_model_id,
@@ -1116,6 +1116,16 @@ class FlowExecutionOrchestrator:
                 matrix_overrides.get("agent_type"),
                 matrix_overrides.get("ai_model_id"),
             )
+        routing_record = (self.trigger_event_data or {}).get(ROUTING_RECORD_KEY) or {}
+        if routing_record:
+            logger.info(
+                "Model routing for execution: source=%s rule_id=%s "
+                "agent_type=%s ai_model_id=%s",
+                routing_record.get("source"),
+                routing_record.get("rule_id"),
+                routing_record.get("agent_type"),
+                routing_record.get("ai_model_id"),
+            )
 
         logger.info(f"Found flow: {self.flow.name} (agent_type: {self.agent_type})")
 
@@ -1128,6 +1138,14 @@ class FlowExecutionOrchestrator:
             )
             self.ai_model = crud_ai_model.get(self.db, id=ai_model_id_str)
             if not self.ai_model:
+                routing_record = (self.trigger_event_data or {}).get(
+                    ROUTING_RECORD_KEY
+                ) or {}
+                if routing_record:
+                    raise ValueError(
+                        f"Recorded routing model {effective_ai_model_id} is "
+                        "not available; refusing to start without a fallback."
+                    )
                 logger.warning(
                     f"AI model {effective_ai_model_id} not found for flow {self.flow_id}"
                 )
@@ -2104,6 +2122,7 @@ class FlowExecutionOrchestrator:
         }
 
         from preloop.services.flow_feedback import resolve_native_checkpoint
+        from preloop.services.model_routing import validate_native_resume_identity
 
         resume = (self.trigger_event_data or {}).get("_resume") or {}
         native = (
@@ -2120,6 +2139,10 @@ class FlowExecutionOrchestrator:
         if resume.get("thread_id"):
             execution_context["checkpoint_resume_authorized"] = True
             execution_context["thread_id"] = resume["thread_id"]
+        if native or resume.get("cli_session"):
+            validate_native_resume_identity(
+                self.db, self.flow, self.trigger_event_data, resume
+            )
         if native:
             resume["cli_session"] = native
             if isinstance(native.get("artifact_reference"), dict):
@@ -3219,6 +3242,7 @@ class FlowExecutionOrchestrator:
                 flow=self.flow,
                 event_data=event_data,
                 nats_client=self.nats_client,
+                source_execution=self.execution_log,
             )
             logger.info(
                 "Started queued follow-up resume after execution %s (index %s)",

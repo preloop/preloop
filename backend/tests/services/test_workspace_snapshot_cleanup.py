@@ -141,13 +141,53 @@ class TestCleanupPass:
         assert report == {"snapshots_purged": 1, "volumes_removed": 3}
 
 
-@pytest.mark.skip(
-    reason=(
-        "Needs Postgres: exercises the real FlowExecution query (JSONB/UUID "
-        "columns have no SQLite equivalent). Run with a database: "
-        "DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost/preloop "
-        "pytest backend/tests/services/test_workspace_snapshot_cleanup.py"
+def test_purge_clears_orphaned_null_end_time_snapshots(db_session, test_user):
+    """Crashed runs (no end_time) still release snapshots after the start-time TTL."""
+    from datetime import UTC, datetime, timedelta
+
+    from preloop.models import models
+    from preloop.models.crud import crud_flow_execution
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    old = now - timedelta(hours=48)
+    cutoff = now - timedelta(hours=24)
+    flow = models.Flow(
+        name="Snapshot purge",
+        prompt_template="test",
+        agent_type="codex",
+        agent_config={},
+        account_id=test_user.account_id,
     )
-)
-def test_purge_expired_snapshots_against_postgres():
-    """End-to-end retention query against a real flow_execution table."""
+    db_session.add(flow)
+    db_session.flush()
+    orphan = models.FlowExecution(
+        flow_id=flow.id,
+        status="RUNNING",
+        workspace_snapshot=b"orphan",
+        start_time=old,
+        end_time=None,
+    )
+    recent = models.FlowExecution(
+        flow_id=flow.id,
+        status="RUNNING",
+        workspace_snapshot=b"live",
+        start_time=now,
+        end_time=None,
+    )
+    finished = models.FlowExecution(
+        flow_id=flow.id,
+        status="SUCCEEDED",
+        workspace_snapshot=b"done",
+        start_time=old,
+        end_time=old,
+    )
+    db_session.add_all([orphan, recent, finished])
+    db_session.commit()
+
+    assert crud_flow_execution.purge_workspace_snapshots(db_session, cutoff=cutoff) == 2
+    db_session.refresh(orphan)
+    db_session.refresh(recent)
+    db_session.refresh(finished)
+    assert orphan.workspace_snapshot is None
+    assert recent.workspace_snapshot == b"live"
+    assert finished.workspace_snapshot is None
