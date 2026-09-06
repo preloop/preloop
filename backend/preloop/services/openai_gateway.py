@@ -16,7 +16,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from io import StringIO
 from itertools import chain
+from uuid import uuid4
 from typing import (
     Any,
     Callable,
@@ -76,6 +78,10 @@ from preloop.services.context_optimization import (
     subject_governance_affects_gateway_context,
     tool_choice_named_tool,
     tool_definition_name,
+)
+from preloop.services.deepseek_responses_reasoning import (
+    MAX_ENCRYPTED_REASONING_CHARS,
+    DeepSeekResponsesReasoning,
 )
 from preloop.services.model_gateway_auth import (
     ModelGatewayAuthContext,
@@ -164,6 +170,9 @@ from preloop.services.secret_service import (
 from preloop.utils.audit import log_model_gateway_request
 
 logger = logging.getLogger(__name__)
+
+# Bound streamed provider data before final envelope encoding/encryption.
+MAX_REASONING_BUFFER_BYTES = MAX_ENCRYPTED_REASONING_CHARS
 
 _RUNTIME_SESSION_ACTIVITY_TOUCH_MIN_INTERVAL = timedelta(seconds=30)
 _RUNTIME_SESSION_SUMMARY_REFRESH_EVERY_REQUESTS = 10
@@ -1252,7 +1261,7 @@ class OpenAIGatewayService:
             )
 
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
-        messages = self._normalize_responses_input(payload)
+        messages = self._normalize_responses_input(payload, ai_model=model)
         started_at = time.perf_counter()
         budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
@@ -2282,7 +2291,7 @@ class OpenAIGatewayService:
         self._begin_request_accounting()
         self._adopt_openai_native_session_id(payload)
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
-        messages = self._normalize_responses_input(payload)
+        messages = self._normalize_responses_input(payload, ai_model=model)
         started_at = time.perf_counter()
         budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
@@ -2388,6 +2397,12 @@ class OpenAIGatewayService:
             text_output_index: Optional[int] = None
             output_items: List[Dict[str, Any]] = []
             tool_call_states: Dict[int, Dict[str, Any]] = {}
+            reasoning_bridge = DeepSeekResponsesReasoning.for_model(
+                model, self.auth_context.user.account_id
+            )
+            reasoning_buffer = StringIO()
+            reasoning_bytes = 0
+            reasoning_output_index: Optional[int] = None
             try:
                 yield self._sse_event(
                     {
@@ -2427,6 +2442,40 @@ class OpenAIGatewayService:
                                 f"{chunk_error_message}"
                             ),
                         )
+                    choices = chunk_dict.get("choices") or []
+                    delta = (choices[0].get("delta") or {}) if choices else {}
+                    reasoning_delta = delta.get("reasoning_content")
+                    if (
+                        reasoning_bridge is not None
+                        and isinstance(reasoning_delta, str)
+                        and reasoning_delta
+                    ):
+                        reasoning_bytes += len(reasoning_delta.encode("utf-8"))
+                        if reasoning_bytes > MAX_REASONING_BUFFER_BYTES:
+                            raise ModelGatewayAPIError(
+                                provider="openai",
+                                status_code=502,
+                                code="reasoning_content_too_large",
+                                message="Provider reasoning exceeds the supported buffer size.",
+                            )
+                        reasoning_buffer.write(reasoning_delta)
+                        if reasoning_output_index is None:
+                            reasoning_output_index = len(output_items)
+                            item = {
+                                "id": f"rs_{uuid4().hex}",
+                                "type": "reasoning",
+                                "status": "in_progress",
+                                "summary": [],
+                            }
+                            output_items.append(item)
+                            yield self._sse_event(
+                                {
+                                    "type": "response.output_item.added",
+                                    "response_id": response_id,
+                                    "output_index": reasoning_output_index,
+                                    "item": item,
+                                }
+                            )
                     delta_text = self._extract_stream_delta_text(chunk_dict)
                     if delta_text:
                         if text_output_index is None:
@@ -2581,7 +2630,9 @@ class OpenAIGatewayService:
                     self._provider_cost_fields(upstream_stream),
                 )
 
-                if not output_items:
+                if not output_items or all(
+                    item.get("type") == "reasoning" for item in output_items
+                ):
                     # The upstream stream ended without a single output item:
                     # no text delta, no tool-call delta, nothing. A completed
                     # Responses stream whose `output` is empty is not a usable
@@ -2604,6 +2655,24 @@ class OpenAIGatewayService:
                     )
 
                 full_text = "".join(assistant_parts)
+                if reasoning_bridge is not None and reasoning_output_index is not None:
+                    reasoning_item = reasoning_bridge.output_item(
+                        reasoning_buffer.getvalue(),
+                        call_ids=[
+                            str(state["item"]["call_id"])
+                            for state in tool_call_states.values()
+                        ],
+                        assistant_text=full_text,
+                        item_id=output_items[reasoning_output_index]["id"],
+                    )
+                    output_items[reasoning_output_index] = reasoning_item
+                    yield self._sse_event(
+                        {
+                            "type": "response.output_item.done",
+                            "output_index": reasoning_output_index,
+                            "item": reasoning_item,
+                        }
+                    )
                 if text_output_index is not None:
                     output_items[text_output_index] = {
                         "id": text_item_id,
@@ -4524,6 +4593,28 @@ class OpenAIGatewayService:
         response_dict: Dict[str, Any],
     ) -> Dict[str, Any]:
         output_items = self._build_response_output_items(response_dict)
+        reasoning_bridge = DeepSeekResponsesReasoning.for_model(
+            ai_model, self.auth_context.user.account_id
+        )
+        choices = response_dict.get("choices") or []
+        message = (choices[0].get("message") or {}) if choices else {}
+        if (
+            reasoning_bridge is not None
+            and isinstance(message.get("reasoning_content"), str)
+            and message["reasoning_content"]
+        ):
+            output_items.insert(
+                0,
+                reasoning_bridge.output_item(
+                    message["reasoning_content"],
+                    call_ids=[
+                        str(item["call_id"])
+                        for item in output_items
+                        if item.get("type") in {"function_call", "custom_tool_call"}
+                    ],
+                    assistant_text=self._response_output_text(output_items),
+                ),
+            )
         assistant_text = self._response_output_text(output_items)
         if not assistant_text:
             assistant_text = str(response_dict.get("output_text") or "").strip()
@@ -6404,9 +6495,16 @@ class OpenAIGatewayService:
             return messages, payload
 
     def _normalize_responses_input(
-        self, payload: Dict[str, Any]
+        self, payload: Dict[str, Any], *, ai_model: Optional[AIModel] = None
     ) -> List[Dict[str, Any]]:
         messages: List[Dict[str, Any]] = []
+        reasoning_bridge = (
+            DeepSeekResponsesReasoning.for_model(
+                ai_model, self.auth_context.user.account_id
+            )
+            if ai_model is not None
+            else None
+        )
         instructions = payload.get("instructions")
         if instructions:
             messages.append({"role": "system", "content": instructions})
@@ -6415,7 +6513,21 @@ class OpenAIGatewayService:
         if isinstance(raw_input, str):
             messages.append({"role": "user", "content": raw_input})
         elif isinstance(raw_input, list):
-            messages.extend(self._normalize_responses_input_items(raw_input))
+            normalized_items = raw_input
+            if reasoning_bridge is not None:
+                normalized_items = [
+                    item
+                    for item in raw_input
+                    if not isinstance(item, dict) or item.get("type") != "reasoning"
+                ]
+            normalized_messages = self._normalize_responses_input_items(
+                normalized_items, preserve_reasoning=reasoning_bridge is not None
+            )
+            if reasoning_bridge is not None:
+                normalized_messages = reasoning_bridge.restore(
+                    normalized_messages, raw_input
+                )
+            messages.extend(normalized_messages)
 
         if not messages:
             raise ModelGatewayAPIError(
@@ -6426,7 +6538,7 @@ class OpenAIGatewayService:
         return messages
 
     def _normalize_responses_input_items(
-        self, items: List[Any]
+        self, items: List[Any], *, preserve_reasoning: bool = False
     ) -> List[Dict[str, Any]]:
         """Convert Responses API history into valid chat-completions messages."""
         messages: List[Dict[str, Any]] = []
@@ -6519,7 +6631,15 @@ class OpenAIGatewayService:
             if staged_tool_calls or pending_tool_call_ids:
                 raise tool_response_error()
 
-            messages.extend(self._normalize_responses_message_item(item))
+            normalized = self._normalize_responses_message_item(item)
+            if (
+                preserve_reasoning
+                and item.get("role") == "assistant"
+                and "reasoning_content" in item
+            ):
+                for message in normalized:
+                    message["reasoning_content"] = item["reasoning_content"]
+            messages.extend(normalized)
 
         flush_staged_tool_calls()
         if pending_tool_call_ids:
