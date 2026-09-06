@@ -135,10 +135,11 @@ def test_missing_checkpoint_blocks_resume_before_cold_clone(
     with pytest.raises(ValueError, match="workspace_checkpoint_missing"):
         checkpoint_context(Mock(), context)
     context["checkpoint_resume_authorized"] = False
-    assert checkpoint_context(Mock(), context) == {}
+    with pytest.raises(ValueError, match="checkpoint_resume_not_authorized"):
+        checkpoint_context(Mock(), context)
 
 
-def test_pr_comment_resume_without_thread_id_cold_clones(
+def test_pr_comment_resume_without_thread_id_requires_authorization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from uuid import uuid4
@@ -160,7 +161,8 @@ def test_pr_comment_resume_without_thread_id_cold_clones(
             }
         },
     }
-    assert checkpoint_context(Mock(), context) == {}
+    with pytest.raises(ValueError, match="checkpoint_resume_not_authorized"):
+        checkpoint_context(Mock(), context)
 
 
 @pytest.mark.asyncio
@@ -219,3 +221,49 @@ def test_artifact_capability_covers_longest_execution() -> None:
     expiry = datetime.fromtimestamp(claims["exp"], UTC)
     assert ARTIFACT_CAPABILITY_TTL >= timedelta(hours=24)
     assert expiry >= datetime.now(UTC) + timedelta(hours=23)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_native_session", [False, True])
+async def test_unreserved_resume_never_starts_a_hosted_agent_on_a_cold_workspace(
+    monkeypatch: pytest.MonkeyPatch, has_native_session: bool
+) -> None:
+    """A legacy PR binding cannot authorize loss of unpublished workspace state."""
+    from unittest.mock import AsyncMock, Mock
+    from uuid import uuid4
+
+    from preloop.api.endpoints import flow_artifacts
+    from preloop.config import settings
+    from preloop.services import flow_orchestrator
+
+    monkeypatch.setattr(settings, "flow_artifact_direct_upload", True)
+    executor = Mock()
+    executor.start = AsyncMock(return_value="unexpected-agent")
+    executor.cleanup = AsyncMock()
+    monkeypatch.setattr(
+        flow_orchestrator, "create_executor_for_execution", lambda *a, **k: executor
+    )
+    mint = Mock()
+    monkeypatch.setattr(flow_artifacts, "mint_artifact_capability", mint)
+    orchestrator = object.__new__(flow_orchestrator.FlowExecutionOrchestrator)
+    orchestrator.flow = Mock()
+    orchestrator.execution_log = Mock()
+    orchestrator.db = Mock()
+    resume = {
+        "execution_id": str(uuid4()),
+        "pr_url": "https://example.test/pull/1",
+        "source_branch": "implementation",
+    }
+    if has_native_session:
+        resume["cli_session"] = {"agent_type": "codex", "session_id": str(uuid4())}
+    context = {
+        "agent_type": "codex",
+        "agent_config": {},
+        "trigger_event_data": {"_resume": resume},
+        "cli_session_restore_archive": b"synthetic legacy archive",
+    }
+    with pytest.raises(ValueError, match="checkpoint_resume_not_authorized"):
+        await orchestrator._start_agent_session(context)
+    executor.start.assert_not_awaited()
+    executor.cleanup.assert_awaited_once()
+    mint.assert_not_called()

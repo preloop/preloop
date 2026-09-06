@@ -21,10 +21,11 @@ def checkpoint_context(db: Session, context: dict[str, Any]) -> dict[str, str]:
     trigger = context.get("trigger_event_data") or {}
     resume = trigger.get("_resume") or {}
     if resume and context.get("checkpoint_resume_authorized") is not True:
-        # PR-comment and CI-failure resumes carry `_resume` without a
-        # thread_id, so they are not checkpoint-authorized. Cold-clone
-        # instead of failing the whole follow-up execution.
-        return {}
+        # A legacy PR/CI binding does not authorize dropping unpublished work
+        # or pairing its old CLI session with a newly cloned workspace. Durable
+        # feedback resumes carry a controller-validated thread reservation.
+        # Cold recovery needs an explicit controller decision, not a fallback.
+        raise ValueError("checkpoint_resume_not_authorized")
     thread_id = str(
         context.get("thread_id")
         or trigger.get("_session_thread_id")
