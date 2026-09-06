@@ -32,7 +32,12 @@ export interface AttentionSummary {
 }
 
 export const ATTENTION_SUMMARY_EVENT = 'preloop-attention-summary';
-const STORAGE_KEY = 'preloop:attention-summary';
+/**
+ * Exported so `invalidateApiCaches` can drop it on an auth change: the counts
+ * are account-scoped, and signing out keeps sessionStorage for the tab.
+ */
+export const ATTENTION_SUMMARY_STORAGE_KEY = 'preloop:attention-summary';
+const STORAGE_KEY = ATTENTION_SUMMARY_STORAGE_KEY;
 
 /** The same slice the Overview strip shows: loud items, or the low ones alone. */
 export function summariseAttentionItems(

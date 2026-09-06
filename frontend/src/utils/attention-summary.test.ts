@@ -9,7 +9,9 @@ import type {
   AttentionKind,
   AttentionSeverity,
 } from './attention';
+import { invalidateApiCaches } from '../api';
 import {
+  ATTENTION_SUMMARY_STORAGE_KEY,
   formatAttentionSummary,
   publishAttentionSummary,
   readAttentionSummary,
@@ -35,7 +37,7 @@ function item(
 
 describe('attention summary', () => {
   afterEach(() => {
-    sessionStorage.removeItem('preloop:attention-summary');
+    sessionStorage.removeItem(ATTENTION_SUMMARY_STORAGE_KEY);
   });
 
   it('counts per kind in the console order', () => {
@@ -79,5 +81,16 @@ describe('attention summary', () => {
     publishAttentionSummary([]);
     expect(formatAttentionSummary(readAttentionSummary())).to.equal('');
     expect(formatAttentionSummary(null)).to.equal('');
+  });
+
+  it('is forgotten when the account changes', () => {
+    publishAttentionSummary([item('flow')]);
+    expect(readAttentionSummary()?.total).to.equal(1);
+
+    // What an auth change runs. Sign-out navigates with location.href, which
+    // keeps sessionStorage for the tab, so the counts have to be dropped here
+    // or the next account reads the previous one's.
+    invalidateApiCaches();
+    expect(readAttentionSummary()).to.equal(null);
   });
 });
