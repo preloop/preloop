@@ -179,8 +179,9 @@ def database() -> Generator[Engine, None, None]:
     engine = create_engine(url, connect_args={"options": f"-csearch_path={schema}"})
     with engine.begin() as conn:
         conn.execute(text(f'CREATE SCHEMA "{schema}"'))
-        for name in ("account", "tracker", "ai_model"):
+        for name in ("account", "tracker", "secret_reference"):
             conn.execute(text(f'CREATE TABLE "{name}" (id UUID PRIMARY KEY)'))
+        models.AIModel.__table__.create(conn)
         models.Flow.__table__.create(conn)
         models.FlowExecution.__table__.create(conn)
         models.FlowThread.__table__.create(conn)
@@ -197,10 +198,21 @@ def create_thread(db: Session) -> models.FlowThread:
     account, tracker = uuid.uuid4(), uuid.uuid4()
     for table, key in (("account", account), ("tracker", tracker)):
         db.execute(text(f'INSERT INTO "{table}" (id) VALUES (:id)'), {"id": key})
+    model = models.AIModel(
+        id=uuid.uuid4(),
+        account_id=account,
+        name="Test model",
+        provider_name="openai",
+        model_identifier="test-model",
+        api_key="synthetic-key",
+    )
+    db.add(model)
+    db.flush()
     flow = models.Flow(
         id=uuid.uuid4(),
         account_id=account,
         name="implementation",
+        ai_model_id=model.id,
         agent_type="codex",
         agent_config={"feedback": {"enabled": True}},
         prompt_template="repair",
@@ -212,6 +224,13 @@ def create_thread(db: Session) -> models.FlowThread:
         id=uuid.uuid4(),
         flow_id=flow.id,
         status="SUCCEEDED",
+        trigger_event_details={
+            "_model_routing": {
+                "schema_version": 1,
+                "agent_type": "codex",
+                "ai_model_id": str(model.id),
+            }
+        },
         cli_session={"agent_type": "codex", "session_id": str(uuid.uuid4())},
     )
     db.add(initial)
@@ -319,6 +338,12 @@ async def test_pg_fake_provider_repairs_same_session_then_ready(
 ) -> None:
     with Session(database) as db:
         thread = create_thread(db)
+        original = db.get(models.FlowExecution, thread.latest_execution_id)
+        frozen_model = original.trigger_event_details["_model_routing"]["ai_model_id"]
+        flow = db.get(models.Flow, thread.flow_id)
+        flow.ai_model_id = None
+        flow.agent_type = "opencode"
+        db.commit()
         native_id = db.get(
             models.FlowExecution, thread.latest_execution_id
         ).cli_session["session_id"]
@@ -346,6 +371,11 @@ async def test_pg_fake_provider_repairs_same_session_then_ready(
             await _reconcile(db, *crud_flow_feedback.claim_due(db, now=NOW)[0], now=NOW)
         db.refresh(thread)
         repair = db.get(models.FlowExecution, thread.active_execution_id)
+        assert (
+            repair.trigger_event_details["_model_routing"]["ai_model_id"]
+            == frozen_model
+        )
+        assert repair.trigger_event_details["_model_routing"]["agent_type"] == "codex"
         assert repair.id != thread.latest_execution_id
         assert (
             repair.trigger_event_details["_resume"]["cli_session"]["session_id"]
@@ -511,3 +541,28 @@ async def test_pg_worker_tick_recovers_discovery_and_debounces_feedback(
             assert await run_feedback_tick(db, now=NOW + timedelta(seconds=62)) == 1
             assert thread.turns == 1
             dispatch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pg_legacy_feedback_blocks_without_reserving_execution(
+    database: Engine,
+) -> None:
+    with Session(database) as db:
+        thread = create_thread(db)
+        prior = db.get(models.FlowExecution, thread.latest_execution_id)
+        prior.trigger_event_details = {}
+        db.commit()
+        provider = SimpleNamespace(
+            read=AsyncMock(
+                return_value=FeedbackState("head", feedback=[event("review")])
+            )
+        )
+        with patch(
+            "preloop.services.flow_feedback.FeedbackProvider.for_thread",
+            AsyncMock(return_value=provider),
+        ):
+            await _reconcile(db, *crud_flow_feedback.claim_due(db, now=NOW)[0], now=NOW)
+        db.refresh(thread)
+        assert thread.state == "blocked"
+        assert thread.stop_reason == "model_identity_unavailable"
+        assert thread.active_execution_id is None

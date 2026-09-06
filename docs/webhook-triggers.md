@@ -10,7 +10,11 @@ Content-Type: application/json
 The JSON body becomes the trigger payload. Prompt templates can reference it
 with `{{trigger_event.payload.<path>}}` (or `{{trigger_event}}` for the whole
 event), and the payload is snapshotted onto the execution record
-(`trigger_event_details`) for audit.
+(`trigger_event_details`) for audit. Reserved keys in the body
+(`_matrix`, `_model_routing`, `ai_model_id`, `assessment`) are not treated as
+authorized model or harness overrides, including when nested under the
+webhook `payload`. Presence of `_resume` in the body is also not a trust
+signal.
 
 ## Seeding `/workspace` files (`workspace_files`)
 

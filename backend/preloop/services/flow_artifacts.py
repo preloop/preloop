@@ -20,6 +20,23 @@ from preloop.utils.encryption import _get_fernet
 MAX_MEMBERS = 100_000
 
 
+def artifact_thread_id(trigger: Any, execution_id: Any) -> str:
+    """Resolve the durable thread id that mint and verify both use.
+
+    Orchestrator context may carry a live ``thread_id``; capability checks only
+    see persisted trigger fields, so mint must not prefer a different value.
+    """
+    details = trigger if isinstance(trigger, dict) else {}
+    resume = details.get("_resume")
+    resume = resume if isinstance(resume, dict) else {}
+    return str(
+        details.get("_session_thread_id")
+        or resume.get("thread_id")
+        or resume.get("execution_id")
+        or execution_id
+    )
+
+
 def validate_archive(archive: bytes, *, max_bytes: int, max_expanded_bytes: int) -> int:
     """Validate before storage/extraction, rejecting links and special files.
 
