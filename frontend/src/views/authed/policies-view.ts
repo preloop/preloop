@@ -282,6 +282,8 @@ export class PoliciesView extends LitElement {
   };
   @state() private _versionToTag: PolicyVersion | null = null;
   @state() private _versionToRollback: PolicyVersion | null = null;
+  /** Last render failure already reported, so one fault is not a toast storm. */
+  private _renderErrorReported: string | null = null;
 
   static styles = [
     consoleDialogStyles,
@@ -793,6 +795,46 @@ export class PoliciesView extends LitElement {
   }
 
   /**
+   * Failures on this page used to be invisible while a dialog was open: the
+   * inline alert renders behind the modal. Every failure now also raises a
+   * toast, which sits above the dialog, and the inline alert stays for the
+   * operator who scrolls back.
+   */
+  private _reportError(error: unknown, fallback: string): void {
+    const message =
+      (error instanceof Error && error.message) ||
+      (typeof error === 'string' && error) ||
+      fallback;
+    this._error = message;
+    showToast(message, 'danger');
+  }
+
+  /**
+   * A render that throws leaves the page half drawn and silent: Lit aborts
+   * the update, so every part after the failure (here: all the dialogs) keeps
+   * its last value and clicking a button appears to do nothing. Report the
+   * failure once instead of letting it surface as an unhandled rejection, and
+   * keep accepting updates so the rest of the console still works.
+   */
+  protected performUpdate(): void | Promise<unknown> {
+    try {
+      return super.performUpdate();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unexpected render error';
+      console.error('Policies view failed to render:', error);
+      if (this._renderErrorReported !== message) {
+        this._renderErrorReported = message;
+        showToast(
+          `The policies page could not finish drawing (${message}). Reload to try again.`,
+          'danger'
+        );
+      }
+      return undefined;
+    }
+  }
+
+  /**
    * A gated route must not fetch. The shell hides the outlet, but a routed
    * view is a light-DOM child and stays connected, so the view checks the
    * viewer's permissions itself before asking for tools, workflows or rules.
@@ -877,7 +919,7 @@ export class PoliciesView extends LitElement {
         ];
       });
     } catch (err: any) {
-      this._error = err.message || 'Failed to load data';
+      this._reportError(err, 'Failed to load data');
       console.error('Error loading policies data:', err);
     } finally {
       this._loading = false;
@@ -1236,7 +1278,7 @@ export class PoliciesView extends LitElement {
       await patchModelIORule(rule.id, { enabled: !(rule.enabled !== false) });
       await this.loadData();
     } catch (err: any) {
-      this._error = err.message || 'Failed to update model I/O rule';
+      this._reportError(err, 'Failed to update model I/O rule');
     }
   }
 
@@ -1250,7 +1292,7 @@ export class PoliciesView extends LitElement {
       await deleteModelIORule(rule.id);
       await this.loadData();
     } catch (err: any) {
-      this._error = err.message || 'Failed to delete model I/O rule';
+      this._reportError(err, 'Failed to delete model I/O rule');
     }
   }
 
@@ -1264,7 +1306,7 @@ export class PoliciesView extends LitElement {
       });
       await this.loadData();
     } catch (err: any) {
-      this._error = err.message || 'Failed to update tool rule';
+      this._reportError(err, 'Failed to update tool rule');
     }
   }
 
@@ -1283,7 +1325,7 @@ export class PoliciesView extends LitElement {
       await deleteAccessRule(rule.accessRuleId);
       await this.loadData();
     } catch (err: any) {
-      this._error = err.message || 'Failed to delete tool rule';
+      this._reportError(err, 'Failed to delete tool rule');
     }
   }
 
@@ -1324,7 +1366,7 @@ export class PoliciesView extends LitElement {
       this._diffResult = normalizePolicyDiff(await response.json());
       this._showDiffDialog = true;
     } catch (err: any) {
-      this._error = err.message || 'Failed to preview policy file';
+      this._reportError(err, 'Failed to preview policy file');
       this._pendingYamlSave = false;
     } finally {
       this._isUploading = false;
@@ -1376,7 +1418,7 @@ export class PoliciesView extends LitElement {
         this._yamlNotice = 'Policy saved and applied.';
       }
     } catch (err: any) {
-      this._error = err.message || 'Failed to apply policy file';
+      this._reportError(err, 'Failed to apply policy file');
       if (this._pendingYamlSave) {
         this._yamlNotice = '';
       }
@@ -1408,7 +1450,7 @@ export class PoliciesView extends LitElement {
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
     } catch (err: any) {
-      this._error = err.message || 'Failed to export policies';
+      this._reportError(err, 'Failed to export policies');
     } finally {
       this._isExporting = false;
     }
@@ -1545,7 +1587,7 @@ export class PoliciesView extends LitElement {
       // stopped every dialog on this page from rendering.
       this._versions = await listPolicyVersions(50);
     } catch (err: any) {
-      this._error = err.message || 'Failed to load versions';
+      this._reportError(err, 'Failed to load versions');
     } finally {
       this._loadingVersions = false;
       this._versionsLoaded = true;
@@ -1580,7 +1622,7 @@ export class PoliciesView extends LitElement {
       this._versionForm = { description: '', tag: '' };
       await this.loadVersions();
     } catch (err: any) {
-      this._error = err.message || 'Failed to save version';
+      this._reportError(err, 'Failed to save version');
     } finally {
       this._savingVersion = false;
     }
@@ -1624,7 +1666,7 @@ export class PoliciesView extends LitElement {
         await Promise.all([this.loadData(), this.loadVersions()]);
       }
     } catch (err: any) {
-      this._error = err.message || 'Failed to rollback to version';
+      this._reportError(err, 'Failed to rollback to version');
     } finally {
       this._rollingBack = false;
     }
@@ -1654,7 +1696,7 @@ export class PoliciesView extends LitElement {
       this._tagForm = { tag: '' };
       await this.loadVersions();
     } catch (err: any) {
-      this._error = err.message || 'Failed to update tag';
+      this._reportError(err, 'Failed to update tag');
     } finally {
       this._taggingVersion = false;
     }
@@ -1685,7 +1727,7 @@ export class PoliciesView extends LitElement {
 
       await this.loadVersions();
     } catch (err: any) {
-      this._error = err.message || 'Failed to delete version';
+      this._reportError(err, 'Failed to delete version');
     } finally {
       this._deletingVersion = false;
     }
@@ -1728,7 +1770,7 @@ export class PoliciesView extends LitElement {
 
       await this.loadVersions();
     } catch (err: any) {
-      this._error = err.message || 'Failed to prune versions';
+      this._reportError(err, 'Failed to prune versions');
     } finally {
       this._pruningVersions = false;
     }

@@ -261,4 +261,39 @@ describe('Policies page against real API shapes', () => {
     });
     expect(toastTexts().join(' ')).to.contain('Pruned 3 old versions.');
   });
+
+  it('P6 reports a failure to load versions with a toast', async () => {
+    const m = await mount();
+    stub = m.stub;
+    m.stub.restore();
+    stub = sinon.stub(window, 'fetch').resolves(json({ detail: 'nope' }, 500));
+
+    await (m.element as any).loadVersions();
+    await m.element.updateComplete;
+
+    expect(toastTexts().join(' ')).to.contain('Failed to fetch versions');
+    expect((m.element as any)._error).to.contain('Failed to fetch versions');
+  });
+
+  it('P7 surfaces a render failure instead of going silent', async () => {
+    const m = await mount();
+    stub = m.stub;
+
+    (m.element as any).renderVersionsSection = () => {
+      throw new Error('boom');
+    };
+    m.element.requestUpdate();
+    await m.element.updateComplete;
+
+    expect(toastTexts().join(' ')).to.contain('could not finish drawing');
+    expect(toastTexts().join(' ')).to.contain('boom');
+
+    // The view keeps accepting updates: the next render is not blocked.
+    delete (m.element as any).renderVersionsSection;
+    m.element.requestUpdate();
+    await m.element.updateComplete;
+    headerButton(m.element, 'Add rule').click();
+    await m.element.updateComplete;
+    expect(ruleDialog(m.element).open).to.be.true;
+  });
 });
