@@ -5,6 +5,7 @@ import { customElement, property } from 'lit/decorators.js';
 // import graph having registered it first.
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import type { GatewayTokenUsage } from '../types';
+import { formatTokenCount } from '../utils/execution-presentation';
 
 /**
  * The console's one way to state token volume.
@@ -21,16 +22,14 @@ import type { GatewayTokenUsage } from '../types';
  * and in `title`, so a screen reader and a hover get the same sentence.
  */
 
-/** Compact count per DESIGN.md: whole under 1000, `12.4K` at or above. */
-export function formatTokenCount(value: number | null | undefined): string {
-  const amount = Number(value || 0);
-  if (!Number.isFinite(amount)) return '0';
-  if (Math.abs(amount) < 1000) return String(Math.round(amount));
-  return new Intl.NumberFormat(undefined, {
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).format(amount);
-}
+/*
+ * Compact count per DESIGN.md: whole under 1000, `12.4K` at or above.
+ *
+ * The executions strip and the gateway event rows already read counts
+ * through this helper, so it stays the one implementation and the component
+ * re-exports it rather than keeping a second near-identical body.
+ */
+export { formatTokenCount };
 
 /** Exact count with thousands separators, for tooltips and `title`. */
 export function formatExactTokenCount(
@@ -72,18 +71,23 @@ export function cacheSplitOf(
   return { hit, miss, ratio };
 }
 
-/** Input tokens, reading whichever name the endpoint used. */
+/**
+ * Input tokens, reading whichever name the endpoint used.
+ *
+ * Product names first, wire names second, and the same order for output, so
+ * a caller that fills only one pair reads the same way on both sides.
+ */
 export function inputTokensOf(
   usage: GatewayTokenUsage | null | undefined
 ): number {
   return Number(usage?.input_tokens ?? usage?.prompt_tokens ?? 0);
 }
 
-/** Output tokens, reading whichever name the endpoint used. */
+/** Output tokens, in the same preference order as `inputTokensOf`. */
 export function outputTokensOf(
   usage: GatewayTokenUsage | null | undefined
 ): number {
-  return Number(usage?.completion_tokens ?? usage?.output_tokens ?? 0);
+  return Number(usage?.output_tokens ?? usage?.completion_tokens ?? 0);
 }
 
 /**
@@ -211,14 +215,16 @@ export class TokenFigures extends LitElement {
       color: var(--sl-color-neutral-900);
     }
 
+    /* 13px meta, the step below body on the console type scale. 0.9em
+       landed on 12.6px, a size the ladder does not have. */
     .unit {
       color: var(--sl-color-neutral-500);
-      font-size: 0.9em;
+      font-size: var(--console-text-meta, 13px);
     }
 
     .cache {
       color: var(--sl-color-neutral-500);
-      font-size: 0.9em;
+      font-size: var(--console-text-meta, 13px);
     }
 
     .empty {

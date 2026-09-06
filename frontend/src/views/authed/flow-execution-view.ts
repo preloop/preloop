@@ -1624,13 +1624,6 @@ export class FlowExecutionView extends LitElement {
     }
   }
 
-  /**
-   * Keep whichever split actually states a direction.
-   *
-   * The metrics endpoint and the execution row can both carry a token usage
-   * object, and either can be a bare total with no in/out breakdown. Prefer
-   * the one that says something rather than the one that arrived last.
-   */
   /** True when the run has a direction split worth showing in the strip. */
   private hasTokenSplit(): boolean {
     return (
@@ -1640,6 +1633,13 @@ export class FlowExecutionView extends LitElement {
     );
   }
 
+  /**
+   * Keep whichever split actually states a direction.
+   *
+   * The metrics endpoint and the execution row can both carry a token usage
+   * object, and either can be a bare total with no in/out breakdown. Prefer
+   * the one that says something rather than the one that arrived last.
+   */
   private pickRicherUsage(
     current: GatewayTokenUsage | null,
     candidate: GatewayTokenUsage | null | undefined
@@ -2688,7 +2688,9 @@ ${execution.resolved_input_prompt}</pre>
                   ></token-figures>`
                 : this.totalTokens > 0
                   ? formatTokenCount(this.totalTokens)
-                  : '—'
+                  : // The same absence the token figures component prints,
+                    // drawn the same way on the same page.
+                    '-'
             }</span
           >
         </div>
