@@ -83,12 +83,9 @@ func runnerLaunchFromJob(job map[string]any) (map[string]any, error) {
 
 func runnerStructuredResult(lines []string) (map[string]any, []string, error) {
 	logs := make([]string, 0, len(lines))
-	var envelope struct {
-		ExitCode *int           `json:"exit_code"`
-		Result   map[string]any `json:"result"`
-	}
+	var result map[string]any
+	var exitCode *int
 	count := 0
-	valid := false
 	for _, line := range lines {
 		if !strings.HasPrefix(line, runnerResultPrefix) {
 			logs = append(logs, line)
@@ -103,37 +100,59 @@ func runnerStructuredResult(lines []string) (map[string]any, []string, error) {
 		if err != nil || len(data) > runnerResultLimit+1024 {
 			continue
 		}
-		if json.Unmarshal(data, &envelope) == nil && envelope.ExitCode != nil && *envelope.ExitCode == 0 && len(envelope.Result) > 0 {
-			valid = runnerResultRecognized(envelope.Result)
+		var envelope struct {
+			ExitCode *int            `json:"exit_code"`
+			Result   json.RawMessage `json:"result"`
 		}
+		if json.Unmarshal(data, &envelope) != nil || envelope.ExitCode == nil || len(envelope.Result) > runnerResultLimit {
+			continue
+		}
+		var decoded map[string]any
+		if json.Unmarshal(envelope.Result, &decoded) != nil || len(decoded) == 0 {
+			continue
+		}
+		result, exitCode = decoded, envelope.ExitCode
 	}
-	if count != 1 || !valid {
+	// Multiple envelopes are ambiguous, so none is accepted as authoritative.
+	if count != 1 || result == nil || exitCode == nil {
 		return nil, logs, fmt.Errorf("agent exited without a valid structured completion result")
 	}
-	return envelope.Result, logs, nil
+	// Retain valid diagnostic reports even when they cannot confirm success.
+	// The caller separately preserves the actual process exit and halt status.
+	if *exitCode != 0 {
+		return result, logs, fmt.Errorf("agent reported nonzero exit %d", *exitCode)
+	}
+	switch runnerResultConfirmation(result) {
+	case "success", "failure":
+		return result, logs, nil
+	default:
+		return result, logs, fmt.Errorf("agent exited without a recognized completion verdict")
+	}
 }
 
-func runnerResultField(result map[string]any, key string) string {
-	value, _ := result[key].(string)
-	return strings.ToLower(strings.TrimSpace(value))
+// Keep vocabulary in sync with backend/tests/fixtures/runner_completion_vocabulary.json.
+// Both Go and Python tests compare their complete tables to that wire contract.
+var runnerResultStatuses = map[string]string{
+	"success": "success", "succeeded": "success", "pass": "success", "passed": "success", "fail": "success",
+	"failure": "failure", "failed": "failure", "error": "failure",
+}
+var runnerResultVerdicts = map[string]string{
+	"pass": "success", "passed": "success", "pass_with_findings": "success", "fail": "success", "error": "failure",
+}
+
+func runnerResultConfirmation(result map[string]any) string {
+	status, _ := result["status"].(string)
+	if confirmation := runnerResultStatuses[strings.ToLower(strings.TrimSpace(status))]; confirmation != "" {
+		return confirmation
+	}
+	verdict, _ := result["verdict"].(string)
+	return runnerResultVerdicts[strings.ToLower(strings.TrimSpace(verdict))]
 }
 
 func runnerResultRecognized(result map[string]any) bool {
-	switch runnerResultField(result, "status") {
-	case "success", "succeeded", "pass", "passed", "fail", "failure", "failed", "error":
-		return true
-	}
-	switch runnerResultField(result, "verdict") {
-	case "pass", "passed", "pass_with_findings", "fail", "error":
-		return true
-	}
-	return false
+	return runnerResultConfirmation(result) != ""
 }
 
 func runnerResultIsFailure(result map[string]any) bool {
-	switch runnerResultField(result, "status") {
-	case "failure", "failed", "error":
-		return true
-	}
-	return runnerResultField(result, "verdict") == "error"
+	return runnerResultConfirmation(result) == "failure"
 }

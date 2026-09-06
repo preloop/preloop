@@ -1,6 +1,284 @@
 {
-  "success_statuses": ["success", "succeeded", "pass", "passed", "fail"],
-  "failure_statuses": ["failure", "failed", "error"],
-  "success_verdicts": ["pass", "passed", "pass_with_findings", "fail"],
-  "failure_verdicts": ["error"]
+  "success_statuses": [
+    "success",
+    "succeeded",
+    "pass",
+    "passed",
+    "fail"
+  ],
+  "failure_statuses": [
+    "failure",
+    "failed",
+    "error"
+  ],
+  "success_verdicts": [
+    "pass",
+    "passed",
+    "pass_with_findings",
+    "fail"
+  ],
+  "failure_verdicts": [
+    "error"
+  ],
+  "protocol": "docker_v1",
+  "version": 1,
+  "cases": [
+    {
+      "name": "status-success",
+      "result": {
+        "status": "success",
+        "details": {
+          "checks": [
+            "unit"
+          ],
+          "reason": "reported outcome"
+        }
+      },
+      "confirmation": "success"
+    },
+    {
+      "name": "status-succeeded",
+      "result": {
+        "status": "succeeded",
+        "details": {
+          "checks": [
+            "unit"
+          ],
+          "reason": "reported outcome"
+        }
+      },
+      "confirmation": "success"
+    },
+    {
+      "name": "status-pass",
+      "result": {
+        "status": "pass",
+        "details": {
+          "checks": [
+            "unit"
+          ],
+          "reason": "reported outcome"
+        }
+      },
+      "confirmation": "success"
+    },
+    {
+      "name": "status-passed",
+      "result": {
+        "status": "passed",
+        "details": {
+          "checks": [
+            "unit"
+          ],
+          "reason": "reported outcome"
+        }
+      },
+      "confirmation": "success"
+    },
+    {
+      "name": "status-fail",
+      "result": {
+        "status": "fail",
+        "details": {
+          "checks": [
+            "unit"
+          ],
+          "reason": "reported outcome"
+        }
+      },
+      "confirmation": "success"
+    },
+    {
+      "name": "status-failure",
+      "result": {
+        "status": "failure",
+        "details": {
+          "checks": [
+            "unit"
+          ],
+          "reason": "reported outcome"
+        }
+      },
+      "confirmation": "failure"
+    },
+    {
+      "name": "status-failed",
+      "result": {
+        "status": "failed",
+        "details": {
+          "checks": [
+            "unit"
+          ],
+          "reason": "reported outcome"
+        }
+      },
+      "confirmation": "failure"
+    },
+    {
+      "name": "status-error",
+      "result": {
+        "status": "error",
+        "details": {
+          "checks": [
+            "unit"
+          ],
+          "reason": "reported outcome"
+        }
+      },
+      "confirmation": "failure"
+    },
+    {
+      "name": "verdict-pass",
+      "result": {
+        "verdict": "pass",
+        "details": {
+          "checks": [
+            "unit"
+          ],
+          "reason": "reported outcome"
+        }
+      },
+      "confirmation": "success"
+    },
+    {
+      "name": "verdict-passed",
+      "result": {
+        "verdict": "passed",
+        "details": {
+          "checks": [
+            "unit"
+          ],
+          "reason": "reported outcome"
+        }
+      },
+      "confirmation": "success"
+    },
+    {
+      "name": "verdict-pass_with_findings",
+      "result": {
+        "verdict": "pass_with_findings",
+        "details": {
+          "checks": [
+            "unit"
+          ],
+          "reason": "reported outcome"
+        }
+      },
+      "confirmation": "success"
+    },
+    {
+      "name": "verdict-fail",
+      "result": {
+        "verdict": "fail",
+        "details": {
+          "checks": [
+            "unit"
+          ],
+          "reason": "reported outcome"
+        }
+      },
+      "confirmation": "success"
+    },
+    {
+      "name": "verdict-error",
+      "result": {
+        "verdict": "error",
+        "details": {
+          "checks": [
+            "unit"
+          ],
+          "reason": "reported outcome"
+        }
+      },
+      "confirmation": "failure"
+    },
+    {
+      "name": "case-and-space",
+      "result": {
+        "status": "  SUCCEEDED  "
+      },
+      "confirmation": "success"
+    },
+    {
+      "name": "failure-overrides-pass",
+      "result": {
+        "status": "failed",
+        "verdict": "pass"
+      },
+      "confirmation": "failure"
+    },
+    {
+      "name": "success-overrides-error",
+      "result": {
+        "status": "success",
+        "verdict": "error"
+      },
+      "confirmation": "success"
+    },
+    {
+      "name": "unknown-status-falls-back",
+      "result": {
+        "status": "unknown",
+        "verdict": "pass_with_findings"
+      },
+      "confirmation": "success"
+    },
+    {
+      "name": "incomplete-status-with-verdict",
+      "result": {
+        "status": "partial",
+        "verdict": "pass"
+      },
+      "confirmation": "success"
+    },
+    {
+      "name": "typed-status-falls-back",
+      "result": {
+        "status": false,
+        "verdict": " ERROR "
+      },
+      "confirmation": "failure"
+    },
+    {
+      "name": "incomplete-report",
+      "result": {
+        "status": "partial"
+      },
+      "confirmation": null
+    },
+    {
+      "name": "unknown-verdict",
+      "result": {
+        "verdict": "unknown"
+      },
+      "confirmation": null
+    },
+    {
+      "name": "nonstring-fields",
+      "result": {
+        "status": 7,
+        "verdict": []
+      },
+      "confirmation": null
+    },
+    {
+      "name": "no-verdict",
+      "result": {
+        "details": {
+          "reason": "no completion verdict"
+        }
+      },
+      "confirmation": null
+    },
+    {
+      "name": "empty-object",
+      "result": {},
+      "confirmation": null
+    },
+    {
+      "name": "null-result",
+      "result": null,
+      "confirmation": null
+    }
+  ]
 }

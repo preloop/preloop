@@ -85,7 +85,13 @@ async def prepare_runner_delivery(
 
 
 async def build_runner_launch(context: dict[str, Any]) -> dict[str, Any]:
-    """Build the same bootstrap and credentials as a hosted Codex/OpenCode run."""
+    """Build the same bootstrap and credentials as a hosted Codex/OpenCode run.
+
+    This internal bridge deliberately uses the hosted adapter builders rather
+    than maintaining a second script implementation. Both adapters are exercised
+    by launch contract tests for model routing, prompt/MCP configuration and
+    credentials; changes to their internal signatures must update this bridge.
+    """
     from .codex import CodexAgent
     from .opencode import OpenCodeAgent
 

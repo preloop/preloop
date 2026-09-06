@@ -139,7 +139,13 @@ to `/workspace/result.json` with a recognized `status` (`success`, `succeeded`,
 `passed`, `pass_with_findings`, or `fail`). Failure/error and incomplete reports
 do not confirm success. The runner removes stale results before launch,
 requires exit zero, and sends the bounded report (256 KiB maximum) separately
-from ordinary logs. The API independently checks the completion contract.
+from ordinary logs. Valid reports are also retained when the process exits
+nonzero or reports failure; retaining evidence never promotes a failed run to
+success. Malformed, oversized, empty or duplicate result envelopes are rejected.
+The API independently checks the completion contract. The versioned vocabulary
+and precedence cases live in `backend/tests/fixtures/runner_completion_vocabulary.json`;
+both Go and Python tests verify their complete tables against this shared
+`docker_v1` contract. Update the fixture and both implementations together.
 Workspace source and evidence archives are not uploaded by this protocol.
 This is an agent completion report, not independent verification of its tests.
 
