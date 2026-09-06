@@ -13,6 +13,7 @@ import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '../../components/view-header.ts';
 import '../../components/json-tree.ts';
+import '../../components/list-toolbar.ts';
 import '../../components/preloop-session-observer.ts';
 import {
   getAccountRuntimeSessionDetail,
@@ -133,22 +134,19 @@ export class RuntimeSessionsView extends LitElement {
         gap: var(--sl-spacing-large);
       }
 
-      .filters-grid {
-        display: flex;
-        gap: var(--sl-spacing-medium);
-        flex-wrap: wrap;
-        align-items: end;
-      }
-
-      .filters-grid sl-select,
-      .filters-grid sl-input {
+      /* The collection bar: the same inline row the Agents and Flows lists
+         use, so the filters sit on the page instead of inside a card of
+         their own. Slotted content lives in this view's tree, so these
+         rules reach the selects and the Apply/Reset pair. */
+      list-toolbar sl-select,
+      list-toolbar sl-input[type='date'] {
         min-width: 180px;
       }
 
-      .filters-actions {
+      .filter-actions {
         display: flex;
         gap: var(--sl-spacing-small);
-        margin-left: auto;
+        align-items: end;
       }
 
       .layout {
@@ -970,6 +968,19 @@ export class RuntimeSessionsView extends LitElement {
     return typeof value === 'number' ? value.toLocaleString() : '0';
   }
 
+  /**
+   * The honest count every other collection page states, in the same place:
+   * how many sessions the filters matched. Empty while the first page is in
+   * flight so the bar never claims "0 sessions" before the answer arrives.
+   */
+  private get sessionCountLabel(): string {
+    if (this.loading || !this.sessions) {
+      return '';
+    }
+    const total = this.sessions.total ?? this.sessions.items.length;
+    return `${this.formatNumber(total)} session${total === 1 ? '' : 's'}`;
+  }
+
   private formatCost(value: number | null | undefined): string {
     if (typeof value !== 'number' || Number.isNaN(value)) {
       return '$0.00';
@@ -1581,73 +1592,70 @@ export class RuntimeSessionsView extends LitElement {
       <div class="dashboard extra-wide">
         <div class="main-column">
           <div class="page">
-            <sl-card>
-              <div slot="header" class="session-item-title">
-                Session Explorer Filters
+            <list-toolbar
+              searchPlaceholder="Search sessions"
+              .search=${this.searchQuery}
+              .views=${[]}
+              @search-change=${(event: CustomEvent) => {
+                this.searchQuery = event.detail.value;
+              }}
+            >
+              <sl-select
+                label="Date range"
+                value=${this.selectedRange}
+                @sl-change=${this.handleRangeChange}
+              >
+                <sl-option value="last-7">Last 7 days</sl-option>
+                <sl-option value="last-30">Last 30 days</sl-option>
+                <sl-option value="last-90">Last 90 days</sl-option>
+                <sl-option value="all">All time</sl-option>
+                <sl-option value="custom">Custom</sl-option>
+              </sl-select>
+              <sl-input
+                type="date"
+                label="Start date"
+                .value=${this.startDate}
+                @sl-change=${this.handleStartDateChange}
+              ></sl-input>
+              <sl-input
+                type="date"
+                label="End date"
+                .value=${this.endDate}
+                @sl-change=${this.handleEndDateChange}
+              ></sl-input>
+              <sl-select
+                label="Source type"
+                value=${this.sessionSourceType}
+                @sl-change=${this.handleSessionSourceTypeChange}
+              >
+                <sl-option value="all">All sources</sl-option>
+                <sl-option value="flow_execution">Flow execution</sl-option>
+                <sl-option value="claude_code">Claude Code</sl-option>
+                <sl-option value="claude_desktop">Claude Desktop</sl-option>
+                <sl-option value="codex">Codex</sl-option>
+                <sl-option value="openclaw">OpenClaw</sl-option>
+                <sl-option value="desktop_agent">Desktop agent</sl-option>
+                <sl-option value="custom">Custom</sl-option>
+              </sl-select>
+              <sl-select
+                label="Status"
+                value=${this.status}
+                @sl-change=${this.handleStatusChange}
+              >
+                <sl-option value="all">All</sl-option>
+                <sl-option value="active">Active</sl-option>
+                <sl-option value="ended">Ended</sl-option>
+              </sl-select>
+              <div class="filter-actions">
+                <sl-button variant="primary" @click=${this.applyFilters}>
+                  Apply
+                </sl-button>
+                <sl-button variant="default" @click=${this.clearFilters}>
+                  Reset
+                </sl-button>
               </div>
-              <div class="filters-grid">
-                <sl-select
-                  label="Date range"
-                  value=${this.selectedRange}
-                  @sl-change=${this.handleRangeChange}
-                >
-                  <sl-option value="last-7">Last 7 days</sl-option>
-                  <sl-option value="last-30">Last 30 days</sl-option>
-                  <sl-option value="last-90">Last 90 days</sl-option>
-                  <sl-option value="all">All time</sl-option>
-                  <sl-option value="custom">Custom</sl-option>
-                </sl-select>
-                <sl-input
-                  type="date"
-                  label="Start date"
-                  .value=${this.startDate}
-                  @sl-change=${this.handleStartDateChange}
-                ></sl-input>
-                <sl-input
-                  type="date"
-                  label="End date"
-                  .value=${this.endDate}
-                  @sl-change=${this.handleEndDateChange}
-                ></sl-input>
-                <sl-input
-                  label="Search sessions"
-                  placeholder="Principal, session reference, or source id"
-                  .value=${this.searchQuery}
-                  @sl-input=${this.handleSearchQueryChange}
-                ></sl-input>
-                <sl-select
-                  label="Source type"
-                  value=${this.sessionSourceType}
-                  @sl-change=${this.handleSessionSourceTypeChange}
-                >
-                  <sl-option value="all">All sources</sl-option>
-                  <sl-option value="flow_execution">Flow execution</sl-option>
-                  <sl-option value="claude_code">Claude Code</sl-option>
-                  <sl-option value="claude_desktop">Claude Desktop</sl-option>
-                  <sl-option value="codex">Codex</sl-option>
-                  <sl-option value="openclaw">OpenClaw</sl-option>
-                  <sl-option value="desktop_agent">Desktop agent</sl-option>
-                  <sl-option value="custom">Custom</sl-option>
-                </sl-select>
-                <sl-select
-                  label="Status"
-                  value=${this.status}
-                  @sl-change=${this.handleStatusChange}
-                >
-                  <sl-option value="all">All</sl-option>
-                  <sl-option value="active">Active</sl-option>
-                  <sl-option value="ended">Ended</sl-option>
-                </sl-select>
-                <div class="filters-actions">
-                  <sl-button variant="primary" @click=${this.applyFilters}>
-                    Apply
-                  </sl-button>
-                  <sl-button variant="default" @click=${this.clearFilters}>
-                    Reset
-                  </sl-button>
-                </div>
-              </div>
-            </sl-card>
+              <span slot="count">${this.sessionCountLabel}</span>
+            </list-toolbar>
 
             ${
               this.error
@@ -1674,11 +1682,9 @@ export class RuntimeSessionsView extends LitElement {
                   `
                 : html`
                     <sl-card>
-                      <div slot="header" class="session-item-title">
-                        Session Observer
-                      </div>
                       <preloop-session-observer
                         scope="account"
+                        hideListSearch
                         .sessions=${this.sessions?.items || []}
                         .emptyText=${this.emptySessionsText()}
                         .selectedSessionId=${this.selectedSessionId}

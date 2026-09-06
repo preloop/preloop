@@ -615,6 +615,68 @@ describe('RuntimeSessionsView', () => {
     expect(content).to.contain('openai/gpt-5');
   });
 
+  describe('collection bar', () => {
+    it('states the matching session count in one live region', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const toolbar = element.shadowRoot!.querySelector('list-toolbar')!;
+      expect(toolbar).to.not.equal(null);
+      const count = toolbar.querySelector('[slot="count"]')!;
+      expect(count.textContent!.trim()).to.equal('2 sessions');
+      const liveRegion = toolbar.shadowRoot!.querySelector('.results-count')!;
+      expect(liveRegion.getAttribute('aria-live')).to.equal('polite');
+    });
+
+    it('drops the filter and observer card titles', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const text = element.shadowRoot!.textContent || '';
+      expect(text).to.not.contain('Session Explorer Filters');
+      expect(text).to.not.contain('Session Observer');
+    });
+
+    it('shows one search input on the page', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const observer = element.shadowRoot!.querySelector(
+        'preloop-session-observer'
+      )!;
+      await (observer as any).updateComplete;
+
+      const toolbarSearches = element
+        .shadowRoot!.querySelector('list-toolbar')!
+        .shadowRoot!.querySelectorAll('sl-input.search-input');
+      const sidebarSearches =
+        observer.shadowRoot!.querySelectorAll('.sidebar sl-input');
+      expect(toolbarSearches.length).to.equal(1);
+      expect(sidebarSearches.length).to.equal(0);
+    });
+  });
+
   describe('reader-facing copy', () => {
     it('uses no em dash in the page copy', async () => {
       const element = (await fixture(
