@@ -690,6 +690,26 @@ describe('RuntimeSessionsView', () => {
       expect(listCalls().pop()).to.contain('query=workspace-42');
     });
 
+    it('keeps the hint about what the query matches', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const toolbar = element.shadowRoot!.querySelector('list-toolbar')!;
+      await (toolbar as any).updateComplete;
+      const input = toolbar.shadowRoot!.querySelector('sl-input.search-input')!;
+      expect(input.getAttribute('placeholder')).to.equal(
+        'Principal, session reference, or source id'
+      );
+      expect(input.getAttribute('label')).to.equal('Search sessions');
+    });
+
     it('shows one search input on the page', async () => {
       const element = (await fixture(
         html`<runtime-sessions-view></runtime-sessions-view>`

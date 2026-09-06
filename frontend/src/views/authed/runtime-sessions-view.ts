@@ -465,7 +465,7 @@ export class RuntimeSessionsView extends LitElement {
       }
 
       @media (max-width: 720px) {
-        .filters-actions {
+        .filter-actions {
           margin-left: 0;
           width: 100%;
         }
@@ -1577,7 +1577,7 @@ export class RuntimeSessionsView extends LitElement {
               </div>
             </div>
             <div class="summary-card">
-              <div class="summary-label">Estimated Cost</div>
+              <div class="summary-label">Estimated spend</div>
               <div class="summary-value">
                 ${this.formatCost(session.estimated_cost)}
               </div>
@@ -1589,7 +1589,7 @@ export class RuntimeSessionsView extends LitElement {
         </sl-card>
 
         <sl-card>
-          <div slot="header" class="session-item-title">Usage By Model</div>
+          <div slot="header" class="session-item-title">Usage by model</div>
           ${this.renderModelBreakdown(this.detail.usage_by_model)}
         </sl-card>
 
@@ -1615,7 +1615,8 @@ export class RuntimeSessionsView extends LitElement {
         <div class="main-column">
           <div class="page">
             <list-toolbar
-              searchPlaceholder="Search sessions"
+              searchPlaceholder="Principal, session reference, or source id"
+              searchLabel="Search sessions"
               .search=${this.searchQuery}
               .views=${[]}
               @search-change=${this.handleSearchChange}
