@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -17,13 +18,16 @@ const runnerLogPartialLimit = 768 * 1024 // Includes a bounded base64 result env
 // writer drains it. A bounded queue survives reconnects with the running Cmd.
 // Overflow is visible and prevents successful completion with missing markers.
 type runnerLogBuffer struct {
-	mu           sync.Mutex
-	partial      []byte
-	discarding   bool
-	pending      []string
-	pendingBytes int
-	results      []string
-	overflow     bool
+	native        bool
+	nativeCapture cursorCapture
+	nativeResults int
+	mu            sync.Mutex
+	partial       []byte
+	discarding    bool
+	pending       []string
+	pendingBytes  int
+	results       []string
+	overflow      bool
 }
 
 func (b *runnerLogBuffer) Write(data []byte) (int, error) {
@@ -59,7 +63,19 @@ func (b *runnerLogBuffer) Write(data []byte) (int, error) {
 }
 
 func (b *runnerLogBuffer) appendLineLocked(line string) {
-	if strings.HasPrefix(line, runnerResultPrefix) {
+	if b.native {
+		var event cursorStreamEvent
+		if json.Unmarshal([]byte(line), &event) == nil {
+			applyCursorEvent(&b.nativeCapture, event)
+			if event.Type == "result" {
+				b.nativeResults++
+				if event.Subtype != "success" {
+					b.nativeCapture.ResultErr = true
+				}
+			}
+		}
+	}
+	if !b.native && strings.HasPrefix(line, runnerResultPrefix) {
 		// Two is enough to reject duplicate envelopes; never grow without bound.
 		if len(b.results) < 2 {
 			b.results = append(b.results, line)
@@ -144,4 +160,31 @@ func flushRunnerLogs(conn *websocket.Conn, executionID string, buffer *runnerLog
 			return nil
 		}
 	}
+}
+
+// Native stream state is bounded independently of already-flushed raw logs.
+func nativeRunnerResult(b *runnerLogBuffer, waitErr error) (map[string]any, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if waitErr != nil {
+		return nil, waitErr
+	}
+	if b.overflow {
+		return nil, fmt.Errorf("native log buffer exceeded its limit")
+	}
+	if b.nativeResults != 1 || !b.nativeCapture.HasResult {
+		return nil, fmt.Errorf("host execution exited without a valid structured completion result")
+	}
+	status := "success"
+	if b.nativeCapture.ResultErr {
+		status = "failure"
+	}
+	result := map[string]any{"status": status, "harness": "cursor_cli"}
+	if b.nativeCapture.SessionID != "" {
+		result["session_id"] = b.nativeCapture.SessionID
+	}
+	if b.nativeCapture.Model != "" {
+		result["model"] = b.nativeCapture.Model
+	}
+	return result, nil
 }

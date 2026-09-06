@@ -15618,6 +15618,30 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    HostExecProfileAdvertisement:
+      properties:
+        name:
+          type: string
+          maxLength: 64
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$
+          title: Name
+        capabilities:
+          items:
+            type: string
+          type: array
+          maxItems: 16
+          title: Capabilities
+        models:
+          items:
+            type: string
+          type: array
+          maxItems: 64
+          title: Models
+      type: object
+      required:
+      - name
+      title: HostExecProfileAdvertisement
+      description: Name and capability flags a runner advertises. No executable path.
     ImportedUsageByConversation:
       properties:
         conversation_id:
@@ -19270,6 +19294,12 @@ components:
             format: uuid
           - type: 'null'
           title: Instance Id
+        host_exec_profiles:
+          items:
+            $ref: '#/components/schemas/HostExecProfileAdvertisement'
+          type: array
+          maxItems: 64
+          title: Host Exec Profiles
       type: object
       title: RunnerRegisterRequest
       description: Register or resume a runner for the logged-in account.
@@ -19338,6 +19368,10 @@ components:
           - type: string
           - type: 'null'
           title: Registered By Email
+        capabilities:
+          additionalProperties: true
+          type: object
+          title: Capabilities
         created_at:
           type: string
           format: date-time
@@ -19424,6 +19458,10 @@ components:
           - type: string
           - type: 'null'
           title: Registered By Email
+        capabilities:
+          additionalProperties: true
+          type: object
+          title: Capabilities
         created_at:
           type: string
           format: date-time

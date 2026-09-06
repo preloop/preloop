@@ -1487,7 +1487,7 @@ def test_private_cursor_does_not_enable_rules_or_matrices(
         ),
     )
     flow.runner_pool = "private"
-    with pytest.raises(ModelRoutingError, match="not supported"):
+    with pytest.raises(ModelRoutingError, match="cannot select agent_type 'cursor'"):
         prepare_execution_routing(
             db_session,
             flow,
@@ -1495,6 +1495,27 @@ def test_private_cursor_does_not_enable_rules_or_matrices(
             authorized_matrix={"agent_type": "cursor", "ai_model_id": str(model.id)}
             if matrix
             else None,
+        )
+
+
+def test_stored_routing_rejects_cursor_rules_with_host_profile_guidance(
+    db_session: Session, test_user: User
+) -> None:
+    model = _usable_model(db_session, test_user.account_id)
+    with pytest.raises(ModelRoutingError, match="named host profile"):
+        validate_stored_model_routing(
+            db_session,
+            {
+                "model_routing": _policy(
+                    _rule(
+                        "native",
+                        any_labels=["native"],
+                        model_id=model.id,
+                        agent_type="cursor",
+                    )
+                )
+            },
+            test_user.account_id,
         )
 
 

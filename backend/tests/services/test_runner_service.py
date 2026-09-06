@@ -293,7 +293,79 @@ def test_lease_job_skips_locked_runner_and_claims_next(
     assert next_runner.status == "busy"
 
 
-def test_runner_console_payload_omits_token() -> None:
+def test_lease_job_skips_runner_missing_host_exec_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = SimpleNamespace(
+        id=uuid4(),
+        status="online",
+        pending_job=None,
+        capabilities={"host_exec_profiles": []},
+    )
+    matching = SimpleNamespace(
+        id=uuid4(),
+        status="online",
+        pending_job=None,
+        current_execution_id=None,
+        halt_requested=False,
+        reported_status=None,
+        capabilities={
+            "host_exec_profiles": [
+                {"name": "cursor-ask", "capabilities": ["host_exec", "cursor_cli"]}
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        crud_flow_runner,
+        "find_matching",
+        lambda db, **kwargs: [missing, matching],
+    )
+
+    def _claim_idle(db, *, runner_id):
+        if runner_id == matching.id:
+            return matching
+        raise AssertionError("must not claim a runner missing the advertised profile")
+
+    monkeypatch.setattr(crud_flow_runner, "claim_idle", _claim_idle)
+    result = lease_job(
+        MagicMock(),
+        account_id=uuid4(),
+        pool="local",
+        execution_id=uuid4(),
+        payload={"host_exec_profile": "cursor-ask", "prompt": "ask"},
+    )
+    assert result is matching
+
+
+def test_lease_job_queues_when_no_runner_advertises_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = SimpleNamespace(
+        id=uuid4(),
+        status="online",
+        pending_job=None,
+        capabilities={"host_exec_profiles": [{"name": "other"}]},
+    )
+    monkeypatch.setattr(
+        crud_flow_runner,
+        "find_matching",
+        lambda db, **kwargs: [runner],
+    )
+    monkeypatch.setattr(
+        crud_flow_runner,
+        "claim_idle",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("must not claim unmatched host-exec runner")
+        ),
+    )
+    result = lease_job(
+        MagicMock(),
+        account_id=uuid4(),
+        pool="local",
+        execution_id=uuid4(),
+        payload={"host_exec_profile": "cursor-ask"},
+    )
+    assert result is None
     runner_id = uuid4()
     user_id = uuid4()
     runner = SimpleNamespace(
@@ -315,6 +387,7 @@ def test_runner_console_payload_omits_token() -> None:
     assert payload["status"] == "online"
     assert payload["labels"] == ["local"]
     assert payload["registered_by_email"] is None
+    assert payload["capabilities"] == {}
     assert "token" not in payload
     assert "token_hash" not in payload
 
