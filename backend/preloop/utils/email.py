@@ -411,6 +411,7 @@ async def send_approval_request_email(
     approval_url: str,
     agent_reasoning: Optional[str] = None,
     summary: Optional[str] = None,
+    agent_name: Optional[str] = None,
 ) -> None:
     """Send an approval request email to an approver.
 
@@ -421,12 +422,21 @@ async def send_approval_request_email(
         approval_url: The URL to approve or decline the request.
         agent_reasoning: Optional reasoning from the agent for why it wants to use the tool.
         summary: Optional plain-language ask shown first in the email.
+        agent_name: The agent that asked, when known. An approver reading an
+            inbox decides on the caller as much as on the tool, so the name
+            goes in the subject and replaces the generic "An AI agent" line.
 
     Raises:
         EmailError: If email sending fails.
     """
     ask_text = (summary or "").strip() or None
-    subject = ask_text[:80] if ask_text else f"Tool Approval Required: {tool_name}"
+    asker = (agent_name or "").strip() or None
+    if ask_text:
+        subject = ask_text[:80]
+    elif asker:
+        subject = f"{asker} needs approval: {tool_name}"
+    else:
+        subject = f"Tool Approval Required: {tool_name}"
 
     # Format tool arguments for display (redact sensitive fields)
     import json
@@ -452,11 +462,18 @@ async def send_approval_request_email(
     else:
         text_parts.extend(
             [
-                "An AI agent is requesting approval to execute the following tool:",
+                (
+                    f"{asker} is requesting approval to execute the following tool:"
+                    if asker
+                    else "An AI agent is requesting approval to execute the following tool:"
+                ),
                 "",
                 f"Tool: {tool_name}",
             ]
         )
+
+    if asker:
+        text_parts.append(f"Agent: {asker}")
 
     if agent_reasoning:
         text_parts.append("")
@@ -523,12 +540,20 @@ async def send_approval_request_email(
             ]
         )
     else:
+        lead = (
+            f"{asker} is requesting approval to execute the following tool:"
+            if asker
+            else "An AI agent is requesting approval to execute the following tool:"
+        )
         html_parts.extend(
             [
-                "      <p>An AI agent is requesting approval to execute the following tool:</p>",
+                f"      <p>{lead}</p>",
                 f'      <p class="tool-name">Tool: {tool_name}</p>',
             ]
         )
+
+    if asker:
+        html_parts.append(f"      <p>Agent: {asker}</p>")
 
     if agent_reasoning:
         html_parts.extend(
