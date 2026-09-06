@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -193,6 +192,7 @@ func loadOrRegisterRunner(client *api.Client, name, hostname string, labels []st
 }
 
 type leasedJobOutcome struct {
+	logBuffer   *runnerLogBuffer
 	result      map[string]any
 	exitCode    int
 	executionID string
@@ -237,6 +237,9 @@ func dialRunnerWebsocket(wsURL, token string) (*websocket.Conn, error) {
 func writeJobOutcome(conn *websocket.Conn, outcome leasedJobOutcome) error {
 	if conn == nil {
 		return nil
+	}
+	if err := flushRunnerLogs(conn, outcome.executionID, outcome.logBuffer, true); err != nil {
+		return err
 	}
 	if len(outcome.lines) > 0 {
 		if err := conn.WriteJSON(map[string]any{
@@ -448,6 +451,8 @@ func runRunnerSession(
 		}
 	}
 
+	logTicker := time.NewTicker(time.Second)
+	defer logTicker.Stop()
 	ticker := time.NewTicker(runnerHeartbeatEvery)
 	defer ticker.Stop()
 
@@ -458,6 +463,14 @@ func runRunnerSession(
 			killRunning()
 			_ = conn.WriteJSON(map[string]any{"type": "unregister"})
 			return nil
+		case <-logTicker.C:
+			if *runningCmd != nil {
+				if buffer, ok := (*runningCmd).Stdout.(*runnerLogBuffer); ok {
+					if err := flushRunnerLogs(conn, *runningExecID, buffer, false); err != nil {
+						return err
+					}
+				}
+			}
 		case <-ticker.C:
 			_ = conn.WriteControl(
 				websocket.PingMessage, nil, time.Now().Add(runnerPingWait),
@@ -625,7 +638,7 @@ func beginLeasedJob(
 		}
 	}
 	cmd := newRunnerJobCmd(image, env, opts)
-	var buf bytes.Buffer
+	var buf runnerLogBuffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 	if err := cmd.Start(); err != nil {
@@ -664,19 +677,38 @@ func requestJobHalt(halted *atomic.Bool, runningCmd *exec.Cmd) bool {
 	return false
 }
 
-func waitDockerJob(cmd *exec.Cmd, executionID string, buf *bytes.Buffer, halted *atomic.Bool) leasedJobOutcome {
+func waitDockerJob(cmd *exec.Cmd, executionID string, buf interface{ String() string }, halted *atomic.Bool) leasedJobOutcome {
 	err := cmd.Wait()
+	buffer, streaming := buf.(*runnerLogBuffer)
+	if streaming {
+		buffer.finish()
+	}
 	result, lines, resultErr := runnerStructuredResult(splitNonEmptyLines(buf.String()))
+	outcome := leasedJobOutcome{executionID: executionID, status: "SUCCEEDED", lines: lines, result: result}
+	if streaming {
+		outcome.logBuffer = buffer
+		outcome.lines = nil
+	}
+	if cmd.ProcessState != nil {
+		outcome.exitCode = cmd.ProcessState.ExitCode()
+	}
 	if err != nil {
 		if halted != nil && halted.Load() {
-			return leasedJobOutcome{executionID: executionID, status: "STOPPED", lines: lines}
+			outcome.status = "STOPPED"
+			return outcome
 		}
-		return leasedJobOutcome{executionID: executionID, status: "FAILED", errMsg: err.Error(), lines: lines}
+		outcome.status = "FAILED"
+		outcome.errMsg = err.Error()
+		return outcome
 	}
 	if resultErr != nil {
-		return leasedJobOutcome{executionID: executionID, status: "FAILED", errMsg: resultErr.Error(), lines: lines}
+		outcome.status = "FAILED"
+		outcome.errMsg = resultErr.Error()
+		if streaming && buffer.overflow {
+			outcome.errMsg = "Runner log buffer exceeded its limit; execution markers may be missing"
+		}
 	}
-	return leasedJobOutcome{executionID: executionID, status: "SUCCEEDED", lines: lines, result: result}
+	return outcome
 }
 
 func splitNonEmptyLines(output string) []string {

@@ -387,3 +387,71 @@ def test_factory_uses_account_default_pool() -> None:
     )
     assert isinstance(executor, RemoteRunnerExecutor)
     assert executor.pool == "office-mac"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("execution_status", ["RUNNING", "SUCCEEDED", "FAILED"])
+async def test_stale_queued_reference_follows_persisted_assignment(
+    monkeypatch: pytest.MonkeyPatch, execution_status: str
+) -> None:
+    """An old queue marker must neither lease twice nor overwrite completion."""
+    execution_id, runner_id = uuid4(), uuid4()
+    execution = SimpleNamespace(
+        id=execution_id,
+        status=execution_status,
+        start_time=datetime.now(timezone.utc) - timedelta(minutes=16),
+        agent_session_reference=f"runner:{runner_id}:{execution_id}",
+        runner_id=runner_id,
+        current_execution_id=None,
+        error_message=None,
+        end_time=None,
+    )
+    runner = SimpleNamespace(
+        id=runner_id,
+        halt_requested=False,
+        reported_status=execution_status,
+        current_execution_id=execution_id,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_execution.get",
+        lambda *a, **k: execution,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_runner.get", lambda *a, **k: runner
+    )
+    lease = MagicMock()
+    monkeypatch.setattr("preloop.agents.remote_runner.lease_job", lease)
+    executor = RemoteRunnerExecutor(
+        "codex", {}, db=MagicMock(), pool="auto", account_id=uuid4()
+    )
+    assert await executor.get_status(
+        f"runner:queued:auto:{execution_id}"
+    ) == AgentStatus(execution_status)
+    assert execution.status == execution_status
+    assert execution.error_message is None
+    lease.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_terminal_execution_ignores_reused_runner_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execution_id, runner_id = uuid4(), uuid4()
+    execution = SimpleNamespace(id=execution_id, status="FAILED")
+    runner = SimpleNamespace(
+        halt_requested=False, reported_status="RUNNING", current_execution_id=uuid4()
+    )
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_execution.get",
+        lambda *a, **k: execution,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_runner.get", lambda *a, **k: runner
+    )
+    executor = RemoteRunnerExecutor(
+        "codex", {}, db=MagicMock(), pool="auto", account_id=uuid4()
+    )
+    assert (
+        await executor.get_status(f"runner:{runner_id}:{execution_id}")
+        == AgentStatus.FAILED
+    )

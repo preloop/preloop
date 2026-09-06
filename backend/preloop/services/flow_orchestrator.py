@@ -1072,7 +1072,7 @@ class FlowExecutionOrchestrator:
         except Exception as e:
             logger.error(f"Failed to publish update to NATS: {e}", exc_info=True)
 
-    def _get_flow_details(self):
+    def _get_flow_details(self, *, refresh: bool = False):
         """Retrieve the Flow definition and associated AIModel."""
         logger.info(f"Retrieving flow details for flow_id: {self.flow_id}")
 
@@ -1082,7 +1082,9 @@ class FlowExecutionOrchestrator:
         )
         # Use CRUD layer without account filtering since this is an internal service
         # and we don't have the account_id yet (it's a property of the flow itself)
-        self.flow = crud_flow.get(self.db, id=flow_id_str)
+        self.flow = crud_flow.get(
+            self.db, id=flow_id_str, **({"refresh": True} if refresh else {})
+        )
         if not self.flow:
             raise ValueError(f"Flow with id {self.flow_id} not found")
 
@@ -2245,6 +2247,10 @@ class FlowExecutionOrchestrator:
             agent_executor: Agent executor instance
             session_reference: Container/Job reference
         """
+        # Private runner WebSockets already persist and publish each line.
+        # They have no container stream, and replaying stored logs duplicates it.
+        if getattr(agent_executor, "streams_logs_externally", False) is True:
+            return
         logger.info(f"Starting log streaming for {session_reference}")
         log_count = 0
 

@@ -143,6 +143,14 @@ from ordinary logs. The API independently checks the completion contract.
 Workspace source and evidence archives are not uploaded by this protocol.
 This is an agent completion report, not independent verification of its tests.
 
+Ordinary output is sent in bounded batches about once per second, with a final
+flush before completion. Unsent output stays with the running process across
+reconnects (at most 4 MiB / 8192 lines; individual ordinary lines are truncated
+to 64 KiB). Exceeding the queue or partial-line bound fails completion because
+execution markers may have been lost. Transport is best effort: a disconnect
+after a successful socket write but before server persistence can lose that
+batch. The runner does not maintain an unbounded replay queue.
+
 When the flow omits `image` / `docker_image`, the control plane uses the hosted
 Codex/OpenCode default. The default `ghcr.io/openai/codex-universal:latest`
 entrypoint is preserved because it initializes language runtimes. Custom

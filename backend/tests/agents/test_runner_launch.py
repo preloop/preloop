@@ -87,7 +87,7 @@ async def test_redelivery_rebuilds_context_with_stored_prompt_and_trigger(monkey
     )
     captured = {}
     monkeypatch.setattr(
-        FlowExecutionOrchestrator, "_get_flow_details", lambda self: None
+        FlowExecutionOrchestrator, "_get_flow_details", lambda self, **kwargs: None
     )
 
     async def prepare(self, *, resolved_prompt):
@@ -212,7 +212,7 @@ async def test_flow_model_edit_rejects_replay_before_minting_credentials(monkeyp
     monkeypatch.setattr(
         FlowExecutionOrchestrator,
         "_get_flow_details",
-        lambda self: setattr(self, "flow", flow),
+        lambda self, **kwargs: setattr(self, "flow", flow),
     )
     prepare = AsyncMock()
     monkeypatch.setattr(
@@ -228,3 +228,47 @@ async def test_flow_model_edit_rejects_replay_before_minting_credentials(monkeyp
     )
     assert "configuration changed" in delivered["launch_error"]
     prepare.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_shared_launch_prepares_clone_setup_and_git_credentials(caplog):
+    context = {
+        "agent_type": "codex",
+        "agent_config": {},
+        "model_provider": "openai",
+        "prompt": "Implement a fix",
+        "execution_id": str(uuid4()),
+        "git_clone_config": {
+            "enabled": True,
+            "repositories": [
+                {
+                    "repository_url": "https://github.com/example/project.git",
+                    "clone_path": "/workspace/project",
+                    "branch": "main",
+                    "tracker_id": "tracker",
+                }
+            ],
+        },
+        "git_credentials_map": {
+            "tracker": {"token": "git-secret", "tracker_type": "github"}
+        },
+        "custom_commands": {"enabled": True, "commands": ["echo repository-setup"]},
+    }
+    with caplog.at_level("DEBUG"):
+        launch = await build_runner_launch(context)
+    assert "git clone" in launch["script"]
+    assert "/workspace/project" in launch["script"]
+    assert "repository-setup" in launch["script"]
+    assert "git-secret" in launch["env"].values()
+    assert "git-secret" not in launch["script"]
+    assert "git-secret" not in caplog.text
+
+
+def test_flow_refresh_bypasses_cached_definition_and_model():
+    from preloop.models.crud import crud_flow
+
+    db = MagicMock()
+    crud_flow.get(db, id=uuid4(), refresh=True)
+    query = db.query.return_value.filter.return_value
+    query.populate_existing.assert_called_once_with()
+    query.populate_existing.return_value.options.assert_called_once()

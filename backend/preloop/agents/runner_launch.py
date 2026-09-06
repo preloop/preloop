@@ -152,7 +152,7 @@ async def hydrate_runner_job(db: Session, job: dict[str, Any]) -> dict[str, Any]
         db, execution.flow_id, execution.trigger_event_details or {}, None
     )
     orchestrator.execution_log = execution
-    orchestrator._get_flow_details()
+    orchestrator._get_flow_details(refresh=True)
     expected = job.get("flow_launch_fingerprint")
     if expected and expected != flow_launch_fingerprint(orchestrator.flow):
         raise RunnerLaunchConfigurationChangedError()
