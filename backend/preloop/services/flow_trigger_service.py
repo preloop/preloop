@@ -1,8 +1,10 @@
 import asyncio
 import logging
+import threading
 import uuid
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
 
 from preloop.models.crud import crud_flow, crud_flow_execution
@@ -103,10 +105,31 @@ class FlowTriggerService:
 
     def __init__(self, db: Session, session_factory: sessionmaker | None = None):
         self.db = db
-        self.session_factory = session_factory or get_session_factory()
+        self._session_factory = session_factory
+        self._db_thread = threading.get_ident()
 
     def _create_orchestrator_session(self) -> Session:
-        return self.session_factory()
+        factory = self._session_factory or get_session_factory()
+        return factory()
+
+    def _flows_halted(self, account_id: Any) -> bool:
+        """Read the account halt flag on a Session owned by this thread.
+
+        Lifecycle workers may marshal ``_start_flow_execution`` onto the
+        application loop. SQLAlchemy sync Sessions are not safe there.
+        """
+        db = self.db
+        if (
+            isinstance(db, Session)
+            and threading.get_ident() != self._db_thread
+            and not isinstance(db.get_bind(), Connection)
+        ):
+            session = self._create_orchestrator_session()
+            try:
+                return flows_halted(session, account_id)
+            finally:
+                session.close()
+        return flows_halted(db, account_id)
 
     def _extract_resource_key(self, event_data: Dict[str, Any]) -> Optional[str]:
         """
@@ -673,7 +696,7 @@ class FlowTriggerService:
         from preloop.services.flow_execution_runner import run_existing_execution
         from preloop.services.flow_orchestrator import _make_json_serializable
 
-        if flows_halted(self.db, flow.account_id):
+        if self._flows_halted(flow.account_id):
             if precreated_execution is None:
                 raise FlowHaltActiveError(
                     f"Flow '{flow.name}' ({flow.id}) not started: the account "
@@ -688,6 +711,23 @@ class FlowTriggerService:
                 precreated_execution.id,
             )
             return precreated_execution
+
+        if precreated_execution is None:
+            from preloop.services.issue_lifecycle_runtime import lifecycle_flow_entry
+            from preloop.services.issue_lifecycle_worker import lifecycle_entry_decision
+
+            event = event_data if isinstance(event_data, dict) else {}
+            skip_entry = (
+                isinstance(self.db, Session)
+                and not lifecycle_entry_decision(self.db, flow, event).engaged
+            )
+            if not skip_entry:
+                handled, lifecycle_execution = await lifecycle_flow_entry(
+                    self, flow, event_data, nats_client
+                )
+                if handled:
+                    return lifecycle_execution
+
         if precreated_execution is not None:
             execution = precreated_execution
             execution_id = execution.id

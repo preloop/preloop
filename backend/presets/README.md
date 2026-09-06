@@ -94,3 +94,12 @@ later file wins and a warning is logged at startup.
 - The `is_preset` field defaults to `true` if not specified
 - Presets are loaded at application startup and cached
 - Invalid YAML files will cause a startup error
+
+## Issue readiness and completion auditing
+
+`012-issue-refinement-readiness.yaml` produces a structured, reviewable acceptance
+contract after triage. `013-merged-issue-completion-audit.yaml` independently audits
+the exact revision that closed an issue through a verified merged PR. Both use the
+public lifecycle controller; neither requires private presets or plugins. Configure
+project policy, scoped repository checkout and approved test environments as
+explained in [the lifecycle guide](../../docs/guide/flows/issue-lifecycle.md).

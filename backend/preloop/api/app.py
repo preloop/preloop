@@ -30,6 +30,7 @@ from fastapi.encoders import jsonable_encoder
 from preloop.api.auth import auth_router, get_current_active_user
 from preloop.api.endpoints import (
     account,
+    issue_lifecycle,
     agent_control,
     agent_permission,
     anthropic_gateway,
@@ -1015,6 +1016,12 @@ def create_app() -> FastAPI:
         )
         app.include_router(
             issues.router,
+            prefix="/api/v1",
+            tags=["Issues"],
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            issue_lifecycle.router,
             prefix="/api/v1",
             tags=["Issues"],
             dependencies=[Depends(get_current_active_user)],

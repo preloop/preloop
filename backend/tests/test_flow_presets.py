@@ -491,6 +491,8 @@ class TestRealPresetSlugs:
 # Maps preset file -> the exact status/verdict vocabulary line its prompt
 # documents (whitespace-normalized).
 PRESET_COMPLETION_MARKERS = {
+    "012-issue-refinement-readiness.yaml": '"status": "success"',
+    "013-merged-issue-completion-audit.yaml": '"status": "success"',
     "001-issue-triage-assistant.yaml": '"status": "success"',
     "002-pull-request-reviewer.yaml": '"status": "success"',
     "003-observe-eval.yaml": '"status": "pass" | "fail" | "error"',
