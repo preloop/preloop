@@ -262,6 +262,26 @@ describe('FlowExecutionsView', () => {
     }
   });
 
+  it('drops a pending search when the view is torn down', async () => {
+    fetchStub = stub(EXECUTIONS);
+    const el = (await fixture(
+      html`<flow-executions-view></flow-executions-view>`
+    )) as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+
+    const toolbar = el.shadowRoot?.querySelector('list-toolbar');
+    toolbar?.dispatchEvent(
+      new CustomEvent('search-change', { detail: { value: 'nightly' } })
+    );
+    const callsBefore = fetchStub.callCount;
+    el.remove();
+    await tick(400);
+
+    // The debounced request must not fire against a detached element.
+    expect(fetchStub.callCount).to.equal(callsBefore);
+  });
+
   it('offers every execution status in the status filter', async () => {
     fetchStub = stub(EXECUTIONS);
     const el = (await fixture(

@@ -754,6 +754,12 @@ export class FlowExecutionsView extends AuthedElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this.stopDurationTicker();
+    // A keystroke 300 ms before the user navigates away must not spend a
+    // request on a detached page, or write state into it afterwards.
+    if (this.searchDebounceId !== undefined) {
+      clearTimeout(this.searchDebounceId);
+      this.searchDebounceId = undefined;
+    }
     // Unsubscribe from flow execution updates
     this.unsubscribe?.();
     this.unsubscribe = undefined;
