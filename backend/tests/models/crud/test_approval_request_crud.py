@@ -154,6 +154,8 @@ def test_expire_stale_pending_marks_expired(crud_approval_request, mock_db_sessi
     mock_db_session.query.return_value = mock_query
     mock_query.filter.return_value = mock_query
     mock_query.update.return_value = 2
+    mock_query.all.return_value = [(account_id,)]
+    mock_query.first.return_value = None
 
     result = crud_approval_request.expire_stale_pending(
         mock_db_session,

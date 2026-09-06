@@ -41,6 +41,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None,
+        commit: bool = True,
     ) -> AuditLog:
         """Log a security-sensitive action.
 
@@ -76,8 +77,11 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         )
 
         db.add(db_obj)
-        db.commit()
-        db.refresh(db_obj)
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        else:
+            db.flush()
         return db_obj
 
     def get_by_account(

@@ -19,6 +19,14 @@ from preloop.agents.base import AgentStatus
 from preloop.services.runner_service import persistable_job_payload
 
 
+@pytest.fixture(autouse=True)
+def no_pending_stop(monkeypatch):
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_execution.get_stop_request",
+        lambda *args, **kwargs: None,
+    )
+
+
 @pytest.mark.asyncio
 async def test_remote_runner_queues_when_no_match(
     monkeypatch: pytest.MonkeyPatch,

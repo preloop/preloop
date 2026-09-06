@@ -11,6 +11,7 @@ Covers:
 """
 
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,6 +26,20 @@ from preloop.services.ask_user_inband import (
     deliver_question_to_session,
     format_question_notice,
 )
+
+
+@pytest.fixture(autouse=True)
+def halt_session():
+    """Keep replay unit tests independent of the async database connection pool."""
+    session = AsyncMock()
+    session.run_sync.return_value = set()
+
+    @asynccontextmanager
+    async def factory():
+        yield session
+
+    with patch("preloop.models.db.session.get_async_db_session", new=factory):
+        yield session
 
 
 class TestDeepLinks:
@@ -570,3 +585,30 @@ class TestApprovedAskUserReplayRegression:
             _bypass_approval_var.reset(bypass_token)
             _approved_comment_var.reset(comment_token)
         assert result == "User answered: Option B"
+
+
+@pytest.mark.asyncio
+async def test_replayed_answer_stays_blocked_during_tools_halt(halt_session):
+    from preloop.services.approval_helper import require_approval
+    from preloop.services.dynamic_fastmcp import (
+        _approved_comment_var,
+        _bypass_approval_var,
+    )
+
+    halt_session.run_sync.return_value = {"tools"}
+    bypass_token = _bypass_approval_var.set(True)
+    comment_token = _approved_comment_var.set("Option B")
+    try:
+        approved, answer = await require_approval(
+            tool_name="ask_user",
+            tool_source="builtin",
+            account_id=str(uuid.uuid4()),
+            arguments={"question": "?"},
+            return_comment_on_approve=True,
+        )
+    finally:
+        _bypass_approval_var.reset(bypass_token)
+        _approved_comment_var.reset(comment_token)
+    assert approved is False
+    assert "kill switch" in answer
+    assert "Option B" not in answer

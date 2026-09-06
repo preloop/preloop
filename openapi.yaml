@@ -4330,6 +4330,103 @@ paths:
                   All Post
       security:
       - bearerAuth: []
+  /api/v1/account/kill-switch/status:
+    get:
+      tags:
+      - Kill Switch
+      summary: Get Kill Switch Status
+      description: 'Report the account''s current kill-switch state.
+
+
+        Readable by any authenticated user of the account: the console banner
+
+        polls this, and a halted account must be visible to everyone governing
+
+        it, not only to whoever flipped the switch.'
+      operationId: get_kill_switch_status_api_v1_account_kill_switch_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KillSwitchStatus'
+      security:
+      - bearerAuth: []
+  /api/v1/account/kill-switch/activate:
+    post:
+      tags:
+      - Kill Switch
+      summary: Activate Kill Switch
+      description: 'Activate the kill switch for one or more traffic scopes.
+
+
+        Defaults to a full halt (gateway, tools, flows). Activation is
+
+        idempotent per scope and audited: the actor, timestamp, and reason are
+
+        recorded on the halt row and in the audit log, and every process
+
+        enforces the halt within seconds (the serving process immediately).'
+      operationId: activate_kill_switch_api_v1_account_kill_switch_activate_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KillSwitchActivateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KillSwitchStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/account/kill-switch/deactivate:
+    post:
+      tags:
+      - Kill Switch
+      summary: Deactivate Kill Switch
+      description: 'Re-enable one or more traffic scopes (staged recovery).
+
+
+        Each scope lifts independently, so an operator can restore the gateway
+
+        first, verify behavior, then tools, then flows — instead of one
+
+        all-at-once un-halt. Deactivating a scope that is not halted is a
+
+        no-op. Like activation, every transition is audited.'
+      operationId: deactivate_kill_switch_api_v1_account_kill_switch_deactivate_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KillSwitchDeactivateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KillSwitchStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/notification-preferences/me:
     get:
       tags:
@@ -14086,6 +14183,34 @@ components:
           title: Result
           description: Structured result artifact reported by the agent (parsed /workspace/result.json,
             eval/observe runs)
+        launch_requested_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Launch Requested At
+        stop_requested_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Stop Requested At
+        stop_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stop Reason
+        stop_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stop Source
+        stop_confirmed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Stop Confirmed At
         agent_session_reference:
           anyOf:
           - type: string
@@ -15970,6 +16095,112 @@ components:
       type: object
       title: IssueUpdate
       description: Model for updating an issue.
+    KillSwitchActivateRequest:
+      properties:
+        scopes:
+          items:
+            type: string
+            enum:
+            - gateway
+            - tools
+            - flows
+          type: array
+          title: Scopes
+          description: 'Which traffic classes to halt. Defaults to all of them (the
+            emergency stop). Scope names: gateway, tools, flows.'
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Reason
+          description: Why the halt was activated (recorded for audit)
+      type: object
+      title: KillSwitchActivateRequest
+      description: Request body for activating the kill switch.
+    KillSwitchDeactivateRequest:
+      properties:
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Reason
+          description: Reason for recovery, recorded for audit
+        scopes:
+          items:
+            type: string
+            enum:
+            - gateway
+            - tools
+            - flows
+          type: array
+          title: Scopes
+          description: Which traffic classes to re-enable. Pass a subset for staged
+            recovery (e.g. only ['gateway'] first).
+      type: object
+      title: KillSwitchDeactivateRequest
+      description: Request body for a staged or full re-enable.
+    KillSwitchScopeState:
+      properties:
+        scope:
+          type: string
+          enum:
+          - gateway
+          - tools
+          - flows
+          title: Scope
+        activated_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Activated By User Id
+        activated_by_username:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Activated By Username
+        activated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Activated At
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+      type: object
+      required:
+      - scope
+      title: KillSwitchScopeState
+      description: Render-ready state for one halted scope.
+    KillSwitchStatus:
+      properties:
+        active:
+          type: boolean
+          title: Active
+          description: Whether any scope is currently halted
+        scopes:
+          items:
+            $ref: '#/components/schemas/KillSwitchScopeState'
+          type: array
+          title: Scopes
+          description: Currently-halted scopes with their activation audit data
+      type: object
+      required:
+      - active
+      title: KillSwitchStatus
+      description: 'Aggregate kill-switch state used to drive the console banner.
+
+
+        Any authenticated user can read this: knowing that agent activity is
+
+        halted is not privileged information, and hiding it would defeat the
+
+        point of the banner.'
     LedgerBackfillBucket:
       properties:
         day:

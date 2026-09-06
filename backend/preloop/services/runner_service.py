@@ -233,6 +233,15 @@ def lease_job(
     Credentials are stripped from the stored payload; the caller still holds
     the original dict for the in-memory WebSocket push.
     """
+    from preloop.models.crud import crud_flow_execution
+
+    # Keep the account lock through lease assignment. A stopped queued
+    # execution cannot acquire a new runner after activation's snapshot.
+    if not crud_flow_execution.admit_runtime_start(
+        db, execution_id=execution_id, commit=False
+    ):
+        db.commit()
+        return None
     matches = crud_flow_runner.find_matching(
         db, account_id=account_id, pool=pool, online_only=True
     )
@@ -257,6 +266,7 @@ def lease_job(
         db.refresh(runner)
         emit_runner_updated(runner, db)
         return runner
+    db.commit()
     return None
 
 

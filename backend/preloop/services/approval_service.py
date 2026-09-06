@@ -612,6 +612,13 @@ class ApprovalService:
         """
         # Calculate expiration time
         timeout = timeout_seconds or 300  # Default: 5 minutes
+        from preloop.models.crud import crud_account_halt
+
+        await self.db.run_sync(
+            lambda session: crud_account_halt.lock_account(
+                session, account_id=account_id
+            )
+        )
         expires_at = datetime.utcnow() + timedelta(seconds=timeout)
 
         # Create approval request
@@ -778,6 +785,32 @@ class ApprovalService:
         """Render the decision channel as an event-detail suffix."""
         return f" via {channel}" if channel else ""
 
+    async def _approvals_frozen(
+        self, account_id: uuid.UUID | str, expires_at: Optional[datetime] = None
+    ) -> bool:
+        """Preserve pending decisions on lookup failure; never revive stale ones."""
+        from preloop.models.crud import crud_account_halt
+
+        try:
+            halt = await self.db.run_sync(
+                lambda db: crud_account_halt.get_for_scope(
+                    db, account_id=account_id, scope="tools"
+                )
+            )
+            return bool(
+                halt is not None
+                and halt.is_active
+                and (
+                    expires_at is None
+                    or expires_at >= halt.activated_at.replace(tzinfo=None)
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Unable to verify approval freeze; preserving pending decision"
+            )
+            return True
+
     async def _reject_if_not_actionable(
         self, approval_request: ApprovalRequest
     ) -> Optional[ApprovalRequest]:
@@ -792,6 +825,10 @@ class ApprovalService:
         * Stale approval: the request's deadline has passed. A caller that
           already timed out must not be able to approve it later via its
           token. Transition it to ``expired`` and return it.
+
+        Kill-switch freeze (#157): while the account halts tools, a
+        past-deadline pending request is frozen instead of expired, so a
+        human decision made during the incident still lands.
         """
         if approval_request.status in self._TERMINAL_STATUSES:
             logger.info(
@@ -804,6 +841,15 @@ class ApprovalService:
             approval_request.expires_at
             and datetime.utcnow() > approval_request.expires_at
         ):
+            if await self._approvals_frozen(
+                approval_request.account_id, approval_request.expires_at
+            ):
+                logger.info(
+                    "Approval request %s is past expiry but frozen by the "
+                    "account kill switch; keeping it pending",
+                    approval_request.id,
+                )
+                return None
             logger.info(
                 "Approval request %s is past expiry; marking expired",
                 approval_request.id,
@@ -3121,7 +3167,9 @@ class ApprovalService:
         while True:
             async with get_async_db_session() as poll_db:
                 poll_service = ApprovalService(poll_db, self.base_url)
-                approval_request = await poll_service.get_approval_request(request_id)
+                approval_request = await poll_service.get_approval_request_for_update(
+                    request_id
+                )
                 if not approval_request:
                     raise ValueError(f"Approval request {request_id} not found")
 
@@ -3129,10 +3177,16 @@ class ApprovalService:
                 if approval_request.status in ["approved", "declined", "cancelled"]:
                     return approval_request
 
+                if approval_request.status == "expired":
+                    raise TimeoutError(f"Approval request {request_id} already expired")
+
                 # Check if expired
                 if (
                     approval_request.expires_at
                     and datetime.utcnow() > approval_request.expires_at
+                    and not await poll_service._approvals_frozen(
+                        approval_request.account_id, approval_request.expires_at
+                    )
                 ):
                     # Get the approval workflow to check for escalation configuration
                     approval_workflow = approval_request.approval_workflow

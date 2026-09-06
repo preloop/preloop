@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional, Set
 
-from preloop.models.crud import crud_flow_execution
+from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models.db.session import get_db_session
+from preloop.models.schemas.flow_execution import FlowExecutionUpdate
 from preloop.services.flow_execution_dispatcher import (
     claim_stale_after_seconds,
     dispatch_execute,
@@ -18,6 +20,7 @@ from preloop.services.flow_execution_dispatcher import (
 from preloop.services.flow_failure_category import derive_failure_category
 from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 from preloop.services.flow_pr_binding import merge_result_preserving_pr_binding
+from preloop.services.kill_switch import flows_halted
 from preloop.sync.services.event_bus import get_nats_client
 
 logger = logging.getLogger(__name__)
@@ -53,7 +56,7 @@ async def resume_existing_execution(
     """Resume monitoring for a recovered execution that already has an agent."""
     from datetime import datetime, timezone
 
-    from preloop.agents import create_agent_executor
+    from preloop.agents import create_executor_for_execution
 
     if orchestrator.execution_log is None:
         raise ValueError("execution_log must be set before resume_existing_execution")
@@ -68,9 +71,12 @@ async def resume_existing_execution(
     # Matrix-aware: _get_flow_details() above resolved any per-cell agent_type
     # override into orchestrator.agent_type; a resumed matrix cell must be
     # monitored with its own harness, never the flow default.
-    agent_executor = create_agent_executor(
+    agent_executor = create_executor_for_execution(
         orchestrator.agent_type or flow.agent_type,
-        {"agent_config": flow.agent_config or {}},
+        flow.agent_config or {},
+        flow=flow,
+        execution=orchestrator.execution_log,
+        db=orchestrator.db,
     )
     try:
         agent_result = await orchestrator._monitor_agent_execution(
@@ -210,6 +216,48 @@ async def claim_and_run_execution(
         session_reference = execution.agent_session_reference
         if ack is not None:
             await ack()
+
+        # A halt prevents launch, not recovery of the monitor that must stop
+        # an existing runtime. Fresh admission is serialized again at dispatch.
+        flow_row = crud_flow.get(db, id=execution.flow_id)
+        if flow_row is None:
+            crud_flow_execution.update(
+                db,
+                db_obj=execution,
+                obj_in=FlowExecutionUpdate(
+                    status="FAILED",
+                    failure_category="runner_error",
+                    error_message="Flow no longer exists; execution cannot continue",
+                    end_time=datetime.now(timezone.utc),
+                ),
+            )
+            db.commit()
+            return {"status": "missing_flow", "execution_id": execution_id_str}
+        if not session_reference:
+            if crud_flow_execution.cancel_unstarted_stop(db, execution_id=execution_id):
+                return {"status": "stopped", "execution_id": execution_id_str}
+            if crud_flow_execution.get_stop_request(db, execution_id=execution_id):
+                # A start may have created a runtime before failing to return a
+                # reference. Never infer termination or start a replacement.
+                crud_flow_execution.update(
+                    db,
+                    db_obj=execution,
+                    obj_in=FlowExecutionUpdate(
+                        status="FAILED",
+                        failure_category="runner_error",
+                        error_message="Stop unconfirmed: launch was requested but no runtime reference was recorded; operator inspection required",
+                    ),
+                )
+                db.commit()
+                return {"status": "stop_unconfirmed", "execution_id": execution_id_str}
+            try:
+                if flows_halted(db, flow_row.account_id):
+                    return {"status": "halted", "execution_id": execution_id_str}
+            except Exception:
+                logger.exception(
+                    "Halt state unavailable for execution %s", execution_id_str
+                )
+                return {"status": "halt_lookup_error", "execution_id": execution_id_str}
 
         nats_client = await get_nats_client()
         flow_id = execution.flow_id

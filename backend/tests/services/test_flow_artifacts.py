@@ -9,6 +9,16 @@ from preloop.agents.checkpoint_client import capture, restore
 from preloop.services.flow_artifacts import manifest_digest, validate_archive
 
 
+@pytest.fixture(autouse=True)
+def admit_unhalted_mock_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These unit tests isolate checkpoint policy. Halt admission and ordering
+    # are exercised against PostgreSQL in test_kill_switch_durability.
+    monkeypatch.setattr(
+        "preloop.models.crud.crud_flow_execution.admit_runtime_start",
+        lambda *args, **kwargs: True,
+    )
+
+
 def archive_with(
     name: str, data: bytes = b"source", kind: bytes = tarfile.REGTYPE
 ) -> bytes:

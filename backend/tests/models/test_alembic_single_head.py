@@ -110,13 +110,29 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert viewed_uniq.down_revision == "20260905_control_heartbeat"
     feedback = script.get_revision("20260906_flow_feedback")
     assert feedback.down_revision == "20260906_ae_viewed_uniq"
+    halt = script.get_revision("20260906_account_halt")
+    assert halt.down_revision == "20260906_flow_feedback"
+    durability = script.get_revision("20260906_halt_durability")
+    assert durability.down_revision == "20260906_account_halt"
     runner_caps = script.get_revision("20260906_runner_caps")
     assert runner_caps.down_revision == "20260906_flow_feedback"
     artifacts = script.get_revision("20260906_flow_artifacts")
     assert artifacts.down_revision == "20260906_flow_feedback"
-    merged = script.get_revision("20260906_runner_artifact_merge")
-    assert set(merged.down_revision) == {
+    runner_merged = script.get_revision("20260906_runner_artifact_merge")
+    assert set(runner_merged.down_revision) == {
         "20260906_runner_caps",
         "20260906_flow_artifacts",
     }
-    assert script.get_heads() == ["20260906_runner_artifact_merge"]
+    halt_merged = script.get_revision("20260906_halt_artifact_merge")
+    assert set(halt_merged.down_revision) == {
+        "20260906_halt_durability",
+        "20260906_flow_artifacts",
+    }
+    launch_intent = script.get_revision("20260906_halt_launch_intent")
+    assert launch_intent.down_revision == "20260906_halt_artifact_merge"
+    joined = script.get_revision("20260906_halt_runner_merge")
+    assert set(joined.down_revision) == {
+        "20260906_halt_launch_intent",
+        "20260906_runner_artifact_merge",
+    }
+    assert script.get_heads() == ["20260906_halt_runner_merge"]
