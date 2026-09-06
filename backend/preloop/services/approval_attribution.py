@@ -178,7 +178,53 @@ async def resolve_managed_agent_name(
     return _agent_display_name(agent) if agent is not None else None
 
 
-def _load_by_id(db: Session, model: Any, ids: Iterable[Any]) -> Dict[Any, Any]:
+def _wanted_ids(ids: Iterable[Any]) -> List[Any]:
+    """De-duplicate the ids worth looking up, dropping the empty ones."""
+    return list({str(i): i for i in ids if i is not None}.values())
+
+
+def _account_ids(rows: Sequence[Any]) -> List[Any]:
+    """The accounts the page belongs to, for scoping every lookup.
+
+    Cheap defence in depth: the ids come off rows the caller is already
+    allowed to read, but a mis-stamped id must not resolve to another
+    account's agent name. Rows without an account (test stand-ins) yield an
+    empty list, which leaves the lookup unscoped rather than empty.
+    """
+    accounts = []
+    for row in rows:
+        account_id = getattr(row, "account_id", None)
+        if isinstance(account_id, (uuid.UUID, str)) and account_id:
+            accounts.append(account_id)
+    return _wanted_ids(accounts)
+
+
+def _by_id_select(model: Any, ids: Sequence[Any], account_ids: Sequence[Any]):
+    """``SELECT ... WHERE id IN (...)``, account-scoped when the model can be."""
+    statement = select(model).where(model.id.in_(ids))
+    account_column = getattr(model, "account_id", None)
+    if account_column is not None and account_ids:
+        statement = statement.where(account_column.in_(account_ids))
+    return statement
+
+
+def _runs_select(ids: Sequence[Any], account_ids: Sequence[Any]):
+    """Executions with their flow in one statement.
+
+    Joined rather than fetched separately for two reasons: the flow name is
+    the only thing worth showing about a run, and ``flow_execution`` has no
+    account column of its own, so the flow's account is what scopes it.
+    """
+    statement = select(FlowExecution, Flow).join(Flow, Flow.id == FlowExecution.flow_id)
+    statement = statement.where(FlowExecution.id.in_(ids))
+    if account_ids:
+        statement = statement.where(Flow.account_id.in_(account_ids))
+    return statement
+
+
+def _load_by_id(
+    db: Session, model: Any, ids: Iterable[Any], account_ids: Sequence[Any]
+) -> Dict[Any, Any]:
     """Fetch rows of one model keyed by primary key; {} on any failure.
 
     Every step is inside the guard on purpose. Attribution is decoration: a
@@ -186,44 +232,73 @@ def _load_by_id(db: Session, model: Any, ids: Iterable[Any]) -> Dict[Any, Any]:
     cost the caller a missing link, never an exception.
     """
     try:
-        wanted = list({str(i): i for i in ids if i is not None}.values())
+        wanted = _wanted_ids(ids)
         if not wanted:
             return {}
-        rows = db.execute(select(model).where(model.id.in_(wanted))).scalars().all()
+        rows = db.execute(_by_id_select(model, wanted, account_ids)).scalars().all()
         return {row.id: row for row in rows}
     except Exception:
         logger.debug("Attribution lookup failed for %s", model.__name__, exc_info=True)
         return {}
 
 
-def attach_attribution(db: Session, requests: Sequence[Any]) -> List[Any]:
-    """Set ``agent``, ``api_key``, ``session`` and ``flow_execution`` on each row.
+async def _load_by_id_async(
+    db: AsyncSession, model: Any, ids: Iterable[Any], account_ids: Sequence[Any]
+) -> Dict[Any, Any]:
+    """Async twin of :func:`_load_by_id`, same guarantees."""
+    try:
+        wanted = _wanted_ids(ids)
+        if not wanted:
+            return {}
+        result = await db.execute(_by_id_select(model, wanted, account_ids))
+        return {row.id: row for row in result.scalars().all()}
+    except Exception:
+        logger.debug("Attribution lookup failed for %s", model.__name__, exc_info=True)
+        return {}
 
-    Accepts approval-request ORM rows or already-validated
-    :class:`ApprovalRequestResponse` models: both expose the four ids and both
-    accept the four summary attributes, which is all this needs.
-    ``ApprovalRequestResponse`` reads the attributes back by name, so an ORM
-    row enriched here serialises with its attribution attached.
 
-    Batched on purpose: the approvals list renders up to 50 rows, and four
-    lookups per row would be 200 queries for one page. Parts whose id is unset
-    (or whose row is gone) are set to ``None`` so the surface omits them
-    rather than printing a generic label.
+def _load_runs(
+    db: Session, ids: Iterable[Any], account_ids: Sequence[Any]
+) -> Dict[Any, Any]:
+    """Map execution id to ``(execution, flow)``; {} on any failure."""
+    try:
+        wanted = _wanted_ids(ids)
+        if not wanted:
+            return {}
+        rows = db.execute(_runs_select(wanted, account_ids)).all()
+        return {execution.id: (execution, flow) for execution, flow in rows}
+    except Exception:
+        logger.debug("Attribution lookup failed for FlowExecution", exc_info=True)
+        return {}
+
+
+async def _load_runs_async(
+    db: AsyncSession, ids: Iterable[Any], account_ids: Sequence[Any]
+) -> Dict[Any, Any]:
+    """Async twin of :func:`_load_runs`."""
+    try:
+        wanted = _wanted_ids(ids)
+        if not wanted:
+            return {}
+        result = await db.execute(_runs_select(wanted, account_ids))
+        return {execution.id: (execution, flow) for execution, flow in result.all()}
+    except Exception:
+        logger.debug("Attribution lookup failed for FlowExecution", exc_info=True)
+        return {}
+
+
+def _apply_attribution(
+    rows: Sequence[Any],
+    agents: Dict[Any, Any],
+    api_keys: Dict[Any, Any],
+    sessions: Dict[Any, Any],
+    runs: Dict[Any, Any],
+) -> None:
+    """Turn the loaded rows into summaries on each request.
+
+    Parts whose id is unset (or whose row is gone) are set to ``None`` so the
+    surface omits them rather than printing a generic label.
     """
-    rows = [r for r in requests if r is not None]
-    if not rows:
-        return list(requests)
-
-    agents = _load_by_id(db, ManagedAgent, (r.managed_agent_id for r in rows))
-    api_keys = _load_by_id(db, ApiKey, (r.api_key_id for r in rows))
-    sessions = _load_by_id(db, RuntimeSession, (r.runtime_session_id for r in rows))
-    executions = _load_by_id(
-        db, FlowExecution, (_as_uuid(r.execution_id) for r in rows)
-    )
-    flows = _load_by_id(
-        db, Flow, (execution.flow_id for execution in executions.values())
-    )
-
     for request in rows:
         agent = agents.get(request.managed_agent_id)
         request.agent = (
@@ -250,8 +325,7 @@ def attach_attribution(db: Session, requests: Sequence[Any]) -> List[Any]:
             else None
         )
 
-        execution = executions.get(_as_uuid(request.execution_id))
-        flow = flows.get(execution.flow_id) if execution is not None else None
+        execution, flow = runs.get(_as_uuid(request.execution_id), (None, None))
         request.flow_execution = (
             ApprovalFlowExecutionSummary(
                 id=str(execution.id),
@@ -262,6 +336,65 @@ def attach_attribution(db: Session, requests: Sequence[Any]) -> List[Any]:
             else None
         )
 
+
+def attach_attribution(db: Session, requests: Sequence[Any]) -> List[Any]:
+    """Set ``agent``, ``api_key``, ``session`` and ``flow_execution`` on each row.
+
+    Accepts approval-request ORM rows or already-validated
+    :class:`ApprovalRequestResponse` models: both expose the four ids and both
+    accept the four summary attributes, which is all this needs.
+    ``ApprovalRequestResponse`` reads the attributes back by name, so an ORM
+    row enriched here serialises with its attribution attached.
+
+    Batched on purpose: the approvals list renders up to 50 rows, and four
+    lookups per row would be 200 queries for one page. A page costs at most
+    four statements in total (agents, keys, sessions, runs joined to flows),
+    and fewer when a kind of id is absent from the whole page.
+    """
+    rows = [r for r in requests if r is not None]
+    if not rows:
+        return list(requests)
+
+    accounts = _account_ids(rows)
+    agents = _load_by_id(db, ManagedAgent, (r.managed_agent_id for r in rows), accounts)
+    api_keys = _load_by_id(db, ApiKey, (r.api_key_id for r in rows), accounts)
+    sessions = _load_by_id(
+        db, RuntimeSession, (r.runtime_session_id for r in rows), accounts
+    )
+    runs = _load_runs(db, (_as_uuid(r.execution_id) for r in rows), accounts)
+
+    _apply_attribution(rows, agents, api_keys, sessions, runs)
+    return list(requests)
+
+
+async def attach_attribution_async(
+    db: AsyncSession, requests: Sequence[Any]
+) -> List[Any]:
+    """Async twin of :func:`attach_attribution`.
+
+    The decide endpoints are ``async def`` and already hold an async session,
+    so resolving attribution on the sync request session would run up to four
+    blocking queries on the event loop.
+    """
+    rows = [r for r in requests if r is not None]
+    if not rows:
+        return list(requests)
+
+    accounts = _account_ids(rows)
+    agents = await _load_by_id_async(
+        db, ManagedAgent, (r.managed_agent_id for r in rows), accounts
+    )
+    api_keys = await _load_by_id_async(
+        db, ApiKey, (r.api_key_id for r in rows), accounts
+    )
+    sessions = await _load_by_id_async(
+        db, RuntimeSession, (r.runtime_session_id for r in rows), accounts
+    )
+    runs = await _load_runs_async(
+        db, (_as_uuid(r.execution_id) for r in rows), accounts
+    )
+
+    _apply_attribution(rows, agents, api_keys, sessions, runs)
     return list(requests)
 
 
@@ -271,10 +404,18 @@ def attributed(db: Session, request: Any) -> Any:
     return request
 
 
+async def attributed_async(db: AsyncSession, request: Any) -> Any:
+    """Single-row convenience wrapper around :func:`attach_attribution_async`."""
+    await attach_attribution_async(db, [request])
+    return request
+
+
 __all__: List[str] = [
     "CallerAttribution",
     "attach_attribution",
+    "attach_attribution_async",
     "attributed",
+    "attributed_async",
     "attribution_from_user_context",
     "current_caller_attribution",
     "resolve_managed_agent_name",
