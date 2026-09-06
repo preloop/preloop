@@ -1,10 +1,11 @@
-import { LitElement, css, html } from 'lit';
+import { LitElement, css, html, unsafeCSS } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import type { ObservedSession } from '../utils/session-observer';
 import { formatCost, formatNumber } from '../utils/session-observer';
+import consoleStyles from '../styles/console-styles.css?inline';
 
 @customElement('session-list-panel')
 export class SessionListPanel extends LitElement {
@@ -17,91 +18,96 @@ export class SessionListPanel extends LitElement {
   @property({ type: String })
   emptyText = '';
 
-  static styles = css`
-    :host {
-      display: block;
-      min-height: 0;
-    }
+  // The console chip recipe, so "Idle" here is the same object as "Idle" on
+  // the agent header instead of a solid Shoelace badge beside it.
+  static styles = [
+    unsafeCSS(consoleStyles),
+    css`
+      :host {
+        display: block;
+        min-height: 0;
+      }
 
-    .list {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-small);
-    }
+      .list {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-small);
+      }
 
-    .session-card {
-      appearance: none;
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      background: var(--sl-color-neutral-0);
-      color: inherit;
-      cursor: pointer;
-      padding: var(--sl-spacing-small) var(--sl-spacing-medium);
-      text-align: left;
-      transition:
-        border-color 0.15s ease,
-        background 0.15s ease,
-        box-shadow 0.15s ease;
-      width: 100%;
-    }
+      .session-card {
+        appearance: none;
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        background: var(--sl-color-neutral-0);
+        color: inherit;
+        cursor: pointer;
+        padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+        text-align: left;
+        transition:
+          border-color 0.15s ease,
+          background 0.15s ease,
+          box-shadow 0.15s ease;
+        width: 100%;
+      }
 
-    .session-card:hover,
-    .session-card.active {
-      background: var(--sl-color-primary-50);
-      border-color: var(--sl-color-primary-500);
-    }
+      .session-card:hover,
+      .session-card.active {
+        background: var(--sl-color-primary-50);
+        border-color: var(--sl-color-primary-500);
+      }
 
-    .session-card.active {
-      box-shadow: 0 0 0 1px var(--sl-color-primary-500);
-    }
+      .session-card.active {
+        box-shadow: 0 0 0 1px var(--sl-color-primary-500);
+      }
 
-    .title-row,
-    .metric-row {
-      align-items: center;
-      display: flex;
-      gap: var(--sl-spacing-small);
-      justify-content: space-between;
-    }
+      .title-row,
+      .metric-row {
+        align-items: center;
+        display: flex;
+        gap: var(--sl-spacing-small);
+        justify-content: space-between;
+      }
 
-    .title {
-      color: var(--sl-color-neutral-900);
-      font-weight: 600;
-      overflow-wrap: anywhere;
-    }
+      .title {
+        color: var(--sl-color-neutral-900);
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
 
-    .meta {
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-small);
-      margin-top: var(--sl-spacing-2x-small);
-      overflow-wrap: anywhere;
-    }
+      .meta {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        margin-top: var(--sl-spacing-2x-small);
+        overflow-wrap: anywhere;
+      }
 
-    .metric {
-      color: var(--sl-color-primary-700);
-      font-size: var(--sl-font-size-small);
-      font-weight: 600;
-      margin-top: var(--sl-spacing-2x-small);
-    }
+      .metric {
+        color: var(--sl-color-primary-700);
+        font-size: var(--sl-font-size-small);
+        font-weight: 600;
+        margin-top: var(--sl-spacing-2x-small);
+      }
 
-    .empty {
-      color: var(--sl-color-neutral-600);
-      padding: var(--sl-spacing-large);
-      text-align: center;
-    }
+      .empty {
+        color: var(--sl-color-neutral-600);
+        padding: var(--sl-spacing-large);
+        text-align: center;
+      }
 
-    .waste-row {
-      align-items: center;
-      display: flex;
-      gap: var(--sl-spacing-x-small);
-      margin-top: var(--sl-spacing-2x-small);
-    }
+      .waste-row {
+        align-items: center;
+        display: flex;
+        gap: var(--sl-spacing-x-small);
+        margin-top: var(--sl-spacing-2x-small);
+      }
 
-    .waste-savings {
-      color: var(--sl-color-success-700);
-      font-size: var(--sl-font-size-x-small);
-      font-weight: 600;
-    }
-  `;
+      .waste-savings {
+        color: var(--sl-color-success-700);
+        font-size: var(--sl-font-size-x-small);
+        font-weight: 600;
+      }
+    `,
+  ];
 
   private getWasteVariant(score: number) {
     if (score >= 40) return 'danger';
@@ -115,7 +121,7 @@ export class SessionListPanel extends LitElement {
     const savings = session.optimizationPotentialSavingsUsd;
     return html`
       <div class="waste-row">
-        <sl-badge variant=${this.getWasteVariant(score)} pill>
+        <sl-badge class="chip" variant=${this.getWasteVariant(score)} pill>
           Waste ${score}%
         </sl-badge>
         ${
@@ -129,11 +135,16 @@ export class SessionListPanel extends LitElement {
     `;
   }
 
+  /**
+   * A state is a tint, and idle is a state, not an outcome (DESIGN.md
+   * "Chips"). The idle case used to return `primary`, so one page carried
+   * two dialects for one word: a soft neutral chip in the agent header and a
+   * solid blue badge in the session list beside it.
+   */
   private getVariant(session: ObservedSession) {
     if (session.status === 'active_now') return 'success';
-    if (session.status === 'ended') return 'neutral';
     if (session.failedRequests > 0) return 'warning';
-    return 'primary';
+    return 'neutral';
   }
 
   private getLabel(session: ObservedSession): string {
@@ -181,7 +192,7 @@ export class SessionListPanel extends LitElement {
             >
               <div class="title-row">
                 <div class="title">${session.title}</div>
-                <sl-badge variant=${this.getVariant(session)} pill>
+                <sl-badge class="chip" variant=${this.getVariant(session)} pill>
                   ${this.getLabel(session)}
                 </sl-badge>
               </div>
