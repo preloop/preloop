@@ -357,17 +357,20 @@ export class AIModelDetailView extends LitElement {
         padding: var(--sl-spacing-medium);
       }
 
-      .summary-grid {
+      /* One hairline row of facts on the card surface. Nothing inside a card
+         gets a filled box of its own (DESIGN.md "Depth limit: two"); what
+         separates the facts is a hairline. */
+      .summary-strip {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
         gap: var(--sl-spacing-medium);
+        border-bottom: 1px solid var(--console-hairline);
+        padding-bottom: var(--sl-spacing-medium);
       }
 
-      .stat-card {
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
-        padding: var(--sl-spacing-medium);
-        background: var(--sl-color-neutral-0);
+      .stat-item + .stat-item {
+        border-left: 1px solid var(--console-hairline);
+        padding-left: var(--sl-spacing-medium);
       }
 
       .stat-label {
@@ -1278,14 +1281,35 @@ export class AIModelDetailView extends LitElement {
     }
   }
 
-  private renderStatCard(label: string, value: string, detail: string) {
+  private renderStat(label: string, value: string, detail: string) {
     return html`
-      <div class="stat-card">
+      <div class="stat-item">
         <div class="stat-label">${label}</div>
         <div class="stat-value">${value}</div>
         <div class="stat-detail">${detail}</div>
       </div>
     `;
+  }
+
+  /**
+   * The window the usage numbers cover, for the card header. "Sep 5, 2026,
+   * 11:59 PM" was rendered as a fourth big number labelled "Tracked Period";
+   * a period is context for the other three, not a stat of its own.
+   */
+  private get trackedPeriodLabel(): string | null {
+    if (!this.summary) {
+      return null;
+    }
+    const start = new Date(this.summary.period_start);
+    const end = new Date(this.summary.period_end);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return null;
+    }
+    const days = Math.max(
+      1,
+      Math.round((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000))
+    );
+    return `${days} days · ${this.formatDate(this.summary.period_start)} to ${this.formatDate(this.summary.period_end)}`;
   }
 
   private renderDailyUsage(days: GatewayUsageByDay[]) {
@@ -1477,26 +1501,24 @@ export class AIModelDetailView extends LitElement {
 
     return html`
       <div class="stack">
-        <div class="summary-grid">
-          ${this.renderStatCard(
+        <!-- A hairline strip, not four filled boxes inside a card
+             (DESIGN.md "Depth limit: two"). The tracked period moved into the
+             card header: a date-time is not a stat. -->
+        <div class="summary-strip">
+          ${this.renderStat(
             'Requests',
             this.formatNumber(this.summary.total_requests),
             `${this.formatNumber(this.summary.successful_requests)} succeeded, ${this.formatNumber(this.summary.failed_requests)} failed`
           )}
-          ${this.renderStatCard(
-            'Estimated Cost',
+          ${this.renderStat(
+            '$ est.',
             this.formatCost(this.summary.estimated_cost),
             `${this.formatPercent(this.summary.successful_requests, this.summary.total_requests)} success rate`
           )}
-          ${this.renderStatCard(
-            'Total Tokens',
+          ${this.renderStat(
+            'Tokens',
             this.formatNumber(this.summary.token_usage.total_tokens),
             `${this.formatNumber(this.summary.token_usage.prompt_tokens)} prompt, ${this.formatNumber(this.summary.token_usage.completion_tokens)} completion`
-          )}
-          ${this.renderStatCard(
-            'Tracked Period',
-            this.formatDateTime(this.summary.period_end),
-            `${this.formatDateTime(this.summary.period_start)} to ${this.formatDateTime(this.summary.period_end)}`
           )}
         </div>
         <div>
@@ -1874,7 +1896,7 @@ export class AIModelDetailView extends LitElement {
             style="margin-left: -12px;"
           >
             <sl-icon slot="prefix" name="arrow-left"></sl-icon>
-            Back to AI Models
+            Back to models
           </sl-button>
         </div>
         <div slot="main-column" class="header-actions">
@@ -1887,11 +1909,16 @@ export class AIModelDetailView extends LitElement {
                 icon: 'pencil',
                 onClick: this.openEditModal,
               },
+              // Danger outline, last, after a gap: DESIGN.md "Destructive
+              // actions". Solid red next to Edit invited the click it should
+              // be hardest to make by accident.
               {
                 id: 'delete',
                 label: 'Delete',
                 icon: 'trash',
                 variant: 'danger',
+                outline: true,
+                separated: true,
                 onClick: this.openDeleteConfirm,
               },
             ]}
@@ -1903,12 +1930,15 @@ export class AIModelDetailView extends LitElement {
           <div class="page">
             <sl-card>
               <div slot="header" class="model-heading">
-                <div class="model-title">Model Observability</div>
+                <!-- This card holds a name, an identifier, an alias,
+                     credentials and a managed agent. That is "Details";
+                     "Observability" promised telemetry it never carried. -->
+                <div class="model-title">Details</div>
                 <div class="badge-row">
                   ${
                     this.model?.provider_name
                       ? html`
-                          <sl-badge variant="neutral">
+                          <sl-badge class="tag-chip" variant="neutral">
                             ${this.model.provider_name}
                           </sl-badge>
                         `
@@ -1916,13 +1946,15 @@ export class AIModelDetailView extends LitElement {
                   }
                   ${
                     this.model?.is_default
-                      ? html`<sl-badge variant="success">Default</sl-badge>`
+                      ? html`<sl-badge class="chip" variant="success" pill
+                          >Default</sl-badge
+                        >`
                       : ''
                   }
                   ${
                     this.model?.model_kind
                       ? html`
-                          <sl-badge variant="neutral">
+                          <sl-badge class="tag-chip" variant="neutral">
                             ${
                               this.model.model_kind === 'stt'
                                 ? 'Speech to text'
@@ -1948,7 +1980,13 @@ export class AIModelDetailView extends LitElement {
                           </span>
                           <span>
                             <strong>Updated:</strong>
-                            ${this.formatDateTime(this.model.updated_at)}
+                            ${
+                              // "Unknown" on a model that was never edited
+                              // reads as a lookup that failed.
+                              this.model.updated_at
+                                ? this.formatDateTime(this.model.updated_at)
+                                : 'Never'
+                            }
                           </span>
                         </div>
                         <div class="model-metadata">
@@ -2109,7 +2147,16 @@ export class AIModelDetailView extends LitElement {
                   `
                 : html`
                     <sl-card>
-                      <div slot="header" class="model-title">Usage Summary</div>
+                      <div slot="header" class="model-heading">
+                        <div class="model-title">Usage summary</div>
+                        ${
+                          this.trackedPeriodLabel
+                            ? html`<div class="meta-line">
+                                ${this.trackedPeriodLabel}
+                              </div>`
+                            : ''
+                        }
+                      </div>
                       ${this.renderSummarySection()}
                     </sl-card>
 
@@ -2145,7 +2192,7 @@ export class AIModelDetailView extends LitElement {
         @close-modal=${this.closeEditModal}
       ></add-ai-model-modal>
       <sl-dialog
-        label="Delete Model"
+        label="Delete model"
         .open=${this.isDeleteConfirmOpen}
         @sl-hide=${() => (this.isDeleteConfirmOpen = false)}
       >

@@ -126,8 +126,11 @@ describe('AIModelsView', () => {
       ' '
     );
     expect(content).to.contain('Claude Sonnet Primary');
-    expect(content).to.contain('View');
-    expect(content).to.contain('Fleet spend');
+    // Honest stat labels: the window is in the label, not in a subtext that
+    // claims a configuration count is a 30-day metric.
+    expect(content).to.contain('$ est. · 30d');
+    expect(content).to.contain('Requests · 30d');
+    expect(content).to.contain('Need attention');
     expect(content).to.contain('$12.34');
     expect(content).to.contain('42 requests');
     expect(content).to.contain('3 active sessions');
@@ -146,12 +149,7 @@ describe('AIModelsView', () => {
     const nameLink = element.shadowRoot?.querySelector(
       'a.model-link[href="/console/ai-models/model-1"]'
     );
-    const viewButton = element.shadowRoot?.querySelector(
-      'sl-button[href="/console/ai-models/model-1"]'
-    );
-
     expect(nameLink).to.not.equal(null);
-    expect(viewButton).to.not.equal(null);
     expect(connectStub).to.have.been.calledOnce;
     expect(subscribeStub.callCount).to.equal(5);
 
@@ -318,6 +316,80 @@ describe('AIModelsView', () => {
     expect(element.shadowRoot?.querySelector('.model-card')).to.exist;
     expect(element.shadowRoot?.querySelector('.model-row')).to.equal(null);
     expect(element.shadowRoot?.textContent).to.contain('Default');
-    expect(element.shadowRoot?.textContent).to.contain('View');
+    // Cards carry the same one kebab as the rows, not a row of buttons.
+    expect(
+      element.shadowRoot?.querySelectorAll('.model-card resource-actions')
+    ).to.have.lengthOf(1);
+  });
+
+  it('gives each row one kebab holding View, Edit, Set default and Delete', async () => {
+    const element = (await fixture(
+      html`<ai-models-view></ai-models-view>`
+    )) as AIModelsView;
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'AI models view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const rows = element.shadowRoot?.querySelectorAll('.model-row') ?? [];
+    expect(rows).to.have.lengthOf(1);
+    const kebabs = element.shadowRoot?.querySelectorAll(
+      '.model-row resource-actions[menu-only]'
+    );
+    expect(kebabs).to.have.lengthOf(1);
+    // No solid danger button and no "Set as default" button in the row: the
+    // rare action and the destructive one both live in the kebab.
+    expect(
+      element.shadowRoot?.querySelector(
+        '.model-row sl-button[variant="danger"]'
+      )
+    ).to.equal(null);
+    expect(element.shadowRoot?.textContent).to.not.contain('Set as default');
+
+    // The default model is a chip, not a button; the rest of the column is a
+    // dash rather than fourteen invitations to change the default.
+    const actions = (
+      element as unknown as {
+        modelActions: (model: AIModel) => { id: string; outline?: boolean }[];
+      }
+    ).modelActions({ id: 'model-1', is_default: false } as AIModel);
+    expect(actions.map((action) => action.id)).to.deep.equal([
+      'view',
+      'edit',
+      'set-default',
+      'delete',
+    ]);
+    const del = actions[actions.length - 1] as {
+      variant?: string;
+      outline?: boolean;
+      separated?: boolean;
+    };
+    expect(del.variant).to.equal('danger');
+    expect(del.outline).to.equal(true);
+    expect(del.separated).to.equal(true);
+  });
+
+  it('renders counts compact and sub-cent spend to four decimals', async () => {
+    const element = (await fixture(
+      html`<ai-models-view></ai-models-view>`
+    )) as AIModelsView;
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'AI models view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const format = element as unknown as {
+      formatCompactNumber: (value: number) => string;
+      formatCurrency: (value: number) => string;
+    };
+    expect(format.formatCompactNumber(999)).to.equal('999');
+    expect(format.formatCompactNumber(18306)).to.equal('18.3K');
+    expect(format.formatCompactNumber(572180203)).to.equal('572.2M');
+    // A sub-cent estimate is four decimals, never a $0.00 that reads as free.
+    expect(format.formatCurrency(0.0042)).to.equal('$0.0042');
+    expect(format.formatCurrency(12.3)).to.equal('$12.30');
+    expect(format.formatCurrency(0)).to.equal('$0.00');
   });
 });
