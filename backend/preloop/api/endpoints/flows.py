@@ -430,9 +430,10 @@ def _normalize_status_filters(status: Optional[List[str]]) -> Optional[List[str]
 @router.get("/flows/executions", response_model=List[schemas.FlowExecutionListResponse])
 @require_permission("view_flows")
 def read_flow_executions(
-    # FastAPI injects the response; the default keeps direct callers (tests,
-    # internal reuse) able to call this like any other function.
-    response: Response = None,
+    # FastAPI injects the response. Optional[Response] makes FastAPI treat it
+    # as a Pydantic field and breaks OpenAPI generation, so the default stays
+    # None for tests and other direct callers.
+    response: Response = None,  # type: ignore[assignment]
     db: Session = Depends(get_db),
     skip: int = 0,
     limit: int = 25,
