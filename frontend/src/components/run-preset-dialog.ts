@@ -194,7 +194,7 @@ export class RunPresetDialog extends LitElement {
         confirm_create: true,
       });
       this.close();
-      this.showSuccessToast(result);
+      this.showRunResultToast(result);
     } catch (error) {
       this.submitting = false;
       if (error instanceof RunPresetError && error.status === 422) {
@@ -205,24 +205,55 @@ export class RunPresetDialog extends LitElement {
     }
   }
 
-  private showSuccessToast(result: RunPresetResponse): void {
+  private showRunResultToast(result: RunPresetResponse): void {
+    const items = result.results;
+    const failures = items?.filter((item) => item.error).length || 0;
+    const created = items?.filter((item) => item.execution_id).length || 0;
     const alert = Object.assign(document.createElement('sl-alert'), {
-      variant: 'success',
+      variant: failures ? 'warning' : 'success',
       duration: Infinity,
       closable: true,
     });
-    alert.innerHTML = '<sl-icon slot="icon" name="check2-circle"></sl-icon>';
-    alert.append(document.createTextNode('Run started'));
-    if (result.execution_url) {
+    const icon = document.createElement('sl-icon');
+    icon.slot = 'icon';
+    icon.setAttribute(
+      'name',
+      failures ? 'exclamation-triangle' : 'check2-circle'
+    );
+    alert.append(icon);
+    const summary = items
+      ? (created
+          ? `${created} ${created === 1 ? 'run' : 'runs'} created.`
+          : 'No runs were created.') +
+        (failures
+          ? ` ${failures} ${failures === 1 ? 'issue needs' : 'issues need'} attention.`
+          : '')
+      : 'Run started';
+    alert.append(document.createTextNode(summary));
+    const addRunLink = (parent: HTMLElement, url: string): void => {
       const view = document.createElement('sl-button');
       view.setAttribute('size', 'small');
       view.setAttribute('variant', 'text');
       view.textContent = 'View run';
       view.addEventListener('click', () => {
-        Router.go(result.execution_url || '');
+        Router.go(url);
         void (alert as unknown as { hide: () => Promise<void> }).hide();
       });
-      alert.append(view);
+      parent.append(view);
+    };
+    if (items) {
+      for (const [index, item] of items.entries()) {
+        const line = document.createElement('div');
+        line.append(
+          document.createTextNode(
+            `Issue ${index + 1}: ${item.error || 'Run created.'} `
+          )
+        );
+        if (item.execution_url) addRunLink(line, item.execution_url);
+        alert.append(line);
+      }
+    } else if (result.execution_url) {
+      addRunLink(alert, result.execution_url);
     }
     const edit = document.createElement('sl-button');
     edit.setAttribute('size', 'small');

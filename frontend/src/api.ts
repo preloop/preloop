@@ -3079,6 +3079,7 @@ export interface RunPresetTarget {
 export interface RunPresetItemResult {
   issue_id: string;
   execution_id?: string | null;
+  execution_status?: string | null;
   execution_url?: string | null;
   error?: string | null;
 }

@@ -36,6 +36,14 @@ issue list and choose **Run triage on selected**. Both call
 runs use `test_mode=false`. Implementer and reviewer run-preset behavior is
 unchanged; batch `targets` is triage-only.
 
+For non-Git trackers, the packet keeps the issue key and known URL. It does
+not invent a repository, clone URL, default branch, or author from an assignee.
+
+Batch results report each issue separately. If dispatch fails after an execution
+was created, its ID, status and link remain in the response with a warning. The
+console shows these warnings and run links; inspect an existing run before
+retrying. Other valid issues in the batch continue.
+
 ## Result packet
 
 `result.json` keeps a bounded assessment separate from provider label names:

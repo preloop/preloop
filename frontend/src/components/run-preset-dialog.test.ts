@@ -235,4 +235,66 @@ describe('RunPresetDialog', () => {
     expect((bodies[0] as { targets: unknown }).targets).to.have.length(2);
     expect((bodies[0] as { target?: unknown }).target).to.equal(undefined);
   });
+  for (const anyCreated of [false, true]) {
+    it(`shows batch failures and preserves existing run links (created=${anyCreated})`, async () => {
+      const results = [
+        ...(anyCreated
+          ? [
+              {
+                issue_id: issueId,
+                execution_id: 'existing-run',
+                execution_status: 'PENDING',
+                execution_url: '/console/flows/executions/existing-run',
+                error: 'View the existing run before retrying.',
+              },
+            ]
+          : []),
+        {
+          issue_id: 'missing',
+          error: 'Issue not found <script>unsafe</script>',
+        },
+      ];
+      fetchStub = sinon
+        .stub(window, 'fetch')
+        .callsFake(async (_input, init) => {
+          const confirm = JSON.parse(String(init?.body || '{}')).confirm_create;
+          return new Response(
+            JSON.stringify({
+              execution_id: anyCreated ? 'existing-run' : null,
+              execution_url: anyCreated
+                ? '/console/flows/executions/existing-run'
+                : null,
+              flow_id: 'triage-flow',
+              flow_name: 'Issue Triage Assistant',
+              flow_created: false,
+              results: confirm ? results : [],
+            }),
+            { status: 200 }
+          );
+        });
+      await openRunPresetDialog({
+        presetSlug: 'issue-triage-assistant',
+        targets: results.map((item) => ({
+          kind: 'issue',
+          issue_id: item.issue_id,
+        })),
+        issueKey: 'selected issues',
+        role: 'triage',
+      });
+      await clickFooter('Run');
+      await aTimeout(30);
+      const alert = document.body.querySelector('sl-alert');
+      expect(alert).to.exist;
+      expect(alert?.getAttribute('variant')).to.equal('warning');
+      expect(alert?.textContent).to.contain(
+        'Issue not found <script>unsafe</script>'
+      );
+      expect(alert?.querySelector('script')).not.to.exist;
+      expect(alert?.textContent).not.to.contain('Run started');
+      expect(alert?.textContent).to.contain(
+        anyCreated ? '1 run created' : 'No runs were created'
+      );
+      if (anyCreated) expect(alert?.textContent).to.contain('View run');
+    });
+  }
 });

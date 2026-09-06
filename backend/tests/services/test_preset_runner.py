@@ -365,6 +365,7 @@ def test_jira_triage_payload_uses_object_attributes():
     issue.meta_data = {
         "url": "https://jira.example.com/browse/ALP-9",
         "labels": ["bug"],
+        "assignees": [{"login": "assigned-user"}],
     }
     issue.external_url = None
     project = MagicMock()
@@ -381,6 +382,11 @@ def test_jira_triage_payload_uses_object_attributes():
     tracker.url = "https://jira.example.com"
     event = build_issue_trigger_payload(issue, project, tracker, git_only=False)
     assert event["source"] == "jira"
+    assert "repository" not in event["payload"]
+    assert "default_branch" not in str(event)
+    assert ".git" not in str(event)
+    assert event["payload"]["object_attributes"]["number"] == "ALP-9"
+    assert event["payload"]["object_attributes"]["author"] == ""
     assert event["payload"]["object_attributes"]["title"] == "Broken search"
     assert event["payload"]["object_attributes"]["labels"] == ["bug"]
     assert event["payload"]["object_attributes"]["updated_at"] == "2026-01-04T00:00:00Z"
@@ -915,3 +921,69 @@ def test_run_preset_request_requires_exactly_one_of_target_or_targets() -> None:
         RunPresetRequest(preset_slug=TRIAGE_SLUG, targets=too_many)
     ok = RunPresetRequest(preset_slug=TRIAGE_SLUG, target=target)
     assert ok.targets is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_kind", ["dispatch", "validation"])
+async def test_triage_batch_preserves_partial_results(failure_kind: str) -> None:
+    from preloop.models.schemas.flow import RunPresetResponse
+    from preloop.services.flow_trigger_service import FlowDispatchError
+
+    targets = [_Simple(kind="issue", issue_id=uuid.uuid4()) for _ in range(3)]
+    ids = [str(uuid.uuid4()) for _ in targets]
+    failure = (
+        FlowDispatchError(ids[1], "PENDING", RuntimeError("dispatch transport failed"))
+        if failure_kind == "dispatch"
+        else ValueError("Flow is unavailable")
+    )
+    trigger = AsyncMock(
+        side_effect=[
+            {"id": ids[0], "status": "PENDING"},
+            failure,
+            {"id": ids[2], "status": "PENDING"},
+        ]
+    )
+    with (
+        patch(
+            "preloop.services.preset_runner._load_visible_issue",
+            return_value=(MagicMock(), MagicMock(), MagicMock()),
+        ),
+        patch(
+            "preloop.services.preset_runner.resolve_or_create_flow",
+            return_value=(_account_flow(name="Issue Triage Assistant"), False),
+        ),
+        patch(
+            "preloop.services.preset_runner.build_issue_trigger_payload",
+            return_value={},
+        ),
+        patch(
+            "preloop.services.flow_trigger_service.FlowTriggerService.trigger_flow",
+            trigger,
+        ),
+    ):
+        response = await run_preset_on_target(
+            MagicMock(),
+            current_user=_user(uuid.uuid4()),
+            preset_slug=TRIAGE_SLUG,
+            targets=targets,
+            confirm_create=True,
+            triggered_by="Jane Doe",
+        )
+    # Ensure the public response schema does not drop the durable identifier/status.
+    result = RunPresetResponse.model_validate(response).model_dump()
+    assert trigger.await_count == 3
+    assert [item["issue_id"] for item in result["results"]] == [
+        str(item.issue_id) for item in targets
+    ]
+    first, middle, last = result["results"]
+    assert first["execution_id"] == ids[0]
+    assert last["execution_id"] == ids[2]
+    assert middle["error"]
+    if failure_kind == "dispatch":
+        assert middle["execution_id"] == ids[1]
+        assert middle["execution_status"] == "PENDING"
+        assert middle["execution_url"] == f"/console/flows/executions/{ids[1]}"
+        assert "before retrying" in middle["error"]
+        assert "dispatch transport failed" not in middle["error"]
+    else:
+        assert middle["execution_id"] is None

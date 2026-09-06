@@ -129,6 +129,30 @@ def _issue_assignee(issue: Any) -> str:
     return ""
 
 
+def _issue_author(issue: Any) -> str:
+    """Return an observed author, never the issue's assignee."""
+    meta = (
+        issue.meta_data if isinstance(getattr(issue, "meta_data", None), dict) else {}
+    )
+    author = (
+        meta.get("author")
+        or meta.get("creator")
+        or meta.get("reporter")
+        or meta.get("user")
+    )
+    if isinstance(author, str):
+        return author
+    if isinstance(author, dict):
+        return str(
+            author.get("login")
+            or author.get("username")
+            or author.get("displayName")
+            or author.get("name")
+            or ""
+        )
+    return ""
+
+
 def _issue_labels(issue: Any) -> List[str]:
     meta = (
         issue.meta_data if isinstance(getattr(issue, "meta_data", None), dict) else {}
@@ -313,21 +337,26 @@ def build_issue_trigger_payload(
     """Build ``trigger_event_data`` for an implementer or triage run on ``issue``."""
     tracker_kind = _tracker_kind_for_issue_payload(tracker, git_only=git_only)
 
-    repo = _repository_clone_fields(project, tracker)
+    is_git_tracker = tracker_kind in ("github", "gitlab")
+    repo = _repository_clone_fields(project, tracker) if is_git_tracker else None
     issue_url = _issue_url(issue)
-    number = _issue_number(issue)
+    number = (
+        _issue_number(issue)
+        if is_git_tracker
+        else getattr(issue, "key", None) or getattr(issue, "external_id", None)
+    )
     title = getattr(issue, "title", None) or ""
     description = getattr(issue, "description", None) or ""
     state = getattr(issue, "status", None) or ""
     labels = _issue_labels(issue)
     updated_at = _issue_updated_at(issue)
-    author = _issue_assignee(issue)
-    payload: Dict[str, Any] = {
-        "project_id": str(project.id),
-        "repository": repo,
-    }
+    author = _issue_assignee(issue) if git_only else _issue_author(issue)
+    payload: Dict[str, Any] = {"project_id": str(project.id)}
+    if repo is not None:
+        payload["repository"] = repo
 
     if tracker_kind == "gitlab":
+        assert repo is not None
         project_id = getattr(project, "identifier", None) or str(project.id)
         try:
             gitlab_id: Any = int(str(project_id))
@@ -770,10 +799,16 @@ async def _run_preset_on_issue_batch(
             "flow_name": flow.name,
             "flow_created": False,
             "execution_url": None,
-            "results": [{"issue_id": str(issue_id)} for issue_id in ordered_ids],
+            "results": [
+                {"issue_id": str(issue_id), "error": item_errors.get(str(issue_id))}
+                for issue_id in ordered_ids
+            ],
         }
 
-    from preloop.services.flow_trigger_service import FlowTriggerService
+    from preloop.services.flow_trigger_service import (
+        FlowDispatchError,
+        FlowTriggerService,
+    )
 
     trigger_service = FlowTriggerService(db)
     results: List[Dict[str, Any]] = []
@@ -805,19 +840,31 @@ async def _run_preset_on_issue_batch(
                 )
                 continue
             execution_id = str(raw_execution_id)
-            execution_url = f"/console/flows/executions/{execution_id}"
-            if first_execution_id is None:
-                first_execution_id = execution_id
-                first_execution_url = execution_url
-            results.append(
-                {
-                    "issue_id": key,
-                    "execution_id": execution_id,
-                    "execution_url": execution_url,
-                }
-            )
+            item_result = {
+                "issue_id": key,
+                "execution_id": execution_id,
+                "execution_status": result.get("status"),
+                "execution_url": f"/console/flows/executions/{execution_id}",
+            }
+        except FlowDispatchError as exc:
+            # Dispatch may fail after the row is committed. Keep its identity
+            # so callers inspect the existing run instead of submitting it twice.
+            item_result = {
+                "issue_id": key,
+                "execution_id": exc.execution_id,
+                "execution_status": exc.execution_status,
+                "execution_url": f"/console/flows/executions/{exc.execution_id}",
+                "error": "Execution was created but dispatch could not be confirmed. "
+                "View the existing run before retrying.",
+            }
         except PresetRunnerError as exc:
-            results.append({"issue_id": key, "error": _error_text(exc.detail)})
+            item_result = {"issue_id": key, "error": _error_text(exc.detail)}
+        except ValueError as exc:
+            item_result = {"issue_id": key, "error": str(exc)}
+        results.append(item_result)
+        if first_execution_id is None and item_result.get("execution_id"):
+            first_execution_id = item_result["execution_id"]
+            first_execution_url = item_result["execution_url"]
 
     return {
         "execution_id": first_execution_id,

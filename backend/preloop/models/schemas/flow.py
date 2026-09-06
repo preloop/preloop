@@ -697,6 +697,7 @@ class RunPresetItemResult(BaseModel):
 
     issue_id: str
     execution_id: Optional[str] = None
+    execution_status: Optional[str] = None
     execution_url: Optional[str] = None
     error: Optional[str] = None
 

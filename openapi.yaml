@@ -18730,6 +18730,11 @@ components:
           - type: string
           - type: 'null'
           title: Execution Id
+        execution_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Execution Status
         execution_url:
           anyOf:
           - type: string
