@@ -246,15 +246,12 @@ def extract_verification_evidence(lines: List[str]) -> Optional[Dict[str, Any]]:
         try:
             payload = json.loads(raw)
         except (json.JSONDecodeError, ValueError):
-            logger.warning(
-                "Ignoring malformed %s marker: %.200s", VERIFICATION_MARKER, raw
-            )
+            logger.warning("Ignoring malformed %s marker", VERIFICATION_MARKER)
             continue
         if not isinstance(payload, dict) or "allowed" not in payload:
             logger.warning(
-                "Ignoring %s marker without an allowed flag: %.200s",
+                "Ignoring %s marker without an allowed flag",
                 VERIFICATION_MARKER,
-                raw,
             )
             continue
         return payload
@@ -2284,9 +2281,7 @@ class FlowExecutionOrchestrator:
                 if stripped_line.startswith(VERIFICATION_MARKER + " "):
                     self._note_verification_evidence(stripped_line)
                 elif stripped_line.startswith(VERIFICATION_DENIED_MARKER):
-                    logger.warning(
-                        "Publication gate denied publication: %s", stripped_line
-                    )
+                    logger.warning("Publication gate denied publication")
 
                 # In-place completion nudge markers printed by the agent
                 # script. Order matters: the result marker shares the start

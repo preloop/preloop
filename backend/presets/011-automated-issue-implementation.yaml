@@ -223,7 +223,9 @@ git_clone_config:
             conflict markers in the published range.
           scope: shared
         - id: no-conflict-markers
-          command: '! git grep -In -e "^<<<<<<< " -e "^>>>>>>> " -- .'
+          command: >-
+            git grep -In -e "^<<<<<<< " -e "^>>>>>>> " -- . >/dev/null;
+            rc=$?; [ "$rc" -eq 1 ]
           reason: >-
             Inexpensive universal hook: a committed conflict marker means the
             change was never actually resolved.

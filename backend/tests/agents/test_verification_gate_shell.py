@@ -221,6 +221,12 @@ class TestGateIntegration:
         assert payload["allowed"] is True
         assert payload["commit_sha"] == sha
 
+    def test_publisher_shell_embeds_evaluate_from_raw(self, repo: GateRepo):
+        """ALLOW/DENY is the same fail-closed decision as evaluate_publication."""
+        shell = repo.gate_shell(PROFILE)
+        assert "evaluate_from_raw" in shell
+        assert "select_from_raw" in shell
+
     def test_failing_required_check_blocks_publication(self, repo: GateRepo):
         repo.add_file("feature.py")
         repo.commit("add feature")

@@ -72,6 +72,15 @@ class TestExtractVerificationEvidence:
         parsed = extract_verification_evidence(lines)
         assert parsed["allowed"] is True
 
+    def test_malformed_marker_does_not_log_the_payload(self, caplog):
+        import logging
+
+        secret_line = f"{VERIFICATION_MARKER} ghp_notajsonpayloadwithsecret"
+        with caplog.at_level(logging.WARNING):
+            assert extract_verification_evidence([secret_line]) is None
+        assert "ghp_" not in caplog.text
+        assert "Ignoring malformed" in caplog.text
+
     def test_marker_without_allowed_flag_is_rejected(self):
         lines = [f'{VERIFICATION_MARKER} {{"status": "passed"}}']
         assert extract_verification_evidence(lines) is None
@@ -179,8 +188,31 @@ class TestVerificationFailureCategories:
             status="FAILED",
             error_message=(
                 "PRELOOP_VERIFICATION_VERDICT DENY status=blocked reason="
-                "one or more required checks could not run (unavailable "
-                "dependency); publication blocked"
+                "required checks unavailable, empty, timed out, or working "
+                "tree changed; publication blocked"
+            ),
+        )
+        assert category == FAILURE_CATEGORY_VERIFICATION_BLOCKED
+
+    def test_denied_echo_before_verdict_is_still_blocked(self):
+        """The publisher echoes DENIED after cat'ing the gate log; combined
+        error text can list those lines in either order."""
+        category = derive_failure_category(
+            status="FAILED",
+            error_message=(
+                f"{VERIFICATION_DENIED_MARKER} verdict=DENY reason="
+                "verification gate refused publication rc=3\n"
+                "PRELOOP_VERIFICATION_VERDICT DENY status=blocked reason="
+                "required command is unavailable"
+            ),
+        )
+        assert category == FAILURE_CATEGORY_VERIFICATION_BLOCKED
+
+    def test_verifier_crash_denied_line_is_blocked(self):
+        category = derive_failure_category(
+            status="FAILED",
+            error_message=(
+                f"{VERIFICATION_DENIED_MARKER} status=blocked reason=verifier crashed"
             ),
         )
         assert category == FAILURE_CATEGORY_VERIFICATION_BLOCKED

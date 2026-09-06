@@ -3843,7 +3843,9 @@ true
         """
         # Invalid configured gates must fail before the legacy broad exception
         # handler, which otherwise turns a policy failure into no post commands.
-        resolve_verification_policy(execution_context.get("git_clone_config") or {})
+        verification_policy = resolve_verification_policy(
+            execution_context.get("git_clone_config") or {}
+        )
         try:
             git_config = execution_context.get("git_clone_config", {})
 
@@ -3889,12 +3891,6 @@ true
                 return ""
             if safe_source is None:
                 safe_source = "main"
-
-            # Resolve the verification policy once: a flow whose
-            # git_clone_config carries verification.mode="gate" refuses to
-            # publish until the runner-controlled verifier allowed it
-            # (issue #428). Existing flows without the key are ungated.
-            verification_policy = resolve_verification_policy(git_config)
 
             post_commands = []
 
@@ -3973,7 +3969,6 @@ true
                 if verification_policy.mode == "gate" and (
                     verification_policy.profile is not None
                 ):
-                    assert verification_policy.profile is not None
                     repo_post_commands.append(
                         build_verification_gate_shell(
                             profile=verification_policy.profile.model_dump(),

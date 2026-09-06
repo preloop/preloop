@@ -111,6 +111,9 @@ class TestPublisherWithGate:
         # The selection module is embedded verbatim, so the container runs
         # the same selection implementation as the runner contract.
         assert "select_from_raw" in commands
+        # The fail-closed publication decision is embedded the same way, so
+        # ALLOW/DENY is evaluate_publication's decision, not a second gate.
+        assert "evaluate_from_raw" in commands
 
     def test_push_only_after_an_allow_verdict(self, executor):
         commands = executor._prepare_git_post_execution_commands(self._context_gate())

@@ -22,8 +22,12 @@ verified the exact commit that is about to be published":
   publication; only evidence for the current commit and tree allows it.
 
 The publisher (``agents/container.py`` post-execution path) consults the
-decision before pushing or opening a pull request. There is no opt-in
-draft-publication exception in this preset: unverified work stays unpushed.
+decision before pushing or opening a pull request: the in-container
+verifier runs :func:`preloop.utils.verification_selection.evaluate_from_raw`
+(the same fail-closed function this module wraps) and only an ALLOW
+verdict lets the push and pull-request creation proceed. There is no
+opt-in draft-publication exception in this preset: unverified work
+stays unpushed.
 """
 
 from __future__ import annotations
@@ -37,15 +41,12 @@ from preloop.models.schemas.verification import (
     VerificationCommand,
     VerificationProfile,
 )
-from preloop.utils.verification_selection import select_from_raw
-
-# Identity of the runner-controlled verifier. Evidence produced by anything
-# else (the agent, a hand-written file) is refused by the gate.
-VERIFICATION_PRODUCER = "preloop-verifier"
-# Bumped when evidence semantics change incompatibly. The in-container
-# verifier (see preloop.agents.verification) must agree with this value; a
-# mismatch refuses to reuse recorded evidence and re-runs the checks.
-VERIFIER_VERSION = 1
+from preloop.utils.verification_selection import (
+    VERIFICATION_PRODUCER,
+    VERIFIER_VERSION,
+    evaluate_from_raw,
+    select_from_raw,
+)
 
 VERIFICATION_STATUS_PASSED = "passed"
 VERIFICATION_STATUS_FAILED = "failed"
@@ -271,6 +272,10 @@ def evaluate_publication(
 
     A caller must independently authenticate a runner/controller channel.
     The producer string in JSON is diagnostic, not proof of that origin.
+
+    Delegates to :func:`preloop.utils.verification_selection.evaluate_from_raw`
+    so the publisher's in-container verifier and this typed wrapper cannot
+    drift: there is one fail-closed decision.
     """
 
     def deny(
@@ -284,41 +289,12 @@ def evaluate_publication(
         parsed = VerificationEvidence.model_validate(evidence)
     except ValueError:
         return deny("verification evidence is malformed")
-    if (
-        parsed.producer != VERIFICATION_PRODUCER
-        or parsed.verifier_version != VERIFIER_VERSION
-    ):
-        return deny("unexpected verifier identity/version")
-    if (parsed.profile_id, parsed.profile_version) != (
-        profile.profile_id,
-        profile.version,
-    ):
-        return deny("stale verification profile")
-    if parsed.commit_sha != commit_sha or parsed.tree_hash != tree_hash:
-        return deny("verification evidence belongs to another commit/tree")
-    if not clean_tree or not parsed.clean_tree:
-        return deny("tracked working tree changed after verification")
-    selected = select_required_checks(profile, changed_files)
-    if not selected.checks:
-        return deny("trusted profile selected no required checks")
-    records = {record.id: record for record in parsed.checks}
-    if len(records) != len(parsed.checks):
-        return deny("duplicate verification check records")
-    for requirement in selected.commands:
-        record = records.get(requirement.id)
-        if record is None or record.command != requirement.command:
-            return deny("required check missing or command changed: " + requirement.id)
-        if record.exit_code is None or record.skipped_reason:
-            return deny("required check unavailable/skipped: " + requirement.id)
-        if record.exit_code != 0:
-            return deny("required check failed: " + requirement.id, "failed")
-    if parsed.status != "passed":
-        return deny(
-            "verification run did not pass",
-            "failed" if parsed.status == "failed" else "blocked",
-        )
-    return PublicationDecision(
-        allowed=True,
-        status="passed",
-        reason="all required checks passed for the final commit/tree",
+    raw = evaluate_from_raw(
+        parsed.model_dump(),
+        profile=profile.model_dump(),
+        commit_sha=commit_sha,
+        tree_hash=tree_hash,
+        clean_tree=clean_tree,
+        changed_files=changed_files,
     )
+    return PublicationDecision.model_validate(raw)

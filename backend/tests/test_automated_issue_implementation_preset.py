@@ -237,10 +237,15 @@ class TestVerificationGate:
         always_ids = [cmd["id"] for cmd in profile["always"]]
         assert "git-diff-check" in always_ids
         assert "no-conflict-markers" in always_ids
-        for cmd in profile["always"]:
-            # The universal hooks scope themselves through the range
-            # contract the verifier provides.
-            assert cmd["command"].startswith(("git diff --check", "! git grep"))
+        by_id = {cmd["id"]: cmd["command"] for cmd in profile["always"]}
+        assert by_id["git-diff-check"].startswith("git diff --check")
+        # Capture git grep's exit code: only "no matches" (1) is success.
+        # Shell negation would treat git errors (2/128) as a pass.
+        assert "git grep" in by_id["no-conflict-markers"]
+        assert (
+            '[ "$rc" -eq 1 ]' in by_id["no-conflict-markers"]
+            or "-eq 1" in by_id["no-conflict-markers"]
+        )
 
     def test_docs_only_changes_need_nothing_beyond_the_hooks(self, preset):
         from preloop.services.verification import select_required_checks

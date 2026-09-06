@@ -1,12 +1,13 @@
-"""Required-check selection for the publication gate (issue #428).
+"""Required-check selection and publication decision (issue #428).
 
 Pure-stdlib on purpose: this module's *source text* is embedded into the
 runner-controlled verifier script that runs inside agent containers (see
 ``preloop.agents.verification``), where only python3 and the standard library
 exist. Keep it free of third-party imports so the embedded copy and this
 module can never drift apart — there is exactly one selection
-implementation, and both the typed contract
-(``preloop.services.verification``) and the in-container verifier execute it.
+implementation and one fail-closed publication decision, and both the
+typed contract (``preloop.services.verification``) and the in-container
+verifier execute them.
 
 The shape of everything here is plain dicts/lists matching the
 ``VerificationProfile`` JSON schema.
@@ -15,7 +16,14 @@ The shape of everything here is plain dicts/lists matching the
 from __future__ import annotations
 
 import fnmatch
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
+
+# Identity of the runner-controlled verifier. Evidence produced by anything
+# else (the agent, a hand-written file) is refused by the gate.
+VERIFICATION_PRODUCER = "preloop-verifier"
+# Bumped when evidence semantics change incompatibly. The in-container
+# verifier must agree with this value.
+VERIFIER_VERSION = 1
 
 # selected_by markers for checks that are not tied to a changed-file rule.
 SELECTED_BY_ALWAYS = "always"
@@ -105,4 +113,92 @@ def select_from_raw(
         "checks": selections,
         "matched_rule_ids": matched_rule_ids,
         "used_unknown_default": used_unknown_default,
+    }
+
+
+def evaluate_from_raw(
+    evidence: Optional[Mapping[str, Any]],
+    *,
+    profile: Mapping[str, Any],
+    commit_sha: str,
+    tree_hash: str,
+    clean_tree: bool = True,
+    changed_files: Sequence[str] = (),
+) -> Dict[str, Any]:
+    """Fail-closed publication decision on plain dict evidence.
+
+    Returns ``{"allowed": bool, "status": "passed"|"failed"|"blocked",
+    "reason": str}``. Missing, failed, foreign-produced, wrong-commit or
+    stale evidence refuses publication; only evidence for the current
+    commit and tree allows it.
+
+    The typed runner wrapper is
+    :func:`preloop.services.verification.evaluate_publication`; the
+    in-container verifier calls this function before writing ALLOW.
+    """
+
+    def deny(reason: str, status: str = "blocked") -> Dict[str, Any]:
+        return {"allowed": False, "status": status, "reason": reason}
+
+    if not evidence:
+        return deny("verification evidence missing")
+    if not isinstance(evidence, Mapping):
+        return deny("verification evidence is malformed")
+
+    producer = evidence.get("producer")
+    verifier_version = evidence.get("verifier_version")
+    if producer != VERIFICATION_PRODUCER or verifier_version != VERIFIER_VERSION:
+        return deny("unexpected verifier identity/version")
+    if (evidence.get("profile_id"), evidence.get("profile_version")) != (
+        profile.get("profile_id"),
+        str(profile.get("version", "")),
+    ):
+        return deny("stale verification profile")
+    if (
+        evidence.get("commit_sha") != commit_sha
+        or evidence.get("tree_hash") != tree_hash
+    ):
+        return deny("verification evidence belongs to another commit/tree")
+    if not clean_tree or not evidence.get("clean_tree"):
+        return deny("tracked working tree changed after verification")
+
+    selected = select_from_raw(profile, changed_files)
+    commands = [entry["command"] for entry in selected["checks"]]
+    if not commands:
+        return deny("trusted profile selected no required checks")
+
+    records_list = evidence.get("checks")
+    if not isinstance(records_list, list):
+        return deny("verification evidence is malformed")
+    records: Dict[str, Mapping[str, Any]] = {}
+    for record in records_list:
+        if not isinstance(record, Mapping):
+            return deny("verification evidence is malformed")
+        rec_id = record.get("id")
+        if rec_id in records:
+            return deny("duplicate verification check records")
+        records[str(rec_id)] = record
+    if len(records) != len(records_list):
+        return deny("duplicate verification check records")
+
+    for requirement in commands:
+        rec_id = str(requirement.get("id"))
+        record = records.get(rec_id)
+        if record is None or record.get("command") != requirement.get("command"):
+            return deny("required check missing or command changed: " + rec_id)
+        if record.get("exit_code") is None or record.get("skipped_reason"):
+            return deny("required check unavailable/skipped: " + rec_id)
+        if record.get("exit_code") != 0:
+            return deny("required check failed: " + rec_id, "failed")
+
+    if evidence.get("status") != "passed":
+        ev_status = evidence.get("status")
+        return deny(
+            "verification run did not pass",
+            "failed" if ev_status == "failed" else "blocked",
+        )
+    return {
+        "allowed": True,
+        "status": "passed",
+        "reason": "all required checks passed for the final commit/tree",
     }

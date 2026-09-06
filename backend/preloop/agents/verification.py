@@ -12,9 +12,10 @@ agent has exited and after its final commit:
    own PR),
 3. executes them with ``PRELOOP_DISABLE_TELEMETRY=true`` and per-command
    timeouts, capturing one log per check under the evidence pack,
-4. reuses its own earlier evidence when the commit, tree, profile and
-   verifier identity are unchanged (no blanket rerun just because another
-   message arrived), re-running whenever anything changed,
+4. consults the same fail-closed decision as
+   :func:`preloop.services.verification.evaluate_publication` (embedded
+   as ``evaluate_from_raw``) so a failed, blocked, or semantically invalid
+   run cannot write ALLOW,
 5. records evidence (commands, exit codes, log references, environment
    digest, profile version, exact commit and tree) and prints a marker line
    the orchestrator stores on the execution result.
@@ -73,8 +74,8 @@ import time
 
 import preloop_verification_selection as selection
 
-PRODUCER = "preloop-verifier"
-VERIFIER_VERSION = 1
+PRODUCER = selection.VERIFICATION_PRODUCER
+VERIFIER_VERSION = selection.VERIFIER_VERSION
 
 STATUS_PASSED = "passed"
 STATUS_FAILED = "failed"
@@ -84,7 +85,7 @@ DENIED_EXIT = 3
 
 
 def _fail(verdict_dir, reason):
-    _write(verdict_dir, False, reason, "blocked", [])
+    _write(verdict_dir, False, reason, "blocked")
     print(
         "PRELOOP_VERIFICATION_VERDICT DENY status=blocked reason=%s" % reason,
         flush=True,
@@ -105,7 +106,7 @@ def _fail(verdict_dir, reason):
     sys.exit(DENIED_EXIT)
 
 
-def _write(verdict_dir, allowed, reason, status, checks):
+def _write(verdict_dir, allowed, reason, status):
     with open(os.path.join(verdict_dir, "verdict"), "w", encoding="utf-8") as fh:
         fh.write("ALLOW" if allowed else "DENY")
     with open(
@@ -140,19 +141,6 @@ def _git_ok(repo, *args):
 
 def _safe_id(check_id):
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", check_id)[:120] or "check"
-
-
-def _identity(evidence, profile_id, profile_version, commit, tree, clean):
-    return (
-        evidence.get("producer") == PRODUCER
-        and evidence.get("verifier_version") == VERIFIER_VERSION
-        and evidence.get("profile_id") == profile_id
-        and evidence.get("profile_version") == profile_version
-        and evidence.get("commit_sha") == commit
-        and evidence.get("tree_hash") == tree
-        and evidence.get("clean_tree") == clean
-        and evidence.get("status") == STATUS_PASSED
-    )
 
 
 def main(argv):
@@ -285,9 +273,23 @@ def main(argv):
         "started_at": started_at, "finished_at": finished_at,
         "environment": {"python_version": platform.python_version(), "git_version": _git(repo, "--version"), "os_name": platform.platform(), "telemetry_disabled": True},
     }
+    decision = selection.evaluate_from_raw(
+        evidence,
+        profile=profile,
+        commit_sha=commit,
+        tree_hash=tree,
+        clean_tree=clean_tree,
+        changed_files=changed_files,
+    )
+    allowed = bool(decision["allowed"])
+    status = decision["status"]
+    reason = decision["reason"]
+    evidence["allowed"] = allowed
+    evidence["status"] = status
+    evidence["reason"] = reason
     with open(evidence_path, "w", encoding="utf-8") as stream:
         json.dump(evidence, stream, indent=2, sort_keys=True)
-    _write(verdict_dir, allowed, reason, status, records)
+    _write(verdict_dir, allowed, reason, status)
     with open(os.path.join(verdict_dir, "verified.sha"), "w", encoding="utf-8") as stream:
         stream.write(commit if allowed else "")
     compact = dict(evidence)

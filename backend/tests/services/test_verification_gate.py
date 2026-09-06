@@ -18,6 +18,7 @@ from preloop.services.verification import (
     resolve_verification_policy,
     select_required_checks,
 )
+from preloop.utils.verification_selection import evaluate_from_raw
 
 # --- Shared fixture commands ---------------------------------------------
 
@@ -270,6 +271,40 @@ class TestPublicationDecision:
         evidence = _evidence()
         evidence["checks"][0].update(change)
         assert not decision(evidence).allowed
+
+
+class TestEvaluateFromRawIsThePublisherDecision:
+    def test_typed_wrapper_and_stdlib_decision_agree(self) -> None:
+        evidence = _evidence()
+        raw = evaluate_from_raw(
+            evidence,
+            profile=PROFILE.model_dump(),
+            commit_sha="a" * 40,
+            tree_hash="b" * 40,
+            changed_files=["unknown.bin"],
+        )
+        typed = evaluate_publication(
+            evidence,
+            profile=PROFILE,
+            commit_sha="a" * 40,
+            tree_hash="b" * 40,
+            changed_files=["unknown.bin"],
+        )
+        assert raw["allowed"] is True
+        assert typed.allowed is True
+        assert raw["status"] == typed.status
+        assert raw["reason"] == typed.reason
+
+    def test_forged_producer_is_denied(self) -> None:
+        raw = evaluate_from_raw(
+            _evidence(producer="agent"),
+            profile=PROFILE.model_dump(),
+            commit_sha="a" * 40,
+            tree_hash="b" * 40,
+            changed_files=["unknown.bin"],
+        )
+        assert raw["allowed"] is False
+        assert "identity" in raw["reason"]
 
 
 class TestPolicyResolution:

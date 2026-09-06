@@ -241,12 +241,16 @@ _SETUP_FAILED_RE = re.compile(
 # run (exit 126/127, missing dependency) is an environment gap and gets its
 # own category so "needs a database" never reads as "broken code".
 # Blocked is matched before failed: the VERDICT line carries the status.
+# Alternatives match the verifier's real output (VERDICT status=blocked,
+# the crash DENIED line, and the blocked-run reason), including either
+# order of the publisher's DENIED echo vs the VERDICT line.
 _VERIFICATION_BLOCKED_RE = re.compile(
     r"PRELOOP_VERIFICATION_VERDICT DENY status=blocked"
-    r"|verification gate refused publication.*verdict=DENY.*"
-    r"status=blocked"
-    r"|could not run \(unavailable dependency\)",
-    re.IGNORECASE,
+    r"|PRELOOP_VERIFICATION_DENIED status=blocked"
+    r"|verification gate refused publication.{0,400}status=blocked"
+    r"|required checks unavailable, empty, timed out, or working tree changed"
+    r"|required command is unavailable",
+    re.IGNORECASE | re.DOTALL,
 )
 _VERIFICATION_FAILED_RE = re.compile(
     r"PRELOOP_VERIFICATION_DENIED"

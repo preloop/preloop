@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Publication verification gate**: implementation flows can set
+  `git_clone_config.verification` (`mode: gate` plus a trusted test
+  profile). The runner re-runs required checks on the exact commit about
+  to be published and refuses the push/PR when they fail or cannot run.
+  Failures are classified as `verification_failed` (a required check ran
+  and failed) or `verification_blocked` (a required check could not run).
+  The automated-issue-implementation preset ships with the gate on and a
+  conservative default that refuses non-docs code changes until operators
+  add repository-specific rules.
+
 - **`control_last_heartbeat_at` on managed agent summaries**: Agent Control
   presence now exposes the last WebSocket heartbeat timestamp on
   `ManagedAgentSummary` (list and detail, OpenAPI, TypeScript type) so the
