@@ -70,9 +70,20 @@ def register_thread(
     provider = details.get("source")
     parsed = urlparse(pr_url)
     parts = parsed.path.rstrip("/").split("/")
+    try:
+        tracker_uuid = uuid.UUID(str(tracker_id)) if tracker_id else None
+        session_thread_id = (
+            uuid.UUID(str(details["_session_thread_id"]))
+            if details.get("_session_thread_id")
+            else uuid.uuid4()
+        )
+    except (ValueError, TypeError, AttributeError):
+        tracker_uuid = None
+        session_thread_id = None
     if (
         not repository_id
-        or not tracker_id
+        or tracker_uuid is None
+        or session_thread_id is None
         or provider not in {"github", "gitlab"}
         or not parts[-1].isdigit()
     ):
@@ -105,12 +116,10 @@ def register_thread(
     crud_flow_feedback.register(
         db,
         values={
-            "id": uuid.UUID(details["_session_thread_id"])
-            if details.get("_session_thread_id")
-            else uuid.uuid4(),
+            "id": session_thread_id,
             "account_id": flow.account_id,
             "flow_id": flow.id,
-            "tracker_id": uuid.UUID(str(tracker_id)),
+            "tracker_id": tracker_uuid,
             "repository_id": str(repository_id),
             "pr_number": parts[-1],
             "pr_url": pr_url,
@@ -181,12 +190,16 @@ def ingest_feedback(db: Session, event: dict[str, Any]) -> bool:
         or {}
     )
     number = pr.get("number") or pr.get("iid")
+    if not number:
+        # Commit-level check_run/status payloads omit a PR. Finding without a
+        # number would wake every thread on the repository.
+        return False
     threads = crud_flow_feedback.find(
         db,
         account_id=uuid.UUID(str(event["account_id"])),
         tracker_id=uuid.UUID(str(event["tracker_id"])),
         repository_id=str(repo["id"]),
-        pr_number=str(number) if number else None,
+        pr_number=str(number),
     )
     now = datetime.now(UTC).replace(tzinfo=None)
     delivery = event.get("delivery_id")
@@ -265,10 +278,17 @@ async def run_feedback_tick(db: Session, *, now: datetime | None = None) -> int:
     """Reconcile a bounded batch; leased execution reservation survives dispatch loss."""
     now = now or datetime.now(UTC).replace(tzinfo=None)
     for publication in crud_flow_feedback.unregistered_publications(db):
-        result = publication.result or {}
-        if result.get("pr_source_branch"):
-            register_thread(
-                db, publication, result["pr_url"], result["pr_source_branch"]
+        try:
+            result = publication.result or {}
+            if result.get("pr_source_branch"):
+                register_thread(
+                    db, publication, result["pr_url"], result["pr_source_branch"]
+                )
+        except Exception:
+            crud_flow_feedback.rollback(db)
+            logger.exception(
+                "Feedback registration failed for execution %s",
+                getattr(publication, "id", None),
             )
     claims = crud_flow_feedback.claim_due(db, now=now)
     for thread_id, token in claims:

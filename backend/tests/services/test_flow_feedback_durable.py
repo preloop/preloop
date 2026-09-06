@@ -4,7 +4,7 @@ import os
 import uuid
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import crud_flow_feedback
-from preloop.services.flow_feedback import _reconcile, decide
+from preloop.services.flow_feedback import _reconcile, decide, ingest_feedback
 from preloop.services.flow_feedback_provider import FeedbackState, classify_checks
 
 NOW = datetime(2026, 9, 6)
@@ -85,6 +85,86 @@ def test_missing_required_and_superseded_review_do_not_pass() -> None:
         )[0]
         == "ready"
     )
+
+
+def _ingest_event(**payload: object) -> dict[str, Any]:
+    return {
+        "type": "check_run",
+        "account_id": str(uuid.uuid4()),
+        "tracker_id": str(uuid.uuid4()),
+        "payload": {"repository": {"id": "123"}, **payload},
+    }
+
+
+def test_ingest_skips_when_pr_cannot_be_determined() -> None:
+    db = MagicMock()
+    with patch("preloop.services.flow_feedback.crud_flow_feedback.find") as find:
+        assert ingest_feedback(db, _ingest_event()) is False
+        find.assert_not_called()
+
+
+def test_ingest_targets_the_event_pr() -> None:
+    db = MagicMock()
+    with patch("preloop.services.flow_feedback.crud_flow_feedback.find") as find:
+        find.return_value = []
+        assert ingest_feedback(db, _ingest_event(pull_request={"number": 7})) is False
+        assert find.call_args.kwargs["pr_number"] == "7"
+
+
+def test_register_thread_skips_non_uuid_tracker() -> None:
+    from preloop.services.flow_feedback import register_thread
+
+    flow = SimpleNamespace(
+        id=uuid.uuid4(),
+        account_id=uuid.uuid4(),
+        trigger_event_source="webhook",
+        agent_config={"feedback": {"enabled": True}},
+    )
+    execution = SimpleNamespace(
+        id=uuid.uuid4(),
+        flow_id=flow.id,
+        trigger_event_details={
+            "source": "github",
+            "payload": {"repository": {"id": "123"}},
+        },
+    )
+    with (
+        patch("preloop.services.flow_feedback.crud_flow.get", return_value=flow),
+        patch("preloop.services.flow_feedback.crud_flow_feedback.register") as register,
+    ):
+        register_thread(
+            MagicMock(),
+            execution,
+            "https://github.com/example/repo/pull/7",
+            "feat/x",
+        )
+        register.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_tick_continues_when_publication_registration_fails() -> None:
+    from preloop.services.flow_feedback import run_feedback_tick
+
+    publication = SimpleNamespace(
+        id=uuid.uuid4(),
+        result={
+            "pr_url": "https://github.com/example/repo/pull/7",
+            "pr_source_branch": "feat/x",
+        },
+    )
+    db = MagicMock()
+    with (
+        patch("preloop.services.flow_feedback.crud_flow_feedback") as crud,
+        patch(
+            "preloop.services.flow_feedback.register_thread",
+            side_effect=ValueError("badly formed hexadecimal UUID string"),
+        ),
+    ):
+        crud.unregistered_publications.return_value = [publication]
+        crud.claim_due.return_value = []
+        assert await run_feedback_tick(db, now=NOW) == 0
+        crud.rollback.assert_called_once_with(db)
+        crud.claim_due.assert_called_once()
 
 
 @pytest.fixture

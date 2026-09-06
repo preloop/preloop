@@ -1428,7 +1428,6 @@ class FlowTriggerService:
 
             if feedback_policy(flow):
                 trigger_details["_session_thread_id"] = str(uuid.uuid4())
-            event_data = trigger_details
             attach_trigger_subject(trigger_details)
 
             cell: Dict[str, Any] = {"batch_id": str(batch_id), "index": index}

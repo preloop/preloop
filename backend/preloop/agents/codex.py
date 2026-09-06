@@ -287,14 +287,18 @@ class CodexAgent(ContainerAgentExecutor):
             "capture": "",
             "pack": "",
         }
+        restore_guard = ""
+        if not execution_context.get("confirmation_nudge"):
+            restore_guard = (
+                'if [ "${PRELOOP_CLI_SESSION_RESTORED:-0}" -eq 1 ]; then\n'
+                '    _pl_codex_sid="${PRELOOP_CLI_SESSION_ID:-}"\n'
+                "fi\n"
+            )
         blocks["capture"] = f"""
 # Extract this run's session id from the newest rollout file so the
 # orchestrator can persist it for a later PR-comment resume.
 _pl_codex_sid=""
-if [ "${{PRELOOP_CLI_SESSION_RESTORED:-0}}" -eq 1 ]; then
-    _pl_codex_sid="${{PRELOOP_CLI_SESSION_ID:-}}"
-fi
-if [ -z "$_pl_codex_sid" ] && [ -d "$CODEX_HOME/sessions" ]; then
+{restore_guard}if [ -z "$_pl_codex_sid" ] && [ -d "$CODEX_HOME/sessions" ]; then
     _pl_rollout=$(find "$CODEX_HOME/sessions" -type f -name 'rollout-*.jsonl' 2>/dev/null | sort | tail -n 1)
     if [ -n "$_pl_rollout" ]; then
         _pl_codex_sid=$(printf '%s\\n' "$_pl_rollout" | grep -oE '[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}' | tail -n 1)
@@ -308,10 +312,6 @@ fi
             "codex", '"$CODEX_HOME/sessions"', excludes=("auth.json",)
         )
         if execution_context.get("confirmation_nudge"):
-            blocks["capture"] = blocks["capture"].replace(
-                'if [ "${PRELOOP_CLI_SESSION_RESTORED:-0}" -eq 1 ]; then\n    _pl_codex_sid="${PRELOOP_CLI_SESSION_ID:-}"\nfi\n',
-                "",
-            )
             return blocks
 
         cli_session_archive = execution_context.get("cli_session_restore_archive")

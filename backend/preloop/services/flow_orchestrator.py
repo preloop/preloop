@@ -2880,6 +2880,7 @@ class FlowExecutionOrchestrator:
                     )
                     self.execution_logger.log_milestone("native_resume", outcome)
             except ValueError:
+                # Malformed PRELOOP_NATIVE_RESUME JSON is not a session record.
                 pass
             return
         artifact = parse_native_artifact_marker(line)
