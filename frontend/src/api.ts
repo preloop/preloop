@@ -2,6 +2,7 @@ import { LitElement } from 'lit';
 import { Router } from '@vaadin/router';
 import { DEFAULT_SIMILARITY_THRESHOLD } from './config';
 import { PermissionError, permissionErrorFromResponse } from './permissions';
+import { ATTENTION_SUMMARY_STORAGE_KEY } from './utils/attention-summary';
 import type {
   ApprovalBypass,
   ApprovalBypassMode,
@@ -118,6 +119,10 @@ export function invalidateApiCaches(): void {
   if (typeof sessionStorage !== 'undefined') {
     try {
       sessionStorage.removeItem('preloop.agents.gateway_summary.v1');
+      // The bell reads these counts from sessionStorage, which survives the
+      // full page navigation sign-out does, so without this the next account
+      // could be told the previous account's attention counts.
+      sessionStorage.removeItem(ATTENTION_SUMMARY_STORAGE_KEY);
       for (let i = sessionStorage.length - 1; i >= 0; i -= 1) {
         const key = sessionStorage.key(i);
         if (key?.startsWith('preloop.cost.previous_summary.v1:')) {

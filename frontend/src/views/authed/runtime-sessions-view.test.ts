@@ -615,6 +615,225 @@ describe('RuntimeSessionsView', () => {
     expect(content).to.contain('openai/gpt-5');
   });
 
+  describe('collection bar', () => {
+    it('states the matching session count in one live region', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const toolbar = element.shadowRoot!.querySelector('list-toolbar')!;
+      expect(toolbar).to.not.equal(null);
+      const count = toolbar.querySelector('[slot="count"]')!;
+      expect(count.textContent!.trim()).to.equal('2 sessions');
+      const liveRegion = toolbar.shadowRoot!.querySelector('.results-count')!;
+      expect(liveRegion.getAttribute('aria-live')).to.equal('polite');
+    });
+
+    it('drops the filter and observer card titles', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const text = element.shadowRoot!.textContent || '';
+      expect(text).to.not.contain('Session Explorer Filters');
+      expect(text).to.not.contain('Session Observer');
+    });
+
+    it('refetches on a debounced search, like the Agents bar', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const listCalls = () =>
+        fetchStub
+          .getCalls()
+          .map((call) => String(call.args[0]))
+          .filter((url) => url.startsWith('/api/v1/runtime-sessions?'));
+      const before = listCalls().length;
+
+      const toolbar = element.shadowRoot!.querySelector('list-toolbar')!;
+      toolbar.dispatchEvent(
+        new CustomEvent('search-change', {
+          detail: { value: 'workspace-42' },
+          bubbles: true,
+          composed: true,
+        })
+      );
+
+      // Nothing goes out on the keystroke itself: the query is a server
+      // parameter, so it waits for the typing to stop.
+      expect(listCalls().length).to.equal(before);
+
+      await waitUntil(
+        () => listCalls().length > before,
+        'Search did not refetch after the debounce',
+        { timeout: 3000 }
+      );
+      expect(listCalls().pop()).to.contain('query=workspace-42');
+    });
+
+    it('ignores a stale list when a later load already finished', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const listPayload = (id: string, name: string) => ({
+        period_start: '2026-02-08T00:00:00Z',
+        period_end: '2026-03-09T23:59:59Z',
+        query: null,
+        session_source_type: null,
+        status: 'all',
+        total: 1,
+        limit: 50,
+        offset: 0,
+        items: [
+          {
+            id,
+            session_source_type: 'claude_code',
+            session_source_id: 'workspace-42',
+            session_reference: name,
+            runtime_principal_type: 'claude_code',
+            runtime_principal_id: 'workspace-42',
+            runtime_principal_name: name,
+            started_at: '2026-03-09T18:00:00Z',
+            last_activity_at: '2026-03-09T20:00:00Z',
+            ended_at: null,
+            flow_id: null,
+            flow_name: null,
+            flow_execution_id: null,
+            latest_model_alias: 'anthropic/claude-sonnet-4',
+            latest_provider_name: 'Anthropic',
+            is_active_now: true,
+            activity_status: 'active_now',
+            total_requests: 4,
+            successful_requests: 3,
+            failed_requests: 1,
+            token_usage: {
+              prompt_tokens: 1200,
+              completion_tokens: 450,
+              total_tokens: 1650,
+            },
+            estimated_cost: 0.42,
+            last_request_at: '2026-03-09T20:00:00Z',
+          },
+        ],
+      });
+
+      const pending: Array<(body: unknown) => void> = [];
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/api/v1/runtime-sessions?')) {
+          const body = await new Promise<unknown>((resolve) => {
+            pending.push(resolve);
+          });
+          return new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('{}', { status: 200 });
+      });
+
+      try {
+        // Identical GETs share one in-flight request, so the two loads need
+        // different queries or there is only one fetch to resolve.
+        (element as any).searchQuery = 'stale';
+        const first = (element as any).loadSessions();
+        await waitUntil(
+          () => pending.length >= 1,
+          'First session list fetch did not start'
+        );
+        (element as any).searchQuery = 'fresh';
+        const second = (element as any).loadSessions();
+        await waitUntil(
+          () => pending.length >= 2,
+          'Second session list fetch did not start'
+        );
+        pending[1](listPayload('fresh-session', 'Fresh'));
+        pending[0](listPayload('stale-session', 'Stale'));
+        await Promise.all([first, second]);
+        await element.updateComplete;
+
+        expect((element as any).sessions.items[0].id).to.equal('fresh-session');
+        expect((element as any).selectedSessionId).to.equal('fresh-session');
+        expect((element as any).loading).to.equal(false);
+      } finally {
+        for (const resolve of pending) {
+          resolve(listPayload('fresh-session', 'Fresh'));
+        }
+      }
+    });
+
+    it('keeps the hint about what the query matches', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const toolbar = element.shadowRoot!.querySelector('list-toolbar')!;
+      await (toolbar as any).updateComplete;
+      const input = toolbar.shadowRoot!.querySelector('sl-input.search-input')!;
+      expect(input.getAttribute('placeholder')).to.equal(
+        'Principal, session reference, or source id'
+      );
+      expect(input.getAttribute('label')).to.equal('Search sessions');
+    });
+
+    it('shows one search input on the page', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const observer = element.shadowRoot!.querySelector(
+        'preloop-session-observer'
+      )!;
+      await (observer as any).updateComplete;
+
+      const toolbarSearches = element
+        .shadowRoot!.querySelector('list-toolbar')!
+        .shadowRoot!.querySelectorAll('sl-input.search-input');
+      const sidebarSearches =
+        observer.shadowRoot!.querySelectorAll('.sidebar sl-input');
+      expect(toolbarSearches.length).to.equal(1);
+      expect(sidebarSearches.length).to.equal(0);
+    });
+  });
+
   describe('reader-facing copy', () => {
     it('uses no em dash in the page copy', async () => {
       const element = (await fixture(

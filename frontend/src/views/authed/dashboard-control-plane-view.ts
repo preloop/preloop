@@ -59,6 +59,7 @@ import {
   loadAttentionInputs,
   type PrefetchedAttentionInputs,
 } from '../../utils/attention-data';
+import { publishAttentionSummary } from '../../utils/attention-summary';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import type {
   AccountGatewayUsageSummaryResponse,
@@ -1011,10 +1012,14 @@ export class DashboardView extends AuthedElement {
            at 240px the card showed three lines and an expanded row had to be
            scrolled to be read. It is stated against the viewport as well as
            in pixels so a short laptop window shrinks the feed instead of
-           pushing the Usage card off the rail. */
+           pushing the Usage card off the rail.
+
+           360px still left three and a half rows at 1440x900, with the
+           fourth clipped mid-line, while the left column ended a screen
+           earlier: 480px (48dvh) uses the height the rail already has. */
         .column-layout.dashboard > .side-column > activity-feed {
           flex: 1 1 0;
-          min-height: min(360px, 34dvh);
+          min-height: min(480px, 48dvh);
           /* The rail is bounded and stretched above, so here (and only
              here) the column decides the feed's height and the card's own
              360px stop would only make the list shorter than the space it
@@ -1479,6 +1484,7 @@ export class DashboardView extends AuthedElement {
       if (data.lastUpdatedAt) this.lastUpdatedAt = data.lastUpdatedAt;
       this.approvalStats = data.approvalStats || this.approvalStats;
       this.attentionInputs = data.attentionInputs || null;
+      if (this.attentionInputs) this.publishAttentionCounts();
       this.budgetPolicies = data.budgetPolicies || [];
       this.budgetAgents = data.budgetAgents || [];
 
@@ -2744,6 +2750,17 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
+   * The bell in the header cannot afford this derivation's nine requests, and
+   * "No notifications" over a strip saying "2 need attention" reads as a
+   * contradiction, so the counts go out whenever the inputs change. Called
+   * where the inputs are assigned rather than from the getter: a getter that
+   * dispatches events during render is a trap for the next editor.
+   */
+  private publishAttentionCounts(): void {
+    publishAttentionSummary(this.attentionItems);
+  }
+
+  /**
    * Same loader, same rules as the Attention page. Approvals, agents and
    * budget policies come from the fold; the usage breakdown is never reused
    * from the Overview range (a calendar month is not a rolling 30 days).
@@ -2762,6 +2779,7 @@ export class DashboardView extends AuthedElement {
           ...shared,
         },
       });
+      this.publishAttentionCounts();
       this.scheduleCacheWrite();
     } catch (error) {
       console.error('Failed to load attention inputs', error);
