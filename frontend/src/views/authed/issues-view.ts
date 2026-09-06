@@ -113,11 +113,12 @@ export class IssuesView extends LitElement {
    * How alike two issues have to be before the page suggests the pair.
    *
    * The list used to ask for everything from 10% up, which is why it opened
-   * on pages of pairs nobody would call duplicates. The bar states the
-   * threshold and lets a reader move it.
+   * on pages of pairs nobody would call duplicates. It opens on 50% instead,
+   * and the bar states the threshold and lets a reader widen it back to
+   * everything.
    */
   @state()
-  private _similarityThreshold = DEFAULT_SIMILARITY_THRESHOLD;
+  private _similarityThreshold = 0.5;
 
   @state()
   private _allProjects: Project[] = [];

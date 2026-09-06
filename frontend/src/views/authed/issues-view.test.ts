@@ -249,6 +249,26 @@ describe('IssuesView', () => {
     );
   });
 
+  it('opens on 50% similarity rather than everything from 10% up', async () => {
+    fetchStub = stubFetch({
+      projects: [{ id: 'p1-xxxx', name: 'Project 1', key: 'P1' }],
+      duplicates: [makePair(1)],
+    });
+    const el = (await fixture(html`<issues-view></issues-view>`)) as IssuesView;
+    await tick(300);
+    await el.updateComplete;
+    const first = fetchStub
+      .getCalls()
+      .map((entry) => String(entry.args[0]))
+      .filter((url) => url.includes('/api/v1/issue-duplicates?'))
+      .shift();
+    expect(first).to.contain('similarity_threshold=0.5');
+    const select = el.shadowRoot?.querySelector(
+      'sl-select.threshold-filter'
+    ) as HTMLElement & { value: string };
+    expect(select.value).to.equal('0.5');
+  });
+
   it('refetches with the similarity threshold chosen in the bar', async () => {
     fetchStub = stubFetch({
       projects: [{ id: 'p1-xxxx', name: 'Project 1', key: 'P1' }],
