@@ -295,7 +295,7 @@ describe('ApiUsageView', () => {
 
     const content = element.shadowRoot?.textContent || '';
 
-    expect(content).to.contain('Requests \u00b7 30d');
+    expect(content).to.contain('Requests · 30d');
     expect(content).to.contain('42');
     expect(content).to.contain('$3.46');
     expect(content).to.contain('16.5K');
@@ -435,10 +435,10 @@ describe('ApiUsageView', () => {
       element.shadowRoot?.querySelectorAll('.stat-label') || []
     ).map((node) => node.textContent?.trim());
     expect(labels).to.deep.equal([
-      'Requests \u00b7 30d',
-      '$ est. \u00b7 30d',
-      'Tokens \u00b7 30d',
-      'Success rate \u00b7 30d',
+      'Requests · 30d',
+      '$ est. · 30d',
+      'Tokens · 30d',
+      'Success rate · 30d',
     ]);
   });
 
@@ -472,5 +472,52 @@ describe('ApiUsageView', () => {
     expect(text).to.not.contain('Source:');
     expect(text).to.not.contain('Session reference:');
     expect(text).to.not.contain('session-def456');
+  });
+
+  // Only the captured interactions depend on the query, so a pause in typing
+  // costs one request, not the four the whole page costs.
+  it('spends one request on a search, not a whole page reload', async () => {
+    const element = (await fixture(
+      html`<api-usage-view></api-usage-view>`
+    )) as ApiUsageView;
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).summary !== null,
+      'API usage view did not finish loading'
+    );
+    await element.updateComplete;
+
+    // Icons are fetched too; only the API calls are counted here.
+    const apiCalls = () =>
+      fetchStub
+        .getCalls()
+        .map((call) => String(call.args[0]))
+        .filter((url) => url.startsWith('/api/'));
+    const callsAfterLoad = apiCalls().length;
+    const search = element.shadowRoot?.querySelector(
+      'sl-input.usage-search'
+    ) as HTMLInputElement;
+    search.value = 'rollback';
+    search.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+
+    await waitUntil(
+      () => apiCalls().length > callsAfterLoad,
+      'the debounced search never reached the server',
+      { timeout: 3000 }
+    );
+    await waitUntil(
+      () => !(element as any).searchLoading,
+      'the search never settled',
+      { timeout: 3000 }
+    );
+    await element.updateComplete;
+
+    const newCalls = apiCalls().slice(callsAfterLoad);
+    expect(newCalls).to.have.length(1);
+    expect(newCalls[0]).to.contain('/api/v1/account/gateway-usage/search');
+    expect(newCalls[0]).to.contain('query=rollback');
+
+    // The numbers the search did not touch are still on screen.
+    expect(element.shadowRoot?.textContent).to.contain('Requests · 30d');
   });
 });

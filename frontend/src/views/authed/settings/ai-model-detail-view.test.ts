@@ -1081,4 +1081,56 @@ describe('AIModelDetailView', () => {
         ?.classList.contains('is-updating')
     ).to.be.false;
   });
+
+  // Only the captured interactions depend on the query, so a pause in typing
+  // costs one request, not the five the whole page costs.
+  it('spends one request on an interaction search and shows the results', async () => {
+    const element = (await fixture(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    )) as AIModelDetailView;
+
+    await waitUntil(
+      () => !(element as any).loading,
+      'AI model detail view did not finish loading',
+      { timeout: 5000 }
+    );
+    await element.updateComplete;
+
+    // The search field promises a list, so the list is on the page.
+    expect(element.shadowRoot?.textContent).to.contain('Captured interactions');
+
+    // Icons are fetched too; only the API calls are counted here.
+    const apiCalls = () =>
+      fetchStub
+        .getCalls()
+        .map((call) => String(call.args[0]))
+        .filter((url) => url.startsWith('/api/'));
+    const callsAfterLoad = apiCalls().length;
+
+    const search = element.shadowRoot?.querySelector(
+      'sl-input.interaction-search'
+    ) as HTMLInputElement;
+    search.value = 'timeout';
+    search.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+
+    await waitUntil(
+      () => apiCalls().length > callsAfterLoad,
+      'the debounced search never reached the server',
+      { timeout: 3000 }
+    );
+    await waitUntil(
+      () => !(element as any).interactionsLoading,
+      'the search never settled',
+      { timeout: 3000 }
+    );
+    await element.updateComplete;
+
+    const newCalls = apiCalls().slice(callsAfterLoad);
+    expect(newCalls).to.have.length(1);
+    expect(newCalls[0]).to.contain('/api/v1/ai-models/model-1/interactions');
+    expect(newCalls[0]).to.contain('query=timeout');
+
+    // The summary the search did not touch is still on screen.
+    expect(element.shadowRoot?.textContent).to.contain('Usage summary');
+  });
 });

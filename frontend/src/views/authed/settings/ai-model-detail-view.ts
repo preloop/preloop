@@ -118,6 +118,14 @@ export class AIModelDetailView extends LitElement {
   @state()
   private interactionQuery = '';
 
+  // The interaction search is one request against one card, so it carries its
+  // own busy flag and its own error instead of reloading the page.
+  @state()
+  private interactionsLoading = false;
+
+  @state()
+  private interactionsError: string | null = null;
+
   @state()
   private validationPrompt =
     'Welcome to Preloop. Reply with a short acknowledgement.';
@@ -223,8 +231,10 @@ export class AIModelDetailView extends LitElement {
 
       /* A range change never blanks answers the page already has: they stay
          readable at 60% until the new ones arrive, the way API usage and Cost
-         behave. Only the very first load shows a spinner. */
-      .results.is-updating {
+         behave. Only the very first load shows a spinner, and a search dims
+         only the card it changes. */
+      .results.is-updating,
+      sl-card.is-updating {
         opacity: 0.6;
         pointer-events: none;
       }
@@ -727,6 +737,7 @@ export class AIModelDetailView extends LitElement {
       this.summary = summary;
       this.sessions = sessions;
       this.interactions = interactions;
+      this.interactionsError = null;
     } catch (error) {
       this.error =
         error instanceof Error
@@ -786,8 +797,38 @@ export class AIModelDetailView extends LitElement {
     }
     this.interactionSearchDebounce = setTimeout(() => {
       this.interactionSearchDebounce = undefined;
-      void this.loadData({ preserveLoadingState: true, markUpdating: true });
+      void this.loadInteractions();
     }, 300);
+  }
+
+  /**
+   * Only the captured interactions depend on the query, so a pause in typing
+   * is one request. Reloading the page would cost five (the model, its price,
+   * the summary, the sessions and the search) to change one list.
+   */
+  private async loadInteractions() {
+    if (!this.modelId) {
+      return;
+    }
+    this.interactionsLoading = true;
+
+    try {
+      this.interactions = await getAIModelGatewayUsageSearch(this.modelId, {
+        ...this.buildSummaryParams(),
+        query: this.interactionQuery.trim() || undefined,
+        limit: 10,
+      });
+      this.interactionsError = null;
+    } catch (error) {
+      console.error('Failed to search captured model interactions:', error);
+      this.interactionsError =
+        error instanceof Error
+          ? error.message
+          : 'Failed to search captured interactions';
+      this.interactions = null;
+    } finally {
+      this.interactionsLoading = false;
+    }
   }
 
   /**
@@ -1526,6 +1567,15 @@ export class AIModelDetailView extends LitElement {
   }
 
   private renderInteractions() {
+    if (this.interactionsError) {
+      return html`
+        <div class="empty-state" role="alert">
+          <sl-icon name="exclamation-triangle"></sl-icon>
+          <div>${this.interactionsError}</div>
+        </div>
+      `;
+    }
+
     if (!this.interactions || this.interactions.items.length === 0) {
       return html`
         <div class="empty-state">
@@ -2214,6 +2264,19 @@ export class AIModelDetailView extends LitElement {
                             auditLinks: true,
                           }}
                         ></preloop-session-observer>
+                      </sl-card>
+
+                      <!-- The toolbar's search field narrows this list, so
+                           the list has to be on the page: before this it was
+                           fetched on every load and never rendered. -->
+                      <sl-card
+                        class="${this.interactionsLoading ? 'is-updating' : ''}"
+                        aria-busy=${this.interactionsLoading ? 'true' : 'false'}
+                      >
+                        <div slot="header" class="model-title">
+                          Captured interactions
+                        </div>
+                        ${this.renderInteractions()}
                       </sl-card>
                     </div>
                   `

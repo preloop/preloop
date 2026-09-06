@@ -83,6 +83,14 @@ export class ApiUsageView extends LitElement {
   @state()
   private searchQuery = '';
 
+  // The search is its own request against its own card, so it has its own
+  // busy flag and its own error rather than blanking the page's numbers.
+  @state()
+  private searchLoading = false;
+
+  @state()
+  private searchError: string | null = null;
+
   private initialized = false;
 
   private searchDebounce?: ReturnType<typeof setTimeout>;
@@ -153,8 +161,10 @@ export class ApiUsageView extends LitElement {
       }
 
       /* A range change never blanks answers the page already has: they stay
-         readable at 60% until the new ones arrive. */
-      .results.is-updating {
+         readable at 60% until the new ones arrive. A search does the same to
+         the one card it changes. */
+      .results.is-updating,
+      .breakdown-card.is-updating {
         opacity: 0.6;
         pointer-events: none;
       }
@@ -497,24 +507,30 @@ export class ApiUsageView extends LitElement {
     super.disconnectedCallback();
   }
 
+  /** The selected window, in the shape the gateway endpoints take. */
+  private rangeParams(): GatewayUsageSummaryParams {
+    const range = resolveTimeRange(this.selectedRange);
+    const params: GatewayUsageSummaryParams = {};
+
+    if (range.startDate) {
+      params.startDate = range.startDate;
+    }
+
+    if (range.endDate) {
+      params.endDate = range.endDate;
+    }
+
+    return params;
+  }
+
   private async loadSummary() {
     this.loading = true;
     this.error = null;
 
-    const range = resolveTimeRange(this.selectedRange);
     const previousRange = resolvePreviousTimeRange(this.selectedRange);
 
     try {
-      const params: GatewayUsageSummaryParams = {};
-
-      if (range.startDate) {
-        params.startDate = range.startDate;
-      }
-
-      if (range.endDate) {
-        params.endDate = range.endDate;
-      }
-
+      const params = this.rangeParams();
       const searchQuery = this.searchQuery.trim();
       const [summary, searchResults, rateLimitReport, previousSummary] =
         await Promise.all([
@@ -543,6 +559,7 @@ export class ApiUsageView extends LitElement {
         ]);
       this.summary = summary;
       this.searchResults = searchResults;
+      this.searchError = null;
       this.rateLimitReport = rateLimitReport;
       this.previousSummary = previousSummary;
     } catch (error) {
@@ -570,6 +587,36 @@ export class ApiUsageView extends LitElement {
     void this.loadSummary();
   }
 
+  /**
+   * Only the captured interactions depend on the query, so a pause in typing
+   * is one request. Reloading the page would cost four (summary with
+   * breakdowns, search, the rate-limit report and the comparison window) to
+   * change one list.
+   */
+  private async loadSearchResults() {
+    this.searchLoading = true;
+
+    try {
+      this.searchResults = await getAccountGatewayUsageSearch({
+        ...this.rangeParams(),
+        query: this.searchQuery.trim() || undefined,
+        limit: 10,
+      });
+      this.searchError = null;
+    } catch (error) {
+      console.error('Failed to search captured gateway interactions:', error);
+      // A failed search says so where the results would be; the numbers above
+      // it are still true and stay on screen.
+      this.searchError =
+        error instanceof Error
+          ? error.message
+          : 'Failed to search captured interactions';
+      this.searchResults = null;
+    } finally {
+      this.searchLoading = false;
+    }
+  }
+
   private handleSearchQueryChange(event: Event) {
     this.searchQuery = (
       event.target as HTMLInputElement & { value: string }
@@ -581,7 +628,7 @@ export class ApiUsageView extends LitElement {
     }
     this.searchDebounce = setTimeout(() => {
       this.searchDebounce = undefined;
-      void this.loadSummary();
+      void this.loadSearchResults();
     }, 300);
   }
 
@@ -1268,6 +1315,15 @@ export class ApiUsageView extends LitElement {
   private renderSearchResults(
     results: AccountGatewayUsageSearchResponse | null
   ) {
+    if (this.searchError) {
+      return html`
+        <div class="empty-state" role="alert">
+          <sl-icon name="exclamation-triangle"></sl-icon>
+          <div>${this.searchError}</div>
+        </div>
+      `;
+    }
+
     if (!results || results.items.length === 0) {
       return html`
         <div class="empty-state">
@@ -1445,7 +1501,12 @@ export class ApiUsageView extends LitElement {
                           )}
                         </sl-card>
 
-                        <sl-card class="breakdown-card">
+                        <sl-card
+                          class="breakdown-card ${
+                            this.searchLoading ? 'is-updating' : ''
+                          }"
+                          aria-busy=${this.searchLoading ? 'true' : 'false'}
+                        >
                           <div slot="header" class="section-header">
                             <div class="section-title">
                               <sl-icon name="search"></sl-icon>
