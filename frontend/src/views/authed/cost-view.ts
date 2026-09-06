@@ -39,7 +39,7 @@ import '../../components/budget-policy-editor.ts';
 import '../../components/budget-health-card.ts';
 import '../../components/tool-cost-flags-panel.ts';
 import '../../components/token-figures.ts';
-import { sumTokenUsage } from '../../components/token-figures.ts';
+import { sumTokenUsage } from '../../components/token-figures';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
