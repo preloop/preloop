@@ -24,6 +24,11 @@ from preloop.models.models.flow_execution import (
     ROUTING_RECORD_KEY,
 )
 from preloop.models.schemas.flow import ModelRoutingConfig, ModelRoutingRule
+from preloop.services.runner_service import (
+    _account_default_runner_pool,
+    _explicit_pool,
+    _is_server_pool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +232,10 @@ def validate_default_selection(
     """Validate defaults/pinned identity without widening rule or matrix targets.
 
     A named private Cursor profile uses the runner's local credentials and
-    model map. The runtime still owns native capability checks and rejection of
+    model map. The pool check matches ``resolve_runner_pool`` for the
+    flow-level and account-default steps (not the "any online runner" auto
+    fallback): ``flow.runner_pool``, then ``account.default_runner_pool``.
+    The runtime still owns native capability checks and rejection of
     unsupported resume/publication paths. This forward-compatible boundary has
     no dependency on the optional native-runner implementation.
     """
@@ -243,16 +251,18 @@ def validate_default_selection(
         return
     config = flow.agent_config if isinstance(flow.agent_config, dict) else {}
     profile = config.get("host_exec_profile")
-    pool = flow.runner_pool
+    pool = _explicit_pool(getattr(flow, "runner_pool", None))
+    if pool is None:
+        pool = _explicit_pool(_account_default_runner_pool(flow, db))
     if (
         not isinstance(profile, str)
         or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", profile.strip()) is None
-        or not isinstance(pool, str)
-        or not pool.strip()
-        or pool.strip().lower() == "server"
+        or pool is None
+        or _is_server_pool(pool)
     ):
         raise ModelRoutingError(
-            "Cursor defaults require a named host profile and explicit private runner pool"
+            "Cursor defaults require a named host profile and a private "
+            "runner pool (flow.runner_pool or account.default_runner_pool)"
         )
     if ai_model_id is None:
         return

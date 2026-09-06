@@ -1425,6 +1425,29 @@ def test_cursor_default_rejects_missing_private_profile(
         prepare_execution_routing(db_session, flow, {})
 
 
+def test_cursor_default_honors_account_private_pool(
+    db_session: Session, test_user: User
+) -> None:
+    model = _usable_model(db_session, test_user.account_id)
+    model.api_key = None
+    account = crud_account.get(db_session, id=test_user.account_id)
+    assert account is not None
+    crud_account.update(
+        db_session, db_obj=account, obj_in={"default_runner_pool": "private"}
+    )
+    flow = _flow(
+        db_session,
+        test_user,
+        agent_type="cursor",
+        ai_model_id=model.id,
+        extra_config={"host_exec_profile": "cursor-ask"},
+    )
+    flow.runner_pool = None
+    details = prepare_execution_routing(db_session, flow, {})
+    assert details[ROUTING_RECORD_KEY]["agent_type"] == "cursor"
+    assert details[ROUTING_RECORD_KEY]["ai_model_id"] == str(model.id)
+
+
 def test_private_cursor_default_rejects_foreign_model(
     db_session: Session, test_user: User
 ) -> None:
