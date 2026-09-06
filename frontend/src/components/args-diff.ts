@@ -161,6 +161,25 @@ export class ArgsDiff extends LitElement {
       user-select: none;
     }
 
+    /*
+     * Added versus removed is a tint and a sign on screen, which is colour
+     * plus a glyph a screen reader reads as "plus". The word goes in the
+     * accessibility tree instead, and is left out of a selection so copying
+     * the diff still yields the file's own text.
+     */
+    .state {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      clip-path: inset(50%);
+      white-space: nowrap;
+      user-select: none;
+    }
+
     /* States are 16% tints with -800 ink, not solid paint (D27). */
     .line.removed {
       background: color-mix(
@@ -208,9 +227,18 @@ export class ArgsDiff extends LitElement {
   private renderLine(line: DiffLine) {
     const sign =
       line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' ';
+    const state =
+      line.type === 'added'
+        ? 'Added: '
+        : line.type === 'removed'
+          ? 'Removed: '
+          : '';
     return html`
       <div class="line ${line.type}">
-        <span class="sign" aria-hidden="true">${sign}</span
+        ${state ? html`<span class="state">${state}</span>` : nothing}<span
+          class="sign"
+          aria-hidden="true"
+          >${sign}</span
         ><span class="text">${line.text || ' '}</span>
       </div>
     `;
@@ -247,14 +275,19 @@ export class ArgsDiff extends LitElement {
     return html`
       <div class="toolbar">
         <span class="path">${path ?? ''}</span>
+        <!--
+          The label says what the next click does rather than carrying
+          aria-pressed: sl-button is a host with no button role of its own and
+          does not forward the attribute to the button in its shadow root, so
+          a pressed state set here would never reach a screen reader.
+        -->
         <sl-button
           size="small"
           variant="text"
           data-testid="raw-toggle"
-          aria-pressed=${this.showRaw ? 'true' : 'false'}
           @click=${this.toggleRaw}
         >
-          ${this.showRaw ? 'Diff' : 'Raw'}
+          ${this.showRaw ? 'Show diff' : 'Show raw'}
         </sl-button>
       </div>
       ${

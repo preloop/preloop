@@ -1089,10 +1089,16 @@ export class ConsoleHeader extends LitElement {
         <div class="notification-list">
           ${this._userNotifications.slice(0, 5).map(
             (notification) => html`
+              <!--
+                A row without an href still does something when it is
+                clicked: it marks itself read. That is a button, not
+                presentation, and it stays focusable so the keyboard can
+                reach it too.
+              -->
               <div
                 class="notification-item ${notification.read ? '' : 'unread'}"
-                role=${notification.href ? 'link' : 'presentation'}
-                tabindex=${notification.href ? '0' : '-1'}
+                role=${notification.href ? 'link' : 'button'}
+                tabindex="0"
                 data-href=${notification.href ?? ''}
                 @click=${() => this.handleNotificationClick(notification)}
                 @keydown=${(event: KeyboardEvent) => {

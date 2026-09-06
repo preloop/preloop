@@ -43,6 +43,13 @@ describe('args-diff', () => {
     expect(el.shadowRoot!.querySelector('.path')?.textContent).to.contain(
       '/srv/app/config.py'
     );
+    // Colour and a sign carry the state on screen; the word carries it to a
+    // screen reader, which would otherwise read "-" as "minus" or skip it.
+    expect(
+      Array.from(el.shadowRoot!.querySelectorAll('.line .state')).map((node) =>
+        node.textContent?.trim()
+      )
+    ).to.deep.equal(['Removed:', 'Added:']);
   });
 
   it('keeps the raw arguments one click away', async () => {
@@ -57,7 +64,7 @@ describe('args-diff', () => {
       '[data-testid="raw-toggle"]'
     );
     expect(toggle, 'raw toggle').to.exist;
-    expect(toggle!.textContent?.trim()).to.equal('Raw');
+    expect(toggle!.textContent?.trim()).to.equal('Show raw');
 
     toggle!.click();
     await el.updateComplete;
@@ -72,7 +79,7 @@ describe('args-diff', () => {
       el
         .shadowRoot!.querySelector('[data-testid="raw-toggle"]')!
         .textContent?.trim()
-    ).to.equal('Diff');
+    ).to.equal('Show diff');
 
     el.shadowRoot!.querySelector<HTMLElement>(
       '[data-testid="raw-toggle"]'

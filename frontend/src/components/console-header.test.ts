@@ -373,6 +373,37 @@ describe('console-header bell approvals', () => {
     expect(notificationItems(el).length, 'notification rows').to.equal(0);
   });
 
+  it('keeps a notification with no target reachable and marks it read', async () => {
+    const el = await header();
+    // The websocket also pushes notifications that carry no href (a budget
+    // alert, a role change). Clicking one still marks it read, so it is a
+    // control, and role="presentation" on a control tells a screen reader the
+    // opposite of what it does.
+    (el as unknown as { _userNotifications: unknown[] })._userNotifications = [
+      {
+        id: 'n-1',
+        type: 'system',
+        title: 'Budget threshold reached',
+        message: '',
+        created_at: new Date().toISOString(),
+        read: false,
+      },
+    ];
+    el.requestUpdate();
+    await el.updateComplete;
+
+    const item = notificationItems(el)[0];
+    expect(item.getAttribute('role')).to.equal('button');
+    expect(item.getAttribute('tabindex')).to.equal('0');
+
+    item.click();
+    await el.updateComplete;
+
+    expect(notificationItems(el)[0].classList.contains('unread')).to.be.false;
+    // Nothing to open, so nothing was opened.
+    expect(routes).to.deep.equal([]);
+  });
+
   it('drops an approval that expires while the tab stays open', async () => {
     const el = await header();
 
