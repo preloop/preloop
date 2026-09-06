@@ -434,6 +434,13 @@ class Settings(BaseSettings):
             "penny-sized spend where drift percentages are meaningless."
         ),
     )
+    flow_artifact_expanded_max_bytes: int = Field(2 * 1024**3, ge=1)
+    flow_artifact_account_quota_bytes: int = Field(4 * 1024**3, ge=1)
+    flow_native_session_retention_hours: int = Field(168, ge=0)
+    flow_checkpoint_interval_seconds: int = Field(300, ge=30)
+    flow_artifact_direct_upload: bool = False
+    flow_environment_profiles_file: str = ""
+
     workspace_snapshot_max_bytes: int = Field(
         512 * 1024 * 1024,
         description=(

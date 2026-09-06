@@ -70,3 +70,6 @@ graph LR
 | [Security](docs/architecture/security.md) | Auth and tenancy, redaction, secret custody, security-screen scoring, and `preloop.security`. |
 | [Decisions](docs/architecture/decisions.md) | Why FastAPI, Python, and PostgreSQL, and how the stack is deployed (Compose, Helm, service roles). |
 | [Flows](docs/architecture/flows.md) | Event-driven agentic flows, remote runners, matrix/batch fan-out, eval artifacts, and evidence packs. |
+
+Execution environment profiles and hosted checkpoint recovery are documented in
+[Environments and recovery](docs/guide/flows/environments-and-recovery.md).

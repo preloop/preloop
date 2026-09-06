@@ -14,11 +14,11 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, Optional
 
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
-from preloop.models.models.flow_execution import FlowExecution
+from preloop.models.crud import crud_flow_execution
+from preloop.models.crud import flow_artifact as crud_flow_artifact
 from preloop.utils.workspace_snapshot import WORKSPACE_VOLUME_PREFIX
 
 logger = logging.getLogger(__name__)
@@ -39,25 +39,7 @@ def purge_expired_snapshots(db: Session, *, cutoff: datetime) -> int:
     pack stay, so history is never rewritten by retention.
     """
 
-    query = (
-        db.query(FlowExecution)
-        .filter(FlowExecution.workspace_snapshot.isnot(None))
-        .filter(
-            or_(
-                FlowExecution.end_time < cutoff,
-                FlowExecution.end_time.is_(None),
-            )
-        )
-        .filter(FlowExecution.start_time < cutoff)
-    )
-    purged = query.update(
-        {FlowExecution.workspace_snapshot: None},
-        synchronize_session=False,
-    )
-    if purged:
-        db.commit()
-        logger.info("Purged %d expired workspace snapshot(s)", purged)
-    return purged
+    return crud_flow_execution.purge_workspace_snapshots(db, cutoff=cutoff)
 
 
 async def purge_expired_docker_volumes(*, cutoff: datetime) -> int:
@@ -127,6 +109,8 @@ async def cleanup_workspace_artifacts(
 
     cutoff = workspace_snapshot_cutoff(now)
     snapshots = purge_expired_snapshots(db, cutoff=cutoff)
+    if settings.flow_artifact_direct_upload:
+        crud_flow_artifact.cleanup(db, now=now or datetime.now(UTC))
     volumes = await purge_expired_docker_volumes(cutoff=cutoff)
     return {"snapshots_purged": snapshots, "volumes_removed": volumes}
 
