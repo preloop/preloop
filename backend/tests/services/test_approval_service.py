@@ -3839,8 +3839,10 @@ async def test_create_and_notify_owns_summary_session_until_finished(
         )
         if outcome == "cancelled":
             with pytest.raises(asyncio.CancelledError):
-                await operation
+                cancelled = await operation
+                raise AssertionError(f"canceled notify returned {cancelled!r}")
         else:
-            await operation
+            created = await operation
+            assert created is sample_approval_request
     assert phases == ["created", "summary", "closed"]
     assert all(thread != loop_thread for thread in worker_threads)

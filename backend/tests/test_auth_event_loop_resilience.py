@@ -64,7 +64,7 @@ async def test_auth_row_lock_does_not_block_loop(
     user_id, key_id, username, token = committed_auth_identity
     locked = threading.Event()
     release = threading.Event()
-    errors: list[BaseException] = []
+    errors: list[Exception] = []
 
     def hold_lock() -> None:
         try:
@@ -76,7 +76,7 @@ async def test_auth_row_lock_does_not_block_loop(
                 if not release.wait(3):
                     raise AssertionError("Lock owner did not receive release")
                 db.rollback()
-        except BaseException as exc:
+        except Exception as exc:
             errors.append(exc)
             locked.set()
 
@@ -177,7 +177,8 @@ async def test_off_loop_cancellation_waits_for_session_owner() -> None:
     finally:
         release.set()
         with pytest.raises(asyncio.CancelledError):
-            await task
+            cancelled = await task
+            raise AssertionError(f"canceled worker returned {cancelled!r}")
         assert await asyncio.to_thread(finished.wait, 3)
 
 
@@ -286,7 +287,8 @@ async def test_summary_timeout_does_not_reuse_active_worker_session(
         assert not task.done()
     finally:
         release.set()
-        await task
+        timeout_result = await task
+        assert task.done()
 
 
 @pytest.mark.asyncio
@@ -332,6 +334,7 @@ async def test_anyio_cancellation_drains_worker_without_blocking_loop() -> None:
         assert not returned
     finally:
         release.set()
-        await task
+        drained = await task
         watchdog.cancel()
+    assert drained is None
     assert returned and finished.is_set()

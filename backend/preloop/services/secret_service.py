@@ -568,6 +568,8 @@ class SecretService:
                     if isinstance(decoded, dict):
                         payload = decoded
                 except (TypeError, ValueError, json.JSONDecodeError):
+                    # Keep the caller's fallback when the locked row is not
+                    # valid JSON (corrupt ciphertext or a non-object payload).
                     pass
             needs_refresh = refresh_required(payload) and bool(
                 str(payload.get("refresh") or "").strip()
