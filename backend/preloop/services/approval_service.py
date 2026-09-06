@@ -2649,6 +2649,9 @@ class ApprovalService:
                     approval_url=approval_url,
                     agent_reasoning=approval_request.agent_reasoning,
                     summary=approval_request.summary,
+                    # Who asked, in the subject: an approver triaging an inbox
+                    # decides on the caller as much as on the tool.
+                    agent_name=approval_request.managed_agent_name,
                 )
 
                 sent_count += 1
@@ -2820,6 +2823,7 @@ class ApprovalService:
             tool_args=redact_dict(approval_request.tool_args or {}),
             summary=approval_request.summary,
             rule_context=approval_request.rule_context,
+            agent_name=approval_request.managed_agent_name,
         )
 
         apns_priority = 10 if priority_str in ["urgent", "high"] else 5
@@ -3479,6 +3483,7 @@ class ApprovalService:
             tool_args=redact_dict(approval_request.tool_args or {}),
             summary=approval_request.summary,
             rule_context=approval_request.rule_context,
+            agent_name=approval_request.managed_agent_name,
         )
 
         sent_count = 0

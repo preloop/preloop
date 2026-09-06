@@ -1492,6 +1492,7 @@ class TestSendEmailNotification:
         sample_approval_workflow.approver_user_ids = [user_id]
         sample_approval_workflow.approver_team_ids = None
         sample_approval_request.approval_token = "token123"
+        sample_approval_request.managed_agent_name = "Claude Code (laptop)"
 
         mock_user = MagicMock()
         mock_user.email = "approver@test.com"
@@ -1526,6 +1527,11 @@ class TestSendEmailNotification:
                     assert result["success"] is True
                     assert result["sent"] == 1
                     mock_send_email.assert_called_once()
+                    # The approver needs to know which agent is asking.
+                    assert (
+                        mock_send_email.call_args.kwargs["agent_name"]
+                        == "Claude Code (laptop)"
+                    )
 
 
 class TestSendPushNotification:
