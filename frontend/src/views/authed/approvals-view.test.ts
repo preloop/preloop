@@ -115,7 +115,9 @@ describe('ApprovalsView', () => {
   afterEach(() => {
     fetchStub?.restore();
     resetConfirmDialogForTests();
-    document.querySelectorAll('sl-alert[open]').forEach((a) => a.remove());
+    // Any alert, not just [open]: a toast raised at the end of a test can set
+    // its open attribute after this hook runs and leak into the next test.
+    document.querySelectorAll('sl-alert').forEach((a) => a.remove());
     localStorage.clear();
   });
 
@@ -977,7 +979,8 @@ describe('ApprovalsView', () => {
       );
 
       expect((element as any).selectedIds).to.deep.equal(['ar-2']);
-      const toast = document.querySelector('sl-alert[open]');
+      const toasts = Array.from(document.querySelectorAll('sl-alert'));
+      const toast = toasts[toasts.length - 1];
       expect(toast?.textContent ?? '').to.contain('1 request approved');
       expect(toast?.textContent ?? '').to.contain('Request already expired');
     });
