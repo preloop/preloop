@@ -6,6 +6,8 @@ import type {
   ApprovalBypass,
   ApprovalBypassMode,
   ApprovalBypassStatus,
+  KillSwitchScope,
+  KillSwitchStatus,
   FetchIssuesListParams,
   SearchIssuesParams,
   SearchIssuesResponse,
@@ -4848,6 +4850,70 @@ export async function revokeAllApprovalBypasses(): Promise<ApprovalBypass[]> {
   });
   if (!response.ok) {
     throw new Error('Failed to revoke approval bypasses');
+  }
+  return response.json();
+}
+
+// --- Account kill switch (org-level emergency halt) --------------------------
+
+/**
+ * Fetch the account's current kill-switch state.
+ *
+ * Drives the halted-state banner; deliberately cheap so it can be polled.
+ */
+export async function getKillSwitchStatus(): Promise<KillSwitchStatus> {
+  const response = await fetchWithAuth('/api/v1/account/kill-switch/status');
+  if (!response.ok) {
+    throw new Error('Failed to fetch kill switch status');
+  }
+  return response.json();
+}
+
+/**
+ * Halt one or more traffic classes for the account.
+ *
+ * Omitting `scopes` halts everything (the emergency stop). Requires the
+ * `manage_kill_switch` permission server-side.
+ */
+export async function activateKillSwitch(params: {
+  scopes?: KillSwitchScope[];
+  reason?: string | null;
+}): Promise<KillSwitchStatus> {
+  const response = await fetchWithAuth('/api/v1/account/kill-switch/activate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      scopes: params.scopes,
+      reason: params.reason ?? null,
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail ?? 'Failed to activate the kill switch');
+  }
+  return response.json();
+}
+
+/**
+ * Re-enable one or more traffic classes (staged recovery).
+ *
+ * Each scope lifts independently: restore the gateway first, verify
+ * behavior, then tools, then flows.
+ */
+export async function deactivateKillSwitch(params: {
+  scopes?: KillSwitchScope[];
+}): Promise<KillSwitchStatus> {
+  const response = await fetchWithAuth(
+    '/api/v1/account/kill-switch/deactivate',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scopes: params.scopes }),
+    }
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail ?? 'Failed to lift the kill switch');
   }
   return response.json();
 }

@@ -778,6 +778,26 @@ class ApprovalService:
         """Render the decision channel as an event-detail suffix."""
         return f" via {channel}" if channel else ""
 
+    async def _approvals_frozen(self, account_id) -> bool:
+        """Whether the account kill switch currently freezes approvals (#157).
+
+        While the tools scope of the kill switch is active, pending
+        approvals must not auto-expire: an incident is exactly when a
+        pending decision must not silently lapse. Lookups fail open (not
+        frozen) so a halt-state query problem can never wedge approvals
+        pending forever.
+        """
+        from preloop.services.kill_switch import tools_halted_async
+
+        try:
+            return await tools_halted_async(self.db, account_id)
+        except Exception as e:
+            logger.warning(
+                f"Kill-switch freeze lookup failed for account {account_id}: {e}; "
+                f"treating approvals as not frozen"
+            )
+            return False
+
     async def _reject_if_not_actionable(
         self, approval_request: ApprovalRequest
     ) -> Optional[ApprovalRequest]:
@@ -792,6 +812,10 @@ class ApprovalService:
         * Stale approval: the request's deadline has passed. A caller that
           already timed out must not be able to approve it later via its
           token. Transition it to ``expired`` and return it.
+
+        Kill-switch freeze (#157): while the account halts tools, a
+        past-deadline pending request is frozen instead of expired, so a
+        human decision made during the incident still lands.
         """
         if approval_request.status in self._TERMINAL_STATUSES:
             logger.info(
@@ -804,6 +828,13 @@ class ApprovalService:
             approval_request.expires_at
             and datetime.utcnow() > approval_request.expires_at
         ):
+            if await self._approvals_frozen(approval_request.account_id):
+                logger.info(
+                    "Approval request %s is past expiry but frozen by the "
+                    "account kill switch; keeping it pending",
+                    approval_request.id,
+                )
+                return None
             logger.info(
                 "Approval request %s is past expiry; marking expired",
                 approval_request.id,
@@ -3134,6 +3165,36 @@ class ApprovalService:
                     approval_request.expires_at
                     and datetime.utcnow() > approval_request.expires_at
                 ):
+                    # ── Kill-switch freeze (#157) ─────────────────────────
+                    # Pending approvals are frozen rather than auto-denied
+                    # while the account halts tools: the operator's attention
+                    # is on the incident, and a timeout during it must not
+                    # silently decide (deny) pending tool calls. Extend the
+                    # deadline and keep waiting; normal expiry resumes once
+                    # the halt is lifted.
+                    if await poll_service._approvals_frozen(
+                        approval_request.account_id
+                    ):
+                        workflow_timeout = 300
+                        if (
+                            approval_request.approval_workflow
+                            and approval_request.approval_workflow.timeout_seconds
+                        ):
+                            workflow_timeout = (
+                                approval_request.approval_workflow.timeout_seconds
+                            )
+                        approval_request.expires_at = datetime.utcnow() + timedelta(
+                            seconds=workflow_timeout
+                        )
+                        await poll_db.commit()
+                        logger.info(
+                            f"Approval request {request_id} frozen by the "
+                            f"account kill switch; deadline extended by "
+                            f"{workflow_timeout}s"
+                        )
+                        await asyncio.sleep(poll_interval)
+                        continue
+
                     # Get the approval workflow to check for escalation configuration
                     approval_workflow = approval_request.approval_workflow
 

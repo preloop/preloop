@@ -66,6 +66,7 @@ from preloop.services.account_realtime import (
     emit_account_event,
 )
 from preloop.services.account_governance_cache import get_cached_account_meta_data
+from preloop.services import kill_switch as kill_switch_service
 from preloop.services.context_optimization import (
     ContextOptimizationStats,
     estimate_tokens,
@@ -1112,6 +1113,15 @@ class OpenAIGatewayService:
                 message="messages must be a non-empty list",
             )
         started_at = time.perf_counter()
+        self._reject_if_gateway_halted(
+            endpoint="/openai/v1/chat/completions",
+            endpoint_kind="chat_completions",
+            ai_model=model,
+            requested_model=payload.get("model"),
+            request_payload=payload,
+            started_at=started_at,
+            gateway_provider="openai",
+        )
         budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
@@ -1254,6 +1264,15 @@ class OpenAIGatewayService:
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
         messages = self._normalize_responses_input(payload)
         started_at = time.perf_counter()
+        self._reject_if_gateway_halted(
+            endpoint="/openai/v1/responses",
+            endpoint_kind="responses",
+            ai_model=model,
+            requested_model=payload.get("model"),
+            request_payload=payload,
+            started_at=started_at,
+            gateway_provider="openai",
+        )
         budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
@@ -1394,6 +1413,15 @@ class OpenAIGatewayService:
         )
         messages = self._normalize_anthropic_messages_input(payload)
         started_at = time.perf_counter()
+        self._reject_if_gateway_halted(
+            endpoint="/anthropic/v1/messages",
+            endpoint_kind="anthropic_messages",
+            ai_model=model,
+            requested_model=payload.get("model"),
+            request_payload=payload,
+            started_at=started_at,
+            gateway_provider="anthropic",
+        )
         budget_result = self._check_budget(
             model, {**payload, "messages": messages}, gateway_provider="anthropic"
         )
@@ -1552,6 +1580,15 @@ class OpenAIGatewayService:
         messages = self._normalize_anthropic_messages_input(payload)
         budget_payload = {**payload, "messages": messages}
         started_at = time.perf_counter()
+        self._reject_if_gateway_halted(
+            endpoint="/anthropic/v1/messages",
+            endpoint_kind="anthropic_messages_stream",
+            ai_model=model,
+            requested_model=payload.get("model"),
+            request_payload=payload,
+            started_at=started_at,
+            gateway_provider="anthropic",
+        )
         budget_result = self._check_budget(
             model, budget_payload, gateway_provider="anthropic"
         )
@@ -1997,6 +2034,15 @@ class OpenAIGatewayService:
             )
 
         started_at = time.perf_counter()
+        self._reject_if_gateway_halted(
+            endpoint="/openai/v1/chat/completions",
+            endpoint_kind="chat_completions_stream",
+            ai_model=model,
+            requested_model=payload.get("model"),
+            request_payload=payload,
+            started_at=started_at,
+            gateway_provider="openai",
+        )
         budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
@@ -2284,6 +2330,15 @@ class OpenAIGatewayService:
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
         messages = self._normalize_responses_input(payload)
         started_at = time.perf_counter()
+        self._reject_if_gateway_halted(
+            endpoint="/openai/v1/responses",
+            endpoint_kind="responses_stream",
+            ai_model=model,
+            requested_model=payload.get("model"),
+            request_payload=payload,
+            started_at=started_at,
+            gateway_provider="openai",
+        )
         budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
@@ -8369,6 +8424,55 @@ class OpenAIGatewayService:
             separators=(",", ":"),
         )
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def _reject_if_gateway_halted(
+        self,
+        *,
+        endpoint: str,
+        endpoint_kind: str,
+        ai_model: AIModel,
+        requested_model: Optional[str],
+        request_payload: Optional[Dict[str, Any]],
+        started_at: float,
+        gateway_provider: GatewayProvider,
+    ) -> None:
+        """Reject the request when the account kill switch halts the gateway.
+
+        Runs before budget preflight so an emergency halt is never shadowed
+        by (or billed as) a budget denial. The rejection is recorded on the
+        usage ledger with the dedicated ``kill_switch`` error class so every
+        blocked request stays attributable to the halt, then raised as a 403
+        carrying the distinct ``preloop_account_halted`` error code.
+        """
+        account_id = self.auth_context.user.account_id
+        if not kill_switch_service.gateway_halted(self.db, account_id):
+            return
+        reason = kill_switch_service.halt_reason(self.db, account_id, "gateway")
+        error = kill_switch_service.gateway_halt_error(
+            provider=gateway_provider, reason=reason
+        )
+        logger.warning(
+            "Gateway request rejected by account kill switch: account=%s "
+            "endpoint=%s requested_model=%s",
+            account_id,
+            endpoint,
+            requested_model,
+        )
+        self._record_gateway_request(
+            endpoint=endpoint,
+            method="POST",
+            status_code=error.status_code,
+            duration=time.perf_counter() - started_at,
+            ai_model=ai_model,
+            requested_model=requested_model,
+            response_payload=None,
+            upstream_response=None,
+            endpoint_kind=endpoint_kind,
+            error_detail=error.message,
+            error_class=kill_switch_service.KILL_SWITCH_ERROR_CLASS,
+            request_payload=request_payload,
+        )
+        raise error
 
     def _check_budget(
         self,

@@ -18,6 +18,7 @@ import '../../components/logo-component';
 import '../../components/global-notice';
 import '../../components/console-header';
 import '../../components/approval-bypass-banner';
+import '../../components/kill-switch-banner';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import {
   getFeatures,
@@ -229,7 +230,7 @@ export class ConsoleShell extends LitElement {
       .main-view {
         flex-grow: 1;
         display: grid;
-        grid-template-rows: auto auto 1fr; /* Header, bypass banner, content */
+        grid-template-rows: auto auto auto 1fr; /* Header, banners, content */
         overflow-y: hidden;
         background-color: var(--console-page);
       }
@@ -881,7 +882,11 @@ export class ConsoleShell extends LitElement {
                   <!-- Sits directly under the header so a relaxed governance
                        state is visible on every console page, not just the
                        approvals view. -->
-                  <approval-bypass-banner></approval-bypass-banner>`
+                  <approval-bypass-banner></approval-bypass-banner>
+                  <!-- The kill-switch banner sits above the bypass banner: a
+                       halted account is the most severe state and must be
+                       impossible to miss on any console page (#157). -->
+                  <kill-switch-banner></kill-switch-banner>`
           }
           <div
             class="main-content ${

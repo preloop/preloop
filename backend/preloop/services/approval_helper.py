@@ -176,6 +176,7 @@ async def require_approval(
     justification: Optional[str] = None,
     return_comment_on_approve: bool = False,
     rule_context: Optional[dict] = None,
+    halt_scope: str = "tools",
 ) -> Tuple[bool, str]:
     """Check if tool requires approval and wait for decision with streaming.
 
@@ -217,6 +218,26 @@ async def require_approval(
     # front guarantees a later consumer can never read a stale approval id
     # left behind by a previous call in the same task context.
     _last_approval_meta_var.set(None)
+
+    async def approved_result(comment: str = "") -> Tuple[bool, str]:
+        """Recheck uncached halt state after every approval/allow path."""
+        from preloop.models.crud import crud_account_halt
+        from preloop.models.db.session import get_async_db_session
+
+        try:
+            async with get_async_db_session() as halt_db:
+                scopes = await halt_db.run_sync(
+                    lambda session: crud_account_halt.active_scopes(
+                        session, account_id=account_id
+                    )
+                )
+            if halt_scope in scopes:
+                return False, "Access denied: the account kill switch is active"
+        except Exception:
+            logger.exception("Unable to verify account halt state after approval")
+            return False, "Access denied: unable to verify account halt state"
+        return True, comment
+
     try:
         # Check if approval should be bypassed (e.g. during async re-execution
         # of an already-approved tool call).
@@ -232,8 +253,8 @@ async def require_approval(
                 # answer; during replay the original decision's comment is
                 # carried in _approved_comment_var (set by
                 # get_approval_status) so the answer is not lost.
-                return (True, _approved_comment_var.get(None) or "")
-            return (True, "")
+                return await approved_result(_approved_comment_var.get(None) or "")
+            return await approved_result()
 
         from preloop.models.db.session import get_async_db_session
         from preloop.models.crud.tool_configuration import (
@@ -324,7 +345,7 @@ async def require_approval(
                     logger.info(
                         f"Tool {tool_name} ({tool_source}) does not require approval (no workflow configured)"
                     )
-                    return (True, "")
+                    return await approved_result()
 
                 # Check if there are access rules that might override approval requirement
                 from sqlalchemy import select
@@ -397,7 +418,7 @@ async def require_approval(
                         logger.info(
                             f"Tool {tool_name} ({tool_source}) allowed by access rule (no approval needed)"
                         )
-                        return (True, "")
+                        return await approved_result()
                     elif rule.action == "deny":
                         logger.info(
                             f"Tool {tool_name} ({tool_source}) denied by access rule"
@@ -429,7 +450,7 @@ async def require_approval(
                         f"Tool {tool_name} ({tool_source}): {len(access_rules)} "
                         f"access rules exist but none matched — default allow"
                     )
-                    return (True, "")
+                    return await approved_result()
 
                 if not access_rules and rule_context is None:
                     # No rules exist at all: the tool config itself pins an
@@ -1065,8 +1086,8 @@ async def require_approval(
                     f"✅ Tool {tool_name} APPROVED - proceeding with execution"
                 )
                 if return_comment_on_approve:
-                    return (True, final_comment or "")
-                return (True, "")
+                    return await approved_result(final_comment or "")
+                return await approved_result()
 
             except Exception as e:
                 logger.error(

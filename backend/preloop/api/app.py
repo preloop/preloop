@@ -41,6 +41,7 @@ from preloop.api.endpoints import (
     gemini_gateway,
     health,
     issues,
+    kill_switch,
     mcp_servers,
     notification_preferences,
     organizations,
@@ -965,6 +966,12 @@ def create_app() -> FastAPI:
             approval_bypass.router,
             prefix="/api/v1",
             tags=["Approval Bypasses"],
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            kill_switch.router,
+            prefix="/api/v1",
+            tags=["Kill Switch"],
             dependencies=[Depends(get_current_active_user)],
         )
         app.include_router(

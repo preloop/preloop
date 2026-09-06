@@ -7,7 +7,7 @@ import logging
 import uuid
 from typing import Any, Awaitable, Callable, Optional, Set
 
-from preloop.models.crud import crud_flow_execution
+from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models.db.session import get_db_session
 from preloop.services.flow_execution_dispatcher import (
     claim_stale_after_seconds,
@@ -18,6 +18,7 @@ from preloop.services.flow_execution_dispatcher import (
 from preloop.services.flow_failure_category import derive_failure_category
 from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 from preloop.services.flow_pr_binding import merge_result_preserving_pr_binding
+from preloop.services.kill_switch import flows_halted
 from preloop.sync.services.event_bus import get_nats_client
 
 logger = logging.getLogger(__name__)
@@ -210,6 +211,36 @@ async def claim_and_run_execution(
         session_reference = execution.agent_session_reference
         if ack is not None:
             await ack()
+
+        # ── Account kill switch (#157) ───────────────────────────────────
+        # Refuse to orchestrate (start OR resume-monitor) any execution while
+        # the account halts new flow executions. The claim is released below
+        # and the row keeps its current status: PENDING rows stay PENDING
+        # (the recovery loop re-dispatches them once the halt is lifted) and
+        # running agents are starved at the gateway/tool layer instead of
+        # being SIGKILLed, so their containers stay inspectable.
+        try:
+            # FlowExecution rows do not carry account_id; the flow does.
+            flow_row = crud_flow.get(db, id=execution.flow_id)
+            flow_account_id = getattr(flow_row, "account_id", None)
+            if flow_account_id is None or flows_halted(db, flow_account_id):
+                logger.info(
+                    "Execution %s left untouched: account kill switch halts "
+                    "flow executions",
+                    execution_id_str,
+                )
+                return {
+                    "status": "halted",
+                    "execution_id": execution_id_str,
+                }
+        except Exception as exc:  # noqa: BLE001 - halt lookup must not 500 workers
+            logger.error(
+                "Kill-switch check failed for execution %s: %s",
+                execution_id_str,
+                exc,
+                exc_info=True,
+            )
+            return {"status": "halted", "execution_id": execution_id_str}
 
         nats_client = await get_nats_client()
         flow_id = execution.flow_id

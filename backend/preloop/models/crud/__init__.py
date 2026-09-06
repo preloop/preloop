@@ -34,6 +34,7 @@ from ..models import (
     RuntimeSessionOptimizationResult,
 )
 from .account import CRUDAccount
+from .account_halt import CRUDAccountHalt, crud_account_halt
 from .agent_control_command import CRUDAgentControlCommand
 from .api_key import CRUDApiKey
 from .api_usage import CRUDApiUsage
@@ -199,6 +200,8 @@ __all__ = [
     "crud_flow_feedback",
     "CRUDBase",
     "CRUDAccount",
+    "CRUDAccountHalt",
+    "crud_account_halt",
     "CRUDAgentControlCommand",
     "crud_agent_control_command",
     "CRUDTracker",

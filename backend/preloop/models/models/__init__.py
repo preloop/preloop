@@ -1,6 +1,7 @@
 """ORM model definitions."""
 
 from .account import Account
+from .account_halt import AccountHalt, HALT_SCOPES
 from .agent_control_command import AgentControlCommand
 from .api_key import ApiKey
 from .api_usage import ApiUsage
@@ -87,6 +88,8 @@ __all__ = [
     "FlowThread",
     "Base",
     "Account",
+    "AccountHalt",
+    "HALT_SCOPES",
     "AgentControlCommand",
     "Tracker",
     "TrackerType",
