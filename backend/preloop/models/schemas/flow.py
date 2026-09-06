@@ -693,9 +693,11 @@ class RunPresetRequest(BaseModel):
 
 
 class RunPresetItemResult(BaseModel):
-    """Per-issue outcome for a batch run-preset call."""
+    """Target outcome for a preset run, including dispatch failure receipts."""
 
-    issue_id: str
+    issue_id: Optional[str] = None
+    project_id: Optional[str] = None
+    number: Optional[int] = None
     execution_id: Optional[str] = None
     execution_status: Optional[str] = None
     execution_url: Optional[str] = None

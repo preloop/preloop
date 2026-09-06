@@ -18723,8 +18723,20 @@ components:
     RunPresetItemResult:
       properties:
         issue_id:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Issue Id
+        project_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Project Id
+        number:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Number
         execution_id:
           anyOf:
           - type: string
@@ -18746,10 +18758,8 @@ components:
           - type: 'null'
           title: Error
       type: object
-      required:
-      - issue_id
       title: RunPresetItemResult
-      description: Per-issue outcome for a batch run-preset call.
+      description: Target outcome for a preset run, including dispatch failure receipts.
     RunPresetRequest:
       properties:
         preset_slug:

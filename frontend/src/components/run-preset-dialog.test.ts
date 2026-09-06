@@ -297,4 +297,47 @@ describe('RunPresetDialog', () => {
       if (anyCreated) expect(alert?.textContent).to.contain('View run');
     });
   }
+  it('shows a warning and existing run for a pull-request dispatch failure', async () => {
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (_input, init) => {
+      const confirm = JSON.parse(String(init?.body || '{}')).confirm_create;
+      return new Response(
+        JSON.stringify({
+          execution_id: confirm ? 'existing-pr-run' : null,
+          execution_url: confirm
+            ? '/console/flows/executions/existing-pr-run'
+            : null,
+          flow_id: 'review-flow',
+          flow_name: 'Pull Request Reviewer',
+          flow_created: false,
+          results: confirm
+            ? [
+                {
+                  project_id: 'project-id',
+                  number: 12,
+                  execution_id: 'existing-pr-run',
+                  execution_status: 'PENDING',
+                  execution_url: '/console/flows/executions/existing-pr-run',
+                  error: 'View the existing run before retrying.',
+                },
+              ]
+            : null,
+        }),
+        { status: 200 }
+      );
+    });
+    await openRunPresetDialog({
+      presetSlug: 'pull-request-reviewer',
+      target: { kind: 'pull_request', project_id: 'project-id', number: 12 },
+      issueKey: 'PR #12',
+      role: 'reviewer',
+    });
+    await clickFooter('Run');
+    await aTimeout(30);
+    const alert = document.body.querySelector('sl-alert');
+    expect(alert?.getAttribute('variant')).to.equal('warning');
+    expect(alert?.textContent).to.contain('Pull request #12');
+    expect(alert?.textContent).to.contain('View run');
+    expect(alert?.textContent).to.contain('before retrying');
+    expect(alert?.textContent).not.to.contain('Run started');
+  });
 });

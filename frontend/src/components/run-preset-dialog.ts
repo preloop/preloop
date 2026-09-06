@@ -226,7 +226,7 @@ export class RunPresetDialog extends LitElement {
           ? `${created} ${created === 1 ? 'run' : 'runs'} created.`
           : 'No runs were created.') +
         (failures
-          ? ` ${failures} ${failures === 1 ? 'issue needs' : 'issues need'} attention.`
+          ? ` ${failures} ${failures === 1 ? 'target needs' : 'targets need'} attention.`
           : '')
       : 'Run started';
     alert.append(document.createTextNode(summary));
@@ -244,10 +244,12 @@ export class RunPresetDialog extends LitElement {
     if (items) {
       for (const [index, item] of items.entries()) {
         const line = document.createElement('div');
+        const label =
+          item.project_id && item.number != null
+            ? `Pull request #${item.number}`
+            : `Issue ${index + 1}`;
         line.append(
-          document.createTextNode(
-            `Issue ${index + 1}: ${item.error || 'Run created.'} `
-          )
+          document.createTextNode(`${label}: ${item.error || 'Run created.'} `)
         );
         if (item.execution_url) addRunLink(line, item.execution_url);
         alert.append(line);

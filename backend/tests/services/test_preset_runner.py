@@ -1071,3 +1071,59 @@ async def test_triage_batch_skips_flow_create_when_no_issue_loads() -> None:
         "Issue not found",
         "Issue not found",
     ]
+
+
+@pytest.mark.asyncio
+async def test_pull_request_dispatch_failure_returns_typed_warning_receipt() -> None:
+    from preloop.models.schemas.flow import RunPresetResponse
+    from preloop.services.flow_trigger_service import FlowDispatchError
+
+    execution_id = str(uuid.uuid4())
+    project_id = uuid.uuid4()
+    flow = _account_flow(name="Pull Request Reviewer")
+    trigger = AsyncMock(
+        side_effect=FlowDispatchError(
+            execution_id, "PENDING", RuntimeError("private transport detail")
+        )
+    )
+    with (
+        patch(
+            "preloop.services.preset_runner._load_visible_project",
+            return_value=(MagicMock(), MagicMock(), MagicMock()),
+        ),
+        patch(
+            "preloop.services.preset_runner.resolve_or_create_flow",
+            return_value=(flow, False),
+        ),
+        patch(
+            "preloop.services.preset_runner._fetch_pull_request_detail",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        patch(
+            "preloop.services.preset_runner.build_pull_request_trigger_payload",
+            return_value={},
+        ),
+        patch(
+            "preloop.services.flow_trigger_service.FlowTriggerService.trigger_flow",
+            trigger,
+        ),
+    ):
+        response = await run_preset_on_target(
+            MagicMock(),
+            current_user=_user(uuid.uuid4()),
+            preset_slug=REVIEWER_SLUG,
+            target=_Simple(kind="pull_request", project_id=project_id, number=12),
+            confirm_create=True,
+            triggered_by="Jane Doe",
+        )
+    result = RunPresetResponse.model_validate(response).model_dump()
+    item = result["results"][0]
+    assert item["issue_id"] is None
+    assert item["project_id"] == str(project_id)
+    assert item["number"] == 12
+    assert item["execution_id"] == result["execution_id"] == execution_id
+    assert item["execution_status"] == "PENDING"
+    assert item["execution_url"] == result["execution_url"]
+    assert "before retrying" in item["error"]
+    assert "private transport detail" not in item["error"]

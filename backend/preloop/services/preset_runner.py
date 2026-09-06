@@ -1015,6 +1015,19 @@ async def _run_preset_on_pull_request(
             "flow_name": flow.name,
             "flow_created": created,
             "execution_url": url,
+            "results": [
+                {
+                    "project_id": str(project_id),
+                    "number": int(number),
+                    "execution_id": execution_id,
+                    "execution_status": exc.execution_status,
+                    "execution_url": url,
+                    "error": (
+                        "Execution was created but dispatch could not be "
+                        "confirmed. View the existing run before retrying."
+                    ),
+                }
+            ],
         }
     raw_execution_id = result.get("id") or result.get("execution_id")
     if raw_execution_id is None:
