@@ -302,6 +302,12 @@ environment:
     maxAttempts: 3
     baseSeconds: 0.2
     retryAfterCapSeconds: 8
+  # Quiet window (seconds) between admin alerts for the same gateway 5xx
+  # (provider, HTTP status). Rendered as GATEWAY_ERROR_ALERT_INTERVAL_SECONDS
+  # on the gateway only. Matches the process default in
+  # gateway_error_alerts.py. Overlays may omit this key and inherit 300.
+  # Set empty to leave the env var off the pod; the process then uses 300.
+  gatewayErrorAlertIntervalSeconds: 300
   # Set true ONLY on the hosted preloop.ai deployment: it is the version-check
   # tracker itself, so it must never persist update state or show the console
   # "update available" banner (rendered as PRELOOP_HOSTED=1 on the API).

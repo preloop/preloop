@@ -117,6 +117,7 @@ from preloop.services.upstream_errors import (
     classify_upstream_error,
     is_retryable_upstream_failure,
 )
+from preloop.services.gateway_error_alerts import reserve_gateway_5xx_alert
 from preloop.services.model_price_catalog import schedule_price_lookup
 from preloop.services.unpriced_model_alert import (
     notify_unpriced_model,
@@ -6887,6 +6888,12 @@ class OpenAIGatewayService:
         code = getattr(exc, "code", None)
         classified = classify_upstream_error(exc)
 
+        # When the upstream did not give us its own HTTP status, a 5xx mapping
+        # below is the gateway's inference (not a provider-reported code), so
+        # the message is labeled a gateway upstream error instead of passing
+        # provider wording through as if it were authoritative.
+        status_is_inferred = not getattr(exc, "status_code", None)
+
         if classified is not None:
             status_code = classified.status_code
             if classified.error_class == ERROR_CLASS_NETWORK:
@@ -6900,7 +6907,7 @@ class OpenAIGatewayService:
                 )
             elif (
                 status_code >= 500
-                and not getattr(exc, "status_code", None)
+                and status_is_inferred
                 and classified.error_class
                 not in (
                     ERROR_CLASS_UPSTREAM_OVERLOADED,
@@ -6934,7 +6941,7 @@ class OpenAIGatewayService:
             if status_code < 400 or status_code > 599:
                 status_code = 502
             message = surfaced_message
-            if status_code >= 500 and not getattr(exc, "status_code", None):
+            if status_code >= 500 and status_is_inferred:
                 message = f"Gateway upstream error: {message}"
 
         if status_code >= 500:
@@ -6943,17 +6950,32 @@ class OpenAIGatewayService:
 
                 from preloop.utils.secret_scrubbing import scrub_secrets
 
-                scrubbed_trace = (scrub_secrets(str(exc)) or "")[:400]
-                notify_admins(
-                    subject=f"[Preloop Alert] AI Gateway HTTP {status_code} Error ({provider})",
-                    message=(
+                # One admin alert per (provider, status) per quiet window, so
+                # a sustained upstream outage pages once instead of once per
+                # request (#185). The slot is reserved before notifying so a
+                # failing notifier consumes it rather than re-arming the alert.
+                send_alert, suppressed_alerts = reserve_gateway_5xx_alert(
+                    str(provider), status_code
+                )
+                if send_alert:
+                    scrubbed_trace = (scrub_secrets(str(exc)) or "")[:400]
+                    alert_body = (
                         "The AI Gateway experienced an upstream or timeout failure.\n\n"
                         f"Provider: {provider}\nStatus: {status_code}\n"
                         f"Message: {message}\nType: {error_type}\nCode: {code}\n"
                         f"Class: {classified.error_class if classified else None}\n\n"
                         f"Trace:\n{scrubbed_trace}"
-                    ),
-                )
+                    )
+                    if suppressed_alerts:
+                        noun = "alert" if suppressed_alerts == 1 else "alerts"
+                        alert_body += (
+                            f"\n\nSuppressed {suppressed_alerts} similar {noun} "
+                            "since the previous notification."
+                        )
+                    notify_admins(
+                        subject=f"[Preloop Alert] AI Gateway HTTP {status_code} Error ({provider})",
+                        message=alert_body,
+                    )
             except Exception:
                 # Admin alert is best-effort; never block error mapping. Logged
                 # at debug so a systematically failing notifier (or a broken

@@ -56,6 +56,20 @@ def _service() -> OpenAIGatewayService:
     return OpenAIGatewayService(MagicMock(), auth_context)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_gateway_alert_state() -> Iterator[None]:
+    """Start every test with an empty gateway 5xx admin-alert window (#185).
+
+    The throttle state is process-global, so tests that expect the first 5xx
+    alert to fire must not inherit a quiet window opened by an earlier test.
+    """
+    from preloop.services.gateway_error_alerts import reset_alert_state_for_tests
+
+    reset_alert_state_for_tests()
+    yield
+    reset_alert_state_for_tests()
+
+
 class TestMidStreamSingleAdminAlert:
     """#210: one mid-stream 5xx must fire notify_admins exactly once.
 
