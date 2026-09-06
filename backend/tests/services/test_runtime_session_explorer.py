@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from preloop.services import runtime_session_explorer as rse_mod
 from preloop.services.runtime_session_explorer import (
+    INTERACTION_SUMMARY_ATTEMPT_TIMEOUT_SECONDS,
     MAX_TITLES_PER_LIST_REQUEST,
     TITLE_REFRESH_REQUEST_DELTA,
     RuntimeSessionExplorerService,
@@ -561,6 +562,22 @@ def test_call_interaction_summary_model_rejects_non_object(service):
             service._call_interaction_summary_model(
                 model, {"api_key": "sk-test"}, payload={}
             )
+
+
+def test_call_interaction_summary_model_bounds_provider_timeout(service):
+    model = _make_ai_model()
+    completion = MagicMock()
+    completion.choices = [MagicMock()]
+    completion.choices[0].message.content = '{"title": "T", "summary": "S"}'
+    with patch.object(
+        rse_mod.litellm, "completion", return_value=completion
+    ) as mock_completion:
+        service._call_interaction_summary_model(
+            model, {"api_key": "sk-test"}, payload={}
+        )
+    kwargs = mock_completion.call_args.kwargs
+    assert kwargs["timeout"] == INTERACTION_SUMMARY_ATTEMPT_TIMEOUT_SECONDS
+    assert kwargs["num_retries"] == 0
 
 
 # --- summarize_account_runtime_session_interaction -------------------------
