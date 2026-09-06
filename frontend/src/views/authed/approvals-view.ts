@@ -1090,15 +1090,25 @@ export class ApprovalsView extends AuthedElement {
     const succeeded: T[] = [];
     const failed: Array<{ item: T; message: string }> = [];
     const resolvedAt = new Date().toISOString();
+    const expectedStatus = approved ? 'approved' : 'declined';
     for (const item of items) {
       const result = byId.get(item.id);
-      if (result?.ok) {
+      const decided =
+        result?.ok === true &&
+        (result.status == null || result.status === expectedStatus);
+      if (decided) {
         succeeded.push(item);
         this.applyResolution(item.id, {
-          status: approved ? 'approved' : 'declined',
+          status: expectedStatus,
           resolved_at: resolvedAt,
         });
         continue;
+      }
+      if (result?.status === 'expired') {
+        this.applyResolution(item.id, {
+          status: 'expired',
+          resolved_at: resolvedAt,
+        });
       }
       failed.push({
         item,

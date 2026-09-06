@@ -1,7 +1,7 @@
 """Tests for approval_requests API endpoints."""
 
 import uuid
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -628,11 +628,12 @@ class TestDecideRequestsBatch:
     """Tests for the decide-batch endpoint (bulk approvals from the console)."""
 
     @staticmethod
-    def _pending(account_id, status="pending"):
+    def _pending(account_id, status="pending", expires_at=None):
         request = MagicMock()
         request.id = uuid.uuid4()
         request.account_id = account_id
         request.status = status
+        request.expires_at = expires_at
         return request
 
     @staticmethod
@@ -654,36 +655,38 @@ class TestDecideRequestsBatch:
         service.decline_request.side_effect = _decide
         return service
 
-    @pytest.mark.asyncio
-    async def test_batch_approves_every_pending_request(
-        self, mock_user, mock_db_session
-    ):
-        """Each id is approved once and reported once, in the order sent."""
+    @staticmethod
+    async def _call(service, user, ids, *, approved=True, comment=None, session=None):
+        """Invoke the handler with a patched service and an async session."""
         from preloop.models.schemas.approval_request import ApprovalBatchDecision
 
+        mock_http_request = MagicMock()
+        mock_http_request.base_url = "http://localhost"
+        session = session or AsyncMock()
+        with patch(
+            "preloop.api.endpoints.approval_requests.ApprovalService",
+            return_value=service,
+        ):
+            response = await approval_requests.decide_requests_batch(
+                decision=ApprovalBatchDecision(
+                    ids=ids, approved=approved, comment=comment
+                ),
+                request=mock_http_request,
+                current_user=user,
+                db=session,
+            )
+        return response, session
+
+    @pytest.mark.asyncio
+    async def test_batch_approves_every_pending_request(self, mock_user):
+        """Each id is approved once and reported once, in the order sent."""
         first = self._pending(mock_user.account_id)
         second = self._pending(mock_user.account_id)
         service = self._service({first.id: first, second.id: second})
 
-        mock_http_request = MagicMock()
-        mock_http_request.base_url = "http://localhost"
-
-        with patch(
-            "preloop.api.endpoints.approval_requests.get_async_db_session"
-        ) as mock_get_session:
-            mock_get_session.return_value.__aenter__.return_value = AsyncMock()
-            with patch(
-                "preloop.api.endpoints.approval_requests.ApprovalService",
-                return_value=service,
-            ):
-                response = await approval_requests.decide_requests_batch(
-                    decision=ApprovalBatchDecision(
-                        ids=[first.id, second.id], approved=True, comment="ship it"
-                    ),
-                    request=mock_http_request,
-                    current_user=mock_user,
-                    db=mock_db_session,
-                )
+        response, _session = await self._call(
+            service, mock_user, [first.id, second.id], comment="ship it"
+        )
 
         assert [result.id for result in response.results] == [first.id, second.id]
         assert all(result.ok for result in response.results)
@@ -696,30 +699,14 @@ class TestDecideRequestsBatch:
         )
 
     @pytest.mark.asyncio
-    async def test_batch_declines_when_not_approved(self, mock_user, mock_db_session):
+    async def test_batch_declines_when_not_approved(self, mock_user):
         """approved=False routes every id to decline, never to approve."""
-        from preloop.models.schemas.approval_request import ApprovalBatchDecision
-
         target = self._pending(mock_user.account_id)
         service = self._service({target.id: target}, decided_status="declined")
 
-        mock_http_request = MagicMock()
-        mock_http_request.base_url = "http://localhost"
-
-        with patch(
-            "preloop.api.endpoints.approval_requests.get_async_db_session"
-        ) as mock_get_session:
-            mock_get_session.return_value.__aenter__.return_value = AsyncMock()
-            with patch(
-                "preloop.api.endpoints.approval_requests.ApprovalService",
-                return_value=service,
-            ):
-                response = await approval_requests.decide_requests_batch(
-                    decision=ApprovalBatchDecision(ids=[target.id], approved=False),
-                    request=mock_http_request,
-                    current_user=mock_user,
-                    db=mock_db_session,
-                )
+        response, _session = await self._call(
+            service, mock_user, [target.id], approved=False
+        )
 
         assert response.results[0].ok is True
         assert response.results[0].status == "declined"
@@ -727,12 +714,8 @@ class TestDecideRequestsBatch:
         assert service.decline_request.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_batch_reports_per_id_and_keeps_going(
-        self, mock_user, mock_db_session
-    ):
+    async def test_batch_reports_per_id_and_keeps_going(self, mock_user):
         """A missing, foreign or resolved id costs that row and no other."""
-        from preloop.models.schemas.approval_request import ApprovalBatchDecision
-
         good = self._pending(mock_user.account_id)
         resolved = self._pending(mock_user.account_id, status="expired")
         foreign = self._pending(str(uuid.uuid4()))
@@ -741,26 +724,9 @@ class TestDecideRequestsBatch:
             {good.id: good, resolved.id: resolved, foreign.id: foreign}
         )
 
-        mock_http_request = MagicMock()
-        mock_http_request.base_url = "http://localhost"
-
-        with patch(
-            "preloop.api.endpoints.approval_requests.get_async_db_session"
-        ) as mock_get_session:
-            mock_get_session.return_value.__aenter__.return_value = AsyncMock()
-            with patch(
-                "preloop.api.endpoints.approval_requests.ApprovalService",
-                return_value=service,
-            ):
-                response = await approval_requests.decide_requests_batch(
-                    decision=ApprovalBatchDecision(
-                        ids=[missing_id, resolved.id, foreign.id, good.id],
-                        approved=True,
-                    ),
-                    request=mock_http_request,
-                    current_user=mock_user,
-                    db=mock_db_session,
-                )
+        response, _session = await self._call(
+            service, mock_user, [missing_id, resolved.id, foreign.id, good.id]
+        )
 
         by_id = {result.id: result for result in response.results}
         assert by_id[missing_id].error == "Approval request not found"
@@ -775,43 +741,47 @@ class TestDecideRequestsBatch:
         assert service.approve_request.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_batch_decides_a_repeated_id_once(self, mock_user, mock_db_session):
-        """Duplicate ids in the body are collapsed before anything is decided."""
-        from preloop.models.schemas.approval_request import ApprovalBatchDecision
+    async def test_batch_skips_pending_rows_that_have_expired(self, mock_user):
+        """A still-pending row past expires_at is expired, not decided."""
+        stale = self._pending(
+            mock_user.account_id,
+            expires_at=datetime.utcnow() - timedelta(minutes=5),
+        )
+        fresh = self._pending(
+            mock_user.account_id,
+            expires_at=datetime.utcnow() + timedelta(minutes=5),
+        )
+        service = self._service({stale.id: stale, fresh.id: fresh})
 
+        response, _session = await self._call(service, mock_user, [stale.id, fresh.id])
+
+        by_id = {result.id: result for result in response.results}
+        assert by_id[stale.id].ok is False
+        assert by_id[stale.id].status == "expired"
+        assert by_id[stale.id].error == "Request already expired"
+        assert by_id[fresh.id].ok is True
+        assert by_id[fresh.id].status == "approved"
+        assert response.succeeded == 1
+        assert response.failed == 1
+        service.approve_request.assert_awaited_once()
+        assert service.approve_request.await_args.args[0] == fresh.id
+
+    @pytest.mark.asyncio
+    async def test_batch_decides_a_repeated_id_once(self, mock_user):
+        """Duplicate ids in the body are collapsed before anything is decided."""
         target = self._pending(mock_user.account_id)
         service = self._service({target.id: target})
 
-        mock_http_request = MagicMock()
-        mock_http_request.base_url = "http://localhost"
-
-        with patch(
-            "preloop.api.endpoints.approval_requests.get_async_db_session"
-        ) as mock_get_session:
-            mock_get_session.return_value.__aenter__.return_value = AsyncMock()
-            with patch(
-                "preloop.api.endpoints.approval_requests.ApprovalService",
-                return_value=service,
-            ):
-                response = await approval_requests.decide_requests_batch(
-                    decision=ApprovalBatchDecision(
-                        ids=[target.id, target.id], approved=True
-                    ),
-                    request=mock_http_request,
-                    current_user=mock_user,
-                    db=mock_db_session,
-                )
+        response, _session = await self._call(
+            service, mock_user, [target.id, target.id]
+        )
 
         assert len(response.results) == 1
         assert service.approve_request.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_batch_survives_one_failing_decision(
-        self, mock_user, mock_db_session
-    ):
+    async def test_batch_survives_one_failing_decision(self, mock_user):
         """A raising decision is one failed result, not a failed batch."""
-        from preloop.models.schemas.approval_request import ApprovalBatchDecision
-
         boom = self._pending(mock_user.account_id)
         fine = self._pending(mock_user.account_id)
         service = self._service({boom.id: boom, fine.id: fine})
@@ -826,30 +796,56 @@ class TestDecideRequestsBatch:
 
         service.approve_request.side_effect = _approve
 
-        mock_http_request = MagicMock()
-        mock_http_request.base_url = "http://localhost"
-
-        with patch(
-            "preloop.api.endpoints.approval_requests.get_async_db_session"
-        ) as mock_get_session:
-            mock_get_session.return_value.__aenter__.return_value = AsyncMock()
-            with patch(
-                "preloop.api.endpoints.approval_requests.ApprovalService",
-                return_value=service,
-            ):
-                response = await approval_requests.decide_requests_batch(
-                    decision=ApprovalBatchDecision(
-                        ids=[boom.id, fine.id], approved=True
-                    ),
-                    request=mock_http_request,
-                    current_user=mock_user,
-                    db=mock_db_session,
-                )
+        response, session = await self._call(service, mock_user, [boom.id, fine.id])
 
         by_id = {result.id: result for result in response.results}
         assert by_id[boom.id].ok is False
         assert by_id[boom.id].error == "Failed to process decision"
         assert by_id[fine.id].ok is True
+        session.rollback.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_batch_rolls_back_before_the_next_lookup(self, mock_user):
+        """A flush/commit failure must not poison the rest of the batch."""
+        boom = self._pending(mock_user.account_id)
+        fine = self._pending(mock_user.account_id)
+        requests_by_id = {boom.id: boom, fine.id: fine}
+        service = self._service(requests_by_id)
+        session = AsyncMock()
+        needs_rollback = False
+
+        async def _rollback() -> None:
+            nonlocal needs_rollback
+            needs_rollback = False
+
+        session.rollback.side_effect = _rollback
+
+        async def _get(request_id):
+            if needs_rollback:
+                raise RuntimeError("This session is in 'needs rollback' state")
+            return requests_by_id.get(request_id)
+
+        async def _approve(request_id, comment, user_id=None, channel=None):
+            nonlocal needs_rollback
+            if request_id == boom.id:
+                needs_rollback = True
+                raise RuntimeError("flush failed")
+            decided = MagicMock()
+            decided.id = request_id
+            decided.status = "approved"
+            return decided
+
+        service.get_approval_request.side_effect = _get
+        service.approve_request.side_effect = _approve
+
+        response, _session = await self._call(
+            service, mock_user, [boom.id, fine.id], session=session
+        )
+
+        by_id = {result.id: result for result in response.results}
+        assert by_id[boom.id].ok is False
+        assert by_id[fine.id].ok is True
+        session.rollback.assert_awaited()
 
     def test_batch_rejects_an_empty_or_oversized_body(self):
         """The body carries at least one id and at most one page of them."""

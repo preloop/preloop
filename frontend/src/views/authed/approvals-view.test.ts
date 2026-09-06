@@ -985,6 +985,34 @@ describe('ApprovalsView', () => {
       expect(toast?.textContent ?? '').to.contain('Request already expired');
     });
 
+    it('does not mark an expired pending result as approved', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+      batchOutcomes = {
+        'ar-1': {
+          id: 'ar-1',
+          ok: true,
+          status: 'expired',
+          error: 'Request already expired',
+        },
+      };
+
+      await select(element, ['ar-1']);
+      barButton(element, 'approve').click();
+      await agree();
+      await waitUntil(() => !!batchCall(), 'no batch call');
+      await waitUntil(() => {
+        const toasts = Array.from(document.querySelectorAll('sl-alert'));
+        const toast = toasts[toasts.length - 1];
+        return (toast?.textContent ?? '').includes('Request already expired');
+      }, 'no expired toast');
+
+      expect((element as any).approvalRequests[0].status).to.not.equal(
+        'approved'
+      );
+    });
+
     it('drops a row from the selection when it leaves the page', async () => {
       const element = await renderList([
         baseRequest({
