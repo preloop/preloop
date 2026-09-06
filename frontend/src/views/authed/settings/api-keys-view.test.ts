@@ -424,13 +424,15 @@ describe('ApiKeysView', () => {
     );
     await element.updateComplete;
 
-    const bar = element.shadowRoot!.querySelector('list-bulk-bar')!;
-    expect(bar.shadowRoot!.querySelector('.bulk-bar')).to.equal(null);
+    // Nothing selected, nothing rendered: not even the wrapper, which would
+    // otherwise cost the table 8px of empty margin.
+    expect(element.shadowRoot!.querySelector('.bulk-bar-slot')).to.equal(null);
 
     // Pick the first row, then shift-extend to the third.
     element.selection.toggle('key-a');
     element.selection.toggle('key-c', true);
     await element.updateComplete;
+    const bar = element.shadowRoot!.querySelector('list-bulk-bar')!;
     expect(Array.from(element.selection.selectedIds)).to.deep.equal([
       'key-a',
       'key-b',

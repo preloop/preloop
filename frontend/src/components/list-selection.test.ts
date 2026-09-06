@@ -247,6 +247,32 @@ describe('list-bulk-bar', () => {
     expect(running.hasAttribute('loading')).to.equal(true);
     expect(other.hasAttribute('disabled')).to.equal(true);
   });
+
+  it('announces the run from one live region, not two', async () => {
+    const element = await fixture<ListBulkBar>(html`
+      <list-bulk-bar
+        .count=${7}
+        .running=${'pause'}
+        .progressDone=${3}
+        .progressTotal=${7}
+        .actions=${[{ id: 'pause', label: 'Pause' }]}
+      ></list-bulk-bar>
+    `);
+    // The count changes because the operator just ticked a box; only the
+    // progress, which changes on its own, is announced.
+    const count = element.shadowRoot!.querySelector(
+      '[data-testid="bulk-count"]'
+    )!;
+    expect(count.hasAttribute('aria-live')).to.equal(false);
+    const progress = element.shadowRoot!.querySelector(
+      '[data-testid="bulk-progress"]'
+    )!;
+    expect(progress.getAttribute('role')).to.equal('status');
+    expect(progress.getAttribute('aria-live')).to.equal('polite');
+    expect(element.shadowRoot!.querySelectorAll('[aria-live]').length).to.equal(
+      1
+    );
+  });
 });
 
 describe('runBulkAction', () => {
@@ -382,8 +408,12 @@ class SelectionHost extends LitElement {
     idOf: (row) => row.id,
   });
 
-  render() {
+  // The rule the views follow: prune before anything in the pass renders.
+  willUpdate() {
     this.selection.setItems(this.rows);
+  }
+
+  render() {
     return html`
       <table>
         <tbody>
@@ -400,6 +430,7 @@ class SelectionHost extends LitElement {
                     item-id=${row.id}
                     label=${`Select ${row.name}`}
                     ?checked=${this.selection.isSelected(row.id)}
+                    ?disabled=${this.selection.busy}
                     @selection-toggle=${this.selection.handleToggleEvent}
                   ></list-select-checkbox>
                 </td>
@@ -551,5 +582,38 @@ describe('ListSelectionController', () => {
     expect(element.selection.running).to.equal(null);
     // A retry of the one that failed is one click away.
     expect(element.selection.selectedIds).to.eql(['c']);
+  });
+
+  it('locks the row checkboxes while a run is in flight', async () => {
+    const element = await host();
+    element.selection.toggle('a');
+    await element.updateComplete;
+
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pending = element.selection.run(
+      'pause',
+      element.selection.selectedItems,
+      () => gate,
+      { verb: 'pause', verbPast: 'paused', noun: 'row' }
+    );
+    await element.updateComplete;
+
+    // A row ticked mid-run would be thrown away when the run replaces the
+    // selection with its failures, so the boxes are locked until it settles.
+    const box = element.shadowRoot!.querySelector<HTMLElement>(
+      'tr[data-selection-id="b"] list-select-checkbox'
+    )!;
+    expect(box.hasAttribute('disabled')).to.equal(true);
+    expect(
+      box.shadowRoot!.querySelector('sl-checkbox')!.hasAttribute('disabled')
+    ).to.equal(true);
+
+    release();
+    await pending;
+    await element.updateComplete;
+    expect(box.hasAttribute('disabled')).to.equal(false);
   });
 });

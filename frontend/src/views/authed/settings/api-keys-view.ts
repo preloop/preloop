@@ -645,11 +645,15 @@ export class ApiKeysView extends LitElement {
       label="Select all keys"
       ?checked=${this.selection.allSelected}
       ?indeterminate=${this.selection.someSelected}
+      ?disabled=${this.selection.busy}
       @selection-toggle=${this.selection.handleToggleEvent}
     ></list-select-checkbox>`;
   }
 
   private renderBulkBar() {
+    // Nothing at all at zero selected, wrapper included: an empty slot with a
+    // margin would push every collection down by 8px it never had before.
+    if (this.selection.count === 0) return nothing;
     return html`<div class="bulk-bar-slot">
       <list-bulk-bar
         label="API key bulk actions"
@@ -751,6 +755,7 @@ export class ApiKeysView extends LitElement {
                               item-id=${key.id}
                               label=${`Select ${key.name}`}
                               ?checked=${this.selection.isSelected(key.id)}
+                              ?disabled=${this.selection.busy}
                               @selection-toggle=${
                                 this.selection.handleToggleEvent
                               }

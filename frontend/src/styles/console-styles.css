@@ -373,13 +373,30 @@ sl-badge.tag-chip sl-icon {
     text-align: left;
 }
 
-/* A selected row is tinted at hover weight, so selection reads without a
-   second border and the depth limit holds. */
+/* Selection is a state, not a box: a primary tint the neutral hover tint
+   cannot be mistaken for, plus a 2px rule on the leading edge of the row.
+   The rule sits on the first cell because a box-shadow on a tr does not
+   paint under border-collapse. Depth stays at two. */
 .styled-table tbody tr[aria-selected='true'] {
-    background-color: var(--console-hover-tint);
+    background-color: var(--console-selected-tint);
 }
 
-/* The strip sits between the toolbar and the table, hairline to hairline. */
+.styled-table tbody tr[aria-selected='true'] > td:first-child {
+    box-shadow: inset 2px 0 0 0 var(--sl-color-primary-600);
+}
+
+/* Hovering a selected row still answers: the hover tint layers over the
+   selection tint instead of replacing it. */
+.styled-table tbody tr[aria-selected='true']:hover {
+    background-image: linear-gradient(
+        var(--console-hover-tint),
+        var(--console-hover-tint)
+    );
+}
+
+/* The strip sits between the toolbar and the table, hairline to hairline.
+   It is rendered only when something is selected, so this margin never
+   costs an empty list any space. */
 .bulk-bar-slot {
     margin-bottom: var(--sl-spacing-small);
 }

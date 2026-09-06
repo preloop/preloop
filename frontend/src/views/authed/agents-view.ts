@@ -2960,6 +2960,9 @@ export class AgentsView extends LitElement {
   }
 
   private renderBulkBar() {
+    // Nothing at all at zero selected, wrapper included: an empty slot with a
+    // margin would push every collection down by 8px it never had before.
+    if (this.selection.count === 0) return nothing;
     return html`<div class="bulk-bar-slot">
       <list-bulk-bar
         label="Agent bulk actions"
@@ -3455,6 +3458,7 @@ export class AgentsView extends LitElement {
                   item-id=${row.id}
                   label=${`Select ${row.name}`}
                   ?checked=${this.selection.isSelected(row.id)}
+                  ?disabled=${this.selection.busy}
                   @selection-toggle=${this.selection.handleToggleEvent}
                 ></list-select-checkbox>`
           }
@@ -3611,6 +3615,7 @@ export class AgentsView extends LitElement {
                       label="Select all agents"
                       ?checked=${this.selection.allSelected}
                       ?indeterminate=${this.selection.someSelected}
+                      ?disabled=${this.selection.busy}
                       @selection-toggle=${this.selection.handleToggleEvent}
                     ></list-select-checkbox>
                   </th>
@@ -3675,15 +3680,15 @@ export class AgentsView extends LitElement {
     const lastSeen = isFlow
       ? flowNode?.execution_stats?.last_seen_at
       : agent?.last_seen_at;
+    // No aria-selected on the card: its role is link, which does not carry
+    // selection, so assistive tech would ignore it. The checkbox's own state
+    // and accessible name are the signal.
     return html`
       <sl-card
         class="agent-card ${liveTotal > 0 ? 'live' : ''} ${
           isGlowing ? 'glowing' : ''
         }"
         data-selection-id=${itemId}
-        aria-selected=${
-          !isFlow && this.selection.isSelected(itemId) ? 'true' : 'false'
-        }
         role="link"
         tabindex="0"
         @click=${() => this.navigateToCardTarget(detailUrl)}
@@ -3704,6 +3709,7 @@ export class AgentsView extends LitElement {
                       item-id=${itemId}
                       label=${`Select ${displayName}`}
                       ?checked=${this.selection.isSelected(itemId)}
+                      ?disabled=${this.selection.busy}
                       @selection-toggle=${this.selection.handleToggleEvent}
                     ></list-select-checkbox>
                   </div>

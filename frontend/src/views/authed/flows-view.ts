@@ -1287,11 +1287,15 @@ export class FlowsView extends LitElement {
       item-id=${row.id}
       label=${`Select ${row.name}`}
       ?checked=${this.selection.isSelected(row.id)}
+      ?disabled=${this.selection.busy}
       @selection-toggle=${this.selection.handleToggleEvent}
     ></list-select-checkbox>`;
   }
 
   private renderBulkBar() {
+    // Nothing at all at zero selected, wrapper included: an empty slot with a
+    // margin would push every collection down by 8px it never had before.
+    if (this.selection.count === 0) return nothing;
     return html`<div class="bulk-bar-slot">
       <list-bulk-bar
         label="Flow bulk actions"
@@ -1709,6 +1713,7 @@ export class FlowsView extends LitElement {
                     label="Select all flows"
                     ?checked=${this.selection.allSelected}
                     ?indeterminate=${this.selection.someSelected}
+                    ?disabled=${this.selection.busy}
                     @selection-toggle=${this.selection.handleToggleEvent}
                   ></list-select-checkbox>
                 </th>
@@ -1923,11 +1928,12 @@ export class FlowsView extends LitElement {
 
   renderFlowCard(row: FlowListRow) {
     const running = Number(row.source.execution_stats?.running_execs || 0);
+    // A card carries no aria-selected: there is no container role for a grid
+    // of cards that would make it honest. The checkbox states the selection.
     return html`
       <sl-card
         class="flow-card"
         data-selection-id=${row.id}
-        aria-selected=${this.selection.isSelected(row.id) ? 'true' : 'false'}
         @click=${() => Router.go(row.detailUrl)}
       >
         <div slot="header" class="flow-header">

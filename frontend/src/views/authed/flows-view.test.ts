@@ -102,8 +102,8 @@ describe('FlowsView', () => {
     );
     await element.updateComplete;
 
-    const bar = element.shadowRoot!.querySelector('list-bulk-bar')!;
-    expect(bar.shadowRoot!.querySelector('.bulk-bar')).to.equal(null);
+    // Nothing selected, nothing rendered, wrapper included.
+    expect(element.shadowRoot!.querySelector('.bulk-bar-slot')).to.equal(null);
 
     // x on the focused row, then shift+X to the third: two keys, three rows.
     const rowLink = (id: string) =>
@@ -135,6 +135,7 @@ describe('FlowsView', () => {
       'flow-2',
       'flow-3',
     ]);
+    const bar = element.shadowRoot!.querySelector('list-bulk-bar')!;
     expect(
       bar.shadowRoot!.querySelector('[data-testid="bulk-count"]')!.textContent
     ).to.contain('3 selected');

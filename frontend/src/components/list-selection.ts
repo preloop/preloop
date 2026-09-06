@@ -264,18 +264,20 @@ export class ListSelectCheckbox extends LitElement {
   }
 }
 
-/** One button in the bulk bar. Ids match the row kebab's action ids. */
+/**
+ * One button in the bulk bar. Ids match the row kebab's action ids.
+ *
+ * There is no per action `disabled` or `outline`: danger is outlined and
+ * pushed away by rule below, and the only thing that disables a button is a
+ * run in flight, which the bar already knows about. A field no caller sets is
+ * a field nobody maintains.
+ */
 export interface BulkAction {
   id: string;
   label: string;
   icon?: string;
   variant?:
     'default' | 'primary' | 'success' | 'neutral' | 'warning' | 'danger';
-  /** Destructive actions are outlined and pushed away (DESIGN.md). */
-  outline?: boolean;
-  disabled?: boolean;
-  /** Why the action is unavailable for this selection. */
-  tooltip?: string;
 }
 
 /**
@@ -356,7 +358,10 @@ export class ListBulkBar extends LitElement {
     const busy = this.running !== null;
     return html`
       <div class="bulk-bar" role="toolbar" aria-label=${this.label}>
-        <span class="count" aria-live="polite" data-testid="bulk-count"
+        <!-- Static text on purpose: the count changes because the operator
+             just ticked a box, and a second live region would make a run
+             announce the count over every progress tick. -->
+        <span class="count" data-testid="bulk-count"
           >${this.count} selected</span
         >
         <span class="separator" aria-hidden="true">·</span>
@@ -368,10 +373,9 @@ export class ListBulkBar extends LitElement {
               class=${destructive ? 'destructive' : ''}
               data-action=${action.id}
               variant=${action.variant || 'default'}
-              ?outline=${destructive || action.outline}
-              ?disabled=${action.disabled || (busy && this.running !== action.id)}
+              ?outline=${destructive}
+              ?disabled=${busy && this.running !== action.id}
               ?loading=${this.running === action.id}
-              title=${action.tooltip || ''}
               @click=${() => this.emit('bulk-action', { id: action.id })}
             >
               ${
@@ -640,6 +644,17 @@ export class ListSelectionController<T> implements ReactiveController {
 
   get count(): number {
     return this.selection.size;
+  }
+
+  /**
+   * True while a bulk run is in flight.
+   *
+   * The bar locks its own buttons, and pages pass this to the row and header
+   * checkboxes too: a run ends by leaving only the failures selected, so a
+   * row ticked while "2 of 7" was counting would be silently dropped.
+   */
+  get busy(): boolean {
+    return this.running !== null;
   }
 
   get selectedIds(): readonly string[] {

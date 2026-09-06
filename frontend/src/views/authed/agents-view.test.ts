@@ -887,10 +887,9 @@ describe('AgentsView', () => {
     const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
     await waitForAgents(el);
 
-    const bar = el.shadowRoot!.querySelector('list-bulk-bar')!;
     expect(
-      bar.shadowRoot!.querySelector('.bulk-bar'),
-      'hidden at zero'
+      el.shadowRoot!.querySelector('.bulk-bar-slot'),
+      'hidden at zero, wrapper included'
     ).to.equal(null);
 
     // x on the focused row, then shift+X three rows down: two keys, three agents.
@@ -922,6 +921,7 @@ describe('AgentsView', () => {
       'agent-2',
       'agent-3',
     ]);
+    const bar = el.shadowRoot!.querySelector('list-bulk-bar')!;
     expect(
       el
         .shadowRoot!.querySelector(`tr[data-selection-id="${order[1]}"]`)!
@@ -1009,9 +1009,10 @@ describe('AgentsView', () => {
     el.selection.toggle('agent-2');
     await el.updateComplete;
 
-    const bar = el.shadowRoot!.querySelector('list-bulk-bar')!;
     expect(
-      bar.shadowRoot!.querySelector('[data-testid="bulk-count"]')!.textContent
+      el
+        .shadowRoot!.querySelector('list-bulk-bar')!
+        .shadowRoot!.querySelector('[data-testid="bulk-count"]')!.textContent
     ).to.contain('2 selected');
 
     const toolbar = el.shadowRoot!.querySelector('list-toolbar')!;
@@ -1028,9 +1029,7 @@ describe('AgentsView', () => {
     expect(el.selection.count).to.equal(0);
     expect(el.shadowRoot!.querySelector('table.agents-table')).to.not.exist;
     expect(
-      el
-        .shadowRoot!.querySelector('list-bulk-bar')!
-        .shadowRoot!.querySelector('.bulk-bar'),
+      el.shadowRoot!.querySelector('.bulk-bar-slot'),
       'a dead bulk bar is still on screen'
     ).to.equal(null);
   });

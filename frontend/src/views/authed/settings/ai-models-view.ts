@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { when } from 'lit/directives/when.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -946,11 +946,15 @@ export class AIModelsView extends LitElement {
       item-id=${model.id}
       label=${`Select ${model.name}`}
       ?checked=${this.selection.isSelected(model.id)}
+      ?disabled=${this.selection.busy}
       @selection-toggle=${this.selection.handleToggleEvent}
     ></list-select-checkbox>`;
   }
 
   private renderBulkBar() {
+    // Nothing at all at zero selected, wrapper included: an empty slot with a
+    // margin would push every collection down by 8px it never had before.
+    if (this.selection.count === 0) return nothing;
     return html`<div class="bulk-bar-slot">
       <list-bulk-bar
         label="Model bulk actions"
@@ -1083,6 +1087,7 @@ export class AIModelsView extends LitElement {
                   label="Select all models"
                   ?checked=${this.selection.allSelected}
                   ?indeterminate=${this.selection.someSelected}
+                  ?disabled=${this.selection.busy}
                   @selection-toggle=${this.selection.handleToggleEvent}
                 ></list-select-checkbox>
               </th>
@@ -1233,12 +1238,13 @@ export class AIModelsView extends LitElement {
   }
 
   private renderModelCard(model: AIModel) {
+    // Selection on a card is stated by its checkbox, not by aria-selected:
+    // the card has no role that supports it (see the agents and flows cards).
     return html`
       <sl-card
         class="model-card"
         data-model-id=${model.id}
         data-selection-id=${model.id}
-        aria-selected=${this.selection.isSelected(model.id) ? 'true' : 'false'}
       >
         <div class="model-card-body">
           <div class="model-card-header">
