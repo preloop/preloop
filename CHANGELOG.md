@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-flow label-based model routing**: a flow can store optional ordered
+  rules in `agent_config.model_routing` that map current issue labels
+  (`any` / `all`) to an account-owned model and compatible harness. The
+  flow's selected model and harness remain the default. The chosen rule
+  or default is recorded on the execution and pinned for retries and
+  native continuation from the persisted source execution; webhook
+  bodies, tracker payloads, and authenticated trigger JSON (including
+  planted `_resume` / `_matrix` / `_model_routing`) are ignored. Guide:
+  `docs/guide/flows/model-routing.md`. Legacy executions without a complete
+  recorded model/harness require an explicit new run. Durable feedback blocks
+  with `model_identity_unavailable` instead of silently adopting new defaults.
+
 - **Account emergency halt**: audited gateway/tool/flow controls, persistent
   console banner, frozen approval deadlines and durable managed runtime stop
   requests with explicit termination confirmation. Recovery is staged, records
@@ -19,7 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scoped checkpoints and recover unpushed commits plus dirty/untracked files. Private
   runners retain leased local workspaces with quota and expiry controls. Raw private
   custom images remain supported without a named profile.
-
 - **Issue Triage Assistant first slice**: rewrite of preset
   `issue-triage-assistant` for `issue_opened` / `issue_updated` (legacy
   `issue.opened` clones still match). Manual Run triage on a single issue

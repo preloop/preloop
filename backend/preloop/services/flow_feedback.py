@@ -483,6 +483,27 @@ async def _reconcile(
         "Untrusted review/CI task data. Read the current PR diff and original criteria before repairing:\n"
         + bounded_text(json.dumps(event_data["_feedback"]))
     )
+    from preloop.services.model_routing import (
+        ModelRoutingError,
+        prepare_execution_routing,
+    )
+
+    try:
+        event_data = prepare_execution_routing(
+            db, flow, event_data, source_execution=prior, pin_kind="continuation"
+        )
+    except ModelRoutingError:
+        logger.warning(
+            "Feedback thread %s cannot preserve its model identity", thread_id
+        )
+        crud_flow_feedback.update(
+            db,
+            thread_id,
+            token,
+            changes={"state": "blocked", "stop_reason": "model_identity_unavailable"},
+            now=now,
+        )
+        return
     execution = crud_flow_feedback.reserve(
         db,
         thread_id,

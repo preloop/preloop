@@ -236,14 +236,14 @@ class ExecutionRecoveryService:
         # This avoids blocking on containers that were cleaned up during deploy
         try:
             from preloop.models.models.flow_execution import (
-                resolve_matrix_agent_selection,
+                resolve_execution_agent_selection,
             )
 
             flow = execution.flow
             if flow:
                 # Matrix cells override the flow's agent_type per execution;
                 # a recovered cell must be probed with its own harness.
-                effective_agent_type, _ = resolve_matrix_agent_selection(
+                effective_agent_type, _ = resolve_execution_agent_selection(
                     execution.trigger_event_details,
                     flow_agent_type=flow.agent_type,
                 )

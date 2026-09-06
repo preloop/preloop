@@ -52,6 +52,22 @@ def test_profile_rejects_harness_mismatch(tmp_path, monkeypatch) -> None:
         )
 
 
+def test_missing_or_corrupt_registry_fails_closed(tmp_path, monkeypatch) -> None:
+    missing = tmp_path / "missing.json"
+    monkeypatch.setattr(settings, "flow_environment_profiles_file", str(missing))
+    with pytest.raises(ValueError, match="not_approved"):
+        resolve_profile(
+            {"environment_profile": "approved"}, agent_type="codex", runner="docker"
+        )
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{")
+    monkeypatch.setattr(settings, "flow_environment_profiles_file", str(corrupt))
+    with pytest.raises(ValueError, match="not_approved"):
+        resolve_profile(
+            {"environment_profile": "approved"}, agent_type="codex", runner="docker"
+        )
+
+
 def test_environment_digest_changes_with_lockfile_contract() -> None:
     a = EnvironmentProfile(
         image=IMAGE, harness="codex", lockfiles=["package-lock.json"]

@@ -493,6 +493,92 @@ class WebhookConfig(BaseModel):
     )
 
 
+class ModelRoutingLabelMatch(BaseModel):
+    """Match current issue labels. ``any`` and ``all`` are combined with AND.
+
+    Assessment predicates are reserved for a later slice and are rejected
+    here (``extra='forbid'``) so untrusted payload fields cannot sneak in.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    any: Optional[List[str]] = Field(
+        default=None,
+        max_length=16,
+        description="Match if at least one of these current labels is present.",
+    )
+    all: Optional[List[str]] = Field(
+        default=None,
+        max_length=16,
+        description="Match if every one of these current labels is present.",
+    )
+
+    @field_validator("any", "all")
+    @classmethod
+    def normalize_label_list(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        """Reject empty strings and cap each label at 64 characters."""
+        if value is None:
+            return None
+        cleaned: List[str] = []
+        for item in value:
+            label = item.strip() if isinstance(item, str) else ""
+            if not label:
+                raise ValueError("label names must be non-empty")
+            if len(label) > 64:
+                raise ValueError("label names must be at most 64 characters")
+            cleaned.append(label)
+        return cleaned
+
+
+class ModelRoutingRule(BaseModel):
+    """One ordered rule: current labels -> account-owned model and harness."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+        description="Stable rule id recorded on the execution when this rule matches.",
+    )
+    labels: ModelRoutingLabelMatch
+    ai_model_id: UUID
+    agent_type: str = Field(min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def require_label_predicates(self) -> "ModelRoutingRule":
+        """A rule must state at least one any/all label to match."""
+        any_labels = self.labels.any or []
+        all_labels = self.labels.all or []
+        if not any_labels and not all_labels:
+            raise ValueError("each routing rule must set labels.any and/or labels.all")
+        return self
+
+    @field_serializer("ai_model_id")
+    def serialize_model_id(self, value: UUID) -> str:
+        """Store model ids as strings inside agent_config JSON."""
+        return str(value)
+
+
+class ModelRoutingConfig(BaseModel):
+    """Optional per-flow ordered model/harness routing (agent_config.model_routing)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[1] = 1
+    rules: List[ModelRoutingRule] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def unique_rule_ids(self) -> "ModelRoutingConfig":
+        """Reject duplicate rule ids so provenance stays unambiguous."""
+        seen: set[str] = set()
+        for rule in self.rules:
+            if rule.id in seen:
+                raise ValueError(f"duplicate routing rule id '{rule.id}'")
+            seen.add(rule.id)
+        return self
+
+
 class FlowBase(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
@@ -556,6 +642,18 @@ class FlowBase(BaseModel):
             "notifications."
         ),
     )
+
+    @field_validator("agent_config")
+    @classmethod
+    def validate_model_routing_config(cls, v):
+        """Validate optional agent_config.model_routing shape before persistence."""
+        if not isinstance(v, dict):
+            return v
+        routing = v.get("model_routing")
+        if routing is None:
+            return v
+        ModelRoutingConfig.model_validate(routing)
+        return v
 
     @field_validator("trigger_project_ids", mode="before")
     @classmethod
