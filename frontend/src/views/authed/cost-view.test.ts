@@ -170,6 +170,101 @@ describe('CostView', () => {
     expect(agentTable?.querySelector('th[scope="col"]')).to.exist;
   });
 
+  it('carries the shared range control, restates the window and drops Refresh', async () => {
+    const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
+    await waitUntil(
+      () => (element as unknown as { loading: boolean }).loading === false
+    );
+    await element.updateComplete;
+
+    // One range vocabulary per page: the shared control, not a bare select.
+    const range = element.shadowRoot?.querySelector('time-range-select');
+    expect(range).to.exist;
+    expect(
+      element.shadowRoot?.querySelector('sl-select[label="Date range"]')
+    ).to.equal(null);
+
+    // The window the numbers cover is restated beside the control, and the
+    // page says how fresh it is instead of offering a manual poll.
+    const window = element.shadowRoot
+      ?.querySelector('.range-window')
+      ?.textContent?.replace(/\s+/g, ' ')
+      .trim();
+    expect(window).to.contain(' to ');
+    expect(window).to.contain('updated');
+
+    const buttons = Array.from(
+      element.shadowRoot?.querySelectorAll('sl-button') || []
+    ).map((button) => (button.textContent || '').trim());
+    expect(buttons).to.not.include('Refresh');
+  });
+
+  it('labels stats with the window and prints counts compact', async () => {
+    summaryPayload = {
+      ...summary,
+      total_requests: 32969,
+      successful_requests: 32519,
+      token_usage: {
+        prompt_tokens: 810_400_000,
+        completion_tokens: 13_700_000,
+        total_tokens: 824_100_000,
+      },
+    };
+    const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
+    await waitUntil(
+      () => (element as unknown as { loading: boolean }).loading === false
+    );
+    await element.updateComplete;
+
+    const metrics = element.shadowRoot
+      ?.querySelector('[aria-label="Cost summary metrics"]')
+      ?.textContent?.replace(/\s+/g, ' ');
+    expect(metrics).to.contain('$ est. · 30d');
+    expect(metrics).to.contain('Requests · 30d');
+    expect(metrics).to.contain('Tokens · 30d');
+    expect(metrics).to.contain('33K');
+    expect(metrics).to.contain('824.1M');
+    expect(metrics).to.not.contain('824,100,000');
+
+    // A delta is an arrow and a percentage, as on the Overview.
+    const delta = (
+      element as unknown as {
+        percentDelta: (current: number, previous: number) => string;
+      }
+    ).percentDelta(24, 10);
+    expect(delta).to.equal('▲ 140% vs prior 30d');
+  });
+
+  it('states the catalog age and offers the action that fixes a price', async () => {
+    summaryPayload = {
+      ...summary,
+      price_catalog: {
+        fetched_at: new Date(
+          Date.now() - 55 * 24 * 60 * 60 * 1000
+        ).toISOString(),
+        model_count: 868,
+      },
+    };
+    featuresPayload = { billing: true, model_price_overrides: true };
+    const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
+    await waitUntil(
+      () => (element as unknown as { loading: boolean }).loading === false
+    );
+    await element.updateComplete;
+
+    const line = Array.from(
+      element.shadowRoot?.querySelectorAll('.metric-detail') || []
+    )
+      .map((node) => (node.textContent || '').replace(/\s+/g, ' ').trim())
+      .find((text) => text.startsWith('Price catalog from'));
+    expect(line, 'catalog provenance line').to.exist;
+    expect(line).to.contain('(868 models), 55 days old.');
+    // "Update recommended" with nothing to click became something to click.
+    expect(line).to.not.contain('update recommended');
+    const action = element.shadowRoot?.querySelector('a.catalog-action');
+    expect(action?.textContent?.trim()).to.equal('Override a price');
+  });
+
   it('exposes loading status while analytics are fetched', async () => {
     const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
     await element.updateComplete;
@@ -506,7 +601,9 @@ describe('CostView', () => {
     await (header as LitElement).updateComplete;
 
     const h1 = header?.shadowRoot?.querySelector('h1');
-    expect(h1?.textContent).to.contain('Cost Analytics');
+    // One name for the page: the sidebar, the Overview link and the h1 all
+    // say Cost.
+    expect(h1?.textContent?.trim()).to.equal('Cost');
 
     const description = header?.shadowRoot?.querySelector('.description');
     expect(description?.textContent).to.contain(
@@ -601,7 +698,7 @@ describe('CostView', () => {
       expect(state.priceModelAlias).to.equal('openai-compatible/muse-spark');
 
       const dialog = element.shadowRoot?.querySelector(
-        'sl-dialog[label="Add Price Override"]'
+        'sl-dialog[label="Add price override"]'
       );
       expect(dialog).to.exist;
       expect((dialog as unknown as { open: boolean }).open).to.equal(true);

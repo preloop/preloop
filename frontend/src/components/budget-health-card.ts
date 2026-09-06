@@ -6,6 +6,7 @@ import type {
   ManagedAgentSummary,
 } from '../types';
 import { budgetTrackStyles } from '../styles/budget-track';
+import { budgetForecast, forecastEndLabel } from '../utils/budget-forecast';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
@@ -127,6 +128,21 @@ export class BudgetHealthCard extends LitElement {
         color: var(--sl-color-danger-700);
       }
 
+      /* The forecast sentence, in the Overview's type and tones. */
+      .budget-forecast {
+        color: var(--sl-color-neutral-500);
+        font-size: var(--sl-font-size-x-small);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .budget-forecast.warning {
+        color: var(--sl-color-warning-700);
+      }
+
+      .budget-forecast.danger {
+        color: var(--sl-color-danger-700);
+      }
+
       .row-footer .limit-status {
         color: var(--sl-color-danger-700);
         font-weight: var(--sl-font-weight-semibold);
@@ -159,6 +175,34 @@ export class BudgetHealthCard extends LitElement {
     return period;
   }
 
+  /**
+   * Which window a budget row is about, in the Overview's words. "Global
+   * spend · 30d" was read as a rolling total; "Monthly budget · Sep" says the
+   * number resets, and says it the same way on both pages.
+   */
+  private periodWindow(period: string, now: Date = new Date()): string {
+    if (period === 'hourly') return 'this hour';
+    if (period === 'daily') return 'today';
+    if (period === 'weekly') return 'this week';
+    if (period === 'monthly' || period === 'month') {
+      return now.toLocaleDateString(undefined, { month: 'short' });
+    }
+    if (period === 'yearly' || period === 'year')
+      return String(now.getFullYear());
+    return '';
+  }
+
+  private budgetPeriodLabel(period: string, now: Date = new Date()): string {
+    const normalized =
+      period === 'month' ? 'monthly' : period === 'year' ? 'yearly' : period;
+    const base =
+      normalized === 'all_time'
+        ? 'All time budget'
+        : `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)} budget`;
+    const window = this.periodWindow(normalized, now);
+    return window ? `${base} · ${window}` : base;
+  }
+
   private periodForTimeRange(): BudgetPolicy['period'] {
     if (this.timeRange === 'day') return 'daily';
     if (this.timeRange === 'week') return 'weekly';
@@ -178,9 +222,11 @@ export class BudgetHealthCard extends LitElement {
   }
 
   private policyDisplayName(policy: BudgetPolicy): string {
-    const period = this.formatBudgetPeriod(policy.period);
+    const period =
+      this.periodWindow(policy.period) ||
+      this.formatBudgetPeriod(policy.period);
     if (policy.subject_type === 'global' || policy.subject_type === 'account') {
-      return `Global · ${period}`;
+      return this.budgetPeriodLabel(policy.period);
     }
     if (policy.subject_type === 'managed_agent') {
       const agentName =
@@ -344,12 +390,46 @@ export class BudgetHealthCard extends LitElement {
     return null;
   }
 
+  /**
+   * Straight-line projection for a budget row, the same sentence the Overview
+   * prints. "$12 of $300" on the 3rd reads as comfortable whether the account
+   * lands at $120 or $1,200; this says which.
+   */
+  private renderForecast(input: {
+    period: string;
+    spend: number;
+    softLimit: number;
+    hardLimit: number;
+    periodStart?: string | null;
+    periodEnd?: string | null;
+  }) {
+    const forecast = budgetForecast(input);
+    if (!forecast) return nothing;
+    const percent = Math.round(forecast.elapsedFraction * 100);
+    return html`
+      <div
+        class="budget-forecast ${forecast.tone}"
+        title=${`Straight line from ${this.formatCurrency(
+          input.spend
+        )} spent in the first ${percent}% of the period.`}
+      >
+        On track for ${this.formatCurrency(forecast.amount)} by
+        ${forecastEndLabel(input.period, forecast.end, forecast.endBasis)}
+      </div>
+    `;
+  }
+
   private renderBudgetLimitRow(
     label: string,
     icon: string,
     spend: number,
     softLimit: number,
-    hardLimit: number
+    hardLimit: number,
+    forecast: {
+      period: string;
+      periodStart?: string | null;
+      periodEnd?: string | null;
+    } | null = null
   ) {
     const maxLimit = hardLimit || softLimit;
     const fillPercent =
@@ -468,6 +548,18 @@ export class BudgetHealthCard extends LitElement {
               `
             : nothing
         }
+        ${
+          forecast
+            ? this.renderForecast({
+                period: forecast.period,
+                spend,
+                softLimit,
+                hardLimit,
+                periodStart: forecast.periodStart,
+                periodEnd: forecast.periodEnd,
+              })
+            : nothing
+        }
       </div>
     `;
   }
@@ -552,11 +644,16 @@ export class BudgetHealthCard extends LitElement {
         >
           <div class="rows">
             ${this.renderBudgetLimitRow(
-              `Global spend · ${this.formatBudgetPeriod(selectedPeriod)}`,
+              this.budgetPeriodLabel(selectedPeriod),
               'globe',
               globalSpend,
               globalSoftLimit,
-              globalHardLimit
+              globalHardLimit,
+              {
+                period: selectedPeriod,
+                periodStart: selectedGlobalUsage?.policy.period_start,
+                periodEnd: selectedGlobalUsage?.policy.period_end,
+              }
             )}
             ${
               additionalUsages.length
@@ -566,7 +663,12 @@ export class BudgetHealthCard extends LitElement {
                       this.policyIcon(usage.policy),
                       usage.spend,
                       usage.softLimit,
-                      usage.hardLimit
+                      usage.hardLimit,
+                      {
+                        period: usage.policy.period,
+                        periodStart: usage.policy.period_start,
+                        periodEnd: usage.policy.period_end,
+                      }
                     )
                   )
                 : html`<div class="empty">No additional budget policies.</div>`
@@ -586,7 +688,7 @@ export class BudgetHealthCard extends LitElement {
                       name="gear"
                       aria-hidden="true"
                     ></sl-icon>
-                    Configure Limits
+                    Configure limits
                   </sl-button>
                 `
               : nothing
