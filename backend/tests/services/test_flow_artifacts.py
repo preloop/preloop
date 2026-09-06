@@ -6,7 +6,11 @@ import tarfile
 import pytest
 
 from preloop.agents.checkpoint_client import capture, restore
-from preloop.services.flow_artifacts import manifest_digest, validate_archive
+from preloop.services.flow_artifacts import (
+    artifact_thread_id,
+    manifest_digest,
+    validate_archive,
+)
 
 
 def archive_with(
@@ -20,6 +24,24 @@ def archive_with(
         info.size = len(data) if kind == tarfile.REGTYPE else 0
         archive.addfile(info, io.BytesIO(data) if kind == tarfile.REGTYPE else None)
     return stream.getvalue()
+
+
+def test_artifact_thread_id_prefers_persisted_session_over_resume() -> None:
+    assert (
+        artifact_thread_id(
+            {
+                "_session_thread_id": "session",
+                "_resume": {"thread_id": "resume", "execution_id": "prior"},
+            },
+            "execution",
+        )
+        == "session"
+    )
+    assert (
+        artifact_thread_id({"_resume": {"thread_id": "resume"}}, "execution")
+        == "resume"
+    )
+    assert artifact_thread_id({}, "execution") == "execution"
 
 
 @pytest.mark.parametrize(

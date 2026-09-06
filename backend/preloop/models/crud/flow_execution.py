@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session, joinedload, load_only, with_expression
 from sqlalchemy.future import select
 
@@ -124,16 +124,30 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         return query.first()
 
     def purge_workspace_snapshots(self, db: Session, *, cutoff: Any) -> int:
-        """Release terminal legacy snapshots; active executions retain state."""
+        """Release terminal and orphaned snapshots; recent active runs retain state."""
         from preloop.models import models
 
         count = (
             db.query(models.FlowExecution)
             .filter(
                 models.FlowExecution.workspace_snapshot.isnot(None),
-                models.FlowExecution.end_time < cutoff,
-                models.FlowExecution.status.in_(
-                    ["SUCCEEDED", "FAILED", "STOPPED", "CANCELLED", "TIMED_OUT"]
+                or_(
+                    and_(
+                        models.FlowExecution.end_time < cutoff,
+                        models.FlowExecution.status.in_(
+                            [
+                                "SUCCEEDED",
+                                "FAILED",
+                                "STOPPED",
+                                "CANCELLED",
+                                "TIMED_OUT",
+                            ]
+                        ),
+                    ),
+                    and_(
+                        models.FlowExecution.end_time.is_(None),
+                        models.FlowExecution.start_time < cutoff,
+                    ),
                 ),
             )
             .update(
