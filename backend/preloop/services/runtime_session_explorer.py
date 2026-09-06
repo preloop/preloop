@@ -54,6 +54,11 @@ MAX_TITLES_PER_LIST_REQUEST = 8
 # many requests since the title was last generated.
 TITLE_REFRESH_REQUEST_DELTA = 5
 
+# Per-attempt provider I/O bound for interaction summaries. Matches the
+# approval-summary attempt budget so a cancelled call does not sit on
+# litellm's 600s default while run_db_off_loop drains the worker.
+INTERACTION_SUMMARY_ATTEMPT_TIMEOUT_SECONDS = 5.0
+
 
 _TRANSCRIPT_ROLE_TITLES = {
     "user": "User message",
@@ -729,6 +734,11 @@ class RuntimeSessionExplorerService:
         kwargs = build_aux_kwargs(
             model, creds_kwargs, call_site_kwargs=call_site_kwargs
         )
+
+        # Cancellation drains a worker that still owns the caller's Session.
+        # Bound provider I/O as well as any coroutine deadline.
+        kwargs["timeout"] = INTERACTION_SUMMARY_ATTEMPT_TIMEOUT_SECONDS
+        kwargs["num_retries"] = 0
 
         response = litellm.completion(**kwargs)
         check_reasoning_model_empty_content(response)
