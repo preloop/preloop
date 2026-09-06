@@ -1040,6 +1040,15 @@ describe('DashboardView', () => {
       ).to.equal(0);
       expect(rows[0].querySelector('.plane-stats sl-skeleton'), 'metrics cell')
         .to.exist;
+      // The waiting cell says so itself: sl-skeleton has no role, so a label
+      // on it alone leaves the row reading as empty.
+      const waiting = rows[0].querySelector('.plane-stats') as HTMLElement;
+      expect(waiting.getAttribute('role')).to.equal('status');
+      expect(waiting.getAttribute('aria-busy')).to.equal('true');
+      expect(waiting.getAttribute('aria-label')).to.contain('Loading');
+      expect(
+        waiting.querySelector('sl-skeleton')?.getAttribute('aria-hidden')
+      ).to.equal('true');
       expect(element.shadowRoot?.textContent).to.not.contain('No traffic yet');
       // And no onboarding line while the agents list is still unanswered.
       expect(element.shadowRoot?.querySelector('.connect-first')).to.not.exist;

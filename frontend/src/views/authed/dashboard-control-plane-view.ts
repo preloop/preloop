@@ -3530,18 +3530,27 @@ export class DashboardView extends AuthedElement {
             </a>
           </sl-tooltip>
         </span>
-        <span class="plane-stats">
-          ${
-            pending
-              ? html`<sl-skeleton
-                  effect="none"
-                  aria-label="Loading ${options.name.toLowerCase()} activity"
-                ></sl-skeleton>`
-              : options.served
-                ? options.stats.join(' · ')
-                : html`<span class="plane-quiet">No traffic yet</span>`
-          }
-        </span>
+        ${
+          // `sl-skeleton` carries no role, so a label on it is not reliably
+          // announced. The cell itself says it is waiting, and the skeleton
+          // is decoration inside it.
+          pending
+            ? html`<span
+                class="plane-stats"
+                role="status"
+                aria-busy="true"
+                aria-label="Loading ${options.name.toLowerCase()} activity"
+              >
+                <sl-skeleton effect="none" aria-hidden="true"></sl-skeleton>
+              </span>`
+            : html`<span class="plane-stats">
+                ${
+                  options.served
+                    ? options.stats.join(' · ')
+                    : html`<span class="plane-quiet">No traffic yet</span>`
+                }
+              </span>`
+        }
       </div>
     `;
   }

@@ -429,18 +429,35 @@ export class AgentsView extends LitElement {
            stretch into two half-screen banners. */
         grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
         gap: var(--sl-spacing-large);
-        padding: 1rem 1rem 0 2rem;
+        /* Same side inset as the header band above it. */
+        padding: 1rem var(--console-page-padding-x) 0;
       }
       /* --- List view --- */
       /* The canvas is full bleed, so this page pays its own side inset. It
-         takes the numbers from the page box rather than inventing them
+         takes the numbers from the page box rather than inventing them, on
+         both edges and at both scales, so the table lines up with the header
+         band above it and with every other page on a phone
          (styles/console-styles.css, "The page box"). */
-      .list-bounds {
+      .list-bounds,
+      .content-bounds {
         width: 100%;
         max-width: var(--console-page-max-width);
         margin: 0 auto;
-        padding: 0 var(--console-page-padding-x) 2rem;
+        padding-inline: var(--console-page-padding-x);
         box-sizing: border-box;
+      }
+      .list-bounds {
+        padding-block: 0 2rem;
+      }
+      .content-bounds {
+        padding-block: 1rem 0;
+      }
+      @media (max-width: 768px) {
+        .list-bounds,
+        .content-bounds,
+        .cards {
+          padding-inline: var(--console-page-padding-x-compact);
+        }
       }
       /* The table sizes itself from the colgroup, not from its content: an
          agent named after a container hash used to push the kebab column past
@@ -899,13 +916,7 @@ export class AgentsView extends LitElement {
         margin: 0 auto;
         padding: 0 2rem;
       }
-      .content-bounds {
-        width: 100%;
-        max-width: 80rem;
-        margin: 0 auto;
-        padding: 1rem 1rem 0 2rem;
-        box-sizing: border-box;
-      }
+      /* .content-bounds is the page box, declared with .list-bounds above. */
       .page-canvas-wrapper .content-bounds {
         /* Any overrides for canvas wrapper */
       }

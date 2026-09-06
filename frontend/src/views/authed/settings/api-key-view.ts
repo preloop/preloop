@@ -48,10 +48,8 @@ export class ApiKeyView extends LitElement {
       }
 
       /* No page geometry here: the shell owns the width and the side inset
-         (styles/console-styles.css, "The page box"). */
-      .container {
-        padding: 0;
-      }
+         (styles/console-styles.css, "The page box"), so .container keeps the
+         shared flex column and adds nothing. */
 
       .loading-container {
         display: flex;
