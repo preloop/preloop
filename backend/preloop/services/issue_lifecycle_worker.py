@@ -34,23 +34,29 @@ def _caller_session(*args: Any, **kwargs: Any) -> Session | None:
 def worker_owned_session(owner: Any = None, fallback: Any = None) -> tuple[Any, bool]:
     """Open a Session on this worker thread instead of borrowing the caller's.
 
-    The worker joins the caller's connection (captured on the application
-    thread) so uncommitted rows stay visible. Test doubles that are not
-    SQLAlchemy sessions are returned unchanged.
+    Engine-bound callers get a fresh factory Session whose commit is durable.
+    Connection-bound callers (pytest savepoints) join that connection so
+    uncommitted fixture rows stay visible. Test doubles are unchanged.
     """
-    bind = _lifecycle_bind.get()
+    join = _lifecycle_bind.get()
     session = fallback if isinstance(fallback, Session) else None
     if session is None:
         db = getattr(owner, "db", None)
         if isinstance(db, Session):
             session = db
-    if bind is None and session is not None:
-        bind = session.connection()
-    if bind is not None:
+    if join is None and session is not None:
+        raw = session.get_bind()
+        if isinstance(raw, Connection):
+            join = raw
+    if join is not None:
         return (
-            Session(bind=bind, join_transaction_mode="create_savepoint"),
+            Session(bind=join, join_transaction_mode="create_savepoint"),
             True,
         )
+    if session is not None:
+        from preloop.models.db.session import get_session_factory
+
+        return get_session_factory()(), True
     return fallback, False
 
 
@@ -89,7 +95,14 @@ def lifecycle_worker_hook(
     @wraps(operation)
     async def offload(*args: P.args, **kwargs: P.kwargs) -> T:
         caller = _caller_session(*args, **kwargs)
-        token = _lifecycle_bind.set(caller.connection() if caller is not None else None)
+        join = None
+        if caller is not None:
+            raw = caller.get_bind()
+            if isinstance(raw, Connection):
+                join = raw
+            else:
+                caller.commit()
+        token = _lifecycle_bind.set(join)
         try:
             return await anyio.to_thread.run_sync(
                 partial(run_lifecycle_endpoint, partial(operation, *args, **kwargs))
