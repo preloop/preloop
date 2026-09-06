@@ -370,6 +370,42 @@ describe('AIModelsView', () => {
     expect(del.separated).to.equal(true);
   });
 
+  it('does not add a prior-window request to every realtime refresh', async () => {
+    const element = (await fixture(
+      html`<ai-models-view></ai-models-view>`
+    )) as AIModelsView;
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'AI models view did not finish loading'
+    );
+    await element.updateComplete;
+    await waitUntil(
+      () => (element as any).priorFleetSpend !== null,
+      'prior window spend never loaded'
+    );
+
+    const overviewCalls = () =>
+      fetchStub
+        .getCalls()
+        .filter((call) =>
+          String(call.args[0]).startsWith('/api/v1/ai-models/overview')
+        ).length;
+    // Mount asks for this window and the one before it, once each.
+    expect(overviewCalls()).to.equal(2);
+
+    // A websocket refresh is one request, not two: the prior 30 day window
+    // moves once a day, and a burst of extra calls is what emptied the API
+    // connection pool on 2026-09-03.
+    await element.fetchModels({ preserveLoadingState: true });
+    expect(overviewCalls()).to.equal(3);
+
+    // Even a full reload reuses the loaded prior window while it is current.
+    await element.fetchModels();
+    await waitUntil(() => overviewCalls() >= 4, 'reload did not fetch');
+    expect(overviewCalls()).to.equal(4);
+    expect((element as any).priorFleetSpend).to.be.a('number');
+  });
+
   it('renders counts compact and sub-cent spend to four decimals', async () => {
     const element = (await fixture(
       html`<ai-models-view></ai-models-view>`

@@ -113,6 +113,12 @@ export class AIModelsView extends LitElement {
   @state()
   private priorFleetSpend: number | null = null;
 
+  /**
+   * The prior window the loaded number belongs to, as a date key. The window
+   * moves once a day, so a realtime refresh has nothing new to ask for.
+   */
+  private priorFleetSpendWindow: string | null = null;
+
   @state()
   private search = '';
 
@@ -436,7 +442,12 @@ export class AIModelsView extends LitElement {
       this.modelOverview = new Map(
         overview.models.map((item) => [item.ai_model_id, item])
       );
-      void this.loadPriorFleetSpend();
+      // Not on realtime refreshes: five subscriptions feed this method, and
+      // the prior 30 day window changes at most once a day. A third request
+      // per socket message is how the pool emptied on 2026-09-03.
+      if (!options.preserveLoadingState) {
+        void this.loadPriorFleetSpend();
+      }
     } catch (error) {
       this.error =
         error instanceof Error ? error.message : 'Failed to fetch AI models';
@@ -464,15 +475,22 @@ export class AIModelsView extends LitElement {
   }
 
   private async loadPriorFleetSpend(): Promise<void> {
+    const params = this.getOverviewParams(1);
+    const window = params.startDate.slice(0, 10);
+    if (this.priorFleetSpendWindow === window) {
+      return;
+    }
     try {
-      const prior = await getAIModelsOverview(this.getOverviewParams(1));
+      const prior = await getAIModelsOverview(params);
+      this.priorFleetSpendWindow = window;
       this.priorFleetSpend = prior.models.reduce(
         (total, item) => total + item.estimated_cost,
         0
       );
     } catch {
       // A missing comparison is not an error worth a banner: the delta line
-      // just does not render.
+      // just does not render, and the next load may still get it.
+      this.priorFleetSpendWindow = null;
       this.priorFleetSpend = null;
     }
   }
