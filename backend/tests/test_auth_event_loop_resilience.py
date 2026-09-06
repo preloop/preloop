@@ -177,8 +177,7 @@ async def test_off_loop_cancellation_waits_for_session_owner() -> None:
     finally:
         release.set()
         with pytest.raises(asyncio.CancelledError):
-            cancelled = await task
-            raise AssertionError(f"canceled worker returned {cancelled!r}")
+            await asyncio.wait_for(task, timeout=3)
         assert await asyncio.to_thread(finished.wait, 3)
 
 
@@ -287,8 +286,9 @@ async def test_summary_timeout_does_not_reuse_active_worker_session(
         assert not task.done()
     finally:
         release.set()
-        timeout_result = await task
-        assert task.done()
+        timeout_result = await asyncio.wait_for(task, timeout=3)
+        assert timeout_result is None
+        assert fallback_started.is_set()
 
 
 @pytest.mark.asyncio

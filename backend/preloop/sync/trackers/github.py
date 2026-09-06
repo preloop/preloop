@@ -272,6 +272,8 @@ class GitHubTracker(BaseTracker):
                                 "must have admin rights to repository",
                             }
                         except (ValueError, AttributeError):
+                            # Malformed responses do not establish permission
+                            # denial; retain the generic tracker response error.
                             pass
                     error_type = (
                         TrackerPermissionError if denied else TrackerResponseError
