@@ -641,6 +641,60 @@ describe('AgentDetailView', () => {
     expect(strip?.querySelector('select'), 'no bare select').to.not.exist;
   });
 
+  // DESIGN.md: the strip never wraps a UUID. Identifiers are shortened to
+  // eight characters, the whole value stays in the title and on the
+  // clipboard.
+  it('shortens the uuids on the strip and keeps the full value to copy', async () => {
+    const uuid = '2f1c8d9a-4b7e-4c21-9f3a-6d0e5b8c1a77';
+    fetchStub.callsFake(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (
+          url.startsWith('/api/v1/agents/agent-1') &&
+          !url.includes('/governance')
+        ) {
+          const response = await defaultFetch(input, init);
+          const payload = await response.json();
+          payload.agent.session_source_id = uuid;
+          payload.agent.session_reference = `agent-${uuid}`;
+          return new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return defaultFetch(input, init);
+      }
+    );
+
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    const strip = element.shadowRoot?.querySelector('.summary-strip');
+    const ids = Array.from(strip?.querySelectorAll('.strip-id') || []);
+    expect(ids.map((id) => id.textContent?.trim())).to.deep.equal([
+      '2f1c8d9a\u2026',
+      'agent-2f1c8d9a\u2026',
+    ]);
+    expect(ids.map((id) => id.getAttribute('title'))).to.deep.equal([
+      uuid,
+      `agent-${uuid}`,
+    ]);
+
+    // The full value goes to the clipboard, not to the screen.
+    const copyButtons = Array.from(
+      strip?.querySelectorAll('sl-copy-button') || []
+    );
+    expect(
+      copyButtons.map((button) => button.getAttribute('value'))
+    ).to.deep.equal([uuid, `agent-${uuid}`]);
+    expect(strip?.textContent).to.not.contain('4b7e-4c21');
+  });
+
   it('calls the session history panel Session History', async () => {
     const element = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`

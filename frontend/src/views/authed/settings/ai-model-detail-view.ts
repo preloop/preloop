@@ -206,7 +206,18 @@ export class AIModelDetailView extends LitElement {
   private unsubscribeRealtime?: () => void;
   private refreshTimer: number | null = null;
   private refreshInFlight = false;
+  /**
+   * A reload asked for while another is in flight is not dropped: the latest
+   * one is queued and runs when the in-flight call settles. Otherwise the
+   * range control could name a window whose data was never fetched, which the
+   * 250 ms realtime refresh made easy to hit.
+   */
+  private pendingReload: {
+    preserveLoadingState?: boolean;
+    markUpdating?: boolean;
+  } | null = null;
   private interactionSearchDebounce?: ReturnType<typeof setTimeout>;
+  private interactionsRequestId = 0;
 
   static styles = [
     consoleDialogStyles,
@@ -366,7 +377,6 @@ export class AIModelDetailView extends LitElement {
         border: 0;
       }
 
-      .period-caption,
       .meta-line,
       .session-meta,
       .interaction-meta,
@@ -375,10 +385,6 @@ export class AIModelDetailView extends LitElement {
         color: var(--sl-color-neutral-600);
         font-size: var(--sl-font-size-small);
         overflow-wrap: anywhere;
-      }
-
-      .period-caption {
-        margin-top: var(--sl-spacing-small);
       }
 
       .model-heading {
@@ -694,6 +700,18 @@ export class AIModelDetailView extends LitElement {
     }
 
     if (this.refreshInFlight) {
+      this.pendingReload = {
+        // The latest caller decides whether a spinner is wanted; a queued
+        // request for the dim treatment survives either way.
+        preserveLoadingState: options.preserveLoadingState,
+        markUpdating:
+          options.markUpdating || this.pendingReload?.markUpdating || false,
+      };
+      // The queued reload reads the range and the query as they are when it
+      // runs, so the last answer on screen is the last one asked for.
+      if (this.pendingReload.markUpdating) {
+        this.updating = true;
+      }
       return;
     }
     this.refreshInFlight = true;
@@ -717,6 +735,7 @@ export class AIModelDetailView extends LitElement {
       this.loading = false;
       this.updating = false;
       this.refreshInFlight = false;
+      this.runPendingReload();
       return;
     }
 
@@ -753,7 +772,18 @@ export class AIModelDetailView extends LitElement {
       this.loading = false;
       this.updating = false;
       this.refreshInFlight = false;
+      this.runPendingReload();
     }
+  }
+
+  /** Run the reload that arrived while the last one was still in flight. */
+  private runPendingReload(): void {
+    const pending = this.pendingReload;
+    if (!pending) {
+      return;
+    }
+    this.pendingReload = null;
+    void this.loadData(pending);
   }
 
   private buildSummaryParams(): GatewayUsageSummaryParams {
@@ -813,24 +843,36 @@ export class AIModelDetailView extends LitElement {
     if (!this.modelId) {
       return;
     }
+    // Two searches can be in flight at once, and the slower one must not
+    // overwrite the newer answer.
+    const request = ++this.interactionsRequestId;
     this.interactionsLoading = true;
 
     try {
-      this.interactions = await getAIModelGatewayUsageSearch(this.modelId, {
+      const results = await getAIModelGatewayUsageSearch(this.modelId, {
         ...this.buildSummaryParams(),
         query: this.interactionQuery.trim() || undefined,
         limit: 10,
       });
+      if (request !== this.interactionsRequestId) {
+        return;
+      }
+      this.interactions = results;
       this.interactionsError = null;
     } catch (error) {
       console.error('Failed to search captured model interactions:', error);
+      if (request !== this.interactionsRequestId) {
+        return;
+      }
       this.interactionsError =
         error instanceof Error
           ? error.message
           : 'Failed to search captured interactions';
       this.interactions = null;
     } finally {
-      this.interactionsLoading = false;
+      if (request === this.interactionsRequestId) {
+        this.interactionsLoading = false;
+      }
     }
   }
 

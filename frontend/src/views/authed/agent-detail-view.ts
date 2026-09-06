@@ -6,6 +6,7 @@ import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
@@ -102,6 +103,14 @@ const SPEND_RANGE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'month', label: '30d' },
   { value: 'year', label: '1y' },
 ];
+
+/**
+ * A uuid anywhere in an identifier, including a prefixed one
+ * ("agent-1f8c...", "flow-execution/1f8c..."), so the strip can shorten the
+ * uuid and keep the part that carries meaning.
+ */
+const UUID_IN_IDENTIFIER =
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 @customElement('agent-detail-view')
 export class AgentDetailView extends LitElement {
@@ -338,11 +347,6 @@ export class AgentDetailView extends LitElement {
         gap: var(--sl-spacing-2x-small);
       }
 
-      .info-icon {
-        color: var(--console-meta-color);
-        font-size: 0.95rem;
-      }
-
       .stat-value {
         margin-top: var(--sl-spacing-2x-small);
         font-size: 1.35rem;
@@ -398,6 +402,10 @@ export class AgentDetailView extends LitElement {
         font-size: var(--sl-font-size-small);
         color: var(--sl-color-neutral-700);
         overflow-wrap: anywhere;
+      }
+
+      .strip-facts sl-copy-button::part(button) {
+        padding: 0 2px;
       }
 
       .strip-sep {
@@ -905,22 +913,6 @@ export class AgentDetailView extends LitElement {
     return 'This agent is not fully managed by Preloop yet.';
   }
 
-  private renderInfoTooltip(content: string): TemplateResult {
-    return html`
-      <sl-tooltip content=${content}>
-        <sl-icon class="info-icon" name="info-circle"></sl-icon>
-      </sl-tooltip>
-    `;
-  }
-
-  private renderStatLabel(label: string, explanation?: string): TemplateResult {
-    return html`
-      <div class="stat-label">
-        ${label}${explanation ? this.renderInfoTooltip(explanation) : null}
-      </div>
-    `;
-  }
-
   private getParsedModelBudgets(): Record<
     string,
     { monthly_usd_limit?: number }
@@ -1093,11 +1085,11 @@ export class AgentDetailView extends LitElement {
             )}</span
           >
           <span class="strip-sep" aria-hidden="true">·</span>
-          <span class="strip-id">${this.agent.session_source_id}</span>
+          ${this.renderStripId(this.agent.session_source_id, 'Copy source id')}
           ${
             reference
               ? html`<span class="strip-sep" aria-hidden="true">·</span>
-                  <span class="strip-id" title=${reference}>${reference}</span>`
+                  ${this.renderStripId(reference, 'Copy session reference')}`
               : nothing
           }
           <span class="badge-row">${this.renderHeaderChips()}</span>
@@ -1134,6 +1126,25 @@ export class AgentDetailView extends LitElement {
           ></time-range-select>
         </div>
       </div>
+    `;
+  }
+
+  /**
+   * An identifier on the strip, shortened. DESIGN "Strip, not cards": the
+   * strip never wraps a UUID, so a uuid (bare or prefixed, "agent-<uuid>")
+   * shows eight characters with the whole value in the title and a copy
+   * button that puts the full id on the clipboard. A short handle
+   * ("claude-code-agent-1") is left alone: truncating it would lose meaning.
+   */
+  private renderStripId(value: string, copyLabel: string): TemplateResult {
+    const match = value.match(UUID_IN_IDENTIFIER);
+    if (!match) {
+      return html`<span class="strip-id" title=${value}>${value}</span>`;
+    }
+    const shortened = `${value.slice(0, match.index)}${match[0].slice(0, 8)}\u2026`;
+    return html`
+      <span class="strip-id" title=${value}>${shortened}</span>
+      <sl-copy-button value=${value} copy-label=${copyLabel}></sl-copy-button>
     `;
   }
 

@@ -141,6 +141,13 @@ export function resolveTimeRange(
  * The window immediately before the one a key resolves to, for "vs prior 30d"
  * deltas. A calendar key steps back a whole period; a rolling key steps back
  * its own duration.
+ *
+ * The two shapes are deliberately different and both are correct.
+ * `this-week`, `this-month` and `last-month` compare whole periods: the
+ * previous window ends exactly where the current one starts. `today` and the
+ * rolling keys compare equal durations: a window that is 9 hours old is
+ * measured against the same 9 hours of the day before, not against a whole
+ * day it would always lose to.
  */
 export function resolvePreviousTimeRange(
   key: TimeRangeKey | string,

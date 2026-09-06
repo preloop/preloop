@@ -98,6 +98,8 @@ export class ApiUsageView extends LitElement {
 
   private searchDebounce?: ReturnType<typeof setTimeout>;
 
+  private searchRequestId = 0;
+
   static styles = [
     unsafeCSS(consoleStyles),
     css`
@@ -459,11 +461,6 @@ export class ApiUsageView extends LitElement {
       }
 
       @media (max-width: 720px) {
-        .filters-actions {
-          margin-left: 0;
-          width: 100%;
-        }
-
         .daily-row {
           grid-template-columns: 1fr;
         }
@@ -600,17 +597,27 @@ export class ApiUsageView extends LitElement {
    * change one list.
    */
   private async loadSearchResults() {
+    // Two searches can be in flight at once, and the slower one must not
+    // overwrite the newer answer.
+    const request = ++this.searchRequestId;
     this.searchLoading = true;
 
     try {
-      this.searchResults = await getAccountGatewayUsageSearch({
+      const results = await getAccountGatewayUsageSearch({
         ...this.rangeParams(),
         query: this.searchQuery.trim() || undefined,
         limit: 10,
       });
+      if (request !== this.searchRequestId) {
+        return;
+      }
+      this.searchResults = results;
       this.searchError = null;
     } catch (error) {
       console.error('Failed to search captured gateway interactions:', error);
+      if (request !== this.searchRequestId) {
+        return;
+      }
       // A failed search says so where the results would be; the numbers above
       // it are still true and stay on screen.
       this.searchError =
@@ -619,7 +626,9 @@ export class ApiUsageView extends LitElement {
           : 'Failed to search captured interactions';
       this.searchResults = null;
     } finally {
-      this.searchLoading = false;
+      if (request === this.searchRequestId) {
+        this.searchLoading = false;
+      }
     }
   }
 

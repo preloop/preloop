@@ -1082,6 +1082,54 @@ describe('AIModelDetailView', () => {
     ).to.be.false;
   });
 
+  // A range change that lands during the 250 ms realtime refresh used to be
+  // dropped, leaving the control naming a window nobody fetched.
+  it('runs a range change that arrives while a refresh is in flight', async () => {
+    const element = (await fixture(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    )) as AIModelDetailView;
+
+    await waitUntil(
+      () => !(element as any).loading,
+      'AI model detail view did not finish loading',
+      { timeout: 5000 }
+    );
+    await element.updateComplete;
+
+    const summaryCalls = () =>
+      fetchStub
+        .getCalls()
+        .map((call) => String(call.args[0]))
+        .filter((url) => url.startsWith('/api/v1/ai-models/model-1/summary'));
+    const before = summaryCalls().length;
+
+    // A background refresh takes the lock, then the operator picks 24h.
+    void (element as any).loadData({ preserveLoadingState: true });
+    (element as any).selectedRange = 'last-24h';
+    void (element as any).loadData({
+      preserveLoadingState: true,
+      markUpdating: true,
+    });
+
+    await waitUntil(
+      () => summaryCalls().length >= before + 2,
+      'the queued range change never ran',
+      { timeout: 5000 }
+    );
+    await waitUntil(
+      () => !(element as any).refreshInFlight,
+      'the reloads never settled',
+      { timeout: 5000 }
+    );
+
+    const last = summaryCalls()[summaryCalls().length - 1];
+    const query = new URLSearchParams(last.split('?')[1] || '');
+    const start = new Date(query.get('start_date') || '');
+    const end = new Date(query.get('end_date') || '');
+    const spanDays = (end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000);
+    expect(Math.abs(spanDays - 1)).to.be.below(0.01);
+  });
+
   // "All time" survived the Filters card here too.
   it('offers All time and asks for it without date bounds', async () => {
     const element = (await fixture(
