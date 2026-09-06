@@ -67,6 +67,15 @@ func dockerRunArgs(image string, env map[string]string, opts runnerDockerOpts) [
 	if opts.PersistWorkspace && opts.WorkspaceHostDir != "" {
 		args = append(args, "-v", opts.WorkspaceHostDir+":"+runnerWorkspaceMount)
 	}
+	if opts.Launch && !opts.hasWorkspaceMount() {
+		// Overlay /workspace for launch jobs with no configured mount.
+		// Nonroot default images need a writable, executable workspace
+		// without a UID change. Image inspect on every launch is skipped:
+		// it cannot tell shipped files from an empty dir without creating
+		// a container. The overlay masks image-shipped /workspace files;
+		// keep those via persist_workspace or an explicit extra_mount.
+		args = append(args, "--tmpfs", runnerWorkspaceMount+":rw,exec,mode=1777")
+	}
 	for _, mount := range opts.ExtraMounts {
 		args = append(args, "-v", mount)
 	}
@@ -86,6 +95,19 @@ func dockerRunArgs(image string, env map[string]string, opts runnerDockerOpts) [
 		args = append(args, "-c", runnerBootstrap)
 	}
 	return args
+}
+
+func (opts runnerDockerOpts) hasWorkspaceMount() bool {
+	if opts.PersistWorkspace && opts.WorkspaceHostDir != "" {
+		return true
+	}
+	for _, mount := range opts.ExtraMounts {
+		parts := strings.Split(mount, ":")
+		if len(parts) >= 2 && strings.TrimRight(parts[1], "/") == runnerWorkspaceMount {
+			return true
+		}
+	}
+	return false
 }
 
 func runnerDockerOptsFromJob(job map[string]any) (runnerDockerOpts, error) {
