@@ -85,13 +85,19 @@ def attribution_from_user_context(user_context: Any) -> CallerAttribution:
     if user_context is None:
         return CallerAttribution()
     execution_id = getattr(user_context, "flow_execution_id", None)
+    agent_id = _as_uuid(getattr(user_context, "managed_agent_id", None))
+    # The runtime principal names whoever holds the token, and that is not
+    # always an agent: a flow runtime token sets it to the flow's name with no
+    # managed agent behind it. Only an actual agent id licenses using it as the
+    # agent's name, otherwise a flow run would be filed as "Agent Nightly
+    # audit" next to "Flow run Nightly audit".
     name = (getattr(user_context, "runtime_principal_name", None) or "").strip()
     return CallerAttribution(
-        managed_agent_id=_as_uuid(getattr(user_context, "managed_agent_id", None)),
+        managed_agent_id=agent_id,
         runtime_session_id=_as_uuid(getattr(user_context, "runtime_session_id", None)),
         api_key_id=_as_uuid(getattr(user_context, "api_key_id", None)),
         execution_id=str(execution_id) if execution_id else None,
-        managed_agent_name=name or None,
+        managed_agent_name=name if (agent_id is not None and name) else None,
     )
 
 

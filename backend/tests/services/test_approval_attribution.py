@@ -80,6 +80,40 @@ def test_user_context_ignores_unparsable_ids():
     assert caller.api_key_id is None
 
 
+def test_a_flow_run_is_not_filed_as_an_agent():
+    """A flow runtime token names the flow, not an agent.
+
+    ``flow_runtime_token`` sets ``runtime_principal = {type: flow_execution,
+    name: <flow name>}`` and no managed agent id. Taking that name as the
+    agent's would label the run "Agent Nightly audit" beside "Flow run
+    Nightly audit", and put a flow name in the approval email subject.
+    """
+    caller = attribution_from_user_context(
+        SimpleNamespace(
+            managed_agent_id=None,
+            api_key_id=str(uuid.uuid4()),
+            flow_execution_id="a5b0d0e2-0000-4000-8000-000000000001",
+            runtime_principal_type="flow_execution",
+            runtime_principal_name="Nightly audit",
+        )
+    )
+    assert caller.managed_agent_id is None
+    assert caller.managed_agent_name is None
+    assert caller.execution_id == "a5b0d0e2-0000-4000-8000-000000000001"
+
+
+def test_a_name_without_a_parsable_agent_id_is_dropped():
+    """A name is only an agent's name when there is an agent id to link it to."""
+    caller = attribution_from_user_context(
+        SimpleNamespace(
+            managed_agent_id="not-a-uuid",
+            runtime_principal_name="Claude Code (laptop)",
+        )
+    )
+    assert caller.managed_agent_id is None
+    assert caller.managed_agent_name is None
+
+
 def test_no_user_context_is_not_an_error():
     """Non-MCP callers (flows, tests) attribute to nothing, they do not raise."""
     caller = attribution_from_user_context(None)
