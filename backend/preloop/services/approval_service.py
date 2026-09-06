@@ -539,6 +539,25 @@ class ApprovalService:
                 "tool_args": redact_dict(approval_request.tool_args or {}),
                 "agent_reasoning": approval_request.agent_reasoning,
                 "managed_agent_name": approval_request.managed_agent_name,
+                # Attribution ids, so a live console row can link the caller
+                # instead of printing a generic label. Ids only: naming the
+                # key and the session would cost a lookup per broadcast, and
+                # the console shortens an unnamed id to eight characters.
+                "managed_agent_id": (
+                    str(approval_request.managed_agent_id)
+                    if approval_request.managed_agent_id
+                    else None
+                ),
+                "runtime_session_id": (
+                    str(approval_request.runtime_session_id)
+                    if approval_request.runtime_session_id
+                    else None
+                ),
+                "api_key_id": (
+                    str(approval_request.api_key_id)
+                    if approval_request.api_key_id
+                    else None
+                ),
                 # Why the call was gated. Rule names and expressions are
                 # operator-authored policy text, not call arguments, so they
                 # are not redacted; tool_args above still are.

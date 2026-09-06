@@ -1,6 +1,7 @@
 import { expect } from '@open-wc/testing';
 
 import {
+  approvalRequesterName,
   formatApprovalRequester,
   getApprovalSource,
   withoutApprovalMetadata,
@@ -30,6 +31,23 @@ describe('approval identity', () => {
     expect(
       formatApprovalRequester(null, { _preloop_source: 'opencode' })
     ).to.equal('OpenCode');
+  });
+
+  it('prefers the server-resolved agent name over the stored one', () => {
+    expect(
+      approvalRequesterName({
+        agent: { name: 'Claude Code (laptop)' },
+        managed_agent_name: null,
+        tool_args: {},
+      })
+    ).to.equal('Claude Code (laptop)');
+  });
+
+  it('still says "AI agent" only when nothing at all names the caller', () => {
+    expect(approvalRequesterName({})).to.equal('AI agent');
+    expect(
+      approvalRequesterName({ tool_args: { _preloop_source: 'cursor' } })
+    ).to.equal('Cursor');
   });
 
   it('keeps adapter metadata out of tool arguments', () => {

@@ -14,7 +14,7 @@ import type {
 } from '../../types';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import {
-  formatApprovalRequester,
+  approvalRequesterName,
   formatApprovalSource,
   getApprovalSource,
   withoutApprovalMetadata,
@@ -36,6 +36,7 @@ import {
 } from '../../utils/scoped-governance';
 import '../../components/question-answer-panel';
 import '../../components/approval-rule-context-block';
+import '../../components/attribution-line';
 import type { QuestionAnswerDetail } from '../../components/question-answer-panel';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
@@ -858,9 +859,8 @@ export class ApprovalView extends AuthedElement {
       confirmed = await confirmDialog({
         title: 'Deny this request?',
         message: `${request.tool_name} will not run.`,
-        detail: `${formatApprovalRequester(
-          request.managed_agent_name,
-          request.tool_args
+        detail: `${approvalRequesterName(
+          request
         )} is told no and continues without it.`,
         confirmLabel: 'Deny',
         variant: 'danger',
@@ -1030,10 +1030,7 @@ export class ApprovalView extends AuthedElement {
       withoutApprovalMetadata(request.tool_args)
     );
     const source = formatApprovalSource(getApprovalSource(request.tool_args));
-    const requester = formatApprovalRequester(
-      request.managed_agent_name,
-      request.tool_args
-    );
+    const requester = approvalRequesterName(request);
 
     const isQuestion = this.isQuestion;
 
@@ -1121,7 +1118,7 @@ export class ApprovalView extends AuthedElement {
               `
             : ''
         }
-        ${this.renderFactStrip(request, requester, source, isPending, countdown)}
+        ${this.renderFactStrip(request, source, isPending, countdown)}
 
         <div class="content-section">
           <h2>${this.argsHeading(request)}</h2>
@@ -1213,12 +1210,12 @@ export class ApprovalView extends AuthedElement {
 
   /**
    * The facts about this request on one hairline strip: who asked, what for,
-   * where from, and when. The agent and the session are links, because "which
-   * agent is this" is the first question a decision raises.
+   * where from, and when. Who asked is the attribution line, so the agent,
+   * the key, the session and the run are all links: "which agent is this,
+   * and on whose credential" is the first question a decision raises.
    */
   private renderFactStrip(
     request: ApprovalRequest,
-    requester: string,
     source: string | null,
     isPending: boolean,
     countdown: string | null
@@ -1226,16 +1223,10 @@ export class ApprovalView extends AuthedElement {
     const shortId = request.id.slice(0, 8);
     return html`
       <div class="fact-strip">
-        <div class="fact">
-          <span class="fact-label">Agent</span>
-          ${
-            request.managed_agent_id
-              ? html`<a href="/console/agents/${request.managed_agent_id}"
-                  >${requester}</a
-                >`
-              : html`<span>${requester}</span>`
-          }
-        </div>
+        <attribution-line
+          class="fact attribution"
+          .source=${request}
+        ></attribution-line>
         <div class="fact">
           <span class="fact-label">Tool</span>
           <code>${request.tool_name}</code>
@@ -1245,29 +1236,6 @@ export class ApprovalView extends AuthedElement {
             ? html`<div class="fact">
                 <span class="fact-label">Adapter</span>
                 <span>${source}</span>
-              </div>`
-            : ''
-        }
-        ${
-          request.runtime_session_id
-            ? html`<div class="fact">
-                <span class="fact-label">Session</span>
-                <a
-                  href="/console/runtime-sessions?sessionId=${encodeURIComponent(
-                    request.runtime_session_id
-                  )}"
-                  >${request.runtime_session_id.slice(0, 8)}</a
-                >
-              </div>`
-            : ''
-        }
-        ${
-          request.execution_id
-            ? html`<div class="fact">
-                <span class="fact-label">Execution</span>
-                <a href="/console/flows/executions/${request.execution_id}"
-                  >${request.execution_id.slice(0, 8)}</a
-                >
               </div>`
             : ''
         }
@@ -1499,10 +1467,7 @@ export class ApprovalView extends AuthedElement {
     countdown: string | null,
     expiringSoon: boolean
   ) {
-    const requester = formatApprovalRequester(
-      request.managed_agent_name,
-      request.tool_args
-    );
+    const requester = approvalRequesterName(request);
     return html`
       <div class="decision-bar">
         <div class="decision-summary">

@@ -1675,6 +1675,38 @@ export type ApprovalRequestStatus =
   'pending' | 'approved' | 'declined' | 'expired' | 'cancelled';
 
 /**
+ * Attribution: who asked for an approval, resolved by the server.
+ *
+ * The ids alone rendered as truncated UUIDs, or worse, as the generic label
+ * "AI agent" when the name column happened to be empty. The server now
+ * resolves each id it holds into a name, and omits the part when the row it
+ * points at is gone, so the console never has to guess.
+ */
+export interface ApprovalAgentSummary {
+  id: string;
+  name: string;
+  /** `claude_code`, `cursor`, and so on. Absent on older agents. */
+  kind?: string | null;
+}
+
+export interface ApprovalApiKeySummary {
+  id: string;
+  name: string;
+}
+
+export interface ApprovalSessionSummary {
+  id: string;
+  /** What the session is about; null when it has no title or reference. */
+  subject?: string | null;
+}
+
+export interface ApprovalFlowExecutionSummary {
+  id: string;
+  flow_id?: string | null;
+  flow_name?: string | null;
+}
+
+/**
  * A pending human decision surfaced by the approvals API.
  *
  * Two flavours share this shape:
@@ -1705,6 +1737,16 @@ export interface ApprovalRequest {
   /** The runtime session the call came from, when the agent had one. */
   runtime_session_id?: string | null;
   managed_agent_name?: string | null;
+  /** The credential the caller authenticated with. Known for every API call. */
+  api_key_id?: string | null;
+  /**
+   * The same four facts, named. Absent on older servers, in which case the
+   * ids above still carry the links.
+   */
+  agent?: ApprovalAgentSummary | null;
+  api_key?: ApprovalApiKeySummary | null;
+  session?: ApprovalSessionSummary | null;
+  flow_execution?: ApprovalFlowExecutionSummary | null;
   webhook_posted_at?: string | null;
   webhook_error?: string | null;
   is_question?: boolean;
