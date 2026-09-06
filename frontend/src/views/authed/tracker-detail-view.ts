@@ -138,6 +138,9 @@ export class TrackerDetailView extends LitElement {
   private _pullRequests: PullRequestListItem[] = [];
 
   @state()
+  private _prsTotal: number | null = null;
+
+  @state()
   private _prsPage = 1;
 
   @state()
@@ -784,10 +787,22 @@ export class TrackerDetailView extends LitElement {
   }
 
   private _pullRequestsCountLabel(): string {
-    const count = this._pullRequests.length;
+    const loaded = this._pullRequests.length;
     const noun = this._prNoun();
     const singular = noun.endsWith('s') ? noun.slice(0, -1) : noun;
-    return `${count} open ${count === 1 ? singular : noun}`;
+    const unit = loaded === 1 ? singular : noun;
+    const total = this._prsTotal;
+    if (total != null) {
+      if (total > loaded) {
+        const totalUnit = total === 1 ? singular : noun;
+        return `${loaded} of ${total.toLocaleString()} open ${totalUnit}`;
+      }
+      return `${total.toLocaleString()} open ${total === 1 ? singular : noun}`;
+    }
+    if (this._prsHasMore) {
+      return `showing ${loaded.toLocaleString()} ${unit}`;
+    }
+    return `${loaded} open ${unit}`;
   }
 
   /** Row actions live in the row's kebab, not as a button per row. */
@@ -891,11 +906,13 @@ export class TrackerDetailView extends LitElement {
     if (!this._selectedProjectId) {
       this._pullRequests = [];
       this._prsHasMore = false;
+      this._prsTotal = null;
       return;
     }
     if (reset) {
       this._prsPage = 1;
       this._pullRequests = [];
+      this._prsTotal = null;
     }
     this._prsLoading = true;
     this._prsError = null;
@@ -908,12 +925,18 @@ export class TrackerDetailView extends LitElement {
       if (!data.supported) {
         this._pullRequests = [];
         this._prsHasMore = false;
+        this._prsTotal = null;
         return;
       }
       this._pullRequests = reset
         ? data.items
         : [...this._pullRequests, ...data.items];
       this._prsHasMore = data.has_more;
+      if (typeof data.total === 'number' && Number.isFinite(data.total)) {
+        this._prsTotal = data.total;
+      } else if (reset) {
+        this._prsTotal = null;
+      }
     } catch (error) {
       this._prsError =
         error instanceof Error ? error.message : 'Could not reach tracker.';

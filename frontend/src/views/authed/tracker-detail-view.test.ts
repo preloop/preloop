@@ -26,6 +26,7 @@ interface StubOpts {
   trackerType?: string;
   pullRequests?: unknown[];
   prHasMore?: boolean;
+  prTotal?: number;
   prSupported?: boolean;
   pullRequestHandler?: (url: string) => Response | null;
 }
@@ -38,6 +39,7 @@ function stubFetch(opts: StubOpts = {}) {
     trackerType = 'github',
     pullRequests = [],
     prHasMore = false,
+    prTotal,
     prSupported = true,
     pullRequestHandler,
   } = opts;
@@ -78,6 +80,7 @@ function stubFetch(opts: StubOpts = {}) {
           has_more: prHasMore,
           supported: prSupported,
           fetched_at: '2026-01-03T00:00:00Z',
+          ...(prTotal !== undefined ? { total: prTotal } : {}),
         });
       }
       if (url.includes('/api/v1/projects')) {
@@ -583,6 +586,77 @@ describe('TrackerDetailView', () => {
     expect(
       branches?.querySelector('.visually-hidden')?.textContent?.trim()
     ).to.equal('to');
+  });
+
+  it('does not report a paged PR list as the total', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=pull-requests&project=${projectA.id}`
+    );
+    fetchStub = stubFetch({
+      pullRequests: [
+        {
+          number: 12,
+          iid: 12,
+          title: 'Add login',
+          url: 'https://github.com/acme/widgets/pull/12',
+          author: 'janedoe',
+          source_branch: 'feature',
+          target_branch: 'main',
+          state: 'open',
+          draft: false,
+          updated_at: '2026-01-03T00:00:00Z',
+        },
+      ],
+      prHasMore: true,
+    });
+    const el = await mountView();
+    await (
+      el as unknown as { _loadPullRequests: (reset: boolean) => Promise<void> }
+    )._loadPullRequests(true);
+    await el.updateComplete;
+    const count = el.shadowRoot
+      ?.querySelector('sl-tab-panel[name="pull-requests"] [slot="count"]')
+      ?.textContent?.trim();
+    expect(count).to.equal('showing 1 pull request');
+    expect(count).to.not.contain('open pull request');
+  });
+
+  it('uses the API total when the PR list reports one', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=pull-requests&project=${projectA.id}`
+    );
+    fetchStub = stubFetch({
+      pullRequests: [
+        {
+          number: 12,
+          iid: 12,
+          title: 'Add login',
+          url: 'https://github.com/acme/widgets/pull/12',
+          author: 'janedoe',
+          source_branch: 'feature',
+          target_branch: 'main',
+          state: 'open',
+          draft: false,
+          updated_at: '2026-01-03T00:00:00Z',
+        },
+      ],
+      prHasMore: true,
+      prTotal: 40,
+    });
+    const el = await mountView();
+    await (
+      el as unknown as { _loadPullRequests: (reset: boolean) => Promise<void> }
+    )._loadPullRequests(true);
+    await el.updateComplete;
+    expect(
+      el.shadowRoot
+        ?.querySelector('sl-tab-panel[name="pull-requests"] [slot="count"]')
+        ?.textContent?.trim()
+    ).to.equal('1 of 40 open pull requests');
   });
 
   it('leaves the Branches cell empty when a branch is missing', async () => {
