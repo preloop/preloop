@@ -100,6 +100,15 @@ export class AIModelDetailView extends LitElement {
   @state()
   private loading = true;
 
+  /**
+   * A reload the operator asked for (a new range, a new search) dims the
+   * answers it is about to replace instead of blanking the page; the 250 ms
+   * realtime refresh does neither, because a page that dims itself twice a
+   * second is unreadable.
+   */
+  @state()
+  private updating = false;
+
   @state()
   private error: string | null = null;
 
@@ -198,6 +207,7 @@ export class AIModelDetailView extends LitElement {
 
       .page,
       .stack,
+      .results,
       .daily-list,
       .session-list,
       .interaction-list {
@@ -206,8 +216,17 @@ export class AIModelDetailView extends LitElement {
       }
 
       .page,
-      .stack {
+      .stack,
+      .results {
         gap: var(--sl-spacing-large);
+      }
+
+      /* A range change never blanks answers the page already has: they stay
+         readable at 60% until the new ones arrive, the way API usage and Cost
+         behave. Only the very first load shows a spinner. */
+      .results.is-updating {
+        opacity: 0.6;
+        pointer-events: none;
       }
 
       .price-grid {
@@ -652,7 +671,9 @@ export class AIModelDetailView extends LitElement {
     }, 250);
   }
 
-  private async loadData(options: { preserveLoadingState?: boolean } = {}) {
+  private async loadData(
+    options: { preserveLoadingState?: boolean; markUpdating?: boolean } = {}
+  ) {
     if (!this.modelId) {
       this.error = 'Missing AI model id.';
       this.loading = false;
@@ -666,6 +687,9 @@ export class AIModelDetailView extends LitElement {
     if (!options.preserveLoadingState) {
       this.loading = true;
     }
+    if (options.markUpdating) {
+      this.updating = true;
+    }
     this.error = null;
 
     try {
@@ -678,6 +702,8 @@ export class AIModelDetailView extends LitElement {
       this.sessions = null;
       this.interactions = null;
       this.loading = false;
+      this.updating = false;
+      this.refreshInFlight = false;
       return;
     }
 
@@ -711,6 +737,7 @@ export class AIModelDetailView extends LitElement {
       this.interactions = null;
     } finally {
       this.loading = false;
+      this.updating = false;
       this.refreshInFlight = false;
     }
   }
@@ -743,7 +770,9 @@ export class AIModelDetailView extends LitElement {
       return;
     }
     this.selectedRange = value;
-    void this.loadData();
+    // The numbers on screen stay readable while the new window loads; only a
+    // page that has nothing to show yet gets a spinner.
+    void this.loadData({ preserveLoadingState: true, markUpdating: true });
   }
 
   private handleInteractionQueryChange(event: Event) {
@@ -757,7 +786,7 @@ export class AIModelDetailView extends LitElement {
     }
     this.interactionSearchDebounce = setTimeout(() => {
       this.interactionSearchDebounce = undefined;
-      void this.loadData();
+      void this.loadData({ preserveLoadingState: true, markUpdating: true });
     }, 300);
   }
 
@@ -2133,50 +2162,60 @@ export class AIModelDetailView extends LitElement {
                 : ''
             }
             ${
-              this.loading
+              this.loading && !this.summary
                 ? html`
                     <sl-card>
-                      <div class="loading-state">
+                      <div
+                        class="loading-state"
+                        role="status"
+                        aria-live="polite"
+                        aria-busy="true"
+                      >
                         <sl-spinner></sl-spinner>
                         <div>Loading AI model observability...</div>
                       </div>
                     </sl-card>
                   `
                 : html`
-                    <sl-card>
-                      <div slot="header" class="model-heading">
-                        <div class="model-title">Usage summary</div>
-                        ${
-                          this.trackedPeriodLabel
-                            ? html`<div class="meta-line">
-                                ${this.trackedPeriodLabel}
-                              </div>`
-                            : ''
-                        }
-                      </div>
-                      ${this.renderSummarySection()}
-                    </sl-card>
+                    <div
+                      class="results ${this.updating ? 'is-updating' : ''}"
+                      aria-busy=${this.updating ? 'true' : 'false'}
+                    >
+                      <sl-card>
+                        <div slot="header" class="model-heading">
+                          <div class="model-title">Usage summary</div>
+                          ${
+                            this.trackedPeriodLabel
+                              ? html`<div class="meta-line">
+                                  ${this.trackedPeriodLabel}
+                                </div>`
+                              : ''
+                          }
+                        </div>
+                        ${this.renderSummarySection()}
+                      </sl-card>
 
-                    <sl-card>
-                      <div slot="header" class="model-title">
-                        Session Observer
-                      </div>
-                      <div class="meta-line" style="margin-bottom: 0.75rem;">
-                        Recent sessions, replay, cost breakdown, and
-                        optimization suggestions scoped to this model.
-                      </div>
-                      <preloop-session-observer
-                        scope="ai_model"
-                        .scopeId=${this.modelId}
-                        .sessions=${this.sessions?.items || []}
-                        layout="embedded"
-                        defaultReplayMode="timeline"
-                        .features=${{
-                          summaries: true,
-                          auditLinks: true,
-                        }}
-                      ></preloop-session-observer>
-                    </sl-card>
+                      <sl-card>
+                        <div slot="header" class="model-title">
+                          Session Observer
+                        </div>
+                        <div class="meta-line" style="margin-bottom: 0.75rem;">
+                          Recent sessions, replay, cost breakdown, and
+                          optimization suggestions scoped to this model.
+                        </div>
+                        <preloop-session-observer
+                          scope="ai_model"
+                          .scopeId=${this.modelId}
+                          .sessions=${this.sessions?.items || []}
+                          layout="embedded"
+                          defaultReplayMode="timeline"
+                          .features=${{
+                            summaries: true,
+                            auditLinks: true,
+                          }}
+                        ></preloop-session-observer>
+                      </sl-card>
+                    </div>
                   `
             }
           </div>

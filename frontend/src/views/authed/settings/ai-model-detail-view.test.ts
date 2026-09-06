@@ -1033,4 +1033,52 @@ describe('AIModelDetailView', () => {
     const spanDays = (end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000);
     expect(Math.abs(spanDays - 30)).to.be.below(0.01);
   });
+
+  // A range change is a refinement, not a new page: the answers it is
+  // replacing stay readable, the way API usage and Cost behave.
+  it('keeps the previous numbers on screen while a new range loads', async () => {
+    const element = (await fixture(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    )) as AIModelDetailView;
+
+    await waitUntil(
+      () => !(element as any).loading,
+      'AI model detail view did not finish loading',
+      { timeout: 5000 }
+    );
+    await element.updateComplete;
+
+    const range = element.shadowRoot?.querySelector('time-range-select');
+    range?.dispatchEvent(
+      new CustomEvent('range-change', {
+        detail: { value: 'last-7' },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await element.updateComplete;
+
+    // No spinner card: the usage summary and the session observer are still
+    // there, dimmed and marked busy.
+    expect((element as any).updating, 'the reload is marked as an update').to.be
+      .true;
+    expect(element.shadowRoot?.querySelector('.loading-state')).to.equal(null);
+    const results = element.shadowRoot?.querySelector('.results');
+    expect(results, 'the answers stay mounted').to.exist;
+    expect(results?.classList.contains('is-updating')).to.be.true;
+    expect(results?.getAttribute('aria-busy')).to.equal('true');
+    expect(results?.textContent).to.contain('Usage summary');
+
+    await waitUntil(
+      () => !(element as any).updating,
+      'the range reload never settled',
+      { timeout: 5000 }
+    );
+    await element.updateComplete;
+    expect(
+      element.shadowRoot
+        ?.querySelector('.results')
+        ?.classList.contains('is-updating')
+    ).to.be.false;
+  });
 });
