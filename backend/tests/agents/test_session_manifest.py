@@ -181,3 +181,76 @@ def test_codex_capture_selects_parent_not_newest_child(tmp_path: Path) -> None:
     assert capture_codex_session_id(tmp_path, "parent") == "parent"
     with pytest.raises(SessionRestoreError):
         capture_codex_session_id(tmp_path, "child")
+
+
+def test_current_opencode_sqlite_scopes_events_and_excludes_credentials(
+    tmp_path: Path,
+) -> None:
+    import sqlite3
+
+    with sqlite3.connect(tmp_path / "opencode.db") as db:
+        db.executescript("""
+        CREATE TABLE project (id TEXT, worktree TEXT);
+        CREATE TABLE session (id TEXT, parent_id TEXT, project_id TEXT, workspace_id TEXT, permission TEXT, share_url TEXT);
+        CREATE TABLE message (id TEXT, session_id TEXT, data TEXT);
+        CREATE TABLE workspace (id TEXT, project_id TEXT, extra TEXT);
+        CREATE TABLE project_directory (project_id TEXT, directory TEXT);
+        CREATE TABLE account (id TEXT, access_token TEXT);
+        CREATE TABLE credential (id TEXT, value TEXT);
+        CREATE TABLE account_state (active_account_id TEXT);
+        CREATE TABLE event_sequence (aggregate_id TEXT, seq INT, owner_id TEXT);
+        CREATE TABLE event (id TEXT, aggregate_id TEXT, type TEXT, data TEXT);
+        CREATE TABLE session_input (id TEXT, session_id TEXT, prompt TEXT);
+        CREATE TABLE session_context_epoch (session_id TEXT, baseline TEXT);
+        CREATE TABLE session_message (id TEXT, session_id TEXT, data TEXT);
+        CREATE TABLE data_migration (name TEXT);
+        CREATE TABLE migration (id TEXT);
+        INSERT INTO project VALUES ('repo','/workspace');
+        INSERT INTO session VALUES ('a',NULL,'repo','wa',NULL,NULL);
+        INSERT INTO session VALUES ('b',NULL,'repo','wb',NULL,NULL);
+        INSERT INTO message VALUES ('ma','a','seeded apricot');
+        INSERT INTO message VALUES ('mb','b','foreign transcript');
+        INSERT INTO workspace VALUES ('wa','repo','selected workspace');
+        INSERT INTO workspace VALUES ('wb','repo','foreign workspace');
+        INSERT INTO account VALUES ('secret-account','foreign access token');
+        INSERT INTO credential VALUES ('secret-id','foreign credential');
+        INSERT INTO account_state VALUES ('secret-account');
+        INSERT INTO event_sequence VALUES ('a',2,'secret-account');
+        INSERT INTO event_sequence VALUES ('b',2,'secret-account');
+        INSERT INTO event VALUES ('ea','a','session.updated.1','{"sessionID":"a","info":{"permission":["stored permission"],"share":{"secret":"share secret"}}}');
+        INSERT INTO event VALUES ('eb','b','message.updated.1','{"data":"foreign event"}');
+        INSERT INTO session_input VALUES ('ia','a','selected input');
+        INSERT INTO session_input VALUES ('ib','b','foreign input');
+        INSERT INTO session_context_epoch VALUES ('a','selected epoch');
+        INSERT INTO session_context_epoch VALUES ('b','foreign epoch');
+        INSERT INTO session_message VALUES ('sma','a','selected message');
+        INSERT INTO session_message VALUES ('smb','b','foreign message');
+        """)
+    files = select_session_files(tmp_path, "opencode", "a")
+    for secret in (
+        b"foreign",
+        b"secret-account",
+        b"stored permission",
+        b"share secret",
+    ):
+        assert secret not in files["opencode.db"]
+    identity = {
+        "harness": "opencode",
+        "harness_version": "1.18.29",
+        "session_id": "a",
+        "thread_id": "thread-a",
+    }
+    archive = pack_session(files, **identity, expires_at=NOW + timedelta(days=1))
+    assert unpack_session(archive, **identity, now=NOW) == files
+    # A manifest alone cannot authorize foreign table rows added to a selected DB.
+    dirty = tmp_path / "dirty.db"
+    dirty.write_bytes(files["opencode.db"])
+    with sqlite3.connect(dirty) as db:
+        db.execute("INSERT INTO message VALUES ('evil','b','foreign transcript')")
+    archive = pack_session(
+        {"opencode.db": dirty.read_bytes()},
+        **identity,
+        expires_at=NOW + timedelta(days=1),
+    )
+    with pytest.raises(SessionRestoreError, match="unrelated database"):
+        unpack_session(archive, **identity, now=NOW)

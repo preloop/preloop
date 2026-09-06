@@ -83,7 +83,7 @@ for manual merge.
 Native session data is separate from workspace recovery. A versioned manifest
 names the harness/version, explicit session ID, implementation thread, file
 hashes, size limit and expiry. Codex checkpoints contain the selected rollout and
-verified child rollouts. OpenCode 1.2.6 uses SQLite: a consistent read transaction
+verified child rollouts. OpenCode 1.2.6 and 1.18.29 use SQLite: a consistent read transaction
 exports only that session graph into a new database, without unrelated sessions,
 account credentials, share secrets or persisted permission grants. A database
 copy followed by deletion is insufficient because unused SQLite pages may retain
@@ -106,11 +106,17 @@ conversation. The execution result records `native_resume`, `cold_handoff` or
 native retention must cover that window independently of workspace retention.
 
 Codex's CLI is pinned to npm release `0.153.4`, tested against the shipped universal
-image. `agent_config.codex_cli_version` accepts an exact release version for an
+image. OpenCode is pinned to `1.18.29`, with `agent_config.opencode_cli_version`
+as its exact-version override. Its current SQLite event/context tables are scoped
+to the selected conversation; account, credential and share tables stay empty.
+`agent_config.codex_cli_version` accepts an exact release version for an
 intentional upgrade. Upgrade tests must repeat the two-turn image smoke. A
 checkpoint from another CLI version is rejected explicitly. OpenCode's image
 version and storage schema are validated through the native manifest. Affinity
 and completion reminders always use explicit IDs, never latest-session flags.
+Wrappers install the selected CLI before one native restore, enter the primary
+checkout after setup, and log the actual CLI version and configured image reference.
+A configured image tag is not proof of the resolved runtime image digest.
 
 ## Local validation
 

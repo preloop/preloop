@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import shlex
 from typing import Any, Dict
 
 from aiodocker.exceptions import DockerError
@@ -417,6 +418,17 @@ fi
 
         # Prepare initialization commands (git clone, custom commands)
         init_commands = self._prepare_init_commands(execution_context)
+        git_config = execution_context.get("git_clone_config") or {}
+        enter_workspace = (
+            "cd "
+            + shlex.quote(self._primary_workspace_path(execution_context, git_config))
+            if git_config.get("repositories")
+            or (
+                git_config.get("enabled")
+                and execution_context.get("trigger_project_id")
+            )
+            else ""
+        )
 
         # Prepare post-execution commands (push, PR/MR creation)
         post_exec_commands = self._prepare_git_post_execution_commands(
@@ -504,18 +516,20 @@ echo ""
 
 # Run initialization commands (git clone, custom commands) if any
 {init_commands}
+{enter_workspace}
 
 # Restore a prior CLI session (correlated PR-comment resume), if the
 # workspace snapshot carried one.
-{session_blocks["decode"]}
 CODEX_HOME="${{CODEX_HOME:-$HOME/.codex}}"
-{session_blocks["restore"]}
 
 # Configure git to trust all directories (needed for cloned repos)
 git config --global --add safe.directory '*'
 
 # Configure Codex CLI in the universal image
 npm install -g @openai/codex@{cli_version}
+echo "PRELOOP_HARNESS_VERSION codex $(codex --version)"
+echo "Agent working directory: $(pwd)"
+printf '%s\n' {shlex.quote("Agent image reference: " + self.image)}
 {session_blocks["decode"]}
 {session_blocks["restore"]}
 

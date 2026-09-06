@@ -214,7 +214,8 @@ class TestOpenCodeBuildScript:
         assert "opencode run" in script
         assert "--model anthropic/model-1" in script
         assert "--format json" in script
-        assert "--dangerously-skip-permissions" in script
+        assert "--dangerously-skip-permissions" not in script
+        assert '"permission": "allow"' in script
         assert "opencode-json-log-filter.js" in script
         assert "node /tmp/opencode-json-log-filter.js" in script
         assert "python -u /tmp/opencode-json-log-filter.py" not in script
@@ -247,7 +248,8 @@ class TestOpenCodeBuildScript:
         script = agent._build_opencode_script(context)
 
         assert "--model preloop/deepseek/deepseek-v4-pro" in script
-        assert "--dangerously-skip-permissions" in script
+        assert "--dangerously-skip-permissions" not in script
+        assert '"permission": "allow"' in script
 
     def test_script_installs_opencode(self):
         """Script installs opencode-ai via npm."""

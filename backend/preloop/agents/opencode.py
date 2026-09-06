@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shlex
+import re
 from typing import Any, Dict
 
 from aiodocker.exceptions import DockerError
@@ -419,6 +420,13 @@ fi
         Returns:
             Shell script to execute
         """
+        cli_version = str(
+            (execution_context.get("agent_config") or {}).get(
+                "opencode_cli_version", "1.18.29"
+            )
+        )
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", cli_version):
+            raise ValueError("opencode_cli_version must be an exact release version")
         prompt = execution_context["prompt"]
         native_resume_guard = (
             '"0"'
@@ -435,6 +443,17 @@ fi
 
         # Prepare initialization commands (git clone, custom commands)
         init_commands = self._prepare_init_commands(execution_context)
+        git_config = execution_context.get("git_clone_config") or {}
+        enter_workspace = (
+            "cd "
+            + shlex.quote(self._primary_workspace_path(execution_context, git_config))
+            if git_config.get("repositories")
+            or (
+                git_config.get("enabled")
+                and execution_context.get("trigger_project_id")
+            )
+            else ""
+        )
 
         # Prepare post-execution commands (push, PR/MR creation)
         post_exec_commands = self._prepare_git_post_execution_commands(
@@ -494,7 +513,7 @@ fi
                 resume_command=(
                     '$PRELOOP_NUDGE_TIMEOUT opencode run --session "$_pl_sid" '
                     "--format json --print-logs --log-level WARN "
-                    f"--model {opencode_model_arg} --dangerously-skip-permissions "
+                    f"--model {opencode_model_arg} "
                     f'-- "$(cat {NUDGE_PROMPT_PATH})" 2>&1 '
                     "| node /tmp/opencode-json-log-filter.js "
                     f'| tee -a "{AGENT_OUTPUT_LOG_PATH}"'
@@ -539,17 +558,20 @@ echo ""
 
 # Run initialization commands (git clone, custom commands) if any
 {init_commands}
+{enter_workspace}
 
 # Restore a prior CLI session (correlated PR-comment resume), if the
 # workspace snapshot carried one.
-{session_blocks["decode"]}
-{session_blocks["restore"]}
-
 # Configure git to trust all directories (needed for cloned repos)
 git config --global --add safe.directory '*'
 
 # Install OpenCode CLI
-npm install -g opencode-ai@latest
+npm install -g opencode-ai@{cli_version}
+echo "PRELOOP_HARNESS_VERSION opencode $(opencode --version)"
+echo "Agent working directory: $(pwd)"
+printf '%s\n' {shlex.quote("Agent image reference: " + self.image)}
+{session_blocks["decode"]}
+{session_blocks["restore"]}
 
 # Write OpenCode configuration (unquoted heredoc for shell variable expansion).
 # The dollar-sign in schema key is escaped so it stays literal; env vars
@@ -705,7 +727,7 @@ echo "PRELOOP_AGENT_EXEC_START"
 # through verbatim, so stderr text reaches the execution log in order.
 set +e
 : > "{AGENT_OUTPUT_LOG_PATH}"
-opencode run $OPENCODE_RESUME_ARGS --format json --print-logs --log-level WARN --model {opencode_model_arg} --dangerously-skip-permissions -- "$(cat /tmp/prompt.txt)" 2>&1 | node /tmp/opencode-json-log-filter.js | tee -a "{AGENT_OUTPUT_LOG_PATH}"
+opencode run $OPENCODE_RESUME_ARGS --format json --print-logs --log-level WARN --model {opencode_model_arg} -- "$(cat /tmp/prompt.txt)" 2>&1 | node /tmp/opencode-json-log-filter.js | tee -a "{AGENT_OUTPUT_LOG_PATH}"
 PIPE_CODES=("${{PIPESTATUS[@]}}")
 OPENCODE_EXIT_CODE=${{PIPE_CODES[0]}}
 FILTER_EXIT_CODE=${{PIPE_CODES[1]:-0}}

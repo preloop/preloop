@@ -9,6 +9,8 @@ import json
 import os
 import subprocess
 import threading
+import shlex
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,8 @@ from preloop.agents.session_manifest import (
     select_session_files,
     restore_session,
     capture_codex_session_id,
+    pack_session,
+    unpack_session,
 )
 
 OPENCODE_IMAGE = "docker/sandbox-templates@sha256:2611218a51758e564159bb8ef895bdcb9a2c4b143305bbe340161966d7965234"
@@ -28,7 +32,10 @@ OPENCODE_IMAGE = "docker/sandbox-templates@sha256:2611218a51758e564159bb8ef895bd
     os.environ.get("NATIVE_SESSION_IMAGE_SMOKE") != "1",
     reason="opt-in local Docker image smoke",
 )
-def test_opencode_native_second_turn_preserves_seeded_fact(tmp_path: Path) -> None:
+@pytest.mark.parametrize("cli_version", ["1.2.6", "1.18.29"])
+def test_opencode_native_second_turn_preserves_seeded_fact(
+    tmp_path: Path, cli_version: str
+) -> None:
     requests: list[dict[str, Any]] = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -84,7 +91,7 @@ def test_opencode_native_second_turn_preserves_seeded_fact(tmp_path: Path) -> No
             "--user",
             "0",
             "--entrypoint",
-            "opencode",
+            "/bin/bash",
             "-v",
             f"{home}:/state",
             "-e",
@@ -96,6 +103,10 @@ def test_opencode_native_second_turn_preserves_seeded_fact(tmp_path: Path) -> No
             "-e",
             "OPENCODE_CONFIG_CONTENT=" + json.dumps(config),
             OPENCODE_IMAGE,
+            "-c",
+        ]
+        arguments = [
+            "opencode",
             "run",
             "--model",
             "fixture/fixture",
@@ -103,9 +114,19 @@ def test_opencode_native_second_turn_preserves_seeded_fact(tmp_path: Path) -> No
             "json",
         ]
         if session_id:
-            command += ["--session", session_id]
+            arguments += ["--session", session_id]
+        install = (
+            f"npm install -g opencode-ai@{cli_version} >/dev/null && "
+            if cli_version != "1.2.6"
+            else ""
+        )
+        shell = (
+            install
+            + f'test "$(opencode --version)" = {cli_version} && '
+            + shlex.join(arguments + [prompt])
+        )
         result = subprocess.run(
-            command + [prompt], capture_output=True, text=True, timeout=90, check=False
+            command + [shell], capture_output=True, text=True, timeout=120, check=False
         )
         assert result.returncode == 0, result.stderr + result.stdout
         return result.stdout
@@ -123,7 +144,18 @@ def test_opencode_native_second_turn_preserves_seeded_fact(tmp_path: Path) -> No
         files = select_session_files(
             tmp_path / "first/opencode", "opencode", session_id
         )
-        restore_session(files, tmp_path / "second/opencode")
+        identity = {
+            "harness": "opencode",
+            "harness_version": cli_version,
+            "session_id": session_id,
+            "thread_id": "local-smoke",
+        }
+        archive = pack_session(
+            files, **identity, expires_at=datetime.now(UTC) + timedelta(days=1)
+        )
+        verified = unpack_session(archive, **identity)
+        assert verified is not None
+        restore_session(verified, tmp_path / "second/opencode")
         requests.clear()
         second = run(
             tmp_path / "second",

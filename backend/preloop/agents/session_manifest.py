@@ -178,6 +178,18 @@ def select_opencode_database(path: Path, session_id: str) -> bytes:
         "permission",
         "session_share",
         "control_account",
+        "account",
+        "account_state",
+        "credential",
+        "workspace",
+        "project_directory",
+        "event",
+        "event_sequence",
+        "session_context_epoch",
+        "session_input",
+        "session_message",
+        "migration",
+        "data_migration",
     }
     with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as source:
         source.execute("PRAGMA trusted_schema=OFF")
@@ -199,6 +211,18 @@ def select_opencode_database(path: Path, session_id: str) -> bytes:
                 break
             ids.update(children)
         projects = {row[2] for row in sessions if row[0] in ids}
+        session_columns = {
+            row[1] for row in source.execute('PRAGMA table_info("session")')
+        }
+        workspaces = (
+            {
+                row[1]
+                for row in source.execute("SELECT id, workspace_id FROM session")
+                if row[0] in ids and row[1]
+            }
+            if "workspace_id" in session_columns
+            else set()
+        )
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary) / "opencode.db"
             with sqlite3.connect(target) as dest:
@@ -206,7 +230,15 @@ def select_opencode_database(path: Path, session_id: str) -> bytes:
                 for _, sql in schemas:
                     dest.execute(sql)
                 for table, _ in schemas:
-                    if table in {"permission", "session_share", "control_account"}:
+                    if table in {
+                        "permission",
+                        "session_share",
+                        "control_account",
+                        "account",
+                        "account_state",
+                        "credential",
+                        "project_directory",
+                    }:
                         continue
                     columns = [
                         row[1]
@@ -220,8 +252,32 @@ def select_opencode_database(path: Path, session_id: str) -> bytes:
                             continue
                         if table == "session" and row["id"] not in ids:
                             continue
+                        if table == "workspace" and row["id"] not in workspaces:
+                            continue
                         if (
-                            table in {"message", "part", "todo"}
+                            table in {"event", "event_sequence"}
+                            and row["aggregate_id"] not in ids
+                        ):
+                            continue
+                        if table == "event_sequence" and "owner_id" in row:
+                            row["owner_id"] = None
+                        if table == "event" and row["type"].startswith("session."):
+                            event = json.loads(row["data"])
+                            info = event.get("info")
+                            if isinstance(info, dict):
+                                for key in ("permission", "share", "share_url"):
+                                    info.pop(key, None)
+                            row["data"] = json.dumps(event, separators=(",", ":"))
+                        if (
+                            table
+                            in {
+                                "message",
+                                "part",
+                                "todo",
+                                "session_context_epoch",
+                                "session_input",
+                                "session_message",
+                            }
                             and row["session_id"] not in ids
                         ):
                             continue
@@ -358,7 +414,14 @@ def unpack_session(
                 raise SessionRestoreError("unrelated session files in checkpoint")
             if harness == "opencode" and "opencode.db" in result:
                 with sqlite3.connect(root / "opencode.db") as db:
-                    for table in ("control_account", "permission", "session_share"):
+                    for table in (
+                        "control_account",
+                        "permission",
+                        "session_share",
+                        "account",
+                        "account_state",
+                        "credential",
+                    ):
                         exists = db.execute(
                             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
                             (table,),
@@ -375,10 +438,21 @@ def unpack_session(
                     selected_path = root / "selected.db"
                     selected_path.write_bytes(selected["opencode.db"])
                     with sqlite3.connect(selected_path) as clean:
-                        if set(db.execute("SELECT id FROM session")) != set(
-                            clean.execute("SELECT id FROM session")
+                        for (table,) in db.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table'"
                         ):
-                            raise SessionRestoreError("unrelated database sessions")
+                            original_rows = sorted(
+                                db.execute(f'SELECT * FROM "{table}"').fetchall(),
+                                key=repr,
+                            )
+                            clean_rows = sorted(
+                                clean.execute(f'SELECT * FROM "{table}"').fetchall(),
+                                key=repr,
+                            )
+                            if original_rows != clean_rows:
+                                raise SessionRestoreError(
+                                    "unrelated database rows or persisted grants"
+                                )
             elif selected != result:
                 raise SessionRestoreError("unrelated session content")
         if datetime.fromisoformat(manifest["expires_at"]) <= now:
