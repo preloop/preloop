@@ -68,9 +68,12 @@ func dockerRunArgs(image string, env map[string]string, opts runnerDockerOpts) [
 		args = append(args, "-v", opts.WorkspaceHostDir+":"+runnerWorkspaceMount)
 	}
 	if opts.Launch && !opts.hasWorkspaceMount() {
-		// Images may run as a nonroot user with no /workspace directory.
-		// Supply a writable, execution-local workspace without changing UID.
-		// exec is required for repository scripts and test binaries.
+		// Overlay /workspace for launch jobs with no configured mount.
+		// Nonroot default images need a writable, executable workspace
+		// without a UID change. Image inspect on every launch is skipped:
+		// it cannot tell shipped files from an empty dir without creating
+		// a container. The overlay masks image-shipped /workspace files;
+		// keep those via persist_workspace or an explicit extra_mount.
 		args = append(args, "--tmpfs", runnerWorkspaceMount+":rw,exec,mode=1777")
 	}
 	for _, mount := range opts.ExtraMounts {

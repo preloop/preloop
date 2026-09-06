@@ -140,6 +140,49 @@ func TestRunnerLaunchWorkspaceMount(t *testing.T) {
 	}
 }
 
+func TestLaunchWorkspaceTmpfsIgnoresImageIdentity(t *testing.T) {
+	// Documented: launch without a configured /workspace mount always overlays
+	// tmpfs. Image names are not inspected; custom image files in /workspace
+	// stay visible only with persist_workspace or an explicit extra_mount.
+	called := false
+	prev := dockerCLI
+	dockerCLI = func(args ...string) error {
+		called = true
+		t.Logf("unexpected docker CLI: %v", args)
+		return prev(args...)
+	}
+	t.Cleanup(func() { dockerCLI = prev })
+
+	for _, image := range []string{
+		"preloop/opencode:latest",
+		"example/custom-with-workspace:1",
+		"ghcr.io/openai/codex-universal:latest",
+	} {
+		args := dockerRunArgs(image, nil, runnerDockerOpts{Launch: true})
+		if !containsPair(args, "--tmpfs", "/workspace:rw,exec,mode=1777") {
+			t.Fatalf("image %s missing workspace tmpfs: %v", image, args)
+		}
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "inspect") {
+			t.Fatalf("launch args must not inspect the image: %v", args)
+		}
+		if strings.Contains(joined, "--user") {
+			t.Fatal("launch must preserve the image user")
+		}
+	}
+	if called {
+		t.Fatal("dockerRunArgs must not inspect the image")
+	}
+
+	seeded := dockerRunArgs("example/custom-with-workspace:1", nil, runnerDockerOpts{
+		Launch:      true,
+		ExtraMounts: []string{"/tmp/seeded:/workspace:rw"},
+	})
+	if containsPair(seeded, "--tmpfs", "/workspace:rw,exec,mode=1777") {
+		t.Fatalf("explicit /workspace mount must skip tmpfs: %v", seeded)
+	}
+}
+
 // Run against an already-local nonroot image; the script is deterministic,
 // uses no model credentials, and Docker networking is disabled.
 func TestRunnerNonrootWorkspaceDockerIntegration(t *testing.T) {
