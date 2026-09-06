@@ -113,26 +113,47 @@ runs the service, since the unit does not inherit your shell exports.
 
 ## What the runner executes
 
-Each leased job runs the flow's agent image via
-`docker run --rm -e ... <image>` with the same environment contract as
-hosted executions: `EXECUTION_ID`, `FLOW_ID`, `AGENT_PROMPT`,
-`AGENT_CONFIG`, `AI_MODEL`, `AI_MODEL_PROVIDER`, `PRELOOP_API_TOKEN`,
-and `PRELOOP_URL`. Values are passed through the process environment,
-not argv, so they don't appear in `ps`. Container stdout/stderr is
-shipped back and shows up in the console execution view.
+Private Docker execution supports **Codex and OpenCode**. Update both the
+control plane and CLI together: old or unknown launch protocol versions fail
+explicitly. Other harness types require a hosted executor until their private
+launch adapter is implemented.
 
-`PRELOOP_API_TOKEN` is a **flow-execution token**, not the partner
-account's long-lived key. It is scoped to that execution (`mcp:read` /
-`mcp:write`), expires in about two hours, and is deactivated when the
-execution completes, fails, or is halted. Root on the runner host can
-still `docker inspect` the running container and read it for that
-window. `AGENT_CONFIG` is the flow's agent settings (image, type); the
-runner strips credential-shaped keys before injecting it. Model and MCP
-credentials stay on the control plane and are used through that token.
+The control plane builds a versioned launch specification using the same
+Codex/OpenCode script and environment builders as hosted execution. The CLI
+runs a static Docker bootstrap that launches this script. Repository clone,
+setup commands, prompt, model routing, MCP configuration and the existing
+post-execution git wrapper therefore run inside the container.
 
-When the flow omits `image` / `docker_image`, the control plane injects
-the same per-agent-type default the hosted executors use
-(`OPENCODE_IMAGE`, `CODEX_IMAGE`, `AIDER_IMAGE`, `GEMINI_IMAGE`).
+Scripts and credentials are transient. Persisted leases contain configuration
+and execution references; delivery after a queue wait or reconnect regenerates
+the model, git and MCP credentials from the execution's stored trigger and
+resolved prompt. Changes to the leased flow configuration cause redelivery to
+fail so a retry can select the new settings. The process environment carries
+secret values rather than Docker command-line arguments. Root on the runner
+host can still inspect the container environment. Gateway-enabled runs receive
+a scoped flow token; direct-provider runs receive the configured provider key.
+
+A zero exit code is insufficient. The agent must write a nonempty JSON object
+to `/workspace/result.json` with a recognized `status` (`success`, `succeeded`,
+`pass`, `passed`, or completed-evaluation `fail`) or audit `verdict` (`pass`,
+`passed`, `pass_with_findings`, or `fail`). Failure/error and incomplete reports
+do not confirm success. The runner removes stale results before launch,
+requires exit zero, and sends the bounded report (256 KiB maximum) separately
+from ordinary logs. The API independently checks the completion contract.
+Workspace source and evidence archives are not uploaded by this protocol.
+This is an agent completion report, not independent verification of its tests.
+
+When the flow omits `image` / `docker_image`, the control plane uses the hosted
+Codex/OpenCode default. The default `ghcr.io/openai/codex-universal:latest`
+entrypoint is preserved because it initializes language runtimes. Custom
+images normally run with `/bin/bash` as the entrypoint. They must provide
+Bash, Python 3, Git, Node/npm, writable `/workspace`, a writable home directory,
+and the dependencies required by repository setup/tests. The shared bootstrap
+installs the configured CLI version. An image whose own entrypoint initializes
+its environment and delegates arguments to Bash can opt into
+`agent_config.runner.preserve_image_entrypoint: true` (also use this for pinned
+or mirrored codex-universal images). Images that cannot execute this bootstrap
+fail explicitly; an idle shell cannot be reported as successful work.
 
 ## Trusted runner options
 

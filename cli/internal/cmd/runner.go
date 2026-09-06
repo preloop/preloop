@@ -193,6 +193,8 @@ func loadOrRegisterRunner(client *api.Client, name, hostname string, labels []st
 }
 
 type leasedJobOutcome struct {
+	result      map[string]any
+	exitCode    int
 	executionID string
 	status      string
 	errMsg      string
@@ -246,10 +248,13 @@ func writeJobOutcome(conn *websocket.Conn, outcome leasedJobOutcome) error {
 		}
 	}
 	return conn.WriteJSON(map[string]any{
-		"type":         "complete",
-		"execution_id": outcome.executionID,
-		"status":       outcome.status,
-		"error":        outcome.errMsg,
+		"type":           "complete",
+		"launch_version": runnerLaunchVersion,
+		"exit_code":      outcome.exitCode,
+		"result":         outcome.result,
+		"execution_id":   outcome.executionID,
+		"status":         outcome.status,
+		"error":          outcome.errMsg,
 	})
 }
 
@@ -574,7 +579,27 @@ func beginLeasedJob(
 		return writeJobOutcome(conn, outcome)
 	}
 
+	launch, launchErr := runnerLaunchFromJob(job)
+	if launchErr != nil {
+		outcome := leasedJobOutcome{executionID: executionID, status: "FAILED", errMsg: launchErr.Error()}
+		rememberOutcome(lastComplete, outcome)
+		return writeJobOutcome(conn, outcome)
+	}
 	env := runnerJobEnv(job, apiURL)
+	for key, value := range launch["env"].(map[string]any) {
+		env[key] = value.(string)
+	}
+	env["PRELOOP_RUNNER_SCRIPT"] = launch["script"].(string)
+	env["PRELOOP_MCP_URL"] = strings.TrimRight(apiURL, "/") + "/mcp/v1"
+	opts.Launch = true
+	opts.PreserveEntrypoint = image == "ghcr.io/openai/codex-universal:latest"
+	if cfg, ok := job["agent_config"].(map[string]any); ok {
+		if runner, ok := cfg["runner"].(map[string]any); ok {
+			if preserve, ok := runner["preserve_image_entrypoint"].(bool); ok {
+				opts.PreserveEntrypoint = preserve
+			}
+		}
+	}
 	if optsErr != nil {
 		reason := optsErr.Error()
 		outcome := leasedJobOutcome{
@@ -641,14 +666,17 @@ func requestJobHalt(halted *atomic.Bool, runningCmd *exec.Cmd) bool {
 
 func waitDockerJob(cmd *exec.Cmd, executionID string, buf *bytes.Buffer, halted *atomic.Bool) leasedJobOutcome {
 	err := cmd.Wait()
-	lines := splitNonEmptyLines(buf.String())
+	result, lines, resultErr := runnerStructuredResult(splitNonEmptyLines(buf.String()))
 	if err != nil {
 		if halted != nil && halted.Load() {
 			return leasedJobOutcome{executionID: executionID, status: "STOPPED", lines: lines}
 		}
 		return leasedJobOutcome{executionID: executionID, status: "FAILED", errMsg: err.Error(), lines: lines}
 	}
-	return leasedJobOutcome{executionID: executionID, status: "SUCCEEDED", lines: lines}
+	if resultErr != nil {
+		return leasedJobOutcome{executionID: executionID, status: "FAILED", errMsg: resultErr.Error(), lines: lines}
+	}
+	return leasedJobOutcome{executionID: executionID, status: "SUCCEEDED", lines: lines, result: result}
 }
 
 func splitNonEmptyLines(output string) []string {

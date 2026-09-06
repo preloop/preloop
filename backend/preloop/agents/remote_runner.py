@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_flow_execution_log
 from preloop.models.crud.flow_runner import crud_flow_runner
-from preloop.services.flow_runtime_token import create_flow_runtime_token
 from preloop.services.runner_service import (
     DEFAULT_QUEUE_TIMEOUT,
     lease_job,
@@ -19,6 +18,11 @@ from preloop.services.runner_service import (
 )
 
 from .base import AgentExecutionResult, AgentExecutor, AgentStatus
+from .runner_launch import (
+    LAUNCH_VERSION,
+    flow_launch_fingerprint,
+    prepare_runner_delivery,
+)
 from .images import agent_config_has_image, default_agent_image
 
 logger = logging.getLogger(__name__)
@@ -75,6 +79,11 @@ class RemoteRunnerExecutor(AgentExecutor):
                 self.pool,
                 summary.get("agent_type"),
             )
+            launch_context = dict(execution_context)
+            launch_context.update(
+                {key: payload[key] for key in ("agent_type", "agent_config")}
+            )
+            payload = await prepare_runner_delivery(self.db, payload, launch_context)
             await _push_job(runner.id, payload)
             return f"runner:{runner.id}:{execution_id}"
 
@@ -133,19 +142,7 @@ class RemoteRunnerExecutor(AgentExecutor):
                     payload=payload,
                 )
                 if runner:
-                    if flow is not None:
-                        token, _ = create_flow_runtime_token(
-                            self.db,
-                            flow=flow,
-                            execution_id=execution.id,
-                        )
-                        payload["account_api_token"] = token
-                        if not token:
-                            logger.warning(
-                                "Could not create temporary API key record "
-                                "for account %s",
-                                getattr(flow, "account_id", self.account_id),
-                            )
+                    payload = await prepare_runner_delivery(self.db, payload)
                     execution.runner_id = runner.id
                     execution.agent_session_reference = (
                         f"runner:{runner.id}:{execution.id}"
@@ -179,6 +176,15 @@ class RemoteRunnerExecutor(AgentExecutor):
             error_message=execution.error_message if execution else None,
             artifacts=execution.result if execution else None,
         )
+
+    async def get_result_artifact(
+        self, session_reference: str
+    ) -> Optional[Dict[str, Any]]:
+        """Expose the runner's validated report to normal flow finalization."""
+        execution = crud_flow_execution.get(
+            self.db, id=_execution_id_from_ref(session_reference)
+        )
+        return execution.result if execution else None
 
     async def stop(self, session_reference: str) -> None:
         runner_id = _runner_id_from_ref(session_reference)
@@ -244,6 +250,8 @@ class RemoteRunnerExecutor(AgentExecutor):
             return getattr(flow, key, default) if flow is not None else default
 
         payload: Dict[str, Any] = {
+            "launch_version": LAUNCH_VERSION,
+            "flow_launch_fingerprint": flow_launch_fingerprint(flow),
             "execution_id": str(execution_id),
             "flow_id": str(flow_id),
             "agent_type": agent_type,
