@@ -150,6 +150,30 @@ describe('FlowsView', () => {
       fetchStub
         .getCalls()
         .filter((call) => (call.args[1] as RequestInit)?.method === 'PUT');
+
+    // Pause confirms and names the flows, exactly as the agents list does.
+    await waitUntil(
+      () => !!document.querySelector('confirm-dialog'),
+      'no confirm dialog'
+    );
+    const dialog = document.querySelector('confirm-dialog')!;
+    await (dialog as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    const dialogText = dialog.shadowRoot!.textContent!.replace(/\s+/g, ' ');
+    expect(dialogText).to.contain('Pause 3 flows?');
+    expect(dialogText).to.contain('Nightly sweep, PR reviewer, Release notes');
+    expect(
+      patches().length,
+      'nothing moves before the operator agrees'
+    ).to.equal(0);
+
+    const confirm = Array.from(
+      dialog.shadowRoot!.querySelectorAll<HTMLElement>('sl-button')
+    ).find((button) => button.textContent?.trim() === 'Pause flows')!;
+    await (confirm as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    confirm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
     await waitUntil(() => patches().length === 3, 'not every flow was paused');
     expect(
       patches()
@@ -169,6 +193,7 @@ describe('FlowsView', () => {
       () => element.selection.count === 0,
       'selection survived the run'
     );
+    resetConfirmDialogForTests();
   });
 
   it('names the flows it is about to delete and clears with Escape', async () => {

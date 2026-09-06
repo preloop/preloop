@@ -1336,6 +1336,28 @@ export class FlowsView extends LitElement {
     }
 
     const enable = actionId === 'resume';
+    const title = enable
+      ? rows.length === 1
+        ? 'Resume flow'
+        : 'Resume flows'
+      : rows.length === 1
+        ? 'Pause flow'
+        : 'Pause flows';
+    // Pause and resume confirm too, like the agents list: moving twelve flows
+    // is one keystroke away and the dialog is the only place the count and the
+    // names are spelled out.
+    const confirmed = await confirmBulkAction({
+      title,
+      message: `${enable ? 'Resume' : 'Pause'} ${count}?`,
+      names: rows.map((row) => row.name),
+      detail: enable
+        ? 'Their triggers start firing again. Nothing runs until the next event.'
+        : 'Their triggers stop firing. Runs already in flight finish.',
+      confirmLabel: title,
+      variant: 'primary',
+    });
+    if (!confirmed) return;
+
     await this.selection.run(
       actionId,
       items,
