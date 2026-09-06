@@ -504,6 +504,30 @@ describe('console-header approval deadlines', () => {
       ?.textContent?.trim();
   }
 
+  it('omits already-expired requests from the pending menu and badge', async () => {
+    approvals = [approval('alive', 5_000), approval('already-expired', -1_000)];
+    await mount();
+    expect(names()).to.deep.equal(['alive']);
+    expect(badge()).to.equal('1');
+    expect(
+      el.shadowRoot!.querySelector('.section-count')!.textContent
+    ).to.contain('(1)');
+    expect(clock.countTimers()).to.equal(1);
+  });
+
+  it('ignores a websocket create whose deadline has already passed', async () => {
+    approvals = [approval('alive', 5_000)];
+    await mount();
+    receiveApproval({
+      ...approval('stale', -1_000),
+      type: 'approval_created',
+      approval_request_id: 'stale',
+    });
+    await el.updateComplete;
+    expect(names()).to.deep.equal(['alive']);
+    expect(badge()).to.equal('1');
+  });
+
   it('removes expired rows, decision buttons and badge at each deadline without a message', async () => {
     approvals = [approval('first', 1_000), approval('second', 3_000)];
     await mount();

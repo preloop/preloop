@@ -120,6 +120,7 @@ export class ConsoleHeader extends LitElement {
   private unsubscribeNotifications?: () => void;
   private unsubscribeConnectionState?: () => void;
   private approvalExpiryTimer?: ReturnType<typeof setTimeout>;
+  private pruningApprovalExpiry = false;
   private loadingPendingApprovals = false;
 
   private refreshPendingApprovals = (): void => {
@@ -404,10 +405,26 @@ export class ConsoleHeader extends LitElement {
     this.approvalExpiryTimer = undefined;
   }
 
-  protected willUpdate(changed: PropertyValues): void {
-    if (changed.has('_pendingApprovals')) {
-      this.pruneAndScheduleApprovalExpiry();
+  /**
+   * Drop expired rows and arm the next deadline after the current update.
+   * Mutating `_pendingApprovals` from willUpdate dirties the same cycle.
+   */
+  protected updated(changed: PropertyValues): void {
+    if (!changed.has('_pendingApprovals') || this.pruningApprovalExpiry) {
+      return;
     }
+    this.pruningApprovalExpiry = true;
+    try {
+      this.pruneAndScheduleApprovalExpiry();
+    } finally {
+      this.pruningApprovalExpiry = false;
+    }
+  }
+
+  private unexpiredPendingApprovals(): ApprovalRequest[] {
+    return this._pendingApprovals.filter((approval) =>
+      this.isUnexpiredPendingApproval(approval)
+    );
   }
 
   private pruneAndScheduleApprovalExpiry(): void {
@@ -415,9 +432,7 @@ export class ConsoleHeader extends LitElement {
     this.approvalExpiryTimer = undefined;
     if (!this.isConnected) return;
 
-    const pending = this._pendingApprovals.filter((approval) =>
-      this.isUnexpiredPendingApproval(approval)
-    );
+    const pending = this.unexpiredPendingApprovals();
     if (pending.length !== this._pendingApprovals.length) {
       this._pendingApprovals = pending;
     }
@@ -591,9 +606,7 @@ export class ConsoleHeader extends LitElement {
    * operator to a page where every button is disabled.
    */
   private get liveApprovals(): ApprovalRequest[] {
-    return this._pendingApprovals.filter((approval) =>
-      this.isUnexpiredPendingApproval(approval)
-    );
+    return this.unexpiredPendingApprovals();
   }
 
   private get totalNotificationCount(): number {
@@ -602,7 +615,7 @@ export class ConsoleHeader extends LitElement {
     ).length;
     return (
       this._runningExecutions.length +
-      this.liveApprovals.length +
+      this.unexpiredPendingApprovals().length +
       unreadNotifications
     );
   }
@@ -1070,8 +1083,8 @@ export class ConsoleHeader extends LitElement {
   }
 
   private renderApprovalsSection() {
-    const approvals = this.liveApprovals;
-    if (approvals.length === 0) return '';
+    const pending = this.unexpiredPendingApprovals();
+    if (pending.length === 0) return '';
 
     return html`
       <div class="notification-section">
@@ -1079,7 +1092,7 @@ export class ConsoleHeader extends LitElement {
           <div class="section-title">
             <sl-icon name="shield-check"></sl-icon>
             Pending approvals
-            <span class="section-count">(${approvals.length})</span>
+            <span class="section-count">(${pending.length})</span>
           </div>
           <a
             class="section-link"
@@ -1088,7 +1101,7 @@ export class ConsoleHeader extends LitElement {
           >
         </div>
         <div class="approval-list">
-          ${approvals.slice(0, 5).map(
+          ${pending.slice(0, 5).map(
             (approval) => html`
               <div
                 class="approval-item"
@@ -1232,7 +1245,7 @@ export class ConsoleHeader extends LitElement {
   render() {
     const hasContent =
       this._runningExecutions.length > 0 ||
-      this.liveApprovals.length > 0 ||
+      this.unexpiredPendingApprovals().length > 0 ||
       this._userNotifications.length > 0;
 
     return html`
