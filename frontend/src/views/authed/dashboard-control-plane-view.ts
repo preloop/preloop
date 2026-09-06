@@ -59,6 +59,7 @@ import {
   loadAttentionInputs,
   type PrefetchedAttentionInputs,
 } from '../../utils/attention-data';
+import { publishAttentionSummary } from '../../utils/attention-summary';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import type {
   AccountGatewayUsageSummaryResponse,
@@ -1011,10 +1012,14 @@ export class DashboardView extends AuthedElement {
            at 240px the card showed three lines and an expanded row had to be
            scrolled to be read. It is stated against the viewport as well as
            in pixels so a short laptop window shrinks the feed instead of
-           pushing the Usage card off the rail. */
+           pushing the Usage card off the rail.
+
+           360px still left three and a half rows at 1440x900, with the
+           fourth clipped mid-line, while the left column ended a screen
+           earlier: 480px (48dvh) uses the height the rail already has. */
         .column-layout.dashboard > .side-column > activity-feed {
           flex: 1 1 0;
-          min-height: min(360px, 34dvh);
+          min-height: min(480px, 48dvh);
           /* The rail is bounded and stretched above, so here (and only
              here) the column decides the feed's height and the card's own
              360px stop would only make the list shorter than the space it
@@ -2740,6 +2745,10 @@ export class DashboardView extends AuthedElement {
     }
     const items = deriveAttentionItems(this.attentionInputs).items;
     this.attentionMemo = { inputs: this.attentionInputs, items };
+    // The bell in the header cannot afford this derivation's requests, and
+    // "No notifications" over a strip saying "2 need attention" reads as a
+    // contradiction. Publish the counts the strip is about to show.
+    publishAttentionSummary(items);
     return items;
   }
 

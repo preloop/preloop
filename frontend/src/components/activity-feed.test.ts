@@ -984,6 +984,60 @@ describe('activity-feed', () => {
     });
   });
 
+  /**
+   * The rail bounds the list, so a full feed always overflows. Without a
+   * count in the footer the card read as broken rather than scrollable: no
+   * visible scrollbar, and a row clipped mid-line as the only hint.
+   */
+  describe('overflow footer', () => {
+    function ingestSessions(el: ActivityFeed, count: number): void {
+      for (let index = 0; index < count; index += 1) {
+        el.ingest('runtime_sessions', {
+          type: 'runtime_session_created',
+          timestamp: new Date(Date.now() - index * 60000).toISOString(),
+          payload: {
+            runtime_session_id: `sess-${index}`,
+            runtime_principal_name: `Agent ${index}`,
+          },
+        });
+      }
+    }
+
+    it('counts the rows below the fold', async () => {
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed
+          style="--activity-feed-list-max-height: 90px;"
+        ></activity-feed>`
+      );
+      ingestSessions(el, 8);
+      await el.updateComplete;
+      await waitUntil(
+        () => Boolean(el.shadowRoot!.querySelector('.footer .more')),
+        'overflow count never rendered'
+      );
+
+      const more = el.shadowRoot!.querySelector('.footer .more')!;
+      expect(more.textContent!.trim()).to.match(/^\d+ more$/);
+      const hidden = Number(more.textContent!.trim().split(' ')[0]);
+      expect(hidden).to.be.greaterThan(0);
+      expect(hidden).to.be.lessThan(8);
+      expect(el.shadowRoot!.querySelector('.footer a')!.textContent).to.contain(
+        'View audit'
+      );
+    });
+
+    it('says nothing when the list fits', async () => {
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      ingestSessions(el, 2);
+      await el.updateComplete;
+      await el.updateComplete;
+
+      expect(el.shadowRoot!.querySelector('.footer .more')).to.not.exist;
+    });
+  });
+
   describe('outcomeLabel', () => {
     it('turns a status enum into a word a reader recognises', () => {
       expect(outcomeLabel('success')).to.equal('Succeeded');

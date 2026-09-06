@@ -127,6 +127,15 @@ export type AgentsViewMode = 'list' | 'cards' | 'canvas';
 
 const VIEW_MODE_KEY = 'preloop.agents.view_mode';
 
+/**
+ * One relative-time cutoff for "Last seen", in the list and on the cards.
+ * The Overview inventory says "6w ago" for an agent this page called
+ * "7/22/2026", which is one fact in two formats; 90 days is the Overview's
+ * window. Past it the absolute date is shown, with the full timestamp in the
+ * cell's title either way.
+ */
+const RELATIVE_TIME_DAYS = 90;
+
 export type AgentListSortKey =
   'agent' | 'status' | 'owner' | 'model' | 'requests' | 'spend' | 'last_seen';
 
@@ -2088,7 +2097,9 @@ export class AgentsView extends LitElement {
       return html`<span class=${className} title="Never seen">Never</span>`;
     }
     return html`<span class=${className} title=${this.formatDateTime(value)}
-      >${formatRelativeTime(value)}</span
+      >${formatRelativeTime(value, undefined, {
+        maxRelativeDays: RELATIVE_TIME_DAYS,
+      })}</span
     >`;
   }
 
@@ -3283,10 +3294,12 @@ export class AgentsView extends LitElement {
         >
           ${
             row.lastSeen
-              ? // A month of relative time: "23d ago" still reads as recent
-                // activity, "213d ago" is arithmetic, so that becomes a date.
+              ? // Ninety days of relative time, the Overview's cutoff: the
+                // same agent read "6w ago" there and "7/22/2026" here, which
+                // is one fact in two formats. The absolute value stays in the
+                // cell's title.
                 formatRelativeTime(row.lastSeen, undefined, {
-                  maxRelativeDays: 30,
+                  maxRelativeDays: RELATIVE_TIME_DAYS,
                 })
               : 'Never'
           }
@@ -3387,7 +3400,7 @@ export class AgentsView extends LitElement {
                   ${this.renderSortableHeader('owner', 'Owner')}
                   ${this.renderSortableHeader('model', 'Model')}
                   ${this.renderSortableHeader('requests', 'Requests', true)}
-                  ${this.renderSortableHeader('spend', 'Spend (est.)', true)}
+                  ${this.renderSortableHeader('spend', '$ est.', true)}
                   ${this.renderSortableHeader('last_seen', 'Last seen')}
                   <th class="actions-cell">
                     <span class="visually-hidden">Actions</span>
@@ -3671,7 +3684,7 @@ export class AgentsView extends LitElement {
           }
 
           <div class="metric-row">
-            <span class="label">Estimated Cost</span>
+            <span class="label">Estimated spend</span>
             <span class="value numeric"
               >${this.formatMoney(estimatedCost!)}</span
             >
@@ -3685,7 +3698,7 @@ export class AgentsView extends LitElement {
           </div>
 
           <div class="metric-row">
-            <span class="label">Last Seen</span>
+            <span class="label">Last seen</span>
             ${this.renderRelativeTimestamp(
               liveActivity?.lastActivityAt || lastSeen,
               'value'

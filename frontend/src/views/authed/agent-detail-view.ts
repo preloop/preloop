@@ -2778,7 +2778,7 @@ export class AgentDetailView extends LitElement {
             <div
               style="display: flex; justify-content: space-between; align-items: center; width: 100%;"
             >
-              ${this.renderStatLabel('Estimated Spend')}
+              ${this.renderStatLabel('Estimated spend')}
               <select
                 style="background: transparent; border: none; font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600); cursor: pointer; outline: none;"
                 .value=${this.budgetTimeRange}

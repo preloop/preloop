@@ -254,7 +254,7 @@ describe('AgentsView', () => {
       'Owner',
       'Model',
       'Requests',
-      'Spend (est.)',
+      '$ est.',
       'Last seen',
       'Actions',
     ]);
@@ -758,7 +758,7 @@ describe('AgentsView', () => {
     );
   });
 
-  it('keeps last seen relative for a month and absolute after it', async () => {
+  it('keeps last seen relative to ninety days and absolute after it', async () => {
     const now = Date.now();
     const tenDaysAgo = new Date(now - 10 * 86400000).toISOString();
     const twoHundredDaysAgo = new Date(now - 200 * 86400000).toISOString();
@@ -789,6 +789,36 @@ describe('AgentsView', () => {
     expect(lastSeen).to.contain(
       new Date(twoHundredDaysAgo).toLocaleDateString()
     );
+  });
+
+  it('still reads relative at 45 days, like the Overview inventory', async () => {
+    const fortyFiveDaysAgo = new Date(Date.now() - 45 * 86400000).toISOString();
+    agentItems = [
+      {
+        ...makeAgent('agent-1', 'Quiet agent', 'claude_code'),
+        last_seen_at: fortyFiveDaysAgo,
+        last_activity_at: fortyFiveDaysAgo,
+        is_active_now: false,
+        activity_status: 'idle',
+      },
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const listCell = el
+      .shadowRoot!.querySelector('tbody tr')!
+      .children[6].textContent?.trim();
+    expect(listCell).to.equal('6w ago');
+
+    localStorage.setItem('preloop.agents.view_mode', 'cards');
+    const cards = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(cards);
+    const cardText =
+      cards.shadowRoot!.querySelector('.cards')!.textContent || '';
+    expect(cardText).to.contain('6w ago');
+    expect(cardText).to.contain('Last seen');
+    expect(cardText).to.contain('Estimated spend');
   });
 
   it('counts the rows the filters matched next to the view switcher', async () => {

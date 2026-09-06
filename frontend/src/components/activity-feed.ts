@@ -1180,7 +1180,10 @@ export class ActivityFeed extends LitElement {
   @state() private connected = false;
   /** The list the feed looked up itself, when the host provided none. */
   @state() private fetchedUsers: FeedContext['users'] = [];
+  /** Rows currently below the fold of the scroller; 0 when nothing overflows. */
+  @state() private belowFold = 0;
 
+  private sizeObserver: ResizeObserver | null = null;
   private unsubscribes: (() => void)[] = [];
   private seen = new Set<string>();
   /** Resolved (never rejected) once the user lookup has had its turn. */
@@ -1517,9 +1520,21 @@ export class ActivityFeed extends LitElement {
         height: 0.75rem;
       }
 
+      /* One hairline row: what is still below the fold on the left, the way
+         out on the right. */
       .footer {
+        align-items: baseline;
         border-top: 1px solid var(--console-hairline);
+        display: flex;
+        gap: var(--sl-spacing-small);
+        justify-content: space-between;
         padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+      }
+
+      .footer .more {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+        font-variant-numeric: tabular-nums;
       }
 
       .footer a {
@@ -1559,6 +1574,8 @@ export class ActivityFeed extends LitElement {
   }
 
   disconnectedCallback(): void {
+    this.sizeObserver?.disconnect();
+    this.sizeObserver = null;
     for (const unsubscribe of this.unsubscribes) {
       try {
         unsubscribe();
@@ -1742,7 +1759,39 @@ export class ActivityFeed extends LitElement {
       : null;
   }
 
+  protected firstUpdated(): void {
+    // The rail decides the card's height, and the height decides how many
+    // rows are out of sight: re-measure whenever either moves.
+    if (typeof ResizeObserver === 'function') {
+      this.sizeObserver = new ResizeObserver(() => this.measureBelowFold());
+      this.sizeObserver.observe(this);
+    }
+    this.measureBelowFold();
+  }
+
+  /**
+   * How many rows sit entirely under the fold of the scroller.
+   *
+   * Without it the card looked broken rather than scrollable: the list has no
+   * visible scrollbar, so a row clipped mid-line was the only hint that
+   * anything followed. A row that is partly visible is not counted, because
+   * it is already saying "there is more".
+   */
+  private measureBelowFold(): void {
+    const list = this.renderRoot?.querySelector<HTMLElement>('.rows');
+    if (!list) {
+      if (this.belowFold !== 0) this.belowFold = 0;
+      return;
+    }
+    const fold = list.getBoundingClientRect().bottom;
+    const hidden = Array.from(
+      list.querySelectorAll<HTMLElement>('.row')
+    ).filter((row) => row.getBoundingClientRect().top >= fold - 1).length;
+    if (hidden !== this.belowFold) this.belowFold = hidden;
+  }
+
   protected updated(changed: Map<string, unknown>): void {
+    this.measureBelowFold();
     // An opened row whose body is below the fold of a short rail has told the
     // operator nothing, so the row moves to the top of the list and its body
     // takes the height that is left. The list is scrolled by hand rather than
@@ -1995,7 +2044,7 @@ export class ActivityFeed extends LitElement {
       </div>`;
     }
     return html`
-      <div class="rows">
+      <div class="rows" @scroll=${() => this.measureBelowFold()}>
         ${repeat(
           this.rows,
           (row) => row.event.id,
@@ -2019,7 +2068,14 @@ export class ActivityFeed extends LitElement {
           }
         </div>
         ${this.renderBody()}
-        <div class="footer"><a href="/console/audit">View audit →</a></div>
+        <div class="footer">
+          ${
+            this.belowFold > 0
+              ? html`<span class="more">${this.belowFold} more</span>`
+              : nothing
+          }
+          <a href="/console/audit">View audit →</a>
+        </div>
       </sl-card>
     `;
   }
