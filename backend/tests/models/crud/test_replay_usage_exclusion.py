@@ -107,6 +107,9 @@ def test_get_gateway_usage_for_execution_excludes_replay_rows(
         "total_tokens": 150,
         "input_tokens": 100,
         "output_tokens": 50,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "uncached_input_tokens": 0,
     }
     assert usage["estimated_cost"] == 0.25
     assert usage["has_pricing"] is True

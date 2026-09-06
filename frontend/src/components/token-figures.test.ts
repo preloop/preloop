@@ -196,8 +196,11 @@ describe('token-figures', () => {
   });
 
   it('says nothing for a row with no usage, rather than a measured zero', async () => {
+    const usage: GatewayTokenUsage | null = null;
     const el = await fixture<TokenFigures>(
-      html`<token-figures .usage=${null}></token-figures>`
+      usage == null
+        ? html`<token-figures></token-figures>`
+        : html`<token-figures .usage=${usage}></token-figures>`
     );
     expect(text(el)).to.equal('-');
     expect(

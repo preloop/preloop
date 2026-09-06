@@ -15,6 +15,37 @@ from preloop.utils.agent_kind import (
 )
 
 
+def _agree_direction_pair(
+    wire: int, product: int, wire_name: str, product_name: str
+) -> tuple[int, int]:
+    """Return one agreed count for a wire name and its product alias.
+
+    Zero means the caller did not supply that name (the field default). A
+    caller that supplies both names must give the same non-zero count.
+
+    Args:
+        wire: Provider-facing count (prompt/completion).
+        product: Product-facing count (input/output).
+        wire_name: Field name used in a mismatch error.
+        product_name: Field name used in a mismatch error.
+
+    Returns:
+        Both sides filled from whichever the caller set, always equal.
+
+    Raises:
+        ValueError: If both sides are non-zero and they differ.
+    """
+    if wire and product and wire != product:
+        raise ValueError(
+            f"{wire_name} ({wire}) and {product_name} ({product}) must agree"
+        )
+    if wire and not product:
+        return wire, wire
+    if product and not wire:
+        return product, product
+    return wire, product
+
+
 class GatewayTokenUsage(BaseModel):
     """Token usage totals, split by direction and by cache participation.
 
@@ -22,7 +53,9 @@ class GatewayTokenUsage(BaseModel):
     provider wire names ``prompt_tokens`` / ``completion_tokens``; both pairs
     are always populated and always agree, because the flow-execution endpoint
     already spoke the input/output names and clients should not have to know
-    which endpoint they are reading. Callers construct with either pair.
+    which endpoint they are reading. Callers construct with either pair. A
+    payload that sets both names of a pair to different non-zero values is
+    rejected rather than left disagreeing.
 
     The cache fields describe the input side only. ``cache_read_tokens`` is
     input served from a prompt cache, ``cache_write_tokens`` is input written
@@ -48,18 +81,24 @@ class GatewayTokenUsage(BaseModel):
     def _mirror_direction_names(self) -> "GatewayTokenUsage":
         """Keep the wire names and the product names in agreement.
 
-        Whichever pair the caller supplied wins for both, so an aggregate that
-        was built from ``prompt_tokens`` answers ``input_tokens`` too, and the
-        hit ratio is derived once from the shared helper.
+        Whichever pair the caller supplied is copied onto the other, so an
+        aggregate built from ``prompt_tokens`` answers ``input_tokens`` too.
+        Both names of a pair already set must match; a mismatch is an error
+        rather than a silent disagreement. The hit ratio is derived once from
+        the shared helper.
         """
-        if self.prompt_tokens and not self.input_tokens:
-            self.input_tokens = self.prompt_tokens
-        elif self.input_tokens and not self.prompt_tokens:
-            self.prompt_tokens = self.input_tokens
-        if self.completion_tokens and not self.output_tokens:
-            self.output_tokens = self.completion_tokens
-        elif self.output_tokens and not self.completion_tokens:
-            self.completion_tokens = self.output_tokens
+        self.prompt_tokens, self.input_tokens = _agree_direction_pair(
+            self.prompt_tokens,
+            self.input_tokens,
+            "prompt_tokens",
+            "input_tokens",
+        )
+        self.completion_tokens, self.output_tokens = _agree_direction_pair(
+            self.completion_tokens,
+            self.output_tokens,
+            "completion_tokens",
+            "output_tokens",
+        )
         if self.cache_hit_ratio is None:
             self.cache_hit_ratio = compute_cache_hit_ratio(
                 cached_tokens=self.cache_read_tokens,
