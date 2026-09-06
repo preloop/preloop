@@ -90,12 +90,14 @@ function makeRow(overrides: Partial<AgentListRow>): AgentListRow {
 describe('AgentsView', () => {
   let fetchStub: sinon.SinonStub;
   let agentItems: Array<Record<string, unknown>>;
+  let flowItems: Array<Record<string, unknown>>;
 
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
     agentItems = [makeAgent('agent-1', 'Claude Code Workspace', 'claude_code')];
+    flowItems = [];
 
     fetchStub = sinon.stub(window, 'fetch');
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
@@ -148,18 +150,10 @@ describe('AgentsView', () => {
       }
 
       if (url.startsWith('/api/v1/flows')) {
-        return new Response(
-          JSON.stringify({
-            items: [],
-            total: 0,
-            limit: 50,
-            offset: 0,
-          }),
-          {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          }
-        );
+        return new Response(JSON.stringify(flowItems), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
       }
 
       return new Response('Not found', { status: 404 });
@@ -362,6 +356,55 @@ describe('AgentsView', () => {
     expect(text).to.contain('cache 68% hit');
     const exact = figures.shadowRoot?.querySelector('.figures');
     expect(exact?.getAttribute('title')).to.contain('12,400 input tokens');
+  });
+
+  it('states lifetime tokens on a flow row, beside its lifetime spend', async () => {
+    // The agents list asks for flows with no window, so the row shows the
+    // all-time spend. Without the all-time token projection behind it the
+    // cell was permanently empty next to a real dollar figure.
+    agentItems = [];
+    // Flows are off by default in the kind filter; nothing hidden means the
+    // list shows them, which is when the row has a spend cell at all.
+    localStorage.setItem('preloopAgentKindsHidden', '[]');
+    flowItems = [
+      {
+        id: 'flow-1',
+        name: 'Nightly Triage',
+        flow_status: 'active',
+        owner_username: 'ada',
+        ai_model_id: null,
+        execution_stats: {
+          total_execs: 4,
+          running_execs: 0,
+          last_seen_at: '2026-03-10T10:00:00Z',
+          estimated_cost: 1.25,
+          token_usage: {
+            prompt_tokens: 9000,
+            completion_tokens: 1200,
+            total_tokens: 10200,
+            input_tokens: 9000,
+            output_tokens: 1200,
+            cache_read_tokens: 6000,
+            cache_write_tokens: 0,
+            uncached_input_tokens: 3000,
+            cache_hit_ratio: 0.6667,
+          },
+        },
+      },
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const row = el.shadowRoot?.querySelector('tbody tr');
+    expect(row?.textContent).to.contain('Nightly Triage');
+    const figures = row?.querySelector('token-figures')!;
+    await (figures as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    const text = (figures.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.contain('9K in');
+    expect(text).to.contain('1.2K out');
+    expect(text).to.contain('cache 67% hit');
   });
 
   it('shows a relative last seen with the absolute time on hover', async () => {
