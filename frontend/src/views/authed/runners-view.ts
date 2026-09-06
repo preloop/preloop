@@ -83,12 +83,17 @@ export class RunnersView extends LitElement {
        * button) spent a screen saying "nothing here yet".
        */
       .empty-state {
+        /* The shared recipe stacks its empty states in a column; this one is
+           a sentence, a command and a link that read as one line. Declared in
+           full, including the 72px box, so it does not depend on which half
+           of console-styles.css the cascade leaves standing. */
         box-sizing: border-box;
         display: flex;
-        flex-wrap: wrap;
+        flex-flow: row wrap;
         align-items: center;
         justify-content: center;
         gap: var(--sl-spacing-x-small) var(--sl-spacing-small);
+        margin: 0;
         min-height: 72px;
         padding: var(--sl-spacing-medium);
         color: var(--sl-color-neutral-600);

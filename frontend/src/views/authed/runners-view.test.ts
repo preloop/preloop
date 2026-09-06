@@ -139,7 +139,11 @@ describe('RunnersView', () => {
     const box = empty.getBoundingClientRect();
     expect(box.height).to.be.at.least(72);
     expect(box.height).to.be.lessThan(80);
-    expect(getComputedStyle(empty).justifyContent).to.equal('center');
+    const style = getComputedStyle(empty);
+    expect(style.justifyContent).to.equal('center');
+    expect(style.flexDirection).to.equal('row');
+    expect(style.boxSizing).to.equal('border-box');
+    expect(style.marginTop).to.equal('0px');
 
     const commands = empty.querySelectorAll('.empty-command');
     expect(commands.length).to.equal(1);
