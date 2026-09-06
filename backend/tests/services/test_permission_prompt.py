@@ -567,3 +567,48 @@ class TestMcpRegistration:
         assert kwargs["source"] == "claude_code"
         assert kwargs["tool_use_id"] == "toolu_1"
         assert str(kwargs["managed_agent_id"]) == user_context.managed_agent_id
+        assert kwargs["managed_agent_name"] == "Claude Code"
+
+    async def test_a_flow_run_is_not_filed_as_an_agent(self):
+        """permission_prompt must use the shared helper, not the raw principal name.
+
+        A flow runtime token sets runtime_principal_name to the flow's name
+        with no managed agent id. Taking that name here would label the run
+        as an agent, the same bug c096c01e closed on the other gates.
+        """
+        from types import SimpleNamespace
+
+        from preloop.services.initialize_mcp import initialize_mcp_with_tools
+
+        mcp = initialize_mcp_with_tools()
+        tool = await mcp.get_tool("permission_prompt")
+        user_context = SimpleNamespace(
+            account_id=str(uuid.uuid4()),
+            user_id=str(uuid.uuid4()),
+            managed_agent_id=None,
+            runtime_session_id=None,
+            api_key_id=str(uuid.uuid4()),
+            flow_execution_id="a5b0d0e2-0000-4000-8000-000000000001",
+            runtime_principal_type="flow_execution",
+            runtime_principal_name="Nightly audit",
+        )
+        with (
+            patch(
+                "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+                return_value=user_context,
+            ),
+            patch(
+                "preloop.services.permission_prompt.evaluate_permission_prompt",
+                new=AsyncMock(
+                    return_value={
+                        "behavior": "allow",
+                        "updatedInput": {"command": "ls"},
+                    }
+                ),
+            ) as evaluator,
+        ):
+            await tool.fn(tool_name="Bash", input={"command": "ls"})
+        kwargs = evaluator.await_args.kwargs
+        assert kwargs["managed_agent_id"] is None
+        assert kwargs["managed_agent_name"] is None
+        assert str(kwargs["api_key_id"]) == user_context.api_key_id

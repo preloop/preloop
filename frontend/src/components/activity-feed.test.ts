@@ -227,6 +227,52 @@ describe('activity-feed', () => {
       expect(event?.trail).to.equal('3m 7s');
     });
 
+    it('attributes an approval to its agent, key, session and run', () => {
+      const requested = feedEventFromRealtime('approvals', {
+        type: 'approval_created',
+        approval_request_id: 'req-9',
+        tool_name: 'Bash',
+        managed_agent_id: 'agent-1',
+        managed_agent_name: 'Claude Code (laptop)',
+        api_key_id: 'key-1',
+        runtime_session_id: 'session-1',
+        execution_id: 'exec-1',
+        timestamp: NOW,
+      });
+
+      expect(requested?.attribution).to.deep.include({
+        managed_agent_id: 'agent-1',
+        managed_agent_name: 'Claude Code (laptop)',
+        api_key_id: 'key-1',
+        runtime_session_id: 'session-1',
+        execution_id: 'exec-1',
+      });
+      // The agent is on the attribution line now, not a second plain field.
+      expect(
+        (requested?.fields || []).map((item) => item.label)
+      ).to.not.include('Agent');
+    });
+
+    it('attributes a key-only approval, and none at all when nothing is known', () => {
+      const keyOnly = feedEventFromRealtime('approvals', {
+        type: 'approval_created',
+        approval_request_id: 'req-10',
+        tool_name: 'Bash',
+        api_key_id: 'key-2',
+        timestamp: NOW,
+      });
+      expect(keyOnly?.attribution?.api_key_id).to.equal('key-2');
+      expect(keyOnly?.attribution?.managed_agent_id).to.equal(null);
+
+      const anonymous = feedEventFromRealtime('approvals', {
+        type: 'approval_created',
+        approval_request_id: 'req-11',
+        tool_name: 'Bash',
+        timestamp: NOW,
+      });
+      expect(anonymous?.attribution).to.equal(undefined);
+    });
+
     it('reads sessions, approvals, budgets, gateway failures and agents', () => {
       const session = feedEventFromRealtime('runtime_sessions', {
         type: 'runtime_session_created',
@@ -741,7 +787,13 @@ describe('activity-feed', () => {
             {
               id: 'expand-2',
               resource_id: 'req-3',
-              details: { tool_name: 'Bash', comment: 'fine by me' },
+              details: {
+                tool_name: 'Bash',
+                comment: 'fine by me',
+                managed_agent_id: 'agent-9',
+                managed_agent_name: 'Claude Code (laptop)',
+                api_key_id: 'key-9',
+              },
               timestamp: new Date(Date.now() - 60000).toISOString(),
             },
             'approved'
@@ -796,6 +848,19 @@ describe('activity-feed', () => {
       expect(approvalLabels).to.include('Decision');
       expect(approvalLabels).to.include('Comment');
       expect(approval.textContent).to.contain('fine by me');
+      // Who asked, linked, above the facts about what they asked for.
+      const attribution = approval.querySelector('attribution-line')!;
+      expect(
+        Array.from(attribution.shadowRoot!.querySelectorAll('a')).map((a) =>
+          a.getAttribute('href')
+        )
+      ).to.deep.equal([
+        '/console/agents/agent-9',
+        '/console/settings/api-keys/key-9',
+      ]);
+      expect(
+        attribution.shadowRoot!.textContent!.replace(/\s+/g, ' ')
+      ).to.contain('Claude Code (laptop)');
 
       // Clicking the open row again closes it.
       toggles()[1].click();

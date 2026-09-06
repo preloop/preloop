@@ -20,7 +20,7 @@ import {
   formatRelativeTime,
   parseUTCDate,
 } from '../utils/date';
-import { formatApprovalRequester } from '../utils/approval-identity';
+import { approvalRequesterName } from '../utils/approval-identity';
 import {
   ATTENTION_SUMMARY_EVENT,
   formatAttentionSummary,
@@ -771,8 +771,8 @@ export class ConsoleHeader extends LitElement {
 
     try {
       const body = approval.agent_reasoning
-        ? `${formatApprovalRequester(approval.managed_agent_name, approval.tool_args)}: ${approval.tool_name}: ${approval.agent_reasoning.substring(0, 100)}${approval.agent_reasoning.length > 100 ? '...' : ''}`
-        : `${formatApprovalRequester(approval.managed_agent_name, approval.tool_args)} requests approval for ${approval.tool_name}`;
+        ? `${approvalRequesterName(approval)}: ${approval.tool_name}: ${approval.agent_reasoning.substring(0, 100)}${approval.agent_reasoning.length > 100 ? '...' : ''}`
+        : `${approvalRequesterName(approval)} requests approval for ${approval.tool_name}`;
 
       const notification = new Notification('Approval Required', {
         body,
@@ -937,11 +937,8 @@ export class ConsoleHeader extends LitElement {
               >
                 <div class="approval-name">${approval.tool_name}</div>
                 <div class="approval-time">
-                  ${formatApprovalRequester(
-                    approval.managed_agent_name,
-                    approval.tool_args
-                  )}
-                  • ${formatRelativeTime(approval.requested_at)}
+                  ${approvalRequesterName(approval)} •
+                  ${formatRelativeTime(approval.requested_at)}
                   ${
                     approval.expires_at
                       ? html` • Expires

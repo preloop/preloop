@@ -11401,6 +11401,40 @@ components:
       - requests_by_endpoint
       title: ApiUsageStatistics
       description: Model for API usage statistics.
+    ApprovalAgentSummary:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Kind
+          description: Agent kind, e.g. 'claude_code' or 'cursor'
+      type: object
+      required:
+      - id
+      - name
+      title: ApprovalAgentSummary
+      description: The managed agent that raised the request.
+    ApprovalApiKeySummary:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+      type: object
+      required:
+      - id
+      - name
+      title: ApprovalApiKeySummary
+      description: The API key the requesting caller authenticated with.
     ApprovalBypassCreate:
       properties:
         mode:
@@ -11648,6 +11682,26 @@ components:
       - timestamp
       title: ApprovalEventResponse
       description: One entry in an approval request's workflow-history timeline.
+    ApprovalFlowExecutionSummary:
+      properties:
+        id:
+          type: string
+          title: Id
+        flow_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Id
+        flow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Name
+      type: object
+      required:
+      - id
+      title: ApprovalFlowExecutionSummary
+      description: The flow run the gated call belonged to.
     ApprovalRequestResponse:
       properties:
         tool_name:
@@ -11749,6 +11803,12 @@ components:
           - type: string
           - type: 'null'
           title: Managed Agent Name
+        api_key_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Api Key Id
         decided_by_ai:
           type: boolean
           title: Decided By Ai
@@ -11785,6 +11845,22 @@ components:
             type: object
           - type: 'null'
           title: Rule Context
+        agent:
+          anyOf:
+          - $ref: '#/components/schemas/ApprovalAgentSummary'
+          - type: 'null'
+        api_key:
+          anyOf:
+          - $ref: '#/components/schemas/ApprovalApiKeySummary'
+          - type: 'null'
+        session:
+          anyOf:
+          - $ref: '#/components/schemas/ApprovalSessionSummary'
+          - type: 'null'
+        flow_execution:
+          anyOf:
+          - $ref: '#/components/schemas/ApprovalFlowExecutionSummary'
+          - type: 'null'
         risk_level:
           type: string
           title: Risk Level
@@ -11863,6 +11939,22 @@ components:
       - allow_free_text
       title: ApprovalRequestResponse
       description: Schema for approval request response.
+    ApprovalSessionSummary:
+      properties:
+        id:
+          type: string
+          title: Id
+        subject:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Subject
+          description: What the session is about (title or reference)
+      type: object
+      required:
+      - id
+      title: ApprovalSessionSummary
+      description: The runtime session the gated call was made in.
     ApprovalWorkflowCreate:
       properties:
         name:

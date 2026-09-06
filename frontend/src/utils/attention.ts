@@ -1,11 +1,18 @@
 import type { BudgetPolicy } from '../api';
 import type {
   AccountGatewayUsageSummaryResponse,
+  ApprovalAgentSummary,
+  ApprovalApiKeySummary,
+  ApprovalFlowExecutionSummary,
+  ApprovalSessionSummary,
   GatewayUsageByModel,
   GatewayUsageSearchResultItem,
   ManagedAgentSummary,
   RuntimeSessionSummary,
 } from '../types';
+// Type only: the attention rules never render, they just carry the shape the
+// attribution line reads.
+import type { AttributionSource } from '../components/attribution-line';
 import {
   formatDurationBetween,
   formatRelativeTime,
@@ -162,6 +169,12 @@ export interface AttentionApprovalRef {
   expiresAt: string | null;
   /** Questions need an answer, not an Approve button. */
   isQuestion: boolean;
+  /**
+   * Agent, key, session and run, for the attribution line under the row.
+   * Deciding from the inbox means deciding without opening the request, so
+   * the row has to say who is asking as precisely as the detail page does.
+   */
+  attribution?: AttributionSource;
 }
 
 /** The shape of a stored dismissal the rules need; the API type is assignable. */
@@ -203,6 +216,17 @@ export interface AttentionApproval {
   flow_name?: string | null;
   is_question?: boolean;
   question?: string | null;
+  /** Attribution, when the server resolved it. All optional; see
+      components/attribution-line.ts for how a partial one renders. */
+  agent?: ApprovalAgentSummary | null;
+  api_key?: ApprovalApiKeySummary | null;
+  session?: ApprovalSessionSummary | null;
+  flow_execution?: ApprovalFlowExecutionSummary | null;
+  managed_agent_id?: string | null;
+  api_key_id?: string | null;
+  runtime_session_id?: string | null;
+  execution_id?: string | null;
+  tool_args?: Record<string, unknown> | null;
 }
 
 export interface AttentionFlowExecution {
@@ -326,7 +350,14 @@ function approvalItems(
       const subject =
         approval.summary || approval.tool_name || 'Approval request';
       const title = approval.is_question ? `Question: ${subject}` : subject;
-      const requester = approval.managed_agent_name || approval.flow_name || '';
+      // The server-resolved name first: `managed_agent_name` is denormalized
+      // and empty on rows whose agent was only ever known by its id.
+      const requester =
+        approval.agent?.name ||
+        approval.managed_agent_name ||
+        approval.flow_execution?.flow_name ||
+        approval.flow_name ||
+        '';
       // "pending 7w", never a bare date: an approval that has been waiting
       // seven weeks reads as urgent, "7/13/2026" reads as a log line.
       const elapsed = approval.requested_at
@@ -359,6 +390,18 @@ function approvalItems(
           requester,
           expiresAt: approval.expires_at || null,
           isQuestion: approval.is_question === true,
+          attribution: {
+            agent: approval.agent,
+            api_key: approval.api_key,
+            session: approval.session,
+            flow_execution: approval.flow_execution,
+            managed_agent_id: approval.managed_agent_id,
+            managed_agent_name: approval.managed_agent_name,
+            api_key_id: approval.api_key_id,
+            runtime_session_id: approval.runtime_session_id,
+            execution_id: approval.execution_id,
+            tool_args: approval.tool_args,
+          },
         },
       };
     });

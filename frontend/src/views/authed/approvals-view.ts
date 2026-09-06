@@ -10,7 +10,7 @@ import {
   formatRelativeTime,
   parseUTCDate,
 } from '../../utils/date';
-import { formatApprovalRequester } from '../../utils/approval-identity';
+import { approvalRequesterName } from '../../utils/approval-identity';
 import {
   APPROVAL_REQUESTS_PAGE_LIMIT,
   approvalStatusLabel,
@@ -22,6 +22,7 @@ import {
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import '../../components/approval-rule-context-block';
+import '../../components/attribution-line';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
@@ -306,6 +307,11 @@ export class ApprovalsView extends AuthedElement {
         font-size: var(--sl-font-size-small);
         color: var(--sl-color-neutral-600);
         flex-wrap: wrap;
+      }
+
+      /* The attribution sits with the meta lines, not above them. */
+      .row-attribution {
+        margin-top: 2px;
       }
 
       .approval-meta-item {
@@ -926,9 +932,8 @@ export class ApprovalsView extends AuthedElement {
     const confirmed = await confirmDialog({
       title: 'Deny this request?',
       message: `${request.tool_name} will not run.`,
-      detail: `${formatApprovalRequester(
-        request.managed_agent_name,
-        request.tool_args
+      detail: `${approvalRequesterName(
+        request
       )} is told no and continues without it.`,
       confirmLabel: 'Deny',
       variant: 'danger',
@@ -1288,10 +1293,7 @@ export class ApprovalsView extends AuthedElement {
               </sl-badge>
               <sl-badge pill class="tag-chip">
                 <sl-icon name="cpu"></sl-icon>
-                ${formatApprovalRequester(
-                  request.managed_agent_name,
-                  request.tool_args
-                )}
+                ${approvalRequesterName(request)}
               </sl-badge>
               ${
                 request.auto_approved_reason
@@ -1319,6 +1321,10 @@ export class ApprovalsView extends AuthedElement {
                   `
                 : ''
             }
+            <attribution-line
+              class="row-attribution"
+              .source=${request}
+            ></attribution-line>
             ${
               request.rule_context
                 ? html`
@@ -1338,19 +1344,6 @@ export class ApprovalsView extends AuthedElement {
                   ${this.formatDate(request.requested_at)}
                 </span>
               </sl-tooltip>
-              ${
-                request.execution_id
-                  ? html`
-                      <span class="approval-meta-item">
-                        <sl-icon name="diagram-3"></sl-icon>
-                        <a
-                          href="/console/flows/executions/${request.execution_id}"
-                          >Flow Execution</a
-                        >
-                      </span>
-                    `
-                  : ''
-              }
               ${
                 request.resolved_at
                   ? html`

@@ -162,6 +162,12 @@ def with_approval(tool_func: Callable) -> Callable:
 
                     # Create approval request and send notification
                     approval_service = ApprovalService(db, base_url)
+                    from preloop.services.approval_attribution import (
+                        attribution_from_user_context,
+                    )
+
+                    # Who is asking, from the authenticated request context.
+                    caller = attribution_from_user_context(user_context)
 
                     try:
                         approval_request = await approval_service.create_and_notify(
@@ -171,7 +177,11 @@ def with_approval(tool_func: Callable) -> Callable:
                             tool_name=tool_name,
                             tool_args=kwargs,  # Use kwargs as tool arguments
                             agent_reasoning=None,
-                            execution_id=None,
+                            execution_id=caller.execution_id,
+                            managed_agent_id=caller.managed_agent_id,
+                            runtime_session_id=caller.runtime_session_id,
+                            managed_agent_name=caller.managed_agent_name,
+                            api_key_id=caller.api_key_id,
                             # getattr: a patched evaluator may return a plain
                             # tuple, and a missing snapshot must read as
                             # "not recorded" rather than raise here.

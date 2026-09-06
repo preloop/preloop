@@ -12,6 +12,7 @@ import '@shoelace-style/shoelace/dist/components/menu/menu.js';
 import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
+import '../../components/attribution-line.ts';
 import '../../components/budget-limits-dialog.ts';
 import '../../components/view-header.ts';
 
@@ -281,6 +282,10 @@ export class AttentionView extends AuthedElement {
         color: var(--console-meta-color);
         font-size: var(--console-text-meta);
         font-variant-numeric: tabular-nums;
+      }
+
+      .row-attribution {
+        margin-top: 2px;
       }
 
       .expiry-chip {
@@ -1458,6 +1463,16 @@ export class AttentionView extends AuthedElement {
               title=${item.at ? formatLocalDateTime(item.at) : nothing}
               >${item.detail}${this.renderExpiry(item)}</span
             >
+            ${
+              // Deciding here means deciding without opening the request, so
+              // the row names the agent, the key, the session and the run.
+              item.approval?.attribution
+                ? html`<attribution-line
+                    class="row-attribution"
+                    .source=${item.approval.attribution}
+                  ></attribution-line>`
+                : nothing
+            }
           </div>
           <div class="row-actions">
             ${this.renderAction(item)} ${this.renderDismiss(item)}

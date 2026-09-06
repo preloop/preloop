@@ -539,6 +539,25 @@ class ApprovalService:
                 "tool_args": redact_dict(approval_request.tool_args or {}),
                 "agent_reasoning": approval_request.agent_reasoning,
                 "managed_agent_name": approval_request.managed_agent_name,
+                # Attribution ids, so a live console row can link the caller
+                # instead of printing a generic label. Ids only: naming the
+                # key and the session would cost a lookup per broadcast, and
+                # the console shortens an unnamed id to eight characters.
+                "managed_agent_id": (
+                    str(approval_request.managed_agent_id)
+                    if approval_request.managed_agent_id
+                    else None
+                ),
+                "runtime_session_id": (
+                    str(approval_request.runtime_session_id)
+                    if approval_request.runtime_session_id
+                    else None
+                ),
+                "api_key_id": (
+                    str(approval_request.api_key_id)
+                    if approval_request.api_key_id
+                    else None
+                ),
                 # Why the call was gated. Rule names and expressions are
                 # operator-authored policy text, not call arguments, so they
                 # are not redacted; tool_args above still are.
@@ -588,6 +607,7 @@ class ApprovalService:
         managed_agent_id: Optional[uuid.UUID] = None,
         runtime_session_id: Optional[uuid.UUID] = None,
         managed_agent_name: Optional[str] = None,
+        api_key_id: Optional[uuid.UUID] = None,
         rule_context: Optional[Dict[str, Any]] = None,
     ) -> ApprovalRequest:
         """Create a new approval request.
@@ -601,6 +621,12 @@ class ApprovalService:
             agent_reasoning: Agent's reasoning for the tool call
             execution_id: Flow execution ID (if applicable)
             timeout_seconds: How long to wait for approval (default: 5 minutes)
+            managed_agent_id: Managed agent that asked, when known.
+            runtime_session_id: Runtime session the call came from, when known.
+            managed_agent_name: Display name for the agent. Backfilled from
+                ``managed_agent_id`` when the caller only had the id, so no
+                surface has to fall back to a generic "AI agent" label.
+            api_key_id: API key the caller authenticated with, when known.
             rule_context: Snapshot of the policy rule that required this
                 approval (see services/approval_rule_context.py). Stored as
                 given so a later edit to the rule cannot rewrite the reason a
@@ -622,6 +648,17 @@ class ApprovalService:
         )
         expires_at = datetime.utcnow() + timedelta(seconds=timeout)
 
+        # A request that knows its agent must never render as "AI agent".
+        # Callers that only carry the id (the MCP tool gate, the approval
+        # wrapper) get the name filled in here rather than at every surface.
+        from preloop.services.approval_attribution import resolve_managed_agent_name
+
+        managed_agent_name = await resolve_managed_agent_name(
+            self.db,
+            managed_agent_id=managed_agent_id,
+            provided_name=managed_agent_name,
+        )
+
         # Create approval request
         approval_request = ApprovalRequest(
             id=uuid.uuid4(),
@@ -635,6 +672,7 @@ class ApprovalService:
             managed_agent_id=managed_agent_id,
             runtime_session_id=runtime_session_id,
             managed_agent_name=managed_agent_name,
+            api_key_id=api_key_id,
             rule_context=rule_context,
             status="pending",
             requested_at=datetime.utcnow(),
@@ -1838,6 +1876,7 @@ class ApprovalService:
         managed_agent_id: Optional[uuid.UUID] = None,
         runtime_session_id: Optional[uuid.UUID] = None,
         managed_agent_name: Optional[str] = None,
+        api_key_id: Optional[uuid.UUID] = None,
         standing_bypass_reason: Optional[str] = None,
         rule_context: Optional[Dict[str, Any]] = None,
     ) -> ApprovalRequest:
@@ -1855,6 +1894,8 @@ class ApprovalService:
             agent_reasoning: Agent's reasoning for the tool call
             execution_id: Flow execution ID (if applicable)
             user_id: ID of the user who initiated the tool call
+            api_key_id: API key the requesting caller authenticated with, so
+                approval surfaces can name the credential as well as the agent.
             standing_bypass_reason: When set, the caller has already established
                 that a standing governance setting disables approval for this
                 request (currently only ``native_tool_approvals: "off"``). The
@@ -1883,6 +1924,7 @@ class ApprovalService:
             managed_agent_id=managed_agent_id,
             runtime_session_id=runtime_session_id,
             managed_agent_name=managed_agent_name,
+            api_key_id=api_key_id,
             rule_context=rule_context,
         )
 
@@ -2607,6 +2649,9 @@ class ApprovalService:
                     approval_url=approval_url,
                     agent_reasoning=approval_request.agent_reasoning,
                     summary=approval_request.summary,
+                    # Who asked, in the subject: an approver triaging an inbox
+                    # decides on the caller as much as on the tool.
+                    agent_name=approval_request.managed_agent_name,
                 )
 
                 sent_count += 1
@@ -2778,6 +2823,7 @@ class ApprovalService:
             tool_args=redact_dict(approval_request.tool_args or {}),
             summary=approval_request.summary,
             rule_context=approval_request.rule_context,
+            agent_name=approval_request.managed_agent_name,
         )
 
         apns_priority = 10 if priority_str in ["urgent", "high"] else 5
@@ -3437,6 +3483,7 @@ class ApprovalService:
             tool_args=redact_dict(approval_request.tool_args or {}),
             summary=approval_request.summary,
             rule_context=approval_request.rule_context,
+            agent_name=approval_request.managed_agent_name,
         )
 
         sent_count = 0

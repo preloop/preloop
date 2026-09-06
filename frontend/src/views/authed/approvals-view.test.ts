@@ -349,6 +349,73 @@ describe('ApprovalsView', () => {
       .true;
   });
 
+  describe('attribution', () => {
+    /** The attribution line renders into its own shadow root. */
+    function lineOf(element: ApprovalsView, requestId: string) {
+      const row = element.shadowRoot!.querySelector(
+        `[data-request-id="${requestId}"] attribution-line`
+      )!;
+      return {
+        text: row.shadowRoot!.textContent!.replace(/\s+/g, ' ').trim(),
+        hrefs: Array.from(row.shadowRoot!.querySelectorAll('a')).map((a) =>
+          a.getAttribute('href')
+        ),
+      };
+    }
+
+    it('names and links the agent, key, session and run on the row', async () => {
+      const element = await renderList([
+        baseRequest({
+          id: 'attributed',
+          managed_agent_name: null,
+          agent: {
+            id: 'agent-1',
+            name: 'Claude Code (laptop)',
+            kind: 'claude_code',
+          },
+          api_key: { id: 'key-1', name: 'claude-code-laptop' },
+          session: { id: 'session-1', subject: 'feature/attribution' },
+          flow_execution: {
+            id: 'exec-1',
+            flow_id: 'flow-1',
+            flow_name: 'Nightly audit',
+          },
+        }),
+      ]);
+
+      const { text, hrefs } = lineOf(element, 'attributed');
+      expect(text).to.contain('Claude Code (laptop)');
+      expect(text).to.contain('claude-code-laptop');
+      expect(text).to.contain('feature/attribution');
+      expect(text).to.contain('Nightly audit');
+      expect(hrefs).to.deep.equal([
+        '/console/agents/agent-1',
+        '/console/settings/api-keys/key-1',
+        '/console/runtime-sessions?sessionId=session-1',
+        '/console/flows/executions/exec-1',
+      ]);
+      // The requester chip stops saying "AI agent" for a named agent.
+      const row = element.shadowRoot!.querySelector(
+        '[data-request-id="attributed"]'
+      )!;
+      expect(row.textContent).to.contain('Claude Code (laptop)');
+      expect(row.textContent).to.not.contain('AI agent');
+    });
+
+    it('shows just the key when the caller is only a key', async () => {
+      const element = await renderList([
+        baseRequest({
+          id: 'key-only',
+          api_key: { id: 'k-2', name: 'ci-deploy' },
+        }),
+      ]);
+
+      const { text, hrefs } = lineOf(element, 'key-only');
+      expect(text).to.equal('Key ci-deploy');
+      expect(hrefs).to.deep.equal(['/console/settings/api-keys/k-2']);
+    });
+  });
+
   describe('keyboard', () => {
     function press(element: ApprovalsView, key: string) {
       element.dispatchEvent(

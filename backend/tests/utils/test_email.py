@@ -11,6 +11,7 @@ from preloop.utils.email import (
     send_invitation_email,
     send_tracker_registered_email,
     send_product_notification_email,
+    send_approval_request_email,
 )
 
 
@@ -630,3 +631,91 @@ class TestUnconfiguredSmtpDoesNotLogSecrets:
         # The operator still learns that an email would have been sent.
         assert "recipient@example.com" in combined
         assert "Test Subject" in combined
+
+
+class TestSendApprovalRequestEmail:
+    """The approval email says which agent asked, when the request knows.
+
+    An approver triaging an inbox is deciding about a caller as much as about
+    a tool: two "Tool Approval Required: Bash" subjects from two different
+    agents are indistinguishable, which is the same complaint the console
+    "AI agent" label produced.
+    """
+
+    @pytest.mark.asyncio
+    @patch("preloop.utils.email.send_email")
+    async def test_names_the_agent_in_the_subject_and_the_body(self, mock_send_email):
+        """A known agent is named in the subject line and in both bodies."""
+        await send_approval_request_email(
+            user_email="approver@example.com",
+            tool_name="shell_command",
+            tool_args={"command": "ls -la"},
+            approval_url="https://app.test.com/console/approval/1",
+            agent_name="Claude Code (laptop)",
+        )
+
+        mock_send_email.assert_called_once()
+        _to, subject, body_text, body_html = mock_send_email.call_args[0]
+        assert subject == "Claude Code (laptop) needs approval: shell_command"
+        assert "Claude Code (laptop) is requesting approval" in body_text
+        assert "Agent: Claude Code (laptop)" in body_text
+        assert "Claude Code (laptop)" in body_html
+        # The generic line is replaced, not added to.
+        assert "An AI agent is requesting" not in body_text
+
+    @pytest.mark.asyncio
+    @patch("preloop.utils.email.send_email")
+    async def test_keeps_the_generic_line_when_no_agent_is_known(self, mock_send_email):
+        """An unattributed request reads exactly as it did before."""
+        await send_approval_request_email(
+            user_email="approver@example.com",
+            tool_name="shell_command",
+            tool_args={"command": "ls -la"},
+            approval_url="https://app.test.com/console/approval/1",
+        )
+
+        _to, subject, body_text, _body_html = mock_send_email.call_args[0]
+        assert subject == "Tool Approval Required: shell_command"
+        assert "An AI agent is requesting" in body_text
+        assert "Agent:" not in body_text
+
+    @pytest.mark.asyncio
+    @patch("preloop.utils.email.send_email")
+    async def test_caller_supplied_text_is_escaped_in_the_html(self, mock_send_email):
+        """An agent name, a tool name and arguments are text, not markup.
+
+        All of it is operator or agent supplied and lands in an email client,
+        so none of it may open a tag there.
+        """
+        await send_approval_request_email(
+            user_email="approver@example.com",
+            tool_name="<b>shell</b>",
+            tool_args={"command": "<script>alert(1)</script>"},
+            approval_url="https://app.test.com/console/approval/1",
+            agent_reasoning="because <img src=x onerror=1>",
+            agent_name="<script>alert('agent')</script>",
+        )
+
+        _to, _subject, _body_text, body_html = mock_send_email.call_args[0]
+        assert "<script>" not in body_html
+        assert "<b>shell</b>" not in body_html
+        assert "&lt;script&gt;" in body_html
+        assert "&lt;b&gt;shell&lt;/b&gt;" in body_html
+        assert "&lt;img src=x onerror=1&gt;" in body_html
+
+    @pytest.mark.asyncio
+    @patch("preloop.utils.email.send_email")
+    async def test_a_summary_still_owns_the_subject(self, mock_send_email):
+        """The plain-language ask is the subject; the agent is in the body."""
+        await send_approval_request_email(
+            user_email="approver@example.com",
+            tool_name="shell_command",
+            tool_args={},
+            approval_url="https://app.test.com/console/approval/1",
+            summary="Deploy to production",
+            agent_name="Release Bot",
+        )
+
+        _to, subject, body_text, _body_html = mock_send_email.call_args[0]
+        assert subject == "Deploy to production"
+        assert "Agent: Release Bot" in body_text

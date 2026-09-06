@@ -44,6 +44,38 @@ export function formatApprovalRequester(
   return `${agentName} via ${source}`;
 }
 
+/**
+ * The requester name for a whole request, server-resolved name first.
+ *
+ * `managed_agent_name` is denormalized at creation time and older rows left
+ * it empty even when they carried an agent id, which is how a named Claude
+ * Code agent came to render as "AI agent". `agent.name` is resolved from the
+ * id at read time, so it is right whenever the agent still exists.
+ *
+ * When nothing names the agent but an id exists (deleted agent, or a server
+ * that predates the resolved summary), the eight character id is the answer,
+ * the same one `attributionParts` gives: the chip beside the attribution line
+ * must not say "AI agent" while the line says "Agent 3f2a9c14".
+ */
+export function approvalRequesterName(
+  request: {
+    agent?: { id?: string | null; name?: string | null } | null;
+    managed_agent_id?: string | null;
+    managed_agent_name?: string | null;
+    tool_args?: Record<string, unknown> | null;
+  },
+  fallback = 'AI agent'
+): string {
+  const agentId = (request.agent?.id || request.managed_agent_id || '').trim();
+  return formatApprovalRequester(
+    request.agent?.name ||
+      request.managed_agent_name ||
+      (agentId ? agentId.slice(0, 8) : null),
+    request.tool_args,
+    fallback
+  );
+}
+
 export function withoutApprovalMetadata(
   toolArgs: Record<string, unknown>
 ): Record<string, unknown> {

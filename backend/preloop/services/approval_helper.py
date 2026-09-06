@@ -507,6 +507,11 @@ async def require_approval(
 
             base_url = os.getenv("PRELOOP_URL", "http://localhost:8000")
             approval_service = ApprovalService(db, base_url)
+            from preloop.services.approval_attribution import (
+                current_caller_attribution,
+            )
+
+            caller = current_caller_attribution()
 
             try:
                 # Create approval request and send notification
@@ -517,7 +522,15 @@ async def require_approval(
                     tool_name=tool_name,
                     tool_args=arguments,
                     agent_reasoning=justification,
-                    execution_id=None,
+                    # Attribution from the authenticated MCP caller. Without
+                    # it a gated builtin (ask_user, request_approval, any
+                    # proxied tool) landed on the approval pages with no agent,
+                    # no key and no session, and rendered as "AI agent".
+                    execution_id=caller.execution_id,
+                    managed_agent_id=caller.managed_agent_id,
+                    runtime_session_id=caller.runtime_session_id,
+                    managed_agent_name=caller.managed_agent_name,
+                    api_key_id=caller.api_key_id,
                     rule_context=rule_context,
                 )
 

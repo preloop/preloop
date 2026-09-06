@@ -134,13 +134,73 @@ describe('deriveAttentionItems', () => {
         ],
       });
 
-      expect(item.approval).to.deep.equal({
+      const { attribution, ...decision } = item.approval!;
+      expect(decision).to.deep.equal({
         id: 'approval-5',
         toolName: 'shell.run',
         requester: 'Hermes',
         expiresAt: minutesFromNow(20),
         isQuestion: false,
       });
+      // The row also carries who asked, so it can be attributed in place.
+      expect(attribution?.managed_agent_name).to.equal('Hermes');
+    });
+
+    it('carries the resolved agent, key, session and run to the row', () => {
+      const [item] = derive({
+        approvals: [
+          {
+            id: 'approval-6',
+            tool_name: 'shell.run',
+            requested_at: minutesAgo(2),
+            // The denormalized name is empty; the resolved one is not, which
+            // is exactly the case that used to render as "AI agent".
+            managed_agent_name: null,
+            agent: {
+              id: 'agent-1',
+              name: 'Claude Code (laptop)',
+              kind: 'claude_code',
+            },
+            api_key: { id: 'key-1', name: 'claude-code-laptop' },
+            session: { id: 'session-1', subject: 'feature/attribution' },
+            flow_execution: {
+              id: 'exec-1',
+              flow_id: 'flow-1',
+              flow_name: 'Nightly audit',
+            },
+          },
+        ],
+      });
+
+      expect(item.approval?.requester).to.equal('Claude Code (laptop)');
+      expect(item.detail).to.contain('Claude Code (laptop)');
+      expect(item.approval?.attribution?.api_key?.name).to.equal(
+        'claude-code-laptop'
+      );
+      expect(item.approval?.attribution?.session?.subject).to.equal(
+        'feature/attribution'
+      );
+      expect(item.approval?.attribution?.flow_execution?.flow_name).to.equal(
+        'Nightly audit'
+      );
+    });
+
+    it('carries a key-only caller without inventing an agent', () => {
+      const [item] = derive({
+        approvals: [
+          {
+            id: 'approval-7',
+            tool_name: 'shell.run',
+            requested_at: minutesAgo(2),
+            api_key: { id: 'key-2', name: 'ci-deploy' },
+          },
+        ],
+      });
+
+      expect(item.approval?.requester).to.equal('');
+      expect(item.detail).to.not.contain('AI agent');
+      expect(item.approval?.attribution?.api_key?.name).to.equal('ci-deploy');
+      expect(item.approval?.attribution?.agent).to.equal(undefined);
     });
 
     it('puts the soonest deadline first, undated approvals after them', () => {
