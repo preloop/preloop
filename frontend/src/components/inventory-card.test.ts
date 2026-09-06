@@ -184,6 +184,61 @@ describe('inventory-card', () => {
     expect(text).to.contain('cache 68% hit');
   });
 
+  it('leads the Flows tab with tokens too, before its money column', async () => {
+    // The Flows tab was the one tab of this card still reading
+    // "Runs, Failed, $ est." with no volume beside the money.
+    const el = await card({
+      flowRows: [
+        flowRow({
+          tokenUsage: {
+            prompt_tokens: 9000,
+            completion_tokens: 1200,
+            total_tokens: 10200,
+            input_tokens: 9000,
+            output_tokens: 1200,
+            cache_read_tokens: 6000,
+            cache_write_tokens: 0,
+            uncached_input_tokens: 3000,
+            cache_hit_ratio: 0.6667,
+          },
+        }),
+      ],
+    });
+    await showTab(el, 'flows');
+
+    const headers = Array.from(el.shadowRoot!.querySelectorAll('table th')).map(
+      (th) => (th.textContent || '').trim()
+    );
+    expect(headers).to.eql([
+      'Flow',
+      'Last run',
+      'Runs',
+      'Failed',
+      'Tokens',
+      '$ est.',
+    ]);
+
+    const figures = el.shadowRoot!.querySelector(
+      'td[data-label="Tokens"] token-figures'
+    ) as HTMLElement & { updateComplete: Promise<unknown> };
+    expect(figures).to.exist;
+    await figures.updateComplete;
+    const text = (figures.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.contain('9K in');
+    expect(text).to.contain('1.2K out');
+    expect(text).to.contain('cache 67% hit');
+  });
+
+  it('states no flow tokens rather than a zero when none were reported', async () => {
+    const el = await card({ flowRows: [flowRow()] });
+    await showTab(el, 'flows');
+    const figures = el.shadowRoot!.querySelector(
+      'td[data-label="Tokens"] token-figures'
+    ) as HTMLElement & { updateComplete: Promise<unknown> };
+    await figures.updateComplete;
+    expect((figures.shadowRoot?.textContent || '').trim()).to.equal('-');
+  });
+
   it('carries the counts in the tab labels', async () => {
     const el = await card();
     expect(tabText(el)).to.eql([

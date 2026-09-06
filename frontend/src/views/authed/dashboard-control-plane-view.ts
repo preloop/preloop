@@ -3571,9 +3571,13 @@ export class DashboardView extends AuthedElement {
 
   private get inventoryFlowRows(): InventoryFlowRow[] {
     const costs = new Map<string, number>();
+    // Tokens come from the same per-flow aggregate as the cost, so the row
+    // states the volume that earned the dollar figure over the same range.
+    const tokens = new Map<string, GatewayTokenUsage | null>();
     for (const flow of this.gatewaySummary?.usage_by_flow || []) {
       if (flow.flow_id) {
         costs.set(flow.flow_id, flow.estimated_cost || 0);
+        tokens.set(flow.flow_id, flow.token_usage || null);
       }
     }
 
@@ -3637,6 +3641,7 @@ export class DashboardView extends AuthedElement {
           : null,
         runs: counted?.runs ?? 0,
         failed: counted?.failed ?? 0,
+        tokenUsage: tokens.get(flow.id) ?? null,
         cost: costs.get(flow.id) ?? 0,
       };
     });

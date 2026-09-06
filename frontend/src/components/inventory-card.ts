@@ -63,6 +63,7 @@ export interface InventoryFlowRow {
   lastRun: InventoryFlowRun | null;
   runs: number;
   failed: number;
+  tokenUsage?: GatewayTokenUsage | null;
   cost: number;
 }
 
@@ -1134,12 +1135,16 @@ export class InventoryCard extends LitElement {
     const rows = this.sortedFlows.slice(0, this.rowLimit);
     return html`
       <table class="inventory-table">
+        <!-- The tokens column takes its width from the last run cell, which
+             holds a sentence and can lose a few points, rather than from the
+             name. -->
         <colgroup>
-          <col style="width: 25%" />
-          <col style="width: 45%" />
-          <col style="width: 9%" />
-          <col style="width: 9%" />
-          <col style="width: 12%" />
+          <col style="width: 24%" />
+          <col style="width: 32%" />
+          <col style="width: 8%" />
+          <col style="width: 8%" />
+          <col style="width: 17%" />
+          <col style="width: 11%" />
         </colgroup>
         <thead>
           <tr>
@@ -1147,12 +1152,13 @@ export class InventoryCard extends LitElement {
             <th>Last run</th>
             <th class="num">Runs</th>
             <th class="num">Failed</th>
+            <th class="num">Tokens</th>
             <th class="num">$ est.</th>
           </tr>
         </thead>
         ${
           this.isTabLoading('flows') && rows.length === 0
-            ? this.renderSkeleton(5)
+            ? this.renderSkeleton(6)
             : html`
                 <tbody>
                   ${repeat(
@@ -1196,6 +1202,17 @@ export class InventoryCard extends LitElement {
                           ${this.renderUsageCell(
                             this.formatCompactNumber(row.failed),
                             this.isUsageLoading('flows')
+                          )}
+                        </td>
+                        <!-- Tokens before cost, split in and out: the
+                             volume that earned the dollar figure beside
+                             it. -->
+                        <td class="num" data-label="Tokens">
+                          ${this.renderUsageCell(
+                            html`<token-figures
+                              .usage=${row.tokenUsage}
+                            ></token-figures>`,
+                            this.isFlowCostLoading()
                           )}
                         </td>
                         <td class="num">
