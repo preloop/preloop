@@ -549,6 +549,27 @@ describe('console-header approval deadlines', () => {
     expect(approvalReads).to.equal(1);
   });
 
+  it('drops expired rows from updated() and converges without looping', async () => {
+    approvals = [approval('first', 1_000), approval('second', 5_000)];
+    await mount();
+    const header = el as ConsoleHeader & {
+      pruneAndScheduleApprovalExpiry: () => void;
+    };
+    const prune = sinon.spy(header, 'pruneAndScheduleApprovalExpiry');
+    await clock.tickAsync(1_000);
+    await el.updateComplete;
+    await el.updateComplete;
+    await clock.tickAsync(0);
+    await el.updateComplete;
+    expect(names()).to.deep.equal(['second']);
+    expect(badge()).to.equal('1');
+    // Timer callback prunes once; updated() prunes once more and the
+    // length-equality check stops further _pendingApprovals writes.
+    expect(prune.callCount).to.equal(2);
+    expect(clock.countTimers()).to.equal(1);
+    expect(approvalReads).to.equal(1);
+  });
+
   it('keeps requests without deadlines and handles deadlines beyond the browser timer limit', async () => {
     approvals = [approval('indefinite'), approval('distant', 3_000_000_000)];
     await mount();

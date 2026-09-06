@@ -121,7 +121,6 @@ export class ConsoleHeader extends LitElement {
   private unsubscribeConnectionState?: () => void;
   private approvalExpiryTimer?: ReturnType<typeof setTimeout>;
   private pendingApprovalsRefreshTimer?: ReturnType<typeof setTimeout>;
-  private pruningApprovalExpiry = false;
   private loadingPendingApprovals = false;
   private pendingApprovalsReload = false;
 
@@ -426,15 +425,8 @@ export class ConsoleHeader extends LitElement {
    * Mutating `_pendingApprovals` from willUpdate dirties the same cycle.
    */
   protected updated(changed: PropertyValues): void {
-    if (!changed.has('_pendingApprovals') || this.pruningApprovalExpiry) {
-      return;
-    }
-    this.pruningApprovalExpiry = true;
-    try {
-      this.pruneAndScheduleApprovalExpiry();
-    } finally {
-      this.pruningApprovalExpiry = false;
-    }
+    if (!changed.has('_pendingApprovals')) return;
+    this.pruneAndScheduleApprovalExpiry();
   }
 
   private unexpiredPendingApprovals(): ApprovalRequest[] {
