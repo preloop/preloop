@@ -27,6 +27,9 @@ from preloop.api.endpoints.flow_artifacts import router
 from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import crud_flow_execution
+
+# Initialize CRUD before Codex: its runtime resolver imports secret_service,
+# which imports the CRUD package and otherwise recurses into ai_model startup.
 from preloop.agents.codex import CodexAgent
 from preloop.services.checkpoint_runtime import checkpoint_context
 

@@ -21,7 +21,7 @@ async def test_artifact_authorization_pool_wait_does_not_block_ping(
     """Exercise the real upload route while authorization waits on a pool."""
     app = FastAPI()
     app.include_router(flow_artifacts.router)
-    app.dependency_overrides[get_db_session] = lambda: object()
+    app.dependency_overrides[get_db_session] = object
     app.dependency_overrides[flow_artifacts.artifact_claims] = lambda: {}
     started = threading.Event()
 
