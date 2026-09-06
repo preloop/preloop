@@ -290,6 +290,17 @@ export class ApiKeysView extends LitElement {
     return this.apiKeys.filter((key) => this.isRetired(key)).length;
   }
 
+  /**
+   * Prunes the selection to the keys this pass paints, before the bulk bar is
+   * built. Doing it here rather than inside `render` keeps the bar's count and
+   * the table's checkboxes from ever disagreeing by one pass.
+   */
+  protected willUpdate(): void {
+    this.selection.setItems(
+      this.isLoading || this.error ? [] : this.visibleKeys()
+    );
+  }
+
   async handleCreateApiKey() {
     if (!this.newKeyName) {
       return;
@@ -692,7 +703,6 @@ export class ApiKeysView extends LitElement {
         hiddenCount === 1 ? 'key is' : 'keys are'
       } revoked or expired and hidden`;
       const shownLabel = `Showing ${this.apiKeys.length} keys, including ${hiddenCount} revoked or expired`;
-      this.selection.setItems(visibleKeys);
 
       return html`
         ${this.renderBulkBar()}

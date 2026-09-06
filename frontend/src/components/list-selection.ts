@@ -614,12 +614,18 @@ export class ListSelectionController<T> implements ReactiveController {
 
   /**
    * Tells the controller which rows the page is showing, in display order.
-   * Call it from `render` or `willUpdate`, wherever the visible rows are
-   * computed: selections for rows that went away are dropped.
+   * Selections for rows that went away are dropped.
    *
-   * Pruning deliberately does not request another update. It runs inside the
+   * Call it from `willUpdate`, never from inside `render`. Lit evaluates
+   * template expressions in source order, so a bar rendered above the branch
+   * that prunes reads the count from one pass ago and can paint "3 selected"
+   * over a page that has nothing selected. `willUpdate` runs before every
+   * expression in the pass, which is the only place the count is true for the
+   * whole template.
+   *
+   * Pruning deliberately does not request another update: it runs inside the
    * pass that is already rendering the new rows, and asking for a second one
-   * from render is how a list ends up in an update loop.
+   * is how a list ends up in an update loop.
    */
   setItems(items: readonly T[]): void {
     this.items = items.filter(
@@ -684,8 +690,14 @@ export class ListSelectionController<T> implements ReactiveController {
     this.host.requestUpdate();
   }
 
+  /**
+   * Empties the selection and always asks for a repaint.
+   *
+   * The repaint is unconditional on purpose: if a bar ever renders from a
+   * count that a later `setItems` pruned away, Clear is the operator's way out
+   * and it has to redraw even when the model is already empty.
+   */
   clear(): void {
-    if (this.selection.isEmpty) return;
     this.selection = this.selection.clear();
     this.host.requestUpdate();
   }

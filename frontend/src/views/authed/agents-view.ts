@@ -2907,6 +2907,33 @@ export class AgentsView extends LitElement {
         : 'asc';
   }
 
+  /**
+   * The rows the current view is about to paint, in paint order.
+   *
+   * Computed once per update in `willUpdate` because the bulk bar renders
+   * above the branch that picks a view: if the pruning happened inside
+   * `renderListView` or `renderCanvas`, the bar would already have been built
+   * from the previous pass's count and would sit over the canvas offering
+   * actions on rows that are no longer selectable.
+   */
+  private selectionRows: AgentListRow[] = [];
+
+  protected willUpdate(): void {
+    // The canvas has no checkboxes, so it offers no rows and the selection
+    // empties itself the moment the operator switches to it.
+    this.selectionRows =
+      this.effectiveView === 'canvas'
+        ? []
+        : this.effectiveView === 'list'
+          ? sortAgentListRows(
+              this.getListRows(),
+              this.sortKey,
+              this.sortDirection
+            )
+          : this.getListRows();
+    this.selection.setItems(this.selectionRows);
+  }
+
   // --- RENDERING ---
   private navigateToCardTarget(url: string) {
     Router.go(url);
@@ -3540,12 +3567,7 @@ export class AgentsView extends LitElement {
   }
 
   private renderListView() {
-    const rows = sortAgentListRows(
-      this.getListRows(),
-      this.sortKey,
-      this.sortDirection
-    );
-    this.selection.setItems(rows);
+    const rows = this.selectionRows;
 
     if (rows.length === 0) {
       return html`
@@ -3939,12 +3961,6 @@ export class AgentsView extends LitElement {
    */
   private renderCardsView() {
     const items = [...(this.agents?.items || []), ...this.flows];
-    const rowsById = new Map(this.getListRows().map((row) => [row.id, row]));
-    this.selection.setItems(
-      items
-        .map((item: { id: string }) => rowsById.get(item.id))
-        .filter((row): row is AgentListRow => Boolean(row))
-    );
 
     return html`
       <div class="cards">
@@ -3964,10 +3980,6 @@ export class AgentsView extends LitElement {
   }
 
   private renderCanvas() {
-    // The canvas has no checkboxes, so a selection made in another view must
-    // not leave a bulk bar floating over it.
-    this.selection.setItems([]);
-
     const items = this.getCanvasItems({ includeExiting: false });
     return html`
       <div

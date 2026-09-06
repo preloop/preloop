@@ -685,6 +685,15 @@ export class AIModelsView extends LitElement {
     return effectiveViewMode(this.currentView, this.narrowViewport);
   }
 
+  /**
+   * Prunes the selection to the models this pass paints, before the bulk bar
+   * is built, so a filter change can never leave the bar counting models that
+   * are no longer on the page.
+   */
+  protected willUpdate(): void {
+    this.selection.setItems(this.visibleModels);
+  }
+
   private get providerOptions(): string[] {
     return [...new Set(this.models.map((model) => model.provider_name))]
       .filter(Boolean)
@@ -916,7 +925,6 @@ export class AIModelsView extends LitElement {
 
   private renderFilteredModels() {
     const models = this.visibleModels;
-    this.selection.setItems(models);
     if (models.length === 0) {
       return html`<div class="filter-empty">
         No models match these filters.

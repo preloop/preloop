@@ -1109,6 +1109,18 @@ export class FlowsView extends LitElement {
     );
   }
 
+  /**
+   * Prunes the selection to the rows this pass will paint, before anything
+   * renders. The bulk bar sits above the list and cards branches, so pruning
+   * inside either of them would leave the bar counting rows a filter or a
+   * search had already taken off the page for a frame.
+   */
+  protected willUpdate(): void {
+    this.selection.setItems(
+      this.loadError || this.flows.length === 0 ? [] : this.visibleRows
+    );
+  }
+
   /** The Type filter's options: the presets these flows came from, plus Custom. */
   private get presetOptions(): Array<{ value: string; label: string }> {
     const seen = new Map<string, string>();
@@ -1642,7 +1654,6 @@ export class FlowsView extends LitElement {
 
   private renderListView() {
     const rows = this.visibleRows;
-    this.selection.setItems(rows);
     if (rows.length === 0) {
       return html`<sl-card class="table-card"
         ><div class="empty-state">${this.emptyResultText}</div></sl-card
@@ -1874,7 +1885,6 @@ export class FlowsView extends LitElement {
 
   private renderCardsView() {
     const rows = this.visibleRows;
-    this.selection.setItems(rows);
     if (rows.length === 0) {
       return html`<div class="empty-state">${this.emptyResultText}</div>`;
     }

@@ -90,12 +90,14 @@ function makeRow(overrides: Partial<AgentListRow>): AgentListRow {
 describe('AgentsView', () => {
   let fetchStub: sinon.SinonStub;
   let agentItems: Array<Record<string, unknown>>;
+  let flowItems: Array<Record<string, unknown>>;
 
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
     agentItems = [makeAgent('agent-1', 'Claude Code Workspace', 'claude_code')];
+    flowItems = [];
 
     fetchStub = sinon.stub(window, 'fetch');
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
@@ -150,8 +152,8 @@ describe('AgentsView', () => {
       if (url.startsWith('/api/v1/flows')) {
         return new Response(
           JSON.stringify({
-            items: [],
-            total: 0,
+            items: flowItems,
+            total: flowItems.length,
             limit: 50,
             offset: 0,
           }),
@@ -992,6 +994,45 @@ describe('AgentsView', () => {
       'selection survived the run'
     );
     resetConfirmDialogForTests();
+  });
+
+  it('leaves no bulk bar over the canvas after switching views', async () => {
+    agentItems = [
+      makeAgent('agent-1', 'Alpha runner', 'claude_code'),
+      makeAgent('agent-2', 'Beta runner', 'claude_code'),
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    el.selection.toggle('agent-1');
+    el.selection.toggle('agent-2');
+    await el.updateComplete;
+
+    const bar = el.shadowRoot!.querySelector('list-bulk-bar')!;
+    expect(
+      bar.shadowRoot!.querySelector('[data-testid="bulk-count"]')!.textContent
+    ).to.contain('2 selected');
+
+    const toolbar = el.shadowRoot!.querySelector('list-toolbar')!;
+    const canvasButton = Array.from(
+      toolbar.shadowRoot!.querySelectorAll<HTMLElement>(
+        'sl-button-group sl-button[data-view]'
+      )
+    ).find((button) => button.getAttribute('data-view') === 'canvas')!;
+    canvasButton.click();
+    await el.updateComplete;
+
+    // One pass, not two: the canvas has no checkboxes, so the bar has to be
+    // gone in the same frame that painted the canvas.
+    expect(el.selection.count).to.equal(0);
+    expect(el.shadowRoot!.querySelector('table.agents-table')).to.not.exist;
+    expect(
+      el
+        .shadowRoot!.querySelector('list-bulk-bar')!
+        .shadowRoot!.querySelector('.bulk-bar'),
+      'a dead bulk bar is still on screen'
+    ).to.equal(null);
   });
 });
 
