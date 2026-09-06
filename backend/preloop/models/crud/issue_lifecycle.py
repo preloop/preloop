@@ -124,6 +124,29 @@ class CRUDIssueLifecycle:
         db.flush()
         return row
 
+    def archive_pickup(self, db: Session, *, row: models.IssueLifecycle) -> None:
+        """Preserve authorization/execution history before an explicit replacement."""
+        archived = self.put(
+            db,
+            account_id=row.account_id,
+            issue_id=row.issue_id,
+            kind="pickup",
+            revision=row.data.get("authorization_id", row.data["issue_revision"]),
+            state="superseded",
+            data=dict(row.data),
+        )
+        archived.execution_id = row.execution_id
+        row.execution_id = None
+        db.flush()
+
+    def pickup_execution(
+        self, db: Session, *, row: models.IssueLifecycle
+    ) -> models.FlowExecution | None:
+        """Read the bound execution inside the issue authorization transaction."""
+        return (
+            db.get(models.FlowExecution, row.execution_id) if row.execution_id else None
+        )
+
     def create_execution(
         self,
         db: Session,

@@ -18,6 +18,7 @@ API, using the account's actual flow IDs:
 ```json
 {
   "ready_enabled": true,
+  "ready_label": "<existing-project-readiness-label>",
   "implementation_flow_id": "<implementation-flow-uuid>",
   "audit_flow_id": "<audit-flow-uuid>",
   "create_follow_ups": false
@@ -50,7 +51,8 @@ permissions. Paths are relative to `/api/v1/issues/{issue_uuid}/lifecycle`.
    points, dependency issue numbers, environment profile and command names.
 3. Review blockers and the proposal. `POST /ready` with
    `{"issue_revision":"<fingerprint>"}` rechecks the issue, dependencies and
-   environment and adds `agent-ready` once under project policy.
+   environment and adds the explicitly configured existing `ready_label` once
+   under project policy. No default label vocabulary is assumed.
 
 Labels are added, not replaced: existing project labels retain their ownership.
 The normal label webhook triggers implementation. A durable pickup record binds
@@ -67,9 +69,22 @@ again. The controller rechecks scope and blockers and archives the superseded
 authorization before replacing it. Stale revisions cannot authorize a pickup.
 
 Once an execution exists, `/ready` returns `pickup_reconciliation_required` and
-preserves that execution. Reconciliation of launched or completed implementation
-work is not provided by this draft; `/audit/reconcile` only recovers audits.
-Repeated labels or readiness requests cannot reset an existing execution.
+preserves that execution. Finish or cancel active work through the existing
+execution controls; scope edits never retarget a running conversation. Refine
+the revised scope, review the proposal, then explicitly call
+`POST /pickup/reconcile` with `issue_revision`, `previous_execution_id`, and a
+nonempty review `reason`. This requires both issue-edit and flow-execution
+permissions. The named previous execution must be terminal, the revision must
+be current and changed, and all readiness checks must pass again.
+
+The controller archives the old authorization with its execution link and creates
+a distinct authorization for the revised scope. It dispatches one fresh execution
+directly because the readiness label may already be present. It never removes
+and re-adds labels to manufacture another webhook. Repeating the same request or
+receiving duplicate issue events reuses the same authorization/execution, including
+a retry after dispatch failure. Old execution prompts and contracts remain intact.
+Same-scope execution retries use the existing execution retry API. The
+`/audit/reconcile` endpoint separately recovers audits.
 
 ## Audit the actual merge
 

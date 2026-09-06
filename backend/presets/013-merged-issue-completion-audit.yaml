@@ -33,7 +33,7 @@ prompt_template: |
   No criteria in the supplied contract means insufficient evidence; do not invent
   a complete verdict. Propose at most three clear follow-ups. The controller searches
   existing linked work, applies external-creation policy, and upserts one audit comment.
-  Do not directly create issues/comments, add agent-ready, reopen the original issue,
+  Do not directly create issues/comments, add readiness labels, reopen the original issue,
   push, publish PRs, deploy, or probe production. Deployment requirements need a
   separate approved verification with a recorded deployed revision and test scope.
 agent_type: codex

@@ -19,7 +19,7 @@ prompt_template: |
   Missing environment or conflicting requirements block readiness; do not invent them.
   Store /workspace/result.json with "status": "success" and readiness_contract containing
   all those fields plus issue_revision set to the trusted revision above.
-  The result is a reviewable proposal. Do not add agent-ready, create follow-ups,
+  The result is a reviewable proposal. Do not add readiness labels, create follow-ups,
   start implementation, or change project labels. A separate authorized transition
   rechecks the live issue, dependencies and runner capabilities before pickup.
 agent_type: codex

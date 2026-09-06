@@ -46,6 +46,7 @@ class FakeGitHub:
                 "labels": [{"name": "feature"}],
             }
         }
+        self.repository_labels = ["feature", "agent-ready"]
         self.comments: list[dict[str, Any]] = []
         self.timeline: list[dict[str, Any]] = []
         self.prs: dict[int, dict[str, Any]] = {}
@@ -98,6 +99,8 @@ class FakeGitHub:
     ) -> Any:
         self.calls.append((method, endpoint))
         root = f"/repos/{REPO}"
+        if endpoint == f"{root}/labels" and method == "GET":
+            return [{"name": name} for name in self.repository_labels]
         if endpoint == f"{root}/issues" and method == "GET":
             return deepcopy(list(self.issues.values()))
         if endpoint == f"{root}/issues" and method == "POST":
@@ -215,6 +218,7 @@ def rig(
     )
     policy = {
         "ready_enabled": True,
+        "ready_label": "agent-ready",
         "implementation_flow_id": str(implementer.id),
         "audit_flow_id": str(audit.id),
         "create_follow_ups": True,
@@ -327,7 +331,31 @@ async def test_ready_and_duplicate_webhook_create_one_authorized_pickup(
 ) -> None:
     service, transport, flow, _ = rig
     contract = await contract_for(service)
-    assert not (await service.refine(contract))["blockers"]
+    vague = ReadinessContract(issue_revision=contract.issue_revision)
+    assert "missing_criteria" in (await service.refine(vague))["blockers"]
+    assert (await service.ready(contract.issue_revision))["state"] == "blocked"
+    assert not any(method == "POST" for method, _ in transport.calls)
+    monkeypatch.setattr(
+        "preloop.services.issue_lifecycle_runtime.build_lifecycle_service",
+        AsyncMock(return_value=service),
+    )
+    refinement = models.Flow(
+        account_id=service.account_id,
+        agent_config={"lifecycle_kind": "refinement"},
+    )
+    proposal = models.FlowExecution(
+        status="SUCCEEDED",
+        trigger_event_details={
+            "lifecycle_refinement": {
+                "issue_id": str(service.issue.id),
+                "issue_revision": contract.issue_revision,
+            }
+        },
+        result={"status": "success", "readiness_contract": contract.model_dump()},
+    )
+    await lifecycle_execution_finished(service.db, proposal, refinement)
+    assert service._get("readiness", contract.issue_revision).state == "reviewable"
+    assert not any(method == "POST" for method, _ in transport.calls)
     assert (await service.ready(contract.issue_revision))["state"] == "ready"
     assert (await service.ready(contract.issue_revision))["state"] == "ready"
     assert transport.issues[1]["labels"] == [
@@ -974,3 +1002,225 @@ async def test_audit_publication_budget_rolls_back_and_can_reconcile(
     result = await service.finish_audit(execution)
     assert len(result["follow_ups"]) == 1
     assert len(transport.issues) == 2
+
+
+@pytest.mark.asyncio
+async def test_ready_uses_only_explicit_existing_project_label(rig: tuple) -> None:
+    service, transport, _, _ = rig
+    contract = await contract_for(service)
+    await service.refine(contract)
+    service.policy.pop("ready_label", None)
+    with pytest.raises(ValueError, match="ready_label_not_configured"):
+        await service.ready(contract.issue_revision)
+    service.policy["ready_label"] = "ready for implementation"
+    transport.repository_labels = ["feature"]
+    with pytest.raises(ValueError, match="ready_label_not_found"):
+        await service.ready(contract.issue_revision)
+    assert not any(method == "POST" for method, _ in transport.calls)
+    transport.repository_labels.append("ready for implementation")
+    result = await service.ready(contract.issue_revision)
+    assert result["label"] == "ready for implementation"
+    assert transport.issues[1]["labels"] == [
+        {"name": "feature"},
+        {"name": "ready for implementation"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_explicit_replacement_preserves_terminal_history_and_reuses_authorization(
+    rig: tuple,
+) -> None:
+    service, transport, flow, _ = rig
+    old = await contract_for(service)
+    await service.refine(old)
+    await service.ready(old.issue_revision)
+    first = await service.schedule_pickup(flow, {}, AsyncMock())
+    transport.issues[1]["body"] += " New scope."
+    current = await contract_for(service)
+    await service.refine(current)
+    with pytest.raises(ValueError, match="pickup_execution_not_terminal"):
+        await service.reconcile_pickup(
+            current.issue_revision, first.id, "Approve revised scope"
+        )
+    assert service._get("pickup", "once").execution_id == first.id
+    crud_flow_execution.update(
+        service.db, db_obj=first, obj_in=FlowExecutionUpdate(status="CANCELLED")
+    )
+    service.db.commit()
+    with pytest.raises(ValueError, match="pickup_execution_mismatch"):
+        await service.reconcile_pickup(
+            current.issue_revision, uuid4(), "Wrong execution"
+        )
+    stale = await service.reconcile_pickup(old.issue_revision, first.id, "Stale scope")
+    assert stale["state"] == "blocked"
+    approved = await service.reconcile_pickup(
+        current.issue_revision, first.id, "Approve revised scope"
+    )
+    assert approved["state"] == "ready"
+    assert approved["replaces_execution_id"] == str(first.id)
+    history = crud_issue_lifecycle.list_for_issue(
+        service.db, account_id=service.account_id, issue_id=service.issue.id
+    )
+    prior = next(
+        row for row in history if row.kind == "pickup" and row.state == "superseded"
+    )
+    assert prior.execution_id == first.id
+    assert prior.data["contract"] == old.model_dump()
+    second = await service.schedule_pickup(flow, {}, AsyncMock())
+    assert second.id != first.id
+    assert second.retry_of_execution_id is None and second.cli_session is None
+    replay = await service.reconcile_pickup(
+        current.issue_revision, first.id, "Approve revised scope"
+    )
+    assert replay["authorization_id"] == approved["authorization_id"]
+    assert (await service.schedule_pickup(flow, {}, AsyncMock())).id == second.id
+    assert (
+        first.trigger_event_details["lifecycle_pickup"]["contract"] == old.model_dump()
+    )
+    assert (
+        second.trigger_event_details["lifecycle_pickup"]["contract"]
+        == current.model_dump()
+    )
+    assert (
+        sum(
+            method == "POST" and url.endswith("/labels")
+            for method, url in transport.calls
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconcile_http_dispatches_once_with_label_already_present(
+    rig: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+    from fastapi import FastAPI
+    from preloop.api.auth import get_current_active_user
+    from preloop.api.endpoints.issue_lifecycle import router
+    from preloop.models.db.session import get_db_session
+
+    service, transport, flow, _ = rig
+    contract = await contract_for(service)
+    await service.refine(contract)
+    await service.ready(contract.issue_revision)
+    first = await service.schedule_pickup(flow, {}, AsyncMock())
+    transport.issues[1]["body"] += " Revised requirement."
+    revised = await contract_for(service)
+    await service.refine(revised)
+    crud_flow_execution.update(
+        service.db, db_obj=first, obj_in=FlowExecutionUpdate(status="SUCCEEDED")
+    )
+    service.db.commit()
+    transport.tracker_type = "github"
+    monkeypatch.setattr(
+        "preloop.services.issue_lifecycle_runtime.get_tracker_client",
+        AsyncMock(return_value=transport),
+    )
+    monkeypatch.setattr(
+        "preloop.services.issue_lifecycle_runtime.FlowEnvironmentCapabilities.blockers",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "preloop.services.flow_execution_dispatcher.flow_execution_worker_enabled",
+        lambda: True,
+    )
+    dispatch = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "preloop.services.flow_execution_dispatcher.dispatch_execute", dispatch
+    )
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_db_session] = lambda: service.db
+    actor = models.User(
+        id=uuid4(), account_id=service.account_id, username="reviewer", is_active=True
+    )
+    app.dependency_overrides[get_current_active_user] = lambda: actor
+    body = {
+        "issue_revision": revised.issue_revision,
+        "previous_execution_id": str(first.id),
+        "reason": "Approve reviewed revised scope",
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        path = f"/issues/{service.issue.id}/lifecycle/pickup/reconcile"
+        initial = await client.post(path, json=body)
+        assert initial.status_code == 200, initial.text
+        replay = await client.post(path, json=body)
+        assert replay.status_code == 200, replay.text
+        assert initial.json()["execution_id"] == replay.json()["execution_id"]
+        assert initial.json()["execution_id"] != str(first.id)
+        assert initial.json()["authorization_id"] == replay.json()["authorization_id"]
+    assert len({str(call.args[0]) for call in dispatch.await_args_list}) == 1
+    assert (
+        sum(
+            method == "POST" and url.endswith("/labels")
+            for method, url in transport.calls
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_merge_fixture_checks_out_exact_revision_before_independent_audit(
+    rig: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Run the production checkout script against a real disposable repository."""
+    import subprocess
+    import sys
+    from preloop.agents.codex import CodexAgent
+
+    def git(*args: str) -> str:
+        return subprocess.check_output(
+            ["git", "-C", str(tmp_path), *args], text=True
+        ).strip()
+
+    git("init", "-b", "main")
+    git("config", "user.name", "Local lifecycle fixture")
+    git("config", "user.email", "fixture@example.invalid")
+    (tmp_path / "preference.txt").write_text("accepted revision\n")
+    git("add", "preference.txt")
+    git("commit", "-m", "Merged acceptance fixture")
+    merged_sha = git("rev-parse", "HEAD")
+    (tmp_path / "preference.txt").write_text("later unrelated change\n")
+    git("commit", "-am", "Later main revision")
+    assert git("rev-parse", "HEAD") != merged_sha
+    monkeypatch.setattr(sys.modules[__name__], "SHA", merged_sha)
+    service, transport, _, flow = rig
+    contract = await contract_for(service)
+    await service.refine(contract)
+    transport.merge()
+    execution = await service.schedule_audit(flow, AsyncMock())
+    agent = CodexAgent({})
+    event = execution.trigger_event_details
+    selected = agent._extract_commit_sha_from_trigger(event)
+    script = agent._build_git_branch_setup_shell(
+        full_path=str(tmp_path),
+        commit_sha=selected,
+        source_branch="main",
+        target_branch="independent-audit",
+        trigger_data=event,
+    )
+    # Only the final sandbox-directory reset is unnecessary on the local host.
+    script = script.removesuffix("cd /workspace")
+    subprocess.run(["bash", "-ec", script], check=True, capture_output=True, text=True)
+    assert git("rev-parse", "HEAD") == merged_sha
+    assert (tmp_path / "preference.txt").read_text() == "accepted revision\n"
+    assert execution.cli_session is None and execution.retry_of_execution_id is None
+    result = audit_result(contract, "gap")
+    result["checked_out_sha"] = git("rev-parse", "HEAD")
+    crud_flow_execution.update(
+        service.db,
+        db_obj=execution,
+        obj_in=FlowExecutionUpdate(status="SUCCEEDED", result=result),
+    )
+    summary = await service.finish_audit(execution)
+    assert summary["verdict"] == "gap"
+    assert len(transport.comments) == 1 and len(transport.issues) == 2
+    await service.finish_audit(execution)
+    assert len(transport.comments) == 1 and len(transport.issues) == 2
+    assert merged_sha in transport.comments[0]["body"]

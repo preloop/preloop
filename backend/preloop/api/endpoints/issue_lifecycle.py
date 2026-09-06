@@ -5,7 +5,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
@@ -116,6 +116,84 @@ def ready_issue(
                 current_user=current_user,
             )
             return await service.ready(request.issue_revision)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    return run_lifecycle_endpoint(operation)
+
+
+class PickupReconciliationRequest(BaseModel):
+    """Approve a new revision while naming the exact implementation it replaces."""
+
+    issue_revision: str
+    previous_execution_id: UUID
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/pickup/reconcile")
+@require_permission("edit_issues")
+@require_permission("execute_flows")
+def reconcile_pickup(
+    issue_id: UUID,
+    request: PickupReconciliationRequest,
+    db: Session = Depends(get_db_session),
+    current_user: models.User = Depends(get_current_active_user),
+) -> dict[str, Any]:
+    """Authorize and durably dispatch changed scope after the prior run ends."""
+
+    async def operation() -> dict[str, Any]:
+        from preloop.services.flow_trigger_service import FlowTriggerService
+
+        try:
+            service = await build_lifecycle_service(
+                db,
+                issue_id=issue_id,
+                account_id=current_user.account_id,
+                current_user=current_user,
+            )
+            flow_id = service.policy.get("implementation_flow_id")
+            flow = (
+                crud_flow.get(db, id=UUID(flow_id), account_id=current_user.account_id)
+                if flow_id
+                else None
+            )
+            if flow is None or not flow.is_enabled:
+                raise ValueError("implementation_flow_unavailable")
+            result = await service.reconcile_pickup(
+                request.issue_revision, request.previous_execution_id, request.reason
+            )
+            if result["state"] not in {"ready", "dispatched", "label_pending"}:
+                return result
+            trigger = FlowTriggerService(db)
+
+            async def dispatch(execution: models.FlowExecution) -> None:
+                _ = flow.id, execution.id
+                await on_application_loop(
+                    partial(
+                        trigger._start_flow_execution,
+                        flow,
+                        execution.trigger_event_details,
+                        None,
+                        precreated_execution=execution,
+                    )
+                )
+
+            # The ready label can already be present. Do not remove/re-add it
+            # to manufacture another webhook; dispatch the new durable intent.
+            execution = await service.schedule_pickup(
+                flow,
+                {
+                    "type": "issue_updated",
+                    "project_id": str(service.issue.project_id),
+                    "payload": {"issue": {"id": service.issue.external_id}},
+                },
+                dispatch,
+            )
+            return {
+                **result,
+                "state": "dispatched" if execution else "needs_reconciliation",
+                "execution_id": str(execution.id) if execution else None,
+            }
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
 

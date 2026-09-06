@@ -3,7 +3,7 @@
 from collections.abc import Awaitable, Callable
 from hashlib import sha256
 from typing import Any, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
@@ -119,7 +119,19 @@ class IssueLifecycleService:
             )
         return blockers
 
+    async def reconcile_pickup(
+        self, revision: str, previous_execution_id: UUID, reason: str
+    ) -> dict[str, Any]:
+        """Explicitly authorize changed scope only after the previous run ends."""
+        return await self._ready(revision, previous_execution_id, reason)
+
     async def ready(self, revision: str) -> dict[str, Any]:
+        """Authorize initial or unlaunched pickup, preserving existing executions."""
+        return await self._ready(revision)
+
+    async def _ready(
+        self, revision: str, previous_execution_id: UUID | None = None, reason: str = ""
+    ) -> dict[str, Any]:
         """Authorize exactly one additive label transition for an issue.
 
         GitHub has no conditional-label-write API. The provider rereads scope
@@ -131,11 +143,45 @@ class IssueLifecycleService:
         async with crud_issue_lifecycle.locked(self.db, self.account_id, self.issue.id):
             existing = self._get("pickup", "once")
             current = await self.provider.issue(self.number)
+            if current.revision != revision or current.state != "open":
+                return {"state": "blocked", "blockers": ["issue_scope_changed"]}
+            replacement = previous_execution_id is not None
+            if replacement:
+                if (
+                    existing
+                    and existing.data.get("replaces_execution_id")
+                    == str(previous_execution_id)
+                    and existing.data["issue_revision"] == revision
+                ):
+                    if existing.state != "label_pending":
+                        return {"state": existing.state, **existing.data}
+                    replacement = (
+                        False  # Retry a provider effect without resetting intent.
+                    )
+                else:
+                    if (
+                        existing is None
+                        or existing.execution_id != previous_execution_id
+                    ):
+                        raise ValueError("pickup_execution_mismatch")
+                    prior = crud_issue_lifecycle.pickup_execution(self.db, row=existing)
+                    if prior is None or prior.status not in {
+                        "SUCCEEDED",
+                        "FAILED",
+                        "CANCELLED",
+                        "TIMED_OUT",
+                        "ABORTED",
+                    }:
+                        raise ValueError("pickup_execution_not_terminal")
+                    if existing.data["issue_revision"] == revision:
+                        raise ValueError("pickup_scope_unchanged_use_execution_retry")
+                    if not reason.strip():
+                        raise ValueError("pickup_reconciliation_reason_required")
             if existing:
                 if existing.data["issue_revision"] != current.revision:
                     self._put("pickup", "once", "needs_reconciliation", existing.data)
                 if existing.state == "needs_reconciliation":
-                    if existing.execution_id is not None:
+                    if existing.execution_id is not None and not replacement:
                         return {
                             "state": existing.state,
                             **existing.data,
@@ -144,7 +190,7 @@ class IssueLifecycleService:
                     # This explicit /ready request can replace an authorization
                     # that never launched. It still validates the current proposal
                     # and scope below; an existing execution is never replaced.
-                elif existing.state != "label_pending":
+                elif existing.state != "label_pending" and not replacement:
                     return {"state": existing.state, **existing.data}
             row = self._get("readiness", revision)
             if row is None:
@@ -155,28 +201,34 @@ class IssueLifecycleService:
                 blockers.append("issue_scope_changed")
             if blockers:
                 return {"state": "blocked", "blockers": blockers}
-            label = self.policy.get("ready_label", "agent-ready")
-            if label != "agent-ready":
-                raise ValueError("unsupported_ready_label")
+            label = self.policy.get("ready_label")
+            if not isinstance(label, str) or not label.strip():
+                raise ValueError("ready_label_not_configured")
+            await self.provider.require_ready_label(label)
             # The marker is stable even if provider success precedes rollback.
             data = {
                 "issue_revision": revision,
                 "contract": contract.model_dump(),
                 "label": label,
             }
-            if existing and existing.state == "needs_reconciliation":
-                self._put(
-                    "pickup",
-                    existing.data["issue_revision"],
-                    "superseded",
-                    dict(existing.data),
+            if replacement:
+                data.update(
+                    {
+                        "authorization_id": str(uuid4()),
+                        "replaces_execution_id": str(previous_execution_id),
+                        "reconciliation_reason": reason,
+                    }
                 )
+            elif existing and existing.state == "label_pending":
+                data = dict(existing.data)
+            if existing and (replacement or existing.state == "needs_reconciliation"):
+                crud_issue_lifecycle.archive_pickup(self.db, row=existing)
             self._put("pickup", "once", "label_pending", data)
         # Persist intent before the provider effect. If its successful response
         # is lost, the real label webhook can still resolve this authorization.
         async with crud_issue_lifecycle.locked(self.db, self.account_id, self.issue.id):
             pending = self._get("pickup", "once")
-            if pending.state != "label_pending":
+            if pending.state != "label_pending" or pending.data != data:
                 return {"state": pending.state, **pending.data}
             await self.provider.add_ready_label(self.number, label, revision)
             after = await self.provider.issue(self.number)

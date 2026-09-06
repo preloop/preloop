@@ -42,6 +42,14 @@ def lifecycle_app() -> FastAPI:
         ("/ready", {"issue_revision": "revision"}),
         ("/audit/reconcile", {}),
         (
+            "/pickup/reconcile",
+            {
+                "issue_revision": "revision",
+                "previous_execution_id": str(uuid4()),
+                "reason": "Approve changed scope",
+            },
+        ),
+        (
             "/deployment/verify",
             {
                 "merge_sha": "a" * 40,

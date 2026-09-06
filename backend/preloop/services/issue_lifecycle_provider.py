@@ -75,6 +75,7 @@ class LifecycleProvider(Protocol):
 
     async def issue(self, number: int) -> IssueSnapshot: ...
     async def merged_links(self, number: int) -> list[MergeLink]: ...
+    async def require_ready_label(self, label: str) -> None: ...
     async def add_ready_label(self, number: int, label: str, revision: str) -> None: ...
     async def upsert_comment(self, number: int, marker: str, body: str) -> str: ...
     async def ensure_follow_up(
@@ -207,8 +208,16 @@ class GitHubLifecycleProvider:
         # contributions in its evidence envelope.
         return sorted(links, key=lambda link: link.sha == closing_sha)
 
+    async def require_ready_label(self, label: str) -> None:
+        """Require an existing repository label; never create project vocabulary."""
+        async for row in self._rows(f"{self.root}/labels"):
+            if row.get("name") == label:
+                return
+        raise ValueError("ready_label_not_found")
+
     async def add_ready_label(self, number: int, label: str, revision: str) -> None:
         """Recheck immediately before an additive, naturally idempotent effect."""
+        await self.require_ready_label(label)
         current = await self.issue(number)
         if current.revision != revision or current.state != "open":
             raise ValueError("issue_scope_changed")
