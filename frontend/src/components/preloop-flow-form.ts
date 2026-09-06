@@ -665,6 +665,7 @@ export class PreloopFlowForm extends LitElement {
         agent_config:
           this.longRunningAgents.length > 0
             ? {
+                ...(this.flow.agent_config || {}),
                 execution_path: this.flowExecutionPath,
                 target_agent_id:
                   this.flowExecutionPath === 'persistent'
