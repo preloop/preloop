@@ -269,8 +269,11 @@ describe('TrackerDetailView', () => {
     await el.updateComplete;
     expect(el.shadowRoot?.textContent).to.contain('ALP-1');
     expect(el.shadowRoot?.textContent).to.contain('Fix login');
-    const actionsHeader = el.shadowRoot?.querySelector('th .visually-hidden');
-    expect(actionsHeader?.textContent?.trim()).to.equal('Actions');
+    const hiddenHeaders = [
+      ...(el.shadowRoot?.querySelectorAll('th .visually-hidden') || []),
+    ].map((node) => node.textContent?.trim());
+    expect(hiddenHeaders).to.include('Actions');
+    expect(hiddenHeaders).to.include('Select issues');
     const issueCalls = fetchStub
       .getCalls()
       .filter((call) => String(call.args[0]).includes('/api/v1/issues?'));
@@ -649,5 +652,68 @@ describe('TrackerDetailView', () => {
       project_id: projectA.id,
       number: 12,
     });
+  });
+
+  it('Run triage on selected posts a capped targets list', async () => {
+    fetchStub = stubFetch({
+      issues: [
+        {
+          id: 'issue-1',
+          key: 'ALP-1',
+          title: 'Fix login',
+          status: 'open',
+          updated_at: '2026-01-03T00:00:00Z',
+          project: 'Alpha',
+          project_id: projectA.id,
+          url: 'https://example.com/1',
+        },
+        {
+          id: 'issue-2',
+          key: 'ALP-2',
+          title: 'Fix search',
+          status: 'open',
+          updated_at: '2026-01-03T00:00:00Z',
+          project: 'Alpha',
+          project_id: projectA.id,
+          url: 'https://example.com/2',
+        },
+      ],
+      total: 2,
+    });
+    const el = await mountView();
+    await (
+      el as unknown as { _loadIssues: (reset: boolean) => Promise<void> }
+    )._loadIssues(true);
+    await el.updateComplete;
+    (
+      el as unknown as {
+        _toggleIssueSelection: (id: string, checked: boolean) => void;
+      }
+    )._toggleIssueSelection('issue-1', true);
+    (
+      el as unknown as {
+        _toggleIssueSelection: (id: string, checked: boolean) => void;
+      }
+    )._toggleIssueSelection('issue-2', true);
+    await el.updateComplete;
+    expect(el.shadowRoot?.textContent).to.contain('Run triage on selected');
+    (
+      el as unknown as { _runTriageOnSelected: () => void }
+    )._runTriageOnSelected();
+    await tick(50);
+    const runCalls = fetchStub
+      .getCalls()
+      .filter((call) =>
+        String(call.args[0]).includes('/api/v1/flows/run-preset')
+      );
+    expect(runCalls.length).to.be.greaterThan(0);
+    const init = runCalls[0].args[1] as RequestInit;
+    const body = JSON.parse(String(init.body));
+    expect(body.preset_slug).to.equal('issue-triage-assistant');
+    expect(body.target).to.equal(undefined);
+    expect(body.targets).to.deep.equal([
+      { kind: 'issue', issue_id: 'issue-1' },
+      { kind: 'issue', issue_id: 'issue-2' },
+    ]);
   });
 });

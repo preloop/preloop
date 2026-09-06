@@ -385,12 +385,13 @@ def run_preset(
     current_user: User = Depends(get_current_active_user),
     body: schemas.RunPresetRequest,
 ) -> schemas.RunPresetResponse:
-    """Run a catalog preset on an issue, creating the account flow on first use.
+    """Run a catalog preset on an issue or a capped triage batch.
 
     ``confirm_create=false`` resolves only: 409 ``flow_missing`` when the
     account has no clone, or 200 with flow metadata and no execution when
     one exists. ``confirm_create=true`` creates if needed (requires
-    ``create_flows``) and starts the run.
+    ``create_flows``) and starts the run. ``targets`` is a 1-25 issue
+    list for ``issue-triage-assistant`` only.
     """
     # Sync handler: an async def would hold Session on the event loop and
     # fail test_async_sync_session_route_count_does_not_grow.
@@ -403,6 +404,7 @@ def run_preset(
                 current_user=current_user,
                 preset_slug=body.preset_slug,
                 target=body.target,
+                targets=body.targets,
                 confirm_create=body.confirm_create,
                 triggered_by=_display_name(current_user),
             )
