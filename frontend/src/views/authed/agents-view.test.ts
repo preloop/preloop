@@ -5,6 +5,7 @@ import './agents-view.ts';
 import type { AgentListRow, AgentsView } from './agents-view';
 import { sortAgentListRows } from './agents-view';
 import { loadShoelaceTokens } from '../../utils/test-shoelace-theme';
+import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 
 function makeAgent(
   id: string,
@@ -248,7 +249,9 @@ describe('AgentsView', () => {
     const headers = Array.from(
       el.shadowRoot?.querySelectorAll('table.agents-table thead th') || []
     );
+    // The first header is the select-all checkbox, which carries no text.
     expect(headers.map((th) => th.textContent?.trim())).to.deep.equal([
+      '',
       'Agent',
       'Status',
       'Owner',
@@ -261,31 +264,31 @@ describe('AgentsView', () => {
 
     // "$ est." is short enough to read as "dollar est." out loud, so the
     // sort button carries the full name.
-    const spendButton = headers[5].querySelector('.sort-button');
+    const spendButton = headers[6].querySelector('.sort-button');
     expect(spendButton?.getAttribute('aria-label')).to.equal('Estimated spend');
     expect(spendButton?.getAttribute('title')).to.equal('Estimated spend');
 
-    const lastSeen = headers[6];
+    const lastSeen = headers[7];
     expect(lastSeen.getAttribute('aria-sort'), 'default sort').to.equal(
       'descending'
     );
-    expect(headers[0].getAttribute('aria-sort')).to.equal('none');
+    expect(headers[1].getAttribute('aria-sort')).to.equal('none');
 
     lastSeen.querySelector<HTMLButtonElement>('.sort-button')?.click();
     await el.updateComplete;
     expect(
       el.shadowRoot
-        ?.querySelectorAll('table.agents-table thead th')[6]
+        ?.querySelectorAll('table.agents-table thead th')[7]
         .getAttribute('aria-sort')
     ).to.equal('ascending');
 
-    headers[0].querySelector<HTMLButtonElement>('.sort-button')?.click();
+    headers[1].querySelector<HTMLButtonElement>('.sort-button')?.click();
     await el.updateComplete;
     const after = el.shadowRoot?.querySelectorAll(
       'table.agents-table thead th'
     );
-    expect(after?.[0].getAttribute('aria-sort')).to.equal('ascending');
-    expect(after?.[6].getAttribute('aria-sort')).to.equal('none');
+    expect(after?.[1].getAttribute('aria-sort')).to.equal('ascending');
+    expect(after?.[7].getAttribute('aria-sort')).to.equal('none');
   });
 
   it('shows the status chip taxonomy and a right-aligned request count', async () => {
@@ -315,7 +318,7 @@ describe('AgentsView', () => {
     const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
     await waitForAgents(el);
 
-    const cell = el.shadowRoot?.querySelectorAll('tbody td')[6];
+    const cell = el.shadowRoot?.querySelectorAll('tbody td')[7];
     expect(cell?.textContent?.trim()).to.not.contain('2026-03-10T10:00:00Z');
     expect(cell?.getAttribute('title'))
       .to.be.a('string')
@@ -633,6 +636,7 @@ describe('AgentsView', () => {
     const table = el.shadowRoot?.querySelector('table.agents-table');
     const cols = Array.from(table?.querySelectorAll('colgroup col') || []);
     expect(cols.map((col) => col.className)).to.deep.equal([
+      'col-select',
       'col-agent',
       'col-status',
       'col-owner',
@@ -790,7 +794,7 @@ describe('AgentsView', () => {
 
     const lastSeen = Array.from(
       el.shadowRoot?.querySelectorAll('tbody tr') || []
-    ).map((row) => row.children[6].textContent?.trim());
+    ).map((row) => row.children[7].textContent?.trim());
     expect(lastSeen).to.contain('10d ago');
     expect(lastSeen).to.contain(
       new Date(twoHundredDaysAgo).toLocaleDateString()
@@ -814,7 +818,7 @@ describe('AgentsView', () => {
 
     const listCell = el
       .shadowRoot!.querySelector('tbody tr')!
-      .children[6].textContent?.trim();
+      .children[7].textContent?.trim();
     expect(listCell).to.equal('6w ago');
 
     localStorage.setItem('preloop.agents.view_mode', 'cards');
@@ -869,6 +873,125 @@ describe('AgentsView', () => {
     ).map((item) => item.textContent?.replace(/\s+/g, ' ').trim());
     expect(items).to.have.length(3);
     expect(items[2]).to.contain('Unmanaged (dashed gray)');
+  });
+
+  it('pauses every selected agent from the bulk bar after naming them', async () => {
+    agentItems = [
+      makeAgent('agent-1', 'Alpha runner', 'claude_code'),
+      makeAgent('agent-2', 'Beta runner', 'claude_code'),
+      makeAgent('agent-3', 'Gamma runner', 'claude_code'),
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const bar = el.shadowRoot!.querySelector('list-bulk-bar')!;
+    expect(
+      bar.shadowRoot!.querySelector('.bulk-bar'),
+      'hidden at zero'
+    ).to.equal(null);
+
+    // x on the focused row, then shift+X three rows down: two keys, three agents.
+    const rowLink = (id: string) =>
+      el.shadowRoot!.querySelector<HTMLElement>(
+        `tr[data-selection-id="${id}"] a.row-link`
+      )!;
+    const press = (id: string, key: string, shiftKey = false) =>
+      rowLink(id).dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key,
+          shiftKey,
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+        })
+      );
+
+    const order = Array.from(
+      el.shadowRoot!.querySelectorAll('tbody tr[data-selection-id]')
+    ).map((row) => row.getAttribute('data-selection-id')!);
+    press(order[0], 'x');
+    await el.updateComplete;
+    press(order[2], 'X', true);
+    await el.updateComplete;
+
+    expect(Array.from(el.selection.selectedIds).sort()).to.deep.equal([
+      'agent-1',
+      'agent-2',
+      'agent-3',
+    ]);
+    expect(
+      el
+        .shadowRoot!.querySelector(`tr[data-selection-id="${order[1]}"]`)!
+        .getAttribute('aria-selected')
+    ).to.equal('true');
+    expect(
+      bar.shadowRoot!.querySelector('[data-testid="bulk-count"]')!.textContent
+    ).to.contain('3 selected');
+
+    // Decommission stays a destructive action here too (DESIGN.md).
+    const decommission = bar.shadowRoot!.querySelector<HTMLElement>(
+      'sl-button[data-action="decommission"]'
+    )!;
+    expect(decommission.getAttribute('variant')).to.equal('danger');
+    expect(decommission.hasAttribute('outline')).to.equal(true);
+
+    const pause = bar.shadowRoot!.querySelector<HTMLElement>(
+      'sl-button[data-action="suspend"]'
+    )!;
+    await (pause as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    pause.click();
+
+    await waitUntil(
+      () => !!document.querySelector('confirm-dialog'),
+      'no confirm dialog'
+    );
+    const dialog = document.querySelector('confirm-dialog')!;
+    await (dialog as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    const dialogText = dialog.shadowRoot!.textContent!.replace(/\s+/g, ' ');
+    expect(dialogText).to.contain('Pause 3 agents?');
+    expect(dialogText).to.contain('Alpha runner, Beta runner, Gamma runner');
+
+    const patches = () =>
+      fetchStub
+        .getCalls()
+        .filter((call) => (call.args[1] as RequestInit)?.method === 'PATCH');
+    expect(
+      patches().length,
+      'nothing moves before the operator agrees'
+    ).to.equal(0);
+
+    const confirm = Array.from(
+      dialog.shadowRoot!.querySelectorAll<HTMLElement>('sl-button')
+    ).find((button) => button.textContent?.trim() === 'Pause')!;
+    await (confirm as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    confirm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    await waitUntil(() => patches().length === 3, 'not every agent was paused');
+    expect(
+      patches()
+        .map((call) => String(call.args[0]))
+        .sort()
+    ).to.deep.equal([
+      '/api/v1/agents/agent-1',
+      '/api/v1/agents/agent-2',
+      '/api/v1/agents/agent-3',
+    ]);
+    expect(
+      JSON.parse(String((patches()[0].args[1] as RequestInit).body))
+    ).to.deep.equal({
+      lifecycle_action: 'suspend',
+      reason: 'Manually paused from managed agents view',
+    });
+
+    await waitUntil(
+      () => el.selection.count === 0,
+      'selection survived the run'
+    );
+    resetConfirmDialogForTests();
   });
 });
 
