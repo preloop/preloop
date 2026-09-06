@@ -186,6 +186,10 @@ describe('token-figures', () => {
 
     const tooltip = el.shadowRoot?.querySelector('sl-tooltip');
     expect(tooltip?.getAttribute('content')).to.equal(expected);
+    // The component carries its own tooltip registration rather than
+    // relying on whatever else a page happens to import.
+    expect(customElements.get('sl-tooltip'), 'sl-tooltip is registered').to
+      .exist;
     expect(
       el.shadowRoot?.querySelector('.figures')?.getAttribute('title')
     ).to.equal(expected);

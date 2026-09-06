@@ -1,5 +1,9 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
+// The component renders a tooltip, so it registers one. Every page that
+// shows token figures would otherwise depend on some other module in its
+// import graph having registered it first.
+import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import type { GatewayTokenUsage } from '../types';
 
 /**
