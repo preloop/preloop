@@ -7,10 +7,14 @@
  * contract so a future restyle cannot silently drop keyboard access.
  */
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
+import sinon from 'sinon';
+import {
+  ConnectionState,
+  unifiedWebSocketManager,
+} from '../services/unified-websocket-manager';
 import './console-header.ts';
 import type { ConsoleHeader } from './console-header.ts';
 import { publishAttentionSummary } from '../utils/attention-summary';
-import { unifiedWebSocketManager } from '../services/unified-websocket-manager';
 import { Router } from '@vaadin/router';
 
 const USER = {
@@ -22,11 +26,15 @@ const USER = {
 };
 
 /** Answer every console-header startup request so rendering is deterministic. */
-function stubFetch(): () => void {
+function stubFetch(approvals: () => unknown[] = () => []): () => void {
   const original = window.fetch;
   window.fetch = (async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : input.toString();
-    const body = url.includes('/users/me') ? USER : [];
+    const body = url.includes('/users/me')
+      ? USER
+      : url.includes('/approval-requests')
+        ? approvals()
+        : [];
     return new Response(JSON.stringify(body), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -203,16 +211,6 @@ describe('console-header bell empty state', () => {
   });
 });
 
-/**
- * The bell and approvals.
- *
- * The bell already lists pending approvals and opens them on click. What it
- * did not do was say anything when one of those approvals stopped waiting:
- * the row vanished mid-session with no trace, and the generic notification
- * rows it does keep went nowhere when clicked. These tests pin the approval
- * notification type, where its click lands, and the two cases that should
- * stay quiet.
- */
 describe('console-header bell approvals', () => {
   const APPROVAL = {
     id: 'ar-1',
@@ -426,5 +424,259 @@ describe('console-header bell approvals', () => {
       0
     );
     expect(el.shadowRoot!.querySelector('.notification-badge')).to.not.exist;
+  });
+});
+
+describe('console-header approval deadlines', () => {
+  const NOW = Date.parse('2030-01-01T12:00:00Z');
+  let clock: sinon.SinonFakeTimers;
+  let restoreFetch: () => void;
+  let el: ConsoleHeader;
+  let approvals: Record<string, unknown>[];
+  let approvalReads: number;
+  let receiveApproval: Parameters<typeof unifiedWebSocketManager.subscribe>[1];
+  let changeState: Parameters<typeof unifiedWebSocketManager.onStateChange>[0];
+  let unsubscribeState: sinon.SinonSpy;
+
+  function approval(id: string, delay?: number): Record<string, unknown> {
+    return {
+      id,
+      tool_name: id,
+      status: 'pending',
+      requested_at: new Date(NOW).toISOString(),
+      // Backend timestamps without a timezone must still be read as UTC.
+      expires_at:
+        delay === undefined
+          ? null
+          : new Date(NOW + delay).toISOString().replace('Z', ''),
+    };
+  }
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-token');
+    clock = sinon.useFakeTimers({
+      now: NOW,
+      toFake: ['Date', 'setTimeout', 'clearTimeout'],
+    });
+    approvals = [];
+    approvalReads = 0;
+    restoreFetch = stubFetch(() => {
+      approvalReads++;
+      return approvals;
+    });
+    sinon.stub(unifiedWebSocketManager, 'subscribe').callsFake((topic, cb) => {
+      if (topic === 'approvals') receiveApproval = cb;
+      return () => {};
+    });
+    unsubscribeState = sinon.spy();
+    sinon.stub(unifiedWebSocketManager, 'onStateChange').callsFake((cb) => {
+      changeState = cb;
+      return unsubscribeState;
+    });
+    if ('Notification' in window) {
+      sinon.stub(Notification, 'requestPermission').resolves('denied');
+    }
+  });
+
+  afterEach(() => {
+    el?.remove();
+    clock.restore();
+    sinon.restore();
+    restoreFetch();
+    localStorage.removeItem('accessToken');
+  });
+
+  async function mount(): Promise<void> {
+    el = await fixture<ConsoleHeader>(html`<console-header></console-header>`);
+    // Fetch + json() are native promises. Flush them without advancing
+    // expiry timers (those are at least 1ms).
+    for (let i = 0; i < 25; i++) {
+      await Promise.resolve();
+      await clock.tickAsync(0);
+      await el.updateComplete;
+      if (approvalReads >= 1) {
+        await Promise.resolve();
+        await clock.tickAsync(0);
+        await el.updateComplete;
+        break;
+      }
+    }
+  }
+
+  function names(): string[] {
+    return [...el.shadowRoot!.querySelectorAll('.approval-name')].map((row) =>
+      row.textContent!.trim()
+    );
+  }
+
+  function badge(): string | undefined {
+    return el
+      .shadowRoot!.querySelector('.notification-badge')
+      ?.textContent?.trim();
+  }
+
+  it('omits already-expired requests from the pending menu and badge', async () => {
+    approvals = [approval('alive', 5_000), approval('already-expired', -1_000)];
+    await mount();
+    expect(names()).to.deep.equal(['alive']);
+    expect(badge()).to.equal('1');
+    expect(
+      el.shadowRoot!.querySelector('.section-count')!.textContent
+    ).to.contain('(1)');
+    expect(clock.countTimers()).to.equal(1);
+  });
+
+  it('ignores a websocket create whose deadline has already passed', async () => {
+    approvals = [approval('alive', 5_000)];
+    await mount();
+    receiveApproval({
+      ...approval('stale', -1_000),
+      type: 'approval_created',
+      approval_request_id: 'stale',
+    });
+    await clock.tickAsync(0);
+    await el.updateComplete;
+    expect(names()).to.deep.equal(['alive']);
+    expect(badge()).to.equal('1');
+  });
+
+  it('removes expired rows, decision buttons and badge at each deadline without a message', async () => {
+    approvals = [approval('first', 1_000), approval('second', 3_000)];
+    await mount();
+    expect(names()).to.deep.equal(['first', 'second']);
+    expect(badge()).to.equal('2');
+    expect(clock.countTimers()).to.equal(1);
+    await clock.tickAsync(1_000);
+    await el.updateComplete;
+    expect(names()).to.deep.equal(['second']);
+    expect(badge()).to.equal('1');
+    expect(
+      el.shadowRoot!.querySelector('.section-count')!.textContent
+    ).to.contain('(1)');
+    await clock.tickAsync(2_000);
+    await el.updateComplete;
+    expect(names()).to.deep.equal([]);
+    expect(el.shadowRoot!.querySelector('.approval-actions')).to.not.exist;
+    expect(badge()).to.equal(undefined);
+    expect(approvalReads).to.equal(1);
+  });
+
+  it('drops expired rows from updated() and converges without looping', async () => {
+    approvals = [approval('first', 1_000), approval('second', 5_000)];
+    await mount();
+    const header = el as ConsoleHeader & {
+      pruneAndScheduleApprovalExpiry: () => void;
+    };
+    const prune = sinon.spy(header, 'pruneAndScheduleApprovalExpiry');
+    await clock.tickAsync(1_000);
+    await el.updateComplete;
+    await el.updateComplete;
+    await clock.tickAsync(0);
+    await el.updateComplete;
+    expect(names()).to.deep.equal(['second']);
+    expect(badge()).to.equal('1');
+    // Timer callback prunes once; updated() prunes once more and the
+    // length-equality check stops further _pendingApprovals writes.
+    expect(prune.callCount).to.equal(2);
+    expect(clock.countTimers()).to.equal(1);
+    expect(approvalReads).to.equal(1);
+  });
+
+  it('keeps requests without deadlines and handles deadlines beyond the browser timer limit', async () => {
+    approvals = [approval('indefinite'), approval('distant', 3_000_000_000)];
+    await mount();
+    await clock.tickAsync(2_147_483_647);
+    await el.updateComplete;
+    expect(names()).to.deep.equal(['indefinite', 'distant']);
+    await clock.tickAsync(3_000_000_000 - 2_147_483_647);
+    await el.updateComplete;
+    expect(names()).to.deep.equal(['indefinite']);
+    expect(badge()).to.equal('1');
+    expect(clock.countTimers()).to.equal(0);
+    expect(approvalReads).to.equal(1);
+  });
+
+  it('reschedules when a websocket request has an earlier deadline', async () => {
+    approvals = [approval('later', 5_000)];
+    await mount();
+    receiveApproval({
+      ...approval('earlier', 1_000),
+      type: 'approval_created',
+      approval_request_id: 'earlier',
+    });
+    await el.updateComplete;
+    await clock.tickAsync(1_000);
+    await el.updateComplete;
+    expect(names()).to.deep.equal(['later']);
+    expect(badge()).to.equal('1');
+    await clock.tickAsync(4_000);
+    await el.updateComplete;
+    expect(names()).to.deep.equal([]);
+  });
+
+  it('prunes on focus after sleep and refreshes requests missed while away', async () => {
+    approvals = [approval('expired-while-asleep', 1_000)];
+    await mount();
+    clock.setSystemTime(NOW + 2_000);
+    approvals = [approval('new-request', 10_000)];
+    window.dispatchEvent(new Event('focus'));
+    changeState(ConnectionState.CONNECTED);
+    window.dispatchEvent(new Event('focus'));
+    await clock.tickAsync(0);
+    await el.updateComplete;
+    await clock.tickAsync(0);
+    await el.updateComplete;
+    expect(names()).to.deep.equal(['new-request']);
+    expect(badge()).to.equal('1');
+    expect(approvalReads).to.equal(2);
+  });
+
+  it('refreshes when a hidden tab becomes visible', async () => {
+    approvals = [approval('expires-hidden', 1_000)];
+    await mount();
+    const visibility = sinon.stub(document, 'visibilityState');
+    visibility.get(() => 'hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(approvalReads).to.equal(1);
+    clock.setSystemTime(NOW + 2_000);
+    approvals = [approval('visible-request', 10_000)];
+    visibility.get(() => 'visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await clock.tickAsync(0);
+    await el.updateComplete;
+    expect(names()).to.deep.equal(['visible-request']);
+    expect(badge()).to.equal('1');
+    expect(approvalReads).to.equal(2);
+  });
+
+  it('refreshes on websocket reconnection and unregisters the state listener on removal', async () => {
+    approvals = [approval('resolved-offline', 5_000)];
+    await mount();
+    approvals = [];
+    changeState(ConnectionState.CONNECTED);
+    await clock.tickAsync(0);
+    await el.updateComplete;
+    expect(names()).to.deep.equal([]);
+    expect(badge()).to.equal(undefined);
+    expect(approvalReads).to.equal(2);
+    el.remove();
+    expect(unsubscribeState.calledOnce).to.equal(true);
+  });
+
+  it('cancels expiry work on removal and refreshes after the element reconnects', async () => {
+    approvals = [approval('expires-detached', 1_000)];
+    await mount();
+    el.remove();
+    const timersAfterRemoval = clock.countTimers();
+    expect(timersAfterRemoval).to.equal(0);
+    window.dispatchEvent(new Event('focus'));
+    await clock.tickAsync(2_000);
+    expect(approvalReads).to.equal(1);
+    document.body.append(el);
+    await clock.tickAsync(0);
+    await el.updateComplete;
+    expect(names()).to.deep.equal([]);
+    expect(badge()).to.equal(undefined);
+    expect(approvalReads).to.equal(2);
   });
 });

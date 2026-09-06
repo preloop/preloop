@@ -1,4 +1,4 @@
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, type PropertyValues } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
 import '@shoelace-style/shoelace/dist/components/menu/menu.js';
@@ -14,7 +14,10 @@ import './theme-switcher.ts';
 import './user-avatar.ts';
 import * as api from '../api';
 import { Router } from '@vaadin/router';
-import { unifiedWebSocketManager } from '../services/unified-websocket-manager';
+import {
+  ConnectionState,
+  unifiedWebSocketManager,
+} from '../services/unified-websocket-manager';
 import {
   formatFutureRelativeTime,
   formatRelativeTime,
@@ -115,6 +118,34 @@ export class ConsoleHeader extends LitElement {
   private unsubscribeFlow?: () => void;
   private unsubscribeApprovals?: () => void;
   private unsubscribeNotifications?: () => void;
+  private unsubscribeConnectionState?: () => void;
+  private approvalExpiryTimer?: ReturnType<typeof setTimeout>;
+  private pendingApprovalsRefreshTimer?: ReturnType<typeof setTimeout>;
+  private loadingPendingApprovals = false;
+  private pendingApprovalsReload = false;
+
+  private refreshPendingApprovals = (): void => {
+    this.pruneAndScheduleApprovalExpiry();
+    this.schedulePendingApprovalsRefresh();
+  };
+
+  /**
+   * Coalesce focus/visibility/reconnect into one follow-up fetch, and retry
+   * if that fetch was requested while a load was already in flight.
+   */
+  private schedulePendingApprovalsRefresh(): void {
+    if (this.pendingApprovalsRefreshTimer !== undefined) return;
+    this.pendingApprovalsRefreshTimer = setTimeout(() => {
+      this.pendingApprovalsRefreshTimer = undefined;
+      void this.loadPendingApprovals();
+    }, 0);
+  }
+
+  private handleVisibilityChange = (): void => {
+    if (document.visibilityState === 'visible') {
+      this.refreshPendingApprovals();
+    }
+  };
 
   // Track notification IDs to prevent duplicates
   private shownExecutionNotifications: Set<string> = new Set();
@@ -353,6 +384,9 @@ export class ConsoleHeader extends LitElement {
       ATTENTION_SUMMARY_EVENT,
       this.handleAttentionSummary as EventListener
     );
+    window.addEventListener('focus', this.refreshPendingApprovals);
+    document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    this.pruneAndScheduleApprovalExpiry();
     this.fetchUserDetails();
     this.connectToFlowUpdates();
     this.connectToApprovalUpdates();
@@ -374,6 +408,55 @@ export class ConsoleHeader extends LitElement {
     this.unsubscribeFlow?.();
     this.unsubscribeApprovals?.();
     this.unsubscribeNotifications?.();
+    this.unsubscribeConnectionState?.();
+    window.removeEventListener('focus', this.refreshPendingApprovals);
+    document.removeEventListener(
+      'visibilitychange',
+      this.handleVisibilityChange
+    );
+    clearTimeout(this.approvalExpiryTimer);
+    this.approvalExpiryTimer = undefined;
+    clearTimeout(this.pendingApprovalsRefreshTimer);
+    this.pendingApprovalsRefreshTimer = undefined;
+  }
+
+  /**
+   * Drop expired rows and arm the next deadline after the current update.
+   * Pruning here (rather than in `willUpdate`) avoids mutating
+   * `_pendingApprovals` mid-cycle, which would dirty the same update pass.
+   */
+  protected updated(changed: PropertyValues): void {
+    if (!changed.has('_pendingApprovals')) return;
+    this.pruneAndScheduleApprovalExpiry();
+  }
+
+  private unexpiredPendingApprovals(): ApprovalRequest[] {
+    return this._pendingApprovals.filter((approval) =>
+      this.isUnexpiredPendingApproval(approval)
+    );
+  }
+
+  private pruneAndScheduleApprovalExpiry(): void {
+    clearTimeout(this.approvalExpiryTimer);
+    this.approvalExpiryTimer = undefined;
+    if (!this.isConnected) return;
+
+    const pending = this.unexpiredPendingApprovals();
+    if (pending.length !== this._pendingApprovals.length) {
+      this._pendingApprovals = pending;
+    }
+    const nextExpiry = pending.reduce((earliest, approval) => {
+      if (!approval.expires_at) return earliest;
+      return Math.min(earliest, parseUTCDate(approval.expires_at).getTime());
+    }, Infinity);
+    if (Number.isFinite(nextExpiry)) {
+      // One timer for the nearest deadline, capped to the browser's signed
+      // 32-bit delay limit. Long deadlines are rescheduled when it fires.
+      this.approvalExpiryTimer = setTimeout(
+        () => this.pruneAndScheduleApprovalExpiry(),
+        Math.min(Math.max(nextExpiry - Date.now(), 1), 2_147_483_647)
+      );
+    }
   }
 
   private async loadRunningExecutions() {
@@ -388,25 +471,42 @@ export class ConsoleHeader extends LitElement {
   }
 
   private async loadPendingApprovals() {
+    if (!this.isConnected) return;
+    if (this.loadingPendingApprovals) {
+      this.pendingApprovalsReload = true;
+      return;
+    }
+    this.loadingPendingApprovals = true;
     try {
-      const approvals = await api.listApprovalRequests({ status: 'pending' });
-      this._pendingApprovals = approvals
-        .map((approval: any) => ({
-          id: approval.id,
-          tool_name: approval.tool_name,
-          tool_args: approval.tool_args || {},
-          status: approval.status,
-          requested_at: approval.requested_at,
-          expires_at: approval.expires_at,
-          execution_id: approval.execution_id,
-          agent_reasoning: approval.agent_reasoning,
-          managed_agent_name: approval.managed_agent_name,
-        }))
-        .filter((approval: ApprovalRequest) =>
-          this.isUnexpiredPendingApproval(approval)
-        );
+      do {
+        this.pendingApprovalsReload = false;
+        const approvals = await api.listApprovalRequests({
+          status: 'pending',
+        });
+        if (!this.isConnected) return;
+        this._pendingApprovals = approvals
+          .map((approval: any) => ({
+            id: approval.id,
+            tool_name: approval.tool_name,
+            tool_args: approval.tool_args || {},
+            status: approval.status,
+            requested_at: approval.requested_at,
+            expires_at: approval.expires_at,
+            execution_id: approval.execution_id,
+            agent_reasoning: approval.agent_reasoning,
+            managed_agent_name: approval.managed_agent_name,
+          }))
+          .filter((approval: ApprovalRequest) =>
+            this.isUnexpiredPendingApproval(approval)
+          );
+      } while (this.pendingApprovalsReload && this.isConnected);
     } catch (error) {
       console.error('Failed to load pending approvals:', error);
+    } finally {
+      this.loadingPendingApprovals = false;
+      if (this.pendingApprovalsReload && this.isConnected) {
+        void this.loadPendingApprovals();
+      }
     }
   }
 
@@ -519,26 +619,13 @@ export class ConsoleHeader extends LitElement {
     }
   }
 
-  /**
-   * Pending approvals that can still be decided.
-   *
-   * The list is filtered when it loads, but a tab left open carries requests
-   * past their expiry, and a bell that counts a dead request sends the
-   * operator to a page where every button is disabled.
-   */
-  private get liveApprovals(): ApprovalRequest[] {
-    return this._pendingApprovals.filter((approval) =>
-      this.isUnexpiredPendingApproval(approval)
-    );
-  }
-
   private get totalNotificationCount(): number {
     const unreadNotifications = this._userNotifications.filter(
       (n) => !n.read
     ).length;
     return (
       this._runningExecutions.length +
-      this.liveApprovals.length +
+      this.unexpiredPendingApprovals().length +
       unreadNotifications
     );
   }
@@ -615,9 +702,13 @@ export class ConsoleHeader extends LitElement {
     );
 
     // Track connection state
-    unifiedWebSocketManager.onStateChange((state) => {
-      console.log(`Console header WebSocket state: ${state}`);
-    });
+    this.unsubscribeConnectionState = unifiedWebSocketManager.onStateChange(
+      (state) => {
+        if (state === ConnectionState.CONNECTED) {
+          this.refreshPendingApprovals();
+        }
+      }
+    );
   }
 
   private connectToApprovalUpdates() {
@@ -1002,8 +1093,8 @@ export class ConsoleHeader extends LitElement {
   }
 
   private renderApprovalsSection() {
-    const approvals = this.liveApprovals;
-    if (approvals.length === 0) return '';
+    const pending = this.unexpiredPendingApprovals();
+    if (pending.length === 0) return '';
 
     return html`
       <div class="notification-section">
@@ -1011,7 +1102,7 @@ export class ConsoleHeader extends LitElement {
           <div class="section-title">
             <sl-icon name="shield-check"></sl-icon>
             Pending approvals
-            <span class="section-count">(${approvals.length})</span>
+            <span class="section-count">(${pending.length})</span>
           </div>
           <a
             class="section-link"
@@ -1020,7 +1111,7 @@ export class ConsoleHeader extends LitElement {
           >
         </div>
         <div class="approval-list">
-          ${approvals.slice(0, 5).map(
+          ${pending.slice(0, 5).map(
             (approval) => html`
               <div
                 class="approval-item"
@@ -1164,7 +1255,7 @@ export class ConsoleHeader extends LitElement {
   render() {
     const hasContent =
       this._runningExecutions.length > 0 ||
-      this.liveApprovals.length > 0 ||
+      this.unexpiredPendingApprovals().length > 0 ||
       this._userNotifications.length > 0;
 
     return html`
