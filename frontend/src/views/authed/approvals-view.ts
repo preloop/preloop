@@ -217,9 +217,11 @@ export class ApprovalsView extends AuthedElement {
         border-color: var(--sl-color-primary-300);
       }
 
+      /* Meta text, at the meta size and the meta colour: neutral-500 at 12px
+         does not hold contrast on a dark card. */
       .key-legend {
-        font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-500);
+        font-size: var(--console-text-meta);
+        color: var(--console-meta-color);
         margin-left: auto;
       }
 
