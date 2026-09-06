@@ -1,4 +1,4 @@
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import {
@@ -24,6 +24,7 @@ import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '../../../components/preloop-invite-dialog';
+import consoleStyles from '../../../styles/console-styles.css?inline';
 
 @customElement('invitation-management-view')
 export class InvitationManagementView extends LitElement {
@@ -51,104 +52,120 @@ export class InvitationManagementView extends LitElement {
   @state()
   private isLoadingTeams = false;
 
-  static styles = css`
-    :host {
-      display: block;
-      padding: 2rem;
-    }
+  static styles = [
+    unsafeCSS(consoleStyles),
+    css`
+      :host {
+        display: block;
+        padding: 2rem;
+      }
 
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 2rem;
-    }
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2rem;
+      }
 
-    h1 {
-      margin: 0;
-      font-size: 1.5rem;
-      font-weight: 600;
-    }
+      h1 {
+        margin: 0;
+        font-size: 1.5rem;
+        font-weight: 600;
+      }
 
-    .invitations-grid {
-      display: grid;
-      gap: 1rem;
-    }
+      .invitations-grid {
+        display: grid;
+        gap: 1rem;
+      }
 
-    sl-card {
-      width: 100%;
-    }
+      sl-card {
+        width: 100%;
+      }
 
-    .invitation-card-content {
-      display: grid;
-      grid-template-columns: auto 1fr auto;
-      gap: 1rem;
-      align-items: center;
-    }
+      .invitation-card-content {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 1rem;
+        align-items: center;
+      }
 
-    .invitation-icon {
-      font-size: 2rem;
-      width: 48px;
-      height: 48px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: var(--sl-color-primary-50);
-      border-radius: 50%;
-      color: var(--sl-color-primary-600);
-    }
+      .invitation-icon {
+        font-size: 2rem;
+        width: 48px;
+        height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--sl-color-primary-50);
+        border-radius: 50%;
+        color: var(--sl-color-primary-600);
+      }
 
-    .invitation-details {
-      flex: 1;
-    }
+      .invitation-details {
+        flex: 1;
+      }
 
-    .invitation-email {
-      font-weight: 600;
-      font-size: 1rem;
-      margin: 0 0 0.25rem 0;
-    }
+      .invitation-email {
+        font-weight: 600;
+        font-size: 1rem;
+        margin: 0 0 0.25rem 0;
+      }
 
-    .invitation-date {
-      color: var(--sl-color-neutral-600);
-      font-size: 0.875rem;
-      margin: 0 0 0.5rem 0;
-    }
+      .invitation-date {
+        color: var(--sl-color-neutral-600);
+        font-size: 0.875rem;
+        margin: 0 0 0.5rem 0;
+      }
 
-    .invitation-meta {
-      display: flex;
-      gap: 0.5rem;
-      flex-wrap: wrap;
-    }
+      .invitation-meta {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
 
-    .invitation-actions {
-      display: flex;
-      gap: 0.5rem;
-    }
+      .invitation-actions {
+        display: flex;
+        gap: 0.5rem;
+      }
 
-    .form-grid {
-      display: grid;
-      gap: 1rem;
-    }
+      .invitation-actions .danger-action {
+        margin-left: var(--sl-spacing-large);
+      }
 
-    .error {
-      color: var(--sl-color-danger-600);
-      background: var(--sl-color-danger-50);
-      padding: 1rem;
-      border-radius: 4px;
-      margin-bottom: 1rem;
-    }
+      .form-grid {
+        display: grid;
+        gap: 1rem;
+      }
 
-    .loading {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      padding: 4rem;
-    }
+      .error {
+        color: var(--sl-color-danger-600);
+        background: var(--sl-color-danger-50);
+        padding: 1rem;
+        border-radius: 4px;
+        margin-bottom: 1rem;
+      }
 
-    sl-tab-group {
-      margin-bottom: 2rem;
-    }
-  `;
+      .loading {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 4rem;
+      }
+
+      sl-tab-group {
+        margin-bottom: 2rem;
+      }
+    `,
+  ];
+
+  /** Statuses are stored lower case; the chip says "Pending". */
+  static statusLabel(status: string | null | undefined): string {
+    const value = String(status || '').trim();
+    if (!value) return 'Unknown';
+    return value
+      .replace(/_/g, ' ')
+      .replace(/^\w/, (character) => character.toUpperCase());
+  }
 
   @state()
   private featureEnabled = true;
@@ -285,13 +302,13 @@ export class InvitationManagementView extends LitElement {
 
     return html`
       <div class="header">
-        <h1>Invitation Management</h1>
+        <h1>Invitations</h1>
         <sl-button
           variant="primary"
           @click=${() => (this.isCreateModalOpen = true)}
         >
           <sl-icon slot="prefix" name="envelope-plus"></sl-icon>
-          Send Invitation
+          Send invitation
         </sl-button>
       </div>
 
@@ -367,15 +384,16 @@ export class InvitationManagementView extends LitElement {
                   </p>
                   <div class="invitation-meta">
                     <sl-badge
+                      class="status-chip"
                       variant="${this.getStatusVariant(invitation.status)}"
                     >
-                      ${invitation.status}
+                      ${InvitationManagementView.statusLabel(invitation.status)}
                     </sl-badge>
                     ${
                       invitation.status === 'pending'
                         ? html`
-                            <sl-badge variant="neutral">
-                              Expires: ${this.formatDate(invitation.expires_at)}
+                            <sl-badge class="chip" variant="neutral">
+                              Expires ${this.formatDate(invitation.expires_at)}
                             </sl-badge>
                           `
                         : ''
@@ -383,8 +401,8 @@ export class InvitationManagementView extends LitElement {
                     ${
                       invitation.accepted_at
                         ? html`
-                            <sl-badge variant="success">
-                              Accepted:
+                            <sl-badge class="chip" variant="success">
+                              Accepted
                               ${this.formatDate(invitation.accepted_at)}
                             </sl-badge>
                           `
@@ -404,9 +422,13 @@ export class InvitationManagementView extends LitElement {
                           >
                             <sl-icon name="arrow-repeat"></sl-icon>
                           </sl-button>
+                          <!-- Outline, last, after a gap (DESIGN.md
+                               "Destructive actions"). -->
                           <sl-button
+                            class="danger-action"
                             size="small"
                             variant="danger"
+                            outline
                             @click=${() =>
                               this.handleCancelInvitation(invitation)}
                             title="Cancel invitation"

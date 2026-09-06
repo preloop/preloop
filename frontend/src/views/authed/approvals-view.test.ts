@@ -1,4 +1,5 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
+import { Router } from '@vaadin/router';
 import sinon from 'sinon';
 
 import '../../components/view-header.ts';
@@ -346,6 +347,251 @@ describe('ApprovalsView', () => {
     const urls = fetchStub.getCalls().map((c) => String(c.args[0]));
     expect(urls.some((u) => u.includes('/api/v1/approval-requests'))).to.be
       .true;
+  });
+
+  describe('keyboard', () => {
+    function press(element: ApprovalsView, key: string) {
+      element.dispatchEvent(
+        new KeyboardEvent('keydown', { key, bubbles: true, composed: true })
+      );
+      return element.updateComplete;
+    }
+
+    function rows(element: ApprovalsView) {
+      return Array.from(
+        element.shadowRoot?.querySelectorAll('.approval-item') ?? []
+      ) as HTMLElement[];
+    }
+
+    it('moves the focused row with j and k', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'first', expires_at: inMinutes(3) }),
+        baseRequest({ id: 'second', expires_at: inMinutes(30) }),
+      ]);
+
+      await press(element, 'j');
+      expect((element as any).focusedIndex).to.equal(0);
+      await press(element, 'j');
+      expect((element as any).focusedIndex).to.equal(1);
+      expect(rows(element)[1].getAttribute('tabindex')).to.equal('0');
+
+      await press(element, 'k');
+      expect((element as any).focusedIndex).to.equal(0);
+
+      // k on the first row stays put rather than wrapping to the bottom.
+      await press(element, 'k');
+      expect((element as any).focusedIndex).to.equal(0);
+    });
+
+    it('approves the focused row with a', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+
+      await press(element, 'j');
+      await press(element, 'a');
+
+      await waitUntil(() => !!decisionCall('approve'), 'no approve call');
+    });
+
+    it('ignores a second a while the first decision is in flight', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+
+      await press(element, 'j');
+      // The Approve button is disabled while the POST is out; the key has to
+      // behave the same, or an impatient double tap decides twice.
+      const first = press(element, 'a');
+      const second = press(element, 'a');
+      await Promise.all([first, second]);
+      await waitUntil(() => !!decisionCall('approve'), 'no approve call');
+
+      const approveCalls = fetchStub
+        .getCalls()
+        .filter(
+          (c) =>
+            String(c.args[0]).includes('/approve') &&
+            String((c.args[1] as RequestInit)?.method || '').toUpperCase() ===
+              'POST'
+        );
+      expect(approveCalls).to.have.length(1);
+    });
+
+    it('confirms before d denies the focused row', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+
+      await press(element, 'j');
+      await press(element, 'd');
+
+      await waitUntil(
+        () => !!document.querySelector('confirm-dialog'),
+        'no confirm dialog'
+      );
+      expect(decisionCall('decline'), 'denied without confirming').to.be
+        .undefined;
+      (
+        document
+          .querySelector('confirm-dialog')!
+          .shadowRoot?.querySelector(
+            '[data-testid="confirm-dialog-confirm"]'
+          ) as HTMLElement
+      ).click();
+      await waitUntil(() => !!decisionCall('decline'), 'no decline call');
+    });
+
+    it('selects the focused row with x and says so to a screen reader', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+
+      await press(element, 'j');
+      expect(rows(element)[0].getAttribute('aria-selected')).to.equal('false');
+
+      await press(element, 'x');
+      expect((element as any).selectedIds).to.deep.equal(['ar-1']);
+      expect(rows(element)[0].getAttribute('aria-selected')).to.equal('true');
+
+      await press(element, 'x');
+      expect((element as any).selectedIds).to.deep.equal([]);
+    });
+
+    it('opens the focused row with Enter', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+      const go = sinon.stub(Router, 'go');
+      try {
+        await press(element, 'j');
+        await press(element, 'Enter');
+        expect(go.calledWith('/console/approval/ar-1')).to.be.true;
+      } finally {
+        go.restore();
+      }
+    });
+
+    it('does not open the row when Enter is pressed on Approve', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+      await press(element, 'j');
+      const go = sinon.stub(Router, 'go');
+      try {
+        const approve = rows(element)[0].querySelector(
+          'sl-button'
+        ) as HTMLElement;
+        approve.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'Enter',
+            bubbles: true,
+            composed: true,
+          })
+        );
+        await element.updateComplete;
+        expect(go.called).to.equal(false);
+      } finally {
+        go.restore();
+      }
+    });
+
+    it('leaves keys alone while a filter is being typed in', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+
+      const search = element.shadowRoot?.querySelector(
+        'sl-input'
+      ) as HTMLElement;
+      search.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'a',
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await element.updateComplete;
+
+      expect(decisionCall('approve'), 'typing decided a request').to.be
+        .undefined;
+    });
+
+    it('offers the key legend on the waiting group', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+
+      const legend = element.shadowRoot?.querySelector('.key-legend');
+      expect(legend, 'expected a key legend').to.exist;
+      expect(legend?.textContent).to.contain('A approve');
+      expect(legend?.textContent).to.contain('D deny');
+    });
+  });
+
+  describe('the counts strip (B-L3)', () => {
+    function resolved(status: string, id: string) {
+      const requestedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+      return baseRequest({
+        id,
+        status,
+        requested_at: requestedAt,
+        resolved_at: new Date(Date.now() - 8 * 60_000).toISOString(),
+      });
+    }
+
+    it('states the counts on one hairline strip, not in cards', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'waiting', expires_at: inMinutes(30) }),
+        resolved('approved', 'yes'),
+        resolved('declined', 'no'),
+      ]);
+
+      expect(
+        element.shadowRoot?.querySelectorAll('.stat-card').length
+      ).to.equal(0);
+      const strip = element.shadowRoot?.querySelector(
+        '.stat-strip'
+      ) as HTMLElement;
+      expect(strip).to.exist;
+      // The separators are their own spans, spaced by the flex gap, so the
+      // text node reading is the facts joined by the middle dot.
+      expect((strip.textContent || '').replace(/\s+/g, ' ').trim()).to.equal(
+        '3 requests·1 waiting·1 approved·1 denied·0 timed out·50% approved by a person·avg response 2m'
+      );
+    });
+
+    it('says "last 100" instead of a total when the page came back full', async () => {
+      const requests = Array.from({ length: 100 }, (_unused, index) =>
+        resolved('approved', `ar-${index}`)
+      );
+      const element = await renderList(requests);
+
+      const strip = element.shadowRoot?.querySelector(
+        '.stat-strip'
+      ) as HTMLElement;
+      const text = (strip.textContent || '').replace(/\s+/g, ' ').trim();
+      // "Last 100", never a bare "100 requests": the page limit is not a
+      // count of everything the account ever asked for.
+      expect(text).to.match(/^Last 100 requests·/);
+    });
+  });
+
+  describe('new since last visit', () => {
+    it('dots a waiting request the first time it is seen and not after', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+      expect(element.shadowRoot?.querySelector('.new-dot'), 'no new dot').to
+        .exist;
+      fetchStub.restore();
+
+      const second = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+      expect(second.shadowRoot?.querySelector('.new-dot'), 'dot came back').to
+        .not.exist;
+    });
   });
 
   describe('agent questions', () => {

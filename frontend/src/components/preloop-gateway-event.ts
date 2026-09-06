@@ -1,4 +1,4 @@
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import type {
   FlowGatewayEvent,
@@ -6,6 +6,8 @@ import type {
   FlowGatewayConversationPreviewMessage,
 } from '../types';
 import { formatLocalTime, formatUTCDateTime } from '../utils/date';
+import { formatTokenCount } from '../utils/execution-presentation';
+import consoleStyles from '../styles/console-styles.css?inline';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
@@ -21,168 +23,205 @@ export class PreloopGatewayEvent extends LitElement {
   @property({ type: Boolean })
   expanded = false;
 
-  static styles = css`
-    :host {
-      display: block;
-      margin-bottom: var(--sl-spacing-small);
-    }
+  /**
+   * The execution timeline prints the time in its own column, so the row
+   * does not print it a second time. Lists that have no time column (the
+   * session history widget) leave this off.
+   */
+  @property({ type: Boolean, attribute: 'hide-timestamp' })
+  hideTimestamp = false;
 
-    .gateway-event::part(base) {
-      background: var(--sl-color-neutral-0);
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      overflow: hidden;
-    }
+  static styles = [
+    // The console chip recipe (soft tints, no border) does not cross a
+    // shadow boundary, so the component brings it in.
+    unsafeCSS(consoleStyles),
+    css`
+      :host {
+        display: block;
+        margin-bottom: 0;
+      }
 
-    .gateway-event::part(header) {
-      padding: var(--sl-spacing-small) var(--sl-spacing-medium);
-      background: var(--sl-color-neutral-50);
-    }
+      /* A model call is a row in a stream, not a card inside it: no border,
+       no fill, no header band. In dark mode the old box was the "grey box
+       in a grey box" the review called out (DESIGN.md, "Depth limit"). */
+      .gateway-event::part(base) {
+        background: transparent;
+        border: none;
+        border-radius: 0;
+      }
 
-    .gateway-event::part(header):hover {
-      background: var(--sl-color-neutral-100);
-    }
+      .gateway-event::part(header) {
+        padding: 4px 0;
+        background: transparent;
+      }
 
-    .gateway-event::part(content) {
-      padding: var(--sl-spacing-medium);
-      border-top: 1px solid var(--sl-color-neutral-200);
-    }
+      .gateway-event::part(header):hover {
+        background: transparent;
+        color: var(--sl-color-primary-600);
+      }
 
-    .gateway-event-summary {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 16px;
-      align-items: center;
-      width: 100%;
-    }
+      .gateway-event::part(content) {
+        padding: var(--sl-spacing-small) 0 var(--sl-spacing-medium);
+        border-top: 1px solid var(--sl-color-neutral-200);
+      }
 
-    .gateway-event-meta {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 16px;
-      padding-bottom: 16px;
-      margin-bottom: 16px;
-      border-bottom: 1px solid var(--sl-color-neutral-200);
-    }
+      .gateway-event-summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        min-width: 0;
+        width: 100%;
+      }
 
-    .gateway-event-field {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
+      /* The summary is one sentence: what it was, which model, how it went,
+       what it cost. The field labels stay behind the chevron. */
+      .gateway-event-title {
+        font-weight: 600;
+        white-space: nowrap;
+      }
 
-    .gateway-event-label {
-      font-size: 0.7rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      color: var(--sl-color-neutral-500);
-    }
+      .gateway-event-alias {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
 
-    .gateway-event-value {
-      font-size: 0.85rem;
-      color: var(--sl-color-neutral-900);
-      word-break: break-all;
-    }
+      .gateway-event-summary-meta {
+        color: var(--console-meta-color, var(--sl-color-neutral-500));
+        font-size: var(--console-text-meta, 0.85rem);
+        white-space: nowrap;
+      }
 
-    .gateway-capture-policy {
-      background: var(--sl-color-neutral-50);
-      border-radius: var(--sl-border-radius-medium);
-      padding: 12px;
-      margin-bottom: 16px;
-    }
+      .gateway-event-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        padding-bottom: 16px;
+        margin-bottom: 16px;
+        border-bottom: 1px solid var(--sl-color-neutral-200);
+      }
 
-    .gateway-capture-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 12px;
-      margin-bottom: 12px;
-    }
+      .gateway-event-field {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
 
-    .gateway-badges {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-    }
+      .gateway-event-label {
+        font-size: 0.7rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        color: var(--sl-color-neutral-500);
+      }
 
-    .conversation-preview-list {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      margin-bottom: 16px;
-    }
+      .gateway-event-value {
+        font-size: 0.85rem;
+        color: var(--sl-color-neutral-900);
+        word-break: break-all;
+      }
 
-    .conversation-preview-message {
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      overflow: hidden;
-    }
+      .gateway-capture-policy {
+        background: var(--sl-color-neutral-50);
+        border-radius: var(--sl-border-radius-medium);
+        padding: 12px;
+        margin-bottom: 16px;
+      }
 
-    .conversation-preview-header {
-      background: var(--sl-color-neutral-50);
-      padding: 8px 12px;
-      border-bottom: 1px solid var(--sl-color-neutral-200);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
+      .gateway-capture-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 12px;
+        margin-bottom: 12px;
+      }
 
-    .conversation-preview-title {
-      font-weight: 600;
-      font-size: 0.85rem;
-      color: var(--sl-color-neutral-800);
-    }
+      .gateway-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
 
-    .conversation-preview-text {
-      margin: 0;
-      padding: 12px;
-      font-family: var(--sl-font-mono);
-      font-size: 0.85rem;
-      color: var(--sl-color-neutral-800);
-      background: var(--sl-color-neutral-0);
-      max-height: min(40vh, 360px);
-      overflow: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
+      .conversation-preview-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
 
-    .conversation-preview-redacted {
-      color: var(--sl-color-neutral-500);
-      font-style: italic;
-    }
+      .conversation-preview-message {
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        overflow: hidden;
+      }
 
-    .payload-section-title {
-      font-size: 0.9rem;
-      font-weight: 600;
-      color: var(--sl-color-neutral-900);
-      margin-bottom: 8px;
-    }
+      .conversation-preview-header {
+        background: var(--sl-color-neutral-50);
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--sl-color-neutral-200);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
 
-    .payload-block {
-      background: var(--sl-color-neutral-100);
-      border-radius: var(--sl-border-radius-medium);
-      max-height: min(55vh, 520px);
-      padding: 12px;
-      overflow: auto;
-      margin-bottom: 16px;
-    }
+      .conversation-preview-title {
+        font-weight: 600;
+        font-size: 0.85rem;
+        color: var(--sl-color-neutral-800);
+      }
 
-    .payload-block pre {
-      margin: 0;
-      font-family: var(--sl-font-mono);
-      font-size: 0.8rem;
-      color: var(--sl-color-neutral-800);
-    }
+      .conversation-preview-text {
+        margin: 0;
+        padding: 12px;
+        font-family: var(--sl-font-mono);
+        font-size: 0.85rem;
+        color: var(--sl-color-neutral-800);
+        background: var(--sl-color-neutral-0);
+        max-height: min(40vh, 360px);
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
 
-    .search-summary {
-      font-size: 0.85rem;
-      color: var(--sl-color-neutral-600);
-      margin-top: 4px;
-      margin-bottom: 12px;
-      font-style: italic;
-    }
-  `;
+      .conversation-preview-redacted {
+        color: var(--sl-color-neutral-500);
+        font-style: italic;
+      }
+
+      .payload-section-title {
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: var(--sl-color-neutral-900);
+        margin-bottom: 8px;
+      }
+
+      .payload-block {
+        background: var(--sl-color-neutral-100);
+        border-radius: var(--sl-border-radius-medium);
+        max-height: min(55vh, 520px);
+        padding: 12px;
+        overflow: auto;
+        margin-bottom: 16px;
+      }
+
+      .payload-block pre {
+        margin: 0;
+        font-family: var(--sl-font-mono);
+        font-size: 0.8rem;
+        color: var(--sl-color-neutral-800);
+      }
+
+      .search-summary {
+        font-size: 0.85rem;
+        color: var(--sl-color-neutral-600);
+        margin-top: 4px;
+        margin-bottom: 12px;
+        font-style: italic;
+      }
+    `,
+  ];
 
   private renderGatewayField(label: string, value: unknown) {
     return html`
@@ -236,6 +275,34 @@ export class PreloopGatewayEvent extends LitElement {
     if (typeof cost !== 'number' || Number.isNaN(cost)) return 'n/a';
     if (cost === 0) return '$0.00';
     return cost >= 0.01 ? `$${cost.toFixed(2)}` : `$${cost.toFixed(4)}`;
+  }
+
+  /**
+   * The rest of the summary line: the HTTP status when the call failed, the
+   * spend, the tokens and how long it took. A fact the event does not carry
+   * is left out rather than printed as "n/a", which is furniture.
+   */
+  private buildGatewaySummaryMeta(payload: FlowGatewayEventPayload): string {
+    const parts: string[] = [];
+    const status = payload.status_code;
+    if (typeof status === 'number' && status >= 400) {
+      parts.push(`HTTP ${status}`);
+    }
+    const cost = payload.estimated_cost;
+    if (typeof cost === 'number' && !Number.isNaN(cost) && cost > 0) {
+      parts.push(this.formatGatewayCost(cost));
+    }
+    const tokens = payload.total_tokens;
+    if (typeof tokens === 'number' && !Number.isNaN(tokens)) {
+      parts.push(
+        tokens > 0 ? `${formatTokenCount(tokens)} tokens` : 'no tokens'
+      );
+    }
+    const duration = payload.duration_ms;
+    if (typeof duration === 'number' && !Number.isNaN(duration)) {
+      parts.push(`${Math.round(duration).toLocaleString()} ms`);
+    }
+    return parts.join(' · ');
   }
 
   private formatGatewayTokens(tokens?: number | null): string {
@@ -454,22 +521,25 @@ ${previewText}</pre>
           @sl-hide=${this.handleExpand}
         >
           <div slot="summary" class="gateway-event-summary">
-            <div
-              style="display: flex; gap: 8px; align-items: center; font-weight: 600;"
-            >
+            <span class="gateway-event-title">
               <sl-icon name=${icon}></sl-icon> ${title}
-            </div>
-            ${this.renderGatewayField('Timestamp', timestamp)}
+            </span>
             ${
               payload.outcome
-                ? this.renderGatewayField(
-                    'Outcome',
-                    html` <sl-badge
-                      variant=${this.getGatewayOutcomeVariant(payload.outcome)}
-                      >${this.formatGatewayOutcome(payload.outcome)}</sl-badge
-                    >`
-                  )
+                ? html`<sl-badge
+                    class="chip"
+                    pill
+                    variant=${this.getGatewayOutcomeVariant(payload.outcome)}
+                    >${this.formatGatewayOutcome(payload.outcome)}</sl-badge
+                  >`
                 : ''
+            }
+            ${
+              this.hideTimestamp
+                ? ''
+                : html`<span class="gateway-event-summary-meta"
+                    >${timestamp}</span
+                  >`
             }
           </div>
 
@@ -500,37 +570,28 @@ ${previewText}</pre>
         @sl-hide=${this.handleExpand}
       >
         <div slot="summary" class="gateway-event-summary">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <sl-icon name="cpu"></sl-icon>
-            <strong>Gateway</strong>
-          </div>
-          ${this.renderGatewayField('Timestamp', timestamp)}
-          ${this.renderGatewayField(
-            'Model',
-            this.getGatewayModelLabel(this.event)
-          )}
-          ${this.renderGatewayField(
-            'Provider',
-            this.getGatewayProviderLabel(this.event)
-          )}
-          ${this.renderGatewayField(
-            'Outcome',
-            html`
-              <sl-badge
-                variant=${this.getGatewayOutcomeVariant(payload.outcome)}
-              >
-                ${this.formatGatewayOutcome(payload.outcome)}
-              </sl-badge>
-            `
-          )}
-          ${this.renderGatewayField(
-            'Cost',
-            this.formatGatewayCost(payload.estimated_cost)
-          )}
-          ${this.renderGatewayField(
-            'Tokens',
-            this.formatGatewayTokens(payload.total_tokens)
-          )}
+          <span class="gateway-event-title">Model call</span>
+          <span
+            class="gateway-event-alias"
+            title=${this.getGatewayProviderLabel(this.event)}
+            >${this.getGatewayModelLabel(this.event)}</span
+          >
+          <sl-badge
+            class="chip"
+            pill
+            variant=${this.getGatewayOutcomeVariant(payload.outcome)}
+            >${this.formatGatewayOutcome(payload.outcome)}</sl-badge
+          >
+          <span class="gateway-event-summary-meta"
+            >${this.buildGatewaySummaryMeta(payload)}</span
+          >
+          ${
+            this.hideTimestamp
+              ? ''
+              : html`<span class="gateway-event-summary-meta"
+                  >${timestamp}</span
+                >`
+          }
         </div>
 
         <div class="gateway-event-meta">

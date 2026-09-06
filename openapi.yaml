@@ -7554,8 +7554,7 @@ paths:
       tags:
       - Flows
       summary: Run Preset
-      description: 'Run a catalog preset on an issue, creating the account flow on
-        first use.
+      description: 'Run a catalog preset on an issue or a capped triage batch.
 
 
         ``confirm_create=false`` resolves only: 409 ``flow_missing`` when the
@@ -7564,7 +7563,9 @@ paths:
 
         one exists. ``confirm_create=true`` creates if needed (requires
 
-        ``create_flows``) and starts the run.'
+        ``create_flows``) and starts the run. ``targets`` is a 1-25 issue
+
+        list for ``issue-triage-assistant`` only.'
       operationId: run_preset_api_v1_flows_run_preset_post
       requestBody:
         content:
@@ -7592,7 +7593,12 @@ paths:
       tags:
       - Flows
       summary: Read Flow Executions
-      description: Retrieve lightweight flow execution summaries for the account.
+      description: 'Retrieve lightweight flow execution summaries for the account.
+
+
+        `X-Total-Count` carries how many executions the filters matched, so a
+
+        console page of 25 can say "25 of 1,412 executions" honestly.'
       operationId: read_flow_executions_api_v1_flows_executions_get
       security:
       - bearerAuth: []
@@ -7630,6 +7636,23 @@ paths:
               type: string
           - type: 'null'
           title: Status
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Search
+      - name: started_after
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started After
       responses:
         '200':
           description: Successful Response
@@ -18743,13 +18766,62 @@ components:
       - EXCLUDE
       title: RuleType
       description: Enum for rule types.
+    RunPresetItemResult:
+      properties:
+        issue_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Issue Id
+        project_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Project Id
+        number:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Number
+        execution_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Execution Id
+        execution_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Execution Status
+        execution_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Execution Url
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+      type: object
+      title: RunPresetItemResult
+      description: Target outcome for a preset run, including dispatch failure receipts.
     RunPresetRequest:
       properties:
         preset_slug:
           type: string
           title: Preset Slug
         target:
-          $ref: '#/components/schemas/RunPresetTarget'
+          anyOf:
+          - $ref: '#/components/schemas/RunPresetTarget'
+          - type: 'null'
+        targets:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/RunPresetTarget'
+            type: array
+          - type: 'null'
+          title: Targets
         confirm_create:
           type: boolean
           title: Confirm Create
@@ -18757,7 +18829,6 @@ components:
       type: object
       required:
       - preset_slug
-      - target
       title: RunPresetRequest
       description: Body for POST /flows/run-preset.
     RunPresetResponse:
@@ -18781,6 +18852,13 @@ components:
           - type: string
           - type: 'null'
           title: Execution Url
+        results:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/RunPresetItemResult'
+            type: array
+          - type: 'null'
+          title: Results
       type: object
       required:
       - flow_id

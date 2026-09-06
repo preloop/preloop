@@ -326,6 +326,68 @@ describe('PoliciesView', () => {
     );
   });
 
+  it("folds each rule card's actions into one row menu (B-P2)", async () => {
+    fetchStub = createFetchStub({
+      tools: [
+        {
+          ...sampleTool,
+          config_id: 'cfg-1',
+          access_rules: [
+            {
+              id: 'ar-1',
+              action: 'deny',
+              approval_workflow_id: null,
+              condition_expression: 'args.amount > 100',
+              condition_type: 'cel',
+              is_enabled: true,
+              priority: 100,
+              description: 'Big payments',
+            },
+          ],
+        },
+      ],
+      modelIORules: [
+        {
+          id: 'block-pii',
+          target: 'model.request',
+          enabled: true,
+          detectors: { pii: true },
+          conditions: [{ expression: 'pii.found', action: 'deny' }],
+        },
+      ],
+    });
+    const element = (await fixture(
+      html`<policies-view></policies-view>`
+    )) as PoliciesView;
+
+    await waitUntil(
+      () =>
+        element.shadowRoot?.querySelectorAll('.access-rule-card').length === 2,
+      'rule cards did not render'
+    );
+    await element.updateComplete;
+
+    const cards = Array.from(
+      element.shadowRoot?.querySelectorAll('.access-rule-card') || []
+    );
+    for (const card of cards) {
+      // One kebab, no per-card Delete button shouting from the row.
+      expect(card.querySelectorAll('sl-dropdown').length).to.equal(1);
+      expect(card.querySelectorAll('sl-button').length).to.equal(0);
+
+      const items = Array.from(card.querySelectorAll('sl-menu-item')).map(
+        (item) => (item.textContent || '').trim()
+      );
+      expect(items).to.deep.equal(['Edit', 'Disable', 'Delete']);
+      // Destructive last, and the only coloured item.
+      expect(
+        card
+          .querySelector('sl-menu-item:last-of-type')
+          ?.classList.contains('menu-danger')
+      ).to.be.true;
+    }
+  });
+
   it('loads approval workflows into state', async () => {
     fetchStub = createFetchStub({ workflows: [sampleWorkflow] });
     const element = (await fixture(

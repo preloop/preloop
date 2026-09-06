@@ -3,7 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { Router } from '@vaadin/router';
 import { fetchWithAuth } from '../api.js';
-import { formatRelativeTime } from '../utils/date';
+import { formatLocalDateTime, formatRelativeTime } from '../utils/date';
 import {
   effectiveViewMode,
   loadViewMode,
@@ -83,6 +83,9 @@ export function filterTrackers(
   });
 }
 
+/** The columns the trackers table sorts on, in the order it prints them. */
+export type TrackerSortKey = 'name' | 'kind' | 'projects' | 'sync' | 'checked';
+
 @customElement('tracker-list')
 export class TrackerList extends LitElement {
   @state()
@@ -108,6 +111,12 @@ export class TrackerList extends LitElement {
 
   @state()
   private trackerPendingDelete: Tracker | null = null;
+
+  @state()
+  private sortKey: TrackerSortKey = 'name';
+
+  @state()
+  private sortDirection: 'asc' | 'desc' = 'asc';
 
   private narrowViewportSubscription: NarrowViewportSubscription | null = null;
 
@@ -151,7 +160,89 @@ export class TrackerList extends LitElement {
   }
 
   private get visibleTrackers(): Tracker[] {
-    return filterTrackers(this.trackers, this.search, this.kindFilter);
+    const rows = filterTrackers(this.trackers, this.search, this.kindFilter);
+    const direction = this.sortDirection === 'asc' ? 1 : -1;
+    return [...rows].sort(
+      (left, right) => direction * this.compareTrackers(left, right)
+    );
+  }
+
+  private compareTrackers(left: Tracker, right: Tracker): number {
+    const projects = (tracker: Tracker) => {
+      const count = trackerProjectsCount(tracker);
+      // "All" is every project there is, so it sorts above any number.
+      return count === 'all' ? Number.MAX_SAFE_INTEGER : count;
+    };
+    const checked = (tracker: Tracker) => {
+      const value = trackerLastCheckedAt(tracker);
+      return value ? new Date(value).getTime() || 0 : 0;
+    };
+    switch (this.sortKey) {
+      case 'kind':
+        return trackerKindLabel(left.tracker_type).localeCompare(
+          trackerKindLabel(right.tracker_type)
+        );
+      case 'projects':
+        return projects(left) - projects(right);
+      case 'sync':
+        return (
+          Number(left.is_valid !== false) - Number(right.is_valid !== false)
+        );
+      case 'checked':
+        return checked(left) - checked(right);
+      case 'name':
+      default:
+        return (left.name || '').localeCompare(right.name || '');
+    }
+  }
+
+  /** Names read A to Z first; everything else leads with the extreme. */
+  private toggleSort(key: TrackerSortKey): void {
+    if (this.sortKey === key) {
+      this.sortDirection = this.sortDirection === 'asc' ? 'desc' : 'asc';
+      return;
+    }
+    this.sortKey = key;
+    this.sortDirection = key === 'name' || key === 'kind' ? 'asc' : 'desc';
+  }
+
+  private renderSortableHeader(
+    key: TrackerSortKey,
+    label: string,
+    numeric = false
+  ) {
+    const active = this.sortKey === key;
+    const ariaSort = active
+      ? this.sortDirection === 'asc'
+        ? 'ascending'
+        : 'descending'
+      : 'none';
+    return html`
+      <th
+        class="sortable ${numeric ? 'numeric' : ''} ${active ? 'active' : ''}"
+        aria-sort=${ariaSort}
+        scope="col"
+      >
+        <button
+          type="button"
+          class="sort-button"
+          data-sort-key=${key}
+          @click=${() => this.toggleSort(key)}
+        >
+          <span>${label}</span>
+          <sl-icon
+            class="sort-caret"
+            name=${
+              active
+                ? this.sortDirection === 'asc'
+                  ? 'caret-up-fill'
+                  : 'caret-down-fill'
+                : 'chevron-expand'
+            }
+          ></sl-icon>
+        </button>
+      </th>
+    `;
   }
 
   private get effectiveView(): ListViewMode {
@@ -392,6 +483,45 @@ export class TrackerList extends LitElement {
         width: 100%;
       }
 
+      /* The same header recipe as the Flows list: the label is a button,
+         uppercase and in the meta register, with the caret beside it. */
+      .sort-button {
+        align-items: center;
+        background: none;
+        border: none;
+        color: var(--sl-color-neutral-600);
+        cursor: pointer;
+        display: flex;
+        font: inherit;
+        font-size: var(--sl-font-size-x-small);
+        font-weight: var(--sl-font-weight-semibold);
+        gap: 4px;
+        letter-spacing: 0.04em;
+        padding: var(--sl-spacing-small);
+        text-transform: uppercase;
+        width: 100%;
+      }
+      .trackers-table th {
+        padding: 0;
+      }
+      th.numeric .sort-button {
+        justify-content: flex-end;
+      }
+      .sort-button:hover,
+      .sort-button:focus-visible {
+        color: var(--sl-color-neutral-900);
+      }
+      th.active .sort-button {
+        color: var(--sl-color-neutral-900);
+      }
+      .sort-caret {
+        font-size: 0.75em;
+        opacity: 0.55;
+      }
+      th.active .sort-caret {
+        opacity: 1;
+      }
+
       .trackers-table th.actions-cell,
       .trackers-table td.actions-cell {
         width: 72px;
@@ -502,11 +632,11 @@ export class TrackerList extends LitElement {
         <table class="styled-table trackers-table">
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Kind</th>
-              <th class="numeric">Projects</th>
-              <th>Sync</th>
-              <th>Last checked</th>
+              ${this.renderSortableHeader('name', 'Name')}
+              ${this.renderSortableHeader('kind', 'Kind')}
+              ${this.renderSortableHeader('projects', 'Projects', true)}
+              ${this.renderSortableHeader('sync', 'Sync')}
+              ${this.renderSortableHeader('checked', 'Last checked')}
               <th class="actions-cell">
                 <span class="visually-hidden">Actions</span>
               </th>
@@ -547,7 +677,7 @@ export class TrackerList extends LitElement {
           }
         </td>
         <td>
-          <sl-badge variant="neutral" pill
+          <sl-badge class="chip" variant="neutral" pill
             >${trackerKindLabel(tracker.tracker_type)}</sl-badge
           >
         </td>
@@ -559,11 +689,17 @@ export class TrackerList extends LitElement {
           }
         </td>
         <td>
-          <sl-badge variant=${connected ? 'success' : 'danger'} pill>
-            ${connected ? 'Connected' : 'Action Required'}
-          </sl-badge>
+          <sl-badge
+            class="chip"
+            variant=${connected ? 'success' : 'danger'}
+            pill
+            >${connected ? 'Connected' : 'Action required'}</sl-badge
+          >
         </td>
-        <td class="muted-cell">
+        <td
+          class="muted-cell"
+          title=${lastChecked ? formatLocalDateTime(lastChecked) : nothing}
+        >
           ${lastChecked ? formatRelativeTime(lastChecked) : nothing}
         </td>
         <td class="actions-cell">
@@ -648,7 +784,7 @@ export class TrackerList extends LitElement {
                 @click=${this._handleAddTracker}
               >
                 <sl-icon slot="prefix" name="plus-lg"></sl-icon>
-                Add New Tracker
+                Add tracker
               </sl-button>
             </div>
           </sl-card>

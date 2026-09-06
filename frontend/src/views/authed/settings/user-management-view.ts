@@ -1,4 +1,4 @@
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import {
@@ -25,6 +25,7 @@ import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
 import '@shoelace-style/shoelace/dist/components/menu/menu.js';
 import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import consoleStyles from '../../../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../../../styles/console-dialog';
 
 @customElement('user-management-view')
@@ -62,7 +63,39 @@ export class UserManagementView extends LitElement {
   @state()
   private editUser: Partial<UserUpdate> = {};
 
+  /**
+   * How the account was created, in words. The stored values are enum names
+   * (`local`, `oauth_google`); printing them verbatim asked the reader to
+   * know the schema to learn that someone signs in with Google.
+   */
+  static userSourceLabel(source: string | null | undefined): string {
+    const value = String(source || '').toLowerCase();
+    if (value === 'local' || value === 'password') return 'Password';
+    if (value === 'oauth_google' || value === 'google') return 'Google';
+    if (value === 'oauth_github' || value === 'github') return 'GitHub';
+    if (value === 'oauth_microsoft' || value === 'microsoft') {
+      return 'Microsoft';
+    }
+    if (value === 'saml' || value === 'sso') return 'SSO';
+    if (value === 'invitation') return 'Invitation';
+    if (!value) return 'Unknown';
+    return value
+      .replace(/^oauth_/, '')
+      .replace(/_/g, ' ')
+      .replace(/^\w/, (character) => character.toUpperCase());
+  }
+
+  /** Role names are stored lower case (`owner`); the chip says "Owner". */
+  static roleLabel(name: string | null | undefined): string {
+    const value = String(name || '').trim();
+    if (!value) return 'Role';
+    return value
+      .replace(/_/g, ' ')
+      .replace(/^\w/, (character) => character.toUpperCase());
+  }
+
   static styles = [
+    unsafeCSS(consoleStyles),
     consoleDialogStyles,
     css`
       :host {
@@ -149,6 +182,12 @@ export class UserManagementView extends LitElement {
       .user-actions {
         display: flex;
         gap: 0.5rem;
+      }
+
+      /* The gap DESIGN.md asks for between the ordinary actions and the
+         destructive one, so Deactivate is never hit on the way to Edit. */
+      .user-actions .danger-action {
+        margin-left: var(--sl-spacing-large);
       }
 
       .form-grid {
@@ -341,13 +380,13 @@ export class UserManagementView extends LitElement {
 
     return html`
       <div class="header">
-        <h1>User Management</h1>
+        <h1>Users</h1>
         <sl-button
           variant="primary"
           @click=${() => (this.isCreateModalOpen = true)}
         >
           <sl-icon slot="prefix" name="person-plus"></sl-icon>
-          Add User
+          Add user
         </sl-button>
       </div>
 
@@ -368,15 +407,22 @@ export class UserManagementView extends LitElement {
                   <p class="user-email">${user.email}</p>
                   <div class="user-meta">
                     <sl-badge
+                      class="chip"
                       variant="${user.is_active ? 'success' : 'neutral'}"
                     >
                       ${user.is_active ? 'Active' : 'Inactive'}
                     </sl-badge>
-                    <sl-badge variant="neutral">${user.user_source}</sl-badge>
+                    <sl-badge class="chip" variant="neutral"
+                      >${UserManagementView.userSourceLabel(
+                        user.user_source
+                      )}</sl-badge
+                    >
                     ${
                       user.email_verified
-                        ? html`<sl-badge variant="success">Verified</sl-badge>`
-                        : html`<sl-badge variant="warning"
+                        ? html`<sl-badge class="chip" variant="success"
+                            >Verified</sl-badge
+                          >`
+                        : html`<sl-badge class="chip" variant="warning"
                             >Unverified</sl-badge
                           >`
                     }
@@ -385,11 +431,13 @@ export class UserManagementView extends LitElement {
                     (user as any).roles && (user as any).roles.length > 0
                       ? html`
                           <div class="user-roles">
-                            <strong>Direct Roles:</strong>
+                            <strong>Roles:</strong>
                             ${(user as any).roles.map(
                               (role: any) =>
-                                html`<sl-badge variant="primary"
-                                  >${role.name}</sl-badge
+                                html`<sl-badge class="chip" variant="neutral"
+                                  >${UserManagementView.roleLabel(
+                                    role.name
+                                  )}</sl-badge
                                 >`
                             )}
                           </div>
@@ -401,13 +449,14 @@ export class UserManagementView extends LitElement {
                     (user as any).inherited_roles.length > 0
                       ? html`
                           <div class="user-roles">
-                            <strong>Inherited Roles:</strong>
+                            <strong>From teams:</strong>
                             ${(user as any).inherited_roles.map(
                               (role: any) =>
                                 html`<sl-badge
+                                  class="chip"
                                   variant="neutral"
                                   title="From team: ${role.team_name}"
-                                  >${role.name}
+                                  >${UserManagementView.roleLabel(role.name)}
                                   <span style="font-size: 0.7em;"
                                     >(${role.team_name})</span
                                   ></sl-badge
@@ -421,19 +470,26 @@ export class UserManagementView extends LitElement {
                 <div class="user-actions">
                   <sl-button
                     size="small"
+                    title="Manage roles"
                     @click=${() => this.openRoleModal(user)}
                   >
                     <sl-icon name="shield-check"></sl-icon>
                   </sl-button>
                   <sl-button
                     size="small"
+                    title="Edit user"
                     @click=${() => this.openEditModal(user)}
                   >
                     <sl-icon name="pencil"></sl-icon>
                   </sl-button>
+                  <!-- Destructive last, outline, after a gap (DESIGN.md
+                       "Destructive actions"): a solid red button beside two
+                       neutral ones is the loudest thing in the row. -->
                   <sl-button
+                    class="danger-action"
                     size="small"
                     variant="danger"
+                    outline
                     title="Deactivate user"
                     @click=${() => this.handleDeactivateUser(user)}
                   >

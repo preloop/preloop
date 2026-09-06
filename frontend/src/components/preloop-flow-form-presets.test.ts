@@ -23,7 +23,7 @@ const ISSUE_TRIAGE = {
   description: 'Automatically analyze new issues.',
   icon: 'funnel',
   prompt_template: 'Triage this issue.',
-  trigger_event_types: ['issue.opened'],
+  trigger_event_types: ['issue_opened'],
   allowed_mcp_tools: [{ name: 'get_issue' }],
   agent_type: 'codex',
   agent_config: {},
@@ -124,12 +124,12 @@ describe('PreloopFlowForm presets', () => {
     expect(payload).to.not.have.property('id');
   });
 
-  it('keeps issue.opened when Issue Triage is selected on a GitHub tracker', async () => {
+  it('keeps issue_opened when Issue Triage is selected on a GitHub tracker', async () => {
     const element = await mount();
     await (element as any).applyPresetSelection('preset-001');
     await element.updateComplete;
 
-    expect(element.flow.trigger_event_types).to.deep.equal(['issue.opened']);
+    expect(element.flow.trigger_event_types).to.deep.equal(['issue_opened']);
     expect(element.flow.trigger_event_source).to.equal(GITHUB_TRACKER.id);
   });
 

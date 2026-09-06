@@ -192,6 +192,72 @@ describe('TrackerList', () => {
     expect(kindSelect?.getAttribute('label')).to.equal('Kind');
   });
 
+  it('renders the kind and sync states through the console chip recipe', async () => {
+    fetchStub.resolves(
+      new Response(JSON.stringify(mockTrackers), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    const el = (await fixture(
+      html`<tracker-list></tracker-list>`
+    )) as TrackerList;
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('.tracker-row') !== null,
+      'Tracker list did not render'
+    );
+
+    const badges = Array.from(
+      el.shadowRoot!.querySelectorAll('.tracker-row sl-badge')
+    );
+    expect(badges.length).to.be.greaterThan(0);
+    // A state is a tint, not a paint: every chip goes through the shared
+    // class, and none of them opts into the solid pill.
+    for (const badge of badges) {
+      expect(badge.classList.contains('chip')).to.be.true;
+      expect(badge.hasAttribute('pill')).to.be.true;
+      expect(badge.classList.contains('solid')).to.be.false;
+    }
+    expect(el.shadowRoot!.textContent).to.contain('Connected');
+    expect(el.shadowRoot!.textContent).to.not.contain('Action Required');
+  });
+
+  it('sorts the table from its uppercase headers', async () => {
+    fetchStub.resolves(
+      new Response(JSON.stringify(mockTrackers), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    const el = (await fixture(
+      html`<tracker-list></tracker-list>`
+    )) as TrackerList;
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('.tracker-row') !== null,
+      'Tracker list did not render'
+    );
+
+    const names = () =>
+      Array.from(el.shadowRoot!.querySelectorAll('.tracker-row .row-link')).map(
+        (link) => (link.textContent || '').trim()
+      );
+    const nameHeader = () =>
+      el.shadowRoot!.querySelector('th.sortable[aria-sort]')!;
+
+    expect(names()).to.eql(['GitHub Repos', 'Jira Production']);
+    expect(nameHeader().getAttribute('aria-sort')).to.equal('ascending');
+
+    (
+      el.shadowRoot!.querySelector(
+        '.sort-button[data-sort-key="name"]'
+      ) as HTMLElement
+    ).click();
+    await el.updateComplete;
+
+    expect(names()).to.eql(['Jira Production', 'GitHub Repos']);
+    expect(nameHeader().getAttribute('aria-sort')).to.equal('descending');
+  });
+
   it('keeps the toolbar while refetching existing trackers', async () => {
     fetchStub.resolves(
       new Response(JSON.stringify(mockTrackers), {
@@ -297,7 +363,7 @@ describe('TrackerList', () => {
     });
     const cta = emptyState?.querySelector('sl-button') as HTMLElement;
     expect(cta).to.exist;
-    expect(cta.textContent).to.contain('Add New Tracker');
+    expect(cta.textContent).to.contain('Add tracker');
     cta.click();
     expect(await addRequested).to.equal(true);
   });

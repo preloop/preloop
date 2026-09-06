@@ -25,7 +25,7 @@ const CATALOG: FlowPresetRecord[] = [
     name: 'Issue Triage Assistant',
     description: 'Automatically analyze new issues, suggest labels.',
     icon: 'funnel',
-    trigger_event_types: ['issue.opened'],
+    trigger_event_types: ['issue_opened'],
     allowed_mcp_tools: [
       { name: 'a' },
       { name: 'b' },

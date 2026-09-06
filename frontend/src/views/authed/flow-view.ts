@@ -1512,7 +1512,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
 
     // Handle special options
     if (trackerId === 'add_new') {
-      // Navigate to trackers page - user can then click "Add New Tracker"
+      // Navigate to trackers page - user can then click "Add tracker"
       window.location.href = '/console/trackers';
       return;
     }
@@ -2048,7 +2048,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
           </p>
           <sl-button variant="primary" @click=${this.openAddTrackerDialog}>
             <sl-icon slot="prefix" name="plus-lg"></sl-icon>
-            Add New Tracker
+            Add tracker
           </sl-button>
         </div>
       `;

@@ -399,12 +399,13 @@ def run_preset(
     current_user: User = Depends(get_current_active_user),
     body: schemas.RunPresetRequest,
 ) -> schemas.RunPresetResponse:
-    """Run a catalog preset on an issue, creating the account flow on first use.
+    """Run a catalog preset on an issue or a capped triage batch.
 
     ``confirm_create=false`` resolves only: 409 ``flow_missing`` when the
     account has no clone, or 200 with flow metadata and no execution when
     one exists. ``confirm_create=true`` creates if needed (requires
-    ``create_flows``) and starts the run.
+    ``create_flows``) and starts the run. ``targets`` is a 1-25 issue
+    list for ``issue-triage-assistant`` only.
     """
     # Sync handler: an async def would hold Session on the event loop and
     # fail test_async_sync_session_route_count_does_not_grow.
@@ -417,6 +418,7 @@ def run_preset(
                 current_user=current_user,
                 preset_slug=body.preset_slug,
                 target=body.target,
+                targets=body.targets,
                 confirm_create=body.confirm_create,
                 triggered_by=_display_name(current_user),
             )
@@ -444,16 +446,27 @@ def _normalize_status_filters(status: Optional[List[str]]) -> Optional[List[str]
 @router.get("/flows/executions", response_model=List[schemas.FlowExecutionListResponse])
 @require_permission("view_flows")
 def read_flow_executions(
+    # FastAPI injects the response. Optional[Response] makes FastAPI treat it
+    # as a Pydantic field and breaks OpenAPI generation, so the default stays
+    # None for tests and other direct callers.
+    response: Response = None,  # type: ignore[assignment]
     db: Session = Depends(get_db),
     skip: int = 0,
     limit: int = 25,
     flow_id: Optional[uuid.UUID] = None,
     status: Optional[List[str]] = Query(default=None),
+    search: Optional[str] = None,
+    started_after: Optional[datetime] = None,
     current_user: User = Depends(get_current_active_user),
 ):
-    """Retrieve lightweight flow execution summaries for the account."""
+    """Retrieve lightweight flow execution summaries for the account.
+
+    `X-Total-Count` carries how many executions the filters matched, so a
+    console page of 25 can say "25 of 1,412 executions" honestly.
+    """
     statuses = _normalize_status_filters(status)
     limit = max(1, min(limit, 100))
+    search_term = search.strip() if isinstance(search, str) else None
     # Use eager_load=True to load flow relationship in single query (avoids N+1)
     executions = crud_flow_execution.get_multi(
         db,
@@ -462,9 +475,21 @@ def read_flow_executions(
         limit=limit,
         flow_id=flow_id,
         statuses=statuses,
+        search=search_term or None,
+        started_after=started_after,
         eager_load=True,
         lightweight=True,
     )
+    total = crud_flow_execution.count(
+        db,
+        account_id=current_user.account_id,
+        flow_id=flow_id,
+        statuses=statuses,
+        search=search_term or None,
+        started_after=started_after,
+    )
+    if response is not None and isinstance(total, int):
+        response.headers["X-Total-Count"] = str(total)
 
     # Flow is already loaded via joinedload - no additional queries needed
     for execution in executions:

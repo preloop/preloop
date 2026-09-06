@@ -73,6 +73,9 @@ def register_runner(
     current_user: User = Depends(get_current_active_user),
 ):
     """Register a new runner or resume an existing one for this account."""
+    capabilities = normalize_host_exec_advertisements(
+        [profile.model_dump() for profile in body.host_exec_profiles]
+    )
     if body.runner_id:
         existing = crud_flow_runner.get(
             db, id=body.runner_id, account_id=str(current_user.account_id)
@@ -80,27 +83,16 @@ def register_runner(
         if not existing:
             raise HTTPException(status_code=404, detail="Runner not found")
         token = mint_runner_token()
-        existing.token_hash = hash_runner_token(token)
-        if body.name:
-            existing.name = body.name
-        if body.hostname:
-            existing.hostname = body.hostname
-        if body.os:
-            existing.os = body.os
-        if body.arch:
-            existing.arch = body.arch
-        if body.labels:
-            existing.labels = body.labels
-        if body.instance_id:
-            existing.instance_id = body.instance_id
-        existing.capabilities = normalize_host_exec_advertisements(
-            body.host_exec_profiles
-        )
-        existing.status = "online"
-        existing.last_heartbeat = datetime.now(timezone.utc)
-        db.add(existing)
-        db.commit()
-        db.refresh(existing)
+        updates = {
+            "token_hash": hash_runner_token(token),
+            "capabilities": capabilities,
+            "status": "online",
+            "last_heartbeat": datetime.now(timezone.utc),
+        }
+        for field in ("name", "hostname", "os", "arch", "labels", "instance_id"):
+            if value := getattr(body, field):
+                updates[field] = value
+        existing = crud_flow_runner.update(db, db_obj=existing, obj_in=updates)
         emit_runner_updated(existing, db)
         return schemas.RunnerRegisterResponse(
             **_to_response(existing, db).model_dump(), token=token
@@ -123,7 +115,7 @@ def register_runner(
             "last_heartbeat": datetime.now(timezone.utc),
             "token_hash": hash_runner_token(token),
             "halt_requested": False,
-            "capabilities": normalize_host_exec_advertisements(body.host_exec_profiles),
+            "capabilities": capabilities,
         },
     )
     emit_runner_updated(row, db)

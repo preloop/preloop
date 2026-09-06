@@ -214,7 +214,7 @@ export class TrackersView extends LitElement {
                     @click=${this._openAddTrackerForm}
                   >
                     <sl-icon slot="prefix" name="plus-lg"></sl-icon>
-                    Add New Tracker
+                    Add tracker
                   </sl-button>
                 </div>
               `
