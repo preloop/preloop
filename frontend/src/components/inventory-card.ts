@@ -24,6 +24,8 @@ import {
 import { renderFailureCategoryChip } from '../utils/failure-category';
 import { renderAgentIcon } from '../utils/agent-icons';
 import type { AgentStatusChip } from '../utils/agent-display';
+import type { GatewayTokenUsage } from '../types';
+import './token-figures';
 
 /** Which inventory the box is showing. */
 export type InventoryTab = 'agents' | 'flows' | 'models' | 'tools' | 'users';
@@ -49,6 +51,8 @@ export interface InventoryAgentRow {
   modelAlias: string | null;
   requests: number;
   tokens: number;
+  /** The in/out/cache split behind `tokens`, or null when unmeasured. */
+  tokenUsage?: GatewayTokenUsage | null;
   cost: number;
   lastSeenAt: string | null;
 }
@@ -68,6 +72,7 @@ export interface InventoryModelRow {
   provider: string;
   requests: number;
   tokens: number;
+  tokenUsage?: GatewayTokenUsage | null;
   cost: number;
 }
 
@@ -116,6 +121,7 @@ export interface InventoryUserRow {
   lastLoginAt: string | null;
   agentsOwned: number;
   tokens: number;
+  tokenUsage?: GatewayTokenUsage | null;
   cost: number;
 }
 
@@ -1056,9 +1062,12 @@ export class InventoryCard extends LitElement {
                             this.formatCompactNumber(row.requests)
                           )}
                         </td>
+                        <!-- Tokens before cost, split in and out. -->
                         <td class="num" data-label="Tokens">
                           ${this.renderUsageCell(
-                            this.formatCompactNumber(row.tokens)
+                            html`<token-figures
+                              .usage=${row.tokenUsage}
+                            ></token-figures>`
                           )}
                         </td>
                         <td class="num">
@@ -1271,7 +1280,9 @@ export class InventoryCard extends LitElement {
                         </td>
                         <td class="num" data-label="Tokens">
                           ${this.renderUsageCell(
-                            this.formatCompactNumber(row.tokens),
+                            html`<token-figures
+                              .usage=${row.tokenUsage}
+                            ></token-figures>`,
                             this.isUsageLoading('models')
                           )}
                         </td>
@@ -1355,7 +1366,9 @@ export class InventoryCard extends LitElement {
                         </td>
                         <td class="num" data-label="Tokens">
                           ${this.renderUsageCell(
-                            this.formatCompactNumber(row.tokens)
+                            html`<token-figures
+                              .usage=${row.tokenUsage}
+                            ></token-figures>`
                           )}
                         </td>
                         <td class="num">

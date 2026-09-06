@@ -12,6 +12,7 @@ import '@shoelace-style/shoelace/dist/components/progress-bar/progress-bar.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '../../components/view-header.ts';
+import '../../components/token-figures.ts';
 import {
   getAccountGatewayUsageSearch,
   getAccountGatewayUsageSummary,
@@ -690,7 +691,7 @@ export class ApiUsageView extends LitElement {
   private renderStatCard(
     label: string,
     value: string,
-    detail: string,
+    detail: unknown,
     icon: string
   ) {
     return html`
@@ -1009,7 +1010,10 @@ export class ApiUsageView extends LitElement {
                 ${this.formatNumber(model.request_count)}
               </div>
               <div class="cell-numeric">
-                ${this.formatNumber(model.token_usage.total_tokens)}
+                <token-figures
+                  .usage=${model.token_usage}
+                  expanded
+                ></token-figures>
               </div>
               <div class="cell-numeric">
                 ${this.formatCost(model.estimated_cost)}
@@ -1060,7 +1064,10 @@ export class ApiUsageView extends LitElement {
                 ${this.formatNumber(flow.request_count)}
               </div>
               <div class="cell-numeric">
-                ${this.formatNumber(flow.token_usage.total_tokens)}
+                <token-figures
+                  .usage=${flow.token_usage}
+                  expanded
+                ></token-figures>
               </div>
               <div class="cell-numeric">
                 ${this.formatCost(flow.estimated_cost)}
@@ -1166,7 +1173,10 @@ export class ApiUsageView extends LitElement {
                 ${this.formatNumber(session.request_count)}
               </div>
               <div class="cell-numeric">
-                ${this.formatNumber(session.token_usage.total_tokens)}
+                <token-figures
+                  .usage=${session.token_usage}
+                  expanded
+                ></token-figures>
               </div>
               <div class="cell-numeric">
                 ${this.formatCost(session.estimated_cost)}
@@ -1237,7 +1247,7 @@ export class ApiUsageView extends LitElement {
         <div class="search-excerpt">${item.excerpt}</div>
         <div class="search-meta">
           ${this.formatDateTimeLabel(item.timestamp)} ·
-          ${this.formatNumber(item.token_usage.total_tokens)} tokens ·
+          <token-figures .usage=${item.token_usage}></token-figures> ·
           ${this.formatCost(item.estimated_cost)}
           ${item.flow_name ? html` · ${item.flow_name}` : ''}
           ${
@@ -1269,9 +1279,9 @@ export class ApiUsageView extends LitElement {
           'cash'
         )}
         ${this.renderStatCard(
-          'Total Tokens',
+          'Total tokens',
           this.formatNumber(tokenUsage.total_tokens),
-          `${this.formatNumber(tokenUsage.prompt_tokens)} prompt, ${this.formatNumber(tokenUsage.completion_tokens)} completion`,
+          html`<token-figures .usage=${tokenUsage} expanded></token-figures>`,
           'cpu'
         )}
         ${this.renderStatCard(

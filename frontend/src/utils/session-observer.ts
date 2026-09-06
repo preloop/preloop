@@ -109,12 +109,34 @@ function asNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
+/**
+ * Token totals as the observer keeps them, direction and cache included.
+ *
+ * The server answers input/output as well as prompt/completion; either pair
+ * is read here so a session's figures survive whichever endpoint filled
+ * them. `cache_hit_ratio` stays null when the server sent none: unknown is
+ * not a measured zero.
+ */
 function getTokenUsage(value: unknown): GatewayTokenUsage {
   const tokenUsage = asRecord(value);
+  const input =
+    asNumber(tokenUsage.input_tokens) || asNumber(tokenUsage.prompt_tokens);
+  const output =
+    asNumber(tokenUsage.output_tokens) ||
+    asNumber(tokenUsage.completion_tokens);
   return {
-    prompt_tokens: asNumber(tokenUsage.prompt_tokens),
-    completion_tokens: asNumber(tokenUsage.completion_tokens),
+    prompt_tokens: input,
+    completion_tokens: output,
     total_tokens: asNumber(tokenUsage.total_tokens),
+    input_tokens: input,
+    output_tokens: output,
+    cache_read_tokens: asNumber(tokenUsage.cache_read_tokens),
+    cache_write_tokens: asNumber(tokenUsage.cache_write_tokens),
+    uncached_input_tokens: asNumber(tokenUsage.uncached_input_tokens),
+    cache_hit_ratio:
+      typeof tokenUsage.cache_hit_ratio === 'number'
+        ? tokenUsage.cache_hit_ratio
+        : null,
   };
 }
 
@@ -279,14 +301,35 @@ export function normalizeObservedSessions(
     existing.successfulRequests += session.successfulRequests;
     existing.failedRequests += session.failedRequests;
     existing.estimatedCost += session.estimatedCost;
+    const promptTokens =
+      existing.tokenUsage.prompt_tokens + session.tokenUsage.prompt_tokens;
+    const completionTokens =
+      existing.tokenUsage.completion_tokens +
+      session.tokenUsage.completion_tokens;
+    const cacheRead =
+      Number(existing.tokenUsage.cache_read_tokens || 0) +
+      Number(session.tokenUsage.cache_read_tokens || 0);
+    const uncachedInput =
+      Number(existing.tokenUsage.uncached_input_tokens || 0) +
+      Number(session.tokenUsage.uncached_input_tokens || 0);
     existing.tokenUsage = {
-      prompt_tokens:
-        existing.tokenUsage.prompt_tokens + session.tokenUsage.prompt_tokens,
-      completion_tokens:
-        existing.tokenUsage.completion_tokens +
-        session.tokenUsage.completion_tokens,
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
       total_tokens:
         existing.tokenUsage.total_tokens + session.tokenUsage.total_tokens,
+      input_tokens: promptTokens,
+      output_tokens: completionTokens,
+      cache_read_tokens: cacheRead,
+      cache_write_tokens:
+        Number(existing.tokenUsage.cache_write_tokens || 0) +
+        Number(session.tokenUsage.cache_write_tokens || 0),
+      uncached_input_tokens: uncachedInput,
+      // Rates do not add. The merged rate follows from the merged counts,
+      // and stays unknown while neither side reported a cache split.
+      cache_hit_ratio:
+        cacheRead + uncachedInput > 0
+          ? cacheRead / (cacheRead + uncachedInput)
+          : null,
     };
     if (
       session.lastActivityAt &&

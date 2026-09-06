@@ -23,6 +23,7 @@ import type {
   CostAnalyticsSummaryResponse,
   CostReconciliationResponse,
   CostReconciliationRow,
+  GatewayTokenUsage,
   GatewayUsageBySession,
   GatewayUsageByTool,
   ImportedUsageByConversation,
@@ -37,6 +38,8 @@ import '../../components/time-range-select.ts';
 import '../../components/budget-policy-editor.ts';
 import '../../components/budget-health-card.ts';
 import '../../components/tool-cost-flags-panel.ts';
+import '../../components/token-figures.ts';
+import { sumTokenUsage } from '../../components/token-figures.ts';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -90,6 +93,8 @@ type AgentGroupRow = {
   flowId: string | null;
   requests: number;
   totalTokens: number;
+  /** The in/out/cache split behind `totalTokens`, or null when unmeasured. */
+  tokenUsage: GatewayTokenUsage | null;
   cost: number;
 };
 
@@ -1331,11 +1336,12 @@ export class CostView extends AuthedElement {
           >
             ${this.formatCompactNumber(summary?.token_usage.total_tokens)}
           </div>
+          <!-- In and out, and how much of the input the cache served. -->
           <div class="metric-detail">
-            ${this.formatCompactNumber(summary?.token_usage.prompt_tokens)}
-            prompt ·
-            ${this.formatCompactNumber(summary?.token_usage.completion_tokens)}
-            completion
+            <token-figures
+              .usage=${summary?.token_usage || null}
+              expanded
+            ></token-figures>
           </div>
         </div>
         ${
@@ -1576,10 +1582,16 @@ export class CostView extends AuthedElement {
         flowId,
         requests: 0,
         totalTokens: 0,
+        tokenUsage: null,
         cost: 0,
       };
       existing.requests += session.request_count || 0;
       existing.totalTokens += session.token_usage?.total_tokens || 0;
+      // Counts add, the cache rate is recomputed from them.
+      existing.tokenUsage = sumTokenUsage([
+        existing.tokenUsage,
+        session.token_usage,
+      ]);
       existing.cost += session.estimated_cost || 0;
       groups.set(key, existing);
     }
@@ -2168,7 +2180,12 @@ export class CostView extends AuthedElement {
                       }
                     </td>
                     <td>${this.formatNumber(row.requests)}</td>
-                    <td>${this.formatNumber(row.totalTokens)}</td>
+                    <td>
+                      <token-figures
+                        .usage=${row.tokenUsage}
+                        expanded
+                      ></token-figures>
+                    </td>
                     <td>${this.formatCurrency(row.cost)}</td>
                   </tr>
                 `
@@ -2390,7 +2407,12 @@ export class CostView extends AuthedElement {
                     </td>
                     <td>${this.renderSessionSubjects(row)}</td>
                     <td>${this.formatNumber(row.request_count)}</td>
-                    <td>${this.formatNumber(row.token_usage?.total_tokens)}</td>
+                    <td>
+                      <token-figures
+                        .usage=${row.token_usage || null}
+                        expanded
+                      ></token-figures>
+                    </td>
                     <td>${this.formatCurrency(row.estimated_cost)}</td>
                     <td>
                       ${

@@ -22,6 +22,7 @@ import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '../../../components/add-ai-model-modal';
 import '../../../components/list-toolbar';
 import '../../../components/resource-actions';
+import '../../../components/token-figures';
 import type { ResourceAction } from '../../../components/resource-actions';
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
 import { formatRelativeTime } from '../../../utils/date';
@@ -1080,11 +1081,11 @@ export class AIModelsView extends LitElement {
         >
           ${this.formatCompactNumber(overview?.total_requests)} requests
         </div>
-        <div
-          class="cell-secondary"
-          title=${this.formatNumber(overview?.token_usage.total_tokens)}
-        >
-          ${this.formatCompactNumber(overview?.token_usage.total_tokens)} tokens
+        <!-- Tokens first, then what they cost. -->
+        <div class="cell-secondary">
+          <token-figures
+            .usage=${overview?.token_usage || null}
+          ></token-figures>
           · ${this.formatCurrency(overview?.estimated_cost)} est.
         </div>
         ${

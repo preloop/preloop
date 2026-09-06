@@ -41,6 +41,7 @@ import type {
   ExecutionModelUsage,
   ExecutionRunner,
 } from '../../utils/execution-presentation';
+import type { GatewayTokenUsage } from '../../types';
 import { renderFailureCategoryChip } from '../../utils/failure-category';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
@@ -48,6 +49,7 @@ import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
 import '../../components/list-toolbar.ts';
 import '../../components/time-range-select.ts';
+import '../../components/token-figures.ts';
 import type { ResourceAction } from '../../components/resource-actions';
 
 interface FlowExecution {
@@ -58,6 +60,12 @@ interface FlowExecution {
   start_time: string;
   end_time?: string;
   tool_calls_count?: number;
+  /**
+   * The run's token split, from the same gateway aggregation the cost comes
+   * from. Absent on a run with no attributable gateway usage, which is not
+   * the same as a run that used no tokens.
+   */
+  token_usage?: GatewayTokenUsage | null;
   estimated_cost?: number | null;
   /**
    * Short human-readable description of what triggered this execution, e.g.
@@ -110,6 +118,7 @@ type ExecutionSortKey =
   | 'duration'
   | 'model'
   | 'tools'
+  | 'tokens'
   | 'cost';
 
 @customElement('flow-executions-view')
@@ -156,6 +165,10 @@ export class FlowExecutionsView extends AuthedElement {
       }
       th.col-tools {
         width: 64px;
+      }
+      /* Tokens lead the money pair, so they get the width they need. */
+      th.col-tokens {
+        width: 170px;
       }
       th.col-cost {
         width: 60px;
@@ -678,6 +691,11 @@ export class FlowExecutionsView extends AuthedElement {
         return text(a.model_alias).localeCompare(text(b.model_alias));
       case 'tools':
         return (a.tool_calls_count || 0) - (b.tool_calls_count || 0);
+      case 'tokens':
+        return (
+          Number(a.token_usage?.total_tokens || 0) -
+          Number(b.token_usage?.total_tokens || 0)
+        );
       case 'cost':
         return (a.estimated_cost || 0) - (b.estimated_cost || 0);
       case 'started':
@@ -1204,6 +1222,12 @@ export class FlowExecutionsView extends AuthedElement {
                             true
                           )}
                           ${this.renderSortableHeader(
+                            'tokens',
+                            'Tokens',
+                            'col-tokens',
+                            true
+                          )}
+                          ${this.renderSortableHeader(
                             'cost',
                             '$ est.',
                             'col-cost',
@@ -1311,6 +1335,9 @@ export class FlowExecutionsView extends AuthedElement {
         </td>
         <td class="numeric">
           ${(exec.tool_calls_count || 0).toLocaleString()}
+        </td>
+        <td class="numeric">
+          <token-figures .usage=${exec.token_usage || null}></token-figures>
         </td>
         <td class="numeric">${formatEstimatedCost(exec.estimated_cost)}</td>
         <td class="actions-cell">
