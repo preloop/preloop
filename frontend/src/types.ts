@@ -69,6 +69,12 @@ export interface FlowExecutionStats {
   last_seen_at?: string | null;
   estimated_cost?: number;
   /**
+   * Tokens over the same period as the counts beside them: the window when
+   * `stats_since` was asked for, all time otherwise. Null means "nothing
+   * attributable in that period", which is not zero tokens.
+   */
+  token_usage?: GatewayTokenUsage | null;
+  /**
    * Present only when the flows request named a window (`stats_since`), and
    * then every field below is measured over that same window, so a list that
    * says "in the last 30d" can say one thing.

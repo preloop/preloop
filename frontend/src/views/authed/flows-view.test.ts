@@ -880,6 +880,7 @@ describe('FlowsView', () => {
         runs: 0,
         failed: 0,
         cost: 0,
+        tokenUsage: null,
         countsFromServer: true,
         source: { id: 'flow-1', name: 'Alpha' } as any,
         ...overrides,
