@@ -1261,6 +1261,11 @@ class ContainerAgentExecutor(AgentExecutor):
             ),
             spec=client.V1PodSpec(
                 restart_policy="Never",
+                # Isolated agents must not retain cluster authority to create
+                # residual writers after their owned Job has been removed.
+                automount_service_account_token=False
+                if (git_clone_config or {}).get("publication_mode") == "isolated"
+                else None,
                 containers=[container],
                 init_containers=self._environment_sidecars() or None,
                 security_context=client.V1PodSecurityContext(
@@ -2964,6 +2969,11 @@ class ContainerAgentExecutor(AgentExecutor):
     ) -> Dict[str, str]:
         """Merge git credential env vars into an agent's environment."""
 
+        if (execution_context.get("git_clone_config") or {}).get(
+            "publication_mode"
+        ) == "isolated":
+            if execution_context.get(self.GIT_API_TOKENS_CONTEXT_KEY):
+                raise ValueError("Write API tokens cannot enter an isolated agent")
         env.update(execution_context.get("checkpoint_env") or {})
         if self.environment_profile:
             from preloop.services.flow_environment import profile_env
@@ -2971,11 +2981,6 @@ class ContainerAgentExecutor(AgentExecutor):
             env.update(
                 profile_env(self.environment_profile, kubernetes=self.use_kubernetes)
             )
-        if (execution_context.get("git_clone_config") or {}).get(
-            "publication_mode"
-        ) == "isolated":
-            if execution_context.get(self.GIT_API_TOKENS_CONTEXT_KEY):
-                raise ValueError("Write API tokens cannot enter an isolated agent")
         env.update(self._git_credential_env(execution_context))
         return env
 
@@ -3047,13 +3052,22 @@ class ContainerAgentExecutor(AgentExecutor):
                 execution_context, git_clone_config
             )
             configured = git_clone_config.get("pull_request_template") or ""
+            # Repository directories are not provider authority. Resolve the
+            # provider from the controller's tracker binding (including
+            # self-hosted GitLab), then pass it as data to template discovery.
+            repos = git_clone_config.get("repositories") or [{}]
+            _, template_provider = self._resolve_repository_token(
+                repos[0], execution_context
+            )
+            if template_provider not in {"github", "gitlab"}:
+                template_provider = "github"
             template_script = (
                 inspect.getsource(pr_metadata)
                 + "\n"
                 + (
                     "import sys\n"
                     "root = Path(sys.argv[1])\n"
-                    "provider = 'gitlab' if (root / '.gitlab').is_dir() else 'github'\n"
+                    "provider = sys.argv[3]\n"
                     "name, template = repository_template(root, provider=provider, configured=sys.argv[2] or None)\n"
                     "target = Path('/workspace/evidence/pr-template.md')\n"
                     "target.parent.mkdir(parents=True, exist_ok=True)\n"
@@ -3068,6 +3082,8 @@ class ContainerAgentExecutor(AgentExecutor):
                 + shlex.quote(template_root)
                 + " "
                 + shlex.quote(configured)
+                + " "
+                + shlex.quote(template_provider)
             )
 
         # Seed /workspace files declared on the trigger payload. After git

@@ -4905,11 +4905,9 @@ class FlowExecutionOrchestrator:
                 execution_context
             )
 
-            # Private runners persist lines on the WebSocket; the live stream
-            # skips them so they are not published twice. Fold them in before
-            # terminal PR/session/metrics binding.
+            # Fold private-runner logs before terminal binding. Isolated
+            # publication still ignores agent-controlled PR markers.
             await self._replay_persisted_runner_logs()
-
             await self._finish_isolated_publication(agent_result)
 
             # Update execution log with final results including detailed logs

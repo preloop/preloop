@@ -40,7 +40,12 @@ async def test_app_credential_is_explicitly_scoped_to_repository_and_permissions
 
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
-        assert payload == {"repositories": ["project"], "permissions": permissions}
+        assert payload == {
+            "repositories": ["project"],
+            "permissions": {
+                key: value for key, value in permissions.items() if key != "metadata"
+            },
+        }
         assert request.headers["Authorization"] == "Bearer app-jwt"
         return httpx.Response(
             201,
@@ -106,6 +111,71 @@ async def test_broker_rejects_provider_ignoring_permission_reduction(
                     write=False,
                     client=client,
                 )
+
+
+@pytest.mark.parametrize(
+    "permissions",
+    [
+        {"contents": "read"},
+        {"contents": "read", "metadata": "read"},
+        {"contents": "read", "issues": "read"},
+        {"contents": "read", "checks": "write"},
+        {"contents": "read", "metadata": "write"},
+        {},
+        None,
+    ],
+)
+@pytest.mark.asyncio
+async def test_app_lease_allows_only_implicit_metadata_read(tracker, permissions):
+    allowed = permissions in (
+        {"contents": "read"},
+        {"contents": "read", "metadata": "read"},
+    )
+
+    def handler(request):
+        return httpx.Response(
+            201,
+            json={
+                "token": "scoped",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "repositories": [{"full_name": "example/project"}],
+                "permissions": permissions,
+            },
+        )
+
+    with (
+        patch(
+            "preloop.services.publication_credentials.settings.github_app",
+            SimpleNamespace(app_id="1", private_key="-----BEGIN KEY-----"),
+        ),
+        patch(
+            "preloop.services.publication_credentials.jwt.encode",
+            return_value="app-jwt",
+        ),
+    ):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            if allowed:
+                lease = await mint_repository_lease(
+                    tracker,
+                    "https://github.com/example/project.git",
+                    write=False,
+                    client=client,
+                )
+                assert lease.token == "scoped"
+            else:
+                with pytest.raises(PublicationError, match="scope"):
+                    await mint_repository_lease(
+                        tracker,
+                        "https://github.com/example/project.git",
+                        write=False,
+                        client=client,
+                    )
+
+
+def test_oauth_app_is_not_an_installation_credential(tracker):
+    tracker.auth_type = "oauth_app"
+    with pytest.raises(PublicationError, match="GitHub App"):
+        validate_publication_tracker(tracker)
 
 
 def test_pat_cannot_be_relabelled_readonly(tracker: Any) -> None:

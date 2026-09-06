@@ -130,21 +130,18 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     }
     launch_intent = script.get_revision("20260906_halt_launch_intent")
     assert launch_intent.down_revision == "20260906_halt_artifact_merge"
-    capabilities = script.get_revision("20260906_publication_caps")
-    assert capabilities.down_revision == "20260906_flow_artifacts"
-    publication = script.get_revision("20260906_halt_publication_merge")
-    assert set(publication.down_revision) == {
-        "20260906_halt_launch_intent",
-        "20260906_publication_caps",
-    }
-    runner = script.get_revision("20260906_halt_runner_merge")
-    assert set(runner.down_revision) == {
+    joined = script.get_revision("20260906_halt_runner_merge")
+    assert set(joined.down_revision) == {
         "20260906_halt_launch_intent",
         "20260906_runner_artifact_merge",
     }
-    joined = script.get_revision("20260906_halt_pub_runner_merge")
-    assert set(joined.down_revision) == {
-        "20260906_halt_publication_merge",
-        "20260906_halt_runner_merge",
+    approval_api_key = script.get_revision("20260906_approval_api_key")
+    assert approval_api_key.down_revision == "20260906_halt_runner_merge"
+    capabilities = script.get_revision("20260906_publication_caps")
+    assert capabilities.down_revision == "20260906_flow_artifacts"
+    publication = script.get_revision("20260906_pub_caps_merge")
+    assert set(publication.down_revision) == {
+        "20260906_approval_api_key",
+        "20260906_publication_caps",
     }
-    assert script.get_heads() == ["20260906_halt_pub_runner_merge"]
+    assert script.get_heads() == ["20260906_pub_caps_merge"]

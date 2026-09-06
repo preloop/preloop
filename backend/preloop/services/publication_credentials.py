@@ -25,7 +25,7 @@ def validate_publication_tracker(tracker: models.Tracker) -> None:
     installation = getattr(tracker, "oauth_installation", None)
     if (
         tracker.tracker_type != "github"
-        or tracker.auth_type not in {"github_app", "oauth_app"}
+        or tracker.auth_type != "github_app"
         or not getattr(installation, "external_id", None)
     ):
         raise PublicationError(
@@ -76,7 +76,7 @@ async def mint_repository_lease(
         )
     except (ValueError, jwt.PyJWTError) as exc:
         raise PublicationError("GitHub App signing failed") from exc
-    permissions = {"contents": "write" if write else "read", "metadata": "read"}
+    permissions = {"contents": "write" if write else "read"}
     if write:
         permissions["pull_requests"] = "write"
     installation_id = str(tracker.oauth_installation.external_id)
@@ -96,10 +96,18 @@ async def mint_repository_lease(
         response.raise_for_status()
         data = response.json()
         repositories = data.get("repositories", [])
+        returned = data.get("permissions")
+        # GitHub implicitly grants metadata:read. No other additional scope,
+        # including read access to issues/checks, is part of this capability.
+        allowed = {**permissions, "metadata": "read"}
+        valid_permissions = isinstance(returned, dict) and (
+            all(returned.get(key) == value for key, value in permissions.items())
+            and all(allowed.get(key) == value for key, value in returned.items())
+        )
         if (
             len(repositories) != 1
             or repositories[0].get("full_name") != project
-            or data.get("permissions") != permissions
+            or not valid_permissions
         ):
             raise PublicationError(
                 "GitHub did not return the requested repository/permission scope"
