@@ -362,6 +362,28 @@ sl-badge.tag-chip sl-icon {
     text-align: right;
 }
 
+/* Multi-select column (components/list-selection.ts). One width on every
+   collection so the identifying column starts at the same x on agents,
+   keys, models and flows. 40px is the Shoelace checkbox plus its target;
+   the padding is halved so the checkbox sits close to what it selects. */
+.styled-table th.select-cell,
+.styled-table td.select-cell {
+    width: 40px;
+    padding-right: var(--sl-spacing-x-small);
+    text-align: left;
+}
+
+/* A selected row is tinted at hover weight, so selection reads without a
+   second border and the depth limit holds. */
+.styled-table tbody tr[aria-selected='true'] {
+    background-color: var(--console-hover-tint);
+}
+
+/* The strip sits between the toolbar and the table, hairline to hairline. */
+.bulk-bar-slot {
+    margin-bottom: var(--sl-spacing-small);
+}
+
 .actions-container {
     display: flex;
     justify-content: flex-end;
