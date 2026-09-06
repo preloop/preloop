@@ -1336,9 +1336,12 @@ export class ApprovalView extends AuthedElement {
   /**
    * Write "allow <tool> for this agent" as a scoped rule on the agent.
    *
-   * A rule with no condition is the catch-all the policy evaluator reads
-   * first for this subject, so the next identical call runs without asking.
-   * The previous rule set is kept so Undo can put it back exactly.
+   * The evaluator returns on the first matching scoped rule in list order
+   * (`policy_evaluator._evaluate_rule_candidates`) and a rule with no
+   * condition matches everything, so the new allow has to go in front: the
+   * catch-all `require_approval` that raised this request is usually already
+   * there, and an allow behind it would never be reached. The previous rule
+   * set is kept so Undo can put it back exactly.
    */
   private async applyAlwaysAllow(request: ApprovalRequest) {
     const agentId = request.managed_agent_id;
@@ -1350,17 +1353,21 @@ export class ApprovalView extends AuthedElement {
       const rules = normalizeScopedToolRules(previous);
       const forTool = rules[request.tool_name] || [];
       rules[request.tool_name] = [
-        ...forTool,
         {
-          id: `scoped:${request.tool_name}:${forTool.length}`,
+          id: `scoped:${request.tool_name}:allow-from-${request.id.slice(
+            0,
+            8
+          )}`,
           action: 'allow',
           condition_expression: null,
           condition_type: 'simple',
-          priority: forTool.length,
+          priority: 0,
           description: `Created from approval ${request.id.slice(0, 8)}`,
           is_enabled: true,
           approval_workflow_id: null,
         },
+        // Everything that was there keeps its relative order, one step down.
+        ...forTool.map((rule, index) => ({ ...rule, priority: index + 1 })),
       ];
       await this.saveToolRules(
         agentId,

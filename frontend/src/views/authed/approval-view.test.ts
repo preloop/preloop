@@ -705,13 +705,17 @@ describe('ApprovalView', () => {
   });
 
   describe('always allow this tool for this agent', () => {
-    async function pendingWithAgent(permissions: string[] | null) {
+    async function pendingWithAgent(
+      permissions: string[] | null,
+      governance?: Record<string, unknown>
+    ) {
       fetchStub = createFetchStub({
         request: pendingRequest({
           managed_agent_id: 'agent-1',
           managed_agent_name: 'Claude Code',
         }),
         permissions,
+        governance,
       });
       const element = (await fixture(
         html`<approval-view .requestId=${'req-1'}></approval-view>`
@@ -774,6 +778,48 @@ describe('ApprovalView', () => {
       expect(rules[0].description).to.contain('req-1');
       // The rule is written only after the decision succeeded.
       expect(decisionCall('approve'), 'no approve call').to.exist;
+    });
+
+    it('writes the allow in front of the rule that asked for approval', async () => {
+      // The evaluator stops at the first matching rule, and the catch-all
+      // require_approval below matches everything, so an appended allow
+      // would never run.
+      const element = await pendingWithAgent(['manage_agents'], {
+        allowed_models: [],
+        model_budgets: {},
+        tool_rules: {
+          shell_command: [
+            {
+              action: 'require_approval',
+              condition_expression: null,
+              condition_type: 'simple',
+              priority: 0,
+              description: 'Ask before any shell command',
+              is_enabled: true,
+              approval_workflow_id: null,
+            },
+          ],
+        },
+      });
+      const checkbox = element.shadowRoot!.querySelector(
+        '.always-allow'
+      ) as any;
+      checkbox.checked = true;
+      checkbox.dispatchEvent(
+        new CustomEvent('sl-change', { bubbles: true, composed: true })
+      );
+      await element.updateComplete;
+      (
+        element.shadowRoot!.querySelector('.decision-bar .approve') as any
+      ).click();
+
+      await waitUntil(() => governanceWrites.length === 1, 'no rule written');
+      const rules = governanceWrites[0].tool_rules.shell_command;
+      expect(rules).to.have.length(2);
+      expect(rules[0].action).to.equal('allow');
+      expect(rules[0].priority).to.equal(0);
+      expect(rules[1].action).to.equal('require_approval');
+      expect(rules[1].priority).to.equal(1);
     });
 
     it('puts the previous rules back when the toast Undo is used', async () => {
