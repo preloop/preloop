@@ -163,6 +163,13 @@ const FOLD_SESSIONS_LIMIT = 20;
 /** The page of gateway calls the failures card reads on a live refresh. */
 const GATEWAY_FAILURES_REFRESH_LIMIT = 25;
 
+/**
+ * The page of approval requests the Audit trail line counts decisions from.
+ * The endpoint takes no date filter, so a full page means the count is a
+ * sample of the range and the line says so in its title.
+ */
+const APPROVALS_PAGE_SIZE = 100;
+
 /** How long a burst of events on one topic is collected before it is served. */
 const REALTIME_DEBOUNCE_MS = 250;
 
@@ -406,6 +413,19 @@ export class DashboardView extends AuthedElement {
     expired: 0,
     avgApprovalTime: 0,
   };
+  /**
+   * When each approval on the last page was decided. The Audit trail line
+   * counts the ones inside the page range, so a range change is a filter
+   * over what the page already fetched rather than another request.
+   */
+  @state() private decidedApprovalTimes: string[] = [];
+  /** True when that page came back full, so the count is a sample. */
+  @state() private approvalsSampled = false;
+  /**
+   * Audit events recorded in the page range, or null when we have not asked
+   * or the ask failed. Never rendered as a zero when it is unknown.
+   */
+  @state() private auditEventCount: number | null = null;
 
   private unsubscribeRealtime?: () => void;
   private refreshInFlight = false;
@@ -580,6 +600,41 @@ export class DashboardView extends AuthedElement {
         font-family: var(--sl-font-mono);
         font-size: 12px;
       }
+      /* What the account did, one line under the Inventory box. A hairline
+         above it, no fill and no border box: it is a footnote to the box it
+         follows, not a fourth card competing with it. */
+      .audit-trail {
+        align-items: baseline;
+        border-top: 1px solid var(--console-hairline);
+        color: var(--console-meta-color);
+        display: flex;
+        flex-wrap: wrap;
+        font-size: var(--console-text-meta);
+        gap: var(--sl-spacing-x-small);
+        padding-top: var(--sl-spacing-small);
+      }
+      .audit-trail-label {
+        color: var(--sl-color-neutral-900);
+        font-weight: 600;
+      }
+      .audit-trail-items {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-x-small);
+        font-variant-numeric: tabular-nums;
+      }
+      .audit-trail-items a {
+        color: var(--console-link-color);
+        text-decoration: none;
+      }
+      .audit-trail-items a:hover {
+        text-decoration: underline;
+      }
+      .audit-trail-items a + a::before {
+        color: var(--console-meta-color);
+        content: '· ';
+      }
+
       /* One amber line above the page, or nothing. It stays one line: the
          chips truncate before the strip is allowed to wrap, so "View all"
          never falls to a second row. */
@@ -1500,6 +1555,10 @@ export class DashboardView extends AuthedElement {
       this.hasAIModels = data.hasAIModels || false;
       if (data.lastUpdatedAt) this.lastUpdatedAt = data.lastUpdatedAt;
       this.approvalStats = data.approvalStats || this.approvalStats;
+      this.decidedApprovalTimes = data.decidedApprovalTimes || [];
+      this.approvalsSampled = data.approvalsSampled === true;
+      this.auditEventCount =
+        typeof data.auditEventCount === 'number' ? data.auditEventCount : null;
       this.attentionInputs = data.attentionInputs || null;
       if (this.attentionInputs) this.publishAttentionCounts();
       this.budgetPolicies = data.budgetPolicies || [];
@@ -1578,6 +1637,9 @@ export class DashboardView extends AuthedElement {
         hasAIModels: this.hasAIModels,
         lastUpdatedAt: this.lastUpdatedAt,
         approvalStats: this.approvalStats,
+        decidedApprovalTimes: this.decidedApprovalTimes,
+        approvalsSampled: this.approvalsSampled,
+        auditEventCount: this.auditEventCount,
         attentionInputs: this.trimAttentionInputsForCache(),
         budgetPolicies: this.budgetPolicies,
         budgetAgents: this.budgetAgents,
@@ -2221,6 +2283,9 @@ export class DashboardView extends AuthedElement {
       await Promise.all([
         this.refreshGatewayInteractions(startDateStr),
         this.refreshUsageBreakdown(startDateStr),
+        // The Audit trail line is per range, and the approvals it counts are
+        // filtered from the page already in hand.
+        this.refreshAuditEventCount(startDateStr),
       ]);
       this.scheduleCacheWrite();
       markOverviewTiming('overview-deferred-ready');
@@ -2255,6 +2320,32 @@ export class DashboardView extends AuthedElement {
       { items: [] } as Awaited<ReturnType<typeof getAccountGatewayUsageSearch>>
     );
     this.gatewayInteractions = interactions.items || [];
+  }
+
+  /**
+   * How many audit events the range holds, for the Audit trail line.
+   *
+   * One count request (`limit=1`, the total is the answer), beside the two
+   * the page already makes for tool calls. It is scoped to the range, so a
+   * range change re-asks it rather than leaving a figure from the last
+   * window under a new label. A failure leaves the count null and the line
+   * omits it rather than printing a zero the account did not earn.
+   */
+  private async refreshAuditEventCount(startDateStr: string): Promise<void> {
+    const params = new URLSearchParams();
+    params.set('limit', '1');
+    params.set('start_date', startDateStr);
+    const count = await this.catchWith403Handling(
+      fetchWithAuth(`/api/v1/audit-logs/grouped?${params}`).then((response) => {
+        if (!response.ok) {
+          throw new Error('Failed to count audit events');
+        }
+        return response.json() as Promise<{ total?: number }>;
+      }),
+      null
+    );
+    this.auditEventCount =
+      count && typeof count.total === 'number' ? count.total : null;
   }
 
   /**
@@ -2327,7 +2418,7 @@ export class DashboardView extends AuthedElement {
     this.tools = tools || [];
   }
 
-  /** Flow runs, resolved approvals and the gateway call log. */
+  /** Flow runs, resolved approvals, the gateway call log and the audit count. */
   private async fetchInventoryData(startDateStr: string): Promise<void> {
     this.fetchingRecentExecutions = true;
     this.fetchingFlowUsage = true;
@@ -2344,12 +2435,13 @@ export class DashboardView extends AuthedElement {
       })();
       const [allApprovalRequests] = await Promise.all([
         this.catchWith403Handling(
-          this.fetchApprovalRequests(undefined, 100),
+          this.fetchApprovalRequests(undefined, APPROVALS_PAGE_SIZE),
           [] as ApprovalRequest[]
         ),
         // The failures card shows a handful, and it should be the handful
         // that happened in the range the page is showing.
         this.refreshGatewayInteractions(startDateStr),
+        this.refreshAuditEventCount(startDateStr),
         executionsPromise,
       ]);
 
@@ -2617,6 +2709,17 @@ export class DashboardView extends AuthedElement {
 
   private calculateApprovalStats(requests: ApprovalRequest[]): void {
     const total = requests.length;
+    // When the decisions were taken, so the Audit trail line can count the
+    // ones inside the page range without asking for the list again on every
+    // range change. Timestamps only: the cache carries this.
+    this.decidedApprovalTimes = requests
+      .filter(
+        (request) =>
+          (request.status === 'approved' || request.status === 'declined') &&
+          Boolean(request.resolved_at)
+      )
+      .map((request) => request.resolved_at as string);
+    this.approvalsSampled = requests.length >= APPROVALS_PAGE_SIZE;
     const approved = requests.filter(
       (request) => request.status === 'approved'
     ).length;
@@ -3869,6 +3972,90 @@ export class DashboardView extends AuthedElement {
     `;
   }
 
+  /**
+   * How many approvals were decided inside the page range.
+   *
+   * Decisions are not inventory: an approval that has been answered is a
+   * record of something that happened, so it belongs on the Audit trail
+   * line and not in the Inventory box. Pending ones stay in the attention
+   * strip, where there is something to do about them.
+   */
+  private get decidedApprovalsInRange(): number {
+    const start = this.getGatewayStartMs();
+    return this.decidedApprovalTimes.filter((time) => {
+      const at = parseUTCDate(time).getTime();
+      return Number.isFinite(at) && at >= start;
+    }).length;
+  }
+
+  /**
+   * True once every figure on the Audit trail line has answered. The line
+   * arrives complete rather than growing an item at a time under the
+   * reader's eyes.
+   */
+  private get auditTrailResolved(): boolean {
+    return (
+      !this.loading && !this.fetchingRecentExecutions && !this.fetchingAudit
+    );
+  }
+
+  /**
+   * What the account did, kept as a record: approvals decided, sessions and
+   * audit events in the page range, each a way into the page that holds
+   * them. The Inventory box above says what the account has; this line says
+   * what there is a trail of, and it is one line because a record nobody is
+   * being asked to act on does not need a card.
+   */
+  private renderAuditTrail() {
+    if (!this.auditTrailResolved) {
+      return nothing;
+    }
+    const decided = this.decidedApprovalsInRange;
+    const sessions = this.totalRuntimeSessionsCount;
+    const events = this.auditEventCount;
+    // Nothing has happened in this window, so there is no trail to offer.
+    if (decided === 0 && sessions === 0 && !events) {
+      return nothing;
+    }
+    const items = [
+      decided > 0
+        ? html`<a
+            href="/console/approvals"
+            title=${
+              this.approvalsSampled
+                ? `In the last ${this.gatewayRangeLabel} (from the most recent ${APPROVALS_PAGE_SIZE} approval requests)`
+                : `In the last ${this.gatewayRangeLabel}`
+            }
+            >${this.formatNumber(decided)} approval${decided === 1 ? '' : 's'}
+            decided</a
+          >`
+        : nothing,
+      sessions > 0
+        ? html`<a href="/console/runtime-sessions"
+            >${this.formatNumber(sessions)}
+            session${sessions === 1 ? '' : 's'}</a
+          >`
+        : nothing,
+      // A figure we could not measure is omitted, never rendered as a zero.
+      events
+        ? html`<a href="/console/audit"
+            >${this.formatNumber(events)} audit
+            event${events === 1 ? '' : 's'}</a
+          >`
+        : nothing,
+    ].filter((item) => item !== nothing);
+
+    return html`
+      <div class="audit-trail">
+        <span class="audit-trail-label">Audit trail</span>
+        <span class="audit-trail-range" title="Range set on the Usage card"
+          >${this.gatewayRangeLabel}</span
+        >
+        <span class="audit-trail-items">${items}</span>
+      </div>
+    `;
+  }
+
   /** What just happened, live, with the audit page one click away. */
   private renderActivityFeed() {
     return html`
@@ -3928,7 +4115,7 @@ export class DashboardView extends AuthedElement {
         <div class="main-column">
           <div class="dashboard-stack">
             ${this.renderGatewayCard()} ${this.renderNextStepsCard()}
-            ${this.renderInventoryCard()}
+            ${this.renderInventoryCard()} ${this.renderAuditTrail()}
 
             <div
               style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sl-spacing-medium);"

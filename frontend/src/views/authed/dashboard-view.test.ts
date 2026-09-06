@@ -1484,6 +1484,95 @@ describe('DashboardView', () => {
       ).to.equal(0);
     });
 
+    it('states the audit trail under the Inventory, in the page range', async () => {
+      const inRange = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      allApprovalRequestsResponse = [
+        ...pendingApprovalRequestsResponse,
+        {
+          id: 'approval-2',
+          tool_name: 'send_email',
+          status: 'approved',
+          requested_at: inRange,
+          resolved_at: inRange,
+        },
+        {
+          id: 'approval-3',
+          tool_name: 'rollback_deployment',
+          status: 'declined',
+          requested_at: inRange,
+          resolved_at: inRange,
+        },
+        // Decided long before the range: a record, but not this window's.
+        {
+          id: 'approval-4',
+          tool_name: 'refund_order',
+          status: 'approved',
+          requested_at: '2026-03-07T09:00:00Z',
+          resolved_at: '2026-03-07T09:02:00Z',
+        },
+      ];
+
+      const element = await mountLoaded();
+
+      const strip = element.shadowRoot?.querySelector(
+        '.audit-trail'
+      ) as HTMLElement;
+      expect(strip, 'the audit trail line').to.exist;
+      expect(strip.textContent).to.contain('Audit trail');
+      const links = Array.from(strip.querySelectorAll('a'));
+      expect(links.map((link) => link.getAttribute('href'))).to.deep.equal([
+        '/console/approvals',
+        '/console/runtime-sessions',
+        '/console/audit',
+      ]);
+      // Two decisions in the range; the March one is outside it.
+      const linkText = (link: HTMLAnchorElement) =>
+        (link.textContent ?? '').replace(/\s+/g, ' ').trim();
+      expect(linkText(links[0])).to.contain('2 approvals decided');
+      expect(linkText(links[1])).to.contain('1 session');
+      expect(linkText(links[2])).to.contain('1 audit event');
+
+      // It is a line under the Inventory, not a row inside it.
+      const inventory = element.shadowRoot?.querySelector(
+        'inventory-card'
+      ) as HTMLElement;
+      expect(strip.closest('.main-column'), 'main column').to.exist;
+      expect(strip.getBoundingClientRect().top).to.be.greaterThan(
+        inventory.getBoundingClientRect().top
+      );
+      expect(inventory.contains(strip)).to.be.false;
+
+      // The count of audit events is scoped to the range on screen.
+      const counted = fetchStub
+        .getCalls()
+        .map((call) => String(call.args[0]))
+        .filter(
+          (url) =>
+            url.startsWith('/api/v1/audit-logs/grouped') &&
+            url.includes('limit=1') &&
+            url.includes('start_date=')
+        );
+      expect(counted.length, 'one range-scoped audit count').to.equal(1);
+    });
+
+    it('leaves the audit trail out when the range holds no record', async () => {
+      allApprovalRequestsResponse = [];
+      pendingApprovalRequestsResponse = [];
+      runtimeSessionsResponse = {
+        ...runtimeSessionsResponse,
+        total: 0,
+        items: [],
+      };
+      auditResponse = { groups: [], total: 0 };
+
+      const element = await mountLoaded();
+
+      expect(
+        element.shadowRoot?.querySelector('.audit-trail'),
+        'no line and no zeroes'
+      ).to.not.exist;
+    });
+
     it('puts the Inventory under the Gateway card and the feed under Usage', async () => {
       const element = await mountLoaded();
 
