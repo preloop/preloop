@@ -68,6 +68,10 @@ spec:
               value: {{ .Values.environment.modelGatewayUpstreamRetry.baseSeconds | default 0.2 | quote }}
             - name: MODEL_GATEWAY_UPSTREAM_RETRY_AFTER_CAP_SECONDS
               value: {{ .Values.environment.modelGatewayUpstreamRetry.retryAfterCapSeconds | default 8 | quote }}
+            {{- with .Values.environment.gatewayErrorAlertIntervalSeconds }}
+            - name: GATEWAY_ERROR_ALERT_INTERVAL_SECONDS
+              value: {{ . | quote }}
+            {{- end }}
             {{- include "preloop.databaseUrlEnv" . | nindent 12 }}
             - name: DATABASE_POOL_SIZE
               value: {{ .Values.database.pool.gateway.size | quote }}
