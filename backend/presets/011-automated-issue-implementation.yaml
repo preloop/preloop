@@ -102,6 +102,32 @@ prompt_template: |
      ones arrived while you worked, handle those too.
 
   ═══════════════════════════════════════════════════════════
+  VERIFICATION GATE (non-negotiable)
+  ═══════════════════════════════════════════════════════════
+
+  After you exit, the flow re-runs a trusted set of required checks against
+  your final commit and only pushes the branch and opens the pull request
+  when they pass. The check list comes from the flow's trusted test profile,
+  never from this repository: you cannot narrow it, skip it, or edit it.
+
+  - Run the relevant checks yourself while you work, and fix failures
+    before you commit. The gate re-running a check you already ran is the
+    safety net, not the plan.
+  - Never leave the tree dirty: commit everything the change needs and
+    remove scratch files. Uncommitted tracked changes refuse publication.
+  - If a required check cannot run because the environment lacks a
+    dependency (a database, a service, a secret), record the exact command
+    and reason under "skipped". The gate records it as blocked and the flow
+    will not publish until the environment provides it; that is a visible
+    gap, not something to work around.
+  - You may propose additional checks by listing them under
+    "proposed_checks" in result.json. Proposals are advisory; only the
+    profile decides what is required.
+  - result.json "status" says what you implemented. The runner records a
+    separate verification status from its own gate; only that one governs
+    publication.
+
+  ═══════════════════════════════════════════════════════════
   PHASE 3: REPORT
   ═══════════════════════════════════════════════════════════
 
@@ -117,6 +143,7 @@ prompt_template: |
     "decisions": ["<choice you made and the reason>"],
     "skipped": ["<what you did not do and why>"],
     "commits": ["<short sha> <subject>"],
+    "proposed_checks": ["<check command you believe should also be required>"],
     "pr_title": "<title the flow should use when it opens the pull request>",
     "pr_body": "<markdown description for that pull request>",
     "reason": "<only when status is failure>"
@@ -165,6 +192,63 @@ git_clone_config:
     Automated implementation for #{{trigger_event.payload.object_attributes.number}}
 
     Closes #{{trigger_event.payload.object_attributes.number}}
+  # Publication gate (issue #428): the branch is pushed and the pull request
+  # opened only after a runner-controlled verifier re-ran the profile's
+  # required checks against the exact final commit and tree. The profile
+  # ships with the flow, never inside the target repository, so the agent
+  # cannot narrow required checks or edit it inside its own PR.
+  #
+  # This default profile is deliberately conservative and generic: the
+  # "always" hooks work in any git repository, documentation-only changes
+  # need nothing beyond them, and every other change is REFUSED until the
+  # operator adds repository-specific rules (with runnable commands) to the
+  # profile below. A runnable repository profile is required before strict
+  # verification is enabled on a live flow.
+  verification:
+    mode: gate
+    gate_budget_seconds: 3600
+    profile:
+      version: v1
+      profile_id: generic-repository-default
+      description: >-
+        Conservative starting profile for automated implementation flows.
+        Extend the rules with repository-specific required checks (test
+        suites, migration graph checks, frontend component tests, API
+        contract checks) before using this flow on real changes.
+      always:
+        - id: git-diff-check
+          command: 'git diff --check "$PRELOOP_VERIFY_BASE...$PRELOOP_VERIFY_HEAD"'
+          reason: >-
+            Inexpensive universal hook: flags whitespace errors and leftover
+            conflict markers in the published range.
+          scope: shared
+        - id: no-conflict-markers
+          command: '! git grep -In -e "^<<<<<<< " -e "^>>>>>>> " -- .'
+          reason: >-
+            Inexpensive universal hook: a committed conflict marker means the
+            change was never actually resolved.
+          scope: shared
+      rules:
+        - id: docs-only
+          description: >-
+            Documentation changes: no test suite applies beyond the
+            universal hooks.
+          path_globs:
+            - "docs/**"
+            - "*.md"
+            - "*.rst"
+          commands: []
+      unknown_default:
+        - id: repository-profile-required
+          command: >-
+            echo "No trusted checks are configured for this kind of change.
+            Add repository-specific rules (with runnable commands) to
+            git_clone_config.verification.profile so the change can be
+            verified before publication."; exit 1
+          reason: >-
+            Unknown impact must not publish on an empty required list; this
+            sentinel refuses publication and says what to configure.
+          scope: unknown
 # Implementation runs are long: reading a repository, writing tests, and
 # running a suite regularly passes the 3600s default.
 timeout_seconds: 5400

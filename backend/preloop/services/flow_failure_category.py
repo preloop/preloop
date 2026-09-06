@@ -44,6 +44,15 @@ it*, not about severity:
     after the clone/restore and before the agent ever started. Nothing the
     agent did caused it, and nothing it could have done would have avoided
     it.
+``verification_failed``
+    The publication gate (issue #428) refused to publish because a required
+    check ran and failed. The implementation itself is the problem: the work
+    goes back to the agent, not to the environment.
+``verification_blocked``
+    The publication gate refused to publish because a required check could
+    not run (unavailable dependency, exit 126/127, exhausted gate budget).
+    An environment gap, like ``setup_failed`` — runnable after bounded setup
+    repair, never evidence of broken code.
 ``tool_error``
     A command or script the agent ran inside the workspace failed.
 ``agent_error``
@@ -80,6 +89,8 @@ FAILURE_CATEGORY_MODEL_QUOTA = "model_quota"
 FAILURE_CATEGORY_MODEL_CONFIG = "model_config"
 FAILURE_CATEGORY_NO_CONFIRMATION = "no_confirmation"
 FAILURE_CATEGORY_SETUP_FAILED = "setup_failed"
+FAILURE_CATEGORY_VERIFICATION_FAILED = "verification_failed"
+FAILURE_CATEGORY_VERIFICATION_BLOCKED = "verification_blocked"
 FAILURE_CATEGORY_TOOL_ERROR = "tool_error"
 FAILURE_CATEGORY_AGENT_ERROR = "agent_error"
 FAILURE_CATEGORY_TIMEOUT = "timeout"
@@ -95,6 +106,8 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_MODEL_CONFIG,
     FAILURE_CATEGORY_NO_CONFIRMATION,
     FAILURE_CATEGORY_SETUP_FAILED,
+    FAILURE_CATEGORY_VERIFICATION_FAILED,
+    FAILURE_CATEGORY_VERIFICATION_BLOCKED,
     FAILURE_CATEGORY_TOOL_ERROR,
     FAILURE_CATEGORY_AGENT_ERROR,
     FAILURE_CATEGORY_TIMEOUT,
@@ -202,6 +215,23 @@ _SETUP_FAILED_RE = re.compile(
     r"PRELOOP_SETUP_FAILED|setup commands? failed",
     re.IGNORECASE,
 )
+# The publication gate's denial lines (issue #428). A required check that
+# ran and failed puts the work back with the agent; a check that could not
+# run (exit 126/127, missing dependency) is an environment gap and gets its
+# own category so "needs a database" never reads as "broken code".
+# Blocked is matched before failed: the VERDICT line carries the status.
+_VERIFICATION_BLOCKED_RE = re.compile(
+    r"PRELOOP_VERIFICATION_VERDICT DENY status=blocked"
+    r"|verification gate refused publication.*verdict=DENY.*"
+    r"status=blocked"
+    r"|could not run \(unavailable dependency\)",
+    re.IGNORECASE,
+)
+_VERIFICATION_FAILED_RE = re.compile(
+    r"PRELOOP_VERIFICATION_DENIED"
+    r"|PRELOOP_VERIFICATION_VERDICT DENY",
+    re.IGNORECASE,
+)
 # The completion-contract message written by the orchestrator.
 _NO_CONFIRMATION_RE = re.compile(
     r"success sentinel|flow_execution_success|did not confirm\s+success",
@@ -235,6 +265,8 @@ _AGENT_ERROR_RE = re.compile(
 # transient blip the executor's analyser latched onto.
 _STRUCTURAL_MESSAGE_RULES = (
     (_SETUP_FAILED_RE, FAILURE_CATEGORY_SETUP_FAILED),
+    (_VERIFICATION_BLOCKED_RE, FAILURE_CATEGORY_VERIFICATION_BLOCKED),
+    (_VERIFICATION_FAILED_RE, FAILURE_CATEGORY_VERIFICATION_FAILED),
     (_RUNNER_CONFLICT_RE, FAILURE_CATEGORY_RUNNER_CONFLICT),
     (_RUNNER_ERROR_RE, FAILURE_CATEGORY_RUNNER_ERROR),
     (_TIMEOUT_RE, FAILURE_CATEGORY_TIMEOUT),

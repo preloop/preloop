@@ -14,6 +14,10 @@ from pydantic import (
     model_validator,
 )
 
+from preloop.models.schemas.verification import (
+    ResolvedVerificationPolicy,
+    VerificationPolicy,
+)
 from preloop.utils.schedule_text import (
     WEEKDAYS,
     describe_cron,
@@ -87,6 +91,30 @@ class GitCloneConfig(BaseModel):
     pull_request_description: Optional[str] = Field(
         default=None, description="Description for the Pull/Merge Request"
     )
+    # Publication gate (issue #428). When set to mode "gate", the
+    # post-execution push and pull-request creation run only after the
+    # runner-controlled verifier allowed them for the exact commit and tree
+    # being published. Absent (the default for every flow saved before the
+    # gate existed) means explicitly ungated: use effective_verification_policy()
+    # to show what a flow actually runs under instead of leaving it implicit.
+    verification: Optional[VerificationPolicy] = Field(
+        default=None,
+        description=(
+            "Publication gate policy: required checks a commit must pass "
+            "before the flow pushes it or opens a pull request"
+        ),
+    )
+
+    def effective_verification_policy(self) -> ResolvedVerificationPolicy:
+        """Effective policy for this config, computed by the contract.
+
+        Keeps "existing flows are ungated" explicit and visible: the console
+        and the API can render the resolved mode and its reason instead of
+        leaving the behaviour implicit in an absent key.
+        """
+        from preloop.services.verification import resolve_verification_policy
+
+        return resolve_verification_policy(self.model_dump())
 
 
 class CustomCommands(BaseModel):

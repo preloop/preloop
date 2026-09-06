@@ -45,6 +45,10 @@ from preloop.agents.completion_nudge import (
     COMPLETION_NUDGE_UNSUPPORTED_MARKER,
 )
 from preloop.agents.failure_analysis import analyze_agent_failure
+from preloop.agents.verification import (
+    VERIFICATION_DENIED_MARKER,
+    VERIFICATION_MARKER,
+)
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_UNKNOWN,
     derive_failure_category,
@@ -221,6 +225,59 @@ RESULT_ARTIFACT_VERDICT_SUCCESSES = frozenset(
     {"pass", "passed", "pass_with_findings", "fail"}
 )
 RESULT_ARTIFACT_VERDICT_FAILURES = frozenset({"error"})
+
+
+def extract_verification_evidence(lines: List[str]) -> Optional[Dict[str, Any]]:
+    """Return the LAST publication-gate evidence reported in log lines.
+
+    The gate (``preloop.agents.verification``) prints one
+    ``PRELOOP_VERIFICATION {json}`` line per run. The marker is parsed by the
+    runner, not written by it — anything the agent prints during its own
+    execution is superseded because the gate always runs afterwards
+    (post-execution), so the last marker is the authoritative one. Returns
+    ``None`` when no well-formed marker exists (the normal case for flows
+    without a verification policy).
+    """
+    for line in reversed(lines):
+        stripped = str(line).strip()
+        if not stripped.startswith(VERIFICATION_MARKER + " "):
+            continue
+        raw = stripped[len(VERIFICATION_MARKER) + 1 :]
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            logger.warning(
+                "Ignoring malformed %s marker: %.200s", VERIFICATION_MARKER, raw
+            )
+            continue
+        if not isinstance(payload, dict) or "allowed" not in payload:
+            logger.warning(
+                "Ignoring %s marker without an allowed flag: %.200s",
+                VERIFICATION_MARKER,
+                raw,
+            )
+            continue
+        return payload
+    return None
+
+
+def separate_agent_verification_claim(
+    artifact: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Rename an agent-authored ``verification`` key to ``verification_reported``.
+
+    Report fields distinguish implemented status from verification status
+    (issue #428): whatever the agent writes under ``verification`` in its
+    result.json is a claim. The runner-captured gate evidence takes the
+    ``verification`` key; the claim survives renamed, clearly not evidence.
+    """
+    if not isinstance(artifact, dict):
+        return artifact
+    if "verification" not in artifact:
+        return artifact
+    claim = artifact.pop("verification")
+    artifact.setdefault("verification_reported", claim)
+    return artifact
 
 
 def _result_artifact_confirmation(artifact: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -451,6 +508,14 @@ class FlowExecutionOrchestrator:
         # tar.gz of /workspace captured before the runtime is torn down, so a
         # run that failed before pushing can be downloaded or resumed.
         self._workspace_snapshot: Optional[bytes] = None
+        # Publication-gate evidence (issue #428) captured from the
+        # PRELOOP_VERIFICATION marker the runner-controlled verifier prints
+        # in its post-execution block. Kept on the orchestrator (not the
+        # agent_result) so every terminal path reports it the same way, and
+        # merged into the stored result with ``source: runner`` — the
+        # agent's own verification claim in result.json is preserved under
+        # verification_reported instead.
+        self._verification_evidence: Optional[Dict[str, Any]] = None
 
         # Execution metrics tracked during execution
         self.total_tokens: int = 0
@@ -2213,6 +2278,16 @@ class FlowExecutionOrchestrator:
                 if AGENT_SESSION_MARKER in stripped_line:
                     self._note_agent_session(stripped_line)
 
+                # Publication-gate verdict printed by the post-execution
+                # verifier. The gate always runs after the agent exits, so
+                # the last marker wins over anything the agent printed.
+                if stripped_line.startswith(VERIFICATION_MARKER + " "):
+                    self._note_verification_evidence(stripped_line)
+                elif stripped_line.startswith(VERIFICATION_DENIED_MARKER):
+                    logger.warning(
+                        "Publication gate denied publication: %s", stripped_line
+                    )
+
                 # In-place completion nudge markers printed by the agent
                 # script. Order matters: the result marker shares the start
                 # marker's prefix, so the exact match is tested first.
@@ -2844,6 +2919,42 @@ class FlowExecutionOrchestrator:
         self.execution_logger.log_milestone("cli_session_captured", dict(parsed))
         if self.execution_log is not None:
             record_cli_session(self.db, self.execution_log.id, parsed)
+
+    def _note_verification_evidence(self, line: str) -> None:
+        """Remember the last publication-gate evidence seen in the stream.
+
+        Only the runner-controlled verifier prints this marker after the
+        agent has exited, so it supersedes both earlier gate runs (e.g. from
+        a previous attempt) and any look-alike line an agent printed.
+        """
+        parsed = extract_verification_evidence([line])
+        if parsed is None:
+            return
+        self._verification_evidence = parsed
+        logger.info(
+            "Publication gate evidence captured: allowed=%s status=%s profile=%s@%s",
+            parsed.get("allowed"),
+            parsed.get("status"),
+            parsed.get("profile_id"),
+            parsed.get("profile_version"),
+        )
+
+    def _resolve_verification_evidence(self) -> Optional[Dict[str, Any]]:
+        """Gate evidence from the live stream, or from the stored log tail.
+
+        A lost stream reconnect can drop the marker; the execution logger
+        keeps every streamed line, so the accumulated output is scanned as a
+        fallback (same recovery pattern as the completion sentinel).
+        """
+        if self._verification_evidence is not None:
+            return self._verification_evidence
+        lines = self.execution_logger.get_agent_output_lines()
+        if not lines:
+            return None
+        parsed = extract_verification_evidence(lines)
+        if parsed is not None:
+            self._verification_evidence = parsed
+        return parsed
 
     def _bind_cli_session(self, output_summary: Optional[str]) -> None:
         """Persist the agent CLI session on the terminal path.
@@ -4096,8 +4207,7 @@ class FlowExecutionOrchestrator:
 
         return None
 
-    @staticmethod
-    def _failure_is_transient(agent_result: Dict[str, Any]) -> bool:
+    def _failure_is_transient(self, agent_result: Dict[str, Any]) -> bool:
         """Whether the failed attempt is worth retrying.
 
         Prefers the first-pass verdict the agent executor classified against
@@ -4108,6 +4218,18 @@ class FlowExecutionOrchestrator:
         for a policy-terminated run — so the message is only consulted for
         legacy results that carry no attached verdict.
         """
+        # A publication-gate denial is a verdict about the code, not a
+        # provider blip: retrying the identical attempt would fail the same
+        # gate. The work goes back to the agent instead (issue #428). The
+        # guard runs before the analysis because the agent phase of a
+        # denied run can still contain transient-looking provider noise.
+        error_message = agent_result.get("error_message") or ""
+        if VERIFICATION_DENIED_MARKER in str(error_message) or any(
+            VERIFICATION_DENIED_MARKER in str(line)
+            for line in self.execution_logger.get_agent_output_lines()[-200:]
+        ):
+            return False
+
         analysis_payload = agent_result.get("failure_analysis")
         if isinstance(analysis_payload, dict) and "transient" in analysis_payload:
             return bool(analysis_payload["transient"])
@@ -4115,7 +4237,7 @@ class FlowExecutionOrchestrator:
             # Tolerate an un-serialised AgentFailureAnalysis instance.
             return bool(analysis_payload.transient)
 
-        return analyze_agent_failure(agent_result.get("error_message") or "").transient
+        return analyze_agent_failure(error_message).transient
 
     async def _run_agent_with_retries(
         self, execution_context: Dict[str, Any]
@@ -4405,6 +4527,22 @@ class FlowExecutionOrchestrator:
                 getattr(self.execution_log, "result", None),
                 agent_result.get("result"),
             )
+
+            # Publication-gate evidence (issue #428): the runner-captured
+            # verdict owns the ``verification`` key of the stored result, so
+            # the implemented status (the agent's ``status`` field) and the
+            # verification status (``verification.status``) stay two
+            # different, separately auditable things. An agent-authored
+            # ``verification`` claim survives renamed as
+            # ``verification_reported``.
+            verification_evidence = self._resolve_verification_evidence()
+            if verification_evidence is not None and isinstance(merged_result, dict):
+                separate_agent_verification_claim(merged_result)
+                merged_result["verification"] = {
+                    **verification_evidence,
+                    "source": "sandbox_log",
+                    "authenticated": False,
+                }
 
             await self._update_execution_log(
                 status=final_status,

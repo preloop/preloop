@@ -203,6 +203,83 @@ class TestGitCloneConfig:
         )
 
 
+class TestVerificationGate:
+    """The publication gate (issue #428): the flow pushes and opens the PR
+    only after a runner-controlled verifier allowed the exact commit."""
+
+    def test_gate_is_enabled_with_a_trusted_profile(self, preset):
+        verification = preset["git_clone_config"]["verification"]
+        assert verification["mode"] == "gate"
+        assert verification["profile"]["profile_id"]
+        assert verification["profile"]["version"] == "v1"
+
+    def test_profile_resolves_through_the_contract(self, preset):
+        from preloop.services.verification import resolve_verification_policy
+
+        policy = resolve_verification_policy(preset["git_clone_config"])
+        assert policy.mode == "gate"
+        assert policy.profile is not None
+        assert policy.profile.profile_id == "generic-repository-default"
+
+    def test_unknown_impact_cannot_resolve_to_an_empty_list(self, preset):
+        from preloop.services.verification import select_required_checks
+        from preloop.models.schemas.verification import VerificationProfile
+
+        profile = VerificationProfile.model_validate(
+            preset["git_clone_config"]["verification"]["profile"]
+        )
+        selected = select_required_checks(profile, ["src/some_module.py"])
+        assert selected.used_unknown_default is True
+        assert len(selected.command_ids) > 0
+
+    def test_always_hooks_are_universal_git_checks(self, preset):
+        profile = preset["git_clone_config"]["verification"]["profile"]
+        always_ids = [cmd["id"] for cmd in profile["always"]]
+        assert "git-diff-check" in always_ids
+        assert "no-conflict-markers" in always_ids
+        for cmd in profile["always"]:
+            # The universal hooks scope themselves through the range
+            # contract the verifier provides.
+            assert cmd["command"].startswith(("git diff --check", "! git grep"))
+
+    def test_docs_only_changes_need_nothing_beyond_the_hooks(self, preset):
+        from preloop.services.verification import select_required_checks
+        from preloop.models.schemas.verification import VerificationProfile
+
+        profile = VerificationProfile.model_validate(
+            preset["git_clone_config"]["verification"]["profile"]
+        )
+        selected = select_required_checks(profile, ["docs/guide/flows/x.md"])
+        assert set(selected.command_ids) == {"git-diff-check", "no-conflict-markers"}
+        assert selected.matched_rule_ids == ["docs-only"]
+
+    def test_gate_cannot_be_narrowed_from_the_repository(self, preset):
+        """The profile travels in the flow config; nothing in the prompt
+        tells the agent it can change required checks."""
+        prompt = _norm(preset["prompt_template"])
+        assert "trusted test profile" in prompt
+        assert "you cannot narrow it" in prompt
+
+    def test_prompt_tells_the_agent_to_keep_the_tree_clean(self, preset):
+        prompt = _norm(preset["prompt_template"])
+        assert "Never leave the tree dirty" in prompt
+
+    def test_prompt_distinguishes_implemented_from_verified(self, preset):
+        prompt = _norm(preset["prompt_template"])
+        assert 'result.json "status" says what you implemented' in prompt
+        assert "only that one governs publication" in prompt
+
+    def test_prompt_points_unrunnable_checks_at_skipped(self, preset):
+        prompt = _norm(preset["prompt_template"])
+        assert "record the exact command" in prompt
+        assert '"skipped"' in prompt
+
+    def test_proposed_checks_are_advisory_only(self, preset):
+        prompt = _norm(preset["prompt_template"])
+        assert '"proposed_checks"' in prompt
+        assert "only the profile decides what is required" in prompt
+
+
 class TestPromptPlaceholders:
     def test_github_issue_body_resolves_as_object_attributes_description(self):
         from preloop.services.prompt_resolvers.trigger_event import (
