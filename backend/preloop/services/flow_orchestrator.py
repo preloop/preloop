@@ -4466,6 +4466,16 @@ class FlowExecutionOrchestrator:
         try:
             if not self.flow or not self.execution_log:
                 return
+            try:
+                from preloop.services.issue_lifecycle_runtime import (
+                    lifecycle_execution_finished,
+                )
+
+                await lifecycle_execution_finished(
+                    self.db, self.execution_log, self.flow
+                )
+            except Exception:
+                logger.exception("Issue lifecycle completion needs reconciliation")
             notifications = getattr(self.flow, "notifications", None)
             if not notifications:
                 return

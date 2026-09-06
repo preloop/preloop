@@ -48,6 +48,7 @@ from .flow_execution import CRUDFlowExecution
 from .flow_execution_log import CRUDFlowExecutionLog
 from .flow_runner import CRUDFlowRunner, crud_flow_runner
 from .issue import CRUDIssue
+from .issue_lifecycle import crud_issue_lifecycle
 from .organization import CRUDOrganization  # Removed create_organization import
 from .project import CRUDProject
 from .tracker import CRUDTracker, crud_tracker
@@ -196,8 +197,10 @@ crud_mcp_tool = CRUDMCPTool()  # Instantiate CRUDMCPTool
 crud_approval_workflow = CRUDApprovalWorkflow()  # Instantiate CRUDApprovalWorkflow
 crud_tool_access_rule = CRUDToolAccessRule()  # Instantiate CRUDToolAccessRule
 
+
 __all__ = [
     "crud_flow_feedback",
+    "crud_issue_lifecycle",
     "CRUDBase",
     "CRUDAccount",
     "CRUDAccountHalt",

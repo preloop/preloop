@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   console banner, frozen approval deadlines and durable managed runtime stop
   requests with explicit termination confirmation. Recovery is staged, records
   a reason and preserves outstanding stops across process restart or re-enable.
+- **Issue readiness and merge completion audits**: store reviewable acceptance
+  contracts, authorize pickup using an existing project-configured label, and
+  independently audit provider-verified merged code at its exact SHA. Explicit
+  reconciliation can authorize revised scope after a prior implementation ends,
+  preserving execution history; audit comments and bounded follow-ups deduplicate.
 
 - **Approved flow environments and workspace recovery**: optional pinned profiles
   provide bounded setup and isolated services. Hosted executions can retain encrypted,

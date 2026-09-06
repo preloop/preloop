@@ -144,4 +144,11 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
         "20260906_approval_api_key",
         "20260906_publication_caps",
     }
-    assert script.get_heads() == ["20260906_pub_caps_merge"]
+    lifecycle = script.get_revision("20260906_issue_lifecycle")
+    assert lifecycle.down_revision == "20260906_flow_artifacts"
+    lifecycle_joined = script.get_revision("20260906_lifecycle_key_merge")
+    assert set(lifecycle_joined.down_revision) == {
+        "20260906_pub_caps_merge",
+        "20260906_issue_lifecycle",
+    }
+    assert script.get_heads() == ["20260906_lifecycle_key_merge"]

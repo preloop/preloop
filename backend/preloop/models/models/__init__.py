@@ -84,9 +84,12 @@ from .oauth_mcp_token import (
 )
 from .budget import BudgetPolicy, BudgetSpendActivity, BudgetPeriod
 
+from .issue_lifecycle import IssueLifecycle
+
 __all__ = [
     "FlowFeedback",
     "FlowThread",
+    "IssueLifecycle",
     "Base",
     "Account",
     "AccountHalt",
