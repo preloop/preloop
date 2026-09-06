@@ -13,11 +13,13 @@ were never recorded, so these tests pin the two halves of the fix:
 from __future__ import annotations
 
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import event
 
 from preloop.models import models
 from preloop.models.schemas.approval_request import ApprovalRequestResponse
@@ -416,22 +418,65 @@ async def test_the_decide_endpoints_attribute_without_blocking(
     assert request.flow_execution.flow_name == "Nightly audit"
 
 
+@contextmanager
+def _counting_statements(session):
+    """Collect every SQL statement issued inside the block."""
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    engine = session.connection().engine
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        yield statements
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+
 def test_a_page_of_requests_is_attributed_in_one_batch(db_session, attributed_world):
-    """The list endpoint must not issue four lookups per row."""
+    """The list endpoint must not issue four lookups per row.
+
+    Counted, not assumed: asserting only the resolved names would pass just as
+    happily if this degenerated into four queries per row, which is the whole
+    property the batching exists for. A page costs one statement per kind of
+    id present, four at most.
+    """
     world = attributed_world
     requests = [
         _request(
             account_id=world.account_id,
             managed_agent_id=world.agent.id,
+            runtime_session_id=world.session.id,
             api_key_id=world.api_key.id,
+            execution_id=str(world.execution.id),
         )
         for _ in range(5)
     ]
 
-    attach_attribution(db_session, requests)
+    with _counting_statements(db_session) as statements:
+        attach_attribution(db_session, requests)
 
+    assert len(statements) == 4, statements
     assert all(r.agent.name == "Claude Code (laptop)" for r in requests)
     assert all(r.api_key.name == "claude-code-laptop" for r in requests)
+    assert all(r.session.subject == "feature/attribution" for r in requests)
+    assert all(r.flow_execution.flow_name == "Nightly audit" for r in requests)
+
+
+def test_a_page_with_only_agents_costs_one_statement(db_session, attributed_world):
+    """A kind of id that no row carries is not queried at all."""
+    world = attributed_world
+    requests = [
+        _request(account_id=world.account_id, managed_agent_id=world.agent.id)
+        for _ in range(5)
+    ]
+
+    with _counting_statements(db_session) as statements:
+        attach_attribution(db_session, requests)
+
+    assert len(statements) == 1, statements
+    assert all(r.api_key is None for r in requests)
 
 
 def test_attribution_failure_never_breaks_the_read():
@@ -444,3 +489,192 @@ def test_attribution_failure_never_breaks_the_read():
 
     assert request.agent is None
     assert request.api_key is None
+
+
+# --- The gates forward what they know -------------------------------------
+#
+# Each gate reads the caller's ids and hands them to create_and_notify.
+# Dropping one kwarg at one of these sites re-creates the founder's bug with
+# every unit test still green, so each gate gets a test that walks the real
+# code path and inspects the kwargs that arrive.
+
+
+def _caller_context():
+    """An authenticated MCP caller carrying all four attribution ids."""
+    from preloop.services.dynamic_mcp_server import UserContext
+
+    ids = SimpleNamespace(
+        account_id=uuid.uuid4(),
+        agent=uuid.uuid4(),
+        session=uuid.uuid4(),
+        key=uuid.uuid4(),
+        run="a5b0d0e2-0000-4000-8000-000000000001",
+    )
+    context = UserContext(
+        user_id=str(uuid.uuid4()),
+        account_id=str(ids.account_id),
+        username="agent@example.com",
+        has_tracker=True,
+        flow_execution_id=ids.run,
+        runtime_session_id=str(ids.session),
+        api_key_id=str(ids.key),
+        managed_agent_id=str(ids.agent),
+        runtime_principal_name="Claude Code (laptop)",
+    )
+    return context, ids
+
+
+def _capturing_approval_service(captured: dict):
+    """An ApprovalService stand-in that records the creation kwargs.
+
+    It raises straight after capturing: every gate handles a creation failure
+    (the helper and the wrapper return an error, the MCP server propagates),
+    so the test stops at the point it cares about instead of driving the
+    whole wait-for-decision loop.
+    """
+
+    class _Service:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def create_and_notify(self, **kwargs):
+            captured.update(kwargs)
+            raise RuntimeError("captured")
+
+    return _Service
+
+
+def _assert_forwarded(captured: dict, ids: SimpleNamespace) -> None:
+    assert captured["managed_agent_id"] == ids.agent
+    assert captured["runtime_session_id"] == ids.session
+    assert captured["api_key_id"] == ids.key
+    assert captured["execution_id"] == ids.run
+    assert captured["managed_agent_name"] == "Claude Code (laptop)"
+
+
+@pytest.mark.asyncio
+async def test_the_builtin_gate_forwards_the_callers_ids():
+    """approval_helper.require_approval: ask_user, request_approval, proxied tools."""
+    from preloop.services.approval_helper import require_approval
+
+    context, ids = _caller_context()
+    captured: dict = {}
+
+    config = MagicMock(id=uuid.uuid4(), approval_workflow_id=uuid.uuid4())
+    workflow = MagicMock(id=config.approval_workflow_id, timeout_seconds=300)
+    db = AsyncMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+    db.execute = AsyncMock(
+        side_effect=[
+            MagicMock(scalar_one_or_none=MagicMock(return_value=config)),
+            MagicMock(scalars=MagicMock(return_value=iter([]))),
+            MagicMock(scalar_one_or_none=MagicMock(return_value=workflow)),
+        ]
+    )
+
+    with (
+        patch("preloop.models.db.session.get_async_db_session", return_value=db),
+        patch(
+            "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+            return_value=context,
+        ),
+        patch(
+            "preloop.services.approval_service.ApprovalService",
+            _capturing_approval_service(captured),
+        ),
+    ):
+        approved, error = await require_approval(
+            tool_name="Bash",
+            tool_source="builtin",
+            account_id=str(ids.account_id),
+            arguments={"command": "rm -rf build"},
+            ctx=None,
+        )
+
+    assert approved is False  # the capture raised; the gate fails closed
+    _assert_forwarded(captured, ids)
+
+
+@pytest.mark.asyncio
+async def test_the_decorator_gate_forwards_the_callers_ids():
+    """approval_wrapper.with_approval: the @requires_approval decorator."""
+    from preloop.services.approval_wrapper import with_approval
+
+    context, ids = _caller_context()
+    captured: dict = {}
+    workflow_id = uuid.uuid4()
+
+    db = AsyncMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+
+    async def tool_func(**kwargs):
+        return "tool_result"
+
+    with (
+        patch("preloop.models.db.session.get_async_db_session", return_value=db),
+        patch(
+            "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+            return_value=context,
+        ),
+        patch(
+            "preloop.models.crud.tool_configuration.get_tool_config_by_name_and_source_async",
+            AsyncMock(
+                return_value=MagicMock(
+                    id=uuid.uuid4(), approval_workflow_id=workflow_id
+                )
+            ),
+        ),
+        patch(
+            "preloop.services.policy_evaluator.evaluate_policy_async",
+            AsyncMock(return_value=("require_approval", workflow_id, "Needs a human")),
+        ),
+        patch(
+            "preloop.models.crud.approval_workflow.get_approval_workflow_async",
+            AsyncMock(return_value=MagicMock(id=workflow_id, timeout_seconds=300)),
+        ),
+        patch(
+            "preloop.services.approval_service.ApprovalService",
+            _capturing_approval_service(captured),
+        ),
+    ):
+        result = await with_approval(tool_func)(arg="value")
+
+    assert "Approval error" in result  # the capture raised
+    _assert_forwarded(captured, ids)
+
+
+@pytest.mark.asyncio
+async def test_the_mcp_gate_forwards_the_callers_ids():
+    """dynamic_mcp_server: ask_user and every dynamically registered tool."""
+    from preloop.services.dynamic_mcp_server import DynamicMCPServer
+
+    context, ids = _caller_context()
+    captured: dict = {}
+
+    config = MagicMock(id=uuid.uuid4(), approval_workflow_id=uuid.uuid4())
+    workflow = MagicMock(id=config.approval_workflow_id, timeout_seconds=300)
+    db = AsyncMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+    db.execute = AsyncMock(
+        side_effect=[
+            MagicMock(scalar_one_or_none=MagicMock(return_value=config)),
+            MagicMock(scalar_one_or_none=MagicMock(return_value=workflow)),
+        ]
+    )
+
+    with (
+        patch("preloop.models.db.session.get_async_db_session", return_value=db),
+        patch(
+            "preloop.services.approval_service.ApprovalService",
+            _capturing_approval_service(captured),
+        ),
+        pytest.raises(RuntimeError),
+    ):
+        await DynamicMCPServer()._request_and_wait_for_approval(
+            context, "Bash", {"command": "rm -rf build"}
+        )
+
+    _assert_forwarded(captured, ids)
