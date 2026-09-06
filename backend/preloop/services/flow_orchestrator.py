@@ -18,6 +18,7 @@ from preloop.models.crud import (
     crud_api_key,
     crud_flow,
     crud_flow_execution,
+    crud_flow_execution_log,
     crud_runtime_session,
     crud_user,
 )
@@ -3034,6 +3035,64 @@ class FlowExecutionOrchestrator:
                 ):
                     self._note_agent_session(line)
 
+    def _replay_persisted_runner_logs(self) -> None:
+        """Fold WebSocket-persisted private-runner lines into marker parsing.
+
+        ``_stream_logs_to_nats`` returns early for these executors so lines
+        are not published twice. The runner ``logs`` handler only stores the
+        raw line, so PR-opened binding, CLI session, verification, nudge
+        markers, and MCP/token metrics would otherwise stay empty.
+        """
+        if self.execution_log is None:
+            return
+        ref = getattr(self.execution_log, "agent_session_reference", "") or ""
+        if not str(ref).startswith("runner:"):
+            return
+        if self.execution_logger.get_agent_output_lines():
+            return
+        rows = crud_flow_execution_log.get_by_execution_id(
+            self.db, self.execution_log.id
+        )
+        previous_line = ""
+        for row in rows:
+            if getattr(row, "log_type", None) not in {
+                None,
+                "log",
+                "agent_log_line",
+            }:
+                continue
+            line = row.message or ""
+            metadata = getattr(row, "metadata_", None)
+            if not line and isinstance(metadata, dict):
+                line = str(metadata.get("line") or "")
+            if not line:
+                continue
+            self.execution_logger.log_agent_output(line)
+            stripped = line.strip()
+            if PR_OPENED_MARKER in stripped:
+                self._note_opened_pr(stripped)
+            if any(
+                marker in stripped
+                for marker in (
+                    AGENT_SESSION_MARKER,
+                    "PRELOOP_NATIVE_SESSION_ARTIFACT ",
+                    "PRELOOP_NATIVE_RESUME ",
+                )
+            ):
+                self._note_agent_session(stripped)
+            if stripped.startswith(VERIFICATION_MARKER + " "):
+                self._note_verification_evidence(stripped)
+            if stripped == COMPLETION_NUDGE_MARKER:
+                self._note_inplace_nudge(source="post_exit_rescan")
+            elif stripped.startswith(COMPLETION_NUDGE_RESULT_MARKER):
+                self._note_inplace_nudge_result(stripped)
+            self.execution_logger.parse_agent_logs([line])
+            if "tokens used" in previous_line.lower():
+                token_match = re.search(r"(\d{1,3}(?:,\d{3})*)", stripped)
+                if token_match:
+                    self.total_tokens += int(token_match.group(1).replace(",", ""))
+            previous_line = line
+
     def _bind_opened_pr(self, output_summary: Optional[str]) -> None:
         """Persist the wrapper-opened PR on this execution's result.
 
@@ -4510,6 +4569,11 @@ class FlowExecutionOrchestrator:
             agent_result, session_reference = await self._run_agent_with_retries(
                 execution_context
             )
+
+            # Private runners persist lines on the WebSocket; the live stream
+            # skips them so they are not published twice. Fold them in before
+            # terminal PR/session/metrics binding.
+            self._replay_persisted_runner_logs()
 
             # Update execution log with final results including detailed logs
             final_status = agent_result.get("status", "FAILED")

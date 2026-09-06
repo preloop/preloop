@@ -795,3 +795,29 @@ async def test_remote_runner_logs_are_not_streamed_twice(
     await orchestrator._stream_logs_to_nats(executor, f"runner:queued:auto:{uuid4()}")
     assert not [record for record in caplog.records if record.levelname == "ERROR"]
     executor.get_logs.assert_not_called()
+
+
+def test_replay_persisted_runner_logs_binds_opened_pr(
+    orchestrator: FlowExecutionOrchestrator,
+) -> None:
+    """Private-runner log rows still feed PR-opened binding after the skip."""
+    from unittest.mock import patch
+
+    orchestrator.execution_log.agent_session_reference = "runner:abc:exec"
+    orchestrator.execution_logger.agent_output_lines = []
+    row = MagicMock()
+    row.log_type = "agent_log_line"
+    row.message = (
+        'PRELOOP_PR_OPENED {"url": "https://example.com/mr/1", "branch": "fix"}'
+    )
+    row.metadata_ = None
+    with patch(
+        "preloop.services.flow_orchestrator.crud_flow_execution_log.get_by_execution_id",
+        return_value=[row],
+    ):
+        orchestrator._replay_persisted_runner_logs()
+    assert orchestrator.execution_logger.get_agent_output_lines() == [
+        'PRELOOP_PR_OPENED {"url": "https://example.com/mr/1", "branch": "fix"}'
+    ]
+    assert orchestrator._opened_pr is not None
+    assert orchestrator._opened_pr["url"] == "https://example.com/mr/1"
