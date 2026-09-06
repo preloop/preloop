@@ -22,11 +22,16 @@ class CRUDAccountHalt(CRUDBase[models.AccountHalt]):
     """
 
     def lock_account(self, db: Session, *, account_id: Union[uuid.UUID, str]) -> None:
-        """Serialize halt transitions, approval expiry and runtime admission."""
+        """Serialize halt/approval admission without blocking child foreign keys.
+
+        The account identity is never changed here. PostgreSQL NO KEY UPDATE
+        remains exclusive against other admission/transition owners while
+        allowing KEY SHARE checks from concurrent audit and usage inserts.
+        """
         account = (
             db.query(models.Account.id)
             .filter(models.Account.id == account_id)
-            .with_for_update()
+            .with_for_update(key_share=True)
             .first()
         )
         if account is None:
