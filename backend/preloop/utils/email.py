@@ -601,7 +601,10 @@ def send_escalation_email(
     """
     subject = f"🚨 ESCALATED: Approval Required for {tool_name}"
 
-    approval_url = f"{base_url}/approval/{request_id}?token={approval_token}"
+    # The approval page lives at /console/approval/<id> (SPA route). The
+    # token is preserved so the page can fall back to the public token read
+    # for recipients who are not signed in (issue #335).
+    approval_url = f"{base_url}/console/approval/{request_id}?token={approval_token}"
 
     # Plain text version
     body_text = f"""Hi,

@@ -1134,7 +1134,7 @@ class TestPostWebhookNotification:
         assert result is True
         message = mock_client.post.call_args[1]["json"]
         review_url = (
-            f"https://app.test.com/approval/{sample_approval_request.id}"
+            f"https://app.test.com/console/approval/{sample_approval_request.id}"
             f"?token={sample_approval_request.approval_token}"
         )
 
@@ -1172,7 +1172,7 @@ class TestPostWebhookNotification:
 
         actions = mock_client.post.call_args[1]["json"]["actions"]
         review_url = (
-            f"/approval/{sample_approval_request.id}"
+            f"/console/approval/{sample_approval_request.id}"
             f"?token={sample_approval_request.approval_token}"
         )
         assert actions["review"].endswith(review_url)

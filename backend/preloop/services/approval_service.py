@@ -637,6 +637,22 @@ class ApprovalService:
         await self.db.commit()
         await self.db.refresh(approval_request)
 
+        # Timeline: the request itself is the first entry. Recorded here (not
+        # by MCP-layer callers) so every creation path — tool gate, ask_user,
+        # request_approval, flow raises — lands on the timeline identically.
+        # Committed immediately: nothing downstream is guaranteed to commit
+        # this session (muted flows return early).
+        await self._record_event(
+            approval_request_id=approval_request.id,
+            account_id=approval_request.account_id,
+            event_type="approval_requested",
+            detail=(
+                f"Approval requested for tool '{tool_name}'"
+                + (f" from agent '{managed_agent_name}'" if managed_agent_name else "")
+            ),
+        )
+        await self.db.commit()
+
         # Broadcast creation event
         await self._broadcast_approval_update(approval_request, "created")
 
@@ -757,6 +773,11 @@ class ApprovalService:
 
     _TERMINAL_STATUSES = frozenset({"approved", "declined", "cancelled", "expired"})
 
+    @staticmethod
+    def _channel_suffix(channel: Optional[str]) -> str:
+        """Render the decision channel as an event-detail suffix."""
+        return f" via {channel}" if channel else ""
+
     async def _reject_if_not_actionable(
         self, approval_request: ApprovalRequest
     ) -> Optional[ApprovalRequest]:
@@ -787,6 +808,17 @@ class ApprovalService:
                 "Approval request %s is past expiry; marking expired",
                 approval_request.id,
             )
+            # Timeline entry is flushed first so the status update's commit
+            # below persists both atomically.
+            await self._record_event(
+                approval_request_id=approval_request.id,
+                account_id=approval_request.account_id,
+                event_type="expired",
+                detail=(
+                    "Expired: no response within the approval window "
+                    "(detected on a late decision attempt)"
+                ),
+            )
             update = ApprovalRequestUpdate(
                 status="expired", resolved_at=datetime.utcnow()
             )
@@ -799,6 +831,7 @@ class ApprovalService:
         request_id: uuid.UUID,
         comment: Optional[str] = None,
         user_id: Optional[uuid.UUID] = None,
+        channel: Optional[str] = None,
     ) -> Optional[ApprovalRequest]:
         """Approve an approval request.
 
@@ -812,6 +845,9 @@ class ApprovalService:
             request_id: Approval request ID
             comment: Optional comment from approver
             user_id: ID of the user approving (for quorum tracking)
+            channel: Surface the decision came through (console, token link,
+                mobile, mcp). Recorded on the timeline for audit; None keeps
+                the channel out of the event detail.
 
         Returns:
             Updated approval request or None if not found
@@ -861,7 +897,10 @@ class ApprovalService:
                     approval_request_id=request_id,
                     account_id=approval_request.account_id,
                     event_type="vote_received",
-                    detail="Approval vote received (token-based)",
+                    detail=(
+                        "Approval vote received (token-based)"
+                        + self._channel_suffix(channel)
+                    ),
                     comment=comment,
                 )
                 await self._record_event(
@@ -925,7 +964,11 @@ class ApprovalService:
             approval_request_id=request_id,
             account_id=approval_request.account_id,
             event_type="vote_received",
-            detail=f"Approval vote received from {voter_display} ({approval_count}/{approvals_required})",
+            detail=(
+                f"Approved by {voter_display} "
+                f"({approval_count}/{approvals_required})"
+                + self._channel_suffix(channel)
+            ),
             comment=comment,
             actor_id=user_id,
         )
@@ -992,6 +1035,7 @@ class ApprovalService:
         request_id: uuid.UUID,
         comment: Optional[str] = None,
         user_id: Optional[uuid.UUID] = None,
+        channel: Optional[str] = None,
     ) -> Optional[ApprovalRequest]:
         """Decline an approval request.
 
@@ -1006,6 +1050,9 @@ class ApprovalService:
             request_id: Approval request ID
             comment: Optional comment from approver
             user_id: ID of the user declining (for quorum tracking)
+            channel: Surface the decision came through (console, token link,
+                mobile, mcp). Recorded on the timeline for audit; None keeps
+                the channel out of the event detail.
 
         Returns:
             Updated approval request or None if not found
@@ -1055,7 +1102,10 @@ class ApprovalService:
                     approval_request_id=request_id,
                     account_id=approval_request.account_id,
                     event_type="vote_received",
-                    detail="Decline vote received (token-based)",
+                    detail=(
+                        "Decline vote received (token-based)"
+                        + self._channel_suffix(channel)
+                    ),
                     comment=comment,
                 )
                 await self._record_event(
@@ -1120,7 +1170,10 @@ class ApprovalService:
             approval_request_id=request_id,
             account_id=approval_request.account_id,
             event_type="vote_received",
-            detail=f"Decline vote received from {voter_display} ({decline_count} decline(s))",
+            detail=(
+                f"Declined by {voter_display} ({decline_count} decline(s))"
+                + self._channel_suffix(channel)
+            ),
             comment=comment,
             actor_id=user_id,
         )
@@ -1392,6 +1445,14 @@ class ApprovalService:
             auto_approved_reason=reason_code,
             auto_approval_bypass_id=bypass.id if bypass is not None else None,
         )
+        # Timeline entry first: the update below commits the session, which
+        # must carry the flushed event with it.
+        await self._record_event(
+            approval_request_id=approval_request.id,
+            account_id=approval_request.account_id,
+            event_type="approval_complete",
+            detail=f"Auto-approved without review: {reason}",
+        )
         updated_request = await self.update_approval_request(
             approval_request.id, update
         )
@@ -1463,6 +1524,19 @@ class ApprovalService:
         updated_request = await self.update_approval_request(request_id, update)
 
         if updated_request:
+            # Committed explicitly: nothing after this guarantees a commit on
+            # this session (fire-and-forget audit/broadcast do not).
+            await self._record_event(
+                approval_request_id=request_id,
+                account_id=updated_request.account_id,
+                event_type="approval_complete",
+                detail=(
+                    f"Auto-approved by AI ({ai_model or 'unknown model'}): {reason}"
+                    if decided_by_ai
+                    else f"Auto-approved: {reason}"
+                ),
+            )
+            await self.db.commit()
             await self._broadcast_approval_update(updated_request, "approved")
 
             # Log to audit trail (fire-and-forget)
@@ -1510,6 +1584,19 @@ class ApprovalService:
         updated_request = await self.update_approval_request(request_id, update)
 
         if updated_request:
+            # Committed explicitly: nothing after this guarantees a commit on
+            # this session (fire-and-forget audit/broadcast do not).
+            await self._record_event(
+                approval_request_id=request_id,
+                account_id=updated_request.account_id,
+                event_type="approval_complete",
+                detail=(
+                    f"Auto-declined by AI ({ai_model or 'unknown model'}): {reason}"
+                    if decided_by_ai
+                    else f"Auto-declined: {reason}"
+                ),
+            )
+            await self.db.commit()
             await self._broadcast_approval_update(updated_request, "declined")
 
             # Log to audit trail (fire-and-forget)
@@ -1550,14 +1637,18 @@ class ApprovalService:
             )
             return False
 
-        # One public link with a token (no authentication required). A chat
-        # message offers exactly one action because there is exactly one:
-        # opening the approval page. Separate "Approve" and "Decline" links
-        # pointed at this same URL and neither of them decided anything, so
-        # the reader clicked "Approve" and still had to decide on the page.
+        # Generate the approval link. All actions happen on the console
+        # approval page (SPA route /console/approval/:requestId); the token
+        # is carried so the page can fall back to the public token read for
+        # recipients who are not signed in. Never point this at the bare
+        # /approval/<id> path: nginx proxies that prefix to the API (issue #335).
+        # A chat message offers exactly one action because there is exactly
+        # one: opening the page. Separate "Approve" and "Decline" links
+        # pointed at this same URL and neither of them decided anything.
         token = approval_request.approval_token
         review_url = urljoin(
-            self.base_url, f"/approval/{approval_request.id}?token={token}"
+            self.base_url,
+            f"/console/approval/{approval_request.id}?token={token}",
         )
 
         # Format tool arguments for display (redact sensitive fields)
@@ -2052,7 +2143,7 @@ class ApprovalService:
             logger.error(f"Failed to send push notifications: {str(e)}")
             results["mobile_push"] = {"success": False, "error": str(e)}
 
-        self._audit_notification_result(
+        await self._audit_notification_result(
             approval_request=approval_request,
             channel="mobile_push",
             channel_result=results["mobile_push"],
@@ -2097,7 +2188,7 @@ class ApprovalService:
                 logger.error(f"Failed to send email notifications: {str(e)}")
                 results["email"] = {"success": False, "error": str(e)}
 
-            self._audit_notification_result(
+            await self._audit_notification_result(
                 approval_request=approval_request,
                 channel="email",
                 channel_result=results["email"],
@@ -2123,7 +2214,7 @@ class ApprovalService:
                 "scheduled": len(delayed_email_ids),
                 "delay_seconds": delay_seconds,
             }
-            self._audit_notification_result(
+            await self._audit_notification_result(
                 approval_request=approval_request,
                 channel="email",
                 channel_result=results["email_delayed"],
@@ -2147,7 +2238,7 @@ class ApprovalService:
                     logger.error(f"Failed to send {channel} notification: {str(e)}")
                     results[channel] = {"success": False, "error": str(e)}
 
-                self._audit_notification_result(
+                await self._audit_notification_result(
                     approval_request=approval_request,
                     channel=channel,
                     channel_result=results[channel],
@@ -2226,7 +2317,36 @@ class ApprovalService:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(_sync_db_executor, _partition)
 
-    def _audit_notification_result(
+    async def _resolve_recipient_labels(
+        self, user_ids: Optional[List[uuid.UUID]], limit: int = 5
+    ) -> str:
+        """Render recipient user ids as an email list for timeline details.
+
+        Falls back to the raw ids when the lookup fails; caps the list so a
+        large approver set cannot produce a wall of text on the timeline.
+        """
+        if not user_ids:
+            return ""
+        labels: List[str] = []
+        try:
+            from sqlalchemy import select
+
+            from preloop.models.models.user import User
+
+            result = await self.db.execute(
+                select(User).where(User.id.in_(list(user_ids)))
+            )
+            by_id = {user.id: user for user in result.scalars()}
+            for user_id in user_ids:
+                user = by_id.get(user_id)
+                labels.append((user.email or user.username) if user else str(user_id))
+        except Exception:  # pragma: no cover - defensive
+            labels = [str(user_id) for user_id in user_ids]
+        if len(labels) > limit:
+            return ", ".join(labels[:limit]) + f" (+{len(labels) - limit} more)"
+        return ", ".join(labels)
+
+    async def _audit_notification_result(
         self,
         approval_request: ApprovalRequest,
         channel: str,
@@ -2285,6 +2405,26 @@ class ApprovalService:
             )
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug(f"Failed to persist notification audit for {channel}: {exc}")
+
+        # Timeline entry so the approval-view history shows every fan-out
+        # attempt (channel, recipients, outcome) alongside the lifecycle
+        # events. Best-effort like the audit write above. The commit here is
+        # what persists it: notification fan-outs run after the request row's
+        # own commit and nothing else commits this session afterwards.
+        try:
+            recipients = await self._resolve_recipient_labels(recipient_user_ids)
+            recipient_part = f" to {recipients}" if recipients else ""
+            await self._record_event(
+                approval_request_id=approval_request.id,
+                account_id=approval_request.account_id,
+                event_type="notification_sent",
+                detail=(f"Notification via {channel}{recipient_part} ({status})"),
+            )
+            await self.db.commit()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug(
+                f"Failed to record notification timeline event for {channel}: {exc}"
+            )
 
     async def _get_all_approver_user_ids(
         self, approval_workflow: ApprovalWorkflow
@@ -2401,10 +2541,13 @@ class ApprovalService:
                     failed_count += 1
                     continue
 
-                # Generate approval URL with token
+                # Generate approval URL with token. The SPA route is the
+                # console page; the token lets a signed-out recipient fall
+                # back to the public token read (issue #335).
                 token = approval_request.approval_token
                 approval_url = (
-                    f"{self.base_url}/approval/{approval_request.id}?token={token}"
+                    f"{self.base_url}/console/approval/"
+                    f"{approval_request.id}?token={token}"
                 )
 
                 # Send email (redact tool_args for display)
@@ -3043,6 +3186,11 @@ class ApprovalService:
                             approval_request, approval_workflow
                         )
 
+                        # Persist the escalation_triggered timeline event that
+                        # _send_escalation_notifications flushed (the commit
+                        # above only covered the expiry-extension fields).
+                        await poll_db.commit()
+
                         # Broadcast escalation event
                         await poll_service._broadcast_approval_update(
                             approval_request,
@@ -3053,7 +3201,15 @@ class ApprovalService:
                         # Continue polling - don't expire yet (the shared
                         # sleep below runs with the session already closed)
                     else:
-                        # No escalation configured or already escalated - expire the request
+                        # No escalation configured or already escalated - expire the request.
+                        # Timeline entry first: the status update's commit below
+                        # must persist it (the poll session closes right after).
+                        await poll_service._record_event(
+                            approval_request_id=approval_request.id,
+                            account_id=approval_request.account_id,
+                            event_type="expired",
+                            detail=("Expired: no response within the approval window"),
+                        )
                         expired_request = await poll_service.update_approval_request(
                             request_id, ApprovalRequestUpdate(status="expired")
                         )

@@ -28,9 +28,19 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
+import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
+
+/** One workflow-history entry as returned by the history API. */
+export interface ApprovalTimelineEntry {
+  event_type: string;
+  detail: string;
+  comment?: string | null;
+  actor_email?: string | null;
+  timestamp: string;
+}
 
 @customElement('approval-view')
 export class ApprovalView extends AuthedElement {
@@ -41,10 +51,22 @@ export class ApprovalView extends AuthedElement {
   private approvalRequest: ApprovalRequest | null = null;
 
   @state()
+  private history: ApprovalTimelineEntry[] = [];
+
+  @state()
   private loading = true;
 
   @state()
   private error: string | null = null;
+
+  /**
+   * True when the request is rendered from the public token payload instead
+   * of the authenticated API (viewer is signed in but not a member of the
+   * request's account, e.g. an escalation recipient). Decisions then go
+   * through the token endpoint.
+   */
+  @state()
+  private publicOnly = false;
 
   @state()
   private comment = '';
@@ -327,15 +349,71 @@ export class ApprovalView extends AuthedElement {
           margin-left: var(--sl-spacing-large);
         }
       }
+
+      .timeline {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      .timeline li {
+        display: flex;
+        gap: 0.75rem;
+        padding: 0.5rem 0;
+        border-bottom: 1px solid var(--sl-color-neutral-200);
+      }
+
+      .timeline li:last-child {
+        border-bottom: none;
+      }
+
+      .timeline-icon {
+        flex: none;
+        color: var(--sl-color-neutral-500);
+        font-size: 1rem;
+        margin-top: 0.1rem;
+      }
+
+      .timeline-body {
+        flex: 1;
+      }
+
+      .timeline-detail {
+        margin: 0;
+        color: var(--sl-color-neutral-900);
+        line-height: 1.4;
+      }
+
+      .timeline-meta {
+        margin: 0.15rem 0 0 0;
+        font-size: 0.8rem;
+        color: var(--sl-color-neutral-600);
+      }
+
+      .timeline-comment {
+        margin: 0.35rem 0 0 0;
+        padding: 0.5rem;
+        background: var(--sl-color-neutral-100);
+        border-radius: 4px;
+        font-size: 0.85rem;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .expired-banner {
+        margin-bottom: 1.5rem;
+      }
     `,
   ];
 
   async connectedCallback() {
     super.connectedCallback();
-    // Extract requestId from URL if not set
+    // Extract requestId from URL if not set. Both the console route
+    // (/console/approval/:id) and the legacy top-level link (/approval/:id,
+    // which the backend redirects here) must resolve (issue #335).
     if (!this.requestId) {
       const path = window.location.pathname;
-      const match = path.match(/\/console\/approval\/([^/?]+)/);
+      const match = path.match(/\/(?:console\/)?approval\/([^/?]+)/);
       if (match) {
         this.requestId = match[1];
       }
@@ -452,12 +530,16 @@ export class ApprovalView extends AuthedElement {
       } else if (message.type === 'approval_expired') {
         showToast('This request timed out.', 'warning');
       }
+
+      // A state transition just landed; refresh the workflow timeline.
+      this.loadHistory();
     }
   }
 
   private async loadApprovalRequest() {
     this.loading = true;
     this.error = null;
+    this.publicOnly = false;
 
     try {
       const data = await this.fetchData(
@@ -468,14 +550,67 @@ export class ApprovalView extends AuthedElement {
         // in the database long after its expiry. Read the clock here so the
         // page never offers a decision that the backend would reject.
         this.approvalRequest = normalizeApprovalRequest(data);
-      } else {
-        this.error = 'Approval request not found';
+        await this.loadHistory();
+        return;
       }
+      // Authenticated read failed (not a member of the account or request
+      // gone). Fall back to the public token payload when the link carried
+      // one, so escalation recipients can still see the request (issue #335).
+      if (await this.loadPublicRequest()) {
+        return;
+      }
+      this.error = 'Approval request not found';
     } catch (err: any) {
       this.error = err.message || 'Failed to load approval request';
       console.error('Error loading approval request:', err);
     } finally {
       this.loading = false;
+    }
+  }
+
+  /** Load the request via the public token endpoint. True when it worked. */
+  private async loadPublicRequest(): Promise<boolean> {
+    const token = new URLSearchParams(window.location.search).get('token');
+    if (!token) {
+      return false;
+    }
+    try {
+      const response = await fetch(
+        `/approval/${this.requestId}/data?token=${encodeURIComponent(token)}`
+      );
+      if (!response.ok) {
+        return false;
+      }
+      const data = await response.json();
+      // The public payload is a subset of ApprovalRequest; fill the gaps the
+      // render path reads so the card renders without blowing up.
+      this.approvalRequest = {
+        ...data,
+        tool_configuration_id: data.tool_configuration_id ?? '',
+        approval_workflow_id: data.approval_workflow_id ?? '',
+        account_id: data.account_id ?? '',
+      } as ApprovalRequest;
+      this.history = Array.isArray(data.history) ? data.history : [];
+      this.publicOnly = true;
+      return true;
+    } catch (err) {
+      console.error('Public token fallback failed:', err);
+      return false;
+    }
+  }
+
+  /** Fetch the workflow-history timeline (authenticated reads only). */
+  private async loadHistory() {
+    try {
+      const events = await this.fetchData(
+        `/api/v1/approval-requests/${this.requestId}/history`
+      );
+      if (Array.isArray(events)) {
+        this.history = events as ApprovalTimelineEntry[];
+      }
+    } catch (err) {
+      // Timeline is supplementary; the request card must still render.
+      console.error('Error loading approval history:', err);
     }
   }
 
@@ -510,6 +645,50 @@ export class ApprovalView extends AuthedElement {
       body.answer_text = options.answer_text;
     }
 
+    // Public-token rendering (viewer outside the account): the decision goes
+    // through the token endpoint, which authorizes exactly this request.
+    if (this.publicOnly) {
+      const token = new URLSearchParams(window.location.search).get('token');
+      try {
+        const response = await fetch(
+          `/approval/${this.requestId}/decide?token=${encodeURIComponent(
+            token || ''
+          )}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: action === 'approve' ? 'approve' : 'decline',
+              comment: options.comment || null,
+            }),
+          }
+        );
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.detail || `Failed to ${action} request`);
+        }
+        const updated = await response.json();
+        this.approvalRequest = {
+          ...this.approvalRequest!,
+          status: updated.status,
+          resolved_at: updated.resolved_at ?? this.approvalRequest!.resolved_at,
+        };
+        // An empty array is the default when the decide payload omits
+        // history; do not wipe a timeline we already rendered.
+        if (Array.isArray(updated.history) && updated.history.length > 0) {
+          this.history = updated.history;
+        }
+        this.decisionTaken = true;
+        showToast(successMessage, action === 'approve' ? 'success' : 'neutral');
+        this.comment = '';
+      } catch (err: any) {
+        showToast(err.message || `Failed to ${action} request`, 'danger');
+      } finally {
+        this.submitting = false;
+      }
+      return;
+    }
+
     try {
       const response = await fetch(
         `/api/v1/approval-requests/${this.requestId}/${action}`,
@@ -533,6 +712,7 @@ export class ApprovalView extends AuthedElement {
       this.comment = '';
       this.decisionTaken = true;
       showToast(successMessage, action === 'approve' ? 'success' : 'neutral');
+      this.loadHistory();
       await this.loadWaitingNext();
     } catch (err: any) {
       showToast(err.message || `Failed to ${action} request`, 'danger');
@@ -686,6 +866,29 @@ export class ApprovalView extends AuthedElement {
       .replace(/\\t/g, '\t');
   }
 
+  private timelineIcon(event: ApprovalTimelineEntry): string {
+    switch (event.event_type) {
+      case 'approval_requested':
+        return 'shield-check';
+      case 'notification_sent':
+        return 'send';
+      case 'viewed':
+        return 'eye';
+      case 'vote_received':
+        return 'hand-thumbs-up';
+      case 'approval_complete':
+        return 'check-circle';
+      case 'escalation_triggered':
+        return 'arrow-up-circle';
+      case 'expired':
+        return 'clock-history';
+      case 'cancelled':
+        return 'slash-circle';
+      default:
+        return 'dot';
+    }
+  }
+
   render() {
     if (this.loading) {
       return html`
@@ -773,6 +976,17 @@ export class ApprovalView extends AuthedElement {
           }
         </p>
       </div>
+
+      ${
+        this.approvalRequest.status === 'expired'
+          ? html`
+              <sl-alert variant="warning" open class="expired-banner">
+                <sl-icon slot="icon" name="clock-history"></sl-icon>
+                <strong>Expired:</strong> no response within the window
+              </sl-alert>
+            `
+          : ''
+      }
 
       <sl-card>
         ${
@@ -896,6 +1110,46 @@ export class ApprovalView extends AuthedElement {
           <div class="code-block">${toolArgs}</div>
         </div>
 
+        ${
+          this.history.length
+            ? html`
+                <div class="content-section">
+                  <h2>Workflow History</h2>
+                  <ul class="timeline">
+                    ${this.history.map(
+                      (event) => html`
+                        <li>
+                          <sl-icon
+                            class="timeline-icon"
+                            name=${this.timelineIcon(event)}
+                          ></sl-icon>
+                          <div class="timeline-body">
+                            <p class="timeline-detail">${event.detail}</p>
+                            <p class="timeline-meta">
+                              ${
+                                event.actor_email
+                                  ? html`<strong>${event.actor_email}</strong>
+                                      · `
+                                  : ''
+                              }
+                              ${this.formatDate(event.timestamp)}
+                            </p>
+                            ${
+                              event.comment
+                                ? html`<div class="timeline-comment">
+                                    ${event.comment}
+                                  </div>`
+                                : ''
+                            }
+                          </div>
+                        </li>
+                      `
+                    )}
+                  </ul>
+                </div>
+              `
+            : ''
+        }
         ${
           isResolved
             ? html`

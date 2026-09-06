@@ -544,7 +544,11 @@ async def test_create_approval_request_stores_the_snapshot_on_the_row():
     )
 
     assert request.rule_context == context
-    db.add.assert_called_once_with(request)
+    added = [call.args[0] for call in db.add.call_args_list]
+    assert added[0] is request
+    assert any(
+        getattr(obj, "event_type", None) == "approval_requested" for obj in added
+    )
 
 
 @pytest.mark.asyncio

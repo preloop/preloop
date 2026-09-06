@@ -535,27 +535,10 @@ async def require_approval(
                     ApprovalEvent as ApprovalEventModel,
                 )
 
-                async with get_async_db_session() as event_db:
-                    # Record approval request creation
-                    event_db.add(
-                        ApprovalEventModel(
-                            approval_request_id=approval_request_id,
-                            account_id=account_id,
-                            event_type="approval_requested",
-                            detail=f"Approval request created for tool '{tool_name}'",
-                        )
-                    )
-                    # Record notification events
-                    for channel in notification_channels:
-                        event_db.add(
-                            ApprovalEventModel(
-                                approval_request_id=approval_request_id,
-                                account_id=account_id,
-                                event_type="notification_sent",
-                                detail=f"Notification sent via {channel}",
-                            )
-                        )
-                    await event_db.commit()
+                # Timeline events for creation and channel fan-outs are
+                # recorded by ApprovalService (create_approval_request /
+                # send_notifications) so every approval path gets identical
+                # entries — the helper no longer duplicates them here.
 
                 # In-session (in-band) delivery for question-style approvals:
                 # if the asking session's runtime has a live Agent Control
