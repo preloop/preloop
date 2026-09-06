@@ -5,9 +5,9 @@ from typing import Any, Literal
 from uuid import UUID
 
 import jwt
+from anyio import from_thread
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from sqlalchemy.orm import Session
-from starlette.concurrency import run_in_threadpool
 
 from preloop.config import settings
 from preloop.models.crud import crud_flow, crud_flow_execution, flow_artifact
@@ -113,30 +113,35 @@ def authorize(
 @router.put(
     "/flows/executions/{execution_id}/artifacts", response_model=ArtifactReference
 )
-async def upload_artifact(
+def upload_artifact(
     execution_id: UUID,
     request: Request,
     claims: dict[str, Any] = Depends(artifact_claims),
     db: Session = Depends(get_db_session),
 ) -> ArtifactReference:
     """Read a bounded gzip archive and commit only after complete validation."""
-    await run_in_threadpool(authorize, db, claims, execution_id, "put")
-    limit = settings.workspace_snapshot_max_bytes
-    data = bytearray()
-    async for chunk in request.stream():
-        if len(data) + len(chunk) > limit:
-            raise HTTPException(413, "artifact_oversized")
-        data.extend(chunk)
+    authorize(db, claims, execution_id, "put")
+
+    async def read_archive() -> bytes:
+        """Consume the ASGI stream on its loop with a strict size bound."""
+        limit = settings.workspace_snapshot_max_bytes
+        data = bytearray()
+        async for chunk in request.stream():
+            if len(data) + len(chunk) > limit:
+                raise HTTPException(413, "artifact_oversized")
+            data.extend(chunk)
+        return bytes(data)
+
+    archive = from_thread.run(read_archive)
     try:
-        return await run_in_threadpool(
-            put_artifact,
+        return put_artifact(
             db,
             account_id=claims["account_id"],
             flow_id=claims["flow_id"],
             execution_id=execution_id,
             thread_id=claims["thread_id"],
             kind=claims["kind"],
-            archive=bytes(data),
+            archive=archive,
             metadata={},
         )
     except ValueError as exc:
