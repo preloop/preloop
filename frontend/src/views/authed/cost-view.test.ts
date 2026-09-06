@@ -223,6 +223,73 @@ describe('CostView', () => {
     expect(text).to.contain('3.9K miss');
   });
 
+  it('states tokens before cost per user, summed across their sessions', async () => {
+    summaryPayload = {
+      ...summary,
+      usage_by_session: [
+        {
+          ...summary.usage_by_session[0],
+          token_usage: {
+            prompt_tokens: 1000,
+            completion_tokens: 200,
+            total_tokens: 1200,
+            input_tokens: 1000,
+            output_tokens: 200,
+            cache_read_tokens: 600,
+            cache_write_tokens: 0,
+            uncached_input_tokens: 400,
+            cache_hit_ratio: 0.6,
+          },
+        },
+        {
+          ...summary.usage_by_session[0],
+          runtime_session_id: 'runtime-session-2',
+          token_usage: {
+            prompt_tokens: 1000,
+            completion_tokens: 200,
+            total_tokens: 1200,
+            input_tokens: 1000,
+            output_tokens: 200,
+            cache_read_tokens: 400,
+            cache_write_tokens: 0,
+            uncached_input_tokens: 600,
+            cache_hit_ratio: 0.4,
+          },
+        },
+      ],
+    };
+    const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
+    await waitUntil(
+      () => (element as unknown as { loading: boolean }).loading === false
+    );
+    await element.updateComplete;
+
+    const table = element.shadowRoot!.querySelector(
+      'table[aria-label="Spend by user"]'
+    )!;
+    const headers = Array.from(table.querySelectorAll('th')).map((th) =>
+      (th.textContent || '').replace(/\s+/g, ' ').trim()
+    );
+    const tokenIndex = headers.findIndex((header) =>
+      header.startsWith('Tokens')
+    );
+    const costIndex = headers.findIndex((header) => header.startsWith('Cost'));
+    expect(tokenIndex).to.be.greaterThan(-1);
+    expect(tokenIndex).to.be.lessThan(costIndex);
+
+    const figures = table.querySelector('token-figures') as HTMLElement & {
+      updateComplete: Promise<unknown>;
+    };
+    await figures.updateComplete;
+    const text = (figures.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.contain('2K in');
+    expect(text).to.contain('400 out');
+    // Two sessions at 60% and 40%: the merged rate is read off the merged
+    // counts, not averaged.
+    expect(text).to.contain('1K hit');
+    expect(text).to.contain('1K miss');
+  });
+
   it('carries the shared range control, restates the window and drops Refresh', async () => {
     const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
     await waitUntil(

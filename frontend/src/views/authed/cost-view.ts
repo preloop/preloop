@@ -102,6 +102,8 @@ type AgentGroupRow = {
 type UserGroupRow = {
   username: string;
   requests: number;
+  /** The in/out/cache split behind the row, or null when unmeasured. */
+  tokenUsage: GatewayTokenUsage | null;
   cost: number;
 };
 
@@ -1607,9 +1609,16 @@ export class CostView extends AuthedElement {
       const existing = groups.get(owner) || {
         username: owner,
         requests: 0,
+        tokenUsage: null,
         cost: 0,
       };
       existing.requests += session.request_count || 0;
+      // Tokens sum through the one helper, so the merged cache rate is
+      // recomputed from the merged counts rather than averaged.
+      existing.tokenUsage = sumTokenUsage([
+        existing.tokenUsage,
+        session.token_usage,
+      ]);
       existing.cost += session.estimated_cost || 0;
       groups.set(owner, existing);
     }
@@ -2448,6 +2457,14 @@ export class CostView extends AuthedElement {
         numeric: true,
         value: (r) => r.requests,
       },
+      // Tokens before cost here too: this is a spend table, and the volume
+      // is what the money was spent on.
+      {
+        key: 'tokens',
+        label: 'Tokens',
+        numeric: true,
+        value: (r) => r.tokenUsage?.total_tokens || 0,
+      },
       { key: 'cost', label: 'Cost', numeric: true, value: (r) => r.cost },
     ];
     const rows = this.sortRows(this.buildUserGroups(), columns, this.userSort);
@@ -2490,6 +2507,12 @@ export class CostView extends AuthedElement {
                   <tr>
                     <td>${row.username}</td>
                     <td>${this.formatNumber(row.requests)}</td>
+                    <td>
+                      <token-figures
+                        .usage=${row.tokenUsage}
+                        expanded
+                      ></token-figures>
+                    </td>
                     <td>${this.formatCurrency(row.cost)}</td>
                   </tr>
                 `
