@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional, Set
 
 from preloop.models.crud import crud_flow, crud_flow_execution
@@ -220,6 +221,17 @@ async def claim_and_run_execution(
         # an existing runtime. Fresh admission is serialized again at dispatch.
         flow_row = crud_flow.get(db, id=execution.flow_id)
         if flow_row is None:
+            crud_flow_execution.update(
+                db,
+                db_obj=execution,
+                obj_in=FlowExecutionUpdate(
+                    status="FAILED",
+                    failure_category="runner_error",
+                    error_message="Flow no longer exists; execution cannot continue",
+                    end_time=datetime.now(timezone.utc),
+                ),
+            )
+            db.commit()
             return {"status": "missing_flow", "execution_id": execution_id_str}
         if not session_reference:
             if crud_flow_execution.cancel_unstarted_stop(db, execution_id=execution_id):

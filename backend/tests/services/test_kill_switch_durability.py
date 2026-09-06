@@ -29,10 +29,6 @@ def clear_cache():
 
 
 def test_invalidation_during_lookup_discards_stale_fill():
-    def read(*args, **kwargs):
-        kill_switch.invalidate_kill_switch_cache("owner")
-        return set()
-
     with patch.object(
         kill_switch.crud_account_halt, "active_scopes", side_effect=[set(), {"flows"}]
     ) as lookup:
