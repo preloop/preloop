@@ -193,3 +193,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 Windows CLI release binaries: `SHA256SUMS` plus a VirusTotal scan; SignPath Authenticode signing is pending. [windows-cli.md](./docs/windows-cli.md), [windows-code-signing.md](./docs/windows-code-signing.md), [code-signing-policy.md](./docs/code-signing-policy.md).
 
 Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+Execution environment profiles and hosted checkpoint recovery are documented in
+[Environments and recovery](docs/guide/flows/environments-and-recovery.md).

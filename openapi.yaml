@@ -7370,6 +7370,78 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/flows/executions/{execution_id}/artifacts:
+    put:
+      tags:
+      - Flow artifacts
+      summary: Upload Artifact
+      description: Read a bounded gzip archive and commit only after complete validation.
+      operationId: upload_artifact_api_v1_flows_executions__execution_id__artifacts_put
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactReference'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+    get:
+      tags:
+      - Flow artifacts
+      summary: Download Artifact
+      description: Download the one immutable reference named by a scoped capability.
+      operationId: download_artifact_api_v1_flows_executions__execution_id__artifacts_get
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/flows:
     post:
       tags:
@@ -12214,6 +12286,40 @@ components:
       type: object
       title: ApprovalWorkflowUpdate
       description: Schema for updating approval workflow.
+    ArtifactReference:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        artifact_id:
+          type: string
+          format: uuid
+          title: Artifact Id
+        execution_id:
+          type: string
+          format: uuid
+          title: Execution Id
+        storage_kind:
+          type: string
+          enum:
+          - hosted
+          - runner_local
+          title: Storage Kind
+          default: hosted
+        manifest_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Manifest Sha256
+      additionalProperties: false
+      type: object
+      required:
+      - artifact_id
+      - execution_id
+      - manifest_sha256
+      title: ArtifactReference
+      description: Opaque reference; authorization is checked on every retrieval.
     AttentionDismissalListResponse:
       properties:
         items:
@@ -15168,7 +15274,7 @@ components:
           description: Description for the Pull/Merge Request
         verification:
           anyOf:
-          - $ref: '#/components/schemas/VerificationPolicy'
+          - $ref: '#/components/schemas/VerificationPolicy-Input'
           - type: 'null'
           description: 'Publication gate policy: required checks a commit must pass
             before the flow pushes it or opens a pull request'
@@ -15245,7 +15351,7 @@ components:
           description: Description for the Pull/Merge Request
         verification:
           anyOf:
-          - $ref: '#/components/schemas/VerificationPolicy'
+          - $ref: '#/components/schemas/VerificationPolicy-Output'
           - type: 'null'
           description: 'Publication gate policy: required checks a commit must pass
             before the flow pushes it or opens a pull request'
@@ -21974,7 +22080,7 @@ components:
       - reason
       title: VerificationCommand
       description: 'One required check: a shell command plus why it exists.'
-    VerificationPolicy:
+    VerificationPolicy-Input:
       properties:
         mode:
           type: string
@@ -21984,7 +22090,7 @@ components:
           title: Mode
           default: gate
         profile:
-          $ref: '#/components/schemas/VerificationProfile'
+          $ref: '#/components/schemas/VerificationProfile-Input'
           description: Versioned trusted test profile driving required checks
         gate_budget_seconds:
           type: integer
@@ -22008,7 +22114,85 @@ components:
         leave the workspace. There is no draft-publication exception: unverified
 
         work stays unpushed.'
-    VerificationProfile:
+    VerificationPolicy-Output:
+      properties:
+        mode:
+          type: string
+          enum:
+          - 'off'
+          - gate
+          title: Mode
+          default: gate
+        profile:
+          $ref: '#/components/schemas/VerificationProfile-Output'
+          description: Versioned trusted test profile driving required checks
+        gate_budget_seconds:
+          type: integer
+          maximum: 14400.0
+          minimum: 30.0
+          title: Gate Budget Seconds
+          description: Wall-clock budget for the whole verification run; a check that
+            cannot start inside it is blocked, not failed
+          default: 3600
+      type: object
+      required:
+      - profile
+      title: VerificationPolicy
+      description: 'Publication gate policy inside ``git_clone_config`` (issue #428).
+
+
+        ``mode: "gate"`` requires the runner-controlled verifier to allow
+
+        publication (push / pull-request creation) before the agent''s commits
+
+        leave the workspace. There is no draft-publication exception: unverified
+
+        work stays unpushed.'
+    VerificationProfile-Input:
+      properties:
+        version:
+          type: string
+          const: v1
+          title: Version
+          default: v1
+        profile_id:
+          type: string
+          title: Profile Id
+          description: Stable profile name, e.g. 'default'
+        description:
+          type: string
+          title: Description
+          default: ''
+        always:
+          items:
+            $ref: '#/components/schemas/VerificationCommand'
+          type: array
+          title: Always
+        rules:
+          items:
+            $ref: '#/components/schemas/ProfileRule'
+          type: array
+          title: Rules
+        unknown_default:
+          items:
+            $ref: '#/components/schemas/VerificationCommand'
+          type: array
+          title: Unknown Default
+      type: object
+      required:
+      - profile_id
+      title: VerificationProfile
+      description: 'Versioned, trusted set of required checks for a repository.
+
+
+        Ships with the flow configuration, not inside the repository under test.
+
+        Inexpensive ``always`` hooks are required on every change; rules match
+
+        the changed-file diff; ``unknown_default`` covers unknown impact so a
+
+        diff never resolves to an empty required list.'
+    VerificationProfile-Output:
       properties:
         version:
           type: string

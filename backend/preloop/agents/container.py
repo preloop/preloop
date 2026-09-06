@@ -630,6 +630,7 @@ _preloop_emit_artifacts() {{
         echo "PRELOOP_ARTIFACT_BEGIN evidence absent"
         echo "PRELOOP_ARTIFACT_END evidence"
     fi
+if [ -z "${{PRELOOP_CHECKPOINT_PUT_TOKEN:-}}" ]; then
 {build_workspace_snapshot_shell(max_bytes=k8s_workspace_snapshot_limit())}
     if [ -f {WORKSPACE_SNAPSHOT_PATH} ]; then
         _pl_wssize=$(wc -c < {WORKSPACE_SNAPSHOT_PATH} | tr -d ' ')
@@ -640,6 +641,7 @@ _preloop_emit_artifacts() {{
         echo "PRELOOP_ARTIFACT_BEGIN workspace absent"
         echo "PRELOOP_ARTIFACT_END workspace"
     fi
+fi
 }}
 if [ -z "${{{K8S_INNER_SCRIPT_ENV}}}" ]; then
     echo "ERROR: {K8S_INNER_SCRIPT_ENV} is not set" >&2
@@ -695,6 +697,18 @@ class ContainerAgentExecutor(AgentExecutor):
         """
         super().__init__(agent_type, config)
         self.image = image
+        from preloop.services.flow_environment import resolve_profile
+
+        self.environment_profile = resolve_profile(
+            config,
+            agent_type=agent_type,
+            runner="kubernetes" if use_kubernetes else "docker",
+        )
+        if self.environment_profile:
+            self.image = self.environment_profile.image
+        self._environment_containers: list[Any] = []
+        self._environment_network: Any = None
+        self._direct_checkpoints = False
         self.use_kubernetes = use_kubernetes
         self._docker_client: Optional[aiodocker.Docker] = None
         self._containers: Dict[str, Any] = {}  # Track running containers
@@ -711,6 +725,76 @@ class ContainerAgentExecutor(AgentExecutor):
         # channel). Executor instances live for a single execution, so no
         # eviction is needed.
         self._k8s_terminal_log_cache: Dict[str, list[str]] = {}
+
+    async def _prepare_environment_services(
+        self, execution_context: dict[str, Any]
+    ) -> None:
+        """Provision isolated Docker dependencies using operator-approved images."""
+        profile = self.environment_profile
+        if profile is None or not profile.services:
+            return
+        docker = await self._get_docker_client()
+        network_name = "preloop-env-" + execution_context["execution_id"]
+        self._environment_network = await docker.networks.create(
+            {
+                "Name": network_name,
+                "Labels": {"preloop.execution_id": execution_context["execution_id"]},
+            }
+        )
+        execution_context["environment_network"] = network_name
+        try:
+            for service in profile.services:
+                await docker.images.pull(service.image)
+                dependency = await docker.containers.create(
+                    config={
+                        "Image": service.image,
+                        "Cmd": service.command or None,
+                        "Env": [f"{key}={value}" for key, value in service.env.items()],
+                        "HostConfig": {
+                            "NetworkMode": network_name,
+                            "AutoRemove": False,
+                        },
+                        "NetworkingConfig": {
+                            "EndpointsConfig": {
+                                network_name: {"Aliases": [service.name]}
+                            }
+                        },
+                        "Labels": {
+                            "preloop.execution_id": execution_context["execution_id"]
+                        },
+                    }
+                )
+                self._environment_containers.append(dependency)
+                await dependency.start()
+        except Exception:
+            await self.aclose()
+            raise
+
+    def _environment_sidecars(self) -> list[Any]:
+        """Use native sidecars so Kubernetes terminates services with the job."""
+        if self.environment_profile is None:
+            return []
+        return [
+            client.V1Container(
+                name=service.name,
+                image=service.image,
+                args=service.command or None,
+                env=[
+                    client.V1EnvVar(name=key, value=value)
+                    for key, value in service.env.items()
+                ],
+                restart_policy="Always",
+                startup_probe=client.V1Probe(
+                    tcp_socket=client.V1TCPSocketAction(port=service.port),
+                    period_seconds=1,
+                    failure_threshold=self.environment_profile.setup_timeout_seconds,
+                ),
+                security_context=client.V1SecurityContext(
+                    allow_privilege_escalation=False
+                ),
+            )
+            for service in self.environment_profile.services
+        ]
 
     async def _get_docker_client(self) -> aiodocker.Docker:
         """Get or create Docker client."""
@@ -729,7 +813,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 config.load_incluster_config()
                 self.logger.info("Loaded in-cluster Kubernetes config")
             except config.ConfigException:
-                await config.load_kube_config()
+                await config.load_kube_config(config_file=os.environ.get("KUBECONFIG"))
                 self.logger.info("Loaded Kubernetes config from kubeconfig")
 
             # Create ApiClient for proper resource management
@@ -740,6 +824,18 @@ class ContainerAgentExecutor(AgentExecutor):
 
     async def aclose(self) -> None:
         """Release Docker and Kubernetes client connections."""
+        for dependency in self._environment_containers:
+            try:
+                await dependency.delete(force=True, v=True)
+            except DockerError:
+                self.logger.warning("Failed to remove environment dependency")
+        self._environment_containers.clear()
+        if self._environment_network is not None:
+            try:
+                await self._environment_network.delete()
+            except DockerError:
+                self.logger.warning("Failed to remove environment network")
+            self._environment_network = None
         if self._docker_client is not None:
             await self._docker_client.close()
             self._docker_client = None
@@ -762,6 +858,9 @@ class ContainerAgentExecutor(AgentExecutor):
             Container ID or K8s pod name as session reference
         """
         execution_id = execution_context["execution_id"]
+        self._direct_checkpoints = bool(execution_context.get("checkpoint_env"))
+        if self.environment_profile and not self.use_kubernetes:
+            await self._prepare_environment_services(execution_context)
 
         self.logger.info(
             f"Starting {self.agent_type} agent in container for execution {execution_id}"
@@ -877,9 +976,8 @@ class ContainerAgentExecutor(AgentExecutor):
             },
             "HostConfig": {
                 "AutoRemove": False,  # Keep container for log retrieval
-                "NetworkMode": os.getenv(
-                    "AGENT_NETWORK_MODE", "bridge"
-                ),  # Use bridge by default
+                "NetworkMode": execution_context.get("environment_network")
+                or os.getenv("AGENT_NETWORK_MODE", "bridge"),  # Use bridge by default
                 # Mount workspace volume with proper permissions
                 "Binds": [f"{workspace_volume}:/workspace:rw"],
                 # Resource limits
@@ -944,6 +1042,10 @@ class ContainerAgentExecutor(AgentExecutor):
         to the clone until snapshots move to object storage.
         """
 
+        if (execution_context.get("checkpoint_env") or {}).get(
+            "PRELOOP_CHECKPOINT_GET_TOKEN"
+        ):
+            return True
         if self._workspace_restore_archive(execution_context) is None:
             return False
         if self.use_kubernetes:
@@ -1191,6 +1293,7 @@ class ContainerAgentExecutor(AgentExecutor):
             spec=client.V1PodSpec(
                 restart_policy="Never",
                 containers=[container],
+                init_containers=self._environment_sidecars() or None,
                 security_context=client.V1PodSecurityContext(
                     run_as_user=agent_uid,
                     run_as_group=agent_gid,
@@ -2120,6 +2223,8 @@ class ContainerAgentExecutor(AgentExecutor):
         the workspace exceeds ``WORKSPACE_SNAPSHOT_MAX_BYTES``, or on any
         error (all logged).
         """
+        if self._direct_checkpoints:
+            return None
         limit = int(getattr(settings, "workspace_snapshot_max_bytes", 0) or 0)
         if limit <= 0:
             self.logger.info(
@@ -2808,6 +2913,13 @@ class ContainerAgentExecutor(AgentExecutor):
     ) -> Dict[str, str]:
         """Merge git credential env vars into an agent's environment."""
 
+        env.update(execution_context.get("checkpoint_env") or {})
+        if self.environment_profile:
+            from preloop.services.flow_environment import profile_env
+
+            env.update(
+                profile_env(self.environment_profile, kubernetes=self.use_kubernetes)
+            )
         env.update(self._git_credential_env(execution_context))
         return env
 
@@ -2822,6 +2934,11 @@ class ContainerAgentExecutor(AgentExecutor):
             Shell command string to run before agent starts, or empty string if none
         """
         commands = []
+        from preloop.services.checkpoint_runtime import checkpoint_shell
+
+        checkpoint = checkpoint_shell(execution_context)
+        if checkpoint:
+            commands.append(checkpoint.rstrip())
 
         # Prepare git clone command if enabled
         git_clone_config = execution_context.get("git_clone_config")
@@ -2890,9 +3007,11 @@ class ContainerAgentExecutor(AgentExecutor):
         if setup_cmd:
             commands.append(setup_cmd)
 
+        if checkpoint:
+            commands.append("_preloop_start_checkpoint_loop")
         # Join all commands with &&
         if commands:
-            return " && ".join(commands)
+            return " && ".join(command.rstrip() for command in commands)
         return ""
 
     def _prepare_workspace_seed_commands(
@@ -2924,6 +3043,14 @@ class ContainerAgentExecutor(AgentExecutor):
         git_config = execution_context.get("git_clone_config") or {}
         if not isinstance(git_config, dict):
             return ""
+        if self.environment_profile:
+            from preloop.services.flow_environment import profile_setup_shell
+
+            return profile_setup_shell(
+                self.environment_profile,
+                kubernetes=self.use_kubernetes,
+                working_dir=self._primary_workspace_path(execution_context, git_config),
+            )
         setup_commands = git_config.get("setup_commands") or []
         if not isinstance(setup_commands, (list, tuple)):
             self.logger.warning(
@@ -2983,7 +3110,32 @@ class ContainerAgentExecutor(AgentExecutor):
             build_credential_setup_shell(),
             f"cd {shlex.quote(repo_path)}",
         ]
-        if branch:
+        direct_restore = bool(
+            (execution_context.get("checkpoint_env") or {}).get(
+                "PRELOOP_CHECKPOINT_GET_TOKEN"
+            )
+        )
+        if direct_restore:
+            repositories = self._resolve_git_clone_repositories(
+                execution_context, git_config
+            )
+            repo_url = (
+                repositories[0].get("repository_url") if repositories else None
+            ) or self._extract_repo_url_from_trigger(
+                execution_context.get("trigger_event_data") or {}
+            )
+            if repo_url:
+                restore_steps.append(
+                    f"git remote add origin {shlex.quote(repo_url)} || git remote set-url origin {shlex.quote(repo_url)}"
+                )
+            if branch:
+                restore_steps.extend(
+                    [
+                        f"git fetch origin {shlex.quote(branch)}",
+                        "git merge-base --is-ancestor FETCH_HEAD HEAD || { echo PRELOOP_CHECKPOINT remote_diverged; exit 1; }",
+                    ]
+                )
+        if branch and not direct_restore:
             restore_steps.extend(
                 [
                     f"git fetch origin {branch} || true",
@@ -4024,6 +4176,11 @@ true
                 return ""
 
             # Join commands with newlines instead of && to properly handle if-else-fi blocks
+            if execution_context.get("checkpoint_env"):
+                post_commands.insert(
+                    0,
+                    "_preloop_checkpoint || { echo PRELOOP_CHECKPOINT prepublication_failed; exit 1; }",
+                )
             return "\n".join(post_commands)
 
         except Exception as e:
@@ -4457,15 +4614,6 @@ true
             self.logger.error(f"Error extracting repo URL from trigger: {e}")
             return ""
 
-    async def cleanup(self):
-        """Cleanup resources (close Docker client, Kubernetes client, etc.)."""
-        if self._docker_client:
-            await self._docker_client.close()
-            self._docker_client = None
-
-        if self._k8s_api_client:
-            await self._k8s_api_client.close()
-            self._k8s_api_client = None
-            self._k8s_batch_api = None
-            self._k8s_core_api = None
-            self._k8s_initialized = False
+    async def cleanup(self) -> None:
+        """Release dependency services, networks and executor client handles."""
+        await self.aclose()

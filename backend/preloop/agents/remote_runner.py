@@ -232,6 +232,11 @@ class RemoteRunnerExecutor(AgentExecutor):
             or self.agent_type
             or (getattr(flow, "agent_type", None) if flow is not None else None)
         )
+        from preloop.services.flow_environment import resolve_profile
+
+        resolve_profile(
+            agent_config, agent_type=str(agent_type or ""), runner="private"
+        )
         if not agent_config_has_image(agent_config):
             image = default_agent_image(str(agent_type or ""))
             if image:

@@ -1166,3 +1166,85 @@ func containsPair(args []string, flag, value string) bool {
 	}
 	return false
 }
+
+func TestWorkspaceZeroRetentionPurgesIdleButKeepsActive(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"idle", "active"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv(workspaceTTLHoursEnv, "0")
+	if workspaceTTL() != 0 {
+		t.Fatal("zero must disable retention")
+	}
+	if err := cleanupStaleWorkspacesAt(root, workspaceTTL(), time.Now(), map[string]bool{"active": true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "idle")); !os.IsNotExist(err) {
+		t.Fatal("idle state retained with zero TTL")
+	}
+	if _, err := os.Stat(filepath.Join(root, "active")); err != nil {
+		t.Fatal("active workspace removed")
+	}
+}
+
+func TestRunnerForwardsRepositorySetupContract(t *testing.T) {
+	env := runnerJobEnv(map[string]any{"git_clone_config": map[string]any{"setup_commands": []string{"echo setup"}}}, "https://example.com")
+	var config map[string]any
+	if err := json.Unmarshal([]byte(env["GIT_CLONE_CONFIG"]), &config); err != nil {
+		t.Fatal(err)
+	}
+	if config["setup_commands"] == nil {
+		t.Fatal("repository setup missing from image contract")
+	}
+}
+
+func TestWorkspaceCleanupProtectsAnotherRunnerLease(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "other-runner")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, ".preloop-runner-lease")
+	if err := os.WriteFile(marker, []byte("active"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanupStaleWorkspacesAt(root, 0, time.Now(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatal("active peer deleted", err)
+	}
+	if err := cleanupStaleWorkspacesAt(root, 0, time.Now().Add(3*time.Minute), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("expired lease retained")
+	}
+}
+
+func TestWorkspaceQuotaProtectsActiveAndRecordsLoss(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"old", "active"} {
+		dir := filepath.Join(root, name)
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "source"), make([]byte, 128), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := enforceWorkspaceQuota(root, 128, time.Now(), map[string]bool{"active": true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "old")); !os.IsNotExist(err) {
+		t.Fatal("quota did not remove old state")
+	}
+	if _, err := os.Stat(filepath.Join(root, "old.expired")); err != nil {
+		t.Fatal("loss metadata missing")
+	}
+	if _, err := os.Stat(filepath.Join(root, "active", "source")); err != nil {
+		t.Fatal("active state removed")
+	}
+}
