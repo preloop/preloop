@@ -125,6 +125,9 @@ memory and is discarded with the container. Repository scripts and test
 binaries can execute there. For larger or retained workspaces, configure
 `agent_config.runner.persist_workspace` or an explicit `/workspace` mount;
 the mounted directory must be writable by the image's configured user.
+The default tmpfs masks any files a custom image puts in `/workspace`. Package
+reusable tools and dependencies elsewhere (for example, `/opt`), and supply
+pre-populated working files through an explicit workspace mount.
 
 The control plane builds a versioned launch specification using the same
 Codex/OpenCode script and environment builders as hosted execution. The CLI
