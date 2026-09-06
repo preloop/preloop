@@ -60,6 +60,7 @@ class NotificationPayloadBuilder:
         tool_args: Optional[Dict[str, Any]] = None,
         summary: Optional[str] = None,
         rule_context: Optional[Dict[str, Any]] = None,
+        agent_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build payload for new approval request.
 
@@ -77,6 +78,9 @@ class NotificationPayloadBuilder:
                 rule NAME travels in a push: an expression does not fit and
                 truncating one would misrepresent it. Clients fetch the full
                 context from the API when the request is opened.
+            agent_name: The agent that asked, when known. A push is decided on
+                a phone with no page to open, so who asked belongs in the
+                notification rather than only behind a tap.
 
         Returns:
             APNs payload dictionary.
@@ -141,13 +145,17 @@ class NotificationPayloadBuilder:
         # Format tool name nicely
         tool_display = tool_name.replace("_", " ").title()
         ask_text = (summary or "").strip() or None
+        asker = (agent_name or "").strip() or None
+        # The subtitle is the "what and who" line. Without a name it stays the
+        # tool alone, which is what every notification said before.
+        subtitle_text = f"{tool_display} · {asker}" if asker else tool_display
 
         if ask_text:
             # Summary is the primary ask; tool name stays as subtitle context.
-            subtitle = tool_display
+            subtitle = subtitle_text
             body = ask_text if len(ask_text) <= 220 else ask_text[:217] + "..."
         else:
-            subtitle = tool_display
+            subtitle = subtitle_text
             # Build body with tool args for context
             body_parts = []
 
@@ -179,9 +187,13 @@ class NotificationPayloadBuilder:
                     reasoning_preview += "..."
                 body_parts.append(reasoning_preview)
 
-            # Fallback if no context
+            # Fallback if no context. A named agent is named: "AI agent needs
+            # approval" is what the console used to say too, and it is not a
+            # thing anyone can look up.
             if not body_parts:
-                body_parts.append(f"AI agent needs approval for {tool_display}")
+                body_parts.append(
+                    f"{asker or 'AI agent'} needs approval for {tool_display}"
+                )
 
             body = "\n".join(body_parts) if len(body_parts) > 1 else body_parts[0]
 
@@ -195,6 +207,9 @@ class NotificationPayloadBuilder:
         }
         if ask_text:
             custom_data["summary"] = ask_text
+        if asker:
+            # Clients render "who asked" on the approval card without a fetch.
+            custom_data["agent_name"] = asker
         rule_name = (rule_context or {}).get("rule_name")
         if rule_name:
             # Name only. The expression belongs on a surface that can show it

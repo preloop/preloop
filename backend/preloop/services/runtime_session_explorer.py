@@ -784,11 +784,7 @@ class RuntimeSessionExplorerService:
             total_requests=row["total_requests"],
             successful_requests=row["successful_requests"],
             failed_requests=row["failed_requests"],
-            token_usage=GatewayTokenUsage(
-                prompt_tokens=row["prompt_tokens"],
-                completion_tokens=row["completion_tokens"],
-                total_tokens=row["total_tokens"],
-            ),
+            token_usage=GatewayTokenUsage.from_row(row),
             estimated_cost=row["estimated_cost"],
             last_request_at=row["last_request_at"],
         )

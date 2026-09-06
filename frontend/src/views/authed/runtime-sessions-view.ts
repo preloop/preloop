@@ -15,6 +15,7 @@ import '../../components/view-header.ts';
 import '../../components/json-tree.ts';
 import '../../components/list-toolbar.ts';
 import '../../components/preloop-session-observer.ts';
+import '../../components/token-figures.ts';
 import {
   getAccountRuntimeSessionDetail,
   getAccountRuntimeSessions,
@@ -1145,7 +1146,10 @@ export class RuntimeSessionsView extends LitElement {
                 ${this.formatNumber(model.request_count)}
               </div>
               <div class="cell-numeric">
-                ${this.formatNumber(model.token_usage.total_tokens)}
+                <token-figures
+                  .usage=${model.token_usage}
+                  expanded
+                ></token-figures>
               </div>
               <div class="cell-numeric">
                 ${this.formatCost(model.estimated_cost)}
@@ -1576,9 +1580,10 @@ export class RuntimeSessionsView extends LitElement {
                 ${this.formatNumber(session.token_usage.total_tokens)}
               </div>
               <div class="summary-detail">
-                ${this.formatNumber(session.token_usage.prompt_tokens)} prompt,
-                ${this.formatNumber(session.token_usage.completion_tokens)}
-                completion
+                <token-figures
+                  .usage=${session.token_usage}
+                  expanded
+                ></token-figures>
               </div>
             </div>
             <div class="summary-card">

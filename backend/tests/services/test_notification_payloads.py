@@ -36,6 +36,56 @@ class TestNewApprovalRequestPayload:
         assert payload["risk_level"] == "danger"
         assert payload["aps"]["category"] == "APPROVAL_REQUEST"
 
+    def test_names_the_agent_in_the_subtitle_and_the_data(self):
+        """A push is decided on a phone, so who asked travels with it."""
+        payload = NotificationPayloadBuilder.new_approval_request(
+            request_id="test-id",
+            tool_name="force_push",
+            tool_args={},
+            agent_name="Claude Code (laptop)",
+        )
+
+        assert (
+            payload["aps"]["alert"]["subtitle"] == "Force Push · Claude Code (laptop)"
+        )
+        # The fallback body names the agent instead of "AI agent".
+        assert (
+            payload["aps"]["alert"]["body"]
+            == "Claude Code (laptop) needs approval for Force Push"
+        )
+        assert payload["agent_name"] == "Claude Code (laptop)"
+        assert payload["data"]["agent_name"] == "Claude Code (laptop)"
+
+    def test_says_ai_agent_only_when_no_agent_is_known(self):
+        """An unattributed request reads exactly as it did before."""
+        payload = NotificationPayloadBuilder.new_approval_request(
+            request_id="test-id",
+            tool_name="force_push",
+            tool_args={},
+        )
+
+        assert payload["aps"]["alert"]["subtitle"] == "Force Push"
+        assert (
+            payload["aps"]["alert"]["body"] == "AI agent needs approval for Force Push"
+        )
+        assert "agent_name" not in payload
+
+    def test_summary_keeps_the_body_and_still_names_the_agent(self):
+        """The ask owns the body; the agent rides in the subtitle."""
+        payload = NotificationPayloadBuilder.new_approval_request(
+            request_id="test-id",
+            tool_name="force_push",
+            summary="Allow the coding agent to force-push branch main?",
+            agent_name="Release Bot",
+        )
+
+        assert (
+            payload["aps"]["alert"]["body"]
+            == "Allow the coding agent to force-push branch main?"
+        )
+        assert payload["aps"]["alert"]["subtitle"] == "Force Push · Release Bot"
+        assert payload["agent_name"] == "Release Bot"
+
     def test_low_risk_read_uses_low_risk_category(self):
         payload = NotificationPayloadBuilder.new_approval_request(
             request_id="read-id",

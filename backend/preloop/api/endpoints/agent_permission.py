@@ -37,6 +37,7 @@ class PermissionIdentity:
 
     account_id: str
     user_id: UUID
+    api_key_id: UUID
     managed_agent_id: UUID
     runtime_session_id: Optional[UUID]
     managed_agent_name: str
@@ -65,6 +66,7 @@ def _resolve_permission_identity(token: str) -> PermissionIdentity:
         return PermissionIdentity(
             account_id=str(api_key.account_id),
             user_id=user.id,
+            api_key_id=api_key.id,
             managed_agent_id=managed_agent.id,
             runtime_session_id=runtime_session.id
             if runtime_session
@@ -172,6 +174,7 @@ async def agent_permission_check(
         managed_agent_id=identity.managed_agent_id,
         runtime_session_id=identity.runtime_session_id,
         managed_agent_name=identity.managed_agent_name,
+        api_key_id=identity.api_key_id,
         source=payload.source,
         tool_name=payload.tool_name,
         tool_input=tool_input,

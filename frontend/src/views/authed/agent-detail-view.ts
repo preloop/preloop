@@ -19,6 +19,7 @@ import '../../components/budget-policy-editor.ts';
 import '../../components/tools-editor-component.ts';
 import '../../components/tool-cost-flags-panel.ts';
 import '../../components/preloop-session-observer.ts';
+import '../../components/token-figures.ts';
 import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
 import '../../components/talk-button.ts';
@@ -2796,6 +2797,14 @@ export class AgentDetailView extends LitElement {
               </select>
             </div>
             <div>
+              <!-- Volume before money: the tokens are what the spend is made
+                   of, split in and out with the cache share of the input. -->
+              <div class="meta-line" data-testid="agent-token-figures">
+                <token-figures
+                  expanded
+                  .usage=${aggregate?.token_usage ?? null}
+                ></token-figures>
+              </div>
               <div class="stat-value">
                 ${this.formatMoney(aggregate?.estimated_cost)}
               </div>
@@ -3265,6 +3274,21 @@ export class AgentDetailView extends LitElement {
                                     budget.monthly_usd_limit ||
                                     showZeroSpend
                                       ? html`<div style="font-size: 0.9em;">
+                                          <!-- Tokens lead the cost here too. -->
+                                          ${
+                                            usage
+                                              ? html`<token-figures
+                                                    .usage=${
+                                                      usage.token_usage ?? null
+                                                    }
+                                                  ></token-figures
+                                                  ><span
+                                                    style="color: var(--sl-color-neutral-500);"
+                                                  >
+                                                    ·
+                                                  </span>`
+                                              : ''
+                                          }
                                           ${
                                             usage || showZeroSpend
                                               ? html`<span

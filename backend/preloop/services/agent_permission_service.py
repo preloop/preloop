@@ -465,6 +465,7 @@ async def request_agent_permission(
     managed_agent_id: Optional[uuid.UUID],
     runtime_session_id: Optional[uuid.UUID],
     managed_agent_name: Optional[str],
+    api_key_id: Optional[uuid.UUID] = None,
     source: Optional[str],
     tool_name: str,
     tool_input: Optional[dict],
@@ -499,6 +500,8 @@ async def request_agent_permission(
         managed_agent_id: Managed agent raising the request, if known.
         runtime_session_id: Active runtime session id, if known.
         managed_agent_name: Display name shown to approvers.
+        api_key_id: Credential the agent authenticated with, recorded on the
+            request so approval surfaces can name the key.
         source: Originating agent adapter (e.g. ``claude_code``).
         tool_name: Native tool name (e.g. ``Bash``).
         tool_input: Tool arguments persisted as approval ``tool_args``.
@@ -611,6 +614,7 @@ async def request_agent_permission(
                 managed_agent_id=managed_agent_id,
                 runtime_session_id=runtime_session_id,
                 managed_agent_name=managed_agent_name,
+                api_key_id=api_key_id,
                 standing_bypass_reason=(
                     models.AutoApprovedReason.NATIVE_TOOL_APPROVALS_OFF
                     if approvals_off and matched_require is None

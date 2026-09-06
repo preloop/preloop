@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from ..models.api_usage import ApiUsage
 from ..models.flow import Flow
 from ..models.runtime_session import RuntimeSession
+from .api_usage import cache_split_columns, cache_split_from_row
 from .base import CRUDBase
 
 logger = logging.getLogger(__name__)
@@ -701,6 +702,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                     "estimated_cost"
                 ),
                 func.max(ApiUsage.timestamp).label("last_request_at"),
+                *cache_split_columns(),
             )
             .group_by(
                 self.model.account_id,
@@ -950,6 +952,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                     "estimated_cost"
                 ),
                 func.max(ApiUsage.timestamp).label("last_request_at"),
+                *cache_split_columns(),
             )
             .outerjoin(ApiUsage, usage_join)
             .outerjoin(Flow, ApiUsage.flow_id == Flow.id)
@@ -1110,6 +1113,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             "prompt_tokens": int(row.prompt_tokens or 0),
             "completion_tokens": int(row.completion_tokens or 0),
             "total_tokens": int(row.total_tokens or 0),
+            **cache_split_from_row(row),
             "estimated_cost": float(row.estimated_cost or 0.0),
             "last_request_at": row.last_request_at,
         }

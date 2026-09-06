@@ -492,6 +492,20 @@ describe('FlowsView', () => {
       failed,
       cost,
       last_run_at: lastRunAt,
+      // Tokens over the same window as the cost.
+      token_usage: runs
+        ? {
+            prompt_tokens: 12400,
+            completion_tokens: 3100,
+            total_tokens: 15500,
+            input_tokens: 12400,
+            output_tokens: 3100,
+            cache_read_tokens: 8200,
+            cache_write_tokens: 0,
+            uncached_input_tokens: 3900,
+            cache_hit_ratio: 0.6777,
+          }
+        : null,
       total_execs: runs,
       running_execs: 0,
       last_seen_at: lastRunAt,
@@ -822,6 +836,53 @@ describe('FlowsView', () => {
       expect(triage?.failed).to.equal(1);
     });
 
+    it('states tokens before cost over the same window', async () => {
+      const element = await renderFlows();
+      await waitUntil(
+        () => element.rows.some((row: FlowListRow) => row.cost > 0),
+        'Costs did not load'
+      );
+      await element.updateComplete;
+
+      const headers = [
+        ...(element.shadowRoot?.querySelectorAll('thead th') || []),
+      ].map((th) => (th.textContent || '').trim());
+      expect(headers.indexOf('Tokens')).to.be.greaterThan(-1);
+      expect(headers.indexOf('Tokens')).to.be.lessThan(
+        headers.indexOf('$ est.')
+      );
+
+      const cells = [
+        ...(element.shadowRoot?.querySelectorAll('tbody tr.flow-row td') || []),
+      ];
+      const tokenIndex = cells.findIndex((cell) =>
+        cell.querySelector('token-figures')
+      );
+      const costIndex = cells.findIndex((cell) =>
+        (cell.textContent || '').includes('$1.23')
+      );
+      expect(tokenIndex, 'tokens before cost').to.be.lessThan(costIndex);
+
+      const figures = cells[tokenIndex].querySelector('token-figures')!;
+      await (figures as unknown as { updateComplete: Promise<unknown> })
+        .updateComplete;
+      const text = (figures.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+      expect(text).to.contain('12.4K in');
+      expect(text).to.contain('3.1K out');
+    });
+
+    it('states no tokens beside a flow with no run in the range', async () => {
+      const element = await renderFlows();
+      const row = [
+        ...(element.shadowRoot?.querySelectorAll('tbody tr.flow-row') || []),
+      ].find((tr) => (tr.textContent || '').includes('Nightly Report'));
+      const figures = row?.querySelector('token-figures')!;
+      await (figures as unknown as { updateComplete: Promise<unknown> })
+        .updateComplete;
+      // Unknown, not zero: the same rule the spend cell follows.
+      expect((figures.shadowRoot?.textContent || '').trim()).to.equal('-');
+    });
+
     it('asks the server for the counts of the range it names', async () => {
       await renderFlows();
       const flowsCall = fetchStub
@@ -999,6 +1060,7 @@ describe('FlowsView', () => {
         runs: 0,
         failed: 0,
         cost: 0,
+        tokenUsage: null,
         countsFromServer: true,
         source: { id: 'flow-1', name: 'Alpha' } as any,
         ...overrides,

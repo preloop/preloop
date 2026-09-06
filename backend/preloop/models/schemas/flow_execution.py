@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, ConfigDict
 
+from preloop.schemas.gateway_usage import GatewayTokenUsage
+
 
 class ExecutionModelUsage(BaseModel):
     """One model alias that served requests during an execution."""
@@ -46,6 +48,14 @@ class ExecutionModelProjection(BaseModel):
         description=(
             "Every distinct model alias this execution used with its request "
             "count, most used first."
+        ),
+    )
+    token_usage: Optional[GatewayTokenUsage] = Field(
+        None,
+        description=(
+            "Tokens this execution's gateway traffic consumed, split by "
+            "direction and cache participation. Null when the run has no "
+            "attributable gateway usage, which is not the same as zero."
         ),
     )
 

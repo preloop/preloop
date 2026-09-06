@@ -9,6 +9,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
+from preloop.services.approval_attribution import (
+    attach_attribution,
+    attributed,
+    attributed_async,
+)
 from preloop.services.approval_service import ApprovalService
 from preloop.models.crud import crud_approval_event, crud_approval_request
 from preloop.models.db.session import get_async_db_session, get_db_session
@@ -98,7 +103,11 @@ def get_approval_request(
     # Track who opened the request (one timeline entry per viewer).
     _record_viewed_event(db, approval_request, current_user.id)
 
-    return ApprovalRequestResponse.model_validate(approval_request)
+    # Name the agent, key, session and flow run instead of leaving the detail
+    # page with four bare ids (the "Agent: AI agent" report), then convert
+    # while the request session is still open so serialization cannot hit a
+    # detached instance.
+    return ApprovalRequestResponse.model_validate(attributed(db, approval_request))
 
 
 @router.get("/{request_id}/history", response_model=list[ApprovalEventResponse])
@@ -193,7 +202,12 @@ def list_approval_requests(
         skip=skip,
         limit=limit,
     )
-    return [ApprovalRequestResponse.model_validate(row) for row in rows]
+    # One batched pass for the page, not four lookups per row, then convert
+    # every row while the request session is still open.
+    return [
+        ApprovalRequestResponse.model_validate(row)
+        for row in attach_attribution(db, rows)
+    ]
 
 
 @router.post("/{request_id}/approve", response_model=ApprovalRequestResponse)
@@ -256,9 +270,13 @@ async def approve_request(
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to approve request")
 
-        # Convert to Pydantic model while session is still open to avoid
-        # DetachedInstanceError during response serialization.
-        return ApprovalRequestResponse.model_validate(updated)
+        # Name the agent, key, session and flow run on the async session the
+        # handler already holds (the sync request session would block the
+        # event loop), then convert while the write session is still open to
+        # avoid DetachedInstanceError during response serialization.
+        return ApprovalRequestResponse.model_validate(
+            await attributed_async(async_db, updated)
+        )
 
 
 @router.post("/{request_id}/decline", response_model=ApprovalRequestResponse)
@@ -321,9 +339,13 @@ async def decline_request(
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to decline request")
 
-        # Convert to Pydantic model while session is still open to avoid
-        # DetachedInstanceError during response serialization.
-        return ApprovalRequestResponse.model_validate(updated)
+        # Name the agent, key, session and flow run on the async session the
+        # handler already holds (the sync request session would block the
+        # event loop), then convert while the write session is still open to
+        # avoid DetachedInstanceError during response serialization.
+        return ApprovalRequestResponse.model_validate(
+            await attributed_async(async_db, updated)
+        )
 
 
 @router.post("/{request_id}/decide", response_model=ApprovalRequestResponse)
@@ -398,6 +420,10 @@ async def decide_request(
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to process decision")
 
-        # Convert to Pydantic model while session is still open to avoid
-        # DetachedInstanceError during response serialization.
-        return ApprovalRequestResponse.model_validate(updated)
+        # Name the agent, key, session and flow run on the async session the
+        # handler already holds (the sync request session would block the
+        # event loop), then convert while the write session is still open to
+        # avoid DetachedInstanceError during response serialization.
+        return ApprovalRequestResponse.model_validate(
+            await attributed_async(async_db, updated)
+        )

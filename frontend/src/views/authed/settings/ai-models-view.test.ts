@@ -164,6 +164,33 @@ describe('AIModelsView', () => {
     expect(statusSelect?.getAttribute('label')).to.equal('Status');
   });
 
+  it('states the token split before the cost in the usage cell', async () => {
+    const element = (await fixture(
+      html`<ai-models-view></ai-models-view>`
+    )) as AIModelsView;
+
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'AI models view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const figures = element.shadowRoot!.querySelector(
+      'token-figures'
+    ) as HTMLElement & { updateComplete: Promise<unknown> };
+    expect(figures).to.exist;
+    await figures.updateComplete;
+    const text = (figures.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.contain('1.2K in');
+    expect(text).to.contain('800 out');
+
+    // The cell reads tokens first, then what they cost.
+    const cell = figures.closest('.cell-secondary')!;
+    const cellText = (cell.textContent || '').replace(/\s+/g, ' ').trim();
+    expect(cellText).to.contain('$12.34 est.');
+    expect(cellText.indexOf('·')).to.be.lessThan(cellText.indexOf('$12.34'));
+  });
+
   it('hides the toolbar when a refresh fails with models still loaded', async () => {
     const element = (await fixture(
       html`<ai-models-view></ai-models-view>`

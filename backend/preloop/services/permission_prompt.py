@@ -243,6 +243,7 @@ async def evaluate_permission_prompt(
     source: Optional[str],
     tool_name: str,
     tool_input: Optional[dict],
+    api_key_id: Optional[uuid.UUID] = None,
     tool_use_id: Optional[str] = None,
     agent_reasoning: Optional[str] = None,
     wait_seconds: Optional[float] = None,
@@ -365,6 +366,7 @@ async def evaluate_permission_prompt(
             managed_agent_id=managed_agent_id,
             runtime_session_id=runtime_session_id,
             managed_agent_name=managed_agent_name,
+            api_key_id=api_key_id,
             standing_bypass_reason=(
                 models.AutoApprovedReason.NATIVE_TOOL_APPROVALS_OFF
                 if approvals_off and rule_outcome is None

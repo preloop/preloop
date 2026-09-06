@@ -51,7 +51,7 @@ def _post_permission_check(client, token: str, payload: dict):
     )
 
 
-def test_permission_check_accepts_source_opencode_and_stamps_marker(client):
+def test_permission_check_accepts_source_opencode_and_stamps_marker(client, db_session):
     """A Bash call from the OpenCode plugin reaches the service with its source."""
     token = _issue_opencode_runtime_token(client)
     decide = AsyncMock(return_value=("allow", "Approved via Preloop.", "req-1", False))
@@ -87,6 +87,9 @@ def test_permission_check_accepts_source_opencode_and_stamps_marker(client):
     assert kwargs["tool_input"]["command"] == "npm test"
     assert kwargs["tool_input"]["cwd"] == "/home/dev/project"
     assert kwargs["managed_agent_name"] == "Laptop OpenCode"
+    from preloop.models.crud import crud_api_key
+
+    assert kwargs["api_key_id"] == crud_api_key.get_by_key(db_session, key=token).id
     assert kwargs["client_decision"] is None
 
 

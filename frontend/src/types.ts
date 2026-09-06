@@ -69,6 +69,12 @@ export interface FlowExecutionStats {
   last_seen_at?: string | null;
   estimated_cost?: number;
   /**
+   * Tokens over the same period as the counts beside them: the window when
+   * `stats_since` was asked for, all time otherwise. Null means "nothing
+   * attributable in that period", which is not zero tokens.
+   */
+  token_usage?: GatewayTokenUsage | null;
+  /**
    * Present only when the flows request named a window (`stats_since`), and
    * then every field below is measured over that same window, so a list that
    * says "in the last 30d" can say one thing.
@@ -254,10 +260,29 @@ export interface FlowGatewayEventsResponse {
   } | null;
 }
 
+/**
+ * Token totals, split by direction and by cache participation.
+ *
+ * `input_tokens` / `output_tokens` are the product-facing names for the
+ * provider wire names `prompt_tokens` / `completion_tokens`; the backend
+ * always sends both pairs in agreement, so a surface can read either.
+ *
+ * The cache fields describe the input side only: `cache_read_tokens` was
+ * served from a prompt cache, `cache_write_tokens` was written into one and
+ * `uncached_input_tokens` is the remainder the provider read afresh.
+ * `cache_hit_ratio` is null when no request in the aggregate reported a
+ * cache split: unknown, which is not "0% hit".
+ */
 export interface GatewayTokenUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  uncached_input_tokens?: number;
+  cache_hit_ratio?: number | null;
 }
 
 export interface GatewayBudgetSummary {
@@ -490,6 +515,8 @@ export interface ManagedAgentSummary {
   total_requests: number;
   successful_requests?: number;
   failed_requests?: number;
+  /** Tokens the agent spent, stated before cost in the agents list. */
+  token_usage?: GatewayTokenUsage;
   estimated_cost: number;
   configured_model_alias: string | null;
   configured_model_id?: string | null;
@@ -1675,6 +1702,38 @@ export type ApprovalRequestStatus =
   'pending' | 'approved' | 'declined' | 'expired' | 'cancelled';
 
 /**
+ * Attribution: who asked for an approval, resolved by the server.
+ *
+ * The ids alone rendered as truncated UUIDs, or worse, as the generic label
+ * "AI agent" when the name column happened to be empty. The server now
+ * resolves each id it holds into a name, and omits the part when the row it
+ * points at is gone, so the console never has to guess.
+ */
+export interface ApprovalAgentSummary {
+  id: string;
+  name: string;
+  /** `claude_code`, `cursor`, and so on. Absent on older agents. */
+  kind?: string | null;
+}
+
+export interface ApprovalApiKeySummary {
+  id: string;
+  name: string;
+}
+
+export interface ApprovalSessionSummary {
+  id: string;
+  /** What the session is about; null when it has no title or reference. */
+  subject?: string | null;
+}
+
+export interface ApprovalFlowExecutionSummary {
+  id: string;
+  flow_id?: string | null;
+  flow_name?: string | null;
+}
+
+/**
  * A pending human decision surfaced by the approvals API.
  *
  * Two flavours share this shape:
@@ -1705,6 +1764,16 @@ export interface ApprovalRequest {
   /** The runtime session the call came from, when the agent had one. */
   runtime_session_id?: string | null;
   managed_agent_name?: string | null;
+  /** The credential the caller authenticated with. Known for every API call. */
+  api_key_id?: string | null;
+  /**
+   * The same four facts, named. Absent on older servers, in which case the
+   * ids above still carry the links.
+   */
+  agent?: ApprovalAgentSummary | null;
+  api_key?: ApprovalApiKeySummary | null;
+  session?: ApprovalSessionSummary | null;
+  flow_execution?: ApprovalFlowExecutionSummary | null;
   webhook_posted_at?: string | null;
   webhook_error?: string | null;
   is_question?: boolean;

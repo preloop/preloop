@@ -26,6 +26,7 @@ import '../../components/resource-actions.ts';
 import '../../components/list-selection.ts';
 import '../../components/talk-button.ts';
 import '../../components/confirm-dialog.ts';
+import '../../components/token-figures.ts';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
 import {
@@ -50,6 +51,7 @@ import type {
   ManagedAgentSummary,
   AccountGatewayUsageSummaryResponse,
   AIModel,
+  GatewayTokenUsage,
 } from '../../types';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
@@ -185,7 +187,14 @@ const AGENT_LIFECYCLE_WORDING: Record<
 };
 
 export type AgentListSortKey =
-  'agent' | 'status' | 'owner' | 'model' | 'requests' | 'spend' | 'last_seen';
+  | 'agent'
+  | 'status'
+  | 'owner'
+  | 'model'
+  | 'requests'
+  | 'tokens'
+  | 'spend'
+  | 'last_seen';
 
 export type SortDirection = 'asc' | 'desc';
 
@@ -209,10 +218,20 @@ export interface AgentListRow {
   modelId: string | null;
   modelGated: boolean;
   requests: number;
+  /**
+   * The token split behind the spend, or null for a row nothing measured
+   * tokens for (a flow node, whose stats window may hold no run).
+   */
+  tokenUsage: GatewayTokenUsage | null;
   spend: number;
   lastSeen: string | null;
   /** The original API item, so row actions keep working on the real object. */
   source: any;
+}
+
+/** Total tokens for sorting; an unmeasured row sorts as zero, not as noise. */
+function tokenTotal(usage: GatewayTokenUsage | null): number {
+  return Number(usage?.total_tokens || 0);
 }
 
 function timestampValue(value: string | null): number {
@@ -250,6 +269,8 @@ function compareRowsByKey(
       });
     case 'requests':
       return a.requests - b.requests;
+    case 'tokens':
+      return tokenTotal(a.tokenUsage) - tokenTotal(b.tokenUsage);
     case 'spend':
       return a.spend - b.spend;
     case 'last_seen':
@@ -578,6 +599,11 @@ export class AgentsView extends LitElement {
       }
       .col-requests {
         width: 110px;
+      }
+      /* Tokens read before cost, so the pair sits together and the wider of
+         the two gets the room. */
+      .col-tokens {
+        width: 190px;
       }
       .col-spend {
         width: 110px;
@@ -3341,6 +3367,7 @@ export class AgentsView extends LitElement {
           modelId: item.ai_model_id || null,
           modelGated: Boolean(item.ai_model_id),
           requests: stats.total_execs || 0,
+          tokenUsage: stats.token_usage || null,
           spend: stats.estimated_cost || 0,
           lastSeen: stats.last_seen_at || null,
           source: item,
@@ -3370,6 +3397,7 @@ export class AgentsView extends LitElement {
         modelId: model.modelId,
         modelGated: model.gated,
         requests: agent.total_requests || 0,
+        tokenUsage: agent.token_usage || null,
         spend: agent.estimated_cost || 0,
         lastSeen: live?.lastActivityAt || agent.last_seen_at || null,
         source: agent,
@@ -3502,6 +3530,9 @@ export class AgentsView extends LitElement {
           }
         </td>
         <td class="numeric">${(row.requests || 0).toLocaleString()}</td>
+        <td class="numeric">
+          <token-figures .usage=${row.tokenUsage}></token-figures>
+        </td>
         <td class="numeric">${this.formatMoney(row.spend)}</td>
         <td
           class="muted-cell"
@@ -3606,6 +3637,7 @@ export class AgentsView extends LitElement {
                 <col class="col-owner" />
                 <col class="col-model" />
                 <col class="col-requests" />
+                <col class="col-tokens" />
                 <col class="col-spend" />
                 <col class="col-last-seen" />
                 <col class="col-actions" />
@@ -3626,6 +3658,12 @@ export class AgentsView extends LitElement {
                   ${this.renderSortableHeader('owner', 'Owner')}
                   ${this.renderSortableHeader('model', 'Model')}
                   ${this.renderSortableHeader('requests', 'Requests', true)}
+                  ${this.renderSortableHeader(
+                    'tokens',
+                    'Tokens',
+                    true,
+                    'Tokens, input and output'
+                  )}
                   ${this.renderSortableHeader(
                     'spend',
                     '$ est.',

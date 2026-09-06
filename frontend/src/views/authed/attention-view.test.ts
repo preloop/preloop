@@ -289,6 +289,75 @@ describe('AttentionView', () => {
     expect(detail.getAttribute('title')).to.not.be.null;
   });
 
+  it('attributes an approval row to its agent, key, session and run', async () => {
+    approvalsResponse = [
+      {
+        id: 'approval-1',
+        tool_name: 'Bash',
+        status: 'pending',
+        requested_at: new Date(Date.now() - 60_000).toISOString(),
+        // Empty denormalized name, resolved summaries present: the shape that
+        // used to render as "AI agent".
+        managed_agent_name: null,
+        agent: {
+          id: 'agent-1',
+          name: 'Claude Code (laptop)',
+          kind: 'claude_code',
+        },
+        api_key: { id: 'key-1', name: 'claude-code-laptop' },
+        session: { id: 'session-1', subject: 'feature/attribution' },
+        flow_execution: {
+          id: 'exec-1',
+          flow_id: 'flow-1',
+          flow_name: 'Nightly audit',
+        },
+      },
+    ];
+    const el = await mount();
+
+    const line = el.shadowRoot!.querySelector(
+      '#approvals attribution-line'
+    ) as HTMLElement & { shadowRoot: ShadowRoot };
+    const text = line.shadowRoot.textContent!.replace(/\s+/g, ' ').trim();
+    expect(text).to.contain('Claude Code (laptop)');
+    expect(text).to.contain('claude-code-laptop');
+    expect(text).to.contain('feature/attribution');
+    expect(text).to.contain('Nightly audit');
+    expect(
+      Array.from(line.shadowRoot.querySelectorAll('a')).map((a) =>
+        a.getAttribute('href')
+      )
+    ).to.deep.equal([
+      '/console/agents/agent-1',
+      '/console/settings/api-keys/key-1',
+      '/console/runtime-sessions?sessionId=session-1',
+      '/console/flows/executions/exec-1',
+    ]);
+    expect(
+      el.shadowRoot!.querySelector('#approvals')!.textContent
+    ).to.not.contain('AI agent');
+  });
+
+  it('attributes a key-only approval to the key alone', async () => {
+    approvalsResponse = [
+      {
+        id: 'approval-1',
+        tool_name: 'Bash',
+        status: 'pending',
+        requested_at: new Date(Date.now() - 60_000).toISOString(),
+        api_key: { id: 'key-2', name: 'ci-deploy' },
+      },
+    ];
+    const el = await mount();
+
+    const line = el.shadowRoot!.querySelector(
+      '#approvals attribution-line'
+    ) as HTMLElement & { shadowRoot: ShadowRoot };
+    expect(line.shadowRoot.textContent!.replace(/\s+/g, ' ').trim()).to.equal(
+      'Key ci-deploy'
+    );
+  });
+
   it('approves an approval from its row', async () => {
     const el = await mount();
 

@@ -6,6 +6,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import type { ObservedSession } from '../utils/session-observer';
 import { formatCost, formatNumber } from '../utils/session-observer';
 import consoleStyles from '../styles/console-styles.css?inline';
+import './token-figures.ts';
 
 @customElement('session-list-panel')
 export class SessionListPanel extends LitElement {
@@ -212,9 +213,11 @@ export class SessionListPanel extends LitElement {
                 <div class="metric">
                   ${formatNumber(session.totalRequests)} requests
                 </div>
+                <!-- Tokens before cost: the split says whether a session is
+                     expensive because it reads a lot or writes a lot. -->
                 <div class="metric">
-                  ${formatNumber(session.tokenUsage.total_tokens)} tokens ·
-                  ${formatCost(session.estimatedCost)}
+                  <token-figures .usage=${session.tokenUsage}></token-figures>
+                  · ${formatCost(session.estimatedCost)}
                 </div>
               </div>
               ${this.renderWasteBadge(session)}

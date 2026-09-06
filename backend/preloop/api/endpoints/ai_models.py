@@ -277,11 +277,7 @@ def get_ai_models_overview(
                 total_requests=requests,
                 successful_requests=max(requests - failed, 0),
                 failed_requests=failed,
-                token_usage=GatewayTokenUsage(
-                    prompt_tokens=usage["prompt_tokens"] if usage else 0,
-                    completion_tokens=usage["completion_tokens"] if usage else 0,
-                    total_tokens=usage["total_tokens"] if usage else 0,
-                ),
+                token_usage=GatewayTokenUsage.from_row(usage),
                 estimated_cost=usage["estimated_cost"] if usage else 0.0,
                 unpriced_request_count=usage["unpriced_request_count"] if usage else 0,
                 active_session_count=active_sessions.get(model_id, 0),

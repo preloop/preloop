@@ -66,6 +66,7 @@ import type {
   AccountGatewayUsageSummaryResponse,
   AccountRateLimitReportResponse,
   AIModelOverviewItem,
+  GatewayTokenUsage,
   GatewayUsageBySession,
   GatewayUsageByTool,
   GatewayUsageSearchResultItem,
@@ -75,6 +76,7 @@ import type {
 } from '../../types';
 import { parseUTCDate } from '../../utils/date';
 import { formatRelativeTime } from '../../components/relative-time-label';
+import { sumTokenUsage } from '../../components/token-figures';
 import { executionSubjectCss } from '../../utils/execution-subject';
 import {
   hasUsageBreakdown,
@@ -3703,7 +3705,12 @@ export class DashboardView extends AuthedElement {
   private get inventoryAgentRows(): InventoryAgentRow[] {
     const totals = new Map<
       string,
-      { requests: number; tokens: number; cost: number }
+      {
+        requests: number;
+        tokens: number;
+        tokenUsage: GatewayTokenUsage | null;
+        cost: number;
+      }
     >();
     for (const session of this.gatewaySummary?.usage_by_session || []) {
       const agent = this.getManagedAgentForUsageSession(session);
@@ -3711,10 +3718,15 @@ export class DashboardView extends AuthedElement {
       const running = totals.get(agent.id) || {
         requests: 0,
         tokens: 0,
+        tokenUsage: null,
         cost: 0,
       };
       running.requests += session.request_count || 0;
       running.tokens += session.token_usage?.total_tokens || 0;
+      running.tokenUsage = sumTokenUsage([
+        running.tokenUsage,
+        session.token_usage,
+      ]);
       running.cost += session.estimated_cost || 0;
       totals.set(agent.id, running);
     }
@@ -3728,6 +3740,7 @@ export class DashboardView extends AuthedElement {
         modelAlias: agent.latest_model_alias || agent.configured_model_alias,
         requests: usage?.requests ?? 0,
         tokens: usage?.tokens ?? 0,
+        tokenUsage: usage?.tokenUsage ?? null,
         cost: usage?.cost ?? 0,
         lastSeenAt: agent.last_seen_at || agent.last_activity_at || null,
       };
@@ -3763,9 +3776,13 @@ export class DashboardView extends AuthedElement {
 
   private get inventoryFlowRows(): InventoryFlowRow[] {
     const costs = new Map<string, number>();
+    // Tokens come from the same per-flow aggregate as the cost, so the row
+    // states the volume that earned the dollar figure over the same range.
+    const tokens = new Map<string, GatewayTokenUsage | null>();
     for (const flow of this.gatewaySummary?.usage_by_flow || []) {
       if (flow.flow_id) {
         costs.set(flow.flow_id, flow.estimated_cost || 0);
+        tokens.set(flow.flow_id, flow.token_usage || null);
       }
     }
 
@@ -3829,6 +3846,7 @@ export class DashboardView extends AuthedElement {
           : null,
         runs: counted?.runs ?? 0,
         failed: counted?.failed ?? 0,
+        tokenUsage: tokens.get(flow.id) ?? null,
         cost: costs.get(flow.id) ?? 0,
       };
     });
@@ -3856,6 +3874,7 @@ export class DashboardView extends AuthedElement {
         provider: model.provider_name || 'Unknown',
         requests: used?.total_requests ?? 0,
         tokens: used?.token_usage?.total_tokens ?? 0,
+        tokenUsage: used?.token_usage ?? null,
         cost: used?.estimated_cost ?? 0,
       };
     });
@@ -3874,6 +3893,7 @@ export class DashboardView extends AuthedElement {
         provider: model.provider_name || 'Unknown',
         requests: model.request_count || 0,
         tokens: model.token_usage?.total_tokens || 0,
+        tokenUsage: model.token_usage || null,
         cost: model.estimated_cost || 0,
       });
     }
@@ -3886,27 +3906,52 @@ export class DashboardView extends AuthedElement {
    * and a human; flows carry no owner at all, so there is no flows column.
    */
   private get inventoryUserRows(): InventoryUserRow[] {
-    const perAgent = new Map<string, { tokens: number; cost: number }>();
+    const perAgent = new Map<
+      string,
+      { tokens: number; tokenUsage: GatewayTokenUsage | null; cost: number }
+    >();
     for (const session of this.gatewaySummary?.usage_by_session || []) {
       const agent = this.getManagedAgentForUsageSession(session);
       if (!agent) continue;
-      const running = perAgent.get(agent.id) || { tokens: 0, cost: 0 };
+      const running = perAgent.get(agent.id) || {
+        tokens: 0,
+        tokenUsage: null,
+        cost: 0,
+      };
       running.tokens += session.token_usage?.total_tokens || 0;
+      running.tokenUsage = sumTokenUsage([
+        running.tokenUsage,
+        session.token_usage,
+      ]);
       running.cost += session.estimated_cost || 0;
       perAgent.set(agent.id, running);
     }
 
     const byOwner = new Map<
       string,
-      { agents: number; tokens: number; cost: number }
+      {
+        agents: number;
+        tokens: number;
+        tokenUsage: GatewayTokenUsage | null;
+        cost: number;
+      }
     >();
     for (const agent of this.managedAgents) {
       const ownerId = agent.owner_user_id;
       if (!ownerId) continue;
-      const running = byOwner.get(ownerId) || { agents: 0, tokens: 0, cost: 0 };
+      const running = byOwner.get(ownerId) || {
+        agents: 0,
+        tokens: 0,
+        tokenUsage: null,
+        cost: 0,
+      };
       running.agents += 1;
       const usage = perAgent.get(agent.id);
       running.tokens += usage?.tokens || 0;
+      running.tokenUsage = sumTokenUsage([
+        running.tokenUsage,
+        usage?.tokenUsage ?? null,
+      ]);
       running.cost += usage?.cost || 0;
       byOwner.set(ownerId, running);
     }
@@ -3923,6 +3968,7 @@ export class DashboardView extends AuthedElement {
         lastLoginAt: user.last_login || null,
         agentsOwned: owned?.agents ?? 0,
         tokens: owned?.tokens ?? 0,
+        tokenUsage: owned?.tokenUsage ?? null,
         cost: owned?.cost ?? 0,
       };
     });

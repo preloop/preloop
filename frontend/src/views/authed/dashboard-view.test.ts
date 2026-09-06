@@ -728,7 +728,17 @@ describe('DashboardView', () => {
     // Tokens lead, dollars are one toggle away.
     expect(usageContent).to.contain('1.5K');
     expect(usageContent).to.contain('tokens · 30d');
-    expect(usageContent).to.contain('1K prompt');
+    // The split lives in the figures element: input and output separately.
+    const figures = usageCard?.shadowRoot?.querySelector('token-figures') as
+      (HTMLElement & { updateComplete: Promise<unknown> }) | null;
+    expect(figures).to.exist;
+    await figures!.updateComplete;
+    const figuresText = (figures!.shadowRoot?.textContent || '').replace(
+      /\s+/g,
+      ' '
+    );
+    expect(figuresText).to.contain('1K in');
+    expect(figuresText).to.contain('500 out');
 
     // Global policies only, ordered daily then monthly; the agent policy is
     // summarised on one line.

@@ -4,6 +4,7 @@ import {
   formatSessionIdLabel,
   looksLikeFilePath,
   normalizeObservedSession,
+  normalizeObservedSessions,
 } from './session-observer';
 
 describe('session-observer titles', () => {
@@ -46,5 +47,66 @@ describe('session-observer titles', () => {
   it('formats short session ids without truncation', () => {
     expect(formatSessionIdLabel('abc12345')).to.equal('abc12345');
     expect(formatSessionIdLabel('runtime-session-empty')).to.equal('runtime-');
+  });
+});
+
+describe('session-observer merge', () => {
+  it('adds two rows for one session and recomputes the cache rate', () => {
+    // Two sources describe the same session (the runtime session list and
+    // the gateway breakdown). Counts add; the hit rate is read again from
+    // the merged counts rather than averaged, which is what sumTokenUsage
+    // does for every other list.
+    const merged = normalizeObservedSessions([
+      {
+        id: 'session-1',
+        total_requests: 2,
+        estimated_cost: 0.1,
+        token_usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 100,
+          total_tokens: 1100,
+          cache_read_tokens: 800,
+          uncached_input_tokens: 200,
+          cache_hit_ratio: 0.8,
+        },
+      },
+      {
+        id: 'session-1',
+        total_requests: 1,
+        estimated_cost: 0.05,
+        token_usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 100,
+          total_tokens: 1100,
+          cache_read_tokens: 200,
+          uncached_input_tokens: 800,
+          cache_hit_ratio: 0.2,
+        },
+      },
+    ]);
+
+    expect(merged.length).to.equal(1);
+    expect(merged[0].totalRequests).to.equal(3);
+    expect(merged[0].tokenUsage.input_tokens).to.equal(2000);
+    expect(merged[0].tokenUsage.output_tokens).to.equal(200);
+    expect(merged[0].tokenUsage.total_tokens).to.equal(2200);
+    expect(merged[0].tokenUsage.cache_read_tokens).to.equal(1000);
+    expect(merged[0].tokenUsage.cache_hit_ratio).to.equal(0.5);
+  });
+
+  it('leaves the merged rate unknown when neither row measured the cache', () => {
+    const merged = normalizeObservedSessions([
+      {
+        id: 'session-2',
+        token_usage: { prompt_tokens: 10, completion_tokens: 5 },
+      },
+      {
+        id: 'session-2',
+        token_usage: { prompt_tokens: 20, completion_tokens: 5 },
+      },
+    ]);
+
+    expect(merged[0].tokenUsage.input_tokens).to.equal(30);
+    expect(merged[0].tokenUsage.cache_hit_ratio).to.equal(null);
   });
 });

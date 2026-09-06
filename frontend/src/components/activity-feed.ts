@@ -27,6 +27,8 @@ import {
   renderExecutionSubject,
   type ExecutionSubjectSource,
 } from '../utils/execution-subject';
+import './attribution-line';
+import type { AttributionSource } from './attribution-line';
 
 export type FeedTone = 'success' | 'warning' | 'danger' | 'neutral';
 
@@ -86,6 +88,12 @@ export interface FeedEvent {
   /** What it was done to: the flow, the agent, the model, the tool. */
   entity?: string;
   fields?: FeedField[];
+  /**
+   * Who asked, on approval rows: agent, key, session, run. Rendered as the
+   * attribution line so the body links the caller instead of naming it once
+   * in plain text.
+   */
+  attribution?: AttributionSource;
   /**
    * Which layer broke a failed run (#361). Only failed run rows carry it, and
    * only from servers that derive it; the row reads the same without it.
@@ -290,6 +298,40 @@ function firstString(
     if (typeof value === 'string' && value.trim()) return value.trim();
   }
   return null;
+}
+
+/**
+ * The attribution an approval payload carries, whatever it named the keys.
+ *
+ * Audit details and the live broadcast both hold ids and a denormalized
+ * agent name; neither holds the resolved key or session names, so the line
+ * shortens those to eight characters. Null when the payload says nothing
+ * about the caller, which keeps an empty line off the body.
+ */
+function approvalAttribution(
+  details: Record<string, any>
+): AttributionSource | undefined {
+  const source: AttributionSource = {
+    managed_agent_id: firstString(details, ['managed_agent_id', 'agent_id']),
+    managed_agent_name: firstString(details, [
+      'managed_agent_name',
+      'agent_name',
+    ]),
+    api_key_id: firstString(details, ['api_key_id']),
+    runtime_session_id: firstString(details, [
+      'runtime_session_id',
+      'session_id',
+    ]),
+    execution_id: firstString(details, ['execution_id', 'flow_execution_id']),
+    tool_args:
+      details.tool_args && typeof details.tool_args === 'object'
+        ? (details.tool_args as Record<string, unknown>)
+        : null,
+  };
+  const known = Object.entries(source).some(
+    ([key, value]) => key !== 'tool_args' && Boolean(value)
+  );
+  return known ? source : undefined;
 }
 
 /** 12.4k rather than 12403: the body is a glance, not a bill. */
@@ -668,14 +710,13 @@ export function feedEventFromAuditGroup(
         kind: 'approval' as const,
         entity: tool,
         actor: actor || undefined,
+        // The agent is not a field: it is the first part of the attribution
+        // line, next to the key, the session and the run.
+        attribution: approvalAttribution(details),
         fields: fieldList(
           field('Tool', tool),
           field('Decision', decision),
           field('Decided by', actor),
-          field(
-            'Agent',
-            firstString(details, ['managed_agent_name', 'agent_name'])
-          ),
           field(
             'Comment',
             firstString(details, ['comment', 'reason', 'decision_reason']),
@@ -888,6 +929,7 @@ export function feedEventFromRealtime(
       eventType: type,
       entity: String(tool),
       actor: by || undefined,
+      attribution: approvalAttribution(message),
       fields: fieldList(
         field('Tool', tool),
         field(
@@ -901,7 +943,6 @@ export function feedEventFromRealtime(
                 : 'Pending'
         ),
         field('Decided by', by),
-        field('Agent', message.managed_agent_name),
         field('Comment', message.comment || message.reason, { wide: true }),
         requestId
           ? { label: 'Request', value: shortId(requestId), href, copy: true }
@@ -1432,6 +1473,11 @@ export class ActivityFeed extends LitElement {
           calc(var(--sl-spacing-medium) + 14px);
       }
 
+      /* Who asked reads first, above the facts about what they asked for. */
+      .body-attribution {
+        margin-bottom: var(--sl-spacing-x-small);
+      }
+
       .fields {
         display: grid;
         gap: var(--sl-spacing-x-small) var(--sl-spacing-medium);
@@ -1940,6 +1986,14 @@ export class ActivityFeed extends LitElement {
       : '/console/audit';
     return html`
       <div class="row-body" id=${bodyId}>
+        ${
+          event.attribution
+            ? html`<attribution-line
+                class="body-attribution"
+                .source=${event.attribution}
+              ></attribution-line>`
+            : nothing
+        }
         <dl class="fields">
           ${this.bodyFields(event).map((item) => this.renderField(item))}
         </dl>
