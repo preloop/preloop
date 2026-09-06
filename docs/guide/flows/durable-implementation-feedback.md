@@ -133,15 +133,26 @@ enables it and retains both workspace and native artifacts for seven days. Copy
 and review that file with your installation values; do not enable it merely by
 setting an environment variable on the Helm client or CI job.
 
-The overlay caps compressed uploads at 16 MiB through
+The example overlay caps compressed uploads at 16 MiB through
 `WORKSPACE_SNAPSHOT_MAX_BYTES`, which applies to both artifact kinds. This is below
-the chart's default 32 MiB ingress and console proxy body limit. Oversized archives
+the chart's default 32 MiB ingress and console proxy body limit. Measure a
+representative workspace and native-session archive locally before choosing this
+limit: repository history and generated assets can exceed it. For example, a
+44.5 MiB compressed checkpoint requires a larger application limit, such as
+64 MiB (`67108864` bytes), with `gateway.proxy.bodySize: "80m"` to update both
+ingress and console limits. Check for explicit ingress annotation overrides in
+the installation values. Oversized archives
 fail explicitly; increase application and every proxy limit together only after
 checking memory and database capacity. Expanded archives retain their separate
 `FLOW_ARTIFACT_EXPANDED_MAX_BYTES` limit (default 2 GiB), and
 `FLOW_ARTIFACT_ACCOUNT_QUOTA_BYTES` limits stored account data (default 4 GiB).
 Retention consumes that quota, so cleanup and database headroom must cover the
 selected retention window. The checkpoint interval defaults to 300 seconds.
+Upload buffering, encryption and database driver copies can require several times
+the compressed archive size in memory. The expanded-size limit is validated with
+streaming reads, but it still bounds restore disk usage and processing work.
+Keep upload concurrency bounded during initial validation; increasing a size
+limit alone does not establish sufficient memory or storage headroom.
 
 Helm merges maps but **replaces lists**. Merge these entries with any existing
 `extraEnv`, preserving database, private-CA and other installation entries. An

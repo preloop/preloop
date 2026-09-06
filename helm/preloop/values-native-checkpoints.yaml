@@ -1,4 +1,5 @@
-# Optional native-conversation and workspace checkpoint overlay.
+# Optional example native-conversation and workspace checkpoint overlay.
+# Size a representative archive before use; 16 MiB will not fit every repository.
 # Deploy the transaction-resilience backend and EE companion first.
 # Review docs/guide/flows/durable-implementation-feedback.md before enabling.
 #
