@@ -52,7 +52,16 @@ async def authenticate_bearer_token(
     if not token:
         return None
 
+    from preloop.api.loop_safety import run_db_off_loop
+
     user = await get_user_from_token_if_valid(token, db)
+    return await run_db_off_loop(lambda: _resolve_bearer_context(token, db, user))
+
+
+def _resolve_bearer_context(
+    token: str, db: Session, user: Optional[User]
+) -> Optional[ModelGatewayAuthContext]:
+    """Resolve remaining gateway credentials on the session's worker thread."""
     if user:
         api_key = crud_api_key.get_by_key(db, key=token)
         if api_key is not None:

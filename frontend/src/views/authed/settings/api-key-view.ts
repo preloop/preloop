@@ -47,11 +47,9 @@ export class ApiKeyView extends LitElement {
         overflow-y: auto;
       }
 
-      .container {
-        padding: var(--sl-spacing-large);
-        max-width: 1200px;
-        margin: 0 auto;
-      }
+      /* No page geometry here: the shell owns the width and the side inset
+         (styles/console-styles.css, "The page box"), so .container keeps the
+         shared flex column and adds nothing. */
 
       .loading-container {
         display: flex;

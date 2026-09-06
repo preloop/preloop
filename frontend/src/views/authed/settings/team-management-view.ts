@@ -99,9 +99,10 @@ export class TeamManagementView extends LitElement {
     unsafeCSS(consoleStyles),
     consoleDialogStyles,
     css`
+      /* No page padding here: the shell pays the side inset
+         (styles/console-styles.css, "The page box"). */
       :host {
         display: block;
-        padding: 2rem;
       }
 
       .header {

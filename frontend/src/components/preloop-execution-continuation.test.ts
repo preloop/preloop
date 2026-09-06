@@ -239,6 +239,7 @@ describe('Execution PR follow-up adoption', () => {
 
   for (const change of [
     { status: 'RUNNING' },
+    { status: 'COMPLETED' },
     { status: 'FAILED' },
     { result: {} },
     {

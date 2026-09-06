@@ -50,6 +50,10 @@ describe('DashboardView', () => {
   let breakdownCalls = 0;
   /** Holds every gateway summary call, for tests about a range change. */
   let summaryGate: Promise<void> | null;
+  /** Holds the Audit trail's count call (`limit=1`), not the page of events. */
+  let auditCountGate: Promise<void> | null;
+  /** Holds the secondary audit pass (exceptions, trackers, tool metrics). */
+  let auditSecondaryGate: Promise<void> | null;
   /** null means RBAC is off, so every permission check passes. */
   let mePermissions: string[] | null;
 
@@ -62,6 +66,8 @@ describe('DashboardView', () => {
     breakdownGate = null;
     breakdownCalls = 0;
     summaryGate = null;
+    auditCountGate = null;
+    auditSecondaryGate = null;
     mePermissions = null;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
@@ -462,10 +468,16 @@ describe('DashboardView', () => {
         }
 
         if (url.startsWith('/api/v1/audit-logs/grouped')) {
+          if (/[?&]limit=1(&|$)/.test(url) && auditCountGate) {
+            await auditCountGate;
+          }
           return json(auditResponse);
         }
 
         if (url.startsWith('/api/v1/trackers')) {
+          if (auditSecondaryGate) {
+            await auditSecondaryGate;
+          }
           return json(trackersResponse);
         }
 
@@ -999,12 +1011,114 @@ describe('DashboardView', () => {
           !element['fetchingAgents'] &&
           !element['fetchingBudget'] &&
           !element['fetchingAudit'] &&
-          !element['fetchingMCPAndTools'],
+          !element['fetchingMCPAndTools'] &&
+          // Onboarding prompts wait for the flows and their runs too, so a
+          // test about one is only meaningful once those have answered.
+          element['onboardingResolved'],
         'dashboard did not finish loading'
       );
       await element.updateComplete;
       return element;
     }
+
+    it('draws both plane rows before the numbers arrive, with no status and no prompt', async () => {
+      let releaseSummary = () => {};
+      summaryGate = new Promise<void>((resolve) => {
+        releaseSummary = resolve;
+      });
+
+      const element = await mountDashboard();
+      await element.updateComplete;
+
+      const rows = element.shadowRoot?.querySelectorAll('.plane-row') || [];
+      expect(rows.length, 'both planes on the first frame').to.equal(2);
+      expect(rows[0].textContent).to.contain('Model gateway');
+      expect(rows[0].textContent).to.contain('/openai/v1');
+      expect(rows[1].textContent).to.contain('Tool firewall');
+      // No status and no metrics until the requests behind them answer: a
+      // neutral dot and "No traffic yet" are claims, not blanks.
+      expect(
+        element.shadowRoot?.querySelectorAll('.plane-dot.pending').length,
+        'both dots pending'
+      ).to.equal(2);
+      expect(
+        element.shadowRoot?.querySelectorAll('.plane-dot.served').length
+      ).to.equal(0);
+      expect(rows[0].querySelector('.plane-stats sl-skeleton'), 'metrics cell')
+        .to.exist;
+      // The waiting cell says so itself: sl-skeleton has no role, so a label
+      // on it alone leaves the row reading as empty.
+      const waiting = rows[0].querySelector('.plane-stats') as HTMLElement;
+      expect(waiting.getAttribute('role')).to.equal('status');
+      expect(waiting.getAttribute('aria-busy')).to.equal('true');
+      expect(waiting.getAttribute('aria-label')).to.contain('Loading');
+      expect(
+        waiting.querySelector('sl-skeleton')?.getAttribute('aria-hidden')
+      ).to.equal('true');
+      expect(element.shadowRoot?.textContent).to.not.contain('No traffic yet');
+      // And no onboarding line while the agents list is still unanswered.
+      expect(element.shadowRoot?.querySelector('.connect-first')).to.not.exist;
+      expect(element.shadowRoot?.querySelector('.welcome-container')).to.not
+        .exist;
+
+      releaseSummary();
+      await waitUntil(
+        () => !element['fetchingGatewaySummary'],
+        'summary never landed'
+      );
+      await element.updateComplete;
+
+      const filled = element.shadowRoot?.querySelector(
+        '.plane-row .plane-stats'
+      ) as HTMLElement;
+      expect(filled.querySelector('sl-skeleton')).to.not.exist;
+      expect(filled.textContent).to.contain('requests');
+      expect(
+        element.shadowRoot?.querySelectorAll('.plane-dot.served').length
+      ).to.be.greaterThan(0);
+    });
+
+    it('holds the get-started card until every onboarding input has answered', async () => {
+      agentsResponse = { ...agentsResponse, total: 0, items: [] };
+      flowsResponse = [];
+      flowExecutionsResponse = [];
+      runtimeSessionsResponse = { items: [], total: 0 };
+      let releaseFlows = () => {};
+      flowsGate = new Promise<void>((resolve) => {
+        releaseFlows = resolve;
+      });
+
+      const element = await mountDashboard();
+      await waitUntil(() => !element['fetchingAgents'], 'fold never finished');
+      await element.updateComplete;
+
+      // Agents answered "none", the flows list has not answered at all. A
+      // page that decides here takes the whole console away from an account
+      // that turns out to have flows.
+      expect(element['onboardingResolved'], 'still unresolved').to.be.false;
+      expect(
+        element.shadowRoot?.querySelector('.welcome-container'),
+        'no get-started card before the flows list'
+      ).to.not.exist;
+      expect(
+        element.shadowRoot?.querySelector('preloop-deploy-wizard'),
+        'no wizard before the flows list'
+      ).to.not.exist;
+      expect(element.shadowRoot?.querySelector('.gateway-card'), 'the console')
+        .to.exist;
+
+      releaseFlows();
+      await waitUntil(
+        () => element['onboardingResolved'],
+        'onboarding never resolved'
+      );
+      await element.updateComplete;
+
+      expect(
+        element.shadowRoot?.querySelector('.welcome-container'),
+        'get-started card after every input answered'
+      ).to.exist;
+    });
 
     it('shows both endpoints without a disclosure', async () => {
       const element = await mountLoaded();
@@ -1365,7 +1479,10 @@ describe('DashboardView', () => {
           !element['fetchingAgents'] &&
           !element['fetchingBudget'] &&
           !element['fetchingAudit'] &&
-          !element['fetchingMCPAndTools'],
+          !element['fetchingMCPAndTools'] &&
+          // Onboarding prompts wait for the flows and their runs too, so a
+          // test about one is only meaningful once those have answered.
+          element['onboardingResolved'],
         'dashboard did not finish loading'
       );
       await element.updateComplete;
@@ -1386,6 +1503,188 @@ describe('DashboardView', () => {
       expect(
         element.shadowRoot?.querySelectorAll('time-range-select').length
       ).to.equal(0);
+    });
+
+    it('states the audit trail under the Inventory, in the page range', async () => {
+      const inRange = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      allApprovalRequestsResponse = [
+        ...pendingApprovalRequestsResponse,
+        {
+          id: 'approval-2',
+          tool_name: 'send_email',
+          status: 'approved',
+          requested_at: inRange,
+          resolved_at: inRange,
+        },
+        {
+          id: 'approval-3',
+          tool_name: 'rollback_deployment',
+          status: 'declined',
+          requested_at: inRange,
+          resolved_at: inRange,
+        },
+        // Decided long before the range: a record, but not this window's.
+        {
+          id: 'approval-4',
+          tool_name: 'refund_order',
+          status: 'approved',
+          requested_at: '2026-03-07T09:00:00Z',
+          resolved_at: '2026-03-07T09:02:00Z',
+        },
+      ];
+
+      const element = await mountLoaded();
+
+      const strip = element.shadowRoot?.querySelector(
+        '.audit-trail'
+      ) as HTMLElement;
+      expect(strip, 'the audit trail line').to.exist;
+      expect(strip.textContent).to.contain('Audit trail');
+      const links = Array.from(strip.querySelectorAll('a'));
+      expect(links.map((link) => link.getAttribute('href'))).to.deep.equal([
+        '/console/approvals',
+        '/console/runtime-sessions',
+        '/console/audit',
+      ]);
+      // Two decisions in the range; the March one is outside it.
+      const linkText = (link: HTMLAnchorElement) =>
+        (link.textContent ?? '').replace(/\s+/g, ' ').trim();
+      expect(linkText(links[0])).to.contain('2 approvals decided');
+      expect(linkText(links[1])).to.contain('1 session');
+      expect(linkText(links[2])).to.contain('1 audit event');
+
+      // It is a line under the Inventory, not a row inside it.
+      const inventory = element.shadowRoot?.querySelector(
+        'inventory-card'
+      ) as HTMLElement;
+      expect(strip.closest('.main-column'), 'main column').to.exist;
+      expect(strip.getBoundingClientRect().top).to.be.greaterThan(
+        inventory.getBoundingClientRect().top
+      );
+      expect(inventory.contains(strip)).to.be.false;
+
+      // The count of audit events is scoped to the range on screen.
+      const counted = fetchStub
+        .getCalls()
+        .map((call) => String(call.args[0]))
+        .filter(
+          (url) =>
+            url.startsWith('/api/v1/audit-logs/grouped') &&
+            url.includes('limit=1') &&
+            url.includes('start_date=')
+        );
+      expect(counted.length, 'one range-scoped audit count').to.equal(1);
+    });
+
+    it('withholds the audit trail while a range change re-measures it', async () => {
+      const inRange = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      allApprovalRequestsResponse = [
+        {
+          id: 'approval-2',
+          tool_name: 'send_email',
+          status: 'approved',
+          requested_at: inRange,
+          resolved_at: inRange,
+        },
+      ];
+
+      const element = await mountLoaded();
+      const trailText = () =>
+        (element.shadowRoot?.querySelector('.audit-trail')?.textContent ?? '')
+          .replace(/\s+/g, ' ')
+          .trim();
+      expect(trailText(), 'the 30d line').to.contain('1 audit event');
+
+      // The new range holds more of everything. A range change keeps the
+      // other fetching flags false on purpose, so without a flag of its own
+      // the line would restate these old figures under the new "24h" label.
+      let releaseCount = () => {};
+      auditCountGate = new Promise<void>((resolve) => {
+        releaseCount = resolve;
+      });
+      auditResponse = { ...auditResponse, total: 9 };
+      runtimeSessionsResponse = { ...runtimeSessionsResponse, total: 4 };
+
+      const usage = element.shadowRoot?.querySelector('usage-card') as Element;
+      usage.dispatchEvent(
+        new CustomEvent('range-change', {
+          detail: { value: 'day' },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await waitUntil(
+        () => element['totalRuntimeSessionsCount'] === 4,
+        'the fold never reloaded for the new range'
+      );
+      await element.updateComplete;
+
+      expect(element['auditTrailResolved'], 'still measuring').to.be.false;
+      expect(
+        element.shadowRoot?.querySelector('.audit-trail'),
+        'no line while the count is still open'
+      ).to.not.exist;
+
+      auditCountGate = null;
+      releaseCount();
+      await waitUntil(
+        () => element['auditTrailResolved'],
+        'the audit trail never resolved'
+      );
+      await element.updateComplete;
+
+      const settled = trailText();
+      expect(settled, 'the new range label').to.contain('24h');
+      expect(settled).to.contain('4 sessions');
+      expect(settled).to.contain('9 audit events');
+    });
+
+    it('shows the audit trail without waiting on the secondary audit pass', async () => {
+      let releaseSecondary = () => {};
+      auditSecondaryGate = new Promise<void>((resolve) => {
+        releaseSecondary = resolve;
+      });
+
+      const element = await mountDashboard();
+      await waitUntil(
+        () =>
+          !element['loading'] &&
+          !element['fetchingRecentExecutions'] &&
+          !element['fetchingAuditTrail'],
+        'trail figures never landed'
+      );
+      await element.updateComplete;
+
+      expect(element['fetchingAudit'], 'secondary pass still open').to.be.true;
+      expect(element['auditTrailResolved']).to.be.true;
+      expect(
+        element.shadowRoot?.querySelector('.audit-trail'),
+        'the line does not wait on exceptions and trackers'
+      ).to.exist;
+
+      releaseSecondary();
+      await waitUntil(
+        () => !element['fetchingAudit'],
+        'secondary pass never finished'
+      );
+    });
+
+    it('leaves the audit trail out when the range holds no record', async () => {
+      allApprovalRequestsResponse = [];
+      pendingApprovalRequestsResponse = [];
+      runtimeSessionsResponse = {
+        ...runtimeSessionsResponse,
+        total: 0,
+        items: [],
+      };
+      auditResponse = { groups: [], total: 0 };
+
+      const element = await mountLoaded();
+
+      expect(
+        element.shadowRoot?.querySelector('.audit-trail'),
+        'no line and no zeroes'
+      ).to.not.exist;
     });
 
     it('puts the Inventory under the Gateway card and the feed under Usage', async () => {

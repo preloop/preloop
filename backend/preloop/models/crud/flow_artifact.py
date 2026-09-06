@@ -14,9 +14,11 @@ def store(
     db: Session, *, values: dict[str, Any], quota_bytes: int
 ) -> models.FlowArtifact:
     """Serialize account writes and enforce retained ciphertext quota."""
+    # Serialize quota checks without blocking child audit/usage foreign keys.
+    # Account identity does not change, so NO KEY UPDATE is sufficient.
     db.query(models.Account).filter(
         models.Account.id == values["account_id"]
-    ).with_for_update().one()
+    ).with_for_update(key_share=True).one()
     size = (
         db.query(
             func.coalesce(

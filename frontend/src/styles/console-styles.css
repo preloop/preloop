@@ -13,6 +13,42 @@
     --console-text-meta: 0.8125rem; /* 13px */
     --console-text-eyebrow: 0.6875rem; /* 11px */
     --console-stat-value: 1.375rem; /* 22px */
+
+    /* The page box. One width and one side inset for every console page. */
+    --console-page-max-width: 80rem; /* 1280px */
+    --console-page-padding-x: 2rem;
+    --console-page-padding-x-compact: 1rem; /* Phones, under 768px */
+    --console-page-padding-top: 1rem;
+    --console-page-padding-bottom: 2rem;
+}
+
+/* =====================================================================
+   The page box.
+
+   Every console page starts its content on the same x, at 1440 and at
+   1024. The shell owns that: it centres one column of
+   --console-page-max-width and pays --console-page-padding-x on each side
+   (console-shell .main-content). A view therefore declares no max-width,
+   no auto margin and no side padding of its own; per-view overrides are
+   what used to make Approvals start 2rem further in than Flows and Audit
+   stop 80px short of it.
+
+   A page the shell hands the whole window (the agents canvas, a popup)
+   has no shell padding to inherit, so it reproduces the box with
+   .console-page rather than inventing numbers.
+   ===================================================================== */
+.console-page {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: var(--console-page-max-width);
+    margin-inline: auto;
+    padding-inline: var(--console-page-padding-x);
+}
+
+@media (max-width: 768px) {
+    .console-page {
+        padding-inline: var(--console-page-padding-x-compact);
+    }
 }
 
 a {

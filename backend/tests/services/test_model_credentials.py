@@ -502,7 +502,7 @@ class TestCapEnvEnforcement:
 
 
 class TestAttemptTimeout:
-    """A hanging primary must not consume the fallback's budget."""
+    """Attempt deadlines trigger fallback after shared-session work drains."""
 
     async def test_primary_timeout_triggers_fallback(self, mock_model, mock_db):
         _fallback_counters.clear()

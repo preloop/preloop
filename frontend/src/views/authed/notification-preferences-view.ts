@@ -118,11 +118,10 @@ export class NotificationPreferencesView extends AuthedElement {
   static styles = [
     consoleDialogStyles,
     css`
+      /* No page geometry here: the shell owns the width and the side inset
+         (styles/console-styles.css, "The page box"). */
       :host {
         display: block;
-        padding: var(--sl-spacing-large);
-        max-width: 900px;
-        margin: 0 auto;
       }
 
       .header {

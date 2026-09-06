@@ -78,7 +78,7 @@ export class PreloopExecutionContinuation extends LitElement {
   private eligible() {
     return (
       this.execution &&
-      ['SUCCEEDED', 'COMPLETED'].includes(this.execution.status) &&
+      this.execution.status === 'SUCCEEDED' &&
       Boolean(this.execution.result?.pr_url) &&
       !this.execution.result?.continuation?.thread_id &&
       !this.execution.trigger_event_details?._thread_id

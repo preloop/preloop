@@ -8,6 +8,9 @@ Implementation PRs can use [durable feedback subscriptions](docs/guide/flows/dur
 
 The [account kill switch](docs/guide/account-kill-switch.md) serializes halt transitions and runtime admission on the account row. Audit records and durable execution stop intent share the transition transaction. Monitors and recovery workers distinguish a stop request from confirmed runtime termination; approval deadlines recover once by their actual frozen interval.
 
+Database worker ownership, row-lock compatibility, and cancellation rules are
+documented in [Transactions and asynchronous request handling](docs/architecture/data-model.md#transactions-and-asynchronous-request-handling).
+
 ## High-Level Architecture
 
 ```mermaid
