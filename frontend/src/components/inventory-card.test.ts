@@ -147,6 +147,43 @@ describe('inventory-card', () => {
     localStorage.removeItem(INVENTORY_TAB_STORAGE_KEY);
   });
 
+  it('leads with tokens split in and out, before the money column', async () => {
+    const el = await card({
+      agentRows: [
+        agentRow({
+          tokens: 15500,
+          tokenUsage: {
+            prompt_tokens: 12400,
+            completion_tokens: 3100,
+            total_tokens: 15500,
+            input_tokens: 12400,
+            output_tokens: 3100,
+            cache_read_tokens: 8200,
+            cache_write_tokens: 0,
+            uncached_input_tokens: 3900,
+            cache_hit_ratio: 0.6777,
+          },
+        }),
+      ],
+    });
+
+    const headers = Array.from(el.shadowRoot!.querySelectorAll('table th')).map(
+      (th) => (th.textContent || '').trim()
+    );
+    expect(headers.indexOf('Tokens')).to.be.greaterThan(-1);
+    expect(headers.indexOf('Tokens')).to.be.lessThan(headers.indexOf('$ est.'));
+
+    const figures = el.shadowRoot!.querySelector(
+      'td[data-label="Tokens"] token-figures'
+    ) as HTMLElement & { updateComplete: Promise<unknown> };
+    expect(figures).to.exist;
+    await figures.updateComplete;
+    const text = (figures.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.contain('12.4K in');
+    expect(text).to.contain('3.1K out');
+    expect(text).to.contain('cache 68% hit');
+  });
+
   it('carries the counts in the tab labels', async () => {
     const el = await card();
     expect(tabText(el)).to.eql([

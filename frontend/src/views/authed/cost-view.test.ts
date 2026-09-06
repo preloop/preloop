@@ -170,6 +170,59 @@ describe('CostView', () => {
     expect(agentTable?.querySelector('th[scope="col"]')).to.exist;
   });
 
+  it('puts the token split ahead of the money in the agent table', async () => {
+    summaryPayload = {
+      ...summary,
+      usage_by_session: [
+        {
+          ...summary.usage_by_session[0],
+          token_usage: {
+            prompt_tokens: 12400,
+            completion_tokens: 3100,
+            total_tokens: 15500,
+            input_tokens: 12400,
+            output_tokens: 3100,
+            cache_read_tokens: 8200,
+            cache_write_tokens: 0,
+            uncached_input_tokens: 3900,
+            cache_hit_ratio: 0.6777,
+          },
+        },
+      ],
+    };
+    const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
+    await waitUntil(
+      () => (element as unknown as { loading: boolean }).loading === false
+    );
+    await element.updateComplete;
+
+    const table = element.shadowRoot!.querySelector(
+      'table[aria-label="Spend by agent"]'
+    )!;
+    const headers = Array.from(table.querySelectorAll('th')).map((th) =>
+      (th.textContent || '').replace(/\s+/g, ' ').trim()
+    );
+    const tokenIndex = headers.findIndex((header) =>
+      header.startsWith('Tokens')
+    );
+    const costIndex = headers.findIndex((header) => header.startsWith('Cost'));
+    expect(tokenIndex).to.be.greaterThan(-1);
+    expect(costIndex).to.be.greaterThan(-1);
+    expect(tokenIndex).to.be.lessThan(costIndex);
+
+    const figures = table.querySelector('token-figures') as HTMLElement & {
+      updateComplete: Promise<unknown>;
+    };
+    expect(figures).to.exist;
+    await figures.updateComplete;
+    const text = (figures.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.contain('12.4K in');
+    expect(text).to.contain('3.1K out');
+    // Expanded on this page: the hit and miss counts, not just the rate.
+    expect(text).to.contain('8.2K hit');
+    expect(text).to.contain('3.9K miss');
+  });
+
   it('carries the shared range control, restates the window and drops Refresh', async () => {
     const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
     await waitUntil(

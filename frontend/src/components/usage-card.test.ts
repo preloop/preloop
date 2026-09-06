@@ -19,6 +19,12 @@ function summaryFixture(
       prompt_tokens: 412100000,
       completion_tokens: 172200000,
       total_tokens: 584300000,
+      input_tokens: 412100000,
+      output_tokens: 172200000,
+      cache_read_tokens: 300000000,
+      cache_write_tokens: 2000000,
+      uncached_input_tokens: 110100000,
+      cache_hit_ratio: 0.7315,
     },
     estimated_cost: 33.57,
     budget: {
@@ -102,9 +108,18 @@ describe('usage-card', () => {
     const element = await renderCard();
     expect(text(element, '.primary-value')).to.equal('584.3M');
     expect(text(element, '.primary-label')).to.contain('tokens · 30d');
-    expect(text(element, '.secondary-line')).to.equal(
-      '412.1M prompt · 172.2M completion · 19.5M requests'
-    );
+    // The split lives in <token-figures>, so the line around it carries the
+    // requests and the figures carry in, out and the cache.
+    expect(text(element, '.secondary-line')).to.contain('19.5M requests');
+
+    const figures = element.shadowRoot!.querySelector('token-figures')!;
+    await (figures as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    const split = (figures.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+    expect(split).to.contain('412.1M in');
+    expect(split).to.contain('172.2M out');
+    expect(split).to.contain('300M hit');
+    expect(split).to.contain('110.1M miss');
   });
 
   it('appends tool calls to the secondary line when present', async () => {

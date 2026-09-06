@@ -79,6 +79,7 @@ function makeRow(overrides: Partial<AgentListRow>): AgentListRow {
     modelId: null,
     modelGated: false,
     requests: 0,
+    tokenUsage: null,
     spend: 0,
     lastSeen: null,
     source: {} as AgentListRow['source'],
@@ -254,6 +255,9 @@ describe('AgentsView', () => {
       'Owner',
       'Model',
       'Requests',
+      // Tokens come before cost: volume is the fact, price is the
+      // consequence of it.
+      'Tokens',
       '$ est.',
       'Last seen',
       'Actions',
@@ -261,11 +265,15 @@ describe('AgentsView', () => {
 
     // "$ est." is short enough to read as "dollar est." out loud, so the
     // sort button carries the full name.
-    const spendButton = headers[5].querySelector('.sort-button');
+    const spendButton = headers[6].querySelector('.sort-button');
     expect(spendButton?.getAttribute('aria-label')).to.equal('Estimated spend');
     expect(spendButton?.getAttribute('title')).to.equal('Estimated spend');
+    const tokensButton = headers[5].querySelector('.sort-button');
+    expect(tokensButton?.getAttribute('aria-label')).to.equal(
+      'Tokens, input and output'
+    );
 
-    const lastSeen = headers[6];
+    const lastSeen = headers[7];
     expect(lastSeen.getAttribute('aria-sort'), 'default sort').to.equal(
       'descending'
     );
@@ -275,7 +283,7 @@ describe('AgentsView', () => {
     await el.updateComplete;
     expect(
       el.shadowRoot
-        ?.querySelectorAll('table.agents-table thead th')[6]
+        ?.querySelectorAll('table.agents-table thead th')[7]
         .getAttribute('aria-sort')
     ).to.equal('ascending');
 
@@ -285,7 +293,7 @@ describe('AgentsView', () => {
       'table.agents-table thead th'
     );
     expect(after?.[0].getAttribute('aria-sort')).to.equal('ascending');
-    expect(after?.[6].getAttribute('aria-sort')).to.equal('none');
+    expect(after?.[7].getAttribute('aria-sort')).to.equal('none');
   });
 
   it('shows the status chip taxonomy and a right-aligned request count', async () => {
@@ -311,11 +319,56 @@ describe('AgentsView', () => {
     expect(numeric?.[0].textContent?.trim()).to.equal((1234).toLocaleString());
   });
 
+  it('states tokens before cost, split in and out with the cache rate', async () => {
+    agentItems = [
+      {
+        ...makeAgent('agent-1', 'Claude Code Workspace', 'claude_code'),
+        token_usage: {
+          prompt_tokens: 12400,
+          completion_tokens: 3100,
+          total_tokens: 15500,
+          input_tokens: 12400,
+          output_tokens: 3100,
+          cache_read_tokens: 8200,
+          cache_write_tokens: 300,
+          uncached_input_tokens: 3900,
+          cache_hit_ratio: 0.6777,
+        },
+      },
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const cells = Array.from(
+      el.shadowRoot?.querySelectorAll('tbody tr td') || []
+    );
+    const tokenIndex = cells.findIndex((cell) =>
+      cell.querySelector('token-figures')
+    );
+    const costIndex = cells.findIndex((cell) =>
+      (cell.textContent || '').includes('$0.42')
+    );
+    expect(tokenIndex, 'tokens are stated before cost').to.be.lessThan(
+      costIndex
+    );
+
+    const figures = cells[tokenIndex].querySelector('token-figures')!;
+    await (figures as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    const text = (figures.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.contain('12.4K in');
+    expect(text).to.contain('3.1K out');
+    expect(text).to.contain('cache 68% hit');
+    const exact = figures.shadowRoot?.querySelector('.figures');
+    expect(exact?.getAttribute('title')).to.contain('12,400 input tokens');
+  });
+
   it('shows a relative last seen with the absolute time on hover', async () => {
     const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
     await waitForAgents(el);
 
-    const cell = el.shadowRoot?.querySelectorAll('tbody td')[6];
+    const cell = el.shadowRoot?.querySelectorAll('tbody td')[7];
     expect(cell?.textContent?.trim()).to.not.contain('2026-03-10T10:00:00Z');
     expect(cell?.getAttribute('title'))
       .to.be.a('string')
@@ -638,6 +691,7 @@ describe('AgentsView', () => {
       'col-owner',
       'col-model',
       'col-requests',
+      'col-tokens',
       'col-spend',
       'col-last-seen',
       'col-actions',
@@ -790,7 +844,7 @@ describe('AgentsView', () => {
 
     const lastSeen = Array.from(
       el.shadowRoot?.querySelectorAll('tbody tr') || []
-    ).map((row) => row.children[6].textContent?.trim());
+    ).map((row) => row.children[7].textContent?.trim());
     expect(lastSeen).to.contain('10d ago');
     expect(lastSeen).to.contain(
       new Date(twoHundredDaysAgo).toLocaleDateString()
@@ -814,7 +868,7 @@ describe('AgentsView', () => {
 
     const listCell = el
       .shadowRoot!.querySelector('tbody tr')!
-      .children[6].textContent?.trim();
+      .children[7].textContent?.trim();
     expect(listCell).to.equal('6w ago');
 
     localStorage.setItem('preloop.agents.view_mode', 'cards');

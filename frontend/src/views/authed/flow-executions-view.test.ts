@@ -219,8 +219,11 @@ describe('FlowExecutionsView', () => {
     const cells = [
       ...el.shadowRoot!.querySelectorAll('tbody tr td.numeric'),
     ].map((cell) => (cell.textContent || '').trim());
+    // Tool calls, then tokens (empty here: this fixture carries no gateway
+    // token usage), then the cost those tokens bought.
     expect(cells).to.deep.equal([
       String(FINISHED_EXECUTION_TOOL_CALLS),
+      '',
       `$${FINISHED_EXECUTION_COST.toFixed(2)}`,
     ]);
   });
@@ -545,6 +548,8 @@ describe('FlowExecutionsView', () => {
         'Duration',
         'Model',
         'Tool calls',
+        // Tokens before cost.
+        'Tokens',
         '$ est.',
         '',
       ]);
@@ -666,6 +671,51 @@ describe('FlowExecutionsView', () => {
       expect((started?.textContent || '').trim()).to.not.contain('2026-03-09');
     });
 
+    it('states tokens before cost, split in and out', async () => {
+      const el = await renderRows([
+        {
+          id: 'exec-tokens',
+          flow_id: 'flow-1',
+          flow_name: 'Nightly Sync',
+          status: 'SUCCEEDED',
+          start_time: '2026-03-09T10:00:00Z',
+          end_time: '2026-03-09T10:01:00Z',
+          estimated_cost: 0.083,
+          token_usage: {
+            prompt_tokens: 12400,
+            completion_tokens: 3100,
+            total_tokens: 15500,
+            input_tokens: 12400,
+            output_tokens: 3100,
+            cache_read_tokens: 8200,
+            cache_write_tokens: 0,
+            uncached_input_tokens: 3900,
+            cache_hit_ratio: 0.6777,
+          },
+        },
+      ]);
+
+      const cells = Array.from(
+        el.shadowRoot?.querySelectorAll('tbody tr td') || []
+      );
+      const tokenIndex = cells.findIndex((cell) =>
+        cell.querySelector('token-figures')
+      );
+      const costIndex = cells.findIndex((cell) =>
+        (cell.textContent || '').includes('$0.08')
+      );
+      expect(tokenIndex).to.be.greaterThan(-1);
+      expect(tokenIndex, 'tokens before cost').to.be.lessThan(costIndex);
+
+      const figures = cells[tokenIndex].querySelector('token-figures')!;
+      await (figures as unknown as { updateComplete: Promise<unknown> })
+        .updateComplete;
+      const text = (figures.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+      expect(text).to.contain('12.4K in');
+      expect(text).to.contain('3.1K out');
+      expect(text).to.contain('cache 68% hit');
+    });
+
     it('shows the estimated cost, dashing an unpriced run', async () => {
       const el = await renderRows([
         {
@@ -690,7 +740,7 @@ describe('FlowExecutionsView', () => {
 
       const costCells = Array.from(
         el.shadowRoot?.querySelectorAll('tbody tr') || []
-      ).map((row) => (row.querySelectorAll('td')[7]?.textContent || '').trim());
+      ).map((row) => (row.querySelectorAll('td')[8]?.textContent || '').trim());
       expect(costCells).to.eql(['$0.08', '\u2014']);
     });
 

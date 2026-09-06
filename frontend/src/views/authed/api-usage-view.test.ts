@@ -319,4 +319,58 @@ describe('ApiUsageView', () => {
     expect(searchCall).to.not.equal(undefined);
     expect(String(searchCall?.args[0])).to.contain('limit=10');
   });
+
+  it('states tokens before cost, split in and out, and stays quiet on unreported cache', async () => {
+    const element = (await fixture(
+      html`<api-usage-view></api-usage-view>`
+    )) as ApiUsageView;
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).summary !== null,
+      'API usage view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const headers = Array.from(
+      element.shadowRoot!.querySelectorAll('.breakdown-header')
+    ).map((header) => (header.textContent || '').replace(/\s+/g, ' ').trim());
+    expect(headers.length).to.be.greaterThan(0);
+    for (const header of headers) {
+      expect(header.indexOf('Tokens')).to.be.greaterThan(-1);
+      expect(header.indexOf('Tokens')).to.be.lessThan(header.indexOf('Cost'));
+    }
+
+    const figures = element.shadowRoot!.querySelector(
+      '.breakdown-row token-figures'
+    ) as HTMLElement & { updateComplete: Promise<unknown> };
+    expect(figures).to.exist;
+    await figures.updateComplete;
+    const text = () =>
+      (figures.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+    expect(text()).to.contain('8K in');
+    expect(text()).to.contain('3.2K out');
+    // This provider reported no cache fields, so the cell claims no hit rate
+    // rather than printing a measured looking zero.
+    expect(text()).to.not.contain('hit');
+
+    // Once the provider does report a split, the cache segment appears.
+    const summary = (element as any).summary;
+    summary.usage_by_model[0].token_usage = {
+      ...summary.usage_by_model[0].token_usage,
+      input_tokens: 8000,
+      output_tokens: 3200,
+      cache_read_tokens: 6000,
+      uncached_input_tokens: 2000,
+      cache_hit_ratio: 0.75,
+    };
+    (element as any).summary = { ...summary };
+    await element.updateComplete;
+    const updated = element.shadowRoot!.querySelector(
+      '.breakdown-row token-figures'
+    ) as HTMLElement & { updateComplete: Promise<unknown> };
+    await updated.updateComplete;
+    expect(
+      (updated.shadowRoot?.textContent || '').replace(/\s+/g, ' ')
+    ).to.contain('6K hit');
+  });
 });
