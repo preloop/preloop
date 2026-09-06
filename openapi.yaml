@@ -11400,6 +11400,40 @@ components:
       - requests_by_endpoint
       title: ApiUsageStatistics
       description: Model for API usage statistics.
+    ApprovalAgentSummary:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Kind
+          description: Agent kind, e.g. 'claude_code' or 'cursor'
+      type: object
+      required:
+      - id
+      - name
+      title: ApprovalAgentSummary
+      description: The managed agent that raised the request.
+    ApprovalApiKeySummary:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+      type: object
+      required:
+      - id
+      - name
+      title: ApprovalApiKeySummary
+      description: The API key the requesting caller authenticated with.
     ApprovalBypassCreate:
       properties:
         mode:
@@ -11647,6 +11681,26 @@ components:
       - timestamp
       title: ApprovalEventResponse
       description: One entry in an approval request's workflow-history timeline.
+    ApprovalFlowExecutionSummary:
+      properties:
+        id:
+          type: string
+          title: Id
+        flow_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Id
+        flow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Name
+      type: object
+      required:
+      - id
+      title: ApprovalFlowExecutionSummary
+      description: The flow run the gated call belonged to.
     ApprovalRequestResponse:
       properties:
         tool_name:
@@ -11748,6 +11802,12 @@ components:
           - type: string
           - type: 'null'
           title: Managed Agent Name
+        api_key_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Api Key Id
         decided_by_ai:
           type: boolean
           title: Decided By Ai
@@ -11784,6 +11844,22 @@ components:
             type: object
           - type: 'null'
           title: Rule Context
+        agent:
+          anyOf:
+          - $ref: '#/components/schemas/ApprovalAgentSummary'
+          - type: 'null'
+        api_key:
+          anyOf:
+          - $ref: '#/components/schemas/ApprovalApiKeySummary'
+          - type: 'null'
+        session:
+          anyOf:
+          - $ref: '#/components/schemas/ApprovalSessionSummary'
+          - type: 'null'
+        flow_execution:
+          anyOf:
+          - $ref: '#/components/schemas/ApprovalFlowExecutionSummary'
+          - type: 'null'
         risk_level:
           type: string
           title: Risk Level
@@ -11862,6 +11938,22 @@ components:
       - allow_free_text
       title: ApprovalRequestResponse
       description: Schema for approval request response.
+    ApprovalSessionSummary:
+      properties:
+        id:
+          type: string
+          title: Id
+        subject:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Subject
+          description: What the session is about (title or reference)
+      type: object
+      required:
+      - id
+      title: ApprovalSessionSummary
+      description: The runtime session the gated call was made in.
     ApprovalWorkflowCreate:
       properties:
         name:
@@ -15449,7 +15541,7 @@ components:
           description: Description for the Pull/Merge Request
         verification:
           anyOf:
-          - $ref: '#/components/schemas/VerificationPolicy'
+          - $ref: '#/components/schemas/VerificationPolicy-Input'
           - type: 'null'
           description: 'Publication gate policy: required checks a commit must pass
             before the flow pushes it or opens a pull request'
@@ -15526,7 +15618,7 @@ components:
           description: Description for the Pull/Merge Request
         verification:
           anyOf:
-          - $ref: '#/components/schemas/VerificationPolicy'
+          - $ref: '#/components/schemas/VerificationPolicy-Output'
           - type: 'null'
           description: 'Publication gate policy: required checks a commit must pass
             before the flow pushes it or opens a pull request'
@@ -22454,7 +22546,7 @@ components:
       - reason
       title: VerificationCommand
       description: 'One required check: a shell command plus why it exists.'
-    VerificationPolicy:
+    VerificationPolicy-Input:
       properties:
         mode:
           type: string
@@ -22464,7 +22556,7 @@ components:
           title: Mode
           default: gate
         profile:
-          $ref: '#/components/schemas/VerificationProfile'
+          $ref: '#/components/schemas/VerificationProfile-Input'
           description: Versioned trusted test profile driving required checks
         gate_budget_seconds:
           type: integer
@@ -22488,7 +22580,85 @@ components:
         leave the workspace. There is no draft-publication exception: unverified
 
         work stays unpushed.'
-    VerificationProfile:
+    VerificationPolicy-Output:
+      properties:
+        mode:
+          type: string
+          enum:
+          - 'off'
+          - gate
+          title: Mode
+          default: gate
+        profile:
+          $ref: '#/components/schemas/VerificationProfile-Output'
+          description: Versioned trusted test profile driving required checks
+        gate_budget_seconds:
+          type: integer
+          maximum: 14400.0
+          minimum: 30.0
+          title: Gate Budget Seconds
+          description: Wall-clock budget for the whole verification run; a check that
+            cannot start inside it is blocked, not failed
+          default: 3600
+      type: object
+      required:
+      - profile
+      title: VerificationPolicy
+      description: 'Publication gate policy inside ``git_clone_config`` (issue #428).
+
+
+        ``mode: "gate"`` requires the runner-controlled verifier to allow
+
+        publication (push / pull-request creation) before the agent''s commits
+
+        leave the workspace. There is no draft-publication exception: unverified
+
+        work stays unpushed.'
+    VerificationProfile-Input:
+      properties:
+        version:
+          type: string
+          const: v1
+          title: Version
+          default: v1
+        profile_id:
+          type: string
+          title: Profile Id
+          description: Stable profile name, e.g. 'default'
+        description:
+          type: string
+          title: Description
+          default: ''
+        always:
+          items:
+            $ref: '#/components/schemas/VerificationCommand'
+          type: array
+          title: Always
+        rules:
+          items:
+            $ref: '#/components/schemas/ProfileRule'
+          type: array
+          title: Rules
+        unknown_default:
+          items:
+            $ref: '#/components/schemas/VerificationCommand'
+          type: array
+          title: Unknown Default
+      type: object
+      required:
+      - profile_id
+      title: VerificationProfile
+      description: 'Versioned, trusted set of required checks for a repository.
+
+
+        Ships with the flow configuration, not inside the repository under test.
+
+        Inexpensive ``always`` hooks are required on every change; rules match
+
+        the changed-file diff; ``unknown_default`` covers unknown impact so a
+
+        diff never resolves to an empty required list.'
+    VerificationProfile-Output:
       properties:
         version:
           type: string

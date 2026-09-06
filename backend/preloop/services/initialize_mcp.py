@@ -651,6 +651,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 managed_agent_name=getattr(
                     user_context, "runtime_principal_name", None
                 ),
+                api_key_id=_as_uuid(getattr(user_context, "api_key_id", None)),
                 source="claude_code",
                 tool_name=tool_name,
                 tool_input=input,
