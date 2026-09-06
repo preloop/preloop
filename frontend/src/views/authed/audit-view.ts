@@ -1567,11 +1567,10 @@ export class AuditView extends AuthedElement {
     reducedMotionStyles,
     unsafeCSS(consoleStyles),
     css`
+      /* No page geometry here: the shell owns the width and the side inset
+         (styles/console-styles.css, "The page box"). */
       :host {
         display: block;
-        padding: 1.5rem;
-        max-width: 1200px;
-        margin: 0 auto;
       }
 
       /* ── Header ─────────────────────────────── */
@@ -1965,9 +1964,6 @@ export class AuditView extends AuthedElement {
 
       /* ── Responsive ────────────────────────── */
       @media (max-width: 768px) {
-        :host {
-          padding: 1rem;
-        }
         .primary-row {
           flex-wrap: wrap;
         }

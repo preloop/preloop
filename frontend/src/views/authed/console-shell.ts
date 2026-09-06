@@ -246,7 +246,8 @@ export class ConsoleShell extends LitElement {
          from here, so a new page matches its neighbours without opting in. */
       .main-content {
         overflow-y: auto;
-        padding: 1rem 2rem 2rem 2rem;
+        padding: var(--console-page-padding-top) var(--console-page-padding-x)
+          var(--console-page-padding-bottom);
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -263,7 +264,7 @@ export class ConsoleShell extends LitElement {
 
       .main-content > ::slotted(*) {
         width: 100%;
-        max-width: 80rem;
+        max-width: var(--console-page-max-width);
       }
 
       .main-content.full-bleed > ::slotted(*) {
@@ -273,7 +274,7 @@ export class ConsoleShell extends LitElement {
 
       @media (max-width: 768px) {
         .main-content {
-          padding: 1rem;
+          padding: var(--console-page-padding-x-compact);
         }
         .main-content.full-bleed {
           padding: 0;

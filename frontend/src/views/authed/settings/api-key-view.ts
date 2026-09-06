@@ -47,10 +47,10 @@ export class ApiKeyView extends LitElement {
         overflow-y: auto;
       }
 
+      /* No page geometry here: the shell owns the width and the side inset
+         (styles/console-styles.css, "The page box"). */
       .container {
-        padding: var(--sl-spacing-large);
-        max-width: 1200px;
-        margin: 0 auto;
+        padding: 0;
       }
 
       .loading-container {

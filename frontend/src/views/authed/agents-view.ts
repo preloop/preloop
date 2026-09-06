@@ -432,11 +432,14 @@ export class AgentsView extends LitElement {
         padding: 1rem 1rem 0 2rem;
       }
       /* --- List view --- */
+      /* The canvas is full bleed, so this page pays its own side inset. It
+         takes the numbers from the page box rather than inventing them
+         (styles/console-styles.css, "The page box"). */
       .list-bounds {
         width: 100%;
-        max-width: 80rem;
+        max-width: var(--console-page-max-width);
         margin: 0 auto;
-        padding: 0 1rem 2rem 2rem;
+        padding: 0 var(--console-page-padding-x) 2rem;
         box-sizing: border-box;
       }
       /* The table sizes itself from the colgroup, not from its content: an
