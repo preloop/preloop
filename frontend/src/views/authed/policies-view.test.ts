@@ -131,7 +131,7 @@ describe('PoliciesView', () => {
               tag: null,
               description: 'Initial snapshot',
               created_at: '2026-06-01T10:00:00Z',
-              created_by_username: 'alice',
+              created_by_user_id: '9f1d0f2e-0000-4000-8000-000000000009',
               is_active: true,
               snapshot_summary: {
                 mcp_servers_count: 0,
@@ -865,7 +865,7 @@ describe('PoliciesView', () => {
       expect((element as any)._showDiffDialog).to.be.true;
 
       const dialog = element.shadowRoot?.querySelector(
-        'sl-dialog[label="Preview Policy Changes"]'
+        'sl-dialog[label="Preview policy changes"]'
       ) as HTMLElement;
       dialog.dispatchEvent(
         new CustomEvent('sl-request-close', {
@@ -1123,7 +1123,7 @@ describe('PoliciesView', () => {
     });
   });
 
-  it('View Diff opens the preview without a Confirm Rollback button', async () => {
+  it('View diff opens the preview without a roll back button', async () => {
     fetchStub = createFetchStub();
     const element = (await fixture(
       html`<policies-view></policies-view>`
@@ -1139,7 +1139,7 @@ describe('PoliciesView', () => {
       tag: null,
       description: 'Older',
       created_at: '2026-05-01T10:00:00Z',
-      created_by_username: 'alice',
+      created_by_user_id: '9f1d0f2e-0000-4000-8000-000000000009',
       is_active: false,
       snapshot_summary: {
         mcp_servers_count: 0,
@@ -1155,10 +1155,10 @@ describe('PoliciesView', () => {
     await element.updateComplete;
 
     const dialog = element.shadowRoot?.querySelector(
-      'sl-dialog[label="Version Diff"]'
+      'sl-dialog[label="Version diff"]'
     );
     expect(dialog).to.exist;
-    expect(dialog?.textContent).to.not.contain('Confirm Rollback');
+    expect(dialog?.textContent).to.not.contain('Roll back');
     expect((element as any)._rollbackConfirmVisible).to.be.false;
   });
 });
