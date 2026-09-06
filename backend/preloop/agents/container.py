@@ -5,6 +5,7 @@ import base64
 import binascii
 import gzip
 import io
+import inspect
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ import aiodocker
 from aiodocker.exceptions import DockerError
 
 from preloop.config import settings
+from preloop.utils import pr_metadata
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_RUNNER_CONFLICT,
     FAILURE_CATEGORY_RUNNER_ERROR,
@@ -148,118 +150,61 @@ _GIT_CONFIG_PATH_ALIASES = {
 # flow-configured title/body, then the commit subject/body (with a flow
 # execution link, and a **Commits:** list when the push is more than one
 # commit).
-WRITE_PR_PAYLOAD_PY = r"""
-import json
-import pathlib
+WRITE_PR_PAYLOAD_PY = (
+    inspect.getsource(pr_metadata)
+    + r"""
 import sys
 
-out_path, head, base, kind = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-issue_number = sys.argv[5] if len(sys.argv) > 5 else ""
-flow_name = sys.argv[6] if len(sys.argv) > 6 else ""
-execution_link = sys.argv[7] if len(sys.argv) > 7 else ""
-try:
-    commit_count = int(sys.argv[8]) if len(sys.argv) > 8 and sys.argv[8] else 0
-except ValueError:
-    commit_count = 0
+out_path, head, base, kind = sys.argv[1:5]
+issue_number, flow_name, execution_link = sys.argv[5:8]
+commit_count = int(sys.argv[8] or "0")
+head_sha = sys.argv[9] if len(sys.argv) > 9 else ""
 
 
 def _read(path):
-    p = pathlib.Path(path)
-    if not p.is_file():
-        return ""
     try:
-        return p.read_text(encoding="utf-8").strip()
+        with open(path, "rb") as stream:
+            raw = stream.read(MAX_ARTIFACT_BYTES + 1)
+        return raw if len(raw) <= MAX_ARTIFACT_BYTES else None
     except OSError:
-        return ""
+        return None
 
 
-def _from_result():
-    path = pathlib.Path("/workspace/result.json")
-    if not path.is_file():
-        return "", ""
+def _text(path):
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return "", ""
-    if not isinstance(data, dict):
-        return "", ""
-    pr = data.get("pull_request")
-    pr = pr if isinstance(pr, dict) else {}
-
-    def _s(*values):
-        for value in values:
-            if isinstance(value, str) and value.strip():
-                return value.strip()
+        return (_read(path) or b"").decode("utf-8").strip()
+    except UnicodeDecodeError:
         return ""
 
-    title = _s(
-        data.get("pr_title"),
-        data.get("pull_request_title"),
-        pr.get("title"),
-    )
-    body = _s(
-        data.get("pr_body"),
-        data.get("pr_description"),
-        data.get("pull_request_description"),
-        pr.get("body"),
-        pr.get("description"),
-    )
-    return title, body
 
-
-def _attribution():
-    if flow_name and execution_link:
-        return f"Automated changes from Preloop flow: [{flow_name}]({execution_link})"
-    if flow_name:
-        return f"Automated changes from Preloop flow: {flow_name}"
-    if execution_link:
-        return f"Automated changes from Preloop flow: {execution_link}"
-    return ""
-
-
-def _commit_fallback_title():
-    if commit_count > 1 and flow_name:
-        return f"[Preloop] {flow_name}"
-    return _read("/tmp/preloop-commit-pr-title.txt")
-
-
-def _commit_fallback_body():
-    attr = _attribution()
-    if commit_count > 1:
-        commit_list = _read("/tmp/preloop-commit-pr-list.txt")
-        listed = f"**Commits:**\n{commit_list}" if commit_list else ""
-        return "\n\n".join(p for p in (attr, listed) if p)
-    commit_body = _read("/tmp/preloop-commit-pr-body.txt")
-    return "\n\n".join(p for p in (attr, commit_body) if p)
-
-
-result_title, result_body = _from_result()
-title = (
-    result_title
-    or _read("/tmp/preloop-flow-pr-title.txt")
-    or _commit_fallback_title()
-    or "Automated changes"
+commit_title = _text("/tmp/preloop-commit-pr-title.txt")
+commit_body = _text("/tmp/preloop-commit-pr-body.txt")
+if commit_count > 1:
+    commit_title = f"[Preloop] {flow_name}" if flow_name else commit_title
+    commit_body = "**Commits:**\n" + _text("/tmp/preloop-commit-pr-list.txt")
+title, body, warnings = select_metadata(
+    _read("/workspace/result.json"),
+    configured_title=_text("/tmp/preloop-flow-pr-title.txt"),
+    configured_body=_text("/tmp/preloop-flow-pr-body.txt"),
+    commit_title=commit_title,
+    commit_body=commit_body,
+    issue_number=issue_number,
 )
-body = (
-    result_body
-    or _read("/tmp/preloop-flow-pr-body.txt")
-    or _commit_fallback_body()
-)
-if issue_number and f"#{issue_number}" not in body:
-    body = (body + "\n\n" if body else "") + f"Closes #{issue_number}"
+for warning in warnings:
+    print("PRELOOP_PR_METADATA_WARNING: " + warning, file=sys.stderr)
+if execution_link and head_sha:
+    public_url, execution_id = execution_link.rsplit("/console/flows/executions/", 1)
+    body = upsert_provenance(body, [PublicationRecord(execution_id, head_sha)], public_url)
+elif execution_link:
+    # Compatibility for callers predating the explicit published SHA argument.
+    body += f"\n\nAutomated changes from Preloop flow: [{flow_name}]({execution_link})"
 if kind == "gitlab":
-    payload = {
-        "source_branch": head,
-        "target_branch": base,
-        "title": title,
-        "description": body,
-    }
+    payload = {"title": title, "description": body, "source_branch": head, "target_branch": base}
 else:
     payload = {"title": title, "body": body, "head": head, "base": base}
-pathlib.Path(out_path).write_text(
-    json.dumps(payload, ensure_ascii=False), encoding="utf-8"
-)
+Path(out_path).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 """
+)
 
 
 def build_github_pr_capture_shell(
@@ -410,7 +355,7 @@ def build_write_pr_payload_shell(
     if [ -z "$PRELOOP_PR_PY" ]; then
       echo "Cannot encode PR payload: python3 is required in the agent image"
     else
-      $PRELOOP_PR_PY - {argv} <<'PRELOOP_PR_PY'
+      $PRELOOP_PR_PY - {argv} "$(git rev-parse HEAD)" <<'PRELOOP_PR_PY'
 {WRITE_PR_PAYLOAD_PY}
 PRELOOP_PR_PY
     fi
@@ -3026,6 +2971,11 @@ class ContainerAgentExecutor(AgentExecutor):
             env.update(
                 profile_env(self.environment_profile, kubernetes=self.use_kubernetes)
             )
+        if (execution_context.get("git_clone_config") or {}).get(
+            "publication_mode"
+        ) == "isolated":
+            if execution_context.get(self.GIT_API_TOKENS_CONTEXT_KEY):
+                raise ValueError("Write API tokens cannot enter an isolated agent")
         env.update(self._git_credential_env(execution_context))
         return env
 
@@ -3089,6 +3039,36 @@ class ContainerAgentExecutor(AgentExecutor):
                 )
         else:
             self.logger.debug("No git_clone_config in execution context")
+
+        if isinstance(git_clone_config, dict) and git_clone_config.get(
+            "create_pull_request"
+        ):
+            template_root = self._primary_workspace_path(
+                execution_context, git_clone_config
+            )
+            configured = git_clone_config.get("pull_request_template") or ""
+            template_script = (
+                inspect.getsource(pr_metadata)
+                + "\n"
+                + (
+                    "import sys\n"
+                    "root = Path(sys.argv[1])\n"
+                    "provider = 'gitlab' if (root / '.gitlab').is_dir() else 'github'\n"
+                    "name, template = repository_template(root, provider=provider, configured=sys.argv[2] or None)\n"
+                    "target = Path('/workspace/evidence/pr-template.md')\n"
+                    "target.parent.mkdir(parents=True, exist_ok=True)\n"
+                    "target.write_text(template, encoding='utf-8')\n"
+                    "print('PR template: ' + (name or 'Summary and Testing fallback'))\n"
+                )
+            )
+            commands.append(
+                "python3 -c "
+                + shlex.quote(template_script)
+                + " "
+                + shlex.quote(template_root)
+                + " "
+                + shlex.quote(configured)
+            )
 
         # Seed /workspace files declared on the trigger payload. After git
         # clone (whose pre-clone backup would sweep earlier writes away) and
@@ -3447,6 +3427,22 @@ class ContainerAgentExecutor(AgentExecutor):
         records a tracker it could not get a key for, and falling through gives
         the remaining sources a chance instead of running with no credential.
         """
+
+        if (execution_context.get("git_clone_config") or {}).get(
+            "publication_mode"
+        ) == "isolated":
+            credentials = execution_context.get("git_credentials_map") or {}
+            tracker_id = str(
+                repo_config.get("tracker_id")
+                or execution_context.get("trigger_tracker_id")
+                or ""
+            )
+            credential = credentials.get(tracker_id) or {}
+            if credential.get("permission") != "read":
+                raise ValueError(
+                    "Isolated agent clone requires a controller-issued read-only credential"
+                )
+            return credential.get("token"), credential.get("tracker_type")
 
         git_credentials_map = execution_context.get("git_credentials_map") or {}
 
@@ -4123,6 +4119,26 @@ true
             target_branch = execution_context.get("_git_target_branch")
             source_branch = execution_context.get("_git_source_branch", "main")
             create_pr = git_config.get("create_pull_request", False)
+
+            if git_config.get("publication_mode") == "isolated":
+                # No publishing credentials or provider calls enter the agent.
+                # Export complete history; the trusted publisher imports only
+                # objects in a fresh bare repo, never this checkout's config.
+                if len(repositories) != 1:
+                    return "echo 'Isolated publication requires one repository' >&2; exit 1"
+                path = self._resolve_repository_clone_path(repositories[0], 0)
+                checkpoint = (
+                    "_preloop_checkpoint || { echo PRELOOP_CHECKPOINT prepublication_failed; exit 1; }\n"
+                    if execution_context.get("checkpoint_env")
+                    else ""
+                )
+                return (
+                    checkpoint + f"cd {shlex.quote(path)}\n"
+                    f"mkdir -p {EVIDENCE_DIR_PATH}\n"
+                    f"git bundle create {EVIDENCE_DIR_PATH}/branch.bundle HEAD || exit 1\n"
+                    f"git rev-parse HEAD > {EVIDENCE_DIR_PATH}/HEAD.txt || exit 1\n"
+                    "cd /workspace\n"
+                )
 
             self.logger.info(
                 f"Preparing post-execution git commands: "

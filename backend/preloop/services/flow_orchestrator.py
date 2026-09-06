@@ -2206,8 +2206,21 @@ class FlowExecutionOrchestrator:
         if cli_session_archive is not None:
             execution_context["cli_session_restore_archive"] = cli_session_archive
 
-        # Prepare git credentials if repositories are configured
-        if self.flow.git_clone_config:
+        from preloop.services.isolated_publication import (
+            isolated_publication_enabled,
+            prepare_isolated_publication,
+        )
+
+        self._isolated_publication_policy = None
+        self._publication_verification = None
+        self._publication_runtime_stopped = False
+        if isolated_publication_enabled(self.flow.git_clone_config):
+            self._isolated_publication_policy = await prepare_isolated_publication(
+                self.db, self.flow, execution_context
+            )
+
+        # Isolated mode never resolves the existing broad tracker token.
+        if self.flow.git_clone_config and self._isolated_publication_policy is None:
             repositories = self.flow.git_clone_config.get("repositories", [])
             if repositories:
                 logger.info(
@@ -2981,6 +2994,9 @@ class FlowExecutionOrchestrator:
         # executors in tests returning non-dict values).
         if not isinstance(artifact, dict):
             return None
+        # Reserved publisher state is control-plane owned, never agent JSON.
+        artifact = dict(artifact)
+        artifact.pop("trusted_publication", None)
         self.execution_logger.log_milestone(
             "result_artifact_captured",
             {"keys": sorted(artifact.keys())[:20]},
@@ -3065,6 +3081,8 @@ class FlowExecutionOrchestrator:
 
     def _note_opened_pr(self, line: str) -> None:
         """Remember the PR/MR the wrapper opened (first one wins)."""
+        if getattr(self, "_isolated_publication_policy", None) is not None:
+            return  # Only the trusted publisher can bind an isolated execution.
         parsed = parse_pr_opened_marker(line)
         if not parsed:
             return
@@ -4288,7 +4306,9 @@ class FlowExecutionOrchestrator:
             # Cleanup agent executor resources (close Kubernetes/Docker clients)
             try:
                 await agent_executor.cleanup()
+                self._publication_runtime_stopped = True
             except Exception as cleanup_error:
+                self._publication_runtime_stopped = False
                 logger.warning(f"Error during agent cleanup: {cleanup_error}")
 
     def _create_execution_log(self):
@@ -4666,6 +4686,57 @@ class FlowExecutionOrchestrator:
 
         return agent_result, session_reference
 
+    async def _finish_isolated_publication(self, agent_result: Dict[str, Any]) -> None:
+        """Run trusted publication after runtime cleanup; failure changes status."""
+        policy = getattr(self, "_isolated_publication_policy", None)
+        if policy is None:
+            return
+        import httpx
+        from preloop.services.isolated_publication import finish_isolated_publication
+        from preloop.services.publication_credentials import revoke_repository_lease
+        from preloop.services.trusted_publisher import PublicationError
+
+        try:
+            if agent_result.get("status") != "SUCCEEDED":
+                return
+            if not getattr(self, "_publication_runtime_stopped", False):
+                raise PublicationError(
+                    "Agent runtime cleanup was not confirmed; refusing to issue publication credentials"
+                )
+            publication = await finish_isolated_publication(
+                self.db,
+                policy,
+                agent_result,
+                self._evidence_archive,
+                getattr(self, "_publication_verification", None),
+            )
+            result = dict(agent_result.get("result") or {})
+            result["trusted_publication"] = publication
+            agent_result["result"] = result
+            self._opened_pr = publication
+            self.execution_logger.log_milestone(
+                "trusted_publication_succeeded",
+                {
+                    "url": publication["url"],
+                    "head_sha": publication["head_sha"],
+                    "metadata_warnings": publication.get("metadata_warnings", []),
+                },
+            )
+        except PublicationError as exc:
+            agent_result["status"] = "FAILED"
+            agent_result["error_message"] = str(exc)
+            self.execution_logger.log_milestone(
+                "trusted_publication_failed", {"reason": str(exc)}
+            )
+        finally:
+            async with httpx.AsyncClient() as client:
+                try:
+                    await revoke_repository_lease(policy.read_lease, client)
+                except PublicationError as exc:
+                    self.execution_logger.log_milestone(
+                        "publication_credential_revocation_failed", {"reason": str(exc)}
+                    )
+
     async def run(self):
         """
         Execute the flow through its full lifecycle.
@@ -4731,6 +4802,8 @@ class FlowExecutionOrchestrator:
             # skips them so they are not published twice. Fold them in before
             # terminal PR/session/metrics binding.
             await self._replay_persisted_runner_logs()
+
+            await self._finish_isolated_publication(agent_result)
 
             # Update execution log with final results including detailed logs
             final_status = agent_result.get("status", "FAILED")

@@ -161,6 +161,23 @@ prompt_template: |
   `pr_body` from this file when they are present. Write a real title and a
   real description: what changed, why, and `Closes #<issue number>`.
 
+  Read `/workspace/evidence/pr-template.md`, selected during repository setup,
+  before writing the description. If it is unavailable, discover the
+  repository's PR template. Prefer
+  the configured `pull_request_template` path, then the conventional default:
+  `.github/pull_request_template.md`, `.github/PULL_REQUEST_TEMPLATE.md`, root
+  or `docs/pull_request_template.md`; GitLab uses
+  `.gitlab/merge_request_templates/Default.md`. If there are multiple named
+  templates and no configured choice, select the lexicographically first
+  Markdown path in `.github/PULL_REQUEST_TEMPLATE/` or the GitLab directory.
+  If no template exists, use Summary and Testing sections. Fill the selected
+  sections with the problem, resulting behavior, scope, acceptance evidence,
+  actual verification commands/results, and limitations. Preserve checklist
+  meaning. Never check a skipped, unavailable, or failed test as passed.
+  Include the issue link. Keep the title to one descriptive line (256 UTF-8
+  bytes maximum) and the body below 60,000 UTF-8 bytes. The publisher adds
+  trusted execution links and published SHAs; do not fabricate provenance.
+
   Use "success" when you committed a change you believe is correct, even
   if some checks could not run (list those under "skipped"). Use "failure"
   when you could not implement the issue, and say why. Never report

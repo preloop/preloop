@@ -85,6 +85,18 @@ class GitCloneConfig(BaseModel):
     create_pull_request: Optional[bool] = Field(
         default=False, description="Whether to create a Pull Request / Merge Request"
     )
+    publication_mode: Literal["legacy", "isolated"] = Field(
+        default="legacy",
+        description=(
+            "Legacy publishes inside the agent container. Isolated publishes from "
+            "the trusted control plane after verification, using scoped App credentials."
+        ),
+    )
+    pull_request_template: Optional[str] = Field(
+        default=None,
+        max_length=512,
+        description="Repository-relative PR template; otherwise conventional default then lexical first",
+    )
     pull_request_title: Optional[str] = Field(
         default=None, description="Title for the Pull/Merge Request"
     )

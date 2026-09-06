@@ -15620,6 +15620,23 @@ components:
           title: Create Pull Request
           description: Whether to create a Pull Request / Merge Request
           default: false
+        publication_mode:
+          type: string
+          enum:
+          - legacy
+          - isolated
+          title: Publication Mode
+          description: Legacy publishes inside the agent container. Isolated publishes
+            from the trusted control plane after verification, using scoped App credentials.
+          default: legacy
+        pull_request_template:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Pull Request Template
+          description: Repository-relative PR template; otherwise conventional default
+            then lexical first
         pull_request_title:
           anyOf:
           - type: string
@@ -15697,6 +15714,23 @@ components:
           title: Create Pull Request
           description: Whether to create a Pull Request / Merge Request
           default: false
+        publication_mode:
+          type: string
+          enum:
+          - legacy
+          - isolated
+          title: Publication Mode
+          description: Legacy publishes inside the agent container. Isolated publishes
+            from the trusted control plane after verification, using scoped App credentials.
+          default: legacy
+        pull_request_template:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Pull Request Template
+          description: Repository-relative PR template; otherwise conventional default
+            then lexical first
         pull_request_title:
           anyOf:
           - type: string
