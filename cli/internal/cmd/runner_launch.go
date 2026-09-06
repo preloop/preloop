@@ -104,7 +104,7 @@ func runnerStructuredResult(lines []string) (map[string]any, []string, error) {
 			continue
 		}
 		if json.Unmarshal(data, &envelope) == nil && envelope.ExitCode != nil && *envelope.ExitCode == 0 && len(envelope.Result) > 0 {
-			valid = runnerResultConfirmsCompletion(envelope.Result)
+			valid = runnerResultRecognized(envelope.Result)
 		}
 	}
 	if count != 1 || !valid {
@@ -113,18 +113,27 @@ func runnerStructuredResult(lines []string) (map[string]any, []string, error) {
 	return envelope.Result, logs, nil
 }
 
-func runnerResultConfirmsCompletion(result map[string]any) bool {
-	status, _ := result["status"].(string)
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "success", "succeeded", "pass", "passed", "fail":
+func runnerResultField(result map[string]any, key string) string {
+	value, _ := result[key].(string)
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func runnerResultRecognized(result map[string]any) bool {
+	switch runnerResultField(result, "status") {
+	case "success", "succeeded", "pass", "passed", "fail", "failure", "failed", "error":
 		return true
-	case "failure", "failed", "error":
-		return false
 	}
-	verdict, _ := result["verdict"].(string)
-	switch strings.ToLower(strings.TrimSpace(verdict)) {
-	case "pass", "passed", "pass_with_findings", "fail":
+	switch runnerResultField(result, "verdict") {
+	case "pass", "passed", "pass_with_findings", "fail", "error":
 		return true
 	}
 	return false
+}
+
+func runnerResultIsFailure(result map[string]any) bool {
+	switch runnerResultField(result, "status") {
+	case "failure", "failed", "error":
+		return true
+	}
+	return runnerResultField(result, "verdict") == "error"
 }

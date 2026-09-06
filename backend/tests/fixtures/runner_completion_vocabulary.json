@@ -1,0 +1,6 @@
+{
+  "success_statuses": ["success", "succeeded", "pass", "passed", "fail"],
+  "failure_statuses": ["failure", "failed", "error"],
+  "success_verdicts": ["pass", "passed", "pass_with_findings", "fail"],
+  "failure_verdicts": ["error"]
+}

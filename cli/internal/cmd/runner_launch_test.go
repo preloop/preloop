@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -28,6 +29,8 @@ func TestRunnerCompletionRequiresReportAndExit(t *testing.T) {
 		{"no exit code", runnerResultPrefix + base64.StdEncoding.EncodeToString([]byte(`{"result":{"status":"success"}}`)), false},
 		{"success", resultLine(`{"status":"success","tests":["pytest"]}`, 0), true},
 		{"completed audit", resultLine(`{"verdict":"fail"}`, 0), true},
+		{"reported failure", resultLine(`{"status":"failure","reason":"tests"}`, 0), true},
+		{"audit error", resultLine(`{"verdict":"error"}`, 0), true},
 		{"duplicate", resultLine(`{"status":"success"}`, 0) + "\n" + resultLine(`{"status":"success"}`, 0), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -56,6 +59,59 @@ func TestRunnerDockerExitCannotBeOverriddenByReport(t *testing.T) {
 		outcome := waitDockerJob(cmd, "example", &output, nil)
 		if (outcome.status == "SUCCEEDED") != (code == "0") {
 			t.Fatalf("outcome: %+v", outcome)
+		}
+	}
+}
+
+func TestRunnerDockerFailureReportIsDelivered(t *testing.T) {
+	cmd := exec.Command("sh", "-c", `printf '%s\n' "$REPORT"; exit 0`)
+	cmd.Env = append(os.Environ(), "REPORT="+resultLine(`{"status":"failure","reason":"tests"}`, 0))
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	outcome := waitDockerJob(cmd, "example", &output, nil)
+	if outcome.status != "FAILED" {
+		t.Fatalf("status=%s", outcome.status)
+	}
+	if outcome.result["status"] != "failure" {
+		t.Fatalf("result=%v", outcome.result)
+	}
+}
+
+func TestCompletionVocabularyMatchesPythonContract(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "backend", "tests", "fixtures", "runner_completion_vocabulary.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vocab struct {
+		SuccessStatuses []string `json:"success_statuses"`
+		FailureStatuses []string `json:"failure_statuses"`
+		SuccessVerdicts []string `json:"success_verdicts"`
+		FailureVerdicts []string `json:"failure_verdicts"`
+	}
+	if err := json.Unmarshal(data, &vocab); err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range vocab.SuccessStatuses {
+		if !runnerResultRecognized(map[string]any{"status": status}) || runnerResultIsFailure(map[string]any{"status": status}) {
+			t.Fatalf("success status %q", status)
+		}
+	}
+	for _, status := range vocab.FailureStatuses {
+		if !runnerResultRecognized(map[string]any{"status": status}) || !runnerResultIsFailure(map[string]any{"status": status}) {
+			t.Fatalf("failure status %q", status)
+		}
+	}
+	for _, verdict := range vocab.SuccessVerdicts {
+		if !runnerResultRecognized(map[string]any{"verdict": verdict}) || runnerResultIsFailure(map[string]any{"verdict": verdict}) {
+			t.Fatalf("success verdict %q", verdict)
+		}
+	}
+	for _, verdict := range vocab.FailureVerdicts {
+		if !runnerResultRecognized(map[string]any{"verdict": verdict}) || !runnerResultIsFailure(map[string]any{"verdict": verdict}) {
+			t.Fatalf("failure verdict %q", verdict)
 		}
 	}
 }

@@ -708,6 +708,8 @@ func waitDockerJob(cmd *exec.Cmd, executionID string, buf interface{ String() st
 		if streaming && buffer.overflow {
 			outcome.errMsg = "Runner log buffer exceeded its limit; execution markers may be missing"
 		}
+	} else if runnerResultIsFailure(result) {
+		outcome.status = "FAILED"
 	}
 	return outcome
 }
