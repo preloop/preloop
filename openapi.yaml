@@ -221,7 +221,9 @@ paths:
       - Auth
       summary: Read Users Me
       description: "Get the current user.\n\nArgs:\n    current_user: The current\
-        \ user.\n\nReturns:\n    The current user."
+        \ user.\n\nReturns:\n    The current user, including the identity fields (id,\
+        \ account_id,\n    team_ids) clients need to answer \"is this waiting for\
+        \ me?\"."
       operationId: read_users_me_api_v1_auth_users_me_get
       responses:
         '200':
@@ -12341,6 +12343,18 @@ components:
       description: User creation model.
     AuthUserResponse:
       properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+          description: The caller's user id. Clients compare it against an approval
+            workflow's approver_user_ids to tell whether a pending approval is waiting
+            for this person.
+        account_id:
+          type: string
+          format: uuid
+          title: Account Id
+          description: The account this user belongs to.
         username:
           type: string
           title: Username
@@ -12377,11 +12391,24 @@ components:
           - type: string
           - type: 'null'
           title: Avatar Source
+        team_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Team Ids
+          description: Ids of the teams the caller belongs to inside account_id. Clients
+            intersect these with an approval workflow's approver_team_ids to tell
+            whether a pending approval is waiting for this person. Empty when the
+            user is in no team.
       type: object
       required:
+      - id
+      - account_id
       - username
       - email
       - email_verified
+      - team_ids
       title: AuthUserResponse
       description: Response model for user data.
     AuthUserUpdate:

@@ -216,24 +216,45 @@ class TestAuthUserResponse:
 
     def test_create_user_response(self):
         """Test creating AuthUserResponse."""
+        user_id = uuid4()
+        account_id = uuid4()
+        team_id = uuid4()
         response = AuthUserResponse(
+            id=user_id,
+            account_id=account_id,
             username="testuser",
             email="test@example.com",
             full_name="Test User",
             email_verified=True,
+            team_ids=[team_id],
         )
 
+        assert response.id == user_id
+        assert response.account_id == account_id
         assert response.username == "testuser"
         assert response.email == "test@example.com"
         assert response.full_name == "Test User"
         assert response.email_verified is True
+        assert response.team_ids == [team_id]
 
     def test_email_verified_required(self):
         """Test that email_verified is required."""
         with pytest.raises(ValidationError):
             AuthUserResponse(
+                id=uuid4(),
+                account_id=uuid4(),
                 username="testuser",
                 email="test@example.com",
+                team_ids=[],
+            )
+
+    def test_identity_fields_required(self):
+        """id, account_id and team_ids are part of the profile contract."""
+        with pytest.raises(ValidationError):
+            AuthUserResponse(
+                username="testuser",
+                email="test@example.com",
+                email_verified=True,
             )
 
 
