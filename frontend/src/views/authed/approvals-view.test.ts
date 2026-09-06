@@ -9,6 +9,8 @@ import type { ApprovalsView } from './approvals-view';
 
 describe('ApprovalsView', () => {
   let fetchStub: sinon.SinonStub;
+  /** Per id results the stubbed batch endpoint should return, if any. */
+  let batchOutcomes: Record<string, unknown> = {};
 
   function createFetchStub(approvalRequests: unknown[] = []) {
     return sinon
@@ -34,6 +36,15 @@ describe('ApprovalsView', () => {
           return json({
             status: 'declined',
             resolved_at: new Date().toISOString(),
+          });
+        }
+
+        if (url.includes('/decide-batch') && method === 'POST') {
+          const ids = JSON.parse(String(init?.body)).ids as string[];
+          return json({
+            results: ids.map((id) => batchOutcomes[id] ?? { id, ok: true }),
+            succeeded: ids.length,
+            failed: 0,
           });
         }
 
@@ -96,6 +107,7 @@ describe('ApprovalsView', () => {
   }
 
   beforeEach(() => {
+    batchOutcomes = {};
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
   });
@@ -417,9 +429,24 @@ describe('ApprovalsView', () => {
   });
 
   describe('keyboard', () => {
-    function press(element: ApprovalsView, key: string) {
-      element.dispatchEvent(
-        new KeyboardEvent('keydown', { key, bubbles: true, composed: true })
+    function press(
+      element: ApprovalsView,
+      key: string,
+      options: { shiftKey?: boolean } = {}
+    ) {
+      // Keys go to the row the keyboard is on, exactly as they do in the
+      // browser: J and K put the focus on a row, so that row is the target.
+      const focused =
+        element.shadowRoot?.querySelector<HTMLElement>(
+          '.approval-item[tabindex="0"]'
+        ) ?? element;
+      focused.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key,
+          bubbles: true,
+          composed: true,
+          ...options,
+        })
       );
       return element.updateComplete;
     }
@@ -773,6 +800,247 @@ describe('ApprovalsView', () => {
         .exist;
       expect(element.shadowRoot?.querySelector('.approval-item')).to.exist;
       expect(element.shadowRoot?.textContent).to.contain('Details');
+    });
+  });
+  describe('bulk decisions', () => {
+    function rows(element: ApprovalsView) {
+      return Array.from(
+        element.shadowRoot?.querySelectorAll('.approval-item') ?? []
+      ) as HTMLElement[];
+    }
+
+    function checkboxes(element: ApprovalsView) {
+      return Array.from(
+        element.shadowRoot?.querySelectorAll('list-select-checkbox') ?? []
+      ) as HTMLElement[];
+    }
+
+    function bulkBar(element: ApprovalsView) {
+      return element.shadowRoot?.querySelector('list-bulk-bar') as HTMLElement;
+    }
+
+    function barButton(element: ApprovalsView, action: string) {
+      return bulkBar(element)?.shadowRoot?.querySelector(
+        `sl-button[data-action="${action}"]`
+      ) as HTMLElement;
+    }
+
+    async function select(element: ApprovalsView, ids: string[]) {
+      for (const id of ids) {
+        (element as any).selection.toggle(id);
+      }
+      await element.updateComplete;
+    }
+
+    function batchCall() {
+      return fetchStub
+        .getCalls()
+        .find((c) => String(c.args[0]).includes('/decide-batch'));
+    }
+
+    function confirmDialogElement() {
+      return document.querySelector('confirm-dialog');
+    }
+
+    async function agree() {
+      await waitUntil(() => !!confirmDialogElement(), 'no confirm dialog');
+      (
+        confirmDialogElement()!.shadowRoot?.querySelector(
+          '[data-testid="confirm-dialog-confirm"]'
+        ) as HTMLElement
+      ).click();
+    }
+
+    it('offers a checkbox on waiting rows only', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'waiting', expires_at: inMinutes(10) }),
+        baseRequest({
+          id: 'done',
+          status: 'approved',
+          resolved_at: new Date().toISOString(),
+        }),
+        questionRequest({ id: 'question', expires_at: inMinutes(10) }),
+      ]);
+
+      const boxes = checkboxes(element);
+      expect(boxes.length, 'one checkbox, on the decidable row').to.equal(1);
+      expect(boxes[0].getAttribute('item-id')).to.equal('waiting');
+      expect(
+        rows(element).filter((row) => row.dataset.selectionId).length
+      ).to.equal(1);
+    });
+
+    it('shows the bar with a count only once something is selected', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+        baseRequest({ id: 'ar-2', expires_at: inMinutes(20) }),
+      ]);
+
+      expect(bulkBar(element)?.shadowRoot?.querySelector('.bulk-bar')).to.not
+        .exist;
+
+      await select(element, ['ar-1', 'ar-2']);
+      expect(
+        bulkBar(element)
+          ?.shadowRoot?.querySelector('[data-testid="bulk-count"]')
+          ?.textContent?.trim()
+      ).to.equal('2 selected');
+    });
+
+    it('approves the selection with one call after naming the requests', async () => {
+      const element = await renderList([
+        baseRequest({
+          id: 'ar-1',
+          tool_name: 'write_file',
+          expires_at: inMinutes(10),
+        }),
+        baseRequest({
+          id: 'ar-2',
+          tool_name: 'run_tests',
+          expires_at: inMinutes(20),
+        }),
+      ]);
+
+      await select(element, ['ar-1', 'ar-2']);
+      barButton(element, 'approve').click();
+
+      await waitUntil(() => !!confirmDialogElement(), 'no confirm dialog');
+      const dialog = confirmDialogElement()!.shadowRoot!;
+      expect(dialog.querySelector('sl-dialog')?.getAttribute('label')).to.equal(
+        'Approve 2 requests?'
+      );
+      const dialogText = dialog.textContent ?? '';
+      expect(dialogText).to.contain('write_file');
+      expect(dialogText).to.contain('run_tests');
+      expect(batchCall(), 'decided before the operator agreed').to.be.undefined;
+
+      await agree();
+      await waitUntil(() => !!batchCall(), 'no batch call');
+
+      const body = bodyOf(batchCall()!);
+      expect(body.ids).to.deep.equal(['ar-1', 'ar-2']);
+      expect(body.approved).to.be.true;
+      expect(
+        fetchStub
+          .getCalls()
+          .filter((c) => String(c.args[0]).includes('/approve')).length,
+        'a batch must not also send per row calls'
+      ).to.equal(0);
+
+      await waitUntil(
+        () =>
+          (element as any).approvalRequests.every(
+            (r: any) => r.status === 'approved'
+          ),
+        'rows were not marked approved'
+      );
+      expect((element as any).selectedIds).to.deep.equal([]);
+    });
+
+    it('denies the selection with one call, confirming first', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+
+      await select(element, ['ar-1']);
+      barButton(element, 'deny').click();
+
+      await waitUntil(() => !!confirmDialogElement(), 'no confirm dialog');
+      expect(
+        confirmDialogElement()!
+          .shadowRoot!.querySelector('sl-dialog')
+          ?.getAttribute('label')
+      ).to.equal('Deny 1 request?');
+      expect(batchCall(), 'denied without confirming').to.be.undefined;
+
+      await agree();
+      await waitUntil(() => !!batchCall(), 'no batch call');
+      expect(bodyOf(batchCall()!).approved).to.be.false;
+    });
+
+    it('keeps only the requests the server refused selected', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+        baseRequest({ id: 'ar-2', expires_at: inMinutes(20) }),
+      ]);
+      batchOutcomes = {
+        'ar-2': { id: 'ar-2', ok: false, error: 'Request already expired' },
+      };
+
+      await select(element, ['ar-1', 'ar-2']);
+      barButton(element, 'approve').click();
+      await agree();
+      await waitUntil(() => !!batchCall(), 'no batch call');
+      await waitUntil(
+        () => (element as any).selectedIds.length === 1,
+        'the failure was not kept for a retry'
+      );
+
+      expect((element as any).selectedIds).to.deep.equal(['ar-2']);
+      const toast = document.querySelector('sl-alert[open]');
+      expect(toast?.textContent ?? '').to.contain('1 request approved');
+      expect(toast?.textContent ?? '').to.contain('Request already expired');
+    });
+
+    it('drops a row from the selection when it leaves the page', async () => {
+      const element = await renderList([
+        baseRequest({
+          id: 'ar-1',
+          tool_name: 'write_file',
+          expires_at: inMinutes(10),
+        }),
+        baseRequest({
+          id: 'ar-2',
+          tool_name: 'run_tests',
+          expires_at: inMinutes(20),
+        }),
+      ]);
+
+      await select(element, ['ar-1', 'ar-2']);
+      expect((element as any).selectedIds.length).to.equal(2);
+
+      (element as any).searchQuery = 'write_file';
+      (element as any).applyFilters();
+      await element.updateComplete;
+
+      expect((element as any).selectedIds).to.deep.equal(['ar-1']);
+    });
+
+    it('extends the selection with shift and X and clears it with Escape', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(5) }),
+        baseRequest({ id: 'ar-2', expires_at: inMinutes(10) }),
+        baseRequest({ id: 'ar-3', expires_at: inMinutes(15) }),
+      ]);
+
+      const press = (key: string, shiftKey = false) => {
+        const focused = element.shadowRoot?.querySelector<HTMLElement>(
+          '.approval-item[tabindex="0"]'
+        ) as HTMLElement;
+        focused.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key,
+            shiftKey,
+            bubbles: true,
+            composed: true,
+          })
+        );
+        return element.updateComplete;
+      };
+
+      await press('j');
+      await press('x');
+      await press('j');
+      await press('j');
+      await press('X', true);
+      expect((element as any).selectedIds).to.deep.equal([
+        'ar-1',
+        'ar-2',
+        'ar-3',
+      ]);
+
+      await press('Escape');
+      expect((element as any).selectedIds).to.deep.equal([]);
     });
   });
 });

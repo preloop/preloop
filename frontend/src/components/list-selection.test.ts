@@ -663,4 +663,57 @@ describe('ListSelectionController', () => {
     await element.updateComplete;
     expect(box.hasAttribute('disabled')).to.equal(false);
   });
+
+  it('runs one batch call and keeps only the refused rows selected', async () => {
+    const element = await host();
+    element.selection.toggleAll(true);
+    await element.updateComplete;
+
+    let sent: string[] = [];
+    const result = await element.selection.runBatch(
+      'approve',
+      element.selection.selectedItems,
+      async (items) => {
+        sent = items.map((item) => item.id);
+        return {
+          succeeded: items.filter((item) => item.id !== 'c'),
+          failed: items
+            .filter((item) => item.id === 'c')
+            .map((item) => ({ item, message: 'Already expired' })),
+        };
+      },
+      { verb: 'approve', verbPast: 'approved', noun: 'request' }
+    );
+
+    // One call, carrying the whole selection.
+    expect(sent).to.eql(['a', 'b', 'c', 'd']);
+    expect(result.succeeded.map((row) => row.id)).to.eql(['a', 'b', 'd']);
+    expect(element.selection.selectedIds).to.eql(['c']);
+    expect(element.selection.running).to.equal(null);
+  });
+
+  it('treats a batch call that throws as every row failing', async () => {
+    const element = await host();
+    element.selection.toggleAll(true);
+    await element.updateComplete;
+
+    const result = await element.selection.runBatch(
+      'approve',
+      element.selection.selectedItems,
+      async () => {
+        throw new Error('Service unavailable');
+      },
+      { verb: 'approve', verbPast: 'approved', noun: 'request' }
+    );
+
+    expect(result.succeeded).to.eql([]);
+    expect(result.failed.map((failure) => failure.message)).to.eql([
+      'Service unavailable',
+      'Service unavailable',
+      'Service unavailable',
+      'Service unavailable',
+    ]);
+    // Nothing was lost: the whole selection is still there to retry.
+    expect(element.selection.selectedIds).to.eql(['a', 'b', 'c', 'd']);
+  });
 });

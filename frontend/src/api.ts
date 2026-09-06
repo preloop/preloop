@@ -4536,6 +4536,49 @@ export async function declineRequest(
   return response.json();
 }
 
+/** What the batch endpoint reports back about one of the ids it was sent. */
+export interface ApprovalBatchItemResult {
+  id: string;
+  ok: boolean;
+  status?: string | null;
+  error?: string | null;
+}
+
+export interface ApprovalBatchResponse {
+  results: ApprovalBatchItemResult[];
+  succeeded: number;
+  failed: number;
+}
+
+/**
+ * Decide several approval requests with one call.
+ *
+ * The batch never fails as a whole: an id that expired while the operator was
+ * reading comes back as its own failed result, so the caller can name it and
+ * leave the rest alone.
+ */
+export async function decideApprovalsBatch(
+  ids: string[],
+  approved: boolean,
+  comment?: string
+): Promise<ApprovalBatchResponse> {
+  const response = await fetchWithAuth(
+    '/api/v1/approval-requests/decide-batch',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, approved, comment: comment ?? null }),
+    }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to record the decisions')
+    );
+  }
+  return response.json();
+}
+
 // ============================================================================
 // User Management API Functions
 // ============================================================================
