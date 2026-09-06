@@ -407,6 +407,39 @@ describe('AttentionView', () => {
     ).to.equal('neutral');
   });
 
+  it('reads "expired" once the deadline passes under an open page', async () => {
+    // The loader drops approvals that are already past their deadline, so
+    // this state is reached by a page left open across the deadline: the row
+    // must then say "expired", never "expires expired".
+    approvalsResponse = [
+      {
+        id: 'stale',
+        tool_name: 'stale_tool',
+        status: 'pending',
+        requested_at: new Date(Date.now() - 3600_000).toISOString(),
+        expires_at: new Date(Date.now() + 300).toISOString(),
+      },
+    ];
+    const el = await mount();
+    expect(
+      el
+        .shadowRoot!.querySelector('#approvals .expiry-chip')!
+        .textContent!.replace(/\s+/g, ' ')
+        .trim()
+    ).to.contain('expires');
+
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    el.requestUpdate();
+    await el.updateComplete;
+
+    expect(
+      el
+        .shadowRoot!.querySelector('#approvals .expiry-chip')!
+        .textContent!.replace(/\s+/g, ' ')
+        .trim()
+    ).to.equal('expired');
+  });
+
   it('shows one row per flow with the failure count', async () => {
     const start = (daysAgo: number) =>
       new Date(Date.now() - daysAgo * 24 * 3600_000).toISOString();

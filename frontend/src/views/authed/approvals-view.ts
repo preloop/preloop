@@ -50,7 +50,6 @@ const SEEN_STORAGE_LIMIT = 500;
 
 interface ApprovalStats {
   total: number;
-  pending: number;
   approved: number;
   declined: number;
   expired: number;
@@ -88,7 +87,6 @@ export class ApprovalsView extends AuthedElement {
   @state()
   private stats: ApprovalStats = {
     total: 0,
-    pending: 0,
     approved: 0,
     declined: 0,
     expired: 0,
@@ -159,7 +157,7 @@ export class ApprovalsView extends AuthedElement {
         border-top: 1px solid var(--console-hairline);
         border-bottom: 1px solid var(--console-hairline);
         color: var(--console-meta-color);
-        font-size: var(--sl-font-size-small);
+        font-size: var(--console-text-meta);
         font-variant-numeric: tabular-nums;
       }
 
@@ -208,15 +206,17 @@ export class ApprovalsView extends AuthedElement {
         transition: all 0.2s ease;
       }
 
-      /* The keyboard row: a ring you can see, and a tint when picked. */
-      .approval-item:focus {
+      /* The keyboard row: a ring for the keyboard, nothing for the pointer. */
+      .approval-item:focus-visible {
         outline: 2px solid var(--sl-color-primary-500);
         outline-offset: 2px;
       }
 
+      /* A selected row is marked at its edge, not filled: a row is never
+         tinted by its state. */
       .approval-item.selected {
-        background: var(--sl-color-primary-50);
-        border-color: var(--sl-color-primary-300);
+        border-left: 3px solid var(--sl-color-primary-500);
+        padding-left: calc(var(--sl-spacing-medium) - 2px);
       }
 
       /* Meta text, at the meta size and the meta colour: neutral-500 at 12px
@@ -672,7 +672,6 @@ export class ApprovalsView extends AuthedElement {
   private calculateStats() {
     const requests = this.approvalRequests;
     const total = requests.length;
-    const pending = requests.filter((r) => r.status === 'pending').length;
     const approved = requests.filter((r) => r.status === 'approved').length;
     const declined = requests.filter((r) => r.status === 'declined').length;
     const expired = requests.filter((r) => r.status === 'expired').length;
@@ -720,7 +719,6 @@ export class ApprovalsView extends AuthedElement {
 
     this.stats = {
       total,
-      pending,
       approved,
       declined,
       expired,
@@ -1204,7 +1202,12 @@ export class ApprovalsView extends AuthedElement {
               : ''
           }
         </div>
-        <div class="approval-list" role="grid" aria-label=${title}>
+        <div
+          class="approval-list"
+          role="grid"
+          aria-multiselectable="true"
+          aria-label=${title}
+        >
           ${requests.map((request, index) =>
             this.renderRequest(request, waiting, indexOffset + index)
           )}

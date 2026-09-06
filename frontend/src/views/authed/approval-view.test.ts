@@ -568,13 +568,18 @@ describe('ApprovalView', () => {
   });
 
   describe('the fact strip', () => {
+    // Full length ids, so "shows eight characters" is actually testable.
+    const REQUEST_UUID = '3f2a9c14-6b7d-4e58-9a01-77b1c0d2e3f4';
+    const SESSION_UUID = 'a1b2c3d4-e5f6-4788-9a0b-1c2d3e4f5a6b';
+
     async function stripOf(overrides: Record<string, unknown> = {}) {
       fetchStub?.restore();
       fetchStub = createFetchStub({
         request: pendingRequest({
+          id: REQUEST_UUID,
           managed_agent_id: 'agent-1',
           managed_agent_name: 'Claude Code',
-          runtime_session_id: 'sess-abcdef12',
+          runtime_session_id: SESSION_UUID,
           ...overrides,
         }),
       });
@@ -594,15 +599,25 @@ describe('ApprovalView', () => {
         a.getAttribute('href')
       );
       expect(links).to.include('/console/agents/agent-1');
+      // The link keeps the whole session id; only the label is shortened.
       expect(links).to.include(
-        '/console/runtime-sessions?sessionId=sess-abcdef12'
+        `/console/runtime-sessions?sessionId=${SESSION_UUID}`
+      );
+      const sessionLink = Array.from(strip.querySelectorAll('a')).find((a) =>
+        a.getAttribute('href')!.includes('runtime-sessions')
+      )!;
+      expect(sessionLink.textContent!.trim()).to.equal(
+        SESSION_UUID.slice(0, 8)
       );
 
       const text = strip.textContent!.replace(/\s+/g, ' ');
       expect(text).to.contain('Claude Code');
       expect(text).to.contain('shell_command');
       // Eight characters of the request id, never the full UUID.
-      expect(text).to.contain('req-1');
+      expect(strip.querySelector('.request-id')!.textContent!.trim()).to.equal(
+        REQUEST_UUID.slice(0, 8)
+      );
+      expect(text).to.not.contain(REQUEST_UUID);
       expect(strip.querySelector('.copy-id')).to.exist;
     });
 

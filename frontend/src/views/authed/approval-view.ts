@@ -187,22 +187,6 @@ export class ApprovalView extends AuthedElement {
         font-weight: 600;
       }
 
-      .info-grid {
-        display: grid;
-        grid-template-columns: 150px 1fr;
-        gap: 0.75rem;
-        margin-bottom: 1rem;
-      }
-
-      .info-label {
-        font-weight: 600;
-        color: var(--sl-color-neutral-700);
-      }
-
-      .info-value {
-        color: var(--sl-color-neutral-900);
-      }
-
       /* The facts on one hairline strip: no boxes, no grid of labels. */
       .fact-strip {
         display: flex;

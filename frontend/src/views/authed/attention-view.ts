@@ -1404,6 +1404,12 @@ export class AttentionView extends AuthedElement {
     if (!expiresAt) return nothing;
     const remainingMs = new Date(expiresAt).getTime() - Date.now();
     const soon = remainingMs <= 60 * 60 * 1000;
+    // A deadline already past reads "expired", not "expires expired": the
+    // backend has simply not reaped the row yet.
+    const label =
+      remainingMs <= 0
+        ? 'expired'
+        : `expires ${formatFutureRelativeTime(expiresAt)}`;
     return html`
       <sl-badge
         class="chip expiry-chip"
@@ -1412,7 +1418,7 @@ export class AttentionView extends AuthedElement {
         title=${formatLocalDateTime(expiresAt)}
       >
         <sl-icon name="hourglass"></sl-icon>
-        expires ${formatFutureRelativeTime(expiresAt)}
+        ${label}
       </sl-badge>
     `;
   }
