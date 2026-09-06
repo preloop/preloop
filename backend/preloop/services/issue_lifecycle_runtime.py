@@ -1,6 +1,7 @@
 """Production adapters and flow entry/terminal hooks for issue lifecycles."""
 
 import logging
+from functools import partial
 from typing import Any
 from uuid import UUID
 
@@ -12,6 +13,10 @@ from preloop.models.crud import crud_flow, crud_issue, crud_issue_lifecycle
 from preloop.schemas.issue_lifecycle import ReadinessContract
 from preloop.services.issue_lifecycle import IssueLifecycleService
 from preloop.services.issue_lifecycle_provider import GitHubLifecycleProvider
+from preloop.services.issue_lifecycle_worker import (
+    lifecycle_worker_hook,
+    on_application_loop,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +87,7 @@ async def build_lifecycle_service(
     )
 
 
+@lifecycle_worker_hook
 async def lifecycle_flow_entry(
     trigger_service: Any, flow: models.Flow, event: dict[str, Any], nats_client: Any
 ) -> tuple[bool, models.FlowExecution | None]:
@@ -125,11 +131,16 @@ async def lifecycle_flow_entry(
     )
 
     async def dispatch(execution: models.FlowExecution) -> None:
-        await trigger_service._start_flow_execution(
-            flow,
-            execution.trigger_event_details,
-            nats_client,
-            precreated_execution=execution,
+        # Resolve expired ORM attributes before crossing to the application loop.
+        _ = flow.id, execution.id
+        await on_application_loop(
+            partial(
+                trigger_service._start_flow_execution,
+                flow,
+                execution.trigger_event_details,
+                nats_client,
+                precreated_execution=execution,
+            )
         )
 
     if kind == "merge_audit":
@@ -146,6 +157,7 @@ async def lifecycle_flow_entry(
     return False, None
 
 
+@lifecycle_worker_hook
 async def lifecycle_execution_finished(
     db: Session, execution: models.FlowExecution, flow: models.Flow
 ) -> None:

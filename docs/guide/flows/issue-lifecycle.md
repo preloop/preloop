@@ -86,6 +86,12 @@ bounded confirmed defects/enhancements. Existing marked issues, or human-created
 issues referencing the source issue and the same acceptance criterion, are reused.
 Unknown findings remain in the audit. The original issue is never reopened.
 
+HTTP handlers and lifecycle hooks run each complete operation in a worker,
+including synchronous CRUD calls and lazy ORM reads after commit. Provider I/O
+uses that worker's private loop. Flow dispatch returns to the persistent
+application loop, so locally dispatched background executions survive the
+request or hook finishing.
+
 Per-issue PostgreSQL transaction locks serialize decisions, and unique operation
 keys survive duplicate webhooks. Remote writes also use deterministic markers:
 a retry after provider success and local rollback finds the original issue or
