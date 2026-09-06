@@ -1034,6 +1034,51 @@ describe('AgentsView', () => {
       'a dead bulk bar is still on screen'
     ).to.equal(null);
   });
+
+  it('paints one card per selectable row, none for a deduplicated agent', async () => {
+    localStorage.setItem('preloop.agents.view_mode', 'cards');
+    // Flows are hidden by default; this list shows them, which is when an
+    // agent can be the session behind a flow.
+    localStorage.setItem('preloopAgentKindsHidden', '[]');
+    agentItems = [
+      makeAgent('agent-1', 'Alpha runner', 'claude_code'),
+      makeAgent('agent-2', 'Beta runner', 'claude_code'),
+    ];
+    // Alpha is the session behind flow-1, so the flow's card represents it and
+    // the list deduplicates it away. A card for it would carry a checkbox
+    // whose id the selection prunes on the next pass: a tick that undoes
+    // itself.
+    (agentItems[0] as Record<string, unknown>).session_source_id = 'flow-1';
+    flowItems = [
+      {
+        id: 'flow-1',
+        name: 'Nightly report',
+        flow_status: 'active',
+        is_enabled: true,
+        owner_username: 'ops',
+        ai_model_id: null,
+        description: '',
+        execution_stats: {},
+      },
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const cardIds = Array.from(
+      el.shadowRoot!.querySelectorAll('.cards sl-card.agent-card')
+    ).map((card) => card.getAttribute('data-selection-id'));
+    expect(cardIds).to.deep.equal(['agent-2', 'flow-1']);
+
+    const checkboxIds = Array.from(
+      el.shadowRoot!.querySelectorAll('.cards list-select-checkbox')
+    ).map((box) => box.getAttribute('item-id'));
+    expect(checkboxIds).to.deep.equal(['agent-2']);
+    expect(
+      checkboxIds.every((id) => el.selection.order.includes(id!)),
+      'a card offers a checkbox for a row the selection prunes'
+    ).to.equal(true);
+  });
 });
 
 describe('sortAgentListRows', () => {

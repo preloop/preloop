@@ -3958,22 +3958,25 @@ export class AgentsView extends LitElement {
   /**
    * Cards carry the same checkboxes as rows, in the order they are painted so
    * a shift-range means what the operator sees.
+   *
+   * The cards come from the same row list the selection was pruned to, which
+   * is the deduplicated one: an agent that is the session behind a flow is
+   * already represented by that flow's card, and painting it again gave it a
+   * checkbox whose id was pruned on the next pass, so ticking it undid itself.
    */
   private renderCardsView() {
-    const items = [...(this.agents?.items || []), ...this.flows];
+    const rows = this.selectionRows;
 
     return html`
       <div class="cards">
         ${
-          (!this.agents ||
-            (this.agents.items.length === 0 && this.flows.length === 0)) &&
-          !this.loading
+          rows.length === 0 && !this.loading
             ? html`
                 <div class="empty-state">
                   No agents or flows found matching your query.
                 </div>
               `
-            : items.map((item) => this.renderAgentCard(item))
+            : rows.map((row) => this.renderAgentCard(row.source))
         }
       </div>
     `;
