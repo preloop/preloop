@@ -743,39 +743,29 @@ describe('RuntimeSessionsView', () => {
         ],
       });
 
-      let releaseStale: () => void = () => undefined;
-      const staleHold = new Promise<void>((resolve) => {
-        releaseStale = resolve;
-      });
-      let listCalls = 0;
+      const pending: Array<(body: unknown) => void> = [];
       fetchStub.callsFake(async (input: RequestInfo | URL) => {
         const url = typeof input === 'string' ? input : input.toString();
-        if (url.startsWith('/api/v1/runtime-sessions?')) {
-          listCalls += 1;
-          if (listCalls === 1) {
-            await staleHold;
-            return new Response(
-              JSON.stringify(listPayload('stale-session', 'Stale')),
-              {
-                status: 200,
-                headers: { 'Content-Type': 'application/json' },
-              }
-            );
-          }
-          return new Response(
-            JSON.stringify(listPayload('fresh-session', 'Fresh')),
-            {
-              status: 200,
-              headers: { 'Content-Type': 'application/json' },
-            }
-          );
+        if (url.includes('/api/v1/runtime-sessions?')) {
+          const body = await new Promise<unknown>((resolve) => {
+            pending.push(resolve);
+          });
+          return new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
         }
         return new Response('{}', { status: 404 });
       });
 
       const first = (element as any).loadSessions();
       const second = (element as any).loadSessions();
-      releaseStale();
+      await waitUntil(
+        () => pending.length >= 2,
+        'Both session list fetches did not start'
+      );
+      pending[1](listPayload('fresh-session', 'Fresh'));
+      pending[0](listPayload('stale-session', 'Stale'));
       await Promise.all([first, second]);
       await element.updateComplete;
 
