@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import partial, wraps
-from typing import Any, ParamSpec, TypeVar
+from typing import Any, NamedTuple, ParamSpec, TypeVar
 from uuid import UUID
 
 import anyio
@@ -96,6 +96,56 @@ def run_lifecycle_endpoint(operation: Callable[[], Awaitable[T]]) -> T:
     return anyio.run(operation)
 
 
+LIFECYCLE_ENTRY_EVENTS = frozenset({"issue_labeled", "issue_updated", "issue_created"})
+LIFECYCLE_ENTRY_KINDS = frozenset({"merge_audit", "refinement"})
+
+
+class LifecycleEntry(NamedTuple):
+    """One trigger decision: the flow kind, its tenant project and pickup."""
+
+    kind: str | None
+    project: Any | None
+    pickup: bool
+
+    @property
+    def engaged(self) -> bool:
+        """True when the entry hook reads or writes lifecycle state."""
+        return self.project is not None and (
+            self.kind in LIFECYCLE_ENTRY_KINDS or self.pickup
+        )
+
+
+def lifecycle_entry_decision(
+    db: Any, flow: Any, event: dict[str, Any]
+) -> LifecycleEntry:
+    """Decide once whether a trigger event belongs to a lifecycle flow.
+
+    The entry hook and the caller-commit gate both read this decision, so the
+    gate cannot silently under-commit when the entry conditions change.
+    """
+    kind = (flow.agent_config or {}).get("lifecycle_kind")
+    event_type = event.get("type")
+    if kind not in LIFECYCLE_ENTRY_KINDS and event_type not in LIFECYCLE_ENTRY_EVENTS:
+        return LifecycleEntry(kind, None, False)
+    project_id = event.get("project_id")
+    if not project_id or not flow.account_id:
+        return LifecycleEntry(kind, None, False)
+    from preloop.models.crud import crud_issue_lifecycle
+
+    project = crud_issue_lifecycle.get_project(
+        db, project_id=UUID(str(project_id)), account_id=flow.account_id
+    )
+    if project is None:
+        return LifecycleEntry(kind, None, False)
+    policy = (project.settings or {}).get("issue_lifecycle") or {}
+    pickup = (
+        event_type in LIFECYCLE_ENTRY_EVENTS
+        and policy.get("ready_enabled") is True
+        and str(policy.get("implementation_flow_id")) == str(flow.id)
+    )
+    return LifecycleEntry(kind, project, pickup)
+
+
 def _should_commit_lifecycle_caller(caller: Session, *args: Any, **kwargs: Any) -> bool:
     """Commit only after the event is a confirmed lifecycle operation."""
     flow = None
@@ -117,32 +167,9 @@ def _should_commit_lifecycle_caller(caller: Session, *args: Any, **kwargs: Any) 
             "lifecycle"
         ) or execution_event.get("lifecycle_refinement")
         return bool(envelope)
-    if flow is None:
+    if flow is None or event is None:
         return False
-    kind = (flow.agent_config or {}).get("lifecycle_kind")
-    if kind in {"merge_audit", "refinement", "deployment_audit"}:
-        return True
-    if not event or event.get("type") not in {
-        "issue_labeled",
-        "issue_updated",
-        "issue_created",
-    }:
-        return False
-    project_id = event.get("project_id")
-    account_id = flow.account_id
-    if not project_id or not account_id:
-        return False
-    from preloop.models.crud import crud_issue_lifecycle
-
-    project = crud_issue_lifecycle.get_project(
-        caller, project_id=UUID(str(project_id)), account_id=account_id
-    )
-    if project is None:
-        return False
-    policy = (project.settings or {}).get("issue_lifecycle") or {}
-    return policy.get("ready_enabled") is True and str(
-        policy.get("implementation_flow_id")
-    ) == str(flow.id)
+    return lifecycle_entry_decision(caller, flow, event).engaged
 
 
 def lifecycle_worker_hook(

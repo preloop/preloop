@@ -15,6 +15,7 @@ from preloop.services.issue_lifecycle import IssueLifecycleService
 from preloop.services.issue_lifecycle_provider import GitHubLifecycleProvider
 from preloop.services.issue_lifecycle_worker import (
     dispatch_lifecycle_execution,
+    lifecycle_entry_decision,
     lifecycle_worker_db,
     lifecycle_worker_hook,
 )
@@ -108,29 +109,10 @@ async def _lifecycle_flow_entry(
     trigger_service: Any,
 ) -> tuple[bool, models.FlowExecution | None]:
     """CRUD for ``lifecycle_flow_entry`` on the worker-owned session."""
-    kind = (flow.agent_config or {}).get("lifecycle_kind")
-    if kind not in {"merge_audit", "refinement"} and event.get("type") not in {
-        "issue_labeled",
-        "issue_updated",
-        "issue_created",
-    }:
+    entry = lifecycle_entry_decision(db, flow, event)
+    if not entry.engaged:
         return False, None
-    project_id = event.get("project_id")
-    if not project_id or not flow.account_id:
-        return False, None
-    project = crud_issue_lifecycle.get_project(
-        db, project_id=UUID(str(project_id)), account_id=flow.account_id
-    )
-    if not project:
-        return False, None
-    policy = (project.settings or {}).get("issue_lifecycle") or {}
-    pickup = (
-        policy.get("ready_enabled") is True
-        and str(policy.get("implementation_flow_id")) == str(flow.id)
-        and event.get("type") in {"issue_labeled", "issue_updated", "issue_created"}
-    )
-    if kind not in {"merge_audit", "refinement"} and not pickup:
-        return False, None
+    project = entry.project
     payload = event.get("payload") or {}
     raw_issue = payload.get("issue") or payload.get("object_attributes") or {}
     external_id = raw_issue.get("id")
@@ -160,9 +142,9 @@ async def _lifecycle_flow_entry(
             ),
         )
 
-    if kind == "merge_audit":
+    if entry.kind == "merge_audit":
         return True, await service.schedule_audit(flow, dispatch)
-    if pickup:
+    if entry.pickup:
         return True, await service.schedule_pickup(flow, event, dispatch)
     # Refinement runs normally, but receives a trusted source revision. Its
     # result is a proposal and cannot itself add the ready label.
