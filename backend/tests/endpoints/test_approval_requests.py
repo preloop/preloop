@@ -1,14 +1,20 @@
 """Tests for approval_requests API endpoints."""
 
+import os
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import NullPool
 
 from preloop.api.endpoints import approval_requests
 from preloop.models import models
+from preloop.models.crud import crud_account_halt
 from preloop.models.schemas.approval_request import ApprovalRequestResponse
 
 
@@ -873,6 +879,138 @@ class TestDecideRequestsBatch:
                 ids=[uuid.uuid4() for _ in range(MAX_BATCH_DECISION_IDS + 1)],
                 approved=True,
             )
+
+
+class TestDecideRequestsBatchAgainstPostgres:
+    """decide-batch on the real database, where expiry is an actual status write."""
+
+    @staticmethod
+    @asynccontextmanager
+    async def _session():
+        """An AsyncSession on the test database, like the route dependency."""
+        url = os.environ["DATABASE_URL"].replace(
+            "postgresql://", "postgresql+asyncpg://", 1
+        )
+        engine = create_async_engine(url, poolclass=NullPool)
+        try:
+            async with AsyncSession(engine, expire_on_commit=False) as session:
+                yield session
+        finally:
+            await engine.dispose()
+
+    @staticmethod
+    def _seed(db_engine, *, expires_at, halt_activated_at=None):
+        """Commit one pending request, optionally under a tools halt.
+
+        Committed rather than nested in the ``db_session`` transaction: the
+        route runs on its own asyncpg connection and would not see the rows.
+        """
+        account_id = uuid.uuid4()
+        with Session(db_engine) as db:
+            db.add(models.Account(id=account_id, organization_name="batch-expiry"))
+            db.flush()
+            workflow = models.ApprovalWorkflow(
+                account_id=account_id, name="batch expiry", workflow_type="simple"
+            )
+            tool = models.ToolConfiguration(
+                account_id=account_id,
+                tool_name="batch-expiry",
+                tool_source="builtin",
+            )
+            db.add_all([workflow, tool])
+            db.flush()
+            approval_request = models.ApprovalRequest(
+                account_id=account_id,
+                tool_configuration_id=tool.id,
+                approval_workflow_id=workflow.id,
+                tool_name="batch-expiry",
+                tool_args={},
+                requested_at=expires_at - timedelta(minutes=30),
+                expires_at=expires_at,
+                status="pending",
+            )
+            db.add(approval_request)
+            if halt_activated_at is not None:
+                crud_account_halt.set_scopes(
+                    db,
+                    account_id=account_id,
+                    scopes=["tools"],
+                    active=True,
+                    user_id=None,
+                    now=halt_activated_at.replace(tzinfo=UTC),
+                    commit=False,
+                )
+            db.commit()
+            return account_id, approval_request.id
+
+    @staticmethod
+    def _drop(db_engine, account_id):
+        """Remove the seeded account; every child row cascades with it."""
+        with Session(db_engine) as db:
+            db.query(models.Account).filter(models.Account.id == account_id).delete()
+            db.commit()
+
+    @staticmethod
+    def _status(db_engine, request_id):
+        with Session(db_engine) as db:
+            return db.get(models.ApprovalRequest, request_id).status
+
+    @classmethod
+    async def _decide(cls, account_id, request_id):
+        """Approve one id through the route with a real ApprovalService."""
+        from preloop.models.schemas.approval_request import ApprovalBatchDecision
+
+        user = MagicMock()
+        user.id = uuid.uuid4()
+        user.account_id = account_id
+        http_request = MagicMock()
+        http_request.base_url = "http://localhost"
+        async with cls._session() as session:
+            response = await approval_requests.decide_requests_batch(
+                decision=ApprovalBatchDecision(ids=[request_id], approved=True),
+                request=http_request,
+                current_user=user,
+                db=session,
+            )
+        return response.results[0]
+
+    @pytest.mark.asyncio
+    async def test_batch_decides_a_past_deadline_request_frozen_by_the_kill_switch(
+        self, db_engine
+    ):
+        """An incident freeze keeps a late request decidable (#157)."""
+        deadline = datetime.utcnow() - timedelta(minutes=1)
+        account_id, request_id = self._seed(
+            db_engine,
+            expires_at=deadline,
+            halt_activated_at=deadline - timedelta(minutes=10),
+        )
+        try:
+            result = await self._decide(account_id, request_id)
+
+            assert result.ok is True
+            assert result.status == "approved"
+            assert self._status(db_engine, request_id) == "approved"
+        finally:
+            self._drop(db_engine, account_id)
+
+    @pytest.mark.asyncio
+    async def test_batch_expires_a_past_deadline_request_when_nothing_is_frozen(
+        self, db_engine
+    ):
+        """Without a freeze the row is reported expired and written expired."""
+        account_id, request_id = self._seed(
+            db_engine, expires_at=datetime.utcnow() - timedelta(minutes=1)
+        )
+        try:
+            result = await self._decide(account_id, request_id)
+
+            assert result.ok is False
+            assert result.status == "expired"
+            # The old pre-check reported this without ever writing it.
+            assert self._status(db_engine, request_id) == "expired"
+        finally:
+            self._drop(db_engine, account_id)
 
 
 class TestGetApprovalRequestHistory:
