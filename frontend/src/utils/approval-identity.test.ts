@@ -50,6 +50,25 @@ describe('approval identity', () => {
     ).to.equal('Cursor');
   });
 
+  it('shortens the agent id rather than saying "AI agent"', () => {
+    // A deleted agent (or a server that predates the resolved summary) leaves
+    // the id as the only fact. The attribution line prints "Agent 3f2a9c14",
+    // so the chip beside it must not print a generic label instead.
+    expect(
+      approvalRequesterName({
+        managed_agent_id: '3f2a9c14-6b7d-4e58-9a01-77b1c0d2e3f4',
+        managed_agent_name: null,
+        tool_args: {},
+      })
+    ).to.equal('3f2a9c14');
+    expect(
+      approvalRequesterName({
+        agent: { id: '3f2a9c14-6b7d-4e58-9a01-77b1c0d2e3f4' },
+        tool_args: { _preloop_source: 'claude_code' },
+      })
+    ).to.equal('3f2a9c14 via Claude Code');
+  });
+
   it('keeps adapter metadata out of tool arguments', () => {
     const toolArgs = { command: 'git status', _preloop_source: 'cursor' };
     expect(getApprovalSource(toolArgs)).to.equal('cursor');

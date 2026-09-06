@@ -149,17 +149,6 @@ describe('attribution-line', () => {
     expect(element.shadowRoot!.querySelector('.line')).to.equal(null);
   });
 
-  it('drops the labels in compact mode but keeps the links', async () => {
-    const element = (await fixture(
-      html`<attribution-line compact .source=${FULL}></attribution-line>`
-    )) as AttributionLine;
-    await element.updateComplete;
-
-    expect(textOf(element)).to.not.contain('Agent');
-    expect(textOf(element)).to.contain('Claude Code (laptop)');
-    expect(hrefsOf(element)).to.have.length(4);
-  });
-
   it('lets a link click reach the document so the router routes it', async () => {
     const element = await lineOf(FULL);
     // Capture phase, so navigation is cancelled before the anchor acts on it

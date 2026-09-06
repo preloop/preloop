@@ -153,13 +153,6 @@ export class AttributionLine extends LitElement {
   @property({ type: Object })
   source: AttributionSource | null = null;
 
-  /**
-   * Drop the labels and keep the links. For a list row, where the column is
-   * already "who asked" and four labels would be more words than facts.
-   */
-  @property({ type: Boolean })
-  compact = false;
-
   static styles = css`
     :host {
       display: block;
@@ -223,11 +216,7 @@ export class AttributionLine extends LitElement {
                 : nothing
             }
             <span class="part" data-part=${item.key}>
-              ${
-                this.compact
-                  ? nothing
-                  : html`<span class="label">${item.label}</span>`
-              }
+              <span class="label">${item.label}</span>
               ${
                 item.href
                   ? html`<a
