@@ -24,6 +24,7 @@ from preloop.models.schemas.approval_request import ApprovalRequestResponse
 from preloop.services.approval_attribution import (
     attach_attribution,
     attributed,
+    attributed_async,
     attribution_from_user_context,
     resolve_managed_agent_name,
 )
@@ -249,6 +250,7 @@ def attributed_world(db_session, test_user):
     db_session.add_all([session, agent, api_key, flow, execution])
     db_session.flush()
     return SimpleNamespace(
+        account_id=test_user.account_id,
         session=session,
         agent=agent,
         api_key=api_key,
@@ -282,6 +284,7 @@ def test_all_four_parts_are_named_and_linkable(db_session, attributed_world):
     """The full fixture: agent, key, session and flow run all resolve."""
     world = attributed_world
     request = _request(
+        account_id=world.account_id,
         managed_agent_id=world.agent.id,
         runtime_session_id=world.session.id,
         api_key_id=world.api_key.id,
@@ -306,7 +309,10 @@ def test_all_four_parts_are_named_and_linkable(db_session, attributed_world):
 
 def test_only_an_api_key_names_only_the_key(db_session, attributed_world):
     """A plain key caller shows one link, not three blanks."""
-    request = _request(api_key_id=attributed_world.api_key.id)
+    request = _request(
+        account_id=attributed_world.account_id,
+        api_key_id=attributed_world.api_key.id,
+    )
 
     response = ApprovalRequestResponse.model_validate(attributed(db_session, request))
 
@@ -343,11 +349,82 @@ def test_a_non_uuid_execution_id_is_not_looked_up(db_session, attributed_world):
     assert response.flow_execution is None
 
 
+def test_an_id_from_another_account_is_never_resolved(db_session, attributed_world):
+    """A mis-stamped id must not name another account's agent or key.
+
+    The ids come off a row the reader already owns, so this is defence in
+    depth rather than a live leak, but the lookup is scoped to the request's
+    account so a wrong id resolves to nothing instead of to a stranger.
+    """
+    world = attributed_world
+    request = _request(
+        account_id=uuid.uuid4(),
+        managed_agent_id=world.agent.id,
+        runtime_session_id=world.session.id,
+        api_key_id=world.api_key.id,
+        execution_id=str(world.execution.id),
+    )
+
+    response = ApprovalRequestResponse.model_validate(attributed(db_session, request))
+
+    assert response.agent is None
+    assert response.api_key is None
+    assert response.session is None
+    assert response.flow_execution is None
+
+
+def _scalar_result(rows):
+    """A stand-in for ``Result`` as the attribution loader consumes it."""
+    return MagicMock(
+        scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=rows)))
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_decide_endpoints_attribute_without_blocking(
+    db_session, attributed_world
+):
+    """approve/decline/cancel are async, so attribution runs on their session.
+
+    Four awaited statements, not four blocking ones on the event loop: the
+    agent, the key, the session, and the run joined to its flow.
+    """
+    world = attributed_world
+    request = _request(
+        account_id=world.account_id,
+        managed_agent_id=world.agent.id,
+        runtime_session_id=world.session.id,
+        api_key_id=world.api_key.id,
+        execution_id=str(world.execution.id),
+    )
+    db = AsyncMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _scalar_result([world.agent]),
+            _scalar_result([world.api_key]),
+            _scalar_result([world.session]),
+            MagicMock(all=MagicMock(return_value=[(world.execution, world.flow)])),
+        ]
+    )
+
+    await attributed_async(db, request)
+
+    assert db.execute.await_count == 4
+    assert request.agent.name == "Claude Code (laptop)"
+    assert request.api_key.name == "claude-code-laptop"
+    assert request.session.subject == "feature/attribution"
+    assert request.flow_execution.flow_name == "Nightly audit"
+
+
 def test_a_page_of_requests_is_attributed_in_one_batch(db_session, attributed_world):
     """The list endpoint must not issue four lookups per row."""
     world = attributed_world
     requests = [
-        _request(managed_agent_id=world.agent.id, api_key_id=world.api_key.id)
+        _request(
+            account_id=world.account_id,
+            managed_agent_id=world.agent.id,
+            api_key_id=world.api_key.id,
+        )
         for _ in range(5)
     ]
 

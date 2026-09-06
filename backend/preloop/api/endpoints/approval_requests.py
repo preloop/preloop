@@ -9,7 +9,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
-from preloop.services.approval_attribution import attach_attribution, attributed
+from preloop.services.approval_attribution import (
+    attach_attribution,
+    attributed,
+    attributed_async,
+)
 from preloop.services.approval_service import ApprovalService
 from preloop.models.crud import crud_approval_event, crud_approval_request
 from preloop.models.db.session import get_async_db_session, get_db_session
@@ -266,10 +270,13 @@ async def approve_request(
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to approve request")
 
-        # Name the agent, key, session and flow run on the request-scoped
-        # session, then convert while the write session is still open to avoid
-        # DetachedInstanceError during response serialization.
-        return ApprovalRequestResponse.model_validate(attributed(db, updated))
+        # Name the agent, key, session and flow run on the async session the
+        # handler already holds (the sync request session would block the
+        # event loop), then convert while the write session is still open to
+        # avoid DetachedInstanceError during response serialization.
+        return ApprovalRequestResponse.model_validate(
+            await attributed_async(async_db, updated)
+        )
 
 
 @router.post("/{request_id}/decline", response_model=ApprovalRequestResponse)
@@ -332,10 +339,13 @@ async def decline_request(
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to decline request")
 
-        # Name the agent, key, session and flow run on the request-scoped
-        # session, then convert while the write session is still open to avoid
-        # DetachedInstanceError during response serialization.
-        return ApprovalRequestResponse.model_validate(attributed(db, updated))
+        # Name the agent, key, session and flow run on the async session the
+        # handler already holds (the sync request session would block the
+        # event loop), then convert while the write session is still open to
+        # avoid DetachedInstanceError during response serialization.
+        return ApprovalRequestResponse.model_validate(
+            await attributed_async(async_db, updated)
+        )
 
 
 @router.post("/{request_id}/decide", response_model=ApprovalRequestResponse)
@@ -410,7 +420,10 @@ async def decide_request(
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to process decision")
 
-        # Name the agent, key, session and flow run on the request-scoped
-        # session, then convert while the write session is still open to avoid
-        # DetachedInstanceError during response serialization.
-        return ApprovalRequestResponse.model_validate(attributed(db, updated))
+        # Name the agent, key, session and flow run on the async session the
+        # handler already holds (the sync request session would block the
+        # event loop), then convert while the write session is still open to
+        # avoid DetachedInstanceError during response serialization.
+        return ApprovalRequestResponse.model_validate(
+            await attributed_async(async_db, updated)
+        )
