@@ -778,3 +778,20 @@ class TestUserStopResult:
         assert "timed out" not in (result["error_message"] or "")
         assert "stopped by user request" in result["error_message"]
         mock_agent_executor.stop.assert_any_call("session-123")
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_logs_are_not_streamed_twice(
+    orchestrator: FlowExecutionOrchestrator, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The runner WebSocket already persists and publishes its log lines."""
+    from uuid import uuid4
+    from preloop.agents.remote_runner import RemoteRunnerExecutor
+
+    executor = RemoteRunnerExecutor(
+        "codex", {}, db=MagicMock(), pool="auto", account_id=uuid4()
+    )
+    executor.get_logs = AsyncMock()
+    await orchestrator._stream_logs_to_nats(executor, f"runner:queued:auto:{uuid4()}")
+    assert not [record for record in caplog.records if record.levelname == "ERROR"]
+    executor.get_logs.assert_not_called()

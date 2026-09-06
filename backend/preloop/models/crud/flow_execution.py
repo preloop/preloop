@@ -102,13 +102,22 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         super().__init__(model=FlowExecution)
 
     def get(
-        self, db: Session, id: Any, *, account_id: Optional[str] = None
+        self,
+        db: Session,
+        id: Any,
+        *,
+        account_id: Optional[str] = None,
+        refresh: bool = False,
     ) -> Optional[FlowExecution]:
         """Get flow execution by ID.
 
         Overrides base get to properly filter by account_id through Flow relationship.
+        Set refresh for monitors that must replace cached attributes with updates
+        committed by another session, such as a runner WebSocket handler.
         """
         query = db.query(FlowExecution).filter(FlowExecution.id == id)
+        if refresh:
+            query = query.populate_existing()
         if account_id:
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.first()

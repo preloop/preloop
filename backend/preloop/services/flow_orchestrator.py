@@ -2242,6 +2242,10 @@ class FlowExecutionOrchestrator:
             agent_executor: Agent executor instance
             session_reference: Container/Job reference
         """
+        # Private runner WebSockets already persist and publish each line.
+        # They have no container stream, and replaying stored logs duplicates it.
+        if getattr(agent_executor, "streams_logs_externally", False) is True:
+            return
         logger.info(f"Starting log streaming for {session_reference}")
         log_count = 0
 
