@@ -46,6 +46,7 @@ import {
 } from '../../utils/execution-presentation';
 import { renderFailureCategoryChip } from '../../utils/failure-category';
 import '../../components/preloop-gateway-event.ts';
+import '../../components/preloop-execution-continuation';
 import '../../components/view-header.ts';
 import '../../components/json-tree.ts';
 import '../../components/session-chat-view';
@@ -2903,6 +2904,9 @@ ${execution.resolved_input_prompt}</pre>
       <div class="column-layout wide">
         <div class="main-column">
           ${this.renderSummaryStrip(execution)}
+          <preloop-execution-continuation
+            .execution=${execution}
+          ></preloop-execution-continuation>
           ${
             errorLine
               ? html`<div

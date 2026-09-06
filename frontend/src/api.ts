@@ -3013,6 +3013,85 @@ export async function getFlowExecution(executionId: string): Promise<any> {
   return response.json();
 }
 
+export type ContinuationRecoveryMode =
+  'native_resume' | 'published_branch_handoff';
+
+export interface FlowContinuationPreview {
+  execution_id: string;
+  flow_id: string;
+  pr_url: string;
+  branch: string;
+  head_sha: string;
+  feedback_enabled: boolean;
+  feedback_readable: boolean;
+  feedback_blocked_reason: string | null;
+  artifact_upload_enabled: boolean;
+  native_resume_available: boolean;
+  existing_thread_id: string | null;
+  existing_thread_state?: string | null;
+  allowed_recovery_modes: ContinuationRecoveryMode[];
+  warnings: string[];
+}
+
+export interface FlowContinuationResult {
+  thread_id: string;
+  state: string;
+  pr_url: string;
+  recovery_mode: ContinuationRecoveryMode;
+}
+
+export class FlowContinuationError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number
+  ) {
+    super(message);
+  }
+}
+
+async function continuationResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new FlowContinuationError(
+      typeof error.detail === 'string'
+        ? error.detail
+        : 'Unable to configure PR follow-up.',
+      response.status
+    );
+  }
+  return response.json();
+}
+
+export async function previewFlowContinuation(
+  executionId: string
+): Promise<FlowContinuationPreview> {
+  return continuationResponse(
+    await fetchWithAuth(
+      `/api/v1/flows/executions/${encodeURIComponent(executionId)}/continuation`
+    )
+  );
+}
+
+export async function adoptFlowContinuation(
+  executionId: string,
+  options: {
+    recovery_mode: ContinuationRecoveryMode;
+    expected_head_sha: string;
+    acknowledge_fresh_conversation: boolean;
+  }
+): Promise<FlowContinuationResult> {
+  return continuationResponse(
+    await fetchWithAuth(
+      `/api/v1/flows/executions/${encodeURIComponent(executionId)}/continuation`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(options),
+      }
+    )
+  );
+}
+
 export async function getFlowExecutionMetrics(executionId: string): Promise<{
   tool_calls: number;
   api_requests: number;

@@ -43,6 +43,15 @@ preserved when editing these controls. A compatible saved checkpoint is required
 for native conversation resume; otherwise an eligible repair reports its cold
 handoff explicitly. Turning on the option does not merge a PR.
 
+For an existing PR, open the successful execution that published it and choose
+**Set up PR follow-up**. This fetches a read-only preview of the exact PR, branch,
+current head and recovery options. Confirm a fresh conversation explicitly if its
+saved state cannot be resumed. If the head changes, review the refreshed preview
+and confirm again. The action requires enabled flow feedback and deployment
+support for saved execution state uploads; unavailable prerequisites are shown in
+the preview. A failed network response triggers a status refresh, not an automatic
+second adoption request.
+
 Use the actual reviewer integration's actor ID in `trusted_reviewer_ids`.
 Unlisted bots and the configured implementer actor are ignored. A copied HTML
 review marker never grants trust. All comment and CI text is untrusted task data.
