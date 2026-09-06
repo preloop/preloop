@@ -13,6 +13,7 @@ from .flow import (
     WebhookConfig,
 )
 from .flow_runner import (
+    HostExecProfileAdvertisement,
     RunnerFleetSummary,
     RunnerRegisterRequest,
     RunnerRegisterResponse,
@@ -109,6 +110,7 @@ __all__ = [
     "RegistrationTokenResponse",
     "WebhookConfig",
     "RunnerFleetSummary",
+    "HostExecProfileAdvertisement",
     "RunnerRegisterRequest",
     "RunnerRegisterResponse",
     "RunnerResponse",

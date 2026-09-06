@@ -66,6 +66,16 @@ async def prepare_runner_delivery(
     not serialize exception text: upstream client errors can contain secrets.
     """
     try:
+        if job.get("completion_protocol") == "host_exec":
+            from preloop.services.host_exec import host_exec_profile_name
+
+            if (
+                job.get("agent_type") != "cursor"
+                or not host_exec_profile_name(job)
+                or "launch_version" in job
+            ):
+                raise ValueError("Invalid native host lease")
+            return dict(job)
         if context is None:
             return await hydrate_runner_job(db, job)
         return {**job, "launch": await build_runner_launch(context)}

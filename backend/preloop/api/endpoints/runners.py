@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session
 
 from preloop.agents.runner_launch import (
     prepare_runner_delivery,
-    validate_runner_completion,
 )
 from preloop.api.auth import get_current_active_user
 from preloop.models import schemas
@@ -33,6 +32,10 @@ from preloop.services.runner_service import (
     emit_runner_updated,
     hash_runner_token,
     mint_runner_token,
+)
+from preloop.services.host_exec import (
+    finalize_runner_completion,
+    normalize_host_exec_advertisements,
 )
 from preloop.utils.permissions import require_permission
 
@@ -90,6 +93,9 @@ def register_runner(
             existing.labels = body.labels
         if body.instance_id:
             existing.instance_id = body.instance_id
+        existing.capabilities = normalize_host_exec_advertisements(
+            body.host_exec_profiles
+        )
         existing.status = "online"
         existing.last_heartbeat = datetime.now(timezone.utc)
         db.add(existing)
@@ -117,6 +123,7 @@ def register_runner(
             "last_heartbeat": datetime.now(timezone.utc),
             "token_hash": hash_runner_token(token),
             "halt_requested": False,
+            "capabilities": normalize_host_exec_advertisements(body.host_exec_profiles),
         },
     )
     emit_runner_updated(row, db)
@@ -227,7 +234,11 @@ def job_for_runner_replay(
     ``job_for_heartbeat_ack``.
     """
     job = dict(pending_job)
-    if not mint_token or job.get("launch_version"):
+    if (
+        not mint_token
+        or job.get("launch_version")
+        or job.get("completion_protocol") == "host_exec"
+    ):
         return job
     execution_id = _parse_runner_execution_id(job.get("execution_id"))
     if execution_id is None:
@@ -300,6 +311,8 @@ async def runner_ws(
 
             if msg_type == "heartbeat":
                 status = "busy" if runner.current_execution_id else "online"
+                if "host_exec_profiles" in raw:
+                    runner.capabilities = normalize_host_exec_advertisements(raw)
                 crud_flow_runner.touch_heartbeat(db, runner, status=status)
                 db.refresh(runner)
                 reply: Dict[str, Any] = {"type": "ack"}
@@ -379,8 +392,8 @@ async def runner_ws(
                 if execution_id is None or execution_id != runner.current_execution_id:
                     await websocket.send_json({"type": "ack"})
                     continue
-                status, completion_error, result = validate_runner_completion(
-                    raw, leased_job=runner.pending_job or {}
+                status, completion_error, result = finalize_runner_completion(
+                    raw, pending_job=runner.pending_job
                 )
                 runner.reported_status = status
                 runner.pending_job = None
@@ -393,6 +406,7 @@ async def runner_ws(
                     execution.end_time = datetime.now(timezone.utc)
                     if completion_error:
                         execution.error_message = completion_error
+
                     if result is not None:
                         execution.result = result
                     db.add(execution)

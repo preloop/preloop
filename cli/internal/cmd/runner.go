@@ -157,11 +157,12 @@ func runRunnerFg(cmd *cobra.Command, args []string) error {
 
 func loadOrRegisterRunner(client *api.Client, name, hostname string, labels []string) (*runnerState, error) {
 	req := map[string]any{
-		"name":     name,
-		"hostname": hostname,
-		"os":       runtime.GOOS,
-		"arch":     runtime.GOARCH,
-		"labels":   labels,
+		"host_exec_profiles": hostExecAdvertisements(),
+		"name":               name,
+		"hostname":           hostname,
+		"os":                 runtime.GOOS,
+		"arch":               runtime.GOARCH,
+		"labels":             labels,
 	}
 	if existing, err := readRunnerState(); err == nil && existing.ID != "" && existing.Token != "" {
 		req["runner_id"] = existing.ID
@@ -192,6 +193,8 @@ func loadOrRegisterRunner(client *api.Client, name, hostname string, labels []st
 }
 
 type leasedJobOutcome struct {
+	hostExec    bool
+	profile     string
 	logBuffer   *runnerLogBuffer
 	result      map[string]any
 	exitCode    int
@@ -250,16 +253,19 @@ func writeJobOutcome(conn *websocket.Conn, outcome leasedJobOutcome) error {
 			return err
 		}
 	}
-	return conn.WriteJSON(map[string]any{
-		"type":                "complete",
-		"launch_version":      runnerLaunchVersion,
-		"completion_protocol": "docker_v1",
-		"exit_code":           outcome.exitCode,
-		"result":              outcome.result,
-		"execution_id":        outcome.executionID,
-		"status":              outcome.status,
-		"error":               outcome.errMsg,
-	})
+	message := map[string]any{
+		"type": "complete", "exit_code": outcome.exitCode,
+		"result": outcome.result, "execution_id": outcome.executionID,
+		"status": outcome.status, "error": outcome.errMsg,
+	}
+	if outcome.hostExec {
+		message["completion_protocol"] = hostExecCompletionProtocol
+		message["host_exec_profile"] = outcome.profile
+	} else {
+		message["launch_version"] = runnerLaunchVersion
+		message["completion_protocol"] = "docker_v1"
+	}
+	return conn.WriteJSON(message)
 }
 
 func rememberOutcome(dst **leasedJobOutcome, outcome leasedJobOutcome) {
@@ -476,7 +482,7 @@ func runRunnerSession(
 			_ = conn.WriteControl(
 				websocket.PingMessage, nil, time.Now().Add(runnerPingWait),
 			)
-			if err := conn.WriteJSON(map[string]any{"type": "heartbeat"}); err != nil {
+			if err := conn.WriteJSON(runnerHeartbeatMessage()); err != nil {
 				return fmt.Errorf("heartbeat: %w", err)
 			}
 		case err := <-readErr:
@@ -551,9 +557,13 @@ func beginLeasedJob(
 		"lines":        []string{"runner leased job " + executionID},
 	})
 	if alreadyHalted {
-		outcome := leasedJobOutcome{executionID: executionID, status: "STOPPED"}
+		outcome := leasedJobOutcome{executionID: executionID, status: "STOPPED", hostExec: jobHostExecProfileName(job) != "", profile: jobHostExecProfileName(job)}
 		rememberOutcome(lastComplete, outcome)
 		return writeJobOutcome(conn, outcome)
+	}
+
+	if jobHostExecProfileName(job) != "" {
+		return beginHostExecJob(conn, job, executionID, runningCmd, runningExecID, jobDone, halted, lastComplete)
 	}
 
 	opts, optsErr := runnerDockerOptsFromJob(job)
@@ -669,7 +679,7 @@ func requestJobHalt(halted *atomic.Bool, runningCmd *exec.Cmd) bool {
 		if halted != nil {
 			halted.Store(true)
 		}
-		_ = runningCmd.Process.Kill()
+		killRunnerJobProcess(runningCmd)
 		return true
 	}
 	if halted != nil {
@@ -721,6 +731,9 @@ func splitNonEmptyLines(output string) []string {
 }
 
 func leasedJobFailureReason(job map[string]any, dockerOK bool) string {
+	if jobHostExecProfileName(job) != "" {
+		return ""
+	}
 	if runnerImageFromJob(job) == "" {
 		return "no agent image in payload"
 	}

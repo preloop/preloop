@@ -13,6 +13,7 @@ clears stale reports, and requires both exit zero and a recognized structured
 The private protocol exports only the bounded report, not workspace archives.
 Unsupported harnesses fail explicitly. See the [runner image contract](../guide/runners/quickstart-linux.md#what-the-runner-executes).
 
+The default private-runner job is still `docker run` of the flow image (or a custom `image` / `docker_image`). An opt-in **host execution profile** is a distinct private-only path: the runner advertises named local CLIs, the flow selects a name (`agent_config.host_exec_profile` with `agent_type: cursor`), and the host executes that fixed command under the operator's local login. Hosted compute rejects it. Native success uses `completion_protocol: host_exec` (structured Cursor stream-json result plus exit 0) and must not be treated as Docker launch v1. Remote checkout/setup, custom commands, workspace seeds, isolated publication and native CLI `--resume` fail closed on this path. Each job starts in a fresh empty directory. The workspace root controls working-directory placement, not filesystem isolation; Cursor has the runner user's local login, configuration, hooks and filesystem access. Flow MCP tool/server settings are not injected as a sandbox. Profiles advertise supported requested model identifiers mapped to local aliases; actual model attribution requires an observed Cursor result. This is not Agent Control and not `preloop cursor`.
 
 ## Ad-hoc preset runs
 

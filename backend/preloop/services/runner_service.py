@@ -16,6 +16,10 @@ from preloop.models.crud.flow_runner import ONLINE_HEARTBEAT_TTL, crud_flow_runn
 from preloop.models.crud.user import crud_user
 from preloop.models.models.flow import Flow
 from preloop.models.models.flow_runner import FlowRunner
+from preloop.services.host_exec import (
+    host_exec_profile_name,
+    runner_has_host_exec_profile,
+)
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_RUNNERS,
     build_account_event,
@@ -233,8 +237,13 @@ def lease_job(
         db, account_id=account_id, pool=pool, online_only=True
     )
     idle = [row for row in matches if row.status == "online" and not row.pending_job]
+    required_profile = host_exec_profile_name(payload)
     stored = persistable_job_payload(payload)
     for candidate in idle:
+        if required_profile and not runner_has_host_exec_profile(
+            candidate, required_profile, payload.get("model_identifier")
+        ):
+            continue
         runner = crud_flow_runner.claim_idle(db, runner_id=candidate.id)
         if runner is None:
             continue
@@ -294,6 +303,7 @@ def runner_console_payload(
             str(runner.registered_by_user_id) if runner.registered_by_user_id else None
         ),
         "registered_by_email": registered_by_email,
+        "capabilities": dict(getattr(runner, "capabilities", None) or {}),
     }
 
 

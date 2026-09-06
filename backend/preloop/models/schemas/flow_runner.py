@@ -1,10 +1,18 @@
 """Pydantic schemas for self-hosted flow runners."""
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class HostExecProfileAdvertisement(BaseModel):
+    """Name and capability flags a runner advertises. No executable path."""
+
+    name: str = Field(max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    capabilities: List[str] = Field(default_factory=list, max_length=16)
+    models: List[str] = Field(default_factory=list, max_length=64)
 
 
 class RunnerRegisterRequest(BaseModel):
@@ -17,6 +25,9 @@ class RunnerRegisterRequest(BaseModel):
     labels: List[str] = Field(default_factory=list)
     runner_id: Optional[UUID] = None
     instance_id: Optional[UUID] = None
+    host_exec_profiles: List[HostExecProfileAdvertisement] = Field(
+        default_factory=list, max_length=64
+    )
 
 
 class RunnerResponse(BaseModel):
@@ -35,6 +46,7 @@ class RunnerResponse(BaseModel):
     last_heartbeat: Optional[datetime] = None
     current_execution_id: Optional[UUID] = None
     registered_by_email: Optional[str] = None
+    capabilities: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
