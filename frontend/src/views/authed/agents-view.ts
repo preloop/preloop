@@ -23,10 +23,16 @@ import '../../components/view-header.ts';
 import '../../components/preloop-agent-deployer.ts';
 import '../../components/preloop-deploy-wizard.ts';
 import '../../components/resource-actions.ts';
+import '../../components/list-selection.ts';
 import '../../components/talk-button.ts';
 import '../../components/confirm-dialog.ts';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
+import {
+  ListSelectionController,
+  confirmBulkAction,
+  type BulkAction,
+} from '../../components/list-selection';
 import {
   fetchWithAuth,
   getAccountAgents,
@@ -135,6 +141,48 @@ const VIEW_MODE_KEY = 'preloop.agents.view_mode';
  * cell's title either way.
  */
 const RELATIVE_TIME_DAYS = 90;
+
+/** The lifecycle moves the list offers, one at a time or over a selection. */
+export type AgentLifecycleAction = 'suspend' | 'resume' | 'decommission';
+
+/**
+ * One wording per lifecycle move, so a confirmation on the row and the same
+ * confirmation over seven rows say the same thing about consequences.
+ */
+const AGENT_LIFECYCLE_WORDING: Record<
+  AgentLifecycleAction,
+  {
+    title: string;
+    verb: string;
+    verbPast: string;
+    detail: string;
+    reason: string;
+  }
+> = {
+  suspend: {
+    title: 'Pause',
+    verb: 'pause',
+    verbPast: 'paused',
+    detail:
+      'Requests are blocked while paused. Resume restores the agent without re-onboarding it.',
+    reason: 'Manually paused from managed agents view',
+  },
+  resume: {
+    title: 'Resume',
+    verb: 'resume',
+    verbPast: 'resumed',
+    detail: 'The existing credentials start working again immediately.',
+    reason: 'Manually resumed from managed agents view',
+  },
+  decommission: {
+    title: 'Decommission',
+    verb: 'decommission',
+    verbPast: 'decommissioned',
+    detail:
+      "Decommissioning revokes the agent's runtime credentials. The agent and its history stay in the list, and resuming it restores its own unexpired keys.",
+    reason: 'Manually decommissioned from managed agents view',
+  },
+};
 
 export type AgentListSortKey =
   'agent' | 'status' | 'owner' | 'model' | 'requests' | 'spend' | 'last_seen';
@@ -294,6 +342,15 @@ function gatewaySummaryDays(
 
 @customElement('agents-view')
 export class AgentsView extends LitElement {
+  /**
+   * Multi-select for the agent table and cards. Flow rows share this list but
+   * carry no agent actions, so they are not selectable.
+   */
+  readonly selection = new ListSelectionController<AgentListRow>(this, {
+    idOf: (row) => row.id,
+    selectable: (row) => !row.isFlow,
+  });
+
   @state() private agents: AccountManagedAgentListResponse | null = null;
   @state() private loading = true;
   @state() private error: string | null = null;
@@ -448,7 +505,7 @@ export class AgentsView extends LitElement {
         /* Below this the eight columns cannot hold their content, so the card
            scrolls sideways instead of hiding the actions. Agent keeps at least
            180px at this width; the list falls back to cards under 640px. */
-        min-width: 1056px;
+        min-width: 1096px;
       }
       .table-scroll {
         overflow-x: auto;
@@ -493,6 +550,15 @@ export class AgentsView extends LitElement {
       /* Percentages for the text columns so wide screens give them the space,
          pixels for the ones whose content has a known width. Agent takes what
          is left. */
+      /* The shared 40px select column, so the agent name starts at the same
+         x as the key, model and flow names. */
+      .col-select {
+        width: 40px;
+      }
+      .agents-table th.select-cell,
+      .agents-table td.select-cell {
+        overflow: visible;
+      }
       .col-status {
         width: 150px;
       }
@@ -733,6 +799,14 @@ export class AgentsView extends LitElement {
         position: absolute;
         top: -8px;
         right: -8px;
+        z-index: 2;
+      }
+      /* Opposite corner from the kebab: the two controls a card carries never
+         sit on top of each other. */
+      .card-select {
+        position: absolute;
+        top: -4px;
+        left: -4px;
         z-index: 2;
       }
       .identity-stack {
@@ -2588,26 +2662,20 @@ export class AgentsView extends LitElement {
 
   private async updateAgentLifecycle(
     agent: ManagedAgentSummary,
-    lifecycleAction: 'suspend' | 'resume'
+    lifecycleAction: AgentLifecycleAction
   ): Promise<void> {
-    const isSuspend = lifecycleAction === 'suspend';
+    const wording = AGENT_LIFECYCLE_WORDING[lifecycleAction];
     const confirmed = await confirmDialog({
-      title: isSuspend ? 'Pause agent' : 'Resume agent',
-      message: isSuspend
-        ? `Pause ${agent.display_name}?`
-        : `Resume ${agent.display_name}?`,
-      detail: isSuspend
-        ? 'Requests are blocked while paused. Resume restores the agent without re-onboarding it.'
-        : 'The existing credentials start working again immediately.',
-      confirmLabel: isSuspend ? 'Pause' : 'Resume',
+      title: `${wording.title} agent`,
+      message: `${wording.title} ${agent.display_name}?`,
+      detail: wording.detail,
+      confirmLabel: wording.title,
+      variant: lifecycleAction === 'decommission' ? 'danger' : 'primary',
     });
     if (!confirmed) return;
     await this.updateAgent(agent, {
       lifecycle_action: lifecycleAction,
-      reason:
-        lifecycleAction === 'suspend'
-          ? 'Manually paused from managed agents view'
-          : 'Manually resumed from managed agents view',
+      reason: wording.reason,
     });
   }
 
@@ -2839,6 +2907,33 @@ export class AgentsView extends LitElement {
         : 'asc';
   }
 
+  /**
+   * The rows the current view is about to paint, in paint order.
+   *
+   * Computed once per update in `willUpdate` because the bulk bar renders
+   * above the branch that picks a view: if the pruning happened inside
+   * `renderListView` or `renderCanvas`, the bar would already have been built
+   * from the previous pass's count and would sit over the canvas offering
+   * actions on rows that are no longer selectable.
+   */
+  private selectionRows: AgentListRow[] = [];
+
+  protected willUpdate(): void {
+    // The canvas has no checkboxes, so it offers no rows and the selection
+    // empties itself the moment the operator switches to it.
+    this.selectionRows =
+      this.effectiveView === 'canvas'
+        ? []
+        : this.effectiveView === 'list'
+          ? sortAgentListRows(
+              this.getListRows(),
+              this.sortKey,
+              this.sortDirection
+            )
+          : this.getListRows();
+    this.selection.setItems(this.selectionRows);
+  }
+
   // --- RENDERING ---
   private navigateToCardTarget(url: string) {
     Router.go(url);
@@ -2848,6 +2943,80 @@ export class AgentsView extends LitElement {
     if (event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault();
     this.navigateToCardTarget(url);
+  }
+
+  /** Pause, resume and decommission, the same ids the row kebab uses. */
+  private get bulkActions(): BulkAction[] {
+    return [
+      { id: 'resume', label: 'Resume', icon: 'play-fill', variant: 'success' },
+      { id: 'suspend', label: 'Pause', icon: 'pause-fill', variant: 'warning' },
+      {
+        id: 'decommission',
+        label: 'Decommission',
+        icon: 'box-arrow-right',
+        variant: 'danger',
+      },
+    ];
+  }
+
+  private renderBulkBar() {
+    // Nothing at all at zero selected, wrapper included: an empty slot with a
+    // margin would push every collection down by 8px it never had before.
+    if (this.selection.count === 0) return nothing;
+    return html`<div class="bulk-bar-slot">
+      <list-bulk-bar
+        label="Agent bulk actions"
+        .count=${this.selection.count}
+        .actions=${this.bulkActions}
+        .running=${this.selection.running}
+        .progressDone=${this.selection.progressDone}
+        .progressTotal=${this.selection.progressTotal}
+        @bulk-action=${(event: CustomEvent) =>
+          void this.handleBulkLifecycle(event.detail.id)}
+        @selection-clear=${() => this.selection.clear()}
+      ></list-bulk-bar>
+    </div>`;
+  }
+
+  /**
+   * Runs one lifecycle move over the selected agents.
+   *
+   * There is no batch lifecycle endpoint and this does not add one: the PATCH
+   * takes a row lock per agent and writes an audit entry per agent, so a loop
+   * of single calls is exactly what a batch endpoint would do server-side,
+   * with the difference that a failure here is reported against the agent it
+   * belongs to instead of rolling six good moves back.
+   */
+  private async handleBulkLifecycle(actionId: string): Promise<void> {
+    const action = actionId as AgentLifecycleAction;
+    const wording = AGENT_LIFECYCLE_WORDING[action];
+    if (!wording) return;
+    const rows = this.selection.selectedItems;
+    if (rows.length === 0) return;
+
+    const confirmed = await confirmBulkAction({
+      title: `${wording.title} ${rows.length === 1 ? 'agent' : 'agents'}`,
+      message: `${wording.title} ${rows.length} ${
+        rows.length === 1 ? 'agent' : 'agents'
+      }?`,
+      names: rows.map((row) => row.name),
+      detail: wording.detail,
+      confirmLabel: wording.title,
+      variant: action === 'decommission' ? 'danger' : 'primary',
+    });
+    if (!confirmed) return;
+
+    await this.selection.run(
+      actionId,
+      rows.map((row) => ({ id: row.id, name: row.name })),
+      (item) =>
+        updateAccountAgent(item.id, {
+          lifecycle_action: action,
+          reason: wording.reason,
+        }),
+      { verb: wording.verb, verbPast: wording.verbPast, noun: 'agent' }
+    );
+    await this.loadAgents();
   }
 
   private getCardActions(
@@ -2936,6 +3105,24 @@ export class AgentsView extends LitElement {
             },
           }
     );
+
+    // Decommission is the reversible offboard: credentials are revoked but
+    // the agent and its history stay. Remove deletes the record, so the two
+    // are not the same action and both belong in the menu.
+    if (agent.lifecycle_state !== 'decommissioned') {
+      actions.push({
+        id: 'decommission',
+        label: 'Decommission',
+        icon: 'box-arrow-right',
+        variant: 'danger',
+        outline: true,
+        separated: true,
+        loading: this.actionAgentId === agent.id,
+        onClick: () => {
+          void this.updateAgentLifecycle(agent, 'decommission');
+        },
+      });
+    }
 
     actions.push({
       id: 'remove',
@@ -3256,8 +3443,26 @@ export class AgentsView extends LitElement {
     return html`
       <tr
         class="agent-row"
+        data-selection-id=${row.id}
+        aria-selected=${this.selection.isSelected(row.id) ? 'true' : 'false'}
         @click=${(event: MouseEvent) => this.handleRowClick(event, row)}
       >
+        <td
+          class="select-cell"
+          @click=${(event: Event) => event.stopPropagation()}
+        >
+          ${
+            row.isFlow
+              ? nothing
+              : html`<list-select-checkbox
+                  item-id=${row.id}
+                  label=${`Select ${row.name}`}
+                  ?checked=${this.selection.isSelected(row.id)}
+                  ?disabled=${this.selection.busy}
+                  @selection-toggle=${this.selection.handleToggleEvent}
+                ></list-select-checkbox>`
+          }
+        </td>
         <td class="agent-cell" title=${row.name}>
           <div class="agent-identity">
             ${
@@ -3366,11 +3571,7 @@ export class AgentsView extends LitElement {
   }
 
   private renderListView() {
-    const rows = sortAgentListRows(
-      this.getListRows(),
-      this.sortKey,
-      this.sortDirection
-    );
+    const rows = this.selectionRows;
 
     if (rows.length === 0) {
       return html`
@@ -3390,8 +3591,14 @@ export class AgentsView extends LitElement {
       <div class="list-bounds">
         <sl-card class="table-card">
           <div class="table-scroll">
-            <table class="styled-table agents-table">
+            <table
+              class="styled-table agents-table"
+              role="grid"
+              aria-multiselectable="true"
+              aria-label="Agents and flows"
+            >
               <colgroup>
+                <col class="col-select" />
                 <col class="col-agent" />
                 <col class="col-status" />
                 <col class="col-owner" />
@@ -3403,6 +3610,15 @@ export class AgentsView extends LitElement {
               </colgroup>
               <thead>
                 <tr>
+                  <th class="select-cell">
+                    <list-select-checkbox
+                      label="Select all agents"
+                      ?checked=${this.selection.allSelected}
+                      ?indeterminate=${this.selection.someSelected}
+                      ?disabled=${this.selection.busy}
+                      @selection-toggle=${this.selection.handleToggleEvent}
+                    ></list-select-checkbox>
+                  </th>
                   ${this.renderSortableHeader('agent', 'Agent')}
                   ${this.renderSortableHeader('status', 'Status')}
                   ${this.renderSortableHeader('owner', 'Owner')}
@@ -3464,11 +3680,15 @@ export class AgentsView extends LitElement {
     const lastSeen = isFlow
       ? flowNode?.execution_stats?.last_seen_at
       : agent?.last_seen_at;
+    // No aria-selected on the card: its role is link, which does not carry
+    // selection, so assistive tech would ignore it. The checkbox's own state
+    // and accessible name are the signal.
     return html`
       <sl-card
         class="agent-card ${liveTotal > 0 ? 'live' : ''} ${
           isGlowing ? 'glowing' : ''
         }"
+        data-selection-id=${itemId}
         role="link"
         tabindex="0"
         @click=${() => this.navigateToCardTarget(detailUrl)}
@@ -3476,6 +3696,25 @@ export class AgentsView extends LitElement {
           this.handleCardKeydown(event, detailUrl)}
       >
         <div class="card-stack">
+          ${
+            isFlow
+              ? nothing
+              : html`
+                  <div
+                    class="card-select"
+                    @click=${(event: Event) => event.stopPropagation()}
+                    @keydown=${(event: Event) => event.stopPropagation()}
+                  >
+                    <list-select-checkbox
+                      item-id=${itemId}
+                      label=${`Select ${displayName}`}
+                      ?checked=${this.selection.isSelected(itemId)}
+                      ?disabled=${this.selection.busy}
+                      @selection-toggle=${this.selection.handleToggleEvent}
+                    ></list-select-checkbox>
+                  </div>
+                `
+          }
           ${
             actions.length
               ? html`
@@ -3719,6 +3958,33 @@ export class AgentsView extends LitElement {
           </div>
         </div>
       </sl-card>
+    `;
+  }
+
+  /**
+   * Cards carry the same checkboxes as rows, in the order they are painted so
+   * a shift-range means what the operator sees.
+   *
+   * The cards come from the same row list the selection was pruned to, which
+   * is the deduplicated one: an agent that is the session behind a flow is
+   * already represented by that flow's card, and painting it again gave it a
+   * checkbox whose id was pruned on the next pass, so ticking it undid itself.
+   */
+  private renderCardsView() {
+    const rows = this.selectionRows;
+
+    return html`
+      <div class="cards">
+        ${
+          rows.length === 0 && !this.loading
+            ? html`
+                <div class="empty-state">
+                  No agents or flows found matching your query.
+                </div>
+              `
+            : rows.map((row) => this.renderAgentCard(row.source))
+        }
+      </div>
     `;
   }
 
@@ -4482,6 +4748,7 @@ export class AgentsView extends LitElement {
                 >`
               : null
           }
+          ${this.renderBulkBar()}
         </div>
 
         ${
@@ -4489,24 +4756,7 @@ export class AgentsView extends LitElement {
             ? this.renderCanvas()
             : this.effectiveView === 'list'
               ? this.renderListView()
-              : html`
-                  <div class="cards">
-                    ${
-                      (!this.agents ||
-                        (this.agents.items.length === 0 &&
-                          this.flows.length === 0)) &&
-                      !this.loading
-                        ? html`
-                            <div class="empty-state">
-                              No agents or flows found matching your query.
-                            </div>
-                          `
-                        : [...(this.agents?.items || []), ...this.flows].map(
-                            (item) => this.renderAgentCard(item)
-                          )
-                    }
-                  </div>
-                `
+              : this.renderCardsView()
         }
       </div>
     `;

@@ -9,6 +9,7 @@ import {
   type AIModelsView,
 } from './ai-models-view';
 import type { AIModel } from '../../../types';
+import { resetConfirmDialogForTests } from '../../../components/confirm-dialog';
 
 describe('AIModelsView', () => {
   let fetchStub: sinon.SinonStub;
@@ -287,6 +288,122 @@ describe('AIModelsView', () => {
     const rows = element.shadowRoot?.querySelectorAll('.model-row');
     expect(rows).to.have.lengthOf(1);
     expect(rows?.[0].textContent).to.include('GPT-4o Mini');
+  });
+
+  it('deletes the selected models from the bulk bar, naming them first', async () => {
+    fetchStub.restore();
+    fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/v1/ai-models') {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 'model-1',
+              name: 'Claude Sonnet Primary',
+              provider_name: 'Anthropic',
+              model_identifier: 'claude-sonnet-4',
+              meta_data: { gateway: { enabled: true } },
+              is_default: true,
+              created_at: '2026-03-01T10:00:00Z',
+              updated_at: '2026-03-09T18:30:00Z',
+            },
+            secondModel,
+          ]),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.startsWith('/api/v1/ai-models/overview')) {
+        return new Response(
+          JSON.stringify({
+            period_start: '2026-02-09T00:00:00Z',
+            period_end: '2026-03-09T23:59:59Z',
+            models: [],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response('{}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const element = (await fixture(
+      html`<ai-models-view></ai-models-view>`
+    )) as AIModelsView;
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'AI models view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const rowCheckbox = element.shadowRoot!.querySelector<HTMLElement>(
+      'tr[data-selection-id="model-1"] list-select-checkbox'
+    )!;
+    expect(rowCheckbox.getAttribute('label')).to.equal(
+      'Select Claude Sonnet Primary'
+    );
+    expect(
+      element
+        .shadowRoot!.querySelector('table.styled-table')!
+        .getAttribute('aria-multiselectable')
+    ).to.equal('true');
+
+    element.selection.toggle('model-1');
+    element.selection.toggle('model-2');
+    await element.updateComplete;
+
+    const bar = element.shadowRoot!.querySelector('list-bulk-bar')!;
+    expect(
+      bar.shadowRoot!.querySelector('[data-testid="bulk-count"]')!.textContent
+    ).to.contain('2 selected');
+
+    const deleteButton = bar.shadowRoot!.querySelector<HTMLElement>(
+      'sl-button[data-action="delete"]'
+    )!;
+    await (deleteButton as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    deleteButton.click();
+
+    await waitUntil(
+      () => !!document.querySelector('confirm-dialog'),
+      'no confirm dialog'
+    );
+    const dialog = document.querySelector('confirm-dialog')!;
+    await (dialog as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    const dialogText = dialog.shadowRoot!.textContent!.replace(/\s+/g, ' ');
+    expect(dialogText).to.contain('Delete 2 models?');
+    expect(dialogText).to.contain('Claude Sonnet Primary, GPT-4o Mini');
+    // The default model is called out rather than deleted quietly.
+    expect(dialogText).to.contain(
+      'Claude Sonnet Primary is the account default'
+    );
+
+    const deletes = () =>
+      fetchStub
+        .getCalls()
+        .filter((call) => (call.args[1] as RequestInit)?.method === 'DELETE');
+    expect(deletes().length, 'deleted before confirming').to.equal(0);
+
+    const confirmButton = dialog.shadowRoot!.querySelector<HTMLElement>(
+      '[data-testid="confirm-dialog-confirm"]'
+    )!;
+    await (confirmButton as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    confirmButton.click();
+
+    await waitUntil(
+      () => deletes().length === 2,
+      'not every model was deleted'
+    );
+    expect(
+      deletes()
+        .map((call) => String(call.args[0]))
+        .sort()
+    ).to.deep.equal(['/api/v1/ai-models/model-1', '/api/v1/ai-models/model-2']);
+    resetConfirmDialogForTests();
   });
 
   it('switches from list rows to cards', async () => {
