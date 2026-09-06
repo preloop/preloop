@@ -22,6 +22,7 @@ const projectB = {
 interface StubOpts {
   issues?: unknown[];
   total?: number;
+  openCounts?: Record<string, number>;
   trackerType?: string;
   pullRequests?: unknown[];
   prHasMore?: boolean;
@@ -33,6 +34,7 @@ function stubFetch(opts: StubOpts = {}) {
   const {
     issues = [],
     total = issues.length,
+    openCounts,
     trackerType = 'github',
     pullRequests = [],
     prHasMore = false,
@@ -83,6 +85,15 @@ function stubFetch(opts: StubOpts = {}) {
       }
       if (url.includes('/api/v1/issues?')) {
         const parsed = new URL(url, 'http://localhost');
+        const projectId = parsed.searchParams.get('project_id') || '';
+        if (openCounts && parsed.searchParams.get('limit') === '1') {
+          return json({
+            items: [],
+            total: openCounts[projectId] ?? 0,
+            skip: 0,
+            limit: 1,
+          });
+        }
         const q = parsed.searchParams.get('q') || '';
         const items = q ? [] : issues;
         const listed = q ? 0 : total;
@@ -150,7 +161,89 @@ describe('TrackerDetailView', () => {
     fetchStub?.restore();
     resetRunPresetDialogForTests();
     localStorage.clear();
+    sessionStorage.clear();
     window.history.replaceState({}, '', '/');
+  });
+
+  it('defaults to the project with the most open issues', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=issues`
+    );
+    fetchStub = stubFetch({
+      issues: [],
+      openCounts: { [projectA.id]: 0, [projectB.id]: 7 },
+    });
+    const el = await mountView();
+    expect(
+      (el as unknown as { _selectedProjectId: string })._selectedProjectId
+    ).to.equal(projectB.id);
+    expect(window.location.search).to.contain(`project=${projectB.id}`);
+  });
+
+  it('reopens on the project read last in this session', async () => {
+    sessionStorage.setItem(`preloop.tracker.project.${trackerId}`, projectA.id);
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=issues`
+    );
+    fetchStub = stubFetch({
+      issues: [],
+      openCounts: { [projectA.id]: 0, [projectB.id]: 7 },
+    });
+    const el = await mountView();
+    expect(
+      (el as unknown as { _selectedProjectId: string })._selectedProjectId
+    ).to.equal(projectA.id);
+  });
+
+  it('remembers the project a link named', async () => {
+    fetchStub = stubFetch({ issues: [] });
+    await mountView();
+    expect(
+      sessionStorage.getItem(`preloop.tracker.project.${trackerId}`)
+    ).to.equal(projectA.id);
+  });
+
+  it('skips the open issue probe when it cannot change the answer', async () => {
+    const probeCalls = () =>
+      fetchStub
+        .getCalls()
+        .map((call) => String(call.args[0]))
+        .filter(
+          (url) => url.includes('/api/v1/issues?') && url.includes('limit=1')
+        );
+
+    // Session memory already names the project.
+    sessionStorage.setItem(`preloop.tracker.project.${trackerId}`, projectB.id);
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=issues`
+    );
+    fetchStub = stubFetch({
+      issues: [],
+      openCounts: { [projectA.id]: 0, [projectB.id]: 7 },
+    });
+    await mountView();
+    expect(probeCalls(), 'remembered project needs no probe').to.deep.equal([]);
+    fetchStub.restore();
+
+    // A tab that does not list issues does not need the default either.
+    sessionStorage.clear();
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=pull-requests`
+    );
+    fetchStub = stubFetch({
+      issues: [],
+      openCounts: { [projectA.id]: 0, [projectB.id]: 7 },
+    });
+    await mountView();
+    expect(probeCalls(), 'pull requests tab needs no probe').to.deep.equal([]);
   });
 
   it('renders Issues tab rows from listIssues', async () => {

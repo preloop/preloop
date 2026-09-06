@@ -13,6 +13,46 @@ import '@shoelace-style/shoelace/dist/components/radio-button/radio-button.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
 import { consoleDialogStyles } from '../styles/console-dialog';
 
+interface ProjectGroup {
+  id: string;
+  name: string;
+  projects: Project[];
+}
+
+/**
+ * Projects grouped by the tracker account they came from.
+ *
+ * Organizations the console has not loaded (or that a project points at
+ * without one) used to drop their projects out of the dialog entirely, so
+ * whatever is left lands in one last group instead of disappearing.
+ */
+function groupsFor(
+  organizations: { id: string | number; name: string }[],
+  projectsByOrg: Map<string | number, Project[]>
+): ProjectGroup[] {
+  const groups: ProjectGroup[] = [];
+  const claimed = new Set<string>();
+  for (const org of organizations) {
+    const projects = projectsByOrg.get(org.id) || [];
+    for (const project of projects) {
+      claimed.add(String(project.id));
+    }
+    groups.push({ id: String(org.id), name: org.name, projects });
+  }
+  const orphans: Project[] = [];
+  for (const projects of projectsByOrg.values()) {
+    for (const project of projects) {
+      if (!claimed.has(String(project.id))) {
+        orphans.push(project);
+      }
+    }
+  }
+  if (orphans.length > 0) {
+    groups.push({ id: 'other', name: 'Other projects', projects: orphans });
+  }
+  return groups;
+}
+
 @customElement('project-filter-modal')
 export class ProjectFilterModal extends LitElement {
   static styles = [
@@ -106,7 +146,7 @@ export class ProjectFilterModal extends LitElement {
       }
       acc.get(orgId)!.push(p);
       return acc;
-    }, new Map<number, Project[]>());
+    }, new Map<string | number, Project[]>());
 
     return html`
       <sl-dialog
@@ -126,8 +166,8 @@ export class ProjectFilterModal extends LitElement {
                 selection="multiple"
                 @sl-selection-change=${this.handleSelect}
               >
-                ${this.organizations.map((org) => {
-                  const projectsInOrg = projectsByOrg.get(org.id) || [];
+                ${groupsFor(this.organizations, projectsByOrg).map((org) => {
+                  const projectsInOrg = org.projects;
                   const selectedProjectsInOrg = projectsInOrg.filter((p) =>
                     this.draftSelectedProjectIds.includes(p.id.toString())
                   );
@@ -165,7 +205,7 @@ export class ProjectFilterModal extends LitElement {
         )}
 
         <div class="filter-section">
-          <label class="filter-label">Issue Status</label>
+          <label class="filter-label">Issue status</label>
           <sl-radio-group
             value=${this.draftSelectedStatus}
             @sl-change=${this.handleStatusChange}
@@ -181,7 +221,7 @@ export class ProjectFilterModal extends LitElement {
           () => html`
             <sl-divider></sl-divider>
             <div class="filter-section">
-              <label class="filter-label">Resolution Status</label>
+              <label class="filter-label">Resolution status</label>
               <sl-radio-group
                 value=${this.draftSelectedResolution}
                 @sl-change=${this.handleResolutionChange}

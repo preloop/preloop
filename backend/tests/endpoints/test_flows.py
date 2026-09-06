@@ -1,10 +1,10 @@
 import uuid
 from zoneinfo import ZoneInfo
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from pytest_mock import MockerFixture
 
 from preloop.api.endpoints import flows
@@ -764,6 +764,8 @@ async def test_read_flow_executions(mock_account: Account, mocker: MockerFixture
         limit=25,
         flow_id=None,
         statuses=None,
+        search=None,
+        started_after=None,
         eager_load=True,
         lightweight=True,
     )
@@ -836,8 +838,57 @@ async def test_read_flow_executions_filters_and_caps_limit(
         limit=100,
         flow_id=flow_id,
         statuses=["RUNNING", "FAILED", "PENDING"],
+        search=None,
+        started_after=None,
         eager_load=True,
         lightweight=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_flow_executions_search_range_and_total_count(
+    mock_account: Account, mocker: MockerFixture
+):
+    """The collection bar filters server-side and the count is the real one.
+
+    The console prints "25 of N executions" over a page of 25, so the search
+    term and the range have to narrow the query the server runs, and N comes
+    back on `X-Total-Count` rather than being guessed from the page.
+    """
+    started_after = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    mock_crud_flow_execution.get_multi.return_value = []
+    mock_crud_flow_execution.count.return_value = 1412
+    response = Response()
+
+    await maybe_await(
+        flows.read_flow_executions(
+            response=response,
+            db=MagicMock(),
+            search="  preloop/preloop #138  ",
+            started_after=started_after,
+            current_user=mock_account,
+        )
+    )
+
+    assert response.headers["X-Total-Count"] == "1412"
+    assert mock_crud_flow_execution.get_multi.call_args.kwargs["search"] == (
+        "preloop/preloop #138"
+    )
+    assert (
+        mock_crud_flow_execution.get_multi.call_args.kwargs["started_after"]
+        == started_after
+    )
+    mock_crud_flow_execution.count.assert_called_once_with(
+        mocker.ANY,
+        account_id=mock_account.account_id,
+        flow_id=None,
+        statuses=None,
+        search="preloop/preloop #138",
+        started_after=started_after,
     )
 
 
