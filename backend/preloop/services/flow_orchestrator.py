@@ -2178,6 +2178,11 @@ class FlowExecutionOrchestrator:
         if resume.get("thread_id"):
             execution_context["checkpoint_resume_authorized"] = True
             execution_context["thread_id"] = resume["thread_id"]
+        cold_handoff = bool(native and native.get("cold_handoff_authorized"))
+        if cold_handoff:
+            execution_context["published_branch_handoff_authorized"] = True
+            resume.pop("cli_session", None)
+            native = None
         if native or resume.get("cli_session"):
             validate_native_resume_identity(
                 self.db, self.flow, self.trigger_event_data, resume
@@ -2193,7 +2198,7 @@ class FlowExecutionOrchestrator:
         # so unpushed commits (and scratch state) survive into this run.
         restore_archive = (
             None
-            if settings.flow_artifact_direct_upload
+            if settings.flow_artifact_direct_upload or cold_handoff
             else self._resolve_workspace_restore_archive()
         )
         if restore_archive is not None:
@@ -2202,7 +2207,9 @@ class FlowExecutionOrchestrator:
         # Correlated resume: extract the prior execution's packed CLI session
         # from its workspace snapshot so the agent script can restore it into
         # runners that cannot seed the filesystem pre-start (Kubernetes).
-        cli_session_archive = self._resolve_cli_session_restore_archive()
+        cli_session_archive = (
+            None if cold_handoff else self._resolve_cli_session_restore_archive()
+        )
         if cli_session_archive is not None:
             execution_context["cli_session_restore_archive"] = cli_session_archive
 

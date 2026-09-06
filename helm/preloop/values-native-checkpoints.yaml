@@ -1,0 +1,19 @@
+# Optional example native-conversation and workspace checkpoint overlay.
+# Size a representative archive before use; 16 MiB will not fit every repository.
+# Deploy the transaction-resilience backend and EE companion first.
+# Review docs/guide/flows/durable-implementation-feedback.md before enabling.
+#
+# Helm replaces lists: merge these entries into any existing extraEnv list.
+# This file does not set, rotate or change the source of either encryption
+# or signing keys, and does not increase ingress/console body-size limits.
+extraEnv:
+  - name: FLOW_ARTIFACT_DIRECT_UPLOAD
+    value: "true"
+  # Both workspace and native archive uploads use this compressed-byte cap.
+  # 16 MiB stays below the default ingress/console limit of 32 MiB.
+  - name: WORKSPACE_SNAPSHOT_MAX_BYTES
+    value: "16777216"
+  - name: FLOW_NATIVE_SESSION_RETENTION_HOURS
+    value: "168"
+  - name: WORKSPACE_SNAPSHOT_TTL_HOURS
+    value: "168"

@@ -7943,6 +7943,72 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/executions/{execution_id}/continuation:
+    get:
+      tags:
+      - Flows
+      summary: Preview Execution Continuation
+      description: Inspect one publication without enabling repairs or holding DB
+        during I/O.
+      operationId: preview_execution_continuation_api_v1_flows_executions__execution_id__continuation_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContinuationPreview'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - Flows
+      summary: Adopt Execution Continuation
+      description: Explicitly subscribe one previously published PR to bounded repairs.
+      operationId: adopt_execution_continuation_api_v1_flows_executions__execution_id__continuation_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContinuationAdoptRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContinuationAdoptResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/flows/executions/{execution_id}/result:
     get:
       tags:
@@ -13602,6 +13668,126 @@ components:
         \    - \"args.command.contains('rm -rf')\"\n    - \"args.path.startsWith('/etc/')\"\
         \n    - \"args.tags.exists(t, t == 'production')\"\n    - \"args.amount >\
         \ 1000 && args.approved == false\""
+    ContinuationAdoptRequest:
+      properties:
+        recovery_mode:
+          type: string
+          enum:
+          - native_resume
+          - published_branch_handoff
+          title: Recovery Mode
+        expected_head_sha:
+          type: string
+          pattern: ^[0-9a-fA-F]{40,64}$
+          title: Expected Head Sha
+        acknowledge_fresh_conversation:
+          type: boolean
+          title: Acknowledge Fresh Conversation
+          default: false
+      type: object
+      required:
+      - recovery_mode
+      - expected_head_sha
+      title: ContinuationAdoptRequest
+    ContinuationAdoptResponse:
+      properties:
+        thread_id:
+          type: string
+          format: uuid
+          title: Thread Id
+        state:
+          type: string
+          title: State
+        pr_url:
+          type: string
+          title: Pr Url
+        recovery_mode:
+          type: string
+          enum:
+          - native_resume
+          - published_branch_handoff
+          title: Recovery Mode
+      type: object
+      required:
+      - thread_id
+      - state
+      - pr_url
+      - recovery_mode
+      title: ContinuationAdoptResponse
+    ContinuationPreview:
+      properties:
+        execution_id:
+          type: string
+          format: uuid
+          title: Execution Id
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        pr_url:
+          type: string
+          title: Pr Url
+        branch:
+          type: string
+          title: Branch
+        head_sha:
+          type: string
+          title: Head Sha
+        feedback_enabled:
+          type: boolean
+          title: Feedback Enabled
+        artifact_upload_enabled:
+          type: boolean
+          title: Artifact Upload Enabled
+        feedback_readable:
+          type: boolean
+          title: Feedback Readable
+          default: false
+        feedback_blocked_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Feedback Blocked Reason
+        native_resume_available:
+          type: boolean
+          title: Native Resume Available
+        existing_thread_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Existing Thread Id
+        existing_thread_state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Existing Thread State
+        allowed_recovery_modes:
+          items:
+            type: string
+            enum:
+            - native_resume
+            - published_branch_handoff
+          type: array
+          title: Allowed Recovery Modes
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
+      type: object
+      required:
+      - execution_id
+      - flow_id
+      - pr_url
+      - branch
+      - head_sha
+      - feedback_enabled
+      - artifact_upload_enabled
+      - native_resume_available
+      - allowed_recovery_modes
+      - warnings
+      title: ContinuationPreview
     CostAnalyticsSummaryResponse:
       properties:
         period_start:

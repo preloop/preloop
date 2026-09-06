@@ -45,6 +45,37 @@ import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 export const FLOW_TIMEOUT_MIN_SECONDS = 60;
 export const FLOW_TIMEOUT_MAX_SECONDS = 86400;
 
+const FEEDBACK_LIMITS = {
+  max_turns: {
+    label: 'Maximum repair turns',
+    default: 5,
+    min: 1,
+    max: 100,
+    step: 1,
+  },
+  max_cost: {
+    label: 'Cumulative cost limit (USD)',
+    default: 100,
+    min: 0.01,
+    max: 1000000,
+    step: 0.01,
+  },
+  max_age_hours: {
+    label: 'Follow-up lifetime (hours)',
+    default: 168,
+    min: 1,
+    max: 8760,
+    step: 1,
+  },
+  debounce_seconds: {
+    label: 'Feedback debounce (seconds)',
+    default: 30,
+    min: 0,
+    max: 3600,
+    step: 1,
+  },
+} as const;
+
 @customElement('preloop-flow-form')
 export class PreloopFlowForm extends LitElement {
   static styles = [
@@ -841,6 +872,159 @@ export class PreloopFlowForm extends LitElement {
     });
   }
 
+  private feedbackConfig(): Record<string, unknown> {
+    const feedback = this.parseAgentConfig(this.flow.agent_config).feedback;
+    return feedback && typeof feedback === 'object' && !Array.isArray(feedback)
+      ? { ...(feedback as Record<string, unknown>) }
+      : {};
+  }
+
+  private updateFeedback(field: string, value: unknown) {
+    const config = this.parseAgentConfig(this.flow.agent_config);
+    const feedback = this.feedbackConfig();
+    if (field === 'enabled' && value === true) {
+      for (const [key, limit] of Object.entries(FEEDBACK_LIMITS)) {
+        if (!(key in feedback)) feedback[key] = limit.default;
+      }
+    }
+    this.flow = {
+      ...this.flow,
+      agent_config: { ...config, feedback: { ...feedback, [field]: value } },
+    };
+  }
+
+  private validatedFeedback(): Record<string, unknown> {
+    const feedback = this.feedbackConfig();
+    if (feedback.enabled !== true) return feedback;
+    for (const [key, limit] of Object.entries(FEEDBACK_LIMITS)) {
+      if (!(key in feedback)) continue;
+      const raw = feedback[key];
+      const value =
+        typeof raw === 'number' || (typeof raw === 'string' && raw.trim())
+          ? Number(raw)
+          : NaN;
+      if (
+        !Number.isFinite(value) ||
+        value < limit.min ||
+        value > limit.max ||
+        (limit.step === 1 && !Number.isInteger(value))
+      ) {
+        throw new Error(
+          `Follow-up: ${limit.label} must be ${limit.step === 1 ? 'a whole number' : 'a number'} between ${limit.min} and ${limit.max}.`
+        );
+      }
+      feedback[key] = value;
+    }
+    for (const key of ['trusted_reviewer_ids', 'implementer_actor_ids']) {
+      if (!(key in feedback)) continue;
+      const raw = feedback[key];
+      const ids =
+        typeof raw === 'string'
+          ? raw
+              .split(',')
+              .map((id) => id.trim())
+              .filter(Boolean)
+          : raw;
+      if (
+        !Array.isArray(ids) ||
+        ids.some(
+          (id) =>
+            !(
+              (typeof id === 'string' && /^[1-9][0-9]*$/.test(id)) ||
+              (typeof id === 'number' && Number.isSafeInteger(id) && id > 0)
+            )
+        )
+      ) {
+        throw new Error(
+          'Follow-up: enter comma-separated numeric provider actor IDs, not usernames.'
+        );
+      }
+      feedback[key] = ids;
+    }
+    return feedback;
+  }
+
+  private renderFeedbackControls() {
+    const feedback = this.feedbackConfig();
+    const enabled = feedback.enabled === true;
+    return html`
+      <sl-card data-feedback-editor>
+        <div slot="header" class="card-header-title">
+          <sl-icon name="arrow-repeat"></sl-icon> PR review and CI follow-up
+        </div>
+        <p class="notifications-help">
+          Repair review findings and failing CI on pull or merge requests
+          published by this flow. Each repair starts a new execution and
+          continues the previous agent conversation when its saved checkpoint is
+          compatible. Otherwise it starts fresh from the issue and PR context
+          and reports that choice. Merge remains manual.
+        </p>
+        <sl-checkbox
+          data-feedback="enabled"
+          .checked=${enabled}
+          @sl-change=${(e: Event) => this.updateFeedback('enabled', (e.target as HTMLInputElement).checked)}
+          >Continue implementation after PR review or CI failure</sl-checkbox
+        >
+        ${
+          enabled
+            ? html`
+                <p
+                  class="notifications-help"
+                  style="margin-top: var(--sl-spacing-medium);"
+                >
+                  Limits apply across the PR's repair turns. The cost limit is
+                  cumulative estimated USD; each execution also keeps its own
+                  budget. Pending CI waits for results without keeping the agent
+                  running. Enabling applies to future runs. Existing PRs require
+                  explicit adoption from the execution that published them.
+                </p>
+                <div class="form-grid">
+                  ${[
+                    [
+                      'trusted_reviewer_ids',
+                      'Trusted reviewer actor IDs',
+                      'Comma-separated GitHub or GitLab numeric user IDs from the reviewer account or integration. Unlisted bots are ignored; comment markers do not grant trust.',
+                    ],
+                    [
+                      'implementer_actor_ids',
+                      'Implementer actor IDs',
+                      'Comma-separated numeric user IDs used by the implementing agent. Their own comments are ignored to prevent feedback loops.',
+                    ],
+                  ].map(
+                    ([key, label, help]) => html`
+                      <sl-input
+                        data-feedback=${key}
+                        label=${label}
+                        help-text=${help}
+                        .value=${Array.isArray(feedback[key]) ? (feedback[key] as unknown[]).join(', ') : String(feedback[key] ?? '')}
+                        @sl-input=${(e: Event) => this.updateFeedback(key, (e.target as HTMLInputElement).value)}
+                      ></sl-input>
+                    `
+                  )}
+                  ${Object.entries(FEEDBACK_LIMITS).map(
+                    ([key, limit]) => html`
+                      <sl-input
+                        data-feedback=${key}
+                        type="number"
+                        label=${limit.label}
+                        min=${limit.min}
+                        max=${limit.max}
+                        step=${limit.step}
+                        required
+                        help-text=${key === 'debounce_seconds' ? 'Collect nearby feedback into one repair turn before starting work.' : `${limit.min}–${limit.max}.`}
+                        .value=${String(feedback[key] ?? limit.default)}
+                        @sl-input=${(e: Event) => this.updateFeedback(key, (e.target as HTMLInputElement).value)}
+                      ></sl-input>
+                    `
+                  )}
+                </div>
+              `
+            : nothing
+        }
+      </sl-card>
+    `;
+  }
+
   private buildAgentConfig(): Record<string, unknown> {
     const config = this.parseAgentConfig(this.flow.agent_config);
     if (this.longRunningAgents.length > 0) {
@@ -849,6 +1033,9 @@ export class PreloopFlowForm extends LitElement {
         this.flowExecutionPath === 'persistent'
           ? this.targetAgentId
           : undefined;
+    }
+    if (config.feedback !== undefined) {
+      config.feedback = this.validatedFeedback();
     }
     const rules = this.normalizedRoutingRules();
     if (rules.length > 0) {
@@ -2332,6 +2519,8 @@ export class PreloopFlowForm extends LitElement {
               : nothing
           }
         </sl-card>
+
+        ${this.renderFeedbackControls()}
 
         <sl-card>
           <div slot="header" class="card-header-title">

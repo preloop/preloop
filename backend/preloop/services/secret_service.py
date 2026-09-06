@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import logging
-from typing import Any, Dict, Optional, Protocol
+from typing import Any, Callable, Dict, Optional, Protocol
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -17,9 +17,12 @@ from sqlalchemy.orm import Session
 
 from preloop.config import settings
 from preloop.models.crud.secret_reference import crud_secret_reference
-from preloop.models.models.ai_model import AIModel
-from preloop.models.models.secret_reference import SecretReference
+from preloop.models import models
+
 from preloop.utils.encryption import decrypt_value, encrypt_value
+
+AIModel = models.AIModel
+SecretReference = models.SecretReference
 
 logger = logging.getLogger(__name__)
 
@@ -544,6 +547,8 @@ class SecretService:
         db: Session,
         secret_ref: SecretReference,
         fallback: Dict[str, Any],
+        *,
+        refresh_required: Callable[[Dict[str, Any]], bool],
     ) -> Dict[str, Any]:
         """Serialize OAuth refreshes on the secret row across workers.
 
@@ -554,19 +559,26 @@ class SecretService:
         already rotated the bundle while we waited, callers must use its
         result instead of refreshing again.
         """
-        locked = (
-            db.query(SecretReference)
-            .filter(SecretReference.id == secret_ref.id)
-            .with_for_update()
-            .one_or_none()
+
+        def inspect(locked: Optional[SecretReference]) -> tuple[Dict[str, Any], bool]:
+            payload = fallback
+            if locked is not None and locked.encrypted_value:
+                try:
+                    decoded = json.loads(decrypt_value(locked.encrypted_value))
+                    if isinstance(decoded, dict):
+                        payload = decoded
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    # Keep the caller's fallback when the locked row is not
+                    # valid JSON (corrupt ciphertext or a non-object payload).
+                    pass
+            needs_refresh = refresh_required(payload) and bool(
+                str(payload.get("refresh") or "").strip()
+            )
+            return payload, needs_refresh
+
+        return crud_secret_reference.inspect_for_refresh(
+            db, secret_id=secret_ref.id, inspect=inspect
         )
-        if locked is None or not locked.encrypted_value:
-            return fallback
-        try:
-            payload = json.loads(decrypt_value(locked.encrypted_value))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return fallback
-        return payload if isinstance(payload, dict) else fallback
 
     def _refresh_openai_codex_ai_model_credentials(
         self,
@@ -581,7 +593,10 @@ class SecretService:
             and ai_model.credentials_secret.backend_type == LOCAL_ENCRYPTED_BACKEND
         ):
             payload = self._lock_and_reload_oauth_payload(
-                db, ai_model.credentials_secret, payload
+                db,
+                ai_model.credentials_secret,
+                payload,
+                refresh_required=self._openai_codex_refresh_required,
             )
             if not self._openai_codex_refresh_required(payload):
                 return payload
@@ -661,7 +676,10 @@ class SecretService:
             and ai_model.credentials_secret.backend_type == LOCAL_ENCRYPTED_BACKEND
         ):
             payload = self._lock_and_reload_oauth_payload(
-                db, ai_model.credentials_secret, payload
+                db,
+                ai_model.credentials_secret,
+                payload,
+                refresh_required=self._anthropic_claude_code_refresh_required,
             )
             if not self._anthropic_claude_code_refresh_required(payload):
                 return payload

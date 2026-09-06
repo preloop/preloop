@@ -8,25 +8,75 @@ decision (or timeout) and returns a simple allow/deny.
 """
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import (
     _authenticate_with_api_key,
     _managed_agent_for_api_key,
     _runtime_session_id_from_api_key,
 )
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.config import settings
 from preloop.models.crud import crud_api_key, crud_runtime_session
-from preloop.models.db.session import get_db_session
+from preloop.models.db.session import get_session_factory
 from preloop.services.agent_permission_service import request_agent_permission
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@dataclass(frozen=True)
+class PermissionIdentity:
+    """Authenticated scalars safe to retain while awaiting a human decision."""
+
+    account_id: str
+    user_id: UUID
+    api_key_id: UUID
+    managed_agent_id: UUID
+    runtime_session_id: Optional[UUID]
+    managed_agent_name: str
+
+
+def _resolve_permission_identity(token: str) -> PermissionIdentity:
+    """Authenticate in one worker-owned session, closed before approval waits."""
+    with get_session_factory()() as db:
+        api_key = crud_api_key.get_by_key(db, key=token)
+        user = _authenticate_with_api_key(db, api_key)
+        managed_agent = _managed_agent_for_api_key(db, api_key)
+        if managed_agent is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token is not bound to a managed agent",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        runtime_session = None
+        runtime_session_id = _runtime_session_id_from_api_key(api_key)
+        if runtime_session_id is not None:
+            runtime_session = crud_runtime_session.get_account_session(
+                db,
+                account_id=api_key.account_id,
+                runtime_session_id=runtime_session_id,
+            )
+        return PermissionIdentity(
+            account_id=str(api_key.account_id),
+            user_id=user.id,
+            api_key_id=api_key.id,
+            managed_agent_id=managed_agent.id,
+            runtime_session_id=runtime_session.id
+            if runtime_session
+            else runtime_session_id,
+            managed_agent_name=(
+                getattr(managed_agent, "display_name", None)
+                or getattr(managed_agent, "name", None)
+                or "Agent"
+            ),
+        )
 
 
 def _permission_check_base_url() -> str:
@@ -94,7 +144,6 @@ class AgentPermissionCheckResponse(BaseModel):
 async def agent_permission_check(
     payload: AgentPermissionCheckRequest,
     authorization: Optional[str] = Header(None),
-    db: Session = Depends(get_db_session),
 ) -> AgentPermissionCheckResponse:
     """Decide whether an onboarded agent's native tool call may proceed."""
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -105,33 +154,9 @@ async def agent_permission_check(
         )
     token = authorization.split(" ", 1)[1].strip()
 
-    # The agent calls this with its durable managed credential (the same token
-    # used for MCP). That credential is bound to a managed agent but is NOT
-    # necessarily tied to a live runtime session, so we resolve loosely:
-    # managed agent is required (for identity); runtime session is optional.
-    api_key = crud_api_key.get_by_key(db, key=token)
-    user = _authenticate_with_api_key(db, api_key)  # validates active/expired
-    managed_agent = _managed_agent_for_api_key(db, api_key)
-    if managed_agent is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token is not bound to a managed agent",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    runtime_session = None
-    runtime_session_id = _runtime_session_id_from_api_key(api_key)
-    if runtime_session_id is not None:
-        runtime_session = crud_runtime_session.get_account_session(
-            db,
-            account_id=api_key.account_id,
-            runtime_session_id=runtime_session_id,
-        )
-
-    agent_name = (
-        getattr(managed_agent, "display_name", None)
-        or getattr(managed_agent, "name", None)
-        or "Agent"
-    )
+    # Preserve the existing credential/binding checks, but keep all ORM access
+    # and pool waits off the event loop. No session survives this await.
+    identity = await run_db_off_loop(lambda: _resolve_permission_identity(token))
 
     tool_input = dict(payload.tool_input or {})
     if payload.cwd:
@@ -144,17 +169,12 @@ async def agent_permission_check(
 
     decision, reason, request_id, timed_out = await request_agent_permission(
         base_url=_permission_check_base_url(),
-        account_id=str(api_key.account_id),
-        user_id=user.id,
-        managed_agent_id=managed_agent.id,
-        runtime_session_id=runtime_session.id
-        if runtime_session
-        else runtime_session_id,
-        managed_agent_name=agent_name,
-        # The bearer token this check authenticated with. Recorded on the
-        # approval so an approver can see which credential is in play, not
-        # only which agent.
-        api_key_id=api_key.id,
+        account_id=identity.account_id,
+        user_id=identity.user_id,
+        managed_agent_id=identity.managed_agent_id,
+        runtime_session_id=identity.runtime_session_id,
+        managed_agent_name=identity.managed_agent_name,
+        api_key_id=identity.api_key_id,
         source=payload.source,
         tool_name=payload.tool_name,
         tool_input=tool_input,

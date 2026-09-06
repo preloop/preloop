@@ -9,8 +9,24 @@ permission service unchanged, and stamps it into ``tool_input`` as the
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
+from sqlalchemy.orm import Session, sessionmaker
+
 PERMISSION_CHECK_URL = "/api/v1/agents/permission-check"
 TOKEN_URL = "/api/v1/auth/runtime-sessions/token"
+
+
+@pytest.fixture(autouse=True)
+def permission_identity_session(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Worker owns its Session while sharing the test's rollback transaction."""
+    factory = sessionmaker(
+        bind=db_session.connection(), join_transaction_mode="create_savepoint"
+    )
+    monkeypatch.setattr(
+        "preloop.api.endpoints.agent_permission.get_session_factory", lambda: factory
+    )
 
 
 def _issue_opencode_runtime_token(client) -> str:
@@ -35,7 +51,7 @@ def _post_permission_check(client, token: str, payload: dict):
     )
 
 
-def test_permission_check_accepts_source_opencode_and_stamps_marker(client):
+def test_permission_check_accepts_source_opencode_and_stamps_marker(client, db_session):
     """A Bash call from the OpenCode plugin reaches the service with its source."""
     token = _issue_opencode_runtime_token(client)
     decide = AsyncMock(return_value=("allow", "Approved via Preloop.", "req-1", False))
@@ -71,6 +87,9 @@ def test_permission_check_accepts_source_opencode_and_stamps_marker(client):
     assert kwargs["tool_input"]["command"] == "npm test"
     assert kwargs["tool_input"]["cwd"] == "/home/dev/project"
     assert kwargs["managed_agent_name"] == "Laptop OpenCode"
+    from preloop.models.crud import crud_api_key
+
+    assert kwargs["api_key_id"] == crud_api_key.get_by_key(db_session, key=token).id
     assert kwargs["client_decision"] is None
 
 

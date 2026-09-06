@@ -5,6 +5,8 @@ import uuid
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
+from typing import Any
+from sqlalchemy import Engine
 
 import pytest
 from preloop.models.models import ApprovalWorkflow, ApprovalRequest
@@ -1712,8 +1714,8 @@ class TestCreateAndNotify:
                 return_value={},
             ) as mock_send_notifications,
             patch(
-                "preloop.models.db.session.get_db_session",
-                return_value=iter([sync_db]),
+                "preloop.models.db.session.get_session_factory",
+                return_value=MagicMock(return_value=sync_db),
             ),
             patch(
                 "preloop.services.approval_summary.generate_approval_summary",
@@ -3774,3 +3776,79 @@ class TestNotificationStagger:
             c for c in mock_audit.call_args_list if c.kwargs.get("channel") == "email"
         ]
         assert any(c.kwargs.get("status") == "scheduled" for c in email_audits)
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancelled"])
+async def test_create_and_notify_owns_summary_session_until_finished(
+    db_engine: Engine,
+    approval_service: ApprovalService,
+    sample_approval_request: MagicMock,
+    sample_approval_workflow: MagicMock,
+    outcome: str,
+) -> None:
+    """Summary gets an open owned Session, closed once off-loop on every exit."""
+    import asyncio
+    import threading
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+    from preloop.api.loop_safety import run_db_off_loop
+
+    phases: list[str] = []
+    worker_threads: list[int] = []
+    loop_thread = threading.get_ident()
+
+    class OwnedSession(Session):
+        def close(self) -> None:
+            phases.append("closed")
+            worker_threads.append(threading.get_ident())
+            super().close()
+
+    def create_session() -> Session:
+        phases.append("created")
+        worker_threads.append(threading.get_ident())
+        return OwnedSession(db_engine, close_resets_only=False)
+
+    async def generate(db: Session, **kwargs: Any) -> None:
+        phases.append("summary")
+        assert await run_db_off_loop(lambda: db.execute(select(1)).scalar_one()) == 1
+        if outcome == "failure":
+            raise RuntimeError("local summary failure")
+        if outcome == "cancelled":
+            raise asyncio.CancelledError()
+
+    with (
+        patch(
+            "preloop.models.db.session.get_session_factory", return_value=create_session
+        ),
+        patch(
+            "preloop.services.approval_summary.generate_approval_summary",
+            side_effect=generate,
+        ),
+        patch.object(
+            approval_service,
+            "create_approval_request",
+            return_value=sample_approval_request,
+        ),
+        patch.object(
+            approval_service,
+            "_auto_approve_without_review",
+            return_value=sample_approval_request,
+        ),
+    ):
+        operation = approval_service.create_and_notify(
+            account_id="local-test",
+            tool_configuration_id=uuid.uuid4(),
+            approval_workflow=sample_approval_workflow,
+            tool_name="Read",
+            tool_args={},
+            standing_bypass_reason="native_tool_approvals_off",
+        )
+        if outcome == "cancelled":
+            with pytest.raises(asyncio.CancelledError):
+                cancelled = await operation
+                raise AssertionError(f"canceled notify returned {cancelled!r}")
+        else:
+            created = await operation
+            assert created is sample_approval_request
+    assert phases == ["created", "summary", "closed"]
+    assert all(thread != loop_thread for thread in worker_threads)

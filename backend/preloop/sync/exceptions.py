@@ -51,6 +51,10 @@ class TrackerResponseError(TrackerError):
     pass
 
 
+class TrackerPermissionError(TrackerResponseError):
+    """Provider explicitly denied permission, excluding throttling/auth failures."""
+
+
 class EmbeddingError(PreloopSyncError):
     """Raised when there's an issue with generating embeddings."""
 

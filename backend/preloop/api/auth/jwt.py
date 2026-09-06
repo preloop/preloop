@@ -13,6 +13,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jwt import PyJWTError
 from passlib.context import CryptContext
+from sqlalchemy.exc import TimeoutError as SQLAlchemyPoolTimeout
 from sqlalchemy.orm import Session
 
 # Configuration
@@ -670,7 +671,17 @@ async def get_user_from_token_if_valid(token: str, db_session: Any) -> Optional[
     Returns None if the token is invalid, expired, or the user doesn't exist.
     This function does not raise HTTPException.
     """
-    return get_user_from_token_if_valid_sync(token, db_session)
+    from preloop.api.loop_safety import run_db_off_loop
+
+    def authenticate() -> Optional[User]:
+        user = get_user_from_token_if_valid_sync(token, db_session)
+        if user is not None:
+            # API-key last-used commits expire the user. Hydrate its scalar
+            # fields here so async callers do not issue a lazy SELECT.
+            _ = user.id, user.account_id, user.username, user.email, user.is_active
+        return user
+
+    return await run_db_off_loop(authenticate)
 
 
 def get_user_from_token_if_valid_sync(token: str, db_session: Any) -> Optional[User]:
@@ -705,6 +716,9 @@ def get_user_from_token_if_valid_sync(token: str, db_session: Any) -> Optional[U
         if user and user.is_active:
             return user
 
+    except SQLAlchemyPoolTimeout:
+        # Capacity failures are retryable service overload, not bad credentials.
+        raise
     except HTTPException as e:
         # Raised by _authenticate_with_api_key with the concrete rejection
         # reason (inactive key, expired key, deleted/suspended managed agent).

@@ -13,6 +13,7 @@ from preloop.models.crud import (
     crud_ai_model,
     crud_api_usage,
     crud_flow_runner,
+    crud_flow_feedback,
     crud_runtime_session_activity,
 )
 from preloop.models.crud.flow import CRUDFlow
@@ -43,6 +44,17 @@ from preloop.services.host_exec import (
     host_exec_flow_error,
     host_exec_profile_name,
     host_exec_unavailable_reason,
+)
+
+from preloop.schemas.flow_continuation import (
+    ContinuationPreview,
+    ContinuationAdoptRequest,
+    ContinuationAdoptResponse,
+)
+from preloop.services.flow_continuation_adoption import (
+    ContinuationAdoptionError,
+    preview_continuation,
+    adopt_continuation,
 )
 
 
@@ -730,6 +742,46 @@ def read_flow_execution(
     project_execution_totals(db, [execution])
 
     return execution
+
+
+@router.get(
+    "/flows/executions/{execution_id}/continuation", response_model=ContinuationPreview
+)
+@require_permission("view_flows")
+def preview_execution_continuation(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+) -> ContinuationPreview:
+    """Inspect one publication without enabling repairs or holding DB during I/O."""
+    account_id = current_user.account_id
+    crud_flow_feedback.release_read(db)
+    try:
+        return preview_continuation(account_id, execution_id)
+    except ContinuationAdoptionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@router.post(
+    "/flows/executions/{execution_id}/continuation",
+    response_model=ContinuationAdoptResponse,
+)
+@require_permission("execute_flows")
+def adopt_execution_continuation(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    request: ContinuationAdoptRequest,
+    current_user: User = Depends(get_current_active_user),
+) -> ContinuationAdoptResponse:
+    """Explicitly subscribe one previously published PR to bounded repairs."""
+    account_id = current_user.account_id
+    crud_flow_feedback.release_read(db)
+    try:
+        return adopt_continuation(account_id, execution_id, request)
+    except ContinuationAdoptionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.get("/flows/executions/{execution_id}/result")

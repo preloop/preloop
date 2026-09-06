@@ -706,6 +706,8 @@ class FlowTriggerService:
                 trigger_details["test_mode"] = True
             from preloop.services.flow_feedback import feedback_policy
 
+            trigger_details.pop("_session_thread_id", None)
+            trigger_details.pop("_thread_id", None)
             if feedback_policy(flow):
                 trigger_details["_session_thread_id"] = str(uuid.uuid4())
             event_data = trigger_details
@@ -1448,6 +1450,12 @@ class FlowTriggerService:
         from preloop.services.flow_orchestrator import _make_json_serializable
 
         trigger_details = _make_json_serializable(trigger_details)
+        from preloop.services.flow_feedback import feedback_policy
+
+        trigger_details.pop("_session_thread_id", None)
+        trigger_details.pop("_thread_id", None)
+        if feedback_policy(flow):
+            trigger_details["_session_thread_id"] = str(uuid.uuid4())
         pin_source_id = retry_of_execution_id or source_execution_id
         source_execution = None
         pin_kind = None
@@ -1578,6 +1586,8 @@ class FlowTriggerService:
             trigger_details = _make_json_serializable(trigger_details)
             from preloop.services.flow_feedback import feedback_policy
 
+            trigger_details.pop("_session_thread_id", None)
+            trigger_details.pop("_thread_id", None)
             if feedback_policy(flow):
                 trigger_details["_session_thread_id"] = str(uuid.uuid4())
             attach_trigger_subject(trigger_details)

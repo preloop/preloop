@@ -3,7 +3,8 @@
 The Automated Issue Implementation preset can keep a PR moving through review
 and CI without leaving an agent container waiting. Each repair gets a new
 FlowExecution, its own execution budgets and fresh credentials. The implementation
-thread keeps the PR branch and exact native conversation across those turns.
+thread keeps the PR branch and, when recovery files are available, the exact native
+conversation across those turns.
 Reviewers remain separate flows and conversations. Merging remains a human action.
 
 ## Enable a subscription
@@ -32,6 +33,34 @@ agent_config:
     required_checks: ["Backend Tests", "UI Tests"]
     required_approvals: 1
 ```
+
+In the console, edit a flow and enable **Continue implementation after PR review
+or CI failure** under **PR review and CI follow-up**. Enter the reviewer's and
+implementer's numeric GitHub or GitLab actor IDs, then choose limits for repair
+turns, cumulative estimated cost in USD, lifetime, and feedback debounce. The
+initial values match the policy defaults above. Saving an existing flow without
+opting in leaves follow-up disabled. Other policy fields set through the API are
+preserved when editing these controls. A compatible saved checkpoint is required
+for native conversation resume. An existing publication without that state
+requires explicit permission to start a fresh conversation. Turning on the option does not merge a PR.
+
+For an existing PR, open the successful execution that published it and choose
+**Set up PR follow-up**. This fetches a read-only preview of the exact PR, branch,
+current head and recovery options. Confirm a fresh conversation explicitly if its
+saved state cannot be resumed. If the head changes, review the refreshed preview
+and confirm again. The action requires enabled flow feedback and deployment
+support for saved execution state uploads; unavailable prerequisites are shown in
+the preview. A failed network response triggers a status refresh, not an automatic
+second adoption request.
+
+Enabling feedback applies to future executions. The server records opt-in when
+an execution starts; turning the setting on does not discover and repair an old
+PR backlog. An older successful publication requires explicit adoption below.
+Turning feedback off pauses future repairs without cancelling a running turn.
+Re-enabling keeps consumed turns, cost, no-progress history and the deadline.
+Current reviewer trust and budget settings apply on every reconciliation and are
+checked again when reserving a repair. Reducing the maximum age can shorten the
+original deadline; increasing it never extends an existing subscription.
 
 Use the actual reviewer integration's actor ID in `trusted_reviewer_ids`.
 Unlisted bots and the configured implementer actor are ignored. A copied HTML
@@ -73,9 +102,13 @@ check never becomes ready simply because a webhook was missing.
 
 Readiness requires passing checks and review gates on the current head. Provider
 permission errors, pagination beyond the bounded reconciliation window, and
-ruleset workflow/code-scanning gates that require additional evidence fail closed
-with a reason. Resolve the blocker or provide the required gate integration;
-Preloop does not interpret unavailable evidence as approval. The PR remains open
+ruleset workflow/code-scanning gates that require additional evidence prevent
+readiness with a reason. Explicit permission denials on GitHub branch protection
+or ruleset discovery still allow repairs to fully read, current-head review and
+CI feedback. They never establish that repository requirements passed. Other
+provider failures, rate limits or incomplete feedback block repairs as well.
+Resolve the blocker or provide the required gate integration; Preloop does not
+interpret unavailable evidence as approval. The PR remains open
 for manual merge.
 
 ## Native conversation checkpoints
@@ -97,8 +130,11 @@ Providing another issue's execution ID or artifact reference does not authorize
 its session. Private runners must advertise native checkpoint support; a runner
 without it reports a cold handoff and does not upload its home directory.
 
-Restore begins in an empty session directory. Missing/expired state produces
-`cold_handoff` with a reason, using current issue/PR evidence. Corrupt, mismatched,
+Restore begins in an empty session directory. Missing or expired recovery files
+stop a durable native resume. Only an explicitly adopted original publication may
+start a fresh conversation on its published branch and report `cold_handoff`.
+That exception is consumed by the first repair: later repairs need their own
+workspace and native checkpoints. Corrupt, mismatched,
 unsupported or incompatible existing state produces `resume_failed`. A failed
 native CLI resume preserves the checkpoint and does not silently select another
 conversation. The execution result records `native_resume`, `cold_handoff` or
@@ -117,6 +153,121 @@ and completion reminders always use explicit IDs, never latest-session flags.
 Wrappers install the selected CLI before one native restore, enter the primary
 checkout after setup, and log the actual CLI version and configured image reference.
 A configured image tag is not proof of the resolved runtime image digest.
+
+## Deployment prerequisites
+
+Enable checkpoint uploads only after deploying the transaction-resilience backend
+and its EE companion. In particular, the artifact quota lock must use
+`FOR NO KEY UPDATE` so checkpoint inserts do not recreate account foreign-key
+contention. Apply database migrations before starting the updated API and flow
+workers. Merely enabling feedback on a saved flow does not enable artifact upload.
+
+The chart already supports shared `extraEnv` on the API, gateway, execution workers
+and scheduler. Its defaults leave `FLOW_ARTIFACT_DIRECT_UPLOAD` disabled. The
+optional [native checkpoint overlay](../../../helm/preloop/values-native-checkpoints.yaml)
+enables it and retains both workspace and native artifacts for seven days. Copy
+and review that file with your installation values; do not enable it merely by
+setting an environment variable on the Helm client or CI job.
+
+The example overlay caps compressed uploads at 16 MiB through
+`WORKSPACE_SNAPSHOT_MAX_BYTES`, which applies to both artifact kinds. This is below
+the chart's default 32 MiB ingress and console proxy body limit. Measure a
+representative workspace and native-session archive locally before choosing this
+limit: repository history and generated assets can exceed it. For example, a
+44.5 MiB compressed checkpoint requires a larger application limit, such as
+64 MiB (`67108864` bytes), with `gateway.proxy.bodySize: "80m"` to update both
+ingress and console limits. Check for explicit ingress annotation overrides in
+the installation values. Oversized archives
+fail explicitly; increase application and every proxy limit together only after
+checking memory and database capacity. Expanded archives retain their separate
+`FLOW_ARTIFACT_EXPANDED_MAX_BYTES` limit (default 2 GiB), and
+`FLOW_ARTIFACT_ACCOUNT_QUOTA_BYTES` limits stored account data (default 4 GiB).
+Retention consumes that quota, so cleanup and database headroom must cover the
+selected retention window. The checkpoint interval defaults to 300 seconds.
+Upload buffering, encryption and database driver copies can require several times
+the compressed archive size in memory. The expanded-size limit is validated with
+streaming reads, but it still bounds restore disk usage and processing work.
+Keep upload concurrency bounded during initial validation; increasing a size
+limit alone does not establish sufficient memory or storage headroom.
+
+Helm merges maps but **replaces lists**. Merge these entries with any existing
+`extraEnv`, preserving database, private-CA and other installation entries. An
+additional values file must not silently replace that list. Render the combined
+values and verify that the same direct-upload flag reaches the API and execution
+workers. Confirm the existing signing/encryption Secret references remain intact;
+never print key values in CI logs.
+
+All API and worker replicas must share a stable `SECRET_KEY`, used to sign and
+verify scoped upload/download capabilities. Artifacts use the existing encryption
+configuration: a stable `SECURITY__ENCRYPTION_KEY` when configured, otherwise the
+existing encryption key derived from `SECRET_KEY`. Preserve the installation's
+current mode and keys. Switching to a new dedicated key or rotating either key is
+not part of enabling checkpoints and can make existing encrypted data unreadable.
+If an existing dedicated key comes from a Kubernetes Secret, preserve its
+`valueFrom.secretKeyRef` entry in the combined values. A non-empty key check only
+proves presence, not continuity with previously stored data.
+
+`PRELOOP_URL` must be reachable from the actual agent execution namespace or
+private runner, including DNS, TLS trust and egress to its resolved destination.
+The native client uploads directly to
+`/api/v1/flows/executions/{execution_id}/artifacts`; MCP access alone does not prove
+this route works. An internal ingress may need an explicit existing network-policy
+rule for its namespace and HTTPS port. Do not widen agent egress merely to bypass
+a failed readiness check. Check upload timeouts as well as size limits.
+
+Use a local or staging acceptance run to verify an encrypted workspace and native
+artifact row, then a fresh-container native resume for the same implementation
+thread. The two-turn image smoke below proves the harness's selected-session
+restore separately from the encrypted HTTP transport. Old executions without an
+uploaded checkpoint cannot regain their lost native context by enabling this
+setting; they require an explicit cold handoff. Disable future direct uploads by
+removing this overlay or setting `FLOW_ARTIFACT_DIRECT_UPLOAD=false` consistently,
+while preserving stored artifacts and keys for recovery.
+
+## Adopt one existing publication
+
+First enable feedback on the flow and direct artifact uploads on the API and
+execution workers (`FLOW_ARTIFACT_DIRECT_UPLOAD=true`). The worker must reach
+`PRELOOP_URL` and share the existing encryption configuration. Retain workspace
+and native artifacts for the desired repair window. A native session ID alone is
+not sufficient to resume a conversation.
+
+Use the execution detail action, or preview the original successful publishing
+execution through `GET /api/v1/flows/executions/{execution_id}/continuation`.
+The preview verifies account ownership, the tracker and current PR repository,
+branch, URL and head. It also exercises review, CI and repository gate reads with
+at most twelve provider requests and a 25-second deadline. It writes no thread
+and dispatches no execution. `feedback_readable=false` means feedback read permissions
+or provider availability must be fixed before adoption. A permission denial
+limited to repository requirement discovery permits adoption and bounded repairs,
+with a warning that readiness remains unverified. Other gate blockers
+remain visible in `feedback_blocked_reason` and the warnings.
+
+Submit the returned head using
+`POST /api/v1/flows/executions/{execution_id}/continuation`:
+
+```json
+{
+  "recovery_mode": "published_branch_handoff",
+  "expected_head_sha": "<head_sha from the preview>",
+  "acknowledge_fresh_conversation": true
+}
+```
+
+Use `native_resume` when it appears in `allowed_recovery_modes`; fresh-conversation
+acknowledgement is then unnecessary. `published_branch_handoff` explicitly gives
+up unavailable unpublished workspace and native conversation state and starts
+from the verified published PR branch. The controller binds that permission to
+the selected source execution and its reserved first repair. Trigger payloads
+cannot grant the exception. Subsequent turns must restore their own checkpoints.
+
+A changed head, closed PR, disabled flow, missing checkpoint capability or
+unreadable provider returns HTTP 409, requiring a new preview. Repeated adoption
+returns the existing thread without resetting its counters, deadline or terminal
+state when its recorded source and recovery mode match. Adopting an already
+subscribed PR with a different or unrecorded mode returns HTTP 409; this endpoint
+does not change an existing thread's recovery authority. Adoption starts the bounded subscription; it does not immediately create
+an agent run. The scheduler first reconciles current trusted feedback and gates.
 
 ## Local validation
 

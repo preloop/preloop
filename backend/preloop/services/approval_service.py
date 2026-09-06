@@ -1930,10 +1930,11 @@ class ApprovalService:
 
         # Generate user-facing summary before any notifications fire.
         try:
-            from preloop.models.db.session import get_db_session
+            from preloop.api.loop_safety import run_db_off_loop
+            from preloop.models.db.session import get_session_factory
             from preloop.services.approval_summary import generate_approval_summary
 
-            sync_db = next(get_db_session())
+            sync_db = await run_db_off_loop(lambda: get_session_factory()())
             try:
                 summary = await generate_approval_summary(
                     sync_db,
@@ -1944,7 +1945,9 @@ class ApprovalService:
                     managed_agent_name=managed_agent_name,
                 )
             finally:
-                sync_db.close()
+                # Rollback during close is database I/O too. The summary's
+                # worker has drained before returning, including cancellation.
+                await run_db_off_loop(sync_db.close)
             if summary:
                 approval_request = await self.update_approval_request(
                     approval_request.id,
