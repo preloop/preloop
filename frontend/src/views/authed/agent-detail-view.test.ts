@@ -602,6 +602,45 @@ describe('AgentDetailView', () => {
     ).to.be.true;
   });
 
+  // Wave 3 (A5): the facts about the agent are one hairline row between the
+  // header and the tabs, not a 190px card holding one number.
+  it('states the agent facts and its spend on one summary strip', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    const strip = element.shadowRoot?.querySelector('.summary-strip');
+    expect(strip, 'the summary strip is rendered').to.exist;
+    expect(element.shadowRoot?.querySelector('.agent-overview'), 'no card').to
+      .not.exist;
+
+    const stripText = getDeepText(strip).replace(/\s+/g, ' ').trim();
+    // Kind, the id the agent reports itself as, the reference it enrolled
+    // with, and its status, in that order.
+    expect(stripText).to.contain('Claude Code');
+    expect(stripText).to.contain('claude-code-agent-1');
+    expect(stripText).to.contain('claude-session-2');
+    expect(
+      strip?.querySelector('.badge-row sl-badge.status-chip')?.textContent
+    ).to.contain('Active now');
+
+    // The spend is stated with the window it covers and what it is based on.
+    expect(stripText).to.contain('Estimated spend · 30d');
+    expect(stripText).to.contain('$0.57');
+    expect(stripText).to.contain('4 requests');
+
+    // One range control, the shared one, holding the selected window.
+    const range = strip?.querySelector('time-range-select');
+    expect(range, 'the strip carries the shared range control').to.exist;
+    expect((range as unknown as { value: string }).value).to.equal('month');
+    expect(strip?.querySelector('select'), 'no bare select').to.not.exist;
+  });
+
   it('calls the session history panel Session History', async () => {
     const element = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`

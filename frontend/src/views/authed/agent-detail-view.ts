@@ -23,6 +23,7 @@ import '../../components/token-figures.ts';
 import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
 import '../../components/talk-button.ts';
+import '../../components/time-range-select.ts';
 import '../../components/confirm-dialog.ts';
 import { confirmDialog } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
@@ -89,6 +90,18 @@ type AllowedModelCandidate = {
   model_identifier?: string;
   meta_data?: Record<string, unknown> | null;
 };
+
+/**
+ * The spend window offered on the summary strip. Same vocabulary and same
+ * control as the Overview usage card, so "30d" means the same thing and looks
+ * the same wherever it is offered.
+ */
+const SPEND_RANGE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'day', label: '24h' },
+  { value: 'week', label: '7d' },
+  { value: 'month', label: '30d' },
+  { value: 'year', label: '1y' },
+];
 
 @customElement('agent-detail-view')
 export class AgentDetailView extends LitElement {
@@ -351,17 +364,73 @@ export class AgentDetailView extends LitElement {
         color: var(--sl-color-neutral-900);
       }
 
-      /* The identity block is a card: it sits on the page, so it takes the
-         card rung of the ladder rather than a named gray step. */
-      .agent-overview {
+      /* Facts about the agent live on one hairline row between the header and
+         the tabs (DESIGN "Strip, not cards"): kind, source id, config
+         reference and status on the left, the spend the page is scoped to on
+         the right. The card this replaced held two meta lines and one number
+         above 100px of nothing. */
+      .summary-strip {
         display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-small);
-        padding: var(--sl-spacing-large);
-        border-radius: var(--console-card-radius);
-        background: var(--console-surface);
-        border: var(--console-card-border);
-        box-shadow: var(--console-card-shadow);
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px var(--sl-spacing-medium);
+        padding: 12px 0;
+        border-top: 1px solid
+          var(--console-hairline, var(--sl-color-neutral-200));
+        border-bottom: 1px solid
+          var(--console-hairline, var(--sl-color-neutral-200));
+        color: var(--sl-color-neutral-900);
+        font-size: var(--console-text-body, var(--sl-font-size-small));
+        font-variant-numeric: tabular-nums;
+      }
+
+      .strip-facts {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+
+      .strip-facts .strip-id {
+        font-family: var(--sl-font-mono);
+        font-size: var(--sl-font-size-small);
+        color: var(--sl-color-neutral-700);
+        overflow-wrap: anywhere;
+      }
+
+      .strip-sep {
+        color: var(--console-meta-color, var(--sl-color-neutral-500));
+      }
+
+      .strip-spend {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--sl-spacing-x-small);
+        margin-left: auto;
+      }
+
+      .strip-spend .strip-label,
+      .strip-spend .strip-requests {
+        color: var(--console-meta-color, var(--sl-color-neutral-600));
+        font-size: var(--sl-font-size-small);
+      }
+
+      .strip-spend .strip-tokens {
+        display: inline-flex;
+        align-items: baseline;
+      }
+
+      .strip-spend .strip-value {
+        font-weight: var(--sl-font-weight-semibold);
+      }
+
+      /* The identity trail is rare (only a re-keyed agent has one) and does
+         not belong on the fact row, so it sits under it in the meta register. */
+      .strip-identity {
+        margin-top: var(--sl-spacing-x-small);
       }
 
       .section-header {
@@ -992,6 +1061,82 @@ export class AgentDetailView extends LitElement {
     return 'Live check pending';
   }
 
+  /** The label of the spend window currently selected ("30d"). */
+  private spendRangeLabel(): string {
+    return (
+      SPEND_RANGE_OPTIONS.find(
+        (option) => option.value === this.budgetTimeRange
+      )?.label || '30d'
+    );
+  }
+
+  /**
+   * One hairline row of facts between the header and the tabs: what kind of
+   * agent this is, the id it reports itself as, the config it was enrolled
+   * from, its status and its tags, then the spend for the selected window.
+   *
+   * DESIGN "Strip, not cards": these are facts about a thing, so they take a
+   * row, not a 190px box holding one number and 100px of empty space.
+   */
+  private renderSummaryStrip(
+    aggregate: ManagedAgentUsageAggregate | null
+  ): TemplateResult | typeof nothing {
+    if (!this.agent) return nothing;
+    const requests = aggregate?.total_requests ?? 0;
+    const reference = this.agent.session_reference;
+    return html`
+      <div class="summary-strip" role="region" aria-label="Agent summary">
+        <div class="strip-facts">
+          <span
+            >${this.getSourceLabel(
+              this.agent.agent_kind || this.agent.session_source_type
+            )}</span
+          >
+          <span class="strip-sep" aria-hidden="true">·</span>
+          <span class="strip-id">${this.agent.session_source_id}</span>
+          ${
+            reference
+              ? html`<span class="strip-sep" aria-hidden="true">·</span>
+                  <span class="strip-id" title=${reference}>${reference}</span>`
+              : nothing
+          }
+          <span class="badge-row">${this.renderHeaderChips()}</span>
+        </div>
+        <div class="strip-spend">
+          <span class="strip-label"
+            >Estimated spend · ${this.spendRangeLabel()}</span
+          >
+          <!-- Volume before money: the tokens are what the spend is made of,
+               split in and out with the cache share of the input. -->
+          <span class="strip-tokens" data-testid="agent-token-figures">
+            <token-figures
+              expanded
+              .usage=${aggregate?.token_usage ?? null}
+            ></token-figures>
+          </span>
+          <span class="strip-value"
+            >${this.formatMoney(aggregate?.estimated_cost)}</span
+          >
+          <span class="strip-requests"
+            >${requests} request${requests === 1 ? '' : 's'}</span
+          >
+          <time-range-select
+            ariaLabel="Estimated spend range"
+            .value=${this.budgetTimeRange}
+            .options=${SPEND_RANGE_OPTIONS}
+            @range-change=${(event: CustomEvent<{ value: string }>) => {
+              this.budgetTimeRange = event.detail
+                .value as typeof this.budgetTimeRange;
+              // The window is applied server-side through `start_date` on the
+              // agent detail call, so the numbers reload with the range.
+              void this.loadData();
+            }}
+          ></time-range-select>
+        </div>
+      </div>
+    `;
+  }
+
   /**
    * The chips under the agent name, in one deliberate order: what the agent is
    * doing right now, then anything that is switched off and costing you
@@ -1243,7 +1388,8 @@ export class AgentDetailView extends LitElement {
     if (ids.length === 0) return nothing;
     return html`
       <details
-        style="margin-top: var(--sl-spacing-x-small); font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600);"
+        class="strip-identity"
+        style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600);"
       >
         <summary style="cursor: pointer;">
           Identity history (${ids.length})
@@ -2743,77 +2889,7 @@ export class AgentDetailView extends LitElement {
         </div>
       </view-header>
       <div class="page" style="padding-top: 0;">
-        <div
-          class="agent-overview"
-          style="flex-direction: row; justify-content: space-between; align-items: stretch; flex-wrap: wrap;"
-        >
-          <div style="flex: 1; min-width: 300px;">
-            <div
-              style="color: var(--console-meta-color); font-size: 0.9rem; margin-top: 4px;"
-            >
-              ${this.getSourceLabel(
-                this.agent.agent_kind || this.agent.session_source_type
-              )}
-              · ${this.agent.session_source_id}
-              ${
-                this.agent.session_reference
-                  ? ` · ${this.agent.session_reference}`
-                  : ''
-              }
-            </div>
-
-            <div
-              style="display: flex; flex-direction: column; align-items: flex-start; gap: var(--sl-spacing-small); margin-top: var(--sl-spacing-small);"
-            >
-              <div class="badge-row">${this.renderHeaderChips()}</div>
-
-              ${this.renderIdentityHistory()}
-            </div>
-          </div>
-
-          <div
-            class="stat-card"
-            style="min-width: 200px; display: flex; flex-direction: column; justify-content: space-between; border-color: transparent;"
-          >
-            <div
-              style="display: flex; justify-content: space-between; align-items: center; width: 100%;"
-            >
-              ${this.renderStatLabel('Estimated spend')}
-              <select
-                style="background: transparent; border: none; font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600); cursor: pointer; outline: none;"
-                .value=${this.budgetTimeRange}
-                @change=${(e: Event) => {
-                  this.budgetTimeRange = (e.target as HTMLSelectElement)
-                    .value as any;
-                  // The API currently returns aggregate lifetime cost,
-                  // time window filtering requires a backend update for agent-specific spend
-                  this.loadData();
-                }}
-              >
-                <option value="day">24h</option>
-                <option value="week">7d</option>
-                <option value="month">30d</option>
-                <option value="year">1y</option>
-              </select>
-            </div>
-            <div>
-              <!-- Volume before money: the tokens are what the spend is made
-                   of, split in and out with the cache share of the input. -->
-              <div class="meta-line" data-testid="agent-token-figures">
-                <token-figures
-                  expanded
-                  .usage=${aggregate?.token_usage ?? null}
-                ></token-figures>
-              </div>
-              <div class="stat-value">
-                ${this.formatMoney(aggregate?.estimated_cost)}
-              </div>
-              <div class="meta-line">
-                Based on ${aggregate?.total_requests ?? 0} requests
-              </div>
-            </div>
-          </div>
-        </div>
+        ${this.renderSummaryStrip(aggregate)} ${this.renderIdentityHistory()}
 
         <!-- Sub-view Tab Navigation -->
         ${(() => {
