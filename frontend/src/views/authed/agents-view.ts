@@ -433,19 +433,9 @@ export class AgentsView extends LitElement {
         padding: 1rem var(--console-page-padding-x) 0;
       }
       /* --- List view --- */
-      /* The canvas is full bleed, so this page pays its own side inset. It
-         takes the numbers from the page box rather than inventing them, on
-         both edges and at both scales, so the table lines up with the header
-         band above it and with every other page on a phone
-         (styles/console-styles.css, "The page box"). */
-      .list-bounds,
-      .content-bounds {
-        width: 100%;
-        max-width: var(--console-page-max-width);
-        margin: 0 auto;
-        padding-inline: var(--console-page-padding-x);
-        box-sizing: border-box;
-      }
+      /* The canvas is full bleed, so this page pays its own side inset with
+         .console-page (styles/console-styles.css, "The page box"). Extra
+         block padding is all these wrappers add. */
       .list-bounds {
         padding-block: 0 2rem;
       }
@@ -453,8 +443,6 @@ export class AgentsView extends LitElement {
         padding-block: 1rem 0;
       }
       @media (max-width: 768px) {
-        .list-bounds,
-        .content-bounds,
         .cards {
           padding-inline: var(--console-page-padding-x-compact);
         }
@@ -3388,7 +3376,7 @@ export class AgentsView extends LitElement {
 
     if (rows.length === 0) {
       return html`
-        <div class="list-bounds">
+        <div class="list-bounds console-page">
           <div class="empty-state">
             ${
               this.loading
@@ -3401,7 +3389,7 @@ export class AgentsView extends LitElement {
     }
 
     return html`
-      <div class="list-bounds">
+      <div class="list-bounds console-page">
         <sl-card class="table-card">
           <div class="table-scroll">
             <table class="styled-table agents-table">
@@ -4394,7 +4382,7 @@ export class AgentsView extends LitElement {
           ></preloop-agent-deployer>
         </sl-dialog>
 
-        <div class="content-bounds">
+        <div class="content-bounds console-page">
           <view-header
             headerText="Agents"
             description="Agents connected to Preloop: their gateway credentials, MCP access, and live status. Onboard agents you already run with the CLI, or deploy new ones."

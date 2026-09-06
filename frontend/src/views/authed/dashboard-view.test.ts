@@ -52,6 +52,8 @@ describe('DashboardView', () => {
   let summaryGate: Promise<void> | null;
   /** Holds the Audit trail's count call (`limit=1`), not the page of events. */
   let auditCountGate: Promise<void> | null;
+  /** Holds the secondary audit pass (exceptions, trackers, tool metrics). */
+  let auditSecondaryGate: Promise<void> | null;
   /** null means RBAC is off, so every permission check passes. */
   let mePermissions: string[] | null;
 
@@ -65,6 +67,7 @@ describe('DashboardView', () => {
     breakdownCalls = 0;
     summaryGate = null;
     auditCountGate = null;
+    auditSecondaryGate = null;
     mePermissions = null;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
@@ -472,6 +475,9 @@ describe('DashboardView', () => {
         }
 
         if (url.startsWith('/api/v1/trackers')) {
+          if (auditSecondaryGate) {
+            await auditSecondaryGate;
+          }
           return json(trackersResponse);
         }
 
@@ -1631,6 +1637,36 @@ describe('DashboardView', () => {
       expect(settled, 'the new range label').to.contain('24h');
       expect(settled).to.contain('4 sessions');
       expect(settled).to.contain('9 audit events');
+    });
+
+    it('shows the audit trail without waiting on the secondary audit pass', async () => {
+      let releaseSecondary = () => {};
+      auditSecondaryGate = new Promise<void>((resolve) => {
+        releaseSecondary = resolve;
+      });
+
+      const element = await mountDashboard();
+      await waitUntil(
+        () =>
+          !element['loading'] &&
+          !element['fetchingRecentExecutions'] &&
+          !element['fetchingAuditTrail'],
+        'trail figures never landed'
+      );
+      await element.updateComplete;
+
+      expect(element['fetchingAudit'], 'secondary pass still open').to.be.true;
+      expect(element['auditTrailResolved']).to.be.true;
+      expect(
+        element.shadowRoot?.querySelector('.audit-trail'),
+        'the line does not wait on exceptions and trackers'
+      ).to.exist;
+
+      releaseSecondary();
+      await waitUntil(
+        () => !element['fetchingAudit'],
+        'secondary pass never finished'
+      );
     });
 
     it('leaves the audit trail out when the range holds no record', async () => {

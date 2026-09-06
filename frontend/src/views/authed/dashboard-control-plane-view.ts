@@ -4027,12 +4027,16 @@ export class DashboardView extends AuthedElement {
    * at a time under the reader's eyes, and a range change hides it until
    * the new window's numbers are in: a figure from the last window under a
    * new label is worse than no line.
+   *
+   * Sessions land with the fold (`loading`), decided approvals with the
+   * inventory wave (`fetchingRecentExecutions`), and the audit count with
+   * `fetchingAuditTrail`. `fetchingAudit` is the secondary pass
+   * (exceptions, trackers, tool metrics) and is not a figure on this line.
    */
   private get auditTrailResolved(): boolean {
     return (
       !this.loading &&
       !this.fetchingRecentExecutions &&
-      !this.fetchingAudit &&
       !this.fetchingAuditTrail
     );
   }

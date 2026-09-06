@@ -241,6 +241,18 @@ describe('AgentsView', () => {
     expect(cardLink?.getAttribute('href')).to.equal('/console/agents/agent-1');
   });
 
+  it('pays the page box with .console-page on the full-bleed canvas', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    expect(
+      el.shadowRoot?.querySelector('.content-bounds.console-page'),
+      'header band'
+    ).to.exist;
+    expect(el.shadowRoot?.querySelector('.list-bounds.console-page'), 'list').to
+      .exist;
+  });
+
   it('gives every column a sortable header with aria-sort', async () => {
     const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
     await waitForAgents(el);
