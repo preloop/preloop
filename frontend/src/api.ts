@@ -3932,6 +3932,240 @@ export async function deleteModelIORule(ruleId: string): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Policy versions and diffs
+//
+// The policy endpoints answer with wrapper objects, not bare arrays, and the
+// version counts sit flat on each row. The console renders lists and grouped
+// diffs, so the shapes are converted here, once, at the boundary. A view that
+// iterates a wrapper object throws "is not iterable" inside Lit's repeat()
+// directive, which aborts the render and leaves every later part of the
+// template (all the dialogs) uncommitted.
+// ---------------------------------------------------------------------------
+
+/** Counts shown when a policy version row is expanded. */
+export interface PolicyVersionSummary {
+  mcp_servers_count: number;
+  tools_count: number;
+  policies_count: number;
+}
+
+export interface PolicyVersion {
+  id: string;
+  version_number: number;
+  tag: string | null;
+  description: string | null;
+  created_at: string;
+  created_by_username: string | null;
+  is_active: boolean;
+  snapshot_summary: PolicyVersionSummary;
+}
+
+function asNumber(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function asNullableString(value: unknown): string | null {
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/**
+ * Accept every shape the versions endpoint has used: a bare array, the
+ * current `{versions: [...], total: n}` wrapper, or a `{items: [...]}` page.
+ * Always answers with an array so callers can iterate without checking.
+ */
+export function normalizePolicyVersions(payload: unknown): PolicyVersion[] {
+  const source = payload as Record<string, unknown> | null | undefined;
+  const rows = Array.isArray(payload)
+    ? payload
+    : Array.isArray(source?.versions)
+      ? (source?.versions as unknown[])
+      : Array.isArray(source?.items)
+        ? (source?.items as unknown[])
+        : [];
+
+  return rows
+    .filter(
+      (row): row is Record<string, unknown> =>
+        typeof row === 'object' && row !== null
+    )
+    .map((row) => {
+      const summary = (row.snapshot_summary ?? {}) as Record<string, unknown>;
+      return {
+        id: String(row.id ?? ''),
+        version_number: asNumber(row.version_number),
+        tag: asNullableString(row.tag),
+        description: asNullableString(row.description),
+        created_at: typeof row.created_at === 'string' ? row.created_at : '',
+        created_by_username: asNullableString(row.created_by_username),
+        is_active: Boolean(row.is_active),
+        snapshot_summary: {
+          mcp_servers_count: asNumber(
+            summary.mcp_servers_count ?? row.mcp_servers_count
+          ),
+          tools_count: asNumber(summary.tools_count ?? row.tools_count),
+          policies_count: asNumber(
+            summary.policies_count ?? row.policies_count
+          ),
+        },
+      };
+    });
+}
+
+export async function listPolicyVersions(limit = 50): Promise<PolicyVersion[]> {
+  const response = await fetchWithAuth(
+    `/api/v1/policies/versions?limit=${limit}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch versions');
+  }
+  return normalizePolicyVersions(await response.json());
+}
+
+export interface PolicyDiffChange {
+  type: 'added' | 'removed' | 'modified';
+  category: string;
+  name: string;
+  details?: string;
+}
+
+export interface PolicyDiffResult {
+  summary: string;
+  has_changes: boolean;
+  changes: {
+    added: PolicyDiffChange[];
+    removed: PolicyDiffChange[];
+    modified: PolicyDiffChange[];
+  };
+}
+
+/** Section labels for the JSON paths the diff endpoint reports. */
+const POLICY_DIFF_CATEGORIES: Record<string, string> = {
+  mcp_servers: 'MCP server',
+  approval_workflows: 'Approval workflow',
+  tools: 'Tool',
+  model_io: 'Model I/O rule',
+  metadata: 'Metadata',
+  defaults: 'Defaults',
+};
+
+/** `$.tools[name=shell]` becomes `{ category: 'Tool', name: 'shell' }`. */
+function describeDiffPath(path: string): { category: string; name: string } {
+  const cleaned = path.replace(/^\$\.?/, '');
+  const match = cleaned.match(/^([^[]+)(?:\[(?:name|id)=([^\]]*)\])?$/);
+  const section = match?.[1] ?? cleaned;
+  return {
+    category: POLICY_DIFF_CATEGORIES[section] ?? section,
+    name: match?.[2] ?? '',
+  };
+}
+
+function asDiffChanges(
+  value: unknown,
+  type: PolicyDiffChange['type']
+): PolicyDiffChange[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter(
+      (item): item is Record<string, unknown> =>
+        typeof item === 'object' && item !== null
+    )
+    .map((item) => ({
+      type,
+      category: String(item.category ?? ''),
+      name: String(item.name ?? ''),
+      details:
+        typeof item.details === 'string' && item.details !== ''
+          ? item.details
+          : undefined,
+    }));
+}
+
+/**
+ * The diff endpoint answers with a flat `changes` list of
+ * `{path, operation, ...}` items; the dialog renders added, removed, and
+ * modified sections. Group the list here, and pass an already grouped object
+ * through unchanged so older payloads still render.
+ */
+export function normalizePolicyDiff(payload: unknown): PolicyDiffResult | null {
+  if (typeof payload !== 'object' || payload === null) {
+    return null;
+  }
+  const source = payload as Record<string, unknown>;
+  const grouped: PolicyDiffResult['changes'] = {
+    added: [],
+    removed: [],
+    modified: [],
+  };
+
+  if (Array.isArray(source.changes)) {
+    for (const item of source.changes) {
+      if (typeof item !== 'object' || item === null) {
+        continue;
+      }
+      const entry = item as Record<string, unknown>;
+      const operation = String(entry.operation ?? entry.type ?? '');
+      const bucket =
+        operation === 'add' || operation === 'added'
+          ? 'added'
+          : operation === 'remove' || operation === 'removed'
+            ? 'removed'
+            : 'modified';
+      const described = describeDiffPath(String(entry.path ?? ''));
+      grouped[bucket].push({
+        type: bucket,
+        category: String(entry.category ?? described.category),
+        name: String(entry.name ?? described.name),
+        details:
+          typeof entry.details === 'string' && entry.details !== ''
+            ? entry.details
+            : undefined,
+      });
+    }
+  } else if (typeof source.changes === 'object' && source.changes !== null) {
+    const changes = source.changes as Record<string, unknown>;
+    grouped.added = asDiffChanges(changes.added, 'added');
+    grouped.removed = asDiffChanges(changes.removed, 'removed');
+    grouped.modified = asDiffChanges(changes.modified, 'modified');
+  }
+
+  const count =
+    grouped.added.length + grouped.removed.length + grouped.modified.length;
+  return {
+    summary: typeof source.summary === 'string' ? source.summary : '',
+    // The server's own verdict wins: it knows about changes the console does
+    // not render (defaults, metadata) and about an empty but valid diff.
+    has_changes:
+      typeof source.has_changes === 'boolean' ? source.has_changes : count > 0,
+    changes: grouped,
+  };
+}
+
+export interface PolicyRollbackResult {
+  success: boolean;
+  error: string | null;
+  changes: PolicyDiffResult | null;
+}
+
+/**
+ * The rollback endpoint answers with `{success, diff, error}`. The dialog
+ * reads a grouped diff under `changes`, so map both spellings.
+ */
+export function normalizePolicyRollback(
+  payload: unknown
+): PolicyRollbackResult {
+  const source = (payload ?? {}) as Record<string, unknown>;
+  const rawDiff = source.changes ?? source.diff ?? null;
+  return {
+    success: Boolean(source.success),
+    error: asNullableString(source.error),
+    changes: normalizePolicyDiff(rawDiff),
+  };
+}
+
 // Approval Workflows API
 export async function getApprovalWorkflows(): Promise<any[]> {
   const response = await fetchWithAuth('/api/v1/approval-workflows');
