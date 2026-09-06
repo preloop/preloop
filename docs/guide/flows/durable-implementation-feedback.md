@@ -33,6 +33,16 @@ agent_config:
     required_approvals: 1
 ```
 
+In the console, edit a flow and enable **Continue implementation after PR review
+or CI failure** under **PR review and CI follow-up**. Enter the reviewer's and
+implementer's numeric GitHub or GitLab actor IDs, then choose limits for repair
+turns, cumulative estimated cost in USD, lifetime, and feedback debounce. The
+initial values match the policy defaults above. Saving an existing flow without
+opting in leaves follow-up disabled. Other policy fields set through the API are
+preserved when editing these controls. A compatible saved checkpoint is required
+for native conversation resume; otherwise an eligible repair reports its cold
+handoff explicitly. Turning on the option does not merge a PR.
+
 Use the actual reviewer integration's actor ID in `trusted_reviewer_ids`.
 Unlisted bots and the configured implementer actor are ignored. A copied HTML
 review marker never grants trust. All comment and CI text is untrusted task data.
