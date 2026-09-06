@@ -7,9 +7,25 @@ from uuid import UUID
 
 import anyio
 from anyio import from_thread
+from sqlalchemy.orm import Session
 
 P = ParamSpec("P")
 T = TypeVar("T")
+
+
+def worker_owned_session(owner: Any = None, fallback: Any = None) -> tuple[Any, bool]:
+    """Open a Session on this worker thread instead of borrowing the caller's.
+
+    Test doubles that are not SQLAlchemy sessions are returned unchanged.
+    """
+    create = getattr(owner, "_create_orchestrator_session", None)
+    if callable(create):
+        return create(), True
+    if isinstance(fallback, Session):
+        from preloop.models.db.session import get_session_factory
+
+        return get_session_factory()(), True
+    return fallback, False
 
 
 def run_lifecycle_endpoint(operation: Callable[[], Awaitable[T]]) -> T:

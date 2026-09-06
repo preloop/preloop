@@ -14,8 +14,9 @@ from preloop.schemas.issue_lifecycle import ReadinessContract
 from preloop.services.issue_lifecycle import IssueLifecycleService
 from preloop.services.issue_lifecycle_provider import GitHubLifecycleProvider
 from preloop.services.issue_lifecycle_worker import (
-    lifecycle_worker_hook,
     dispatch_lifecycle_execution,
+    lifecycle_worker_hook,
+    worker_owned_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,26 @@ async def lifecycle_flow_entry(
     trigger_service: Any, flow: models.Flow, event: dict[str, Any], nats_client: Any
 ) -> tuple[bool, models.FlowExecution | None]:
     """Intercept explicitly configured lifecycle flows before ordinary dispatch."""
+    db, owned = worker_owned_session(
+        trigger_service, getattr(trigger_service, "db", None)
+    )
+    try:
+        return await _lifecycle_flow_entry(
+            db, flow, event, nats_client, trigger_service
+        )
+    finally:
+        if owned:
+            db.close()
+
+
+async def _lifecycle_flow_entry(
+    db: Any,
+    flow: models.Flow,
+    event: dict[str, Any],
+    nats_client: Any,
+    trigger_service: Any,
+) -> tuple[bool, models.FlowExecution | None]:
+    """CRUD for ``lifecycle_flow_entry`` on the worker-owned session."""
     kind = (flow.agent_config or {}).get("lifecycle_kind")
     if kind not in {"merge_audit", "refinement"} and event.get("type") not in {
         "issue_labeled",
@@ -103,7 +124,7 @@ async def lifecycle_flow_entry(
     if not project_id or not flow.account_id:
         return False, None
     project = crud_issue_lifecycle.get_project(
-        trigger_service.db, project_id=UUID(str(project_id)), account_id=flow.account_id
+        db, project_id=UUID(str(project_id)), account_id=flow.account_id
     )
     if not project:
         return False, None
@@ -119,7 +140,7 @@ async def lifecycle_flow_entry(
     raw_issue = payload.get("issue") or payload.get("object_attributes") or {}
     external_id = raw_issue.get("id")
     issue = crud_issue.get_by_external_id(
-        trigger_service.db,
+        db,
         project_id=str(project.id),
         external_id=str(external_id),
         account_id=str(flow.account_id),
@@ -127,7 +148,7 @@ async def lifecycle_flow_entry(
     if issue is None:
         raise ValueError("lifecycle_issue_not_synced")
     service = await build_lifecycle_service(
-        trigger_service.db, issue_id=issue.id, account_id=flow.account_id
+        db, issue_id=issue.id, account_id=flow.account_id
     )
 
     async def dispatch(execution: models.FlowExecution) -> None:
@@ -163,24 +184,29 @@ async def lifecycle_execution_finished(
     db: Session, execution: models.FlowExecution, flow: models.Flow
 ) -> None:
     """Consume persisted structured output; failures remain retryable by API."""
-    event = execution.trigger_event_details or {}
-    envelope = (event.get("payload") or {}).get("lifecycle") or event.get(
-        "lifecycle_refinement"
-    )
-    if not envelope or not flow.account_id:
-        return
-    service = await build_lifecycle_service(
-        db, issue_id=UUID(envelope["issue_id"]), account_id=flow.account_id
-    )
-    if (flow.agent_config or {}).get("lifecycle_kind") in {
-        "merge_audit",
-        "deployment_audit",
-    }:
-        await service.finish_audit(execution)
-    elif execution.status == "SUCCEEDED":
-        contract = ReadinessContract.model_validate(
-            (execution.result or {}).get("readiness_contract")
+    worker_db, owned = worker_owned_session(fallback=db)
+    try:
+        event = execution.trigger_event_details or {}
+        envelope = (event.get("payload") or {}).get("lifecycle") or event.get(
+            "lifecycle_refinement"
         )
-        if contract.issue_revision != envelope["issue_revision"]:
-            raise ValueError("refinement_revision_mismatch")
-        await service.refine(contract)
+        if not envelope or not flow.account_id:
+            return
+        service = await build_lifecycle_service(
+            worker_db, issue_id=UUID(envelope["issue_id"]), account_id=flow.account_id
+        )
+        if (flow.agent_config or {}).get("lifecycle_kind") in {
+            "merge_audit",
+            "deployment_audit",
+        }:
+            await service.finish_audit(execution)
+        elif execution.status == "SUCCEEDED":
+            contract = ReadinessContract.model_validate(
+                (execution.result or {}).get("readiness_contract")
+            )
+            if contract.issue_revision != envelope["issue_revision"]:
+                raise ValueError("refinement_revision_mismatch")
+            await service.refine(contract)
+    finally:
+        if owned:
+            worker_db.close()

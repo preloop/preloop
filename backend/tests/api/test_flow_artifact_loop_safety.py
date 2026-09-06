@@ -64,7 +64,7 @@ async def test_upload_consumes_stream_on_app_loop_before_worker_persistence(
 
     app = FastAPI()
     app.include_router(flow_artifacts.router)
-    app.dependency_overrides[get_db_session] = lambda: object()
+    app.dependency_overrides[get_db_session] = object
     claims = {
         "account_id": uuid4(),
         "flow_id": uuid4(),

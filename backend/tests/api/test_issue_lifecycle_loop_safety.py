@@ -25,7 +25,7 @@ def lifecycle_app() -> FastAPI:
     app.include_router(issue_lifecycle.router)
     actor = models.User(id=uuid4(), account_id=uuid4(), username="loop-test")
     app.dependency_overrides[get_current_active_user] = lambda: actor
-    app.dependency_overrides[get_db_session] = lambda: object()
+    app.dependency_overrides[get_db_session] = object
 
     @app.get("/ping")
     async def ping() -> dict[str, bool]:

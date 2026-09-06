@@ -216,8 +216,11 @@ class GitHubLifecycleProvider:
         raise ValueError("ready_label_not_found")
 
     async def add_ready_label(self, number: int, label: str, revision: str) -> None:
-        """Recheck immediately before an additive, naturally idempotent effect."""
-        await self.require_ready_label(label)
+        """Apply the ready label after `_ready` already required it exists.
+
+        Scope is re-read here because the issue can change between the two
+        advisory locks; the repository label list is not enumerated again.
+        """
         current = await self.issue(number)
         if current.revision != revision or current.state != "open":
             raise ValueError("issue_scope_changed")
