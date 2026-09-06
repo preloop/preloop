@@ -1617,6 +1617,17 @@ async def authenticate_user(
     Returns:
         The user if authentication is successful, None otherwise.
     """
+    from preloop.api.loop_safety import run_db_off_loop
+
+    return await run_db_off_loop(
+        lambda: _authenticate_user_sync(username, password, db, source_ip)
+    )
+
+
+def _authenticate_user_sync(
+    username: str, password: str, db: Session, source_ip: Optional[str] = None
+) -> Optional[UserModel]:
+    """Verify credentials and record login using one sequential worker owner."""
     from datetime import datetime, timezone
     import threading
 
@@ -1686,6 +1697,9 @@ async def authenticate_user(
         thread.daemon = True
         thread.start()
 
+    # The audit insert commits and expires user fields. Token construction
+    # reads them immediately after this worker returns to the event loop.
+    _ = user.id, user.account_id, user.username, user.email, user.is_active
     return user
 
 

@@ -53,3 +53,49 @@ The detailed schema is defined using SQLAlchemy models within the `preloop.model
 *   **Other Metadata:** Tables for comments, users, API keys, etc., as needed.
 
 Schema migrations are managed using Alembic within `preloop.models`.
+
+
+## Transactions and asynchronous request handling
+
+Keep synchronous CRUD and password/credential work off the API event loop.
+Synchronous FastAPI handlers and dependencies already execute in workers. Async
+callers can use `preloop.api.loop_safety.run_db_off_loop` for a complete, sequential
+unit of database work. Do not let cancellation close a session while that worker
+still uses it: the helper drains the worker before propagating cancellation,
+including repeated asyncio cancellation and AnyIO cancellation scopes. Provider
+calls must have their own I/O timeout because draining can exceed a coroutine
+deadline.
+
+Avoid keeping database connections while waiting for a human. Native permission
+checks resolve authentication into immutable scalar fields in a worker-owned
+session, close that session, then await the approval. Read response DTOs while
+their session is open; an ORM object that survives rollback can have expired
+attributes even when `expire_on_commit=False`.
+
+Account halt/admission and artifact quota transactions use PostgreSQL
+`FOR NO KEY UPDATE`. This still excludes competing owners while allowing the
+`KEY SHARE` foreign-key checks performed by independent child audit and usage
+inserts. This choice assumes the transaction does not change the referenced
+account identity. Other row locks protect distinct invariants and must not be
+weakened mechanically. Heartbeats and operator lifecycle transactions both
+update the managed-agent row before the runtime-session row.
+
+OAuth credential refresh must serialize single-use refresh tokens. Its CRUD
+helper reloads the locked row with `populate_existing` so an earlier identity-map
+read cannot win over a peer's committed rotation. If rotation is no longer needed,
+only the helper's savepoint is rolled back to release its new lock, leaving
+caller work uncommitted and intact. A necessary refresh retains exclusion through
+the existing rotation transaction; its provider request has a bounded timeout.
+
+Use independent PostgreSQL sessions and bounded lock timeouts to test lock
+compatibility and ordering. Include a live event-loop task in blocking-I/O and
+cancellation tests; mock-only session tests do not exercise these failure modes.
+Monitor lock waiters, transaction age, pool checkout pressure, and event-loop
+latency separately from CPU and memory. Increasing a pool cannot resolve a lock
+cycle.
+
+These changes cover the admission, authentication, summary, and refresh paths
+described above. Gateway preparation still needs a separate connection-lifetime
+change before long provider streams, and the agent-control WebSocket still needs
+worker-owned per-message sessions. Those broader lifecycle changes are not implied
+by moving individual authentication calls into workers.

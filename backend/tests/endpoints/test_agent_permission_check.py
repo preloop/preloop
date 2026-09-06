@@ -9,8 +9,24 @@ permission service unchanged, and stamps it into ``tool_input`` as the
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
+from sqlalchemy.orm import Session, sessionmaker
+
 PERMISSION_CHECK_URL = "/api/v1/agents/permission-check"
 TOKEN_URL = "/api/v1/auth/runtime-sessions/token"
+
+
+@pytest.fixture(autouse=True)
+def permission_identity_session(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Worker owns its Session while sharing the test's rollback transaction."""
+    factory = sessionmaker(
+        bind=db_session.connection(), join_transaction_mode="create_savepoint"
+    )
+    monkeypatch.setattr(
+        "preloop.api.endpoints.agent_permission.get_session_factory", lambda: factory
+    )
 
 
 def _issue_opencode_runtime_token(client) -> str:

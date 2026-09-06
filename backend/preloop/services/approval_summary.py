@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.models.ai_model import AIModel
 from preloop.services.litellm_routing import to_litellm_model
@@ -119,6 +120,10 @@ def _call_summary_model(
     }
     kwargs = build_aux_kwargs(model, creds_kwargs, call_site_kwargs=call_site_kwargs)
 
+    # Cancellation drains a worker that still owns the caller's Session.
+    # Bound provider I/O as well as the coroutine deadline.
+    kwargs["timeout"] = SUMMARY_ATTEMPT_TIMEOUT_SECONDS
+    kwargs["num_retries"] = 0
     response = litellm.completion(**kwargs)
     check_reasoning_model_empty_content(response)
     text = (response.choices[0].message.content or "").strip()
@@ -154,8 +159,10 @@ async def generate_approval_summary(
         return question[:SUMMARY_MAX_CHARS]
 
     try:
-        model = crud_ai_model.get_default_active_model(
-            db, account_id=str(account_id), model_kind="llm"
+        model = await run_db_off_loop(
+            lambda: crud_ai_model.get_default_active_model(
+                db, account_id=str(account_id), model_kind="llm"
+            )
         )
     except Exception as exc:
         logger.warning("Could not resolve default model for approval summary: %s", exc)

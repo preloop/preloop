@@ -22,6 +22,7 @@ from typing import Any, Callable, Optional
 
 from sqlalchemy.orm import Session
 
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.models.ai_model import AIModel
 from preloop.services.aux_model_retry import call_with_aux_retry
@@ -409,6 +410,9 @@ async def call_with_default_model_fallback(
         attempt_timeout: Optional per-attempt timeout in seconds. Each attempt gets its
                 own budget, so a slow primary still leaves room for the fallback. Callers
                 that wrap this in an overall deadline should pass roughly half of it.
+                Cancellation waits for the worker to finish using the shared
+                Session, so wall time can exceed this budget. Provider calls
+                must configure their own I/O timeout.
 
     Returns:
         The result of the caller, or None if both primary and fallback fail.
@@ -425,7 +429,9 @@ async def call_with_default_model_fallback(
         )
 
     async def _attempt(model: AIModel) -> Any:
-        coro = asyncio.to_thread(_resolve_and_call, model)
+        # Credential resolution and the caller share db. A timeout may not
+        # start fallback or close that Session before the worker relinquishes it.
+        coro = run_db_off_loop(lambda: _resolve_and_call(model))
         if attempt_timeout is None:
             return await coro
         return await asyncio.wait_for(coro, timeout=attempt_timeout)
@@ -461,8 +467,10 @@ async def call_with_default_model_fallback(
                 return None
 
         # Get the system-wide default model.
-        system_default = crud_ai_model.get_default_active_model(
-            db, account_id=None, model_kind="llm"
+        system_default = await run_db_off_loop(
+            lambda: crud_ai_model.get_default_active_model(
+                db, account_id=None, model_kind="llm"
+            )
         )
 
         if not system_default:

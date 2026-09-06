@@ -151,6 +151,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Prevent database waits in authentication and approval summaries from blocking
+  the API event loop; cancellation now waits for shared-session workers to finish.
+  Native permission checks release authentication connections before human waits.
+  Artifact quota locks permit independent account foreign-key inserts, OAuth
+  refresh reloads current credentials and releases unnecessary locks, and agent
+  heartbeats use the same row-lock order as operator lifecycle changes.
+
 - **OpenCode log-filter tests no longer crash without Node**:
   `TestOpenCodeLogFilterJs` spawned `node` and raised `FileNotFoundError`
   in the GitLab agents job (Python slim image) and any local env without

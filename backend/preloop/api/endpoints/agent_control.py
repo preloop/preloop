@@ -408,14 +408,8 @@ def _touch_presence(
     session_mode: Optional[str] = None,
     commit: bool = True,
 ) -> None:
-    crud_runtime_session.touch_activity(
-        db,
-        account_id=context.runtime_session.account_id,
-        runtime_session_id=context.runtime_session.id,
-        observed_at=observed_at,
-        min_update_interval=HEARTBEAT_TOUCH_INTERVAL,
-        commit=False,
-    )
+    # Match operator lifecycle transactions: managed agent before runtime.
+    # Reversing this order lets heartbeat and decommission wait on each other.
     crud_managed_agent.touch_last_seen_for_principal(
         db,
         account_id=context.runtime_session.account_id,
@@ -428,6 +422,14 @@ def _touch_presence(
         # every call here is proof the plugin is connected right now. It is the
         # only presence signal the other api replicas can read.
         control_heartbeat_at=observed_at,
+        commit=False,
+    )
+    crud_runtime_session.touch_activity(
+        db,
+        account_id=context.runtime_session.account_id,
+        runtime_session_id=context.runtime_session.id,
+        observed_at=observed_at,
+        min_update_interval=HEARTBEAT_TOUCH_INTERVAL,
         commit=False,
     )
     if commit:

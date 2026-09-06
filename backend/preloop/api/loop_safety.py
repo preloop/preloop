@@ -20,8 +20,10 @@ or wrap their synchronous body in :func:`run_db_off_loop`.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Callable, TypeVar
 
+from anyio import CancelScope
 from fastapi.concurrency import run_in_threadpool
 
 T = TypeVar("T")
@@ -45,4 +47,24 @@ async def run_db_off_loop(operation: Callable[[], T]) -> T:
     Returns:
         Whatever ``operation`` returns.
     """
-    return await run_in_threadpool(operation)
+    # Shield the worker future from raw asyncio cancellation as well as AnyIO
+    # cancellation scopes. Dependency cleanup may rollback/close the same
+    # request Session as soon as this coroutine exits.
+    worker = asyncio.create_task(run_in_threadpool(operation))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        # AnyIO cancellation is level-triggered. Shield its enclosing scope
+        # while draining; still handle repeated raw Task.cancel separately.
+        with CancelScope(shield=True):
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+        # Retrieve a worker exception even when cancellation takes precedence.
+        if not worker.cancelled():
+            worker.exception()
+        raise
