@@ -741,8 +741,8 @@ class TestDecideRequestsBatch:
         assert service.approve_request.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_batch_skips_pending_rows_that_have_expired(self, mock_user):
-        """A still-pending row past expires_at is expired, not decided."""
+    async def test_batch_leaves_expiry_to_the_service(self, mock_user):
+        """A past-deadline row is still handed to the service, then reported."""
         stale = self._pending(
             mock_user.account_id,
             expires_at=datetime.utcnow() - timedelta(minutes=5),
@@ -753,18 +753,28 @@ class TestDecideRequestsBatch:
         )
         service = self._service({stale.id: stale, fresh.id: fresh})
 
+        async def _approve(request_id, comment, user_id=None, channel=None):
+            decided = MagicMock()
+            decided.id = request_id
+            # What _reject_if_not_actionable does to an unfrozen late row.
+            decided.status = "expired" if request_id == stale.id else "approved"
+            return decided
+
+        service.approve_request.side_effect = _approve
+
         response, _session = await self._call(service, mock_user, [stale.id, fresh.id])
 
         by_id = {result.id: result for result in response.results}
         assert by_id[stale.id].ok is False
         assert by_id[stale.id].status == "expired"
-        assert by_id[stale.id].error == "Request already expired"
+        assert by_id[stale.id].error == "Request expired"
         assert by_id[fresh.id].ok is True
         assert by_id[fresh.id].status == "approved"
         assert response.succeeded == 1
         assert response.failed == 1
-        service.approve_request.assert_awaited_once()
-        assert service.approve_request.await_args.args[0] == fresh.id
+        # No expiry pre-check here: the kill-switch freeze exception (#157)
+        # lives in the service, so every pending id has to reach it.
+        assert service.approve_request.await_count == 2
 
     @pytest.mark.asyncio
     async def test_batch_decides_a_repeated_id_once(self, mock_user):

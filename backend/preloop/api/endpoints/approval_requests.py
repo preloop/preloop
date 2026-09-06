@@ -3,7 +3,6 @@
 import logging
 import os
 import uuid
-from datetime import datetime
 from typing import AsyncGenerator, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -51,20 +50,6 @@ async def _async_db_session() -> AsyncGenerator[AsyncSession, None]:
     """
     async with get_async_db_session() as session:
         yield session
-
-
-def _pending_request_has_expired(approval_request: ApprovalRequest) -> bool:
-    """True when a still-pending row is past ``expires_at``.
-
-    Matches ``ApprovalService._reject_if_not_actionable``: naive UTC, so a
-    request the operator is staring at can expire without a status write.
-    """
-    expires_at = approval_request.expires_at
-    if expires_at is None:
-        return False
-    if getattr(expires_at, "tzinfo", None) is not None:
-        expires_at = expires_at.replace(tzinfo=None)
-    return datetime.utcnow() > expires_at
 
 
 def _record_viewed_event(
@@ -526,20 +511,11 @@ async def decide_requests_batch(
                 )
             )
             continue
-        if _pending_request_has_expired(approval_request):
-            # Still pending in the DB, but the window has closed. Do not
-            # call approve/decline: those would expire the row and this
-            # handler used to report that as ok=True.
-            results.append(
-                ApprovalBatchItemResult(
-                    id=request_id,
-                    ok=False,
-                    status="expired",
-                    error="Request already expired",
-                )
-            )
-            continue
-
+        # A past-deadline row is not pre-checked here. Expiry belongs to
+        # ApprovalService._reject_if_not_actionable, which holds the row lock,
+        # persists the expired transition, and honours the kill-switch freeze
+        # (#157) that keeps a frozen past-deadline request decidable. The
+        # post-check below reports whatever status the decision actually left.
         try:
             if decision.approved:
                 updated = await approval_service.approve_request(
