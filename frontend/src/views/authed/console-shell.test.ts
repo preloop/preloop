@@ -433,6 +433,27 @@ describe('ConsoleShell', () => {
     expect(models).to.be.lessThan(tools);
   });
 
+  it('reaches the personal settings pages from the sidebar', async () => {
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('a[href="/console/tools"]') !== null,
+      'Sidebar did not render'
+    );
+
+    const hrefs = Array.from(
+      el.shadowRoot?.querySelectorAll('a.sidebar-link') ?? []
+    ).map((link) => link.getAttribute('href'));
+    // These four had routes and a place in the avatar menu, but no way in
+    // from the sidebar.
+    expect(hrefs).to.include('/console/settings/profile');
+    expect(hrefs).to.include('/console/settings/security');
+    expect(hrefs).to.include('/console/settings/appearance');
+    expect(hrefs).to.include('/console/settings/notification-preferences');
+  });
+
   describe('Policies preview gate', () => {
     /** Re-stub fetch with a chosen policies_console flag and superuser bit. */
     function stubShell(

@@ -603,7 +603,9 @@ export class InventoryCard extends LitElement {
         .inventory-table tr {
           display: flex;
           flex-wrap: wrap;
-          gap: 2px var(--sl-spacing-small);
+          /* The separators below carry the rhythm now, so the gap only has
+             to keep the words apart. */
+          gap: 2px 4px;
           padding: var(--sl-spacing-x-small) var(--sl-spacing-medium);
         }
 
@@ -647,11 +649,15 @@ export class InventoryCard extends LitElement {
           content: attr(data-label) ' ';
         }
 
-        /* The second line is one sentence of numbers, so it is punctuated. */
-        .inventory-table td.num:not(:last-child)::after,
-        .inventory-table td.secondary:not(.wide-cell)::after {
-          color: var(--console-meta-color);
-          content: ' ·';
+        /* The second line is one sentence of numbers, so it is punctuated.
+           The separator leads each value instead of trailing the one before
+           it: a trailing dot wraps onto the next line on its own, and hiding
+           a cell (Tokens, below) used to leave its dot behind. Cells with no
+           label resolve attr(data-label) to nothing and print just the dot. */
+        .inventory-table
+          :is(td.num, td.secondary:not(.wide-cell))
+          ~ :is(td.num, td.secondary:not(.wide-cell))::before {
+          content: '· ' attr(data-label) ' ';
         }
 
         /* Tokens are the one number a phone can do without: the request
@@ -1071,10 +1077,14 @@ export class InventoryCard extends LitElement {
                             ></token-figures>`
                           )}
                         </td>
-                        <td class="num">
+                        <td class="num" data-label="Spend">
                           ${this.renderUsageCell(this.formatCurrency(row.cost))}
                         </td>
-                        <td class="num" title=${this.absolute(row.lastSeenAt)}>
+                        <td
+                          class="num"
+                          data-label="Seen"
+                          title=${this.absolute(row.lastSeenAt)}
+                        >
                           ${this.relative(row.lastSeenAt)}
                         </td>
                       </tr>
@@ -1215,7 +1225,7 @@ export class InventoryCard extends LitElement {
                             this.isFlowCostLoading()
                           )}
                         </td>
-                        <td class="num">
+                        <td class="num" data-label="Spend">
                           ${this.renderUsageCell(
                             this.formatCurrency(row.cost),
                             this.isFlowCostLoading()
@@ -1303,7 +1313,7 @@ export class InventoryCard extends LitElement {
                             this.isUsageLoading('models')
                           )}
                         </td>
-                        <td class="num">
+                        <td class="num" data-label="Spend">
                           ${this.renderUsageCell(
                             this.formatCurrency(row.cost),
                             this.isUsageLoading('models')
@@ -1388,7 +1398,7 @@ export class InventoryCard extends LitElement {
                             ></token-figures>`
                           )}
                         </td>
-                        <td class="num">
+                        <td class="num" data-label="Spend">
                           ${this.renderUsageCell(this.formatCurrency(row.cost))}
                         </td>
                       </tr>

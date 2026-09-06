@@ -1240,8 +1240,8 @@ export class ToolRuleEditor extends LitElement {
   render() {
     return html`
       <sl-dialog
-        label="${this._isEditing ? 'Edit' : 'Add'} Access Rule${
-          this.toolName ? ` - ${this.toolName}` : ''
+        label="${this._isEditing ? 'Edit' : 'Add'} rule${
+          this.toolName ? ` for ${this.toolName}` : ''
         }"
         ?open=${this.open}
         @sl-request-close=${this._handleClose}
@@ -1387,7 +1387,7 @@ export class ToolRuleEditor extends LitElement {
             ?loading=${this._saving}
             @click=${this._handleSave}
           >
-            ${this._isEditing ? 'Update Rule' : 'Add Rule'}
+            ${this._isEditing ? 'Update rule' : 'Add rule'}
           </sl-button>
         </div>
       </sl-dialog>

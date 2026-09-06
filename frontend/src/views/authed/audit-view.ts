@@ -17,6 +17,7 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
+import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
@@ -609,6 +610,82 @@ export class AuditView extends AuthedElement {
     `;
   }
 
+  /** Console route for the ids the audit log records, where one exists. */
+  private _detailIdHref(key: string, id: string): string | null {
+    const value = encodeURIComponent(id);
+    switch (key) {
+      case 'runtime_session_id':
+        return `/console/runtime-sessions?sessionId=${value}`;
+      case 'flow_execution_id':
+      case 'execution_id':
+        return `/console/flows/executions/${value}`;
+      case 'flow_id':
+        return `/console/flows/${value}`;
+      case 'approval_id':
+        return `/console/approval/${value}`;
+      default:
+        return null;
+    }
+  }
+
+  private _isUuid(value: unknown): value is string {
+    return (
+      typeof value === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        value
+      )
+    );
+  }
+
+  private async _copyDetailId(id: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(id);
+      showToast('Id copied', 'success');
+    } catch {
+      showToast('Could not copy the id', 'danger');
+    }
+  }
+
+  /**
+   * One id in the expanded event.
+   *
+   * The same UUID used to be printed four times at full length as plain
+   * text, which is 144 characters of noise and no way to reach the thing it
+   * names. It now shows its first 8 characters, links to the session,
+   * execution, flow or approval when the key says which, and copies in full
+   * on request; the full value stays in the title.
+   */
+  private _renderIdDetail(key: string, label: string, id: string) {
+    const href = this._detailIdHref(key, id);
+    const short = id.slice(0, 8);
+    return html`
+      <div class="detail-item">
+        <span class="detail-label">${label}</span>
+        <span class="detail-value id-value">
+          ${
+            href
+              ? html`<a href=${href} title=${id}>${short}</a>`
+              : html`<span title=${id}>${short}</span>`
+          }
+          <sl-icon-button
+            class="copy-id"
+            name="clipboard"
+            label="Copy ${label.toLowerCase()}"
+            @click=${() => this._copyDetailId(id)}
+          ></sl-icon-button>
+        </span>
+      </div>
+    `;
+  }
+
+  /** An id field gets the id treatment; everything else is printed. */
+  private _renderDetailField(key: string, value: unknown) {
+    const label = this._prettyDetailLabel(key);
+    return this._isUuid(value)
+      ? this._renderIdDetail(key, label, value)
+      : this._renderDetailItem(label, value);
+  }
+
   private _renderJsonDetail(label: string, value: unknown) {
     if (value == null) return nothing;
     let rendered = '';
@@ -692,10 +769,7 @@ export class AuditView extends AuthedElement {
       .filter((key) => details[key] != null && details[key] !== '')
       .map((key) => {
         renderedKeys.add(key);
-        return this._renderDetailItem(
-          this._prettyDetailLabel(key),
-          details[key]
-        );
+        return this._renderDetailField(key, details[key]);
       });
     const remainingItems = Object.entries(details)
       .filter(
@@ -705,9 +779,7 @@ export class AuditView extends AuthedElement {
           typeof value !== 'object' &&
           !['tool_name', 'decision', 'event'].includes(key)
       )
-      .map(([key, value]) =>
-        this._renderDetailItem(this._prettyDetailLabel(key), value)
-      );
+      .map(([key, value]) => this._renderDetailField(key, value));
 
     // Render recipient list as a small chip cluster when present.
     const recipientChips =
@@ -1848,6 +1920,25 @@ export class AuditView extends AuthedElement {
         font-size: 0.78rem;
         color: var(--sl-color-neutral-700);
         word-break: break-word;
+      }
+      .detail-value a {
+        color: var(--console-link-color);
+        text-decoration: none;
+      }
+      .detail-value a:hover,
+      .detail-value a:focus-visible {
+        text-decoration: underline;
+      }
+      .id-value {
+        align-items: center;
+        display: flex;
+        font-family: var(--sl-font-mono, monospace);
+        gap: 0.25rem;
+      }
+      .copy-id::part(base) {
+        padding: 0;
+        font-size: 0.78rem;
+        color: var(--sl-color-neutral-500);
       }
       .detail-json {
         margin: 0;

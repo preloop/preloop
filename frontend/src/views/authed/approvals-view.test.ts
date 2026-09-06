@@ -1043,4 +1043,26 @@ describe('ApprovalsView', () => {
       expect((element as any).selectedIds).to.deep.equal([]);
     });
   });
+
+  describe('configure approvals menu', () => {
+    it('sends each item to the tools tab it names', async () => {
+      const element = await renderList([baseRequest({ id: 'ar-1' })]);
+
+      const items = Array.from(
+        element.shadowRoot!.querySelectorAll('sl-menu-item')
+      ).map((item) => ({
+        text: (item.textContent || '').replace(/\s+/g, ' ').trim(),
+        href: item.getAttribute('data-href'),
+      }));
+
+      // Both tools items used to open /console/tools and land on whichever
+      // tab was open last, so one of them always looked broken.
+      expect(
+        items.find((item) => item.text.includes('MCP tool access'))?.href
+      ).to.equal('/console/tools?tab=mcp');
+      expect(
+        items.find((item) => item.text.includes('Native tool approvals'))?.href
+      ).to.equal('/console/tools?tab=native');
+    });
+  });
 });

@@ -1180,20 +1180,26 @@ export class ApprovalsView extends AuthedElement {
             Configure approvals
           </sl-button>
           <sl-menu>
+            <!-- The tools view honours ?tab=, so each item lands on the
+                 tab it names instead of on whichever one was open last.
+                 The destination lives on the item so it can be read. -->
             <sl-menu-item
-              @click=${() => (window.location.href = '/console/tools')}
+              data-href="/console/tools?tab=mcp"
+              @click=${this.openConfigLink}
             >
               <sl-icon slot="prefix" name="tools"></sl-icon>
               MCP tool access rules
             </sl-menu-item>
             <sl-menu-item
-              @click=${() => (window.location.href = '/console/tools')}
+              data-href="/console/tools?tab=native"
+              @click=${this.openConfigLink}
             >
               <sl-icon slot="prefix" name="shield-lock"></sl-icon>
               Native tool approvals (account default)
             </sl-menu-item>
             <sl-menu-item
-              @click=${() => (window.location.href = '/console/agents')}
+              data-href="/console/agents"
+              @click=${this.openConfigLink}
             >
               <sl-icon slot="prefix" name="robot"></sl-icon>
               Per-agent overrides
@@ -1389,6 +1395,12 @@ export class ApprovalsView extends AuthedElement {
    * rows. It renders nothing until something is selected, so a page with no
    * selection looks exactly as it did before.
    */
+  /** Follow the destination the configure menu item carries. */
+  private openConfigLink(event: Event) {
+    const href = (event.currentTarget as HTMLElement | null)?.dataset.href;
+    if (href) window.location.href = href;
+  }
+
   private renderBulkBar() {
     return html`
       <list-bulk-bar

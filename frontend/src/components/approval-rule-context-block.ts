@@ -118,8 +118,19 @@ export class ApprovalRuleContextBlock extends LitElement {
   `;
 
   /** True when this context names a real rule with an expression. */
+  /**
+   * An expression worth printing under the name.
+   *
+   * Unnamed rules are recorded with their expression as the name, and
+   * printing "args.amount >= 100" as the heading and again in the mono block
+   * underneath reads as two facts when it is one. The compact variant
+   * already makes the same test against the rule id.
+   */
   private get hasExpression(): boolean {
-    return Boolean(this.ruleContext?.expression);
+    const context = this.ruleContext;
+    return Boolean(
+      context?.expression && context.expression !== context.rule_name
+    );
   }
 
   /** Tools page, narrowed to this tool when we know which one it is. */
