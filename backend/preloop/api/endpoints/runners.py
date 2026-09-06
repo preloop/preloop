@@ -12,6 +12,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
+from preloop.agents.runner_launch import (
+    prepare_runner_delivery,
+)
 from preloop.api.auth import get_current_active_user
 from preloop.models import schemas
 from preloop.models.crud import (
@@ -29,6 +32,10 @@ from preloop.services.runner_service import (
     emit_runner_updated,
     hash_runner_token,
     mint_runner_token,
+)
+from preloop.services.host_exec import (
+    finalize_runner_completion,
+    normalize_host_exec_advertisements,
 )
 from preloop.utils.permissions import require_permission
 
@@ -86,6 +93,9 @@ def register_runner(
             existing.labels = body.labels
         if body.instance_id:
             existing.instance_id = body.instance_id
+        existing.capabilities = normalize_host_exec_advertisements(
+            body.host_exec_profiles
+        )
         existing.status = "online"
         existing.last_heartbeat = datetime.now(timezone.utc)
         db.add(existing)
@@ -113,6 +123,7 @@ def register_runner(
             "last_heartbeat": datetime.now(timezone.utc),
             "token_hash": hash_runner_token(token),
             "halt_requested": False,
+            "capabilities": normalize_host_exec_advertisements(body.host_exec_profiles),
         },
     )
     emit_runner_updated(row, db)
@@ -223,7 +234,11 @@ def job_for_runner_replay(
     ``job_for_heartbeat_ack``.
     """
     job = dict(pending_job)
-    if not mint_token:
+    if (
+        not mint_token
+        or job.get("launch_version")
+        or job.get("completion_protocol") == "host_exec"
+    ):
         return job
     execution_id = _parse_runner_execution_id(job.get("execution_id"))
     if execution_id is None:
@@ -275,8 +290,9 @@ async def runner_ws(
     db.refresh(runner)
     emit_runner_updated(runner, db)
     if runner.pending_job:
-        hello["job"] = job_for_runner_replay(
-            db, pending_job=runner.pending_job, mint_token=True
+        hello["job"] = await prepare_runner_delivery(
+            db,
+            job_for_runner_replay(db, pending_job=runner.pending_job, mint_token=True),
         )
     if runner.halt_requested:
         hello["halt"] = True
@@ -295,12 +311,18 @@ async def runner_ws(
 
             if msg_type == "heartbeat":
                 status = "busy" if runner.current_execution_id else "online"
+                if "host_exec_profiles" in raw:
+                    runner.capabilities = normalize_host_exec_advertisements(raw)
                 crud_flow_runner.touch_heartbeat(db, runner, status=status)
                 db.refresh(runner)
                 reply: Dict[str, Any] = {"type": "ack"}
                 heartbeat_job = job_for_heartbeat_ack(db, runner)
                 if heartbeat_job is not None:
-                    reply["job"] = heartbeat_job
+                    reply["job"] = (
+                        await prepare_runner_delivery(db, heartbeat_job)
+                        if runner_needs_lease_token(runner)
+                        else heartbeat_job
+                    )
                 if runner.halt_requested:
                     reply["halt"] = True
                     if runner.current_execution_id:
@@ -314,6 +336,9 @@ async def runner_ws(
                     await websocket.send_json({"type": "ack"})
                     continue
                 status = str(raw.get("status") or "RUNNING").upper()
+                if status not in {"PENDING", "STARTING", "RUNNING"}:
+                    await websocket.send_json({"type": "ack"})
+                    continue
                 runner.reported_status = status
                 execution = crud_flow_execution.get(db, id=execution_id)
                 if execution:
@@ -367,7 +392,9 @@ async def runner_ws(
                 if execution_id is None or execution_id != runner.current_execution_id:
                     await websocket.send_json({"type": "ack"})
                     continue
-                status = str(raw.get("status") or "SUCCEEDED").upper()
+                status, completion_error, result = finalize_runner_completion(
+                    raw, pending_job=runner.pending_job
+                )
                 runner.reported_status = status
                 runner.pending_job = None
                 runner.current_execution_id = None
@@ -377,8 +404,11 @@ async def runner_ws(
                 if execution:
                     execution.status = status
                     execution.end_time = datetime.now(timezone.utc)
-                    if raw.get("error"):
-                        execution.error_message = str(raw["error"])
+                    if completion_error:
+                        execution.error_message = completion_error
+
+                    if result is not None:
+                        execution.result = result
                     db.add(execution)
                     crud_api_key.deactivate_runtime_keys_for_flow_execution(
                         db,

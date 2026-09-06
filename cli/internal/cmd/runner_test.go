@@ -67,6 +67,13 @@ func TestRunnerImageFromJob(t *testing.T) {
 	}
 }
 
+func TestRunnerImageUsesAliasWhenPrimaryIsBlank(t *testing.T) {
+	job := map[string]any{"agent_config": map[string]any{"image": "  ", "docker_image": " example/custom:1 "}}
+	if image := runnerImageFromJob(job); image != "example/custom:1" {
+		t.Fatalf("image=%q", image)
+	}
+}
+
 func TestRunnerJobEnvMatchesHostedContract(t *testing.T) {
 	job := map[string]any{
 		"execution_id":      "exec-1",
@@ -852,6 +859,8 @@ func TestRunnerFgInterruptDuringBackoffKillsJob(t *testing.T) {
 			"type": "hello",
 			"job": map[string]any{
 				"execution_id": "exec-backoff",
+				"agent_type":   "codex",
+				"launch":       map[string]any{"version": 1, "script": "true", "env": map[string]any{}},
 				"agent_config": map[string]any{"image": "preloop/agent:dev"},
 			},
 		})

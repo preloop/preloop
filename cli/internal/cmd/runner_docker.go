@@ -31,12 +31,14 @@ var workspaceIDRe = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}
 // runnerDockerOpts is the private-runner-only docker run surface. Hosted
 // executors ignore agent_config.runner; only this CLI honors these flags.
 type runnerDockerOpts struct {
-	MountDockerSocket bool
-	PersistWorkspace  bool
-	WorkspaceHostDir  string
-	ExtraMounts       []string
-	Network           string
-	ComposeProject    string
+	Launch             bool
+	PreserveEntrypoint bool
+	MountDockerSocket  bool
+	PersistWorkspace   bool
+	WorkspaceHostDir   string
+	ExtraMounts        []string
+	Network            string
+	ComposeProject     string
 }
 
 var dockerCLI = func(args ...string) error {
@@ -56,6 +58,9 @@ func defaultNewRunnerJobCmd(image string, env map[string]string, opts runnerDock
 // from the runner process environment and never show up in `ps` output.
 func dockerRunArgs(image string, env map[string]string, opts runnerDockerOpts) []string {
 	args := []string{"run", "--rm"}
+	if opts.Launch && !opts.PreserveEntrypoint {
+		args = append(args, "--entrypoint", "/bin/bash")
+	}
 	if opts.MountDockerSocket {
 		args = append(args, "-v", dockerSocketMount)
 	}
@@ -76,7 +81,11 @@ func dockerRunArgs(image string, env map[string]string, opts runnerDockerOpts) [
 	for _, key := range keys {
 		args = append(args, "-e", key)
 	}
-	return append(args, image)
+	args = append(args, image)
+	if opts.Launch {
+		args = append(args, "-c", runnerBootstrap)
+	}
+	return args
 }
 
 func runnerDockerOptsFromJob(job map[string]any) (runnerDockerOpts, error) {

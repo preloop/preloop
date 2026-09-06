@@ -11,14 +11,24 @@ from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_flow_execution_log
 from preloop.models.crud.flow_runner import crud_flow_runner
-from preloop.services.flow_runtime_token import create_flow_runtime_token
 from preloop.services.runner_service import (
     DEFAULT_QUEUE_TIMEOUT,
     lease_job,
     mark_queued_or_fail,
 )
 
+from preloop.services.host_exec import (
+    HOST_EXEC_AGENT_TYPE,
+    host_exec_profile_name,
+    host_exec_unavailable_reason,
+)
+
 from .base import AgentExecutionResult, AgentExecutor, AgentStatus
+from .runner_launch import (
+    LAUNCH_VERSION,
+    flow_launch_fingerprint,
+    prepare_runner_delivery,
+)
 from .images import agent_config_has_image, default_agent_image
 
 logger = logging.getLogger(__name__)
@@ -26,6 +36,9 @@ logger = logging.getLogger(__name__)
 
 class RemoteRunnerExecutor(AgentExecutor):
     """Does not start a hosted container. Jobs wait for a matching runner."""
+
+    # Runner WebSocket handlers already persist and publish log lines.
+    streams_logs_externally = True
 
     def __init__(
         self,
@@ -75,6 +88,11 @@ class RemoteRunnerExecutor(AgentExecutor):
                 self.pool,
                 summary.get("agent_type"),
             )
+            launch_context = dict(execution_context)
+            launch_context.update(
+                {key: payload[key] for key in ("agent_type", "agent_config")}
+            )
+            payload = await prepare_runner_delivery(self.db, payload, launch_context)
             await _push_job(runner.id, payload)
             return f"runner:{runner.id}:{execution_id}"
 
@@ -93,10 +111,23 @@ class RemoteRunnerExecutor(AgentExecutor):
 
     async def get_status(self, session_reference: str) -> AgentStatus:
         execution_id = _execution_id_from_ref(session_reference)
+        execution = crud_flow_execution.get(self.db, id=execution_id, refresh=True)
+        if execution and _map_status(execution.status) in (
+            AgentStatus.SUCCEEDED,
+            AgentStatus.FAILED,
+            AgentStatus.STOPPED,
+        ):
+            return _map_status(execution.status)
         if session_reference.startswith("runner:queued:"):
-            execution = (
-                crud_flow_execution.get(self.db, id=execution_id) or self.execution
-            )
+            execution = execution or self.execution
+            assigned_reference = getattr(execution, "agent_session_reference", None)
+            if (
+                isinstance(assigned_reference, str)
+                and assigned_reference.startswith("runner:")
+                and not assigned_reference.startswith("runner:queued:")
+                and _execution_id_from_ref(assigned_reference) == execution_id
+            ):
+                return await self.get_status(assigned_reference)
             started = (
                 execution.start_time
                 if execution and execution.start_time
@@ -133,19 +164,7 @@ class RemoteRunnerExecutor(AgentExecutor):
                     payload=payload,
                 )
                 if runner:
-                    if flow is not None:
-                        token, _ = create_flow_runtime_token(
-                            self.db,
-                            flow=flow,
-                            execution_id=execution.id,
-                        )
-                        payload["account_api_token"] = token
-                        if not token:
-                            logger.warning(
-                                "Could not create temporary API key record "
-                                "for account %s",
-                                getattr(flow, "account_id", self.account_id),
-                            )
+                    payload = await prepare_runner_delivery(self.db, payload)
                     execution.runner_id = runner.id
                     execution.agent_session_reference = (
                         f"runner:{runner.id}:{execution.id}"
@@ -163,7 +182,6 @@ class RemoteRunnerExecutor(AgentExecutor):
                 return AgentStatus.STOPPED
             if runner and runner.reported_status:
                 return _map_status(runner.reported_status)
-        execution = crud_flow_execution.get(self.db, id=execution_id)
         if execution:
             return _map_status(execution.status)
         return AgentStatus.PENDING
@@ -171,7 +189,7 @@ class RemoteRunnerExecutor(AgentExecutor):
     async def get_result(self, session_reference: str) -> AgentExecutionResult:
         status = await self.get_status(session_reference)
         execution_id = _execution_id_from_ref(session_reference)
-        execution = crud_flow_execution.get(self.db, id=execution_id)
+        execution = crud_flow_execution.get(self.db, id=execution_id, refresh=True)
         return AgentExecutionResult(
             status=status,
             session_reference=session_reference,
@@ -179,6 +197,15 @@ class RemoteRunnerExecutor(AgentExecutor):
             error_message=execution.error_message if execution else None,
             artifacts=execution.result if execution else None,
         )
+
+    async def get_result_artifact(
+        self, session_reference: str
+    ) -> Optional[Dict[str, Any]]:
+        """Expose the runner's validated report to normal flow finalization."""
+        execution = crud_flow_execution.get(
+            self.db, id=_execution_id_from_ref(session_reference), refresh=True
+        )
+        return execution.result if execution else None
 
     async def stop(self, session_reference: str) -> None:
         runner_id = _runner_id_from_ref(session_reference)
@@ -232,7 +259,14 @@ class RemoteRunnerExecutor(AgentExecutor):
             or self.agent_type
             or (getattr(flow, "agent_type", None) if flow is not None else None)
         )
-        if not agent_config_has_image(agent_config):
+        profile = host_exec_profile_name(agent_config, context)
+        kind = str(agent_type or "").strip().lower() if agent_type else ""
+        if kind == HOST_EXEC_AGENT_TYPE and not profile:
+            raise ValueError(
+                "agent type cursor requires agent_config.host_exec_profile "
+                "on a private runner"
+            )
+        if not profile and not agent_config_has_image(agent_config):
             image = default_agent_image(str(agent_type or ""))
             if image:
                 agent_config["image"] = image
@@ -243,7 +277,23 @@ class RemoteRunnerExecutor(AgentExecutor):
                 return value
             return getattr(flow, key, default) if flow is not None else default
 
+        git_clone_config = context_or_flow("git_clone_config")
+        resume_from = _resume_from_execution_id(context, self.execution)
+        if profile:
+            blocked = host_exec_unavailable_reason(
+                git_clone_config=git_clone_config,
+                resume_from=resume_from,
+                session_id=context.get("session_id"),
+                custom_commands=context_or_flow("custom_commands"),
+            )
+            if blocked:
+                raise ValueError(blocked)
+            agent_config.pop("image", None)
+            agent_type = agent_type or HOST_EXEC_AGENT_TYPE
+
         payload: Dict[str, Any] = {
+            "launch_version": LAUNCH_VERSION,
+            "flow_launch_fingerprint": flow_launch_fingerprint(flow),
             "execution_id": str(execution_id),
             "flow_id": str(flow_id),
             "agent_type": agent_type,
@@ -258,11 +308,31 @@ class RemoteRunnerExecutor(AgentExecutor):
             "account_api_token": context.get("account_api_token"),
             "allowed_mcp_servers": context_or_flow("allowed_mcp_servers", []) or [],
             "allowed_mcp_tools": context_or_flow("allowed_mcp_tools", []) or [],
-            "git_clone_config": context_or_flow("git_clone_config"),
+            "git_clone_config": git_clone_config,
             "custom_commands": context_or_flow("custom_commands"),
         }
-        resume_from = _resume_from_execution_id(context, self.execution)
-        if resume_from:
+        if profile:
+            payload["host_exec_profile"] = profile
+            timeout_seconds = context.get("timeout_seconds")
+            if timeout_seconds is None and flow is not None:
+                timeout_seconds = getattr(flow, "timeout_seconds", None)
+            if timeout_seconds:
+                payload["timeout_seconds"] = timeout_seconds
+            # Host profiles consume only data and local credentials. Never
+            # deliver Docker scripts, model/MCP tokens or remote setup commands.
+            allowed = {
+                "execution_id",
+                "flow_id",
+                "agent_type",
+                "prompt",
+                "model_identifier",
+                "host_exec_profile",
+                "timeout_seconds",
+            }
+            payload = {key: value for key, value in payload.items() if key in allowed}
+            payload["agent_config"] = {"host_exec_profile": profile}
+            payload["completion_protocol"] = "host_exec"
+        elif resume_from:
             payload["resume_from"] = resume_from
         return payload
 
@@ -350,6 +420,7 @@ def payload_for_log(payload: Dict[str, Any]) -> Dict[str, Any]:
         "execution_id": payload.get("execution_id"),
         "agent_type": payload.get("agent_type"),
         "image": image,
+        "host_exec_profile": host_exec_profile_name(agent_config, payload),
     }
 
 

@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/guide/flows/model-routing.md`. Legacy executions without a complete
   recorded model/harness require an explicit new run. Durable feedback blocks
   with `model_identity_unavailable` instead of silently adopting new defaults.
+- **Private-runner host execution profiles**: a self-hosted runner can advertise
+  named local CLI profiles (first slice: Cursor `agent` / `cursor-agent` with
+  the operator's existing local login). Flows select only the advertised
+  profile name; the control plane never receives an executable, argv, env, or
+  Cursor auth store. Hosted compute rejects this path. Native success requires
+  a structured Cursor stream-json result plus exit 0 (`completion_protocol:
+  host_exec`); Docker jobs keep the Docker launch v1 contract. Isolated
+  publication and native CLI `--resume` fail closed. Cursor usage follows the
+  operator's Cursor plan, not Preloop billing. Tracking: issue #450.
 
 - **Publication verification gate**: implementation flows can set
   `git_clone_config.verification` (`mode: gate` plus a trusted test

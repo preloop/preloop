@@ -144,9 +144,16 @@ async def test_fresh_queued_executor_reconstructs_complete_payload(
         "preloop.agents.remote_runner.crud_flow_execution.get",
         lambda *args, **kwargs: execution,
     )
+
+    async def fake_hydrate(db: Any, job: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **job,
+            "account_api_token": "fresh-runtime-token",
+            "launch": {"version": 1},
+        }
+
     monkeypatch.setattr(
-        "preloop.agents.remote_runner.create_flow_runtime_token",
-        lambda *args, **kwargs: ("fresh-runtime-token", uuid4()),
+        "preloop.agents.remote_runner.prepare_runner_delivery", fake_hydrate
     )
 
     executor = create_executor_for_execution(
@@ -268,6 +275,84 @@ def test_payload_for_log_omits_credentials() -> None:
     assert "agent_config" not in redacted
     assert redacted["agent_type"] == "codex"
     assert redacted["image"] == "preloop/agent:dev"
+    assert redacted["host_exec_profile"] is None
+
+
+def test_lease_payload_skips_image_for_host_exec() -> None:
+    executor = RemoteRunnerExecutor(
+        "cursor",
+        {},
+        db=MagicMock(),
+        pool="local",
+        account_id=uuid4(),
+    )
+    payload = executor._lease_payload(
+        execution_id=uuid4(),
+        flow_id=uuid4(),
+        prompt="summarize",
+        execution_context={
+            "agent_type": "cursor",
+            "agent_config": {"host_exec_profile": "cursor-ask"},
+            "timeout_seconds": 120,
+        },
+    )
+    assert payload["host_exec_profile"] == "cursor-ask"
+    assert payload["agent_type"] == "cursor"
+    assert "image" not in payload["agent_config"]
+    assert payload["timeout_seconds"] == 120
+    assert payload_for_log(payload)["host_exec_profile"] == "cursor-ask"
+    assert payload_for_log(payload)["agent_type"] == "cursor"
+
+
+def test_lease_payload_host_exec_rejects_pull_request() -> None:
+    executor = RemoteRunnerExecutor(
+        "cursor", {}, db=MagicMock(), pool="local", account_id=uuid4()
+    )
+    with pytest.raises(ValueError, match="pull requests"):
+        executor._lease_payload(
+            execution_id=uuid4(),
+            flow_id=uuid4(),
+            prompt="open a pr",
+            execution_context={
+                "agent_type": "cursor",
+                "agent_config": {"host_exec_profile": "cursor-ask"},
+                "git_clone_config": {"create_pull_request": True},
+            },
+        )
+
+
+def test_lease_payload_host_exec_rejects_resume() -> None:
+    executor = RemoteRunnerExecutor(
+        "cursor", {}, db=MagicMock(), pool="local", account_id=uuid4()
+    )
+    with pytest.raises(ValueError, match="does not resume"):
+        executor._lease_payload(
+            execution_id=uuid4(),
+            flow_id=uuid4(),
+            prompt="continue",
+            execution_context={
+                "agent_type": "cursor",
+                "agent_config": {"host_exec_profile": "cursor-ask"},
+                "resume_from": str(uuid4()),
+            },
+        )
+
+
+def test_lease_payload_keeps_custom_image_without_host_profile() -> None:
+    executor = RemoteRunnerExecutor(
+        "codex", {}, db=MagicMock(), pool="local", account_id=uuid4()
+    )
+    payload = executor._lease_payload(
+        execution_id=uuid4(),
+        flow_id=uuid4(),
+        prompt="review",
+        execution_context={
+            "agent_type": "codex",
+            "agent_config": {"docker_image": "custom/codex:dev"},
+        },
+    )
+    assert payload["agent_config"]["docker_image"] == "custom/codex:dev"
+    assert "host_exec_profile" not in payload
 
 
 @pytest.mark.asyncio
@@ -312,6 +397,35 @@ async def test_start_logs_do_not_include_token(
     assert token not in caplog.text
     assert api_key not in caplog.text
     assert f"Leased execution {execution_id}" in caplog.text
+
+
+def test_factory_rejects_hosted_cursor() -> None:
+    flow = SimpleNamespace(runner_pool="server", account_id=uuid4())
+    with pytest.raises(ValueError, match="hosted compute"):
+        create_executor_for_execution(
+            "cursor",
+            {"host_exec_profile": "cursor-ask"},
+            flow=flow,
+            db=MagicMock(),
+            execution_context={"agent_config": {"host_exec_profile": "cursor-ask"}},
+        )
+
+
+def test_factory_uses_remote_runner_for_cursor_host_exec() -> None:
+    flow = SimpleNamespace(
+        runner_pool="office-mac",
+        account_id=uuid4(),
+        agent_config={"host_exec_profile": "cursor-ask"},
+    )
+    executor = create_executor_for_execution(
+        "cursor",
+        {"host_exec_profile": "cursor-ask"},
+        flow=flow,
+        db=MagicMock(),
+        execution_context={"agent_config": {"host_exec_profile": "cursor-ask"}},
+    )
+    assert isinstance(executor, RemoteRunnerExecutor)
+    assert executor.pool == "office-mac"
 
 
 def test_factory_keeps_hosted_executor_without_pool() -> None:
@@ -380,3 +494,71 @@ def test_factory_uses_account_default_pool() -> None:
     )
     assert isinstance(executor, RemoteRunnerExecutor)
     assert executor.pool == "office-mac"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("execution_status", ["RUNNING", "SUCCEEDED", "FAILED"])
+async def test_stale_queued_reference_follows_persisted_assignment(
+    monkeypatch: pytest.MonkeyPatch, execution_status: str
+) -> None:
+    """An old queue marker must neither lease twice nor overwrite completion."""
+    execution_id, runner_id = uuid4(), uuid4()
+    execution = SimpleNamespace(
+        id=execution_id,
+        status=execution_status,
+        start_time=datetime.now(timezone.utc) - timedelta(minutes=16),
+        agent_session_reference=f"runner:{runner_id}:{execution_id}",
+        runner_id=runner_id,
+        current_execution_id=None,
+        error_message=None,
+        end_time=None,
+    )
+    runner = SimpleNamespace(
+        id=runner_id,
+        halt_requested=False,
+        reported_status=execution_status,
+        current_execution_id=execution_id,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_execution.get",
+        lambda *a, **k: execution,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_runner.get", lambda *a, **k: runner
+    )
+    lease = MagicMock()
+    monkeypatch.setattr("preloop.agents.remote_runner.lease_job", lease)
+    executor = RemoteRunnerExecutor(
+        "codex", {}, db=MagicMock(), pool="auto", account_id=uuid4()
+    )
+    assert await executor.get_status(
+        f"runner:queued:auto:{execution_id}"
+    ) == AgentStatus(execution_status)
+    assert execution.status == execution_status
+    assert execution.error_message is None
+    lease.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_terminal_execution_ignores_reused_runner_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execution_id, runner_id = uuid4(), uuid4()
+    execution = SimpleNamespace(id=execution_id, status="FAILED")
+    runner = SimpleNamespace(
+        halt_requested=False, reported_status="RUNNING", current_execution_id=uuid4()
+    )
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_execution.get",
+        lambda *a, **k: execution,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_runner.get", lambda *a, **k: runner
+    )
+    executor = RemoteRunnerExecutor(
+        "codex", {}, db=MagicMock(), pool="auto", account_id=uuid4()
+    )
+    assert (
+        await executor.get_status(f"runner:{runner_id}:{execution_id}")
+        == AgentStatus.FAILED
+    )

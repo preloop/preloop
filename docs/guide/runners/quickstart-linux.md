@@ -113,26 +113,134 @@ runs the service, since the unit does not inherit your shell exports.
 
 ## What the runner executes
 
-Each leased job runs the flow's agent image via
-`docker run --rm -e ... <image>` with the same environment contract as
-hosted executions: `EXECUTION_ID`, `FLOW_ID`, `AGENT_PROMPT`,
-`AGENT_CONFIG`, `AI_MODEL`, `AI_MODEL_PROVIDER`, `PRELOOP_API_TOKEN`,
-and `PRELOOP_URL`. Values are passed through the process environment,
-not argv, so they don't appear in `ps`. Container stdout/stderr is
-shipped back and shows up in the console execution view.
+Private Docker execution supports **Codex and OpenCode**. Update both the
+control plane and CLI together: old or unknown launch protocol versions fail
+explicitly. Other harness types require a hosted executor until their private
+launch adapter is implemented.
 
-`PRELOOP_API_TOKEN` is a **flow-execution token**, not the partner
-account's long-lived key. It is scoped to that execution (`mcp:read` /
-`mcp:write`), expires in about two hours, and is deactivated when the
-execution completes, fails, or is halted. Root on the runner host can
-still `docker inspect` the running container and read it for that
-window. `AGENT_CONFIG` is the flow's agent settings (image, type); the
-runner strips credential-shaped keys before injecting it. Model and MCP
-credentials stay on the control plane and are used through that token.
+The control plane builds a versioned launch specification using the same
+Codex/OpenCode script and environment builders as hosted execution. The CLI
+runs a static Docker bootstrap that launches this script. Repository clone,
+setup commands, prompt, model routing, MCP configuration and the existing
+post-execution git wrapper therefore run inside the container.
 
-When the flow omits `image` / `docker_image`, the control plane injects
-the same per-agent-type default the hosted executors use
-(`OPENCODE_IMAGE`, `CODEX_IMAGE`, `AIDER_IMAGE`, `GEMINI_IMAGE`).
+Scripts and credentials are transient. Persisted leases contain configuration
+and execution references; delivery after a queue wait or reconnect regenerates
+the model, git and MCP credentials from the execution's stored trigger and
+resolved prompt. Changes to the leased flow configuration cause redelivery to
+fail so a retry can select the new settings. The process environment carries
+secret values rather than Docker command-line arguments. Root on the runner
+host can still inspect the container environment. Gateway-enabled runs receive
+a scoped flow token; direct-provider runs receive the configured provider key.
+
+A zero exit code is insufficient. The agent must write a nonempty JSON object
+to `/workspace/result.json` with a recognized `status` (`success`, `succeeded`,
+`pass`, `passed`, or completed-evaluation `fail`) or audit `verdict` (`pass`,
+`passed`, `pass_with_findings`, or `fail`). Failure/error and incomplete reports
+do not confirm success. The runner removes stale results before launch,
+requires exit zero, and sends the bounded report (256 KiB maximum) separately
+from ordinary logs. Valid reports are also retained when the process exits
+nonzero or reports failure; retaining evidence never promotes a failed run to
+success. Malformed, oversized, empty or duplicate result envelopes are rejected.
+The API independently checks the completion contract. The versioned vocabulary
+and precedence cases live in `backend/tests/fixtures/runner_completion_vocabulary.json`;
+both Go and Python tests verify their complete tables against this shared
+`docker_v1` contract. Update the fixture and both implementations together.
+Workspace source and evidence archives are not uploaded by this protocol.
+This is an agent completion report, not independent verification of its tests.
+
+Ordinary output is sent in bounded batches about once per second, with a final
+flush before completion. Unsent output stays with the running process across
+reconnects (at most 4 MiB / 8192 lines; individual ordinary lines are truncated
+to 64 KiB). Exceeding the queue or partial-line bound fails completion because
+execution markers may have been lost. Transport is best effort: a disconnect
+after a successful socket write but before server persistence can lose that
+batch. The runner does not maintain an unbounded replay queue.
+
+When the flow omits `image` / `docker_image`, the control plane uses the hosted
+Codex/OpenCode default. The default `ghcr.io/openai/codex-universal:latest`
+entrypoint is preserved because it initializes language runtimes. Custom
+images normally run with `/bin/bash` as the entrypoint. They must provide
+Bash, Python 3, Git, Node/npm, writable `/workspace`, a writable home directory,
+and the dependencies required by repository setup/tests. The shared bootstrap
+installs the configured CLI version. An image whose own entrypoint initializes
+its environment and delegates arguments to Bash can opt into
+`agent_config.runner.preserve_image_entrypoint: true` (also use this for pinned
+or mirrored codex-universal images). Images that cannot execute this bootstrap
+fail explicitly; an idle shell cannot be reported as successful work.
+
+## Host execution profiles (opt-in, private only)
+
+Docker remains the default, including a flow's custom `image` /
+`docker_image`. A host execution profile is a separate, explicit
+capability: the runner host runs a **fixed local command** instead of
+`docker run`. This is not Agent Control, and it is not the
+[`preloop cursor`](../cursor-cli.md) operator launcher.
+
+Create `~/.preloop/runner-host-profiles.json` (or point
+`PRELOOP_RUNNER_HOST_PROFILES` at an absolute path):
+
+```json
+{
+  "profiles": [
+    {
+      "name": "cursor-ask",
+      "executable": "cursor-agent",
+      "argv": ["--print", "--output-format", "stream-json", "--mode=ask"],
+      "workspace_root": "/home/example/src",
+      "timeout_seconds": 1800,
+      "force_writes": false,
+      "model_map": {"team-fast": "sonnet-4.6"}
+    }
+  ]
+}
+```
+
+The runner advertises profile names, capabilities and supported requested model
+identifiers (at most 64 profiles and 64 models per profile). Executables, argv,
+local aliases and credentials stay on the host. Restart `preloop runner fg`
+after editing the file. On the flow, choose `cursor`, select a private runner
+pool and set `agent_config.host_exec_profile`. Hosted compute and Windows host
+profiles are unavailable.
+
+An optional local `model_map` maps requested identifiers to Cursor aliases,
+for example `"model_map": {"team-fast": "sonnet-4.6"}`. Every nonempty requested
+model must match this map. The scheduler selects a runner advertising that
+identifier, and the runner passes the mapped alias to Cursor. The legacy
+`pass_model` field does not bypass this mapping.
+The selected API model's credentials are never delivered to the host. Leave
+the requested model empty to use the profile default. An actual model is
+recorded only when Cursor reports it, never inferred from the request.
+
+The lease supplies the prompt as one argument after `--`, plus the profile,
+requested model and deadline. It cannot inject an executable, extra argv,
+environment, API key or session id. Only `cursor-agent` and `agent` executables
+are accepted. Local argv cannot override runner-managed workspace, model,
+resume or credential controls. The profile should retain `stream-json` output
+so the runner can validate structured completion. `force_writes` defaults to false; enable it only for
+a profile whose operator intends to permit writes.
+
+Each job creates a fresh directory under
+`{workspace_root}/.preloop-host-exec/{execution_id}`. Existing directories and
+symlinks are rejected. This controls working-directory placement, not OS
+filesystem access: Cursor runs as the runner user with that user's local login,
+environment and filesystem permissions. Use a dedicated OS user or VM when
+stronger host isolation is needed. Halt, cancellation and deadline expiry clean
+up the process group. The tighter profile/flow timeout applies.
+
+Cursor's local configuration, MCP servers and hooks apply. Flow
+`allowed_mcp_tools` and server settings are not injected or enforced as a
+sandbox on this path. The enforced controls are profile selection, explicit
+model mapping, working-directory creation, deadline, cancellation and terminal
+result validation. This slice does not add Agent Control, flow governance,
+native session continuation or usage ingestion. Runs use the operator's Cursor
+plan; no unlimited usage or inferred billing is promised.
+
+Success requires exit zero and a successful Cursor stream-json result; exit
+zero alone fails. Remote repository clone/setup, custom commands, workspace
+seeds, native CLI session resume and isolated PR publication are rejected.
+The workspace starts empty. Use the Docker harness for repository
+implementation flows that need the managed checkout/test/publication pipeline.
 
 ## Trusted runner options
 

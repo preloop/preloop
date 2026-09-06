@@ -706,7 +706,7 @@ export class PreloopFlowForm extends LitElement {
         description: this.flow.description || '',
         prompt_template: this.flow.prompt_template || '',
         agent_type: this.flow.agent_type || 'codex',
-        agent_config: this.buildAgentConfig(),
+        agent_config: this.composedAgentConfig(),
         allowed_mcp_servers: this.flow.allowed_mcp_servers || ['preloop-mcp'],
         allowed_mcp_tools: this.flow.allowed_mcp_tools || [],
         ai_model_id: this.flow.ai_model_id || undefined,
@@ -1034,6 +1034,68 @@ export class PreloopFlowForm extends LitElement {
     this.requestUpdate();
   }
 
+  private composedAgentConfig(): Record<string, unknown> {
+    const base = this.buildAgentConfig();
+    const profile = String(base.host_exec_profile || '').trim();
+    if ((this.flow.agent_type || '') === 'cursor') {
+      if (profile) {
+        base.host_exec_profile = profile;
+      } else {
+        delete base.host_exec_profile;
+      }
+    } else {
+      delete base.host_exec_profile;
+    }
+    return base;
+  }
+
+  private hostExecProfileName(): string {
+    const raw = this.flow?.agent_config?.host_exec_profile;
+    return typeof raw === 'string' ? raw.trim() : '';
+  }
+
+  private advertisedHostExecProfiles(): string[] {
+    const names = new Set<string>();
+    for (const runner of this.runners) {
+      const advertised = runner.capabilities?.host_exec_profiles || [];
+      for (const item of advertised) {
+        const name = (item?.name || '').trim();
+        if (name) {
+          names.add(name);
+        }
+      }
+    }
+    return [...names].sort();
+  }
+
+  private handleHostExecProfileInput(event: Event) {
+    const value = (event.target as HTMLInputElement).value;
+    this.flow = {
+      ...this.flow,
+      agent_config: {
+        ...(this.flow.agent_config || {}),
+        host_exec_profile: value,
+      },
+    };
+    this.requestUpdate();
+  }
+
+  private renderHostExecProfileField() {
+    if ((this.flow.agent_type || '') !== 'cursor') {
+      return nothing;
+    }
+    const advertised = this.advertisedHostExecProfiles();
+    return html`
+      <sl-input
+        label="Host execution profile"
+        help-text="Named profile on a private runner. Runs as the runner user with its local Cursor login and filesystem access."
+        placeholder=${advertised[0] || 'cursor-ask'}
+        .value=${this.hostExecProfileName()}
+        @sl-input=${this.handleHostExecProfileInput}
+      ></sl-input>
+    `;
+  }
+
   private renderRunnerPoolField() {
     return html`
       <preloop-runner-pool-select
@@ -1284,7 +1346,7 @@ export class PreloopFlowForm extends LitElement {
       this.triggerType = 'webhook';
     }
 
-    if (!this.flow.ai_model_id) {
+    if (!this.flow.ai_model_id && this.flow.agent_type !== 'cursor') {
       let selectableModels = this.models.filter(
         (m) => m.model_kind !== 'stt' && m.model_kind !== 'tts'
       );
@@ -2055,6 +2117,9 @@ export class PreloopFlowForm extends LitElement {
                     <sl-option value="codex">Codex CLI</sl-option>
                     <sl-option value="gemini">Gemini CLI</sl-option>
                     <sl-option value="opencode">OpenCode</sl-option>
+                    <sl-option value="cursor"
+                      >Cursor CLI (private runner host profile)</sl-option
+                    >
                   </sl-select>
                 `
           }
@@ -2063,7 +2128,8 @@ export class PreloopFlowForm extends LitElement {
             style="display: flex; flex-direction: column; gap: var(--sl-spacing-2x-small); margin-bottom: var(--sl-spacing-medium);"
           >
             <sl-select
-              label="AI Model"
+              label=${this.flow.agent_type === 'cursor' ? 'Requested AI Model' : 'AI Model'}
+              help-text=${this.flow.agent_type === 'cursor' ? 'The local profile must map this model. The observed Cursor model is recorded only when reported.' : ''}
               placeholder="Select AI model"
               .value=${this.flow.ai_model_id || ''}
               @sl-change=${(e: any) => {
@@ -2071,6 +2137,7 @@ export class PreloopFlowForm extends LitElement {
               }}
               style="margin-bottom: 0;"
             >
+              ${this.flow.agent_type === 'cursor' ? html`<sl-option value="">Profile default</sl-option>` : nothing}
               ${selectableModels.map(
                 (m) => html`<sl-option .value=${m.id}>${m.name}</sl-option>`
               )}
@@ -2086,7 +2153,7 @@ export class PreloopFlowForm extends LitElement {
           </div>
 
           ${this.renderModelRoutingEditor(selectableModels)}
-          ${this.renderRunnerPoolField()}
+          ${this.renderRunnerPoolField()} ${this.renderHostExecProfileField()}
 
           <sl-textarea
             class="prompt"
@@ -2103,6 +2170,7 @@ export class PreloopFlowForm extends LitElement {
           <div slot="header" class="card-header-title">
             <sl-icon name="tools"></sl-icon> Allowed MCP Tools
           </div>
+          ${this.flow.agent_type === 'cursor' ? html`<p>Cursor profiles use local MCP configuration. These flow tool settings do not apply.</p>` : nothing}
 
           <div
             style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"

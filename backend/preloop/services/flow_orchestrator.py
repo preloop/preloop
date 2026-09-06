@@ -18,6 +18,7 @@ from preloop.models.crud import (
     crud_api_key,
     crud_flow,
     crud_flow_execution,
+    crud_flow_execution_log,
     crud_runtime_session,
     crud_user,
 )
@@ -447,6 +448,10 @@ def _exception_message(exc: BaseException) -> str:
     return str(exc) or exc.__class__.__name__
 
 
+RUNNER_LOG_PAGE_SIZE = 500
+RUNNER_LOG_SUMMARY_LINES = 1000
+
+
 class FlowExecutionOrchestrator:
     """Manages the end-to-end lifecycle of a single Flow invocation."""
 
@@ -471,6 +476,9 @@ class FlowExecutionOrchestrator:
         self.execution_logger = FlowExecutionLogger()
         self.temporary_api_key_id: Optional[uuid.UUID] = None
         self._log_streaming_task: Optional[asyncio.Task] = None
+        self._runner_log_cursor: Optional[tuple[datetime, uuid.UUID]] = None
+        self._runner_log_previous_line = ""
+        self._runner_log_count = 0
         self._command_subscription: Optional[Any] = None
         self._stop_requested = asyncio.Event()
         self._success_sentinel_seen = asyncio.Event()
@@ -1073,7 +1081,7 @@ class FlowExecutionOrchestrator:
         except Exception as e:
             logger.error(f"Failed to publish update to NATS: {e}", exc_info=True)
 
-    def _get_flow_details(self):
+    def _get_flow_details(self, *, refresh: bool = False):
         """Retrieve the Flow definition and associated AIModel."""
         logger.info(f"Retrieving flow details for flow_id: {self.flow_id}")
 
@@ -1083,7 +1091,9 @@ class FlowExecutionOrchestrator:
         )
         # Use CRUD layer without account filtering since this is an internal service
         # and we don't have the account_id yet (it's a property of the flow itself)
-        self.flow = crud_flow.get(self.db, id=flow_id_str)
+        self.flow = crud_flow.get(
+            self.db, id=flow_id_str, **({"refresh": True} if refresh else {})
+        )
         if not self.flow:
             raise ValueError(f"Flow with id {self.flow_id} not found")
 
@@ -2049,14 +2059,17 @@ class FlowExecutionOrchestrator:
             logger.error(f"Error executing custom commands: {e}", exc_info=True)
             return False
 
-    async def _prepare_execution_context(self) -> Dict[str, Any]:
+    async def _prepare_execution_context(
+        self, *, resolved_prompt: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Prepare the full execution context for the agent."""
         effective_agent_type = self.agent_type or self.flow.agent_type
         logger.info(
             f"Preparing execution context for agent type: {effective_agent_type}"
         )
 
-        resolved_prompt = await self._resolve_prompt()
+        if resolved_prompt is None:
+            resolved_prompt = await self._resolve_prompt()
 
         # Validate trigger-payload workspace seeds before any agent starts: a
         # bad `workspace_files` declaration (path traversal, oversized inline
@@ -2074,6 +2087,45 @@ class FlowExecutionOrchestrator:
                 len(workspace_files),
                 [seed.path for seed in workspace_files],
             )
+
+        # Native profiles use only the operator's local Cursor login/config.
+        # Do not mint model/MCP tokens or resolve cloud provider secrets here.
+        from preloop.services.host_exec import (
+            host_exec_profile_name,
+            host_exec_flow_error,
+            host_exec_unavailable_reason,
+        )
+
+        profile = host_exec_profile_name(self.flow.agent_config)
+        if effective_agent_type == "cursor" or profile:
+            error = host_exec_flow_error(
+                agent_type=effective_agent_type,
+                agent_config=self.flow.agent_config,
+                runner_pool=self.flow.runner_pool,
+            ) or host_exec_unavailable_reason(
+                git_clone_config=self.flow.git_clone_config,
+                custom_commands=self.flow.custom_commands,
+            )
+            if error:
+                raise ValueError(error)
+            if workspace_files or (self.trigger_event_data or {}).get("_resume"):
+                raise ValueError(
+                    "Host profiles do not support remote workspace seeds or native resume"
+                )
+            return {
+                "flow_id": str(self.flow_id),
+                "flow_name": self.flow.name,
+                "execution_id": str(self.execution_log.id),
+                "prompt": resolved_prompt,
+                "agent_type": "cursor",
+                "agent_config": {"host_exec_profile": profile},
+                "account_id": self.flow.account_id,
+                # A request for the local profile's explicit model map. This is
+                # never a claim about the model Cursor actually reported.
+                "model_identifier": self.ai_model.model_identifier
+                if self.ai_model
+                else None,
+            }
 
         # Create short-lived API token for this flow execution
         account_api_token = None
@@ -2265,6 +2317,10 @@ class FlowExecutionOrchestrator:
             agent_executor: Agent executor instance
             session_reference: Container/Job reference
         """
+        # Private runner WebSockets already persist and publish each line.
+        # The main monitor consumes their stored markers with a keyset cursor.
+        if getattr(agent_executor, "streams_logs_externally", False) is True:
+            return
         logger.info(f"Starting log streaming for {session_reference}")
         log_count = 0
 
@@ -2276,154 +2332,11 @@ class FlowExecutionOrchestrator:
                 log_count += 1
                 logger.debug(f"Streamed log line #{log_count}: {log_line[:100]}")
 
-                # Store the log line for later summary
-                self.execution_logger.log_agent_output(log_line)
-
-                # Track the agent exec start marker — sentinel detection is
-                # suppressed until this marker is seen, preventing false
-                # positives from the prompt echo that contains the sentinel
-                # instruction text.
-                if (
-                    not self._agent_exec_started
-                    and log_line.strip() == AGENT_EXEC_START_MARKER
-                ):
-                    self._agent_exec_started = True
-                    logger.info(
-                        f"Agent exec start marker seen at log line #{log_count}"
-                    )
-
-                # Detect success sentinel — but ONLY after the agent exec
-                # start marker has been seen (to ignore prompt echo).
-                stripped_line = log_line.strip()
-                if stripped_line == FLOW_SUCCESS_SENTINEL:
-                    if not self._agent_exec_started:
-                        logger.warning(
-                            f"[Sentinel] Ignoring sentinel match at line #{log_count} "
-                            f"— agent exec start marker not yet seen (prompt echo?). "
-                            f"Previous line: {previous_line[:120]!r}"
-                        )
-                    elif self._success_sentinel_seen.is_set():
-                        logger.warning(
-                            f"[Sentinel] Duplicate sentinel match at line #{log_count} "
-                            f"— already triggered. Previous line: {previous_line[:120]!r}"
-                        )
-                    else:
-                        logger.info(
-                            f"[Sentinel] Success sentinel detected for {session_reference} "
-                            f"at line #{log_count}. "
-                            f"Previous line: {previous_line[:120]!r}"
-                        )
-                        self._success_sentinel_seen.set()
-
-                # PR/MR opened by the wrapper's post-execution curl. The
-                # response never reaches Python, so the line is the binding
-                # channel (MCP create_pull_request binds directly instead).
-                if PR_OPENED_MARKER in stripped_line:
-                    self._note_opened_pr(stripped_line)
-
-                # Native CLI session id reported by the agent script, so a
-                # later PR-comment resume can invoke the CLI resume flag.
-                if any(
-                    marker in stripped_line
-                    for marker in (
-                        AGENT_SESSION_MARKER,
-                        "PRELOOP_NATIVE_SESSION_ARTIFACT ",
-                        "PRELOOP_NATIVE_RESUME ",
-                    )
-                ):
-                    self._note_agent_session(stripped_line)
-
-                # Publication-gate verdict printed by the post-execution
-                # verifier. The gate always runs after the agent exits, so
-                # the last marker wins over anything the agent printed.
-                if stripped_line.startswith(VERIFICATION_MARKER + " "):
-                    self._note_verification_evidence(stripped_line)
-                elif stripped_line.startswith(VERIFICATION_DENIED_MARKER):
-                    logger.warning("Publication gate denied publication")
-
-                # In-place completion nudge markers printed by the agent
-                # script. Order matters: the result marker shares the start
-                # marker's prefix, so the exact match is tested first.
-                if stripped_line == COMPLETION_NUDGE_MARKER:
-                    self._note_inplace_nudge(source="live_stream")
-                elif stripped_line.startswith(COMPLETION_NUDGE_RESULT_MARKER):
-                    self._note_inplace_nudge_result(stripped_line)
-                elif stripped_line.startswith(COMPLETION_NUDGE_UNSUPPORTED_MARKER):
-                    self._inplace_nudge_unsupported = True
-                    logger.info(
-                        "Agent runtime could not resume its session in place "
-                        "for the completion contract: %s",
-                        stripped_line,
-                    )
-
-                previous_tool_calls_count = len(self.execution_logger.mcp_usage_logs)
-
-                # Parse log line for structured data (includes tool call detection)
-                self.execution_logger.parse_agent_logs([log_line])
-
-                # Check for token usage pattern: "tokens used" followed by number on next line
-                if "tokens used" in previous_line.lower():
-                    # Try to extract token count from current line
-                    # Pattern: number with optional commas (e.g., "1,234" or "1234")
-                    token_match = re.search(r"(\d{1,3}(?:,\d{3})*)", log_line.strip())
-                    if token_match:
-                        tokens = int(token_match.group(1).replace(",", ""))
-                        self.total_tokens += tokens
-
-                        logger.info(
-                            "Detected token usage: %s tokens (total: %s). "
-                            "Live cost remains unset until provider pricing is known.",
-                            tokens,
-                            self.total_tokens,
-                        )
-
-                        # Emit token usage update
-                        await self._publish_update(
-                            "token_usage_update",
-                            {
-                                "total_tokens": self.total_tokens,
-                                "pricing_available": False,
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
-                            },
-                        )
-                        await self._persist_live_metrics()
-
-                # Check if this log line indicates a tool call was detected
-                updated_tool_calls_count = len(self.execution_logger.mcp_usage_logs)
-                if updated_tool_calls_count > self.tool_calls_count:
-                    new_tool_entries = self.execution_logger.mcp_usage_logs[
-                        previous_tool_calls_count:updated_tool_calls_count
-                    ]
-                    self.tool_calls_count = updated_tool_calls_count
-                    logger.info(f"Tool call detected (total: {self.tool_calls_count})")
-
-                    for tool_entry in new_tool_entries:
-                        await self._publish_update(
-                            "mcp_call",
-                            {
-                                **tool_entry,
-                                "timestamp": tool_entry.get("timestamp")
-                                or datetime.now(timezone.utc).isoformat(),
-                            },
-                        )
-
-                    # Emit tool call count update
-                    await self._publish_update(
-                        "tool_calls_update",
-                        {
-                            "tool_calls": self.tool_calls_count,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        },
-                    )
-                    await self._persist_live_metrics()
-
-                # Publish log line to NATS
-                await self._publish_update(
-                    "agent_log_line",
-                    {
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "line": log_line,
-                    },
+                await self._process_agent_log_line(
+                    log_line,
+                    session_reference=session_reference,
+                    previous_line=previous_line,
+                    log_count=log_count,
                 )
 
                 # Update previous line for next iteration
@@ -2442,6 +2355,196 @@ class FlowExecutionOrchestrator:
             await self._publish_update(
                 "agent_log_error", {"error": f"Log streaming error: {str(e)}"}
             )
+
+    async def _process_agent_log_line(
+        self,
+        log_line: str,
+        *,
+        session_reference: str,
+        previous_line: str,
+        log_count: int,
+        publish_raw: bool = True,
+    ) -> None:
+        """Interpret one runtime line independently of raw-log transport ownership."""
+        # Store the log line for later summary
+        self.execution_logger.log_agent_output(log_line)
+
+        # Track the agent exec start marker — sentinel detection is
+        # suppressed until this marker is seen, preventing false
+        # positives from the prompt echo that contains the sentinel
+        # instruction text.
+        if not self._agent_exec_started and log_line.strip() == AGENT_EXEC_START_MARKER:
+            self._agent_exec_started = True
+            logger.info(f"Agent exec start marker seen at log line #{log_count}")
+
+        # Detect success sentinel — but ONLY after the agent exec
+        # start marker has been seen (to ignore prompt echo).
+        stripped_line = log_line.strip()
+        if stripped_line == FLOW_SUCCESS_SENTINEL:
+            if not self._agent_exec_started:
+                logger.warning(
+                    f"[Sentinel] Ignoring sentinel match at line #{log_count} "
+                    f"— agent exec start marker not yet seen (prompt echo?). "
+                    f"Previous line: {previous_line[:120]!r}"
+                )
+            elif self._success_sentinel_seen.is_set():
+                logger.warning(
+                    f"[Sentinel] Duplicate sentinel match at line #{log_count} "
+                    f"— already triggered. Previous line: {previous_line[:120]!r}"
+                )
+            else:
+                logger.info(
+                    f"[Sentinel] Success sentinel detected for {session_reference} "
+                    f"at line #{log_count}. "
+                    f"Previous line: {previous_line[:120]!r}"
+                )
+                self._success_sentinel_seen.set()
+
+        # PR/MR opened by the wrapper's post-execution curl. The
+        # response never reaches Python, so the line is the binding
+        # channel (MCP create_pull_request binds directly instead).
+        if PR_OPENED_MARKER in stripped_line:
+            self._note_opened_pr(stripped_line)
+
+        # Native CLI session id reported by the agent script, so a
+        # later PR-comment resume can invoke the CLI resume flag.
+        if any(
+            marker in stripped_line
+            for marker in (
+                AGENT_SESSION_MARKER,
+                "PRELOOP_NATIVE_SESSION_ARTIFACT ",
+                "PRELOOP_NATIVE_RESUME ",
+            )
+        ):
+            self._note_agent_session(stripped_line)
+
+        # Publication-gate verdict printed by the post-execution
+        # verifier. The gate always runs after the agent exits, so
+        # the last marker wins over anything the agent printed.
+        if stripped_line.startswith(VERIFICATION_MARKER + " "):
+            self._note_verification_evidence(stripped_line)
+        elif stripped_line.startswith(VERIFICATION_DENIED_MARKER):
+            logger.warning("Publication gate denied publication")
+
+        # In-place completion nudge markers printed by the agent
+        # script. Order matters: the result marker shares the start
+        # marker's prefix, so the exact match is tested first.
+        if stripped_line == COMPLETION_NUDGE_MARKER:
+            self._note_inplace_nudge(source="live_stream")
+        elif stripped_line.startswith(COMPLETION_NUDGE_RESULT_MARKER):
+            self._note_inplace_nudge_result(stripped_line)
+        elif stripped_line.startswith(COMPLETION_NUDGE_UNSUPPORTED_MARKER):
+            self._inplace_nudge_unsupported = True
+            logger.info(
+                "Agent runtime could not resume its session in place "
+                "for the completion contract: %s",
+                stripped_line,
+            )
+
+        previous_tool_calls_count = len(self.execution_logger.mcp_usage_logs)
+
+        # Parse log line for structured data (includes tool call detection)
+        self.execution_logger.parse_agent_logs([log_line])
+
+        # Check for token usage pattern: "tokens used" followed by number on next line
+        if "tokens used" in previous_line.lower():
+            # Try to extract token count from current line
+            # Pattern: number with optional commas (e.g., "1,234" or "1234")
+            token_match = re.search(r"(\d{1,3}(?:,\d{3})*)", log_line.strip())
+            if token_match:
+                tokens = int(token_match.group(1).replace(",", ""))
+                self.total_tokens += tokens
+
+                logger.info(
+                    "Detected token usage: %s tokens (total: %s). "
+                    "Live cost remains unset until provider pricing is known.",
+                    tokens,
+                    self.total_tokens,
+                )
+
+                # Emit token usage update
+                await self._publish_update(
+                    "token_usage_update",
+                    {
+                        "total_tokens": self.total_tokens,
+                        "pricing_available": False,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+                await self._persist_live_metrics()
+
+        # Check if this log line indicates a tool call was detected
+        updated_tool_calls_count = len(self.execution_logger.mcp_usage_logs)
+        if updated_tool_calls_count > self.tool_calls_count:
+            new_tool_entries = self.execution_logger.mcp_usage_logs[
+                previous_tool_calls_count:updated_tool_calls_count
+            ]
+            self.tool_calls_count = updated_tool_calls_count
+            logger.info(f"Tool call detected (total: {self.tool_calls_count})")
+
+            for tool_entry in new_tool_entries:
+                await self._publish_update(
+                    "mcp_call",
+                    {
+                        **tool_entry,
+                        "timestamp": tool_entry.get("timestamp")
+                        or datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+
+            # Emit tool call count update
+            await self._publish_update(
+                "tool_calls_update",
+                {
+                    "tool_calls": self.tool_calls_count,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            await self._persist_live_metrics()
+
+        # Runner WebSockets already persisted and published this line.
+        if publish_raw:
+            await self._publish_update(
+                "agent_log_line",
+                {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "line": log_line,
+                },
+            )
+
+    async def _consume_runner_log_page(self, session_reference: str) -> bool:
+        """Consume a bounded stored-log page; True when caught up with the runner.
+
+        The WebSocket owns persistence and raw log broadcast. This cursor only
+        reconstructs controller markers, summaries and derived metrics. Terminal
+        status is processed after all committed pages, because the runner flushes
+        its final lines before reporting completion.
+        """
+        rows = crud_flow_execution_log.get_agent_log_page(
+            self.db,
+            self.execution_log.id,
+            after=self._runner_log_cursor,
+            limit=RUNNER_LOG_PAGE_SIZE,
+        )
+        # The parser may commit metric/binding updates. Materialize scalar
+        # values first so an expired ORM page cannot cause a query per line.
+        events = [(row.timestamp, row.id, row.message) for row in rows]
+        for timestamp, event_id, message in events:
+            if message is not None:
+                self._runner_log_count += 1
+                await self._process_agent_log_line(
+                    message,
+                    session_reference=session_reference,
+                    previous_line=self._runner_log_previous_line,
+                    log_count=self._runner_log_count,
+                    publish_raw=False,
+                )
+                self._runner_log_previous_line = message
+                # Raw history remains in the log table; retain only the bounded
+                # tail used by summaries, completion checks and loop detection.
+                del self.execution_logger.agent_output_lines[:-RUNNER_LOG_SUMMARY_LINES]
+            self._runner_log_cursor = (timestamp, event_id)
+        return len(events) < RUNNER_LOG_PAGE_SIZE
 
     async def _persist_live_metrics(self):
         """Persist live execution counters so reloads can rehydrate them."""
@@ -3052,6 +3155,21 @@ class FlowExecutionOrchestrator:
                     )
                 ):
                     self._note_agent_session(line)
+
+    async def _replay_persisted_runner_logs(self) -> None:
+        """Drain remaining runner pages before terminal PR/session/metrics binding.
+
+        Live monitoring normally consumed these rows already. Reuse its cursor
+        so terminal recovery cannot duplicate raw logs or derived metrics, and
+        yield between bounded pages when a completed run has a large backlog.
+        """
+        if self.execution_log is None:
+            return
+        ref = getattr(self.execution_log, "agent_session_reference", "") or ""
+        if not isinstance(ref, str) or not ref.startswith("runner:"):
+            return
+        while not await self._consume_runner_log_page(ref):
+            await asyncio.sleep(0)
 
     def _bind_opened_pr(self, output_summary: Optional[str]) -> None:
         """Persist the wrapper-opened PR on this execution's result.
@@ -3789,6 +3907,18 @@ class FlowExecutionOrchestrator:
                         # Continue polling for transient errors
                         await asyncio.sleep(poll_interval)
                         elapsed += poll_interval
+                        continue
+
+                if getattr(agent_executor, "streams_logs_externally", False) is True:
+                    caught_up = await self._consume_runner_log_page(session_reference)
+                    if not caught_up and status in (
+                        AgentStatus.SUCCEEDED,
+                        AgentStatus.FAILED,
+                        AgentStatus.STOPPED,
+                    ):
+                        # Drain the final backlog one bounded page at a time,
+                        # yielding between pages before deciding completion.
+                        await asyncio.sleep(0)
                         continue
 
                 # Publish status update (best effort - don't fail if NATS is down)
@@ -4530,6 +4660,11 @@ class FlowExecutionOrchestrator:
             agent_result, session_reference = await self._run_agent_with_retries(
                 execution_context
             )
+
+            # Private runners persist lines on the WebSocket; the live stream
+            # skips them so they are not published twice. Fold them in before
+            # terminal PR/session/metrics binding.
+            await self._replay_persisted_runner_logs()
 
             # Update execution log with final results including detailed logs
             final_status = agent_result.get("status", "FAILED")
