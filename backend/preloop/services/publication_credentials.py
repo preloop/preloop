@@ -131,7 +131,11 @@ async def revoke_repository_lease(
             timeout=15,
             follow_redirects=False,
         )
-        response.raise_for_status()
+        # The helper and controller both revoke independently. GitHub returns
+        # 401 when the known token was already revoked/expired, which proves it
+        # is unusable. Authorization/server errors still fail closed.
+        if response.status_code != 401:
+            response.raise_for_status()
     except httpx.HTTPError as exc:
         raise PublicationError(
             "Publisher token revocation failed; token will expire at its issued deadline"

@@ -207,6 +207,38 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         logger = logging.getLogger(__name__)
 
         update_data = obj_in.model_dump(exclude_unset=True)
+        if "result" in update_data:
+            # Result writers may hold an old ORM snapshot while the runner
+            # advances publication. Lock/read the current protected state and
+            # preserve it in the same transaction as this terminal update.
+            with db.no_autoflush:
+                stored = (
+                    db.query(FlowExecution.result)
+                    .filter(FlowExecution.id == db_obj.id)
+                    .with_for_update()
+                    .first()
+                )
+            existing = stored[0] if stored is not None else None
+            incoming = update_data["result"]
+            if isinstance(incoming, dict):
+                incoming = dict(incoming)
+                incoming.pop("_private_publication", None)
+            state = (
+                existing.get("_private_publication")
+                if isinstance(existing, dict)
+                else None
+            )
+            if isinstance(state, dict):
+                incoming = dict(incoming) if isinstance(incoming, dict) else {}
+                incoming["_private_publication"] = state
+                incoming.pop("trusted_publication", None)
+                if (
+                    state.get("phase") == "complete"
+                    and isinstance(state.get("receipt"), dict)
+                    and existing.get("trusted_publication") == state["receipt"]
+                ):
+                    incoming["trusted_publication"] = state["receipt"]
+            update_data["result"] = incoming
 
         # Debug logging for metrics updates
         if "tool_calls_count" in update_data or "total_tokens" in update_data:

@@ -65,6 +65,9 @@ async def prepare_runner_delivery(
     Adapter/credential errors must not strand the already committed lease. Do
     not serialize exception text: upstream client errors can contain secrets.
     """
+    from preloop.services.private_publication import public_publication_descriptor
+
+    public_job = {key: value for key, value in job.items() if key != "_publication"}
     try:
         if job.get("completion_protocol") == "host_exec":
             from preloop.services.host_exec import host_exec_profile_name
@@ -76,12 +79,15 @@ async def prepare_runner_delivery(
             ):
                 raise ValueError("Invalid native host lease")
             return dict(job)
+        state = job.get("_publication")
+        if state is not None:
+            public_job["publication"] = public_publication_descriptor(state)
         if context is None:
-            return await hydrate_runner_job(db, job)
-        return {**job, "launch": await build_runner_launch(context)}
+            return await hydrate_runner_job(db, public_job)
+        return {**public_job, "launch": await build_runner_launch(context)}
     except RunnerLaunchConfigurationChangedError:
         return {
-            **job,
+            **public_job,
             "launch_error": "Flow configuration changed after leasing; retry the execution",
         }
     except Exception:
@@ -89,7 +95,7 @@ async def prepare_runner_delivery(
             "Could not prepare private runner launch for %s", job.get("execution_id")
         )
         return {
-            **job,
+            **public_job,
             "launch_error": "Could not prepare private runner launch; verify the flow configuration and supported harness",
         }
 
@@ -185,6 +191,10 @@ async def hydrate_runner_job(db: Session, job: dict[str, Any]) -> dict[str, Any]
         "allowed_mcp_tools",
     ):
         if key in job:
+            # Private restore rebuilt the trusted, pinned branch/repository.
+            # A queued job's original flow config must not overwrite that pin.
+            if key == "git_clone_config" and job.get("publication"):
+                continue
             context[key] = job[key]
     hydrated = dict(job)
     hydrated["account_api_token"] = context.get("account_api_token")

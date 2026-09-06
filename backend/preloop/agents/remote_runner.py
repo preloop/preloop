@@ -76,6 +76,8 @@ class RemoteRunnerExecutor(AgentExecutor):
         execution = crud_flow_execution.get(self.db, id=execution_id)
         if runner:
             if execution:
+                if payload.get("_publication"):
+                    execution.error_message = None
                 execution.runner_id = runner.id
                 execution.agent_session_reference = f"runner:{runner.id}:{execution_id}"
                 self.db.add(execution)
@@ -97,6 +99,16 @@ class RemoteRunnerExecutor(AgentExecutor):
             return f"runner:{runner.id}:{execution_id}"
 
         if execution:
+            if payload.get("_publication"):
+                from preloop.models.schemas.flow_execution import FlowExecutionUpdate
+
+                crud_flow_execution.update(
+                    self.db,
+                    db_obj=execution,
+                    obj_in=FlowExecutionUpdate(
+                        error_message="Waiting for a private Docker runner with publication protocol v1 and a configured ready helper image"
+                    ),
+                )
             execution.agent_session_reference = (
                 f"runner:queued:{self.pool}:{execution_id}"
             )
@@ -153,6 +165,11 @@ class RemoteRunnerExecutor(AgentExecutor):
                     execution.error_message = (
                         f"No matching self-hosted runner for pool "
                         f"{self.pool} within {DEFAULT_QUEUE_TIMEOUT}"
+                        + (
+                            "; isolated publication requires protocol v1 and a configured ready helper image"
+                            if (execution.result or {}).get("_private_publication")
+                            else ""
+                        )
                     )
                     execution.end_time = datetime.now(timezone.utc)
                     self.db.add(execution)
@@ -176,6 +193,8 @@ class RemoteRunnerExecutor(AgentExecutor):
                 )
                 if runner:
                     payload = await prepare_runner_delivery(self.db, payload)
+                    if (execution.result or {}).get("_private_publication"):
+                        execution.error_message = None
                     execution.runner_id = runner.id
                     execution.agent_session_reference = (
                         f"runner:{runner.id}:{execution.id}"
@@ -327,6 +346,22 @@ class RemoteRunnerExecutor(AgentExecutor):
             "git_clone_config": git_clone_config,
             "custom_commands": context_or_flow("custom_commands"),
         }
+        if (payload.get("git_clone_config") or {}).get(
+            "publication_mode"
+        ) == "isolated":
+            execution = crud_flow_execution.get(
+                self.db, id=execution_id, account_id=str(self.account_id), refresh=True
+            )
+            state = (
+                (execution.result or {}).get("_private_publication")
+                if execution
+                else None
+            )
+            if not isinstance(state, dict):
+                raise ValueError(
+                    "Private publication requires a trusted policy snapshot"
+                )
+            payload["_publication"] = state
         if profile:
             payload["host_exec_profile"] = profile
             timeout_seconds = context.get("timeout_seconds")

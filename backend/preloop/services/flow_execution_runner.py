@@ -68,6 +68,50 @@ async def resume_existing_execution(
     if flow is None:
         raise ValueError("Flow not found for resumed execution")
 
+    from preloop.services.isolated_publication import isolated_publication_enabled
+    from preloop.services.trusted_publisher import PublicationError
+
+    orchestrator._isolated_publication_policy = None
+    saved_result = getattr(orchestrator.execution_log, "result", None)
+    protected_private = isinstance(saved_result, dict) and isinstance(
+        saved_result.get("_private_publication"), dict
+    )
+    isolated = protected_private or isolated_publication_enabled(
+        getattr(flow, "git_clone_config", None)
+    )
+    if isolated:
+        try:
+            if session_reference.startswith("runner:queued:"):
+                raise PublicationError(
+                    "Queued isolated execution cannot safely replay its original runner lease after recovery; publication blocked, retry explicitly with an eligible runner"
+                )
+            if not session_reference.startswith("runner:"):
+                raise PublicationError(
+                    "Recovered hosted isolated execution has no original trusted publication policy snapshot; publication blocked and original runtime retained for recovery"
+                )
+            from preloop.services.private_publication import (
+                load_private_monitoring_policy,
+            )
+
+            orchestrator._isolated_publication_policy = load_private_monitoring_policy(
+                orchestrator.db, flow, orchestrator.execution_log
+            )
+        except PublicationError as exc:
+            await orchestrator._update_execution_log(
+                status="FAILED",
+                error_message=str(exc),
+                failure_category="verification_blocked",
+                end_time=datetime.now(timezone.utc),
+            )
+            await orchestrator._notify_terminal(
+                status="FAILED",
+                failure_category="verification_blocked",
+                result=saved_result,
+            )
+            orchestrator._sync_runtime_session(ended_at=datetime.now(timezone.utc))
+            orchestrator._revoke_execution_runtime_tokens()
+            return
+
     # Matrix-aware: _get_flow_details() above resolved any per-cell agent_type
     # override into orchestrator.agent_type; a resumed matrix cell must be
     # monitored with its own harness, never the flow default.
@@ -82,6 +126,9 @@ async def resume_existing_execution(
         agent_result = await orchestrator._monitor_agent_execution(
             session_reference, agent_executor
         )
+        if orchestrator._isolated_publication_policy is not None:
+            await orchestrator._replay_persisted_runner_logs()
+            await orchestrator._finish_isolated_publication(agent_result)
         final_status = agent_result.get("status", "FAILED")
         resume_category = derive_failure_category(
             status=final_status,

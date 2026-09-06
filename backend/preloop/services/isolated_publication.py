@@ -47,7 +47,7 @@ class IsolatedPublicationPolicy:
     expected_remote_sha: str | None
     execution_id: str
     previous_records: tuple[PublicationRecord, ...]
-    read_lease: PublicationLease
+    read_lease: PublicationLease | None
     configured_title: str
     configured_body: str
     issue_number: str
@@ -73,10 +73,13 @@ async def prepare_isolated_publication(
     )
     from preloop.services.runner_service import resolve_runner_pool
 
-    if resolve_runner_pool(flow, context, db=db):
-        raise PublicationError(
-            "Isolated publication on private runners requires trusted bundle/evidence upload support; use a hosted isolated runtime until that capability is available"
-        )
+    private = bool(resolve_runner_pool(flow, context, db=db))
+    if private:
+        from preloop.services.private_publication import restore_private_publication
+
+        restored = await restore_private_publication(db, flow, context)
+        if restored is not None:
+            return restored
     config = dict(context["git_clone_config"])
     verification_policy = resolve_verification_policy(config)
     if verification_policy.mode != "gate" or verification_policy.profile is None:
@@ -268,7 +271,7 @@ async def prepare_isolated_publication(
         base_sha,
         verification_policy,
         verification_image,
-        False,
+        private,
         secrets.token_hex(32),
     )
 

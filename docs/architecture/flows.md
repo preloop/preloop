@@ -167,8 +167,29 @@ that repository: `contents:read` for the agent, then `contents:write` and
 `pull_requests:write` for the publisher after verification. Stored PATs and
 GitLab publication are rejected in this mode until a broker can enforce their
 scope and lifetime. The standalone metadata/provider client supports both
-GitHub and GitLab. Unsupported private runners fail before agent execution;
-private source must remain local, not be uploaded to bypass this restriction.
+GitHub and GitLab. Private runners require an authenticated current capability
+advertisement confirming protocol v1 and a locally available digest-pinned
+trusted helper image. Older runners cannot receive an isolated lease. Private
+source stays on the runner; the controller receives only bounded manifests,
+check outcomes, and the provider receipt.
+
+Private verification is an ordered, nonce-bound handshake. The runner removes
+the agent and residual volume writers, freezes the bundle in independent
+storage, runs the exact controller-selected checks, and confirms verifier
+removal. Only then does the controller issue a repository-scoped writer to the
+trusted publisher helper. Agent result files and ordinary completion messages
+cannot advance publication. Both helper and controller revoke the writer;
+already-invalid token responses make repeated revocation safe.
+
+Recovered private monitoring restores the protected policy and accepted receipt
+without relaunching the agent or replaying credentials. Queued isolated
+executions fail closed on worker recovery because their original lease cannot
+be safely replayed; retry explicitly after an eligible runner is available.
+Private frozen recovery artifacts remain local with a fixed 24-hour retention
+limit after verification or publication failure. A recovered hosted isolated
+execution currently cannot reconstruct its original trusted policy
+snapshot: it fails closed with an explicit diagnostic and retains its original
+runtime for recovery. It does not silently switch to ungated publication.
 
 After runtime cleanup, the control-plane publisher imports a bounded,
 self-contained `branch.bundle` into a fresh bare object store. It never checks

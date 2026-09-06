@@ -2218,6 +2218,14 @@ class FlowExecutionOrchestrator:
             self._isolated_publication_policy = await prepare_isolated_publication(
                 self.db, self.flow, execution_context
             )
+            if self._isolated_publication_policy.private:
+                from preloop.services.private_publication import (
+                    persist_private_publication,
+                )
+
+                persist_private_publication(
+                    self.db, self.flow, self._isolated_publication_policy
+                )
 
         # Isolated mode never resolves the existing broad tracker token.
         if self.flow.git_clone_config and self._isolated_publication_policy is None:
@@ -2997,6 +3005,7 @@ class FlowExecutionOrchestrator:
         # Reserved publisher state is control-plane owned, never agent JSON.
         artifact = dict(artifact)
         artifact.pop("trusted_publication", None)
+        artifact.pop("_private_publication", None)
         self.execution_logger.log_milestone(
             "result_artifact_captured",
             {"keys": sorted(artifact.keys())[:20]},
@@ -4732,6 +4741,12 @@ class FlowExecutionOrchestrator:
         policy = getattr(self, "_isolated_publication_policy", None)
         if policy is None:
             return
+        reported_result = agent_result.get("result")
+        if isinstance(reported_result, dict):
+            reported_result = dict(reported_result)
+            reported_result.pop("trusted_publication", None)
+            reported_result.pop("_private_publication", None)
+            agent_result["result"] = reported_result
         import httpx
         from preloop.services.isolated_publication import finish_isolated_publication
         from preloop.services.publication_credentials import revoke_repository_lease
@@ -4740,42 +4755,61 @@ class FlowExecutionOrchestrator:
         try:
             if agent_result.get("status") != "SUCCEEDED":
                 return
-            if not getattr(self, "_publication_runtime_stopped", False):
-                raise PublicationError(
-                    "Agent runtime cleanup was not confirmed; refusing to issue publication credentials"
-                )
-            from preloop.services.publication_hosted_verifier import (
-                verify_hosted_publication,
-            )
-            from preloop.services.trusted_publisher import read_publication_bundle
+            if getattr(policy, "private", False):
+                from preloop.services.private_publication import trusted_private_receipt
 
-            executor = getattr(self, "_publication_executor", None)
-            if executor is None:
-                raise PublicationError("Missing trusted verifier runtime adapter")
-            try:
-                verified = await verify_hosted_publication(
-                    executor,
+                execution = crud_flow_execution.get(
+                    self.db,
+                    id=policy.execution_id,
+                    account_id=policy.account_id,
+                    refresh=True,
+                )
+                if execution is None:
+                    raise PublicationError(
+                        "Private publication execution is no longer authorized"
+                    )
+                publication = trusted_private_receipt(execution)
+                if not isinstance(publication, dict):
+                    raise PublicationError(
+                        "Private publication has no controller-accepted completion receipt"
+                    )
+            else:
+                if not getattr(self, "_publication_runtime_stopped", False):
+                    raise PublicationError(
+                        "Agent runtime cleanup was not confirmed; refusing to issue publication credentials"
+                    )
+                from preloop.services.publication_hosted_verifier import (
+                    verify_hosted_publication,
+                )
+                from preloop.services.trusted_publisher import read_publication_bundle
+
+                executor = getattr(self, "_publication_executor", None)
+                if executor is None:
+                    raise PublicationError("Missing trusted verifier runtime adapter")
+                try:
+                    verified = await verify_hosted_publication(
+                        executor,
+                        policy,
+                        read_publication_bundle(self._evidence_archive or b""),
+                    )
+                    self._publication_verification = verified.verification
+                    self.execution_logger.log_milestone(
+                        "trusted_verification_succeeded",
+                        {
+                            "manifest": verified.manifest,
+                            "checks": list(verified.checks),
+                            "image": verified.image,
+                        },
+                    )
+                finally:
+                    await executor.cleanup()
+                publication = await finish_isolated_publication(
+                    self.db,
                     policy,
-                    read_publication_bundle(self._evidence_archive or b""),
+                    agent_result,
+                    self._evidence_archive,
+                    getattr(self, "_publication_verification", None),
                 )
-                self._publication_verification = verified.verification
-                self.execution_logger.log_milestone(
-                    "trusted_verification_succeeded",
-                    {
-                        "manifest": verified.manifest,
-                        "checks": list(verified.checks),
-                        "image": verified.image,
-                    },
-                )
-            finally:
-                await executor.cleanup()
-            publication = await finish_isolated_publication(
-                self.db,
-                policy,
-                agent_result,
-                self._evidence_archive,
-                getattr(self, "_publication_verification", None),
-            )
             result = dict(agent_result.get("result") or {})
             result["trusted_publication"] = publication
             agent_result["result"] = result
@@ -4800,13 +4834,15 @@ class FlowExecutionOrchestrator:
                 failure["verification"] = exc.evidence
             self.execution_logger.log_milestone("trusted_publication_failed", failure)
         finally:
-            async with httpx.AsyncClient() as client:
-                try:
-                    await revoke_repository_lease(policy.read_lease, client)
-                except PublicationError as exc:
-                    self.execution_logger.log_milestone(
-                        "publication_credential_revocation_failed", {"reason": str(exc)}
-                    )
+            if policy.read_lease is not None:
+                async with httpx.AsyncClient() as client:
+                    try:
+                        await revoke_repository_lease(policy.read_lease, client)
+                    except PublicationError as exc:
+                        self.execution_logger.log_milestone(
+                            "publication_credential_revocation_failed",
+                            {"reason": str(exc)},
+                        )
 
     async def run(self):
         """

@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import secrets
 from datetime import datetime, timezone
+from string import ascii_letters, digits
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -16,7 +18,7 @@ from preloop.agents.runner_launch import (
     prepare_runner_delivery,
 )
 from preloop.api.auth import get_current_active_user
-from preloop.models import schemas
+from preloop.models import models, schemas
 from preloop.models.crud import (
     crud_api_key,
     crud_flow,
@@ -26,24 +28,47 @@ from preloop.models.crud import (
 )
 from preloop.models.crud.flow_runner import crud_flow_runner
 from preloop.models.db.session import get_db_session as get_db
-from preloop.models.models.flow_runner import FlowRunner
-from preloop.models.models.user import User
+
 from preloop.services.runner_service import (
     emit_runner_updated,
     hash_runner_token,
     mint_runner_token,
 )
+from preloop.services.private_publication import (
+    PrivatePublicationController,
+    trusted_private_receipt,
+)
+from preloop.services.trusted_publisher import PublicationError
 from preloop.services.host_exec import (
     finalize_runner_completion,
     normalize_host_exec_advertisements,
 )
 from preloop.utils.permissions import require_permission
 
+FlowRunner = models.FlowRunner
+User = models.User
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # runner_id -> live websocket (this process only)
 _live: Dict[str, WebSocket] = {}
+
+
+def _valid_publication_helper_image(value: object) -> bool:
+    """Validate a bounded, digest-pinned reference without regex backtracking."""
+    if not isinstance(value, str) or len(value) > 1024:
+        return False
+    name, separator, digest = value.partition("@sha256:")
+    alphanumeric = ascii_letters + digits
+    return (
+        bool(separator)
+        and bool(name)
+        and name[0] in alphanumeric
+        and all(character in alphanumeric + "._:/-" for character in name)
+        and len(digest) == 64
+        and all(character in "0123456789abcdef" for character in digest)
+    )
 
 
 def _release_live_runner(runner_key: str, connection: WebSocket) -> bool:
@@ -205,6 +230,14 @@ def job_for_heartbeat_ack(
     pending_job = getattr(runner, "pending_job", None)
     if not pending_job:
         return None
+    state = pending_job.get("_publication")
+    if state and (
+        state.get("phase") != "agent"
+        or not runner_needs_lease_token(runner)
+        or (getattr(runner, "publication_capabilities", None) or {}).get("helper_ready")
+        is not True
+    ):
+        return None
     return job_for_runner_replay(
         db,
         pending_job=pending_job,
@@ -277,11 +310,24 @@ async def runner_ws(
 
     runner_key = str(runner.id)
     _live[runner_key] = websocket
+    connection_id = secrets.token_hex(32)
+    crud_flow_runner.set_publication_capabilities(
+        db, runner_id=runner.id, capabilities={"connection_id": connection_id}
+    )
+    publication = PrivatePublicationController(
+        db,
+        runner_id=runner.id,
+        account_id=runner.account_id,
+        connection_id=connection_id,
+    )
+    if runner.current_execution_id and (runner.pending_job or {}).get("_publication"):
+        publication.execution_id = runner.current_execution_id
+        publication.nonce = runner.pending_job["_publication"]["nonce"]
     crud_flow_runner.touch_heartbeat(db, runner, status="online")
     hello: Dict[str, Any] = {"type": "hello", "runner_id": runner_key}
     db.refresh(runner)
     emit_runner_updated(runner, db)
-    if runner.pending_job:
+    if runner.pending_job and not runner.pending_job.get("_publication"):
         hello["job"] = await prepare_runner_delivery(
             db,
             job_for_runner_replay(db, pending_job=runner.pending_job, mint_token=True),
@@ -301,7 +347,57 @@ async def runner_ws(
                 await websocket.send_json({"type": "error", "error": "gone"})
                 break
 
+            if (runner.publication_capabilities or {}).get(
+                "connection_id"
+            ) != connection_id:
+                await websocket.send_json(
+                    {"type": "error", "error": "Runner connection was replaced"}
+                )
+                break
+            if msg_type.startswith("publication_"):
+                try:
+                    reply = await publication.handle(raw)
+                    await websocket.send_json(reply)
+                except (PublicationError, ValueError):
+                    await publication.close()
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "error": "Publication protocol rejected; recovery retained",
+                        }
+                    )
+                continue
+
             if msg_type == "heartbeat":
+                capability = raw.get("publication_capabilities")
+                ready = (
+                    isinstance(capability, dict)
+                    and type(capability.get("version")) is int
+                    and capability.get("version") == 1
+                    and capability.get("helper_ready") is True
+                    and _valid_publication_helper_image(capability.get("helper_image"))
+                )
+                updated_capability = crud_flow_runner.set_publication_capabilities(
+                    db,
+                    runner_id=runner.id,
+                    expected_connection_id=connection_id,
+                    capabilities={
+                        "connection_id": connection_id,
+                        **(
+                            {
+                                "version": 1,
+                                "helper_ready": True,
+                                "helper_image": capability["helper_image"],
+                            }
+                            if ready
+                            else {}
+                        ),
+                    },
+                )
+                if not updated_capability:
+                    break
+                if runner.halt_requested:
+                    await publication.close()
                 status = "busy" if runner.current_execution_id else "online"
                 if "host_exec_profiles" in raw:
                     runner.capabilities = normalize_host_exec_advertisements(raw)
@@ -369,13 +465,19 @@ async def runner_ws(
                 continue
 
             if msg_type == "unregister":
-                runner.status = "offline"
-                runner.pending_job = None
-                runner.current_execution_id = None
-                runner.halt_requested = False
-                db.add(runner)
-                db.commit()
-                emit_runner_updated(runner, db)
+                await publication.close()
+                if crud_flow_runner.set_publication_capabilities(
+                    db,
+                    runner_id=runner.id,
+                    capabilities={},
+                    expected_connection_id=connection_id,
+                    offline=True,
+                    clear_lease=True,
+                    execution_id=runner.current_execution_id,
+                ):
+                    fresh_runner = crud_flow_runner.get_fresh(db, runner_id=runner_id)
+                    if fresh_runner is not None:
+                        emit_runner_updated(fresh_runner, db)
                 await websocket.send_json({"type": "ack"})
                 break
 
@@ -399,11 +501,30 @@ async def runner_ws(
                 status, completion_error, result = finalize_runner_completion(
                     raw, pending_job=runner.pending_job
                 )
-                runner.reported_status = status
-                runner.pending_job = None
-                runner.current_execution_id = None
-                runner.halt_requested = False
-                runner.status = "online"
+                isolated = bool((runner.pending_job or {}).get("_publication"))
+                execution = crud_flow_execution.get(
+                    db, id=execution_id, account_id=str(runner.account_id), refresh=True
+                )
+                if isolated:
+                    if status == "SUCCEEDED":
+                        try:
+                            trusted_private_receipt(execution)
+                        except (PublicationError, AttributeError):
+                            status = "FAILED"
+                            completion_error = (
+                                "Private publication completion was not acknowledged"
+                            )
+                    await publication.close()
+                if not crud_flow_runner.set_publication_capabilities(
+                    db,
+                    runner_id=runner.id,
+                    capabilities=runner.publication_capabilities,
+                    expected_connection_id=connection_id,
+                    clear_lease=True,
+                    execution_id=execution_id,
+                    reported_status=status,
+                ):
+                    break
                 execution = crud_flow_execution.get(db, id=execution_id)
                 if execution:
                     execution.status = status
@@ -416,7 +537,18 @@ async def runner_ws(
                         execution.error_message = completion_error
 
                     if result is not None:
-                        execution.result = result
+                        clean_result = {
+                            key: value
+                            for key, value in result.items()
+                            if key
+                            not in {"trusted_publication", "_private_publication"}
+                        }
+                        protected = {
+                            key: value
+                            for key, value in (execution.result or {}).items()
+                            if key in {"trusted_publication", "_private_publication"}
+                        }
+                        execution.result = {**clean_result, **protected}
                     db.add(execution)
                     crud_api_key.deactivate_runtime_keys_for_flow_execution(
                         db,
@@ -424,9 +556,10 @@ async def runner_ws(
                         execution_id=execution_id,
                         commit=False,
                     )
-                db.add(runner)
                 db.commit()
-                emit_runner_updated(runner, db)
+                fresh_runner = crud_flow_runner.get_fresh(db, runner_id=runner_id)
+                if fresh_runner is not None:
+                    emit_runner_updated(fresh_runner, db)
                 await websocket.send_json({"type": "ack"})
                 continue
 
@@ -434,13 +567,24 @@ async def runner_ws(
     except WebSocketDisconnect:
         logger.info("runner %s disconnected", runner_id)
     finally:
-        if _release_live_runner(runner_key, websocket):
-            row = crud_flow_runner.get(db, id=runner_id)
-            if row and row.status in ("online", "busy"):
-                row.status = "offline"
-                db.add(row)
-                db.commit()
-                emit_runner_updated(row, db)
+        try:
+            await publication.close()
+        except PublicationError:
+            logger.warning(
+                "Private publication credential cleanup failed for runner %s", runner_id
+            )
+        finally:
+            _release_live_runner(runner_key, websocket)
+            if crud_flow_runner.set_publication_capabilities(
+                db,
+                runner_id=runner_id,
+                capabilities={},
+                expected_connection_id=connection_id,
+                offline=True,
+            ):
+                row = crud_flow_runner.get_fresh(db, runner_id=runner_id)
+                if row:
+                    emit_runner_updated(row, db)
 
 
 async def push_job_to_runner(runner_id: UUID, job: Dict[str, Any]) -> bool:

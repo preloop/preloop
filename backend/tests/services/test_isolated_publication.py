@@ -392,3 +392,248 @@ async def test_failed_recovery_commit_does_not_authorize_removal():
         await orchestrator._persist_isolated_recovery()
     orchestrator.db.rollback.assert_called_once()
     orchestrator.execution_logger.log_milestone.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_private_restore_preserves_snapshot_without_provider_reresolution():
+    from preloop.services.isolated_publication import prepare_isolated_publication
+
+    restored = object()
+    flow = SimpleNamespace(account_id="account", id="flow")
+    context = {
+        "execution_id": "execution",
+        "git_clone_config": {"publication_mode": "isolated"},
+    }
+    with (
+        patch(
+            "preloop.services.runner_service.resolve_runner_pool",
+            return_value="private",
+        ),
+        patch(
+            "preloop.services.private_publication.restore_private_publication",
+            new=AsyncMock(return_value=restored),
+        ) as restore,
+        patch(
+            "preloop.services.isolated_publication.mint_repository_lease",
+            new=AsyncMock(),
+        ) as mint,
+    ):
+        assert (
+            await prepare_isolated_publication(MagicMock(), flow, context) is restored
+        )
+    restore.assert_awaited_once()
+    mint.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("accepted", [False, True])
+async def test_private_success_requires_trusted_receipt_not_agent_claim(accepted):
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.db = MagicMock()
+    orchestrator.execution_logger = MagicMock()
+    orchestrator._publication_runtime_stopped = False
+    orchestrator._isolated_publication_policy = SimpleNamespace(
+        private=True,
+        execution_id="execution",
+        account_id="account",
+        read_lease=object(),
+    )
+    receipt = (
+        {"url": "https://github.com/example/project/pull/1", "head_sha": "a" * 40}
+        if accepted
+        else None
+    )
+    result = {
+        "status": "SUCCEEDED",
+        "result": {"trusted_publication": {"url": "forged"}},
+    }
+    execution = object()
+    with (
+        patch(
+            "preloop.services.private_publication.trusted_private_receipt",
+            return_value=receipt,
+        ) as read,
+        patch(
+            "preloop.services.flow_orchestrator.crud_flow_execution.get",
+            return_value=execution,
+        ) as get,
+        patch(
+            "preloop.services.publication_credentials.revoke_repository_lease",
+            new=AsyncMock(),
+        ),
+        patch(
+            "preloop.services.publication_hosted_verifier.verify_hosted_publication",
+            new=AsyncMock(),
+        ) as verify,
+        patch(
+            "preloop.services.isolated_publication.finish_isolated_publication",
+            new=AsyncMock(),
+        ) as publish,
+    ):
+        await orchestrator._finish_isolated_publication(result)
+    get.assert_called_once_with(
+        orchestrator.db, id="execution", account_id="account", refresh=True
+    )
+    read.assert_called_once_with(execution)
+    verify.assert_not_awaited()
+    publish.assert_not_awaited()
+    assert result["status"] == ("SUCCEEDED" if accepted else "FAILED")
+    if accepted:
+        assert result["result"]["trusted_publication"] == receipt
+    else:
+        assert "trusted_publication" not in result["result"]
+
+
+@pytest.mark.asyncio
+async def test_helper_then_controller_revocation_is_idempotent():
+    from preloop.services.publication_credentials import revoke_repository_lease
+
+    replies = iter([204, 401])
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(next(replies)))
+    ) as client:
+        lease = PublicationLease(
+            "known-token",
+            "https://github.com/example/project.git",
+            datetime.now(timezone.utc) + timedelta(minutes=10),
+        )
+        await revoke_repository_lease(lease, client)
+        await revoke_repository_lease(lease, client)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", [403, 500])
+async def test_revocation_authorization_or_provider_failure_is_not_success(code):
+    from preloop.services.publication_credentials import revoke_repository_lease
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(code))
+    ) as client:
+        lease = PublicationLease(
+            "known-token",
+            "https://github.com/example/project.git",
+            datetime.now(timezone.utc) + timedelta(minutes=10),
+        )
+        with pytest.raises(PublicationError, match="revocation failed"):
+            await revoke_repository_lease(lease, client)
+
+
+@pytest.mark.parametrize("phase", ["verifying", "complete"])
+def test_terminal_crud_preserves_current_private_state_over_stale_result(phase):
+    from uuid import uuid4
+    from preloop.models import schemas
+    from preloop.models.crud import crud_flow_execution
+
+    receipt = {"url": "https://github.com/example/project/pull/1", "head_sha": "a" * 40}
+    state = {"phase": phase, "nonce": "b" * 64, "receipt": receipt}
+    db = MagicMock()
+    db.query.return_value.filter.return_value.with_for_update.return_value.first.return_value = (
+        {"_private_publication": state, "trusted_publication": receipt},
+    )
+    execution = SimpleNamespace(
+        id=uuid4(), result={"_private_publication": {"phase": "agent"}}
+    )
+    crud_flow_execution.update(
+        db,
+        db_obj=execution,
+        obj_in=schemas.FlowExecutionUpdate(
+            result={
+                "summary": "done",
+                "_private_publication": {"phase": "complete"},
+                "trusted_publication": {"url": "forged"},
+            }
+        ),
+    )
+    assert execution.result["_private_publication"] == state
+    assert execution.result["summary"] == "done"
+    if phase == "complete":
+        assert execution.result["trusted_publication"] == receipt
+    else:
+        assert "trusted_publication" not in execution.result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reference,diagnostic",
+    [
+        ("hosted-job", "runtime retained"),
+        (
+            "runner:queued:original-pool:11111111-1111-4111-8111-111111111111",
+            "Queued isolated execution",
+        ),
+    ],
+)
+async def test_recovery_without_replay_authority_fails_closed(reference, diagnostic):
+    from preloop.services.flow_execution_runner import resume_existing_execution
+
+    orchestrator = MagicMock()
+    orchestrator.flow = SimpleNamespace(
+        agent_type="codex",
+        agent_config={},
+        git_clone_config={"publication_mode": "isolated"},
+    )
+    orchestrator.execution_log = SimpleNamespace(id="execution", result={})
+    orchestrator._update_execution_log = AsyncMock()
+    orchestrator._notify_terminal = AsyncMock()
+    orchestrator._monitor_agent_execution = AsyncMock()
+    with patch("preloop.agents.create_agent_executor") as create:
+        await resume_existing_execution(orchestrator, reference)
+    create.assert_not_called()
+    orchestrator._monitor_agent_execution.assert_not_awaited()
+    assert orchestrator._update_execution_log.call_args.kwargs["status"] == "FAILED"
+    assert (
+        diagnostic
+        in orchestrator._update_execution_log.call_args.kwargs["error_message"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_private_recovered_monitor_restores_policy_and_finalizes_before_status():
+    from uuid import uuid4
+    from preloop.services.flow_execution_runner import resume_existing_execution
+
+    orchestrator = MagicMock()
+    orchestrator.flow = SimpleNamespace(
+        account_id=uuid4(),
+        agent_type="codex",
+        agent_config={},
+        git_clone_config={"publication_mode": "isolated"},
+    )
+    orchestrator.agent_type = "codex"
+    orchestrator.execution_log = SimpleNamespace(
+        id=uuid4(), result={"_private_publication": {"phase": "verifying"}}
+    )
+    events = []
+
+    async def monitor(*args):
+        events.append("monitor")
+        return {"status": "SUCCEEDED", "result": {}}
+
+    async def finish(result):
+        events.append("finalize")
+        result["status"] = "FAILED"
+
+    async def update(**kwargs):
+        events.append(kwargs["status"])
+
+    orchestrator._monitor_agent_execution = AsyncMock(side_effect=monitor)
+    orchestrator._finish_isolated_publication = AsyncMock(side_effect=finish)
+    orchestrator._replay_persisted_runner_logs = AsyncMock()
+    orchestrator._update_execution_log = AsyncMock(side_effect=update)
+    orchestrator._notify_terminal = AsyncMock()
+    executor = SimpleNamespace(cleanup=AsyncMock())
+    with (
+        patch(
+            "preloop.services.private_publication.load_private_monitoring_policy",
+            return_value=object(),
+        ) as restore,
+        patch(
+            "preloop.agents.remote_runner.RemoteRunnerExecutor", return_value=executor
+        ) as create,
+    ):
+        await resume_existing_execution(
+            orchestrator, f"runner:{uuid4()}:{orchestrator.execution_log.id}"
+        )
+    restore.assert_called_once()
+    create.assert_called_once()
+    assert events == ["monitor", "finalize", "FAILED"]

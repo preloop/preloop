@@ -57,6 +57,11 @@ class FlowRunner(Base):
         index=True,
     )
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    publication_capabilities: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+    )
     pending_job: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     halt_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     reported_status: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
