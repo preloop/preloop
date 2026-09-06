@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recorded model/harness require an explicit new run. Durable feedback blocks
   with `model_identity_unavailable` instead of silently adopting new defaults.
 
+- **Account emergency halt**: audited gateway/tool/flow controls, persistent
+  console banner, frozen approval deadlines and durable managed runtime stop
+  requests with explicit termination confirmation. Recovery is staged, records
+  a reason and preserves outstanding stops across process restart or re-enable.
+
 - **Approved flow environments and workspace recovery**: optional pinned profiles
   provide bounded setup and isolated services. Hosted executions can retain encrypted,
   scoped checkpoints and recover unpushed commits plus dirty/untracked files. Private
@@ -136,6 +141,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adds a page by dropping a markdown file.
 
 ### Fixed
+
+- **OpenCode log-filter tests no longer crash without Node**:
+  `TestOpenCodeLogFilterJs` spawned `node` and raised `FileNotFoundError`
+  in the GitLab agents job (Python slim image) and any local env without
+  Node on `PATH`. Those cases skip; the agents unit job installs `nodejs`
+  so CI still parses and executes the embedded filter.
 
 - **Landing build fails on missing screenshots**: the brand Vite plugin
   now errors when a landing `hero.image` or feature `placeholderImg` is

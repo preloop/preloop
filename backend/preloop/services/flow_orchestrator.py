@@ -1081,7 +1081,7 @@ class FlowExecutionOrchestrator:
         except Exception as e:
             logger.error(f"Failed to publish update to NATS: {e}", exc_info=True)
 
-    def _get_flow_details(self):
+    def _get_flow_details(self, *, refresh: bool = False):
         """Retrieve the Flow definition and associated AIModel."""
         logger.info(f"Retrieving flow details for flow_id: {self.flow_id}")
 
@@ -1091,7 +1091,9 @@ class FlowExecutionOrchestrator:
         )
         # Use CRUD layer without account filtering since this is an internal service
         # and we don't have the account_id yet (it's a property of the flow itself)
-        self.flow = crud_flow.get(self.db, id=flow_id_str)
+        self.flow = crud_flow.get(
+            self.db, id=flow_id_str, **({"refresh": True} if refresh else {})
+        )
         if not self.flow:
             raise ValueError(f"Flow with id {self.flow_id} not found")
 
@@ -2057,14 +2059,17 @@ class FlowExecutionOrchestrator:
             logger.error(f"Error executing custom commands: {e}", exc_info=True)
             return False
 
-    async def _prepare_execution_context(self) -> Dict[str, Any]:
+    async def _prepare_execution_context(
+        self, *, resolved_prompt: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Prepare the full execution context for the agent."""
         effective_agent_type = self.agent_type or self.flow.agent_type
         logger.info(
             f"Preparing execution context for agent type: {effective_agent_type}"
         )
 
-        resolved_prompt = await self._resolve_prompt()
+        if resolved_prompt is None:
+            resolved_prompt = await self._resolve_prompt()
 
         # Validate trigger-payload workspace seeds before any agent starts: a
         # bad `workspace_files` declaration (path traversal, oversized inline
@@ -2754,6 +2759,18 @@ class FlowExecutionOrchestrator:
                 execution_context=execution_context,
             )
 
+            # Admission and account activation share a row lock. If activation
+            # wins, do not launch. If launch wins, activation persists stop intent.
+            if not crud_flow_execution.admit_runtime_start(
+                self.db,
+                execution_id=self.execution_log.id,
+            ):
+                crud_flow_execution.cancel_unstarted_stop(
+                    self.db, execution_id=self.execution_log.id
+                )
+                from preloop.services.kill_switch import FlowHaltActiveError
+
+                raise FlowHaltActiveError("Account kill switch prevented agent launch")
             from preloop.agents.remote_runner import RemoteRunnerExecutor
             from preloop.services.checkpoint_runtime import checkpoint_context
 
@@ -3798,6 +3815,37 @@ class FlowExecutionOrchestrator:
                             heartbeat_error,
                         )
 
+                stop_request = crud_flow_execution.get_stop_request(
+                    self.db,
+                    execution_id=self.execution_log.id,
+                )
+                if stop_request:
+                    # Persisted intent survives a worker restart and a quick
+                    # scope re-enable. A runner halt flag is only a request.
+                    try:
+                        await agent_executor.stop(session_reference)
+                        if await agent_executor.is_stopped(session_reference) is True:
+                            crud_flow_execution.confirm_stop(
+                                self.db, execution_id=self.execution_log.id
+                            )
+                            return {
+                                "status": "STOPPED",
+                                "error_message": "Execution terminated after account kill-switch request",
+                                "actions_taken": self.execution_logger.get_actions_taken(),
+                                "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                                "result": await self._capture_result_artifact(
+                                    agent_executor, session_reference
+                                ),
+                            }
+                    except Exception:
+                        logger.exception(
+                            "Stop requested but not confirmed for %s",
+                            self.execution_log.id,
+                        )
+                    await asyncio.sleep(poll_interval)
+                    elapsed += poll_interval
+                    continue
+
                 # Check if user requested stop
                 if self._stop_requested.is_set():
                     logger.info(
@@ -4484,9 +4532,17 @@ class FlowExecutionOrchestrator:
             # Each attempt runs its own CLI session; forget the previous
             # attempt's marker so the retry's session overwrites it.
             self._agent_session = None
-            session_reference, agent_executor = await self._start_agent_session(
-                execution_context
-            )
+            from preloop.services.kill_switch import FlowHaltActiveError
+
+            try:
+                session_reference, agent_executor = await self._start_agent_session(
+                    execution_context
+                )
+            except FlowHaltActiveError:
+                return {
+                    "status": "STOPPED",
+                    "error_message": "Account kill switch prevented agent launch",
+                }, None
 
             await self._update_execution_log(
                 status="RUNNING",

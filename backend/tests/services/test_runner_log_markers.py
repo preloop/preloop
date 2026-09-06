@@ -182,7 +182,10 @@ async def test_terminal_monitor_drains_runner_logs_before_result() -> None:
         exit_code=0,
     )
     drains = AsyncMock(side_effect=[False, False, True])
-    with patch.object(instance, "_consume_runner_log_page", drains):
+    with (
+        patch.object(instance, "_consume_runner_log_page", drains),
+        patch.object(crud_flow_execution, "get_stop_request", return_value=None),
+    ):
         result = await instance._monitor_agent_execution("runner:test", executor)
     assert drains.await_count == 3
     executor.get_result.assert_awaited_once()

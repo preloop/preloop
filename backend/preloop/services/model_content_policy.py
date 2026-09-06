@@ -585,6 +585,7 @@ async def hold_for_model_io_approval(
         tool_source="builtin",
         account_id=str(account_id),
         arguments=_approval_arguments(decision, target),
+        halt_scope="gateway",
         workflow_id=workflow_id,
         rule_context=rule_context,
     )

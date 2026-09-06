@@ -22,6 +22,7 @@ from preloop.api.auth import get_current_active_user
 from preloop.models.models.user import User
 from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
 from preloop.services.execution_metrics import project_execution_totals
+from preloop.services.kill_switch import FlowHaltActiveError
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.utils.hashing import compute_content_hash
 from preloop.utils.audit import log_config_change
@@ -1311,6 +1312,13 @@ def _display_name(user: User) -> str:
     return name or getattr(user, "username", None) or getattr(user, "email", "") or ""
 
 
+def _halted_response() -> HTTPException:
+    """Distinct 403 for manual triggers blocked by the kill switch (#157)."""
+    from preloop.services.kill_switch import FLOW_DENIAL_MESSAGE
+
+    return HTTPException(status_code=403, detail=FLOW_DENIAL_MESSAGE)
+
+
 def _validate_matrix(
     db: Session, matrix: Any, account_id: uuid.UUID
 ) -> List[Dict[str, Any]]:
@@ -1418,11 +1426,11 @@ async def trigger_flow_execution(
 
     trigger_service = FlowTriggerService(db)
 
-    try:
-        if matrix is not None:
-            validated_matrix = _validate_matrix(
-                db, matrix, account_id=current_user.account_id
-            )
+    if matrix is not None:
+        validated_matrix = _validate_matrix(
+            db, matrix, account_id=current_user.account_id
+        )
+        try:
             return await trigger_service.trigger_flow_matrix(
                 flow_id=flow_id,
                 matrix=validated_matrix,
@@ -1430,8 +1438,13 @@ async def trigger_flow_execution(
                 trigger_event_data=trigger_event_data,
                 triggered_by=_display_name(current_user),
             )
+        except ModelRoutingError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except FlowHaltActiveError:
+            raise _halted_response()
 
-        return await trigger_service.trigger_flow(
+    try:
+        result = await trigger_service.trigger_flow(
             flow_id=flow_id,
             test_mode=True,
             trigger_event_data=trigger_event_data,
@@ -1439,6 +1452,10 @@ async def trigger_flow_execution(
         )
     except ModelRoutingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except FlowHaltActiveError:
+        raise _halted_response()
+
+    return result
 
 
 @router.post("/flows/executions/{execution_id}/retry")
@@ -1490,7 +1507,7 @@ async def retry_flow_execution(
 
     trigger_service = FlowTriggerService(db)
     try:
-        return await trigger_service.trigger_flow(
+        result = await trigger_service.trigger_flow(
             flow_id=original.flow_id,
             test_mode=False,
             trigger_event_data=original.trigger_event_details,
@@ -1499,6 +1516,10 @@ async def retry_flow_execution(
         )
     except ModelRoutingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except FlowHaltActiveError:
+        raise _halted_response()
+
+    return result
 
 
 @router.get("/flows/{flow_id}", response_model=schemas.FlowResponse)
@@ -1991,6 +2012,11 @@ async def trigger_flow_via_webhook(
         )
     except ModelRoutingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except FlowHaltActiveError:
+        # The account kill switch halts new executions (#157): nothing was
+        # created, so a clean 403 (not 202/500) tells webhook senders this
+        # trigger was deliberately refused, not lost.
+        raise _halted_response()
     except FlowDispatchError as e:
         # The execution row was committed before dispatch failed: report 202
         # with the execution id so callers can poll, and do NOT claim that no

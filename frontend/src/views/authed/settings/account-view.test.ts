@@ -128,6 +128,32 @@ describe('AccountView', () => {
     invalidateApiCaches();
   });
 
+  it('includes the operator recovery reason in the deactivation request', async () => {
+    fetchStub = createFetchStub();
+    const element = await fixture<AccountView>(
+      html`<account-view></account-view>`
+    );
+    await waitUntil(() => !(element as any)._loading);
+    (element as any)._haltStatus = {
+      active: true,
+      scopes: [{ scope: 'flows', reason: 'Inspect active runtimes' }],
+    };
+    await element.updateComplete;
+    expect(
+      element.shadowRoot?.querySelectorAll('sl-input[label="Recovery reason"]')
+    ).to.have.length(1);
+    (element as any)._haltReason = 'Runtime termination verified';
+    await (element as any)._handleResume(['flows']);
+    const request = fetchStub
+      .getCalls()
+      .find((call) => String(call.args[0]).includes('/kill-switch/deactivate'));
+    expect(request).to.exist;
+    expect(JSON.parse(request!.args[1].body)).to.deep.equal({
+      scopes: ['flows'],
+      reason: 'Runtime termination verified',
+    });
+  });
+
   it('renders organization details after load (non-billing edition)', async () => {
     fetchStub = createFetchStub({ billing: false });
     const element = (await fixture(

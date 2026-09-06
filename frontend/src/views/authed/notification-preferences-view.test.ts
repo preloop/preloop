@@ -1,4 +1,4 @@
-import { html, fixture, expect } from '@open-wc/testing';
+import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import './notification-preferences-view';
 import { NotificationPreferencesView } from './notification-preferences-view';
@@ -358,7 +358,10 @@ describe('NotificationPreferencesView', () => {
       const el = (await fixture(
         html`<notification-preferences-view></notification-preferences-view>`
       )) as NotificationPreferencesView;
-      await tick();
+      await waitUntil(
+        () => handler !== null,
+        'the view should subscribe to device_registered'
+      );
       await el.updateComplete;
       return el;
     }

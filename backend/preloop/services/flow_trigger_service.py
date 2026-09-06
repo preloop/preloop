@@ -20,6 +20,7 @@ from preloop.services.flow_ci_feedback import (
     flow_requires_ci_failure_resume,
 )
 from .flow_orchestrator import FlowExecutionOrchestrator
+from preloop.services.kill_switch import FlowHaltActiveError, flows_halted
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.sync.services.event_bus import get_nats_client
 from preloop.utils.workspace_seed import attach_workspace_file_paths
@@ -659,6 +660,11 @@ class FlowTriggerService:
 
         When ``FLOW_EXECUTION_WORKER_ENABLED`` is true, publishes ``execute_flow``.
         Otherwise falls back to ``asyncio.create_task`` in-process.
+
+        Raises:
+            FlowHaltActiveError: The account kill switch currently halts new
+                flow executions (#157). No execution row is created and
+                nothing is dispatched.
         """
         from preloop.services.flow_execution_dispatcher import (
             dispatch_execute,
@@ -667,6 +673,21 @@ class FlowTriggerService:
         from preloop.services.flow_execution_runner import run_existing_execution
         from preloop.services.flow_orchestrator import _make_json_serializable
 
+        if flows_halted(self.db, flow.account_id):
+            if precreated_execution is None:
+                raise FlowHaltActiveError(
+                    f"Flow '{flow.name}' ({flow.id}) not started: the account "
+                    "kill switch currently halts new flow executions"
+                )
+            # A pre-created execution stays PENDING: workers refuse to claim
+            # it while the halt is active, and the recovery loop re-dispatches
+            # it once the scope is lifted.
+            logger.info(
+                "Execution %s left PENDING: account kill switch halts new "
+                "flow executions",
+                precreated_execution.id,
+            )
+            return precreated_execution
         if precreated_execution is not None:
             execution = precreated_execution
             execution_id = execution.id
@@ -1227,6 +1248,28 @@ class FlowTriggerService:
                         flow.id,
                         exc_info=True,
                     )
+                except FlowHaltActiveError:
+                    # The kill switch is not an error: record that the trigger
+                    # was deliberately dropped (#157) and keep processing.
+                    from preloop.models.crud import crud_event
+
+                    logger.info(
+                        "Trigger for flow '%s' (%s) dropped: account kill "
+                        "switch halts new flow executions",
+                        flow.name,
+                        flow.id,
+                    )
+                    crud_event.log_event(
+                        self.db,
+                        event_type="flow_trigger_blocked_kill_switch",
+                        account_id=flow.account_id,
+                        event_data={
+                            "flow_id": str(flow.id),
+                            "flow_name": flow.name,
+                            "trigger_source": event_data.get("source"),
+                            "trigger_type": event_data.get("type"),
+                        },
+                    )
                 except Exception as e:
                     logger.error(
                         f"Error initiating flow '{flow.name}' ({flow.id}): {e}",
@@ -1253,7 +1296,7 @@ class FlowTriggerService:
 
         Returns:
             One of "triggered", "skipped_overlap", "suppressed_disabled",
-            or "not_scheduled".
+            "suppressed_halted", or "not_scheduled".
         """
         from datetime import datetime, timezone as dt_timezone
 
@@ -1272,6 +1315,23 @@ class FlowTriggerService:
                 f"Scheduled tick suppressed for disabled flow '{flow.name}' ({flow.id})"
             )
             return "suppressed_disabled"
+
+        if flows_halted(self.db, flow.account_id):
+            logger.info(
+                f"Scheduled tick suppressed for flow '{flow.name}' ({flow.id}): "
+                f"account kill switch halts new flow executions"
+            )
+            crud_event.log_event(
+                self.db,
+                event_type="flow_trigger_blocked_kill_switch",
+                account_id=flow.account_id,
+                event_data={
+                    "flow_id": str(flow.id),
+                    "flow_name": flow.name,
+                    "trigger_source": "schedule",
+                },
+            )
+            return "suppressed_halted"
 
         from preloop.models.schemas.flow import parse_schedule_config
 
@@ -1357,6 +1417,12 @@ class FlowTriggerService:
 
         if not flow:
             raise ValueError(f"Flow {flow_id} not found")
+
+        if flows_halted(self.db, flow.account_id):
+            raise FlowHaltActiveError(
+                f"Flow '{flow.name}' ({flow.id}) not started: the account "
+                "kill switch currently halts new flow executions"
+            )
 
         if retry_of_execution_id:
             logger.info(
@@ -1482,6 +1548,12 @@ class FlowTriggerService:
         flow = crud_flow.get(self.db, id=str(flow_id))
         if not flow:
             raise ValueError(f"Flow {flow_id} not found")
+
+        if flows_halted(self.db, flow.account_id):
+            raise FlowHaltActiveError(
+                f"Flow '{flow.name}' ({flow.id}) not started: the account "
+                "kill switch currently halts new flow executions"
+            )
 
         from preloop.services.flow_orchestrator import _make_json_serializable
 

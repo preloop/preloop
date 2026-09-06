@@ -134,6 +134,10 @@ frontend:unit-tests:
     DATABASE_URL: postgresql://test_user:test_password@postgres:5432/test_db
     SENTRY_DSN:
   before_script:
+    - |
+      if [ "$TEST_PATHS" = "backend/tests/agents" ]; then
+        apt-get update && apt-get install -y --no-install-recommends nodejs
+      fi
     - pip install -U pip
     - pip install pytest pytest-cov loguru
     - pip install -e ".[dev]"

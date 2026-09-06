@@ -1,8 +1,13 @@
 """Focused tests for self-hosted runner WebSocket helpers."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
+
+import pytest
+from starlette.websockets import WebSocketDisconnect
+
+from preloop.api.endpoints import runners
 
 from preloop.api.endpoints.runners import (
     _live,
@@ -178,3 +183,57 @@ def test_release_live_runner_ignores_stale_reconnect() -> None:
         assert "rid" not in _live
     finally:
         _live.pop("rid", None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status", [None, "RUNNING", "unknown", "FAILED", "STOPPED", "SUCCEEDED"]
+)
+async def test_completion_confirms_stop_only_on_terminal_owner_ack(
+    monkeypatch: pytest.MonkeyPatch, status: str | None
+) -> None:
+    """Invalid completion packets retain the lease and durable halt intent."""
+    execution_id = uuid4()
+    runner = SimpleNamespace(
+        id=uuid4(),
+        account_id=uuid4(),
+        current_execution_id=execution_id,
+        pending_job=None,
+        halt_requested=True,
+        status="online",
+        reported_status="RUNNING",
+    )
+    execution = SimpleNamespace(status="RUNNING")
+    websocket = MagicMock()
+    websocket.accept = AsyncMock()
+    websocket.send_json = AsyncMock()
+    websocket.receive_json = AsyncMock(
+        side_effect=[
+            {"type": "complete", "execution_id": str(execution_id), "status": status},
+            WebSocketDisconnect(),
+        ]
+    )
+    monkeypatch.setattr(runners, "_authenticate_runner", lambda *args: runner)
+    monkeypatch.setattr(runners, "emit_runner_updated", MagicMock())
+    monkeypatch.setattr(runners.crud_flow_runner, "get", lambda *args, **kwargs: runner)
+    monkeypatch.setattr(runners.crud_flow_runner, "touch_heartbeat", MagicMock())
+    monkeypatch.setattr(
+        runners.crud_flow_execution, "get", lambda *args, **kwargs: execution
+    )
+    confirm = MagicMock()
+    monkeypatch.setattr(runners.crud_flow_execution, "confirm_stop", confirm)
+    monkeypatch.setattr(
+        runners.crud_api_key, "deactivate_runtime_keys_for_flow_execution", MagicMock()
+    )
+
+    await runners.runner_ws(websocket, runner.id, MagicMock())
+
+    if status in {"SUCCEEDED", "FAILED", "STOPPED"}:
+        confirm.assert_called_once()
+        assert runner.current_execution_id is None
+        assert runner.halt_requested is False
+    else:
+        confirm.assert_not_called()
+        assert runner.current_execution_id == execution_id
+        assert runner.halt_requested is True
+        assert execution.status == "RUNNING"

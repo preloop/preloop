@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_flow_execution_log
 from preloop.models.crud.flow_runner import crud_flow_runner
-from preloop.services.flow_runtime_token import create_flow_runtime_token
 from preloop.services.runner_service import (
     DEFAULT_QUEUE_TIMEOUT,
     lease_job,
@@ -19,6 +18,11 @@ from preloop.services.runner_service import (
 )
 
 from .base import AgentExecutionResult, AgentExecutor, AgentStatus
+from .runner_launch import (
+    LAUNCH_VERSION,
+    flow_launch_fingerprint,
+    prepare_runner_delivery,
+)
 from .images import agent_config_has_image, default_agent_image
 
 logger = logging.getLogger(__name__)
@@ -78,6 +82,11 @@ class RemoteRunnerExecutor(AgentExecutor):
                 self.pool,
                 summary.get("agent_type"),
             )
+            launch_context = dict(execution_context)
+            launch_context.update(
+                {key: payload[key] for key in ("agent_type", "agent_config")}
+            )
+            payload = await prepare_runner_delivery(self.db, payload, launch_context)
             await _push_job(runner.id, payload)
             return f"runner:{runner.id}:{execution_id}"
 
@@ -97,6 +106,17 @@ class RemoteRunnerExecutor(AgentExecutor):
     async def get_status(self, session_reference: str) -> AgentStatus:
         execution_id = _execution_id_from_ref(session_reference)
         execution = crud_flow_execution.get(self.db, id=execution_id, refresh=True)
+        stop_request = crud_flow_execution.get_stop_request(
+            self.db, execution_id=execution_id
+        )
+        if stop_request:
+            # Only completion from the owning runner (or pre-lease cancellation)
+            # confirms termination; server-side status changes are not evidence.
+            return (
+                AgentStatus.STOPPED
+                if stop_request["confirmed_at"]
+                else AgentStatus.RUNNING
+            )
         if execution and _map_status(execution.status) in (
             AgentStatus.SUCCEEDED,
             AgentStatus.FAILED,
@@ -149,19 +169,7 @@ class RemoteRunnerExecutor(AgentExecutor):
                     payload=payload,
                 )
                 if runner:
-                    if flow is not None:
-                        token, _ = create_flow_runtime_token(
-                            self.db,
-                            flow=flow,
-                            execution_id=execution.id,
-                        )
-                        payload["account_api_token"] = token
-                        if not token:
-                            logger.warning(
-                                "Could not create temporary API key record "
-                                "for account %s",
-                                getattr(flow, "account_id", self.account_id),
-                            )
+                    payload = await prepare_runner_delivery(self.db, payload)
                     execution.runner_id = runner.id
                     execution.agent_session_reference = (
                         f"runner:{runner.id}:{execution.id}"
@@ -175,8 +183,6 @@ class RemoteRunnerExecutor(AgentExecutor):
         runner_id = _runner_id_from_ref(session_reference)
         if runner_id:
             runner = crud_flow_runner.get(self.db, id=runner_id)
-            if runner and runner.halt_requested:
-                return AgentStatus.STOPPED
             if runner and runner.reported_status:
                 return _map_status(runner.reported_status)
         if execution:
@@ -186,7 +192,7 @@ class RemoteRunnerExecutor(AgentExecutor):
     async def get_result(self, session_reference: str) -> AgentExecutionResult:
         status = await self.get_status(session_reference)
         execution_id = _execution_id_from_ref(session_reference)
-        execution = crud_flow_execution.get(self.db, id=execution_id)
+        execution = crud_flow_execution.get(self.db, id=execution_id, refresh=True)
         return AgentExecutionResult(
             status=status,
             session_reference=session_reference,
@@ -195,16 +201,27 @@ class RemoteRunnerExecutor(AgentExecutor):
             artifacts=execution.result if execution else None,
         )
 
+    async def is_stopped(self, session_reference: str) -> bool:
+        """Confirm only the owning runner's terminal acknowledgment."""
+        request = crud_flow_execution.get_stop_request(
+            self.db,
+            execution_id=_execution_id_from_ref(session_reference),
+        )
+        return request is not None and request["confirmed_at"] is not None
+
+    async def get_result_artifact(
+        self, session_reference: str
+    ) -> Optional[Dict[str, Any]]:
+        """Expose the runner's validated report to normal flow finalization."""
+        execution = crud_flow_execution.get(
+            self.db, id=_execution_id_from_ref(session_reference), refresh=True
+        )
+        return execution.result if execution else None
+
     async def stop(self, session_reference: str) -> None:
-        runner_id = _runner_id_from_ref(session_reference)
-        if not runner_id:
-            return
-        runner = crud_flow_runner.get(self.db, id=runner_id)
-        if not runner:
-            return
-        runner.halt_requested = True
-        self.db.add(runner)
-        self.db.commit()
+        execution_id = _execution_id_from_ref(session_reference)
+        if execution_id:
+            crud_flow_execution.request_runner_stop(self.db, execution_id=execution_id)
 
     async def cleanup(self) -> None:
         return None
@@ -264,6 +281,8 @@ class RemoteRunnerExecutor(AgentExecutor):
             return getattr(flow, key, default) if flow is not None else default
 
         payload: Dict[str, Any] = {
+            "launch_version": LAUNCH_VERSION,
+            "flow_launch_fingerprint": flow_launch_fingerprint(flow),
             "execution_id": str(execution_id),
             "flow_id": str(flow_id),
             "agent_type": agent_type,

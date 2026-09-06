@@ -459,7 +459,7 @@ class TestMatrixOverrideOnRebuiltExecutors:
         executor = AsyncMock()
         with (
             patch(
-                "preloop.agents.create_agent_executor", return_value=executor
+                "preloop.agents.create_executor_for_execution", return_value=executor
             ) as create_mock,
             patch.object(
                 orchestrator,

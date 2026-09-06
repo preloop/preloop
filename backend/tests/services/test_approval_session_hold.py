@@ -34,6 +34,7 @@ class SessionLedger:
         self.held = 0
         self.opened = 0
         self.at_sleep: list[int] = []
+        self.halted = False
 
     def make_session_factory(self):
         ledger = self
@@ -52,6 +53,9 @@ class SessionLedger:
 
             session = MagicMock()
             session.execute = AsyncMock()
+            session.run_sync = AsyncMock(
+                side_effect=lambda callback: {"tools"} if ledger.halted else set()
+            )
             session.commit = AsyncMock()
             session.rollback = AsyncMock()
             session.refresh = AsyncMock()
@@ -310,7 +314,8 @@ class TestWithApprovalDecisionPaths:
 class TestRequireApprovalSessionRelease:
     """approval_helper.require_approval must not hold a session while polling."""
 
-    async def test_session_released_before_first_poll_sleep(self):
+    @pytest.mark.parametrize("halt_during_wait", [False, True])
+    async def test_session_released_before_first_poll_sleep(self, halt_during_wait):
         from preloop.services.approval_helper import require_approval
 
         ledger = SessionLedger()
@@ -321,6 +326,7 @@ class TestRequireApprovalSessionRelease:
         poll_state = {"current": pending}
 
         def resolve():
+            ledger.halted = halt_during_wait
             poll_state["current"] = approved
 
         async def _get_request(_db, request_id=None):
@@ -371,8 +377,8 @@ class TestRequireApprovalSessionRelease:
                 workflow_id=str(workflow.id),
             )
 
-        assert approved_result is True
-        assert error == ""
+        assert approved_result is not halt_during_wait
+        assert ("kill switch" in error) if halt_during_wait else error == ""
         assert ledger.at_sleep, "polling loop never slept"
         assert max(ledger.at_sleep) == 0, (
             "require_approval held a DB session during the approval wait: "
@@ -410,7 +416,7 @@ class TestWaitForApprovalSessionRelease:
             # approval_service binds the CRUD function at module import time,
             # so patch that binding rather than the crud module.
             patch(
-                "preloop.services.approval_service.get_approval_request_async",
+                "preloop.services.approval_service.get_approval_request_for_update_async",
                 new=AsyncMock(side_effect=_get_request),
             ),
             patch(
