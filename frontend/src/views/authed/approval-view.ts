@@ -122,9 +122,18 @@ export class ApprovalView extends AuthedElement {
   @state()
   private alwaysAllow = false;
 
-  /** Permissions of the signed-in user; null until the profile has loaded. */
+  /**
+   * Permissions of the signed-in user. `null` is not "no permissions": it is
+   * the RBAC-inactive contract of `/auth/users/me` (OSS and DISABLE_RBAC),
+   * where `hasPermission` is permissive. Use `permissionsLoaded` to tell
+   * "still fetching" from "RBAC is off".
+   */
   @state()
   private permissions: string[] | null = null;
+
+  /** True once the profile fetch has settled, whatever it returned. */
+  @state()
+  private permissionsLoaded = false;
 
   /**
    * True while the deny confirmation is on screen. The decision keys listen on
@@ -516,9 +525,13 @@ export class ApprovalView extends AuthedElement {
     if (this.publicOnly) return;
     try {
       const profile = await getUserProfile();
-      this.permissions = profile?.permissions ?? [];
+      // Keep the null: on OSS and DISABLE_RBAC the endpoint returns no
+      // permissions array at all, and `[]` would read as "allowed nothing".
+      this.permissions = profile?.permissions ?? null;
     } catch {
-      this.permissions = [];
+      this.permissions = null;
+    } finally {
+      this.permissionsLoaded = true;
     }
   }
 
@@ -1315,6 +1328,8 @@ export class ApprovalView extends AuthedElement {
   private canWriteAgentRules(request: ApprovalRequest): boolean {
     if (this.publicOnly) return false;
     if (!request.managed_agent_id) return false;
+    // Wait for the profile rather than drawing a checkbox that may vanish.
+    if (!this.permissionsLoaded) return false;
     return hasPermission(this.permissions, 'manage_agents');
   }
 

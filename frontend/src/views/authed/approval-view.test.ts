@@ -718,7 +718,7 @@ describe('ApprovalView', () => {
       )) as ApprovalView;
       await waitUntil(() => !(element as any).loading, 'still loading');
       await waitUntil(
-        () => (element as any).permissions !== null,
+        () => (element as any).permissionsLoaded,
         'permissions did not load'
       );
       await element.updateComplete;
@@ -728,6 +728,13 @@ describe('ApprovalView', () => {
     it('is hidden from a member who cannot write agent rules', async () => {
       const element = await pendingWithAgent(['view_approvals']);
       expect(element.shadowRoot!.querySelector('.always-allow')).to.not.exist;
+    });
+
+    it('is shown when the server reports RBAC is inactive', async () => {
+      // OSS and DISABLE_RBAC send `permissions: null`, which means
+      // unrestricted, not "this user may do nothing".
+      const element = await pendingWithAgent(null);
+      expect(element.shadowRoot!.querySelector('.always-allow')).to.exist;
     });
 
     it('is hidden when the request names no agent', async () => {
