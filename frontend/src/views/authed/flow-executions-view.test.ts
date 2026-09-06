@@ -340,6 +340,25 @@ describe('FlowExecutionsView', () => {
     ]);
   });
 
+  it('names the filter selects for a screen reader without printing them', async () => {
+    fetchStub = stub(EXECUTIONS);
+    const el = (await fixture(
+      html`<flow-executions-view></flow-executions-view>`
+    )) as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+
+    const flow = el.shadowRoot?.querySelector('sl-select.flow-filter');
+    const status = el.shadowRoot?.querySelector('sl-select.status-filter');
+    expect(flow?.getAttribute('label')).to.equal('Flow');
+    expect(status?.getAttribute('label')).to.equal('Status');
+    const printed = flow?.shadowRoot?.querySelector(
+      '[part~="form-control-label"]'
+    ) as HTMLElement | null;
+    // Named, but clipped: the bar has no room to print the label.
+    expect(printed && printed.getBoundingClientRect().height).to.be.lessThan(2);
+  });
+
   it('reloads executions when the status filter changes', async () => {
     fetchStub = stub(EXECUTIONS);
     const el = (await fixture(

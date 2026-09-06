@@ -326,6 +326,19 @@ export class FlowExecutionsView extends AuthedElement {
       list-toolbar sl-select {
         min-width: 180px;
       }
+      /* The selects carry a label so a screen reader does not meet two
+         unnamed comboboxes; the bar has no room to print it. */
+      list-toolbar sl-select::part(form-control-label) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+      }
       .connection-status {
         display: flex;
         align-items: center;
@@ -995,6 +1008,7 @@ export class FlowExecutionsView extends AuthedElement {
       >
         <sl-select
           class="flow-filter"
+          label="Flow"
           clearable
           placeholder="All flows"
           value=${this.flowIdFilter || ''}
@@ -1010,6 +1024,7 @@ export class FlowExecutionsView extends AuthedElement {
 
         <sl-select
           class="status-filter"
+          label="Status"
           placeholder="Any status"
           value=${this.statusFilter === 'all' ? '' : this.statusFilter}
           @sl-change=${(event: Event) => {

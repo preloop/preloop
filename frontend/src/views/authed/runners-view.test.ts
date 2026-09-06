@@ -135,8 +135,11 @@ describe('RunnersView', () => {
       '.empty-state'
     ) as HTMLElement;
     expect(empty).to.exist;
-    // One line, not a hero card: two text lines of slack at most.
-    expect(empty.getBoundingClientRect().height).to.be.lessThan(80);
+    // The console recipe: one centred line in a 72px box, not a hero card.
+    const box = empty.getBoundingClientRect();
+    expect(box.height).to.be.at.least(72);
+    expect(box.height).to.be.lessThan(80);
+    expect(getComputedStyle(empty).justifyContent).to.equal('center');
 
     const commands = empty.querySelectorAll('.empty-command');
     expect(commands.length).to.equal(1);

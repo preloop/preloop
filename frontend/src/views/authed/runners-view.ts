@@ -83,11 +83,14 @@ export class RunnersView extends LitElement {
        * button) spent a screen saying "nothing here yet".
        */
       .empty-state {
+        box-sizing: border-box;
         display: flex;
         flex-wrap: wrap;
         align-items: center;
+        justify-content: center;
         gap: var(--sl-spacing-x-small) var(--sl-spacing-small);
-        margin-top: var(--sl-spacing-medium);
+        min-height: 72px;
+        padding: var(--sl-spacing-medium);
         color: var(--sl-color-neutral-600);
         font-size: 13px;
       }
