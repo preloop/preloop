@@ -5701,6 +5701,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/issues/{issue_id}/lifecycle/pickup/reconcile:
+    post:
+      tags:
+      - Issues
+      summary: Reconcile Pickup
+      description: Authorize and durably dispatch changed scope after the prior run
+        ends.
+      operationId: reconcile_pickup_api_v1_issues__issue_id__lifecycle_pickup_reconcile_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: issue_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Issue Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PickupReconciliationRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Reconcile Pickup Api V1 Issues  Issue Id  Lifecycle
+                  Pickup Reconcile Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/issues/{issue_id}/lifecycle/audit/reconcile:
     post:
       tags:
@@ -18883,6 +18923,28 @@ components:
       - email
       title: PasswordResetRequest
       description: Model for password reset requests.
+    PickupReconciliationRequest:
+      properties:
+        issue_revision:
+          type: string
+          title: Issue Revision
+        previous_execution_id:
+          type: string
+          format: uuid
+          title: Previous Execution Id
+        reason:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Reason
+      type: object
+      required:
+      - issue_revision
+      - previous_execution_id
+      - reason
+      title: PickupReconciliationRequest
+      description: Approve a new revision while naming the exact implementation it
+        replaces.
     PolicyDiffItem:
       properties:
         path:
