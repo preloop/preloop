@@ -67,6 +67,12 @@ func dockerRunArgs(image string, env map[string]string, opts runnerDockerOpts) [
 	if opts.PersistWorkspace && opts.WorkspaceHostDir != "" {
 		args = append(args, "-v", opts.WorkspaceHostDir+":"+runnerWorkspaceMount)
 	}
+	if opts.Launch && !opts.hasWorkspaceMount() {
+		// Images may run as a nonroot user with no /workspace directory.
+		// Supply a writable, execution-local workspace without changing UID.
+		// exec is required for repository scripts and test binaries.
+		args = append(args, "--tmpfs", runnerWorkspaceMount+":rw,exec,mode=1777")
+	}
 	for _, mount := range opts.ExtraMounts {
 		args = append(args, "-v", mount)
 	}
@@ -86,6 +92,19 @@ func dockerRunArgs(image string, env map[string]string, opts runnerDockerOpts) [
 		args = append(args, "-c", runnerBootstrap)
 	}
 	return args
+}
+
+func (opts runnerDockerOpts) hasWorkspaceMount() bool {
+	if opts.PersistWorkspace && opts.WorkspaceHostDir != "" {
+		return true
+	}
+	for _, mount := range opts.ExtraMounts {
+		parts := strings.Split(mount, ":")
+		if len(parts) >= 2 && strings.TrimRight(parts[1], "/") == runnerWorkspaceMount {
+			return true
+		}
+	}
+	return false
 }
 
 func runnerDockerOptsFromJob(job map[string]any) (runnerDockerOpts, error) {

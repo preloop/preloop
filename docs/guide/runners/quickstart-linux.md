@@ -118,6 +118,14 @@ control plane and CLI together: old or unknown launch protocol versions fail
 explicitly. Other harness types require a hosted executor until their private
 launch adapter is implemented.
 
+Launches without a configured workspace mount get a writable `/workspace`
+tmpfs, so nonroot images such as the default OpenCode image can start without
+creating directories under `/`. This temporary workspace uses Docker-host
+memory and is discarded with the container. Repository scripts and test
+binaries can execute there. For larger or retained workspaces, configure
+`agent_config.runner.persist_workspace` or an explicit `/workspace` mount;
+the mounted directory must be writable by the image's configured user.
+
 The control plane builds a versioned launch specification using the same
 Codex/OpenCode script and environment builders as hosted execution. The CLI
 runs a static Docker bootstrap that launches this script. Repository clone,

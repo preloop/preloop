@@ -116,6 +116,58 @@ func TestRunnerBootstrapPassesNoSecretsInArgv(t *testing.T) {
 	}
 }
 
+func TestRunnerLaunchWorkspaceMount(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		opts      runnerDockerOpts
+		wantTmpfs bool
+	}{
+		{"default launch", runnerDockerOpts{Launch: true}, true},
+		{"persisted workspace", runnerDockerOpts{Launch: true, PersistWorkspace: true, WorkspaceHostDir: "/tmp/private-workspace"}, false},
+		{"explicit workspace", runnerDockerOpts{Launch: true, ExtraMounts: []string{"/tmp/custom:/workspace:rw"}}, false},
+		{"unrelated mount", runnerDockerOpts{Launch: true, ExtraMounts: []string{"/tmp/custom:/cache:rw"}}, true},
+		{"legacy image", runnerDockerOpts{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := dockerRunArgs("example/image", nil, tc.opts)
+			if got := containsPair(args, "--tmpfs", "/workspace:rw,exec,mode=1777"); got != tc.wantTmpfs {
+				t.Fatalf("workspace tmpfs=%v want %v: %v", got, tc.wantTmpfs, args)
+			}
+			if strings.Contains(strings.Join(args, " "), "--user") {
+				t.Fatal("launch must preserve the image user")
+			}
+		})
+	}
+}
+
+// Run against an already-local nonroot image; the script is deterministic,
+// uses no model credentials, and Docker networking is disabled.
+func TestRunnerNonrootWorkspaceDockerIntegration(t *testing.T) {
+	image := os.Getenv("PRELOOP_TEST_RUNNER_NONROOT_IMAGE")
+	if image == "" {
+		t.Skip("set PRELOOP_TEST_RUNNER_NONROOT_IMAGE to a local nonroot image")
+	}
+	env := map[string]string{"PRELOOP_RUNNER_SCRIPT": `set -eu
+test "$(id -u)" != 0
+test "$PWD" = /workspace
+mkdir -p nested
+printf '#!/bin/sh\nexit 0\n' > nested/check
+chmod +x nested/check
+./nested/check
+printf '{"status":"success","nonroot_workspace":true}\n' > /workspace/result.json
+`}
+	command := defaultNewRunnerJobCmd(image, env, runnerDockerOpts{Launch: true, Network: "none"})
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	outcome := waitDockerJob(command, "nonroot-workspace", &output, nil)
+	if outcome.status != "SUCCEEDED" || outcome.result["nonroot_workspace"] != true {
+		t.Fatalf("outcome=%+v logs=%s", outcome, output.String())
+	}
+}
+
 // Optional real-Docker check. The fixture contains a generated hosted script
 // with fake credentials and fake CLIs. Network is disabled unconditionally.
 func TestRunnerDockerLaunchIntegration(t *testing.T) {
