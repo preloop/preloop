@@ -226,3 +226,18 @@ def test_missing_app_configuration_is_a_sanitized_precondition() -> None:
             service.preview_continuation(uuid4(), uuid4())
     assert error.value.status_code == 409
     assert str(error.value) == "Execution tracker configuration is unavailable"
+
+
+@pytest.mark.asyncio
+async def test_gitlab_preflight_rejects_non_get_methods() -> None:
+    gl = SimpleNamespace(http_get=object(), http_post=object())
+    raw = SimpleNamespace(gl=gl, _make_request=AsyncMock(return_value={"id": 474}))
+    client = service._BoundedReadClient(raw)
+    assert await client._make_request(
+        gl.http_get, "/projects/1/merge_requests/474"
+    ) == {"id": 474}
+    with pytest.raises(service.ContinuationAdoptionError, match="reads only"):
+        await client._make_request(gl.http_post, "/projects/1/merge_requests/474/notes")
+    raw._make_request.assert_awaited_once_with(
+        gl.http_get, "/projects/1/merge_requests/474"
+    )

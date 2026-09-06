@@ -264,7 +264,9 @@ cannot grant the exception. Subsequent turns must restore their own checkpoints.
 A changed head, closed PR, disabled flow, missing checkpoint capability or
 unreadable provider returns HTTP 409, requiring a new preview. Repeated adoption
 returns the existing thread without resetting its counters, deadline or terminal
-state. Adoption starts the bounded subscription; it does not immediately create
+state when its recorded source and recovery mode match. Adopting an already
+subscribed PR with a different or unrecorded mode returns HTTP 409; this endpoint
+does not change an existing thread's recovery authority. Adoption starts the bounded subscription; it does not immediately create
 an agent run. The scheduler first reconciles current trusted feedback and gates.
 
 ## Local validation

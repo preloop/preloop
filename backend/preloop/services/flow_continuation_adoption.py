@@ -180,6 +180,8 @@ class _BoundedReadClient:
 
     async def _make_request(self, method: Any, path: str) -> Any:
         self._take()
+        if self.gl is None or method != self.gl.http_get:
+            raise ContinuationAdoptionError("Provider preflight permits reads only")
         return await self.client._make_request(method, path)
 
 
@@ -391,9 +393,20 @@ def adopt_continuation(
                 "Execution cannot be registered for continuation"
             )
         recorded = (thread.context or {}).get("adoption") or {}
+        # Registration can lose an insert race or find a previously subscribed
+        # publication. Only an exact adoption replay is idempotent; changing an
+        # existing thread's recovery authority requires a separate operation.
+        if (
+            recorded.get("source_execution_id") != str(execution_id)
+            or recorded.get("recovery_mode") != request.recovery_mode
+        ):
+            raise ContinuationAdoptionError(
+                "PR already has a continuation thread; adoption cannot change "
+                "its source or recovery mode"
+            )
         return ContinuationAdoptResponse(
             thread_id=thread.id,
             state=thread.state,
             pr_url=thread.pr_url,
-            recovery_mode=recorded.get("recovery_mode", "native_resume"),
+            recovery_mode=recorded["recovery_mode"],
         )

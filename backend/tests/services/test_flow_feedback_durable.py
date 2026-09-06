@@ -806,8 +806,12 @@ async def test_explicit_cold_source_reserves_once_then_requires_own_checkpoint(
                 )
 
 
+@pytest.mark.parametrize(
+    "existing_mode", ["new", "unadopted", "native_resume", "other_source"]
+)
 def test_adoption_registers_only_selected_legacy_pr_and_is_idempotent(
     database: Engine,
+    existing_mode: str,
 ) -> None:
     from preloop.services import flow_continuation_adoption as adoption
     from preloop.schemas.flow_continuation import (
@@ -836,7 +840,22 @@ def test_adoption_registers_only_selected_legacy_pr_and_is_idempotent(
             "payload": {"repository": {"id": "123"}, "issue": {"number": 185}},
         }
         source.result = {"pr_url": pr_url, "pr_source_branch": branch}
-        db.delete(old_thread)
+        if existing_mode == "new":
+            db.delete(old_thread)
+        else:
+            old_thread.turns, old_thread.cost, old_thread.state = 3, 14.0, "stopped"
+            if existing_mode != "unadopted":
+                old_thread.context = {
+                    **old_thread.context,
+                    "adoption": {
+                        "source_execution_id": str(uuid.uuid4())
+                        if existing_mode == "other_source"
+                        else str(source_id),
+                        "recovery_mode": "native_resume"
+                        if existing_mode == "native_resume"
+                        else "published_branch_handoff",
+                    },
+                }
         db.commit()
         readiness = ContinuationPreview(
             execution_id=source_id,
@@ -862,6 +881,29 @@ def test_adoption_registers_only_selected_legacy_pr_and_is_idempotent(
                 adoption, "get_session_factory", return_value=sessionmaker(database)
             ),
         ):
+            if existing_mode != "new":
+                stored = (
+                    old_thread.context,
+                    old_thread.turns,
+                    old_thread.cost,
+                    old_thread.state,
+                    old_thread.expires_at,
+                )
+                with pytest.raises(
+                    adoption.ContinuationAdoptionError,
+                    match="already has a continuation",
+                ) as error:
+                    adoption.adopt_continuation(account, source_id, request)
+                assert error.value.status_code == 409
+                db.refresh(old_thread)
+                assert (
+                    old_thread.context,
+                    old_thread.turns,
+                    old_thread.cost,
+                    old_thread.state,
+                    old_thread.expires_at,
+                ) == stored
+                return
             first = adoption.adopt_continuation(account, source_id, request)
             assert first.thread_id == source_id
             thread = db.get(models.FlowThread, first.thread_id)
