@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload, load_only, with_expression
 from sqlalchemy.future import select
 
@@ -102,13 +103,22 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         super().__init__(model=FlowExecution)
 
     def get(
-        self, db: Session, id: Any, *, account_id: Optional[str] = None
+        self,
+        db: Session,
+        id: Any,
+        *,
+        account_id: Optional[str] = None,
+        refresh: bool = False,
     ) -> Optional[FlowExecution]:
         """Get flow execution by ID.
 
         Overrides base get to properly filter by account_id through Flow relationship.
+        Set refresh for monitors that must replace cached attributes with updates
+        committed by another session, such as a runner WebSocket handler.
         """
         query = db.query(FlowExecution).filter(FlowExecution.id == id)
+        if refresh:
+            query = query.populate_existing()
         if account_id:
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.first()
@@ -374,6 +384,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         account_id: Optional[str] = None,
         flow_id: Optional[Any] = None,
         statuses: Optional[List[str]] = None,
+        search: Optional[str] = None,
+        started_after: Optional[datetime] = None,
         eager_load: bool = False,
         lightweight: bool = False,
         **filters,
@@ -385,6 +397,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         Args:
             eager_load: If True, eagerly load the flow relationship to avoid N+1 queries.
             lightweight: If True, defer heavy text/JSON columns used only by detail views.
+            search: Case-insensitive match on the flow name or the trigger subject.
+            started_after: Only runs that started at or after this instant.
         """
         query = db.query(FlowExecution)
 
@@ -434,9 +448,66 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 flow_loader = flow_loader.load_only(Flow.id, Flow.name)
             query = query.options(flow_loader)
 
-        # Filter by account_id through the Flow relationship
+        query = self._apply_list_filters(
+            query,
+            account_id=account_id,
+            flow_id=flow_id,
+            statuses=statuses,
+            search=search,
+            started_after=started_after,
+            filters=filters,
+        )
+
+        # Order by start_time descending (most recent first)
+        query = query.order_by(FlowExecution.start_time.desc())
+
+        return query.offset(skip).limit(limit).all()
+
+    def count(
+        self,
+        db: Session,
+        *,
+        account_id: Optional[str] = None,
+        flow_id: Optional[Any] = None,
+        statuses: Optional[List[str]] = None,
+        search: Optional[str] = None,
+        started_after: Optional[datetime] = None,
+        **filters,
+    ) -> int:
+        """How many executions match the filters, ignoring the page window.
+
+        The console prints "25 of N executions" over a page of 25, and N has
+        to be the number the filters actually matched, not the page size.
+        """
+        query = self._apply_list_filters(
+            db.query(FlowExecution),
+            account_id=account_id,
+            flow_id=flow_id,
+            statuses=statuses,
+            search=search,
+            started_after=started_after,
+            filters=filters,
+        )
+        return query.count()
+
+    def _apply_list_filters(
+        self,
+        query,
+        *,
+        account_id: Optional[str],
+        flow_id: Optional[Any],
+        statuses: Optional[List[str]],
+        search: Optional[str] = None,
+        started_after: Optional[datetime] = None,
+        filters: Optional[Dict[str, Any]] = None,
+    ):
+        """The list filters, shared by the page query and its count."""
+        # Filter by account_id through the Flow relationship. Search reads the
+        # flow name, so it needs the same join even without an account.
+        if account_id or search:
+            query = query.join(Flow)
         if account_id:
-            query = query.join(Flow).filter(Flow.account_id == account_id)
+            query = query.filter(Flow.account_id == account_id)
 
         if flow_id:
             query = query.filter(FlowExecution.flow_id == flow_id)
@@ -444,15 +515,27 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         if statuses:
             query = query.filter(FlowExecution.status.in_(statuses))
 
+        if started_after is not None:
+            query = query.filter(FlowExecution.start_time >= started_after)
+
+        if search:
+            # Both halves of what the row shows: the flow it belongs to and
+            # the subject that tells one run of that flow from the next.
+            pattern = f"%{search.strip()}%"
+            subject = FlowExecution.trigger_event_details[TRIGGER_SUBJECT_KEY]
+            query = query.filter(
+                or_(
+                    Flow.name.ilike(pattern),
+                    subject["text"].astext.ilike(pattern),
+                )
+            )
+
         # Apply any additional filters
-        for key, value in filters.items():
+        for key, value in (filters or {}).items():
             if hasattr(FlowExecution, key):
                 query = query.filter(getattr(FlowExecution, key) == value)
 
-        # Order by start_time descending (most recent first)
-        query = query.order_by(FlowExecution.start_time.desc())
-
-        return query.offset(skip).limit(limit).all()
+        return query
 
     def get_by_statuses(
         self, db: Session, statuses: List[str], account_id: Optional[str] = None

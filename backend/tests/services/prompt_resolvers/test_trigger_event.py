@@ -193,10 +193,12 @@ class TestTriggerEventResolver:
         result = await resolver.resolve("", context)
         assert result is not None
         parsed = json.loads(result)
-        assert parsed == trigger_data
-        # Verify nested structures are preserved
         assert parsed["payload"]["object_attributes"]["title"] == "Add new feature"
-        assert len(parsed["payload"]["labels"]) == 2
+        assert parsed["payload"]["object_attributes"]["labels"] == [
+            "enhancement",
+            "priority:high",
+        ]
+        assert parsed["payload"]["labels"] == trigger_data["payload"]["labels"]
         # No iid/number on this fixture, so aliasing is a no-op.
         assert "number" not in parsed["payload"]["object_attributes"]
         assert "iid" not in parsed["payload"]["object_attributes"]
@@ -343,6 +345,29 @@ class TestCrossTrackerObjectAttributes:
             await resolver.resolve("payload.object_attributes.url", context)
             == "https://gitlab.example/group/proj/-/merge_requests/8#note_9002"
         )
+
+
+class TestIssueLabelContext:
+    def test_github_issue_labels_flatten_onto_object_attributes(self):
+        resolver = TriggerEventResolver()
+        normalized = resolver._normalize_event_data(
+            {
+                "source": "github",
+                "payload": {
+                    "issue": {
+                        "title": "Broken search",
+                        "body": "Search returns 500",
+                        "number": 9,
+                        "updated_at": "2026-01-04T00:00:00Z",
+                        "labels": [{"name": "bug"}, {"name": "search"}],
+                    }
+                },
+            }
+        )
+        attrs = normalized["payload"]["object_attributes"]
+        assert attrs["labels"] == ["bug", "search"]
+        assert attrs["updated_at"] == "2026-01-04T00:00:00Z"
+        assert attrs["title"] == "Broken search"
 
 
 class TestWorkspaceFilesRedaction:

@@ -113,6 +113,23 @@ export class ToolListItem extends LitElement {
         flex-shrink: 0;
       }
 
+      /* Which agents can call a native tool is a label, not a state, so it
+         gets no box: a leading tag icon and the word, in meta colour. */
+      .tag-chip::part(base) {
+        background-color: transparent;
+        color: var(--console-meta-color, var(--sl-color-neutral-500));
+        border-width: 0;
+        padding: 2px 0;
+        text-transform: none;
+        font-weight: var(--sl-font-weight-normal);
+      }
+
+      .tag-chip sl-icon {
+        font-size: 13px;
+        vertical-align: -2px;
+        margin-right: 3px;
+      }
+
       .usage-stat {
         color: var(--sl-color-neutral-500);
         font-size: var(--sl-font-size-x-small);
@@ -548,8 +565,8 @@ export class ToolListItem extends LitElement {
               this._isNativeTool()
                 ? (this.tool.adapters || []).map(
                     (adapter) =>
-                      html`<sl-badge variant="neutral" pill
-                        >${adapter}</sl-badge
+                      html`<sl-badge class="tag-chip" variant="neutral" pill
+                        ><sl-icon name="tag"></sl-icon>${adapter}</sl-badge
                       >`
                   )
                 : ''

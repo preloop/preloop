@@ -22,6 +22,7 @@ from preloop.agents.container import (
     kubernetes_job_name,
 )
 from preloop.agents.errors import AgentStartError
+from preloop.models import models
 from preloop.models.crud import crud_account, crud_flow, crud_user
 from preloop.models.models import Account, Flow
 from preloop.models.models.user import User
@@ -890,3 +891,73 @@ class TestFailureCategoryRecorded:
 
         assert orchestrator.execution_log.status == "FAILED"
         assert orchestrator.execution_log.failure_category == "runner_conflict"
+
+
+@pytest.mark.asyncio
+async def test_runtime_oom_survives_monitor_and_terminal_storage(
+    db_session: Session,
+    test_flow: models.Flow,
+    event_data: dict,
+    mock_nats_client: AsyncMock,
+) -> None:
+    """Runtime evidence survives result.json and is stored without a retry."""
+    docker = AsyncMock()
+    docker.containers.get.return_value.show.return_value = {
+        "Id": "agent-container",
+        "Name": "/agent-test",
+        "State": {
+            "ExitCode": 137,
+            "OOMKilled": True,
+            "FinishedAt": "2026-01-01T12:00:00Z",
+        },
+    }
+    executor = ContainerAgentExecutor("test", {}, "test-image", use_kubernetes=False)
+    executor._get_docker_client = AsyncMock(return_value=docker)
+    executor.start = AsyncMock(return_value="agent-container")
+    executor.get_status = AsyncMock(return_value=AgentStatus.FAILED)
+    executor.get_logs = AsyncMock(return_value=UPSTREAM_TIMEOUT_LOGS.splitlines())
+    executor.get_result_artifact = AsyncMock(
+        return_value={
+            "status": "success",
+            "summary": "Agent progress",
+            "container_termination": {"reason": "Completed", "oom_killed": False},
+        }
+    )
+    executor.cleanup = AsyncMock()
+    with (
+        patch(
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
+            return_value=executor,
+        ),
+        patch.object(FlowExecutionOrchestrator, "_stream_logs_to_nats", AsyncMock()),
+        patch.object(
+            FlowExecutionOrchestrator, "_capture_evidence_archive", AsyncMock()
+        ),
+        patch.object(
+            FlowExecutionOrchestrator, "_capture_workspace_snapshot", AsyncMock()
+        ),
+    ):
+        orchestrator = _build_orchestrator(
+            db_session, test_flow, event_data, mock_nats_client
+        )
+        await orchestrator.run()
+    executor.start.assert_awaited_once()
+    db_session.refresh(orchestrator.execution_log)
+    saved = orchestrator.execution_log
+    assert saved.status == "FAILED"
+    assert saved.failure_category == "runner_error"
+    assert "OOMKilled" in saved.error_message
+    assert saved.result["summary"] == "Agent progress"
+    assert saved.result["container_termination"] == {
+        "runtime": "docker",
+        "container_name": "agent-test",
+        "container_id": "agent-container",
+        "pod_name": None,
+        "exit_code": 137,
+        "reason": "OOMKilled",
+        "message": None,
+        "signal": None,
+        "started_at": None,
+        "finished_at": "2026-01-01T12:00:00Z",
+        "oom_killed": True,
+    }

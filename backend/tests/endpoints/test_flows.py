@@ -1,10 +1,10 @@
 import uuid
 from zoneinfo import ZoneInfo
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from pytest_mock import MockerFixture
 
 from preloop.api.endpoints import flows
@@ -764,6 +764,8 @@ async def test_read_flow_executions(mock_account: Account, mocker: MockerFixture
         limit=25,
         flow_id=None,
         statuses=None,
+        search=None,
+        started_after=None,
         eager_load=True,
         lightweight=True,
     )
@@ -836,8 +838,57 @@ async def test_read_flow_executions_filters_and_caps_limit(
         limit=100,
         flow_id=flow_id,
         statuses=["RUNNING", "FAILED", "PENDING"],
+        search=None,
+        started_after=None,
         eager_load=True,
         lightweight=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_flow_executions_search_range_and_total_count(
+    mock_account: Account, mocker: MockerFixture
+):
+    """The collection bar filters server-side and the count is the real one.
+
+    The console prints "25 of N executions" over a page of 25, so the search
+    term and the range have to narrow the query the server runs, and N comes
+    back on `X-Total-Count` rather than being guessed from the page.
+    """
+    started_after = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    mock_crud_flow_execution.get_multi.return_value = []
+    mock_crud_flow_execution.count.return_value = 1412
+    response = Response()
+
+    await maybe_await(
+        flows.read_flow_executions(
+            response=response,
+            db=MagicMock(),
+            search="  preloop/preloop #138  ",
+            started_after=started_after,
+            current_user=mock_account,
+        )
+    )
+
+    assert response.headers["X-Total-Count"] == "1412"
+    assert mock_crud_flow_execution.get_multi.call_args.kwargs["search"] == (
+        "preloop/preloop #138"
+    )
+    assert (
+        mock_crud_flow_execution.get_multi.call_args.kwargs["started_after"]
+        == started_after
+    )
+    mock_crud_flow_execution.count.assert_called_once_with(
+        mocker.ANY,
+        account_id=mock_account.account_id,
+        flow_id=None,
+        statuses=None,
+        search="preloop/preloop #138",
+        started_after=started_after,
     )
 
 
@@ -2718,3 +2769,58 @@ def test_run_preset_pull_request_target_400(
 
     assert exc_info.value.status_code == 400
     assert "pull request" in str(exc_info.value.detail).lower()
+
+
+def test_run_preset_reviewer_on_issue_400(mock_account: Account, mocker: MockerFixture):
+    issue_id = uuid.uuid4()
+    mocker.patch(
+        "preloop.services.preset_runner._load_visible_issue",
+        return_value=(MagicMock(), MagicMock(), MagicMock()),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        flows.run_preset(
+            db=MagicMock(),
+            current_user=mock_account,
+            body=_run_preset_body(issue_id, slug="pull-request-reviewer"),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "issue" in str(exc_info.value.detail).lower()
+
+
+def test_run_preset_triage_batch_forwards_targets(
+    mock_account: Account, mocker: MockerFixture
+):
+    first = uuid.uuid4()
+    second = uuid.uuid4()
+    flow_id = uuid.uuid4()
+    mocker.patch(
+        "preloop.services.preset_runner.run_preset_on_target",
+        new=mocker.AsyncMock(
+            return_value={
+                "execution_id": "exec-1",
+                "flow_id": str(flow_id),
+                "flow_name": "Issue Triage Assistant",
+                "flow_created": False,
+                "execution_url": "/console/flows/executions/exec-1",
+                "results": [
+                    {"issue_id": str(first), "execution_id": "exec-1"},
+                    {"issue_id": str(second), "error": "Issue not found"},
+                ],
+            }
+        ),
+    )
+    body = schemas.RunPresetRequest(
+        preset_slug="issue-triage-assistant",
+        targets=[
+            schemas.RunPresetTarget(kind="issue", issue_id=first),
+            schemas.RunPresetTarget(kind="issue", issue_id=second),
+        ],
+        confirm_create=True,
+    )
+    result = flows.run_preset(db=MagicMock(), current_user=mock_account, body=body)
+    assert result.flow_name == "Issue Triage Assistant"
+    assert result.results is not None
+    assert len(result.results) == 2
+    assert result.results[1].error == "Issue not found"

@@ -1,4 +1,4 @@
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import {
@@ -36,6 +36,7 @@ import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import consoleStyles from '../../../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../../../styles/console-dialog';
 
 @customElement('team-management-view')
@@ -85,7 +86,17 @@ export class TeamManagementView extends LitElement {
   @state()
   private teamRoles: Role[] = [];
 
+  /** Role names are stored lower case (`owner`); the chip says "Owner". */
+  static roleLabel(name: string | null | undefined): string {
+    const value = String(name || '').trim();
+    if (!value) return 'Role';
+    return value
+      .replace(/_/g, ' ')
+      .replace(/^\w/, (character) => character.toUpperCase());
+  }
+
   static styles = [
+    unsafeCSS(consoleStyles),
     consoleDialogStyles,
     css`
       :host {
@@ -166,6 +177,10 @@ export class TeamManagementView extends LitElement {
       .team-actions {
         display: flex;
         gap: 0.5rem;
+      }
+
+      .team-actions .danger-action {
+        margin-left: var(--sl-spacing-large);
       }
 
       .form-grid {
@@ -450,13 +465,13 @@ export class TeamManagementView extends LitElement {
 
     return html`
       <div class="header">
-        <h1>Team Management</h1>
+        <h1>Teams</h1>
         <sl-button
           variant="primary"
           @click=${() => (this.isCreateModalOpen = true)}
         >
           <sl-icon slot="prefix" name="people-fill"></sl-icon>
-          Create Team
+          Create team
         </sl-button>
       </div>
 
@@ -488,8 +503,10 @@ export class TeamManagementView extends LitElement {
                             <strong>Roles:</strong>
                             ${(team as any).roles.map(
                               (role: any) =>
-                                html`<sl-badge variant="primary"
-                                  >${role.name}</sl-badge
+                                html`<sl-badge class="chip" variant="neutral"
+                                  >${TeamManagementView.roleLabel(
+                                    role.name
+                                  )}</sl-badge
                                 >`
                             )}
                           </div>
@@ -516,9 +533,14 @@ export class TeamManagementView extends LitElement {
                   >
                     <sl-icon name="pencil"></sl-icon>
                   </sl-button>
+                  <!-- Outline, last, after a gap (DESIGN.md "Destructive
+                       actions"). -->
                   <sl-button
+                    class="danger-action"
                     size="small"
                     variant="danger"
+                    outline
+                    title="Delete team"
                     @click=${() => this.handleDeleteTeam(team)}
                   >
                     <sl-icon name="trash"></sl-icon>

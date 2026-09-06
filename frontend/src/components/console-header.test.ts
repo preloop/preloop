@@ -9,6 +9,7 @@
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
 import './console-header.ts';
 import type { ConsoleHeader } from './console-header.ts';
+import { publishAttentionSummary } from '../utils/attention-summary';
 
 const USER = {
   id: 'user-1',
@@ -95,5 +96,107 @@ describe('console-header user menu trigger', () => {
       () => el.shadowRoot!.textContent?.includes('Alice Smith') ?? false,
       'user name never rendered'
     );
+  });
+});
+
+/**
+ * The bell's empty state. "No notifications" over an amber strip saying
+ * "2 need attention" is two true sentences that read as a contradiction, so
+ * the empty state names what is empty and repeats the attention counts the
+ * Overview or the Attention page published.
+ */
+describe('console-header bell empty state', () => {
+  let restoreFetch: () => void;
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-token');
+    restoreFetch = stubFetch();
+    sessionStorage.removeItem('preloop:attention-summary');
+  });
+
+  afterEach(() => {
+    restoreFetch();
+    localStorage.removeItem('accessToken');
+    sessionStorage.removeItem('preloop:attention-summary');
+  });
+
+  function dropdownText(el: ConsoleHeader): string {
+    return (
+      el
+        .shadowRoot!.querySelector('.notification-dropdown')!
+        .textContent?.replace(/\s+/g, ' ')
+        .trim() || ''
+    );
+  }
+
+  it('says what is empty when nothing needs attention', async () => {
+    const el = await fixture<ConsoleHeader>(
+      html`<console-header></console-header>`
+    );
+    await el.updateComplete;
+
+    const text = dropdownText(el);
+    expect(text).to.contain('No new notifications');
+    expect(text).to.not.contain('need attention:');
+  });
+
+  it('states the attention counts published by the Overview', async () => {
+    publishAttentionSummary([
+      {
+        id: 'flow:flow-1',
+        kind: 'flow',
+        severity: 'critical',
+        title: 'Pull Request Reviewer',
+        detail: '11 failed runs',
+        href: '/console/flows',
+        at: null,
+        fingerprint: 'flow-1:11',
+        dismissable: true,
+      },
+      {
+        id: 'pricing:model-1',
+        kind: 'pricing',
+        severity: 'warning',
+        title: 'No price catalog loaded',
+        detail: 'Estimated spend is $0',
+        href: '/console/cost',
+        at: null,
+        fingerprint: 'pricing:1',
+        dismissable: true,
+      },
+    ]);
+
+    const el = await fixture<ConsoleHeader>(
+      html`<console-header></console-header>`
+    );
+    await el.updateComplete;
+
+    expect(dropdownText(el)).to.contain(
+      '2 items need attention: 1 flow, 1 pricing'
+    );
+  });
+
+  it('follows a summary published while the header is on screen', async () => {
+    const el = await fixture<ConsoleHeader>(
+      html`<console-header></console-header>`
+    );
+    await el.updateComplete;
+
+    publishAttentionSummary([
+      {
+        id: 'approval:approval-1',
+        kind: 'approval',
+        severity: 'critical',
+        title: 'read_file',
+        detail: 'waiting on you',
+        href: '/console/approvals',
+        at: null,
+        fingerprint: 'approval-1',
+        dismissable: false,
+      },
+    ]);
+    await el.updateComplete;
+
+    expect(dropdownText(el)).to.contain('1 item needs attention: 1 approval');
   });
 });

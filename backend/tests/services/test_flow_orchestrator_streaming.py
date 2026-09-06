@@ -778,3 +778,60 @@ class TestUserStopResult:
         assert "timed out" not in (result["error_message"] or "")
         assert "stopped by user request" in result["error_message"]
         mock_agent_executor.stop.assert_any_call("session-123")
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_logs_are_not_streamed_twice(
+    orchestrator: FlowExecutionOrchestrator, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The runner WebSocket already persists and publishes its log lines."""
+    from uuid import uuid4
+    from preloop.agents.remote_runner import RemoteRunnerExecutor
+
+    executor = RemoteRunnerExecutor(
+        "codex", {}, db=MagicMock(), pool="auto", account_id=uuid4()
+    )
+    executor.get_logs = AsyncMock()
+    await orchestrator._stream_logs_to_nats(executor, f"runner:queued:auto:{uuid4()}")
+    assert not [record for record in caplog.records if record.levelname == "ERROR"]
+    executor.get_logs.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_replay_persisted_runner_logs_binds_opened_pr(
+    orchestrator: FlowExecutionOrchestrator,
+) -> None:
+    """Terminal runner draining binds PRs, without replaying live-consumed rows."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    orchestrator.execution_log.agent_session_reference = "runner:abc:exec"
+    # Earlier output must not suppress the remaining terminal marker.
+    orchestrator.execution_logger.agent_output_lines = ["earlier output"]
+    orchestrator._publish_update = AsyncMock()
+    row = SimpleNamespace(
+        id=uuid4(),
+        timestamp=datetime.now(timezone.utc),
+        message='PRELOOP_PR_OPENED {"url": "https://example.com/mr/1", "branch": "fix"}',
+    )
+    with (
+        patch("preloop.services.flow_orchestrator.RUNNER_LOG_PAGE_SIZE", 1),
+        patch(
+            "preloop.services.flow_orchestrator.crud_flow_execution_log.get_agent_log_page",
+            side_effect=[[row], [], []],
+        ) as pages,
+    ):
+        await orchestrator._replay_persisted_runner_logs()
+        await orchestrator._replay_persisted_runner_logs()
+    assert pages.call_count == 3
+    assert pages.call_args_list[0].kwargs["after"] is None
+    assert pages.call_args_list[1].kwargs["after"] == (row.timestamp, row.id)
+    assert pages.call_args_list[2].kwargs["after"] == (row.timestamp, row.id)
+    assert orchestrator.execution_logger.get_agent_output_lines() == [
+        "earlier output",
+        row.message,
+    ]
+    assert orchestrator._opened_pr is not None
+    assert orchestrator._opened_pr["url"] == "https://example.com/mr/1"
+    orchestrator._publish_update.assert_not_awaited()

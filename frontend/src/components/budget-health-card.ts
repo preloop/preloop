@@ -6,6 +6,12 @@ import type {
   ManagedAgentSummary,
 } from '../types';
 import { budgetTrackStyles } from '../styles/budget-track';
+import {
+  budgetPeriodLabel,
+  budgetPeriodWindow,
+  budgetForecastStyles,
+  renderBudgetForecast,
+} from '../utils/budget-forecast';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
@@ -33,6 +39,7 @@ export class BudgetHealthCard extends LitElement {
 
   static styles = [
     budgetTrackStyles,
+    budgetForecastStyles,
     css`
       :host {
         display: block;
@@ -127,6 +134,12 @@ export class BudgetHealthCard extends LitElement {
         color: var(--sl-color-danger-700);
       }
 
+      /* Cost runs one step smaller than the Overview; the sentence, its
+         tones and its tabular figures come from budgetForecastStyles. */
+      .budget-forecast {
+        font-size: var(--sl-font-size-x-small);
+      }
+
       .row-footer .limit-status {
         color: var(--sl-color-danger-700);
         font-weight: var(--sl-font-weight-semibold);
@@ -178,9 +191,11 @@ export class BudgetHealthCard extends LitElement {
   }
 
   private policyDisplayName(policy: BudgetPolicy): string {
-    const period = this.formatBudgetPeriod(policy.period);
+    const period =
+      budgetPeriodWindow(policy.period) ||
+      this.formatBudgetPeriod(policy.period);
     if (policy.subject_type === 'global' || policy.subject_type === 'account') {
-      return `Global · ${period}`;
+      return budgetPeriodLabel(policy.period);
     }
     if (policy.subject_type === 'managed_agent') {
       const agentName =
@@ -349,7 +364,12 @@ export class BudgetHealthCard extends LitElement {
     icon: string,
     spend: number,
     softLimit: number,
-    hardLimit: number
+    hardLimit: number,
+    forecast: {
+      period: string;
+      periodStart?: string | null;
+      periodEnd?: string | null;
+    } | null = null
   ) {
     const maxLimit = hardLimit || softLimit;
     const fillPercent =
@@ -468,6 +488,21 @@ export class BudgetHealthCard extends LitElement {
               `
             : nothing
         }
+        ${
+          forecast
+            ? renderBudgetForecast(
+                {
+                  period: forecast.period,
+                  spend,
+                  softLimit,
+                  hardLimit,
+                  periodStart: forecast.periodStart,
+                  periodEnd: forecast.periodEnd,
+                },
+                (value) => this.formatCurrency(value)
+              )
+            : nothing
+        }
       </div>
     `;
   }
@@ -552,11 +587,16 @@ export class BudgetHealthCard extends LitElement {
         >
           <div class="rows">
             ${this.renderBudgetLimitRow(
-              `Global spend · ${this.formatBudgetPeriod(selectedPeriod)}`,
+              budgetPeriodLabel(selectedPeriod),
               'globe',
               globalSpend,
               globalSoftLimit,
-              globalHardLimit
+              globalHardLimit,
+              {
+                period: selectedPeriod,
+                periodStart: selectedGlobalUsage?.policy.period_start,
+                periodEnd: selectedGlobalUsage?.policy.period_end,
+              }
             )}
             ${
               additionalUsages.length
@@ -566,7 +606,12 @@ export class BudgetHealthCard extends LitElement {
                       this.policyIcon(usage.policy),
                       usage.spend,
                       usage.softLimit,
-                      usage.hardLimit
+                      usage.hardLimit,
+                      {
+                        period: usage.policy.period,
+                        periodStart: usage.policy.period_start,
+                        periodEnd: usage.policy.period_end,
+                      }
                     )
                   )
                 : html`<div class="empty">No additional budget policies.</div>`
@@ -586,7 +631,7 @@ export class BudgetHealthCard extends LitElement {
                       name="gear"
                       aria-hidden="true"
                     ></sl-icon>
-                    Configure Limits
+                    Configure limits
                   </sl-button>
                 `
               : nothing

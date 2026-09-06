@@ -1363,6 +1363,15 @@ class TestIsPreloopTriggeredEvent:
         }
         assert flow_trigger_service._is_preloop_triggered_event(event) is True
 
+    def test_github_bot_issue_updated_is_ignored(self, flow_trigger_service):
+        """Bot-edited GitHub issues are side-effects and must be dropped."""
+        event = {
+            "source": "github",
+            "type": "issue_updated",
+            "payload": {"sender": {"login": "preloop[bot]"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is True
+
     def test_github_bot_pr_updated_is_ignored(self, flow_trigger_service):
         """Bot pushing status/body edits on an existing PR: drop."""
         event = {
@@ -1444,6 +1453,14 @@ class TestIsPreloopTriggeredEvent:
             "source": "github",
             "type": "issue_labeled",
             "payload": {"sender": {"login": "dimitris"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_human_github_issue_updated_passes(self, flow_trigger_service):
+        event = {
+            "source": "github",
+            "type": "issue_updated",
+            "payload": {"sender": {"login": "janedoe"}},
         }
         assert flow_trigger_service._is_preloop_triggered_event(event) is False
 

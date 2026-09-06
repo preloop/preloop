@@ -8,6 +8,44 @@ from .base import PromptResolver, ResolverContext
 logger = logging.getLogger(__name__)
 
 
+def _flatten_label_names(labels: Any) -> list[str]:
+    """Return label names from objects or strings, preserving order."""
+    names: list[str] = []
+    if not isinstance(labels, list):
+        return names
+    for item in labels:
+        if isinstance(item, dict):
+            name = item.get("title") or item.get("name") or item.get("label")
+            if name:
+                names.append(str(name))
+        elif isinstance(item, str) and item.strip():
+            names.append(item)
+    return names
+
+
+def _enrich_object_attributes(payload: Dict[str, Any], attrs: Dict[str, Any]) -> None:
+    """Copy labels and updated_at onto object_attributes when missing."""
+    raw_labels = attrs.get("labels")
+    if isinstance(raw_labels, list) and raw_labels and isinstance(raw_labels[0], dict):
+        flattened = _flatten_label_names(raw_labels)
+        if flattened:
+            attrs["labels"] = flattened
+    elif raw_labels is None:
+        labels: list[str] = []
+        if "labels" in payload:
+            labels = _flatten_label_names(payload.get("labels"))
+        else:
+            issue = payload.get("issue")
+            if isinstance(issue, dict) and "labels" in issue:
+                labels = _flatten_label_names(issue.get("labels"))
+        if labels or "labels" in payload:
+            attrs["labels"] = labels
+    if not attrs.get("updated_at"):
+        issue = payload.get("issue")
+        if isinstance(issue, dict) and issue.get("updated_at"):
+            attrs["updated_at"] = issue.get("updated_at")
+
+
 def _alias_object_attribute_ids(attrs: Dict[str, Any]) -> None:
     """Expose both GitHub ``number`` and GitLab ``iid`` on object_attributes.
 
@@ -97,6 +135,7 @@ class TriggerEventResolver(PromptResolver):
             if isinstance(attrs, dict):
                 _lift_gitlab_noteable_ids(payload, attrs)
                 _alias_object_attribute_ids(attrs)
+                _enrich_object_attributes(payload, attrs)
             return normalized
 
         # For GitHub, create object_attributes from pull_request or issue
@@ -125,16 +164,20 @@ class TriggerEventResolver(PromptResolver):
             # Handle GitHub issue events
             elif "issue" in payload:
                 issue = payload["issue"]
+                user = issue.get("user") if isinstance(issue.get("user"), dict) else {}
                 object_attributes = {
                     "title": issue.get("title"),
                     "description": issue.get("body"),
-                    "url": issue.get("html_url"),
+                    "url": issue.get("html_url") or issue.get("url"),
                     "state": issue.get("state"),
-                    "author": issue.get("user", {}).get("login"),
+                    "author": user.get("login") or user.get("username"),
                     "number": issue.get("number"),
                     "iid": issue.get("number"),
+                    "labels": _flatten_label_names(issue.get("labels")),
+                    "updated_at": issue.get("updated_at"),
                 }
                 payload["object_attributes"] = object_attributes
+                _enrich_object_attributes(payload, object_attributes)
                 self.logger.debug(
                     f"Normalized GitHub issue to object_attributes: {object_attributes.get('title')}"
                 )

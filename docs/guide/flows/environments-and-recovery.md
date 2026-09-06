@@ -134,3 +134,13 @@ the sandbox, and checks exact unpushed/dirty/untracked recovery in a new one.
 Supply a migrated disposable `DATABASE_URL`, image digests and, for Kubernetes,
 an explicit disposable `--kubeconfig`. It never invokes a model. Set
 `PRELOOP_DISABLE_TELEMETRY=true` for all such tests and setup scripts.
+
+
+This fixture verifies the generic runtime and recovery contract. The SQL/browser
+probe is an optional example, not a required application stack or a claim that a
+project's full end-to-end suite passes. Run the repository's relevant verification
+commands separately; missing dependencies and unavailable checks remain explicit
+blocked evidence. Use immutable `repository@sha256:<digest>` references for both
+profile and service images. Raw private-runner image overrides do not require a
+named profile registry; named private profiles remain unsupported until the
+runner advertises that protocol.

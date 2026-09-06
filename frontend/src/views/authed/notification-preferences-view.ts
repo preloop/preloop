@@ -155,13 +155,20 @@ export class NotificationPreferencesView extends AuthedElement {
         color: var(--sl-color-neutral-900);
       }
 
+      /* Hairline rows, not boxes: DESIGN.md depth limit two means nothing
+         inside a card gets its own border. */
       .preference-row {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: var(--sl-spacing-medium);
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
+        gap: var(--sl-spacing-medium);
+        padding: var(--sl-spacing-medium) 0;
+        border-bottom: 1px solid var(--console-hairline);
+      }
+
+      /* The card edge ends the list; a rule right above it is a second edge. */
+      .preference-row:last-of-type {
+        border-bottom: none;
       }
 
       .preference-label {
@@ -190,10 +197,13 @@ export class NotificationPreferencesView extends AuthedElement {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: var(--sl-spacing-medium);
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
-        background: var(--sl-color-neutral-50);
+        gap: var(--sl-spacing-medium);
+        padding: var(--sl-spacing-medium) 0;
+        border-bottom: 1px solid var(--console-hairline);
+      }
+
+      .devices-list .device-item:last-of-type {
+        border-bottom: none;
       }
 
       .device-info {
@@ -266,32 +276,19 @@ export class NotificationPreferencesView extends AuthedElement {
       .app-store-links {
         display: flex;
         justify-content: center;
+        flex-wrap: wrap;
         gap: var(--sl-spacing-medium);
         margin-top: var(--sl-spacing-large);
       }
 
-      .app-store-button {
-        display: inline-flex;
-        align-items: center;
-        gap: var(--sl-spacing-small);
-        padding: var(--sl-spacing-medium) var(--sl-spacing-large);
-        background: var(--sl-color-primary-600);
-        color: var(--sl-color-neutral-0);
-        text-decoration: none;
-        border-radius: var(--sl-border-radius-medium);
-        transition: all 0.2s ease;
-        font-weight: var(--sl-font-weight-semibold);
-        box-shadow: var(--sl-shadow-small);
-      }
-
-      .app-store-button:hover {
-        background: var(--sl-color-primary-700);
-        transform: translateY(-1px);
-        box-shadow: var(--sl-shadow-medium);
-      }
-
-      .app-store-button sl-icon {
-        font-size: 1.5rem;
+      /* Two links to an app store are not the primary action of this page:
+         they are default buttons under one sentence. */
+      .app-store-links .hint {
+        width: 100%;
+        text-align: center;
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        margin-bottom: var(--sl-spacing-small);
       }
 
       .loading {
@@ -814,7 +811,7 @@ export class NotificationPreferencesView extends AuthedElement {
 
     return html`
       <div class="header">
-        <h1>Notification Preferences</h1>
+        <h1>Notifications</h1>
         <p>Manage how you receive approval request notifications</p>
       </div>
 
@@ -841,7 +838,7 @@ export class NotificationPreferencesView extends AuthedElement {
 
       <div class="content">
         <sl-card>
-          <h2 class="section-title">Notification Channels</h2>
+          <h2 class="section-title">Channels</h2>
 
           <div class="preference-row">
             <div class="preference-label">
@@ -904,10 +901,10 @@ export class NotificationPreferencesView extends AuthedElement {
           <div
             style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--sl-spacing-medium);"
           >
-            <h2 class="section-title" style="margin: 0;">Mobile Devices</h2>
+            <h2 class="section-title" style="margin: 0;">Devices</h2>
             <sl-button size="small" @click=${this.handleShowQRCode}>
               <sl-icon slot="prefix" name="qr-code"></sl-icon>
-              Register New Device
+              Register device
             </sl-button>
           </div>
 
@@ -949,9 +946,13 @@ export class NotificationPreferencesView extends AuthedElement {
                               </div>
                             </div>
                           </div>
+                          <!-- Outline: removing one device is not the loudest
+                               thing on a settings page (DESIGN.md
+                               "Destructive actions"). -->
                           <sl-button
                             size="small"
                             variant="danger"
+                            outline
                             @click=${() =>
                               this.handleUnregisterDevice(device.token)}
                           >
@@ -981,31 +982,32 @@ export class NotificationPreferencesView extends AuthedElement {
         ${this.renderTestSendSection()}
 
         <div class="app-store-links">
-          <a
+          <div class="hint">
+            Get the mobile app to approve requests on the go.
+          </div>
+          <sl-button
+            variant="default"
             href="https://apps.apple.com/app/preloop/id6757803021"
             target="_blank"
             rel="noopener noreferrer"
-            class="app-store-button"
-            title="Download on the App Store"
           >
-            <sl-icon name="apple"></sl-icon>
-            <span>App Store</span>
-          </a>
-          <a
+            <sl-icon slot="prefix" name="apple"></sl-icon>
+            App Store
+          </sl-button>
+          <sl-button
+            variant="default"
             href="https://play.google.com/store/apps/details?id=ai.spacecode.preloop&pli=1"
             target="_blank"
             rel="noopener noreferrer"
-            class="app-store-button"
-            title="Get it on Google Play"
           >
-            <sl-icon name="google-play"></sl-icon>
-            <span>Google Play</span>
-          </a>
+            <sl-icon slot="prefix" name="google-play"></sl-icon>
+            Google Play
+          </sl-button>
         </div>
       </div>
 
       <sl-dialog
-        label="Register Mobile Device"
+        label="Register device"
         ?open=${this.showQRDialog}
         @sl-request-close=${this.handleCloseQRDialog}
         style="--width: 600px;"
