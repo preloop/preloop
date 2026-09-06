@@ -20,6 +20,11 @@ Three entry points, for the three moments attribution is needed:
 
 Lookups are best-effort. A revoked key, a deleted agent or a purged session
 must degrade to "that part is omitted", never to a failed page load.
+
+Read-time batched lookups use ``select()`` rather than ``preloop.models.crud``:
+``CRUDBase.get_multi`` only supports scalar ``==`` filters, and a page of 50
+rows must not issue four queries per row. Creation-time name backfill in
+:func:`resolve_managed_agent_name` is the same kind of single-id lookup.
 """
 
 from __future__ import annotations
@@ -188,8 +193,8 @@ def _account_ids(rows: Sequence[Any]) -> List[Any]:
 
     Cheap defence in depth: the ids come off rows the caller is already
     allowed to read, but a mis-stamped id must not resolve to another
-    account's agent name. Rows without an account (test stand-ins) yield an
-    empty list, which leaves the lookup unscoped rather than empty.
+    account's agent name. An empty list means "skip the lookup", never
+    "run it unscoped".
     """
     accounts = []
     for row in rows:
@@ -235,6 +240,8 @@ def _load_by_id(
         wanted = _wanted_ids(ids)
         if not wanted:
             return {}
+        if getattr(model, "account_id", None) is not None and not account_ids:
+            return {}
         rows = db.execute(_by_id_select(model, wanted, account_ids)).scalars().all()
         return {row.id: row for row in rows}
     except Exception:
@@ -249,6 +256,8 @@ async def _load_by_id_async(
     try:
         wanted = _wanted_ids(ids)
         if not wanted:
+            return {}
+        if getattr(model, "account_id", None) is not None and not account_ids:
             return {}
         result = await db.execute(_by_id_select(model, wanted, account_ids))
         return {row.id: row for row in result.scalars().all()}
@@ -265,6 +274,8 @@ def _load_runs(
         wanted = _wanted_ids(ids)
         if not wanted:
             return {}
+        if not account_ids:
+            return {}
         rows = db.execute(_runs_select(wanted, account_ids)).all()
         return {execution.id: (execution, flow) for execution, flow in rows}
     except Exception:
@@ -279,6 +290,8 @@ async def _load_runs_async(
     try:
         wanted = _wanted_ids(ids)
         if not wanted:
+            return {}
+        if not account_ids:
             return {}
         result = await db.execute(_runs_select(wanted, account_ids))
         return {execution.id: (execution, flow) for execution, flow in result.all()}

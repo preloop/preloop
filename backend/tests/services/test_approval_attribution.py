@@ -376,6 +376,38 @@ def test_an_id_from_another_account_is_never_resolved(db_session, attributed_wor
     assert response.flow_execution is None
 
 
+def test_a_page_without_accounts_does_not_run_unscoped_lookups(
+    db_session, attributed_world
+):
+    """No account on the page skips the lookup; it does not widen it.
+
+    ``_account_ids`` used to return [] and the SELECT then omitted the
+    account WHERE, so a stand-in without account_id would name any matching
+    id. Skip instead: missing scope is not a license to search the table.
+    """
+    world = attributed_world
+    request = SimpleNamespace(
+        account_id=None,
+        managed_agent_id=world.agent.id,
+        runtime_session_id=world.session.id,
+        api_key_id=world.api_key.id,
+        execution_id=str(world.execution.id),
+        agent=None,
+        api_key=None,
+        session=None,
+        flow_execution=None,
+    )
+
+    with _counting_statements(db_session) as statements:
+        attach_attribution(db_session, [request])
+
+    assert statements == []
+    assert request.agent is None
+    assert request.api_key is None
+    assert request.session is None
+    assert request.flow_execution is None
+
+
 def _scalar_result(rows):
     """A stand-in for ``Result`` as the attribution loader consumes it."""
     return MagicMock(
