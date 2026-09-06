@@ -103,6 +103,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Landing onboard screenshot 404**: the homepage feature
+  "Onboard the agents you already run with one command" pointed at
+  `/assets/screenshots/quickstart/dark/agents-onboard-dialog.png`, which
+  was captured into the docs tree but never copied into `frontend/public`.
+  Prod and staging rendered a broken-image icon. The still is now in
+  `public/` next to the other quickstart shots, and the brand Vite plugin
+  fails the build when a landing `hero.image` or `placeholderImg` is
+  missing from `public/` so this cannot ship silent again.
+
 - **Talk window follows the latest message**: new turns (including after
   the 50-event page is full, and replies that arrive as activity rows)
   keep the thread at the bottom unless the reader scrolled up with a

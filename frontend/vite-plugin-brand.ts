@@ -3,6 +3,7 @@ import * as yaml from 'js-yaml';
 import * as fs from 'fs';
 import * as path from 'path';
 import { BrandConfig } from './src/brand-config';
+import { collectLandingPublicAssetPaths } from './src/brand-landing-assets';
 import {
   get_canonical_url,
   get_meta_for_route,
@@ -261,6 +262,16 @@ export interface BrandPluginOptions {
   outDir?: string;
 }
 
+function missingPublicAssetPaths(
+  assetPaths: string[],
+  publicDir: string
+): string[] {
+  return assetPaths.filter((assetPath) => {
+    const file = path.join(publicDir, assetPath.replace(/^\//, ''));
+    return !fs.existsSync(file);
+  });
+}
+
 /**
  * Vite plugin to inject brand-specific content and configuration
  *
@@ -329,7 +340,7 @@ export function brandPlugin(
   return {
     name: 'vite-plugin-brand',
 
-    configResolved() {
+    configResolved(config) {
       // Load brand configuration at build time
       if (!fs.existsSync(configPath)) {
         throw new Error(`brands.yaml not found at ${configPath}`);
@@ -371,6 +382,21 @@ export function brandPlugin(
         brandConfig.landing.pricing!.plans || [];
       brandConfig.landing.pricing!.faqs =
         brandConfig.landing.pricing!.faqs || [];
+
+      const publicDir = config.publicDir;
+      if (publicDir) {
+        const missing = missingPublicAssetPaths(
+          collectLandingPublicAssetPaths(brandConfig),
+          publicDir
+        );
+        if (missing.length) {
+          throw new Error(
+            'Landing brand images are missing from public/: ' +
+              missing.join(', ') +
+              '. Copy the screenshot into frontend/public (see docs/guide/assets/screenshots/quickstart/) so the live site does not 404.'
+          );
+        }
+      }
 
       console.log(
         `\n🎨 Building for brand: ${brandConfig.name} (${brandConfig.domain})\n`
