@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy import event
 
+from preloop.api.endpoints import approval_requests
 from preloop.models import models
 from preloop.models.schemas.approval_request import ApprovalRequestResponse
 from preloop.services.approval_attribution import (
@@ -477,6 +478,73 @@ def test_a_page_with_only_agents_costs_one_statement(db_session, attributed_worl
 
     assert len(statements) == 1, statements
     assert all(r.api_key is None for r in requests)
+
+
+def test_the_detail_endpoint_returns_a_validated_response_with_attribution(
+    db_session, attributed_world
+):
+    """The read endpoints owe two things at once, so pin both together.
+
+    The endpoint must hand back an ``ApprovalRequestResponse`` built while the
+    request session is still open (serializing the ORM row later raises
+    DetachedInstanceError), and that response must still carry the resolved
+    agent and key. Ordering is what makes both true: attribute the row, then
+    validate. Swapping the two silently drops every link.
+    """
+    world = attributed_world
+    row = _request(
+        account_id=world.account_id,
+        managed_agent_id=world.agent.id,
+        api_key_id=world.api_key.id,
+    )
+    caller = SimpleNamespace(id=uuid.uuid4(), account_id=world.account_id)
+
+    with (
+        patch.object(approval_requests, "_record_viewed_event"),
+        patch.object(approval_requests.crud_approval_request, "get", return_value=row),
+    ):
+        result = approval_requests.get_approval_request(
+            request_id=row.id, current_user=caller, db=db_session
+        )
+
+    assert isinstance(result, ApprovalRequestResponse)
+    assert result.agent is not None and result.agent.name == "Claude Code (laptop)"
+    assert result.api_key is not None and result.api_key.name == "claude-code-laptop"
+
+
+def test_the_list_endpoint_returns_validated_responses_with_attribution(
+    db_session, attributed_world
+):
+    """Same contract for the page: validated rows that kept their links."""
+    world = attributed_world
+    rows = [
+        _request(
+            account_id=world.account_id,
+            managed_agent_id=world.agent.id,
+            api_key_id=world.api_key.id,
+        )
+        for _ in range(3)
+    ]
+    caller = SimpleNamespace(id=uuid.uuid4(), account_id=world.account_id)
+
+    with patch.object(
+        approval_requests.crud_approval_request,
+        "get_multi_by_account",
+        return_value=rows,
+    ):
+        results = approval_requests.list_approval_requests(
+            status=None,
+            execution_id=None,
+            limit=50,
+            skip=0,
+            current_user=caller,
+            db=db_session,
+        )
+
+    assert len(results) == 3
+    assert all(isinstance(result, ApprovalRequestResponse) for result in results)
+    assert all(result.agent.name == "Claude Code (laptop)" for result in results)
+    assert all(result.api_key.name == "claude-code-laptop" for result in results)
 
 
 def test_attribution_failure_never_breaks_the_read():
