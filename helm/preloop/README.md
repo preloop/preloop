@@ -771,3 +771,14 @@ point in time), they do not restore in place:
 ### To 1.0.0
 
 No special actions are required when upgrading from previous versions.
+
+### Native conversation checkpoints
+
+`values-native-checkpoints.yaml` is an optional overlay using the existing shared
+`extraEnv` support. Chart defaults remain disabled. Deploy the transaction lock
+corrections before enabling uploads, preserve existing signing/encryption keys,
+and merge the overlay entries into your full `extraEnv` list. The overlay's
+16 MiB example compressed upload cap fits below the default 32 MiB proxy limit;
+measure representative archives and adjust both limits before use. See the
+[deployment prerequisites](../../docs/guide/flows/durable-implementation-feedback.md#deployment-prerequisites)
+for retention, quota, egress, rollback and validation requirements.
