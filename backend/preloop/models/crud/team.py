@@ -156,27 +156,37 @@ class CRUDTeam(CRUDBase[Team]):
         return False
 
     def get_user_teams(
-        self, db: Session, *, user_id: uuid.UUID, skip: int = 0, limit: int = 100
+        self,
+        db: Session,
+        *,
+        user_id: uuid.UUID,
+        account_id: Optional[uuid.UUID] = None,
+        skip: int = 0,
+        limit: Optional[int] = 100,
     ) -> List[Team]:
         """Get all teams a user is a member of.
 
         Args:
             db: Database session.
             user_id: User ID.
+            account_id: When set, only teams belonging to this account.
             skip: Number of records to skip.
-            limit: Maximum number of records to return.
+            limit: Maximum number of records to return. ``None`` means no cap.
 
         Returns:
-            List of teams.
+            Teams ordered by name.
         """
-        return (
+        query = (
             db.query(Team)
             .join(TeamMembership, Team.id == TeamMembership.team_id)
             .filter(TeamMembership.user_id == user_id)
-            .offset(skip)
-            .limit(limit)
-            .all()
         )
+        if account_id is not None:
+            query = query.filter(Team.account_id == account_id)
+        query = query.order_by(Team.name).offset(skip)
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
 
 
 # Create instance

@@ -1,0 +1,34 @@
+{
+  "description": "Sanitized structure from hosted Codex 0.153.4 DeepSeek v4 Flash response: assistant message, one namespace call, one ordinary call. All text, tool names, arguments, and identifiers are synthetic. Original gateway response had no reasoning item.",
+  "output": [
+    {
+      "id": "msg_fixture",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Inspecting the fixture."
+        }
+      ]
+    },
+    {
+      "id": "fc_fixture_1",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_fixture_1",
+      "name": "read_issue",
+      "arguments": "{\"path\":\"fixture.txt\"}",
+      "namespace": "mcp__preloop"
+    },
+    {
+      "id": "fc_fixture_2",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_fixture_2",
+      "name": "inspect",
+      "arguments": "{\"path\":\"fixture.txt\"}"
+    }
+  ]
+}

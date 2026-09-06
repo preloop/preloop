@@ -22,8 +22,8 @@ it*, not about severity:
     The agent Job/container could not be created because its name was already
     taken (Kubernetes 409 AlreadyExists). Infrastructure, always transient.
 ``runner_error``
-    Anything else that stopped the runtime from starting (bad manifest,
-    quota, oversized entrypoint).
+    Runtime infrastructure failures, including startup errors (bad manifest,
+    quota, oversized entrypoint) and confirmed container memory kills.
 ``model_transient``
     The model provider dropped, throttled or 5xx'd the request mid-run.
     Retryable, and the reason the run-level retry exists.
@@ -140,6 +140,7 @@ _CANCELLED_STATUSES = frozenset({"STOPPED", "CANCELLED", "CANCELED"})
 # Upstream taxonomy -> category. Keeps the gateway's vocabulary and the
 # execution's vocabulary from drifting apart.
 _ERROR_CLASS_CATEGORIES = {
+    "container_oom_killed": FAILURE_CATEGORY_RUNNER_ERROR,
     ERROR_CLASS_NETWORK: FAILURE_CATEGORY_MODEL_TRANSIENT,
     ERROR_CLASS_UPSTREAM_OVERLOADED: FAILURE_CATEGORY_MODEL_TRANSIENT,
     ERROR_CLASS_UPSTREAM_RATE_LIMITED: FAILURE_CATEGORY_MODEL_TRANSIENT,

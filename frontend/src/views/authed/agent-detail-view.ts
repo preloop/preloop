@@ -1789,7 +1789,7 @@ export class AgentDetailView extends LitElement {
       },
       {
         id: 'edit-tags',
-        label: 'Edit Tags',
+        label: 'Edit tags',
         icon: 'tag',
         onClick: () => this.promptEditTags(),
       },
@@ -1798,7 +1798,7 @@ export class AgentDetailView extends LitElement {
     if (this.featureFlags.user_management) {
       actions.push({
         id: 'change-owner',
-        label: 'Change Owner',
+        label: 'Change owner',
         icon: 'person-gear',
         onClick: () => this.promptChangeOwner(),
       });
@@ -2565,7 +2565,7 @@ export class AgentDetailView extends LitElement {
             <div
               style="font-weight: 700; font-size: 1.15rem; color: var(--sl-color-neutral-800);"
             >
-              Flows Using This Agent Node
+              Flows using this agent
             </div>
             ${
               this.associatedFlows.length > 0
@@ -2576,7 +2576,7 @@ export class AgentDetailView extends LitElement {
                     >
                       <sl-button variant="primary" size="small">
                         <sl-icon name="plus-lg" slot="prefix"></sl-icon>
-                        Create New Flow
+                        Create flow
                       </sl-button>
                     </a>
                   `
@@ -2603,21 +2603,20 @@ export class AgentDetailView extends LitElement {
                     <p
                       style="margin: 0; font-size: var(--sl-font-size-medium);"
                     >
-                      This agent is not currently bound to any event-driven or
-                      automated flows.
+                      No flow uses this agent yet.
                     </p>
                     <p
                       style="margin: 4px 0 0 0; font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-400);"
                     >
-                      Go to the Flows panel to bind this persistent node to an
-                      automation task.
+                      Add it as a step in a flow to have it run on a schedule or
+                      on an event.
                     </p>
                     <a
                       href="/console/flows/new?agent_id=${this.agentId}"
                       style="text-decoration: none; display: inline-block; margin-top: var(--sl-spacing-large);"
                     >
                       <sl-button variant="primary" size="small"
-                        >Create New Flow</sl-button
+                        >Create flow</sl-button
                       >
                     </a>
                   </div>
@@ -2778,7 +2777,7 @@ export class AgentDetailView extends LitElement {
             <div
               style="display: flex; justify-content: space-between; align-items: center; width: 100%;"
             >
-              ${this.renderStatLabel('Estimated Spend')}
+              ${this.renderStatLabel('Estimated spend')}
               <select
                 style="background: transparent; border: none; font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600); cursor: pointer; outline: none;"
                 .value=${this.budgetTimeRange}
@@ -2832,19 +2831,19 @@ export class AgentDetailView extends LitElement {
                   slot="nav"
                   panel="sessions"
                   ?active=${this.activeTab === 'sessions'}
-                  >Session History</sl-tab
+                  >Session history</sl-tab
                 >
                 <sl-tab
                   slot="nav"
                   panel="tools"
                   ?active=${this.activeTab === 'tools'}
-                  >Tools & Governance</sl-tab
+                  >Tools & governance</sl-tab
                 >
                 <sl-tab
                   slot="nav"
                   panel="models"
                   ?active=${this.activeTab === 'models'}
-                  >Models & Spend</sl-tab
+                  >Models & spend</sl-tab
                 >
 
                 ${
@@ -2854,7 +2853,7 @@ export class AgentDetailView extends LitElement {
                           slot="nav"
                           panel="ssh"
                           ?active=${this.activeTab === 'ssh'}
-                          >Command Terminal (SSH)</sl-tab
+                          >Command terminal (SSH)</sl-tab
                         >
                         ${
                           isVncEnabled
@@ -2872,7 +2871,7 @@ export class AgentDetailView extends LitElement {
                           slot="nav"
                           panel="dashboard"
                           ?active=${this.activeTab === 'dashboard'}
-                          >Agent Web UI</sl-tab
+                          >Agent web UI</sl-tab
                         >
                       `
                     : nothing
@@ -2884,7 +2883,7 @@ export class AgentDetailView extends LitElement {
                           slot="nav"
                           panel="associated-flows"
                           ?active=${this.activeTab === 'associated-flows'}
-                          >Associated Flows
+                          >Associated flows
                           (${this.associatedFlows.length})</sl-tab
                         >
                       `
@@ -2968,7 +2967,7 @@ export class AgentDetailView extends LitElement {
                             style="display: flex; justify-content: space-between; align-items: center; width: 100%;"
                           >
                             <div>
-                              <div class="hero-title">Tools & Governance</div>
+                              <div class="hero-title">Tools & governance</div>
                               <div class="meta-line">
                                 Agent-specific configurations overrides applying
                                 only to this agent.
@@ -3203,7 +3202,7 @@ export class AgentDetailView extends LitElement {
                             style="display: flex; justify-content: space-between; align-items: center; width: 100%;"
                           >
                             <div>
-                              <div class="hero-title">Models & Spend</div>
+                              <div class="hero-title">Models & spend</div>
                               <div class="meta-line">
                                 Update the models this agent can use and set
                                 monthly spend limits per model.

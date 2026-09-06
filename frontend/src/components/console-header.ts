@@ -21,6 +21,12 @@ import {
   parseUTCDate,
 } from '../utils/date';
 import { formatApprovalRequester } from '../utils/approval-identity';
+import {
+  ATTENTION_SUMMARY_EVENT,
+  formatAttentionSummary,
+  readAttentionSummary,
+  type AttentionSummary,
+} from '../utils/attention-summary';
 
 interface UserDetails {
   username: string;
@@ -82,6 +88,18 @@ export class ConsoleHeader extends LitElement {
 
   @state()
   private _processingApproval: string | null = null;
+
+  /**
+   * Counts published by whoever last derived the attention items (the
+   * Overview strip, the Attention page). Null until one of them has run in
+   * this tab, in which case the empty state says only what it knows.
+   */
+  @state()
+  private _attentionSummary: AttentionSummary | null = null;
+
+  private handleAttentionSummary = (event: Event) => {
+    this._attentionSummary = (event as CustomEvent<AttentionSummary>).detail;
+  };
 
   private unsubscribeFlow?: () => void;
   private unsubscribeApprovals?: () => void;
@@ -304,6 +322,10 @@ export class ConsoleHeader extends LitElement {
       margin-bottom: 0.5rem;
       opacity: 0.5;
     }
+    .empty-state-detail {
+      font-size: var(--console-text-meta, 0.8125rem);
+      margin-top: 0.25rem;
+    }
     .theme-switcher-container {
       text-align: center;
     }
@@ -311,6 +333,11 @@ export class ConsoleHeader extends LitElement {
 
   async connectedCallback() {
     super.connectedCallback();
+    this._attentionSummary = readAttentionSummary();
+    window.addEventListener(
+      ATTENTION_SUMMARY_EVENT,
+      this.handleAttentionSummary as EventListener
+    );
     this.fetchUserDetails();
     this.connectToFlowUpdates();
     this.connectToApprovalUpdates();
@@ -325,6 +352,10 @@ export class ConsoleHeader extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    window.removeEventListener(
+      ATTENTION_SUMMARY_EVENT,
+      this.handleAttentionSummary as EventListener
+    );
     this.unsubscribeFlow?.();
     this.unsubscribeApprovals?.();
     this.unsubscribeNotifications?.();
@@ -845,7 +876,7 @@ export class ConsoleHeader extends LitElement {
         <div class="section-header">
           <div class="section-title">
             <sl-icon name="activity"></sl-icon>
-            Active Executions
+            Active executions
             <span class="section-count"
               >(${this._runningExecutions.length})</span
             >
@@ -886,7 +917,7 @@ export class ConsoleHeader extends LitElement {
         <div class="section-header">
           <div class="section-title">
             <sl-icon name="shield-check"></sl-icon>
-            Pending Approvals
+            Pending approvals
             <span class="section-count"
               >(${this._pendingApprovals.length})</span
             >
@@ -1004,11 +1035,24 @@ export class ConsoleHeader extends LitElement {
     return iconMap[type] || 'bell';
   }
 
+  /**
+   * "No notifications" over an amber strip saying "2 need attention" read as
+   * a contradiction: both were true, and the bell was the one that sounded
+   * wrong. The empty state now says what is empty (new notifications) and
+   * repeats the attention counts the strip and the footer link already point
+   * at, from the summary the Overview or the Attention page published.
+   */
   private renderEmptyState() {
+    const attention = formatAttentionSummary(this._attentionSummary);
     return html`
       <div class="empty-state">
         <sl-icon name="bell-slash"></sl-icon>
-        <div>No notifications</div>
+        <div>No new notifications</div>
+        ${
+          attention
+            ? html`<div class="empty-state-detail">${attention}</div>`
+            : ''
+        }
       </div>
     `;
   }
@@ -1120,12 +1164,12 @@ export class ConsoleHeader extends LitElement {
                   Router.go('/console/settings/notification-preferences')}
               >
                 <sl-icon name="bell" slot="prefix"></sl-icon>
-                Notification Preferences
+                Notification preferences
               </sl-menu-item>
               <sl-divider></sl-divider>
               <sl-menu-item @click=${this.signOut}>
                 <sl-icon name="box-arrow-right" slot="prefix"></sl-icon>
-                Sign Out
+                Sign out
               </sl-menu-item>
             </sl-menu>
           </sl-dropdown>

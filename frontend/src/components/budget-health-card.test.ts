@@ -135,6 +135,46 @@ describe('BudgetHealthCard', () => {
     ).to.contain('Hard limit exceeded');
   });
 
+  it('forecasts where the period lands and names rows as the Overview does', async () => {
+    // A month that is 60% gone with $120 spent lands at $200: over the soft
+    // limit, under the hard one, so the line reads as a warning.
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const forecastPolicies = [
+      {
+        ...policies[0],
+        period: 'monthly',
+        hard_limit_usd: 300,
+        soft_limit_usd: 100,
+        current_spend_usd: 120,
+        period_start: start.toISOString(),
+        period_end: end.toISOString(),
+      },
+    ] as unknown as BudgetPolicy[];
+
+    const element = (await fixture(html`
+      <budget-health-card
+        .summary=${summary}
+        .policies=${forecastPolicies}
+      ></budget-health-card>
+    `)) as BudgetHealthCard;
+    await element.updateComplete;
+
+    const forecast = element.shadowRoot?.querySelector('.budget-forecast');
+    expect(forecast, 'budget rows forecast the period end').to.exist;
+    expect(forecast?.textContent?.replace(/\s+/g, ' ')).to.contain(
+      'On track for $'
+    );
+
+    // One name per budget: "Monthly budget · Sep", not "Global spend · 30d".
+    const label = element.shadowRoot?.querySelector('.row-label');
+    const month = now.toLocaleDateString(undefined, { month: 'short' });
+    expect(label?.textContent?.replace(/\s+/g, ' ').trim()).to.equal(
+      `Monthly budget · ${month}`
+    );
+  });
+
   it('dispatches configure when limits button is clicked', async () => {
     const element = (await fixture(html`
       <budget-health-card

@@ -1114,6 +1114,85 @@ describe('FlowsView', () => {
     });
   });
 
+  describe('card footer', () => {
+    async function renderCards(flows: unknown[], executions: unknown[]) {
+      localStorage.setItem('preloop.flows.view_mode', 'cards');
+      fetchStub = sinon
+        .stub(window, 'fetch')
+        .callsFake(async (input: RequestInfo | URL) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          const body = url.includes('/api/v1/flows/executions')
+            ? executions
+            : url.includes('/api/v1/flows/presets')
+              ? []
+              : flows;
+          return new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        });
+      const element = (await fixture(
+        html`<flows-view></flows-view>`
+      )) as FlowsView;
+      await waitUntil(
+        () => !(element as any).isLoading,
+        'Flows view did not finish loading'
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    const FLOWS = [{ id: 'flow-1', name: 'Nightly Sync', is_enabled: true }];
+
+    it('keeps one primary button on the page when cards are shown', async () => {
+      const element = await renderCards(FLOWS, []);
+
+      const cards = element.shadowRoot!.querySelectorAll('.flow-card');
+      expect(cards.length).to.equal(1);
+      // Every card carrying a filled Run now made the grid all-primary; the
+      // page's single primary is Create flow in the header.
+      const primaries = Array.from(
+        element.shadowRoot!.querySelectorAll('sl-button[variant="primary"]')
+      ).filter((button) => !button.closest('sl-dialog'));
+      expect(primaries.length).to.equal(1);
+      expect((primaries[0].textContent || '').trim()).to.contain('Create flow');
+      const runNow = Array.from(
+        element.shadowRoot!.querySelectorAll('.flow-card sl-button')
+      ).find((button) => (button.textContent || '').includes('Run now'))!;
+      expect(runNow.hasAttribute('outline')).to.be.true;
+      expect(runNow.getAttribute('variant')).to.not.equal('primary');
+    });
+
+    it('shows the last run outcome and subject in the card footer', async () => {
+      const element = await renderCards(FLOWS, [
+        {
+          id: 'exec-1',
+          flow_id: 'flow-1',
+          flow_name: 'Nightly Sync',
+          status: 'SUCCEEDED',
+          start_time: new Date(Date.now() - 31 * 60 * 1000).toISOString(),
+          end_time: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+          trigger_subject: 'preloop/preloop #138',
+        },
+      ]);
+
+      const footer = element.shadowRoot!.querySelector('.card-last-run')!;
+      expect(footer).to.exist;
+      expect(footer.textContent).to.contain('Succeeded');
+      expect(footer.textContent).to.contain('preloop/preloop #138');
+      expect(footer.getAttribute('href')).to.contain(
+        '/console/flows/executions/exec-1'
+      );
+    });
+
+    it('says a flow has never run rather than inventing an outcome', async () => {
+      const element = await renderCards(FLOWS, []);
+
+      const footer = element.shadowRoot!.querySelector('.card-last-run')!;
+      expect((footer.textContent || '').trim()).to.equal('No run yet');
+    });
+  });
+
   it('labels the preset card action Use preset', async () => {
     fetchStub = createFetchStub(
       [],

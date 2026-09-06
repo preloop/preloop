@@ -2,6 +2,8 @@ import { expect } from '@open-wc/testing';
 
 import {
   budgetForecast,
+  budgetPeriodLabel,
+  budgetPeriodWindow,
   forecastEndLabel,
   periodEndFor,
   periodStartFor,
@@ -163,5 +165,28 @@ describe('budget-forecast', () => {
             minute: '2-digit',
           });
     expect(forecastEndLabel('daily', utcDayEnd, 'utc')).to.equal(expected);
+  });
+
+  it('names a budget the same way whichever surface prints it', () => {
+    const now = at('2026-09-03T15:00:00');
+    const month = now.toLocaleDateString(undefined, { month: 'short' });
+    expect(budgetPeriodLabel('monthly', now)).to.equal(
+      `Monthly budget \u00b7 ${month}`
+    );
+    expect(budgetPeriodLabel('daily', now)).to.equal(
+      'Daily budget \u00b7 today'
+    );
+    expect(budgetPeriodLabel('all_time', now)).to.equal('All time budget');
+    // The legacy spellings are folded here, so Cost and the Overview cannot
+    // disagree about what the same budget is called.
+    expect(budgetPeriodLabel('month', now)).to.equal(
+      budgetPeriodLabel('monthly', now)
+    );
+    expect(budgetPeriodWindow('year', now)).to.equal(
+      budgetPeriodWindow('yearly', now)
+    );
+    expect(budgetPeriodWindow('year', now)).to.equal('2026');
+    // A legacy period also gets a forecast rather than silently losing one.
+    expect(periodStartFor('month', now)!.getDate()).to.equal(1);
   });
 });

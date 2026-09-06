@@ -13,6 +13,7 @@ from preloop.sync.event_normalizer import (
     extract_trigger_subject,
     gitlab_label_delta,
     humanize_event_type,
+    matching_event_types,
     normalize_event_type,
     extract_filter_fields,
 )
@@ -855,3 +856,12 @@ class TestAttachTriggerSubject:
     def test_subject_key_matches_model_constant(self):
         """The writer and the CRUD reader must agree on the storage key."""
         assert SUBJECT_KEY == TRIGGER_SUBJECT_KEY
+
+
+def test_matching_event_types_includes_legacy_dotted_issue_names() -> None:
+    assert matching_event_types("issue_opened") == ("issue_opened", "issue.opened")
+    assert matching_event_types("issue_updated") == (
+        "issue_updated",
+        "issue.updated",
+    )
+    assert matching_event_types("comment_created") == ("comment_created",)

@@ -23,7 +23,8 @@ description: "Automatically analyze new issues..."
 icon: "funnel"
 trigger_event_source: null  # Set to tracker_id when instantiated
 trigger_event_types:         # Array of event types that trigger this flow
-  - "issue.opened"
+  - "issue_opened"
+  - "issue_updated"
 prompt_template: |
   You are an intelligent issue triage assistant.
   ...

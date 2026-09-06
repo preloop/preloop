@@ -22,6 +22,7 @@ const projectB = {
 interface StubOpts {
   issues?: unknown[];
   total?: number;
+  openCounts?: Record<string, number>;
   trackerType?: string;
   pullRequests?: unknown[];
   prHasMore?: boolean;
@@ -33,6 +34,7 @@ function stubFetch(opts: StubOpts = {}) {
   const {
     issues = [],
     total = issues.length,
+    openCounts,
     trackerType = 'github',
     pullRequests = [],
     prHasMore = false,
@@ -83,6 +85,15 @@ function stubFetch(opts: StubOpts = {}) {
       }
       if (url.includes('/api/v1/issues?')) {
         const parsed = new URL(url, 'http://localhost');
+        const projectId = parsed.searchParams.get('project_id') || '';
+        if (openCounts && parsed.searchParams.get('limit') === '1') {
+          return json({
+            items: [],
+            total: openCounts[projectId] ?? 0,
+            skip: 0,
+            limit: 1,
+          });
+        }
         const q = parsed.searchParams.get('q') || '';
         const items = q ? [] : issues;
         const listed = q ? 0 : total;
@@ -150,7 +161,89 @@ describe('TrackerDetailView', () => {
     fetchStub?.restore();
     resetRunPresetDialogForTests();
     localStorage.clear();
+    sessionStorage.clear();
     window.history.replaceState({}, '', '/');
+  });
+
+  it('defaults to the project with the most open issues', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=issues`
+    );
+    fetchStub = stubFetch({
+      issues: [],
+      openCounts: { [projectA.id]: 0, [projectB.id]: 7 },
+    });
+    const el = await mountView();
+    expect(
+      (el as unknown as { _selectedProjectId: string })._selectedProjectId
+    ).to.equal(projectB.id);
+    expect(window.location.search).to.contain(`project=${projectB.id}`);
+  });
+
+  it('reopens on the project read last in this session', async () => {
+    sessionStorage.setItem(`preloop.tracker.project.${trackerId}`, projectA.id);
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=issues`
+    );
+    fetchStub = stubFetch({
+      issues: [],
+      openCounts: { [projectA.id]: 0, [projectB.id]: 7 },
+    });
+    const el = await mountView();
+    expect(
+      (el as unknown as { _selectedProjectId: string })._selectedProjectId
+    ).to.equal(projectA.id);
+  });
+
+  it('remembers the project a link named', async () => {
+    fetchStub = stubFetch({ issues: [] });
+    await mountView();
+    expect(
+      sessionStorage.getItem(`preloop.tracker.project.${trackerId}`)
+    ).to.equal(projectA.id);
+  });
+
+  it('skips the open issue probe when it cannot change the answer', async () => {
+    const probeCalls = () =>
+      fetchStub
+        .getCalls()
+        .map((call) => String(call.args[0]))
+        .filter(
+          (url) => url.includes('/api/v1/issues?') && url.includes('limit=1')
+        );
+
+    // Session memory already names the project.
+    sessionStorage.setItem(`preloop.tracker.project.${trackerId}`, projectB.id);
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=issues`
+    );
+    fetchStub = stubFetch({
+      issues: [],
+      openCounts: { [projectA.id]: 0, [projectB.id]: 7 },
+    });
+    await mountView();
+    expect(probeCalls(), 'remembered project needs no probe').to.deep.equal([]);
+    fetchStub.restore();
+
+    // A tab that does not list issues does not need the default either.
+    sessionStorage.clear();
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=pull-requests`
+    );
+    fetchStub = stubFetch({
+      issues: [],
+      openCounts: { [projectA.id]: 0, [projectB.id]: 7 },
+    });
+    await mountView();
+    expect(probeCalls(), 'pull requests tab needs no probe').to.deep.equal([]);
   });
 
   it('renders Issues tab rows from listIssues', async () => {
@@ -176,8 +269,11 @@ describe('TrackerDetailView', () => {
     await el.updateComplete;
     expect(el.shadowRoot?.textContent).to.contain('ALP-1');
     expect(el.shadowRoot?.textContent).to.contain('Fix login');
-    const actionsHeader = el.shadowRoot?.querySelector('th .visually-hidden');
-    expect(actionsHeader?.textContent?.trim()).to.equal('Actions');
+    const hiddenHeaders = [
+      ...(el.shadowRoot?.querySelectorAll('th .visually-hidden') || []),
+    ].map((node) => node.textContent?.trim());
+    expect(hiddenHeaders).to.include('Actions');
+    expect(hiddenHeaders).to.include('Select issues');
     const issueCalls = fetchStub
       .getCalls()
       .filter((call) => String(call.args[0]).includes('/api/v1/issues?'));
@@ -556,5 +652,68 @@ describe('TrackerDetailView', () => {
       project_id: projectA.id,
       number: 12,
     });
+  });
+
+  it('Run triage on selected posts a capped targets list', async () => {
+    fetchStub = stubFetch({
+      issues: [
+        {
+          id: 'issue-1',
+          key: 'ALP-1',
+          title: 'Fix login',
+          status: 'open',
+          updated_at: '2026-01-03T00:00:00Z',
+          project: 'Alpha',
+          project_id: projectA.id,
+          url: 'https://example.com/1',
+        },
+        {
+          id: 'issue-2',
+          key: 'ALP-2',
+          title: 'Fix search',
+          status: 'open',
+          updated_at: '2026-01-03T00:00:00Z',
+          project: 'Alpha',
+          project_id: projectA.id,
+          url: 'https://example.com/2',
+        },
+      ],
+      total: 2,
+    });
+    const el = await mountView();
+    await (
+      el as unknown as { _loadIssues: (reset: boolean) => Promise<void> }
+    )._loadIssues(true);
+    await el.updateComplete;
+    (
+      el as unknown as {
+        _toggleIssueSelection: (id: string, checked: boolean) => void;
+      }
+    )._toggleIssueSelection('issue-1', true);
+    (
+      el as unknown as {
+        _toggleIssueSelection: (id: string, checked: boolean) => void;
+      }
+    )._toggleIssueSelection('issue-2', true);
+    await el.updateComplete;
+    expect(el.shadowRoot?.textContent).to.contain('Run triage on selected');
+    (
+      el as unknown as { _runTriageOnSelected: () => void }
+    )._runTriageOnSelected();
+    await tick(50);
+    const runCalls = fetchStub
+      .getCalls()
+      .filter((call) =>
+        String(call.args[0]).includes('/api/v1/flows/run-preset')
+      );
+    expect(runCalls.length).to.be.greaterThan(0);
+    const init = runCalls[0].args[1] as RequestInit;
+    const body = JSON.parse(String(init.body));
+    expect(body.preset_slug).to.equal('issue-triage-assistant');
+    expect(body.target).to.equal(undefined);
+    expect(body.targets).to.deep.equal([
+      { kind: 'issue', issue_id: 'issue-1' },
+      { kind: 'issue', issue_id: 'issue-2' },
+    ]);
   });
 });

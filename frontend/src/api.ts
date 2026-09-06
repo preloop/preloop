@@ -2,6 +2,7 @@ import { LitElement } from 'lit';
 import { Router } from '@vaadin/router';
 import { DEFAULT_SIMILARITY_THRESHOLD } from './config';
 import { PermissionError, permissionErrorFromResponse } from './permissions';
+import { ATTENTION_SUMMARY_STORAGE_KEY } from './utils/attention-summary';
 import type {
   ApprovalBypass,
   ApprovalBypassMode,
@@ -118,6 +119,10 @@ export function invalidateApiCaches(): void {
   if (typeof sessionStorage !== 'undefined') {
     try {
       sessionStorage.removeItem('preloop.agents.gateway_summary.v1');
+      // The bell reads these counts from sessionStorage, which survives the
+      // full page navigation sign-out does, so without this the next account
+      // could be told the previous account's attention counts.
+      sessionStorage.removeItem(ATTENTION_SUMMARY_STORAGE_KEY);
       for (let i = sessionStorage.length - 1; i >= 0; i -= 1) {
         const key = sessionStorage.key(i);
         if (key?.startsWith('preloop.cost.previous_summary.v1:')) {
@@ -2297,6 +2302,9 @@ export async function commitIssueDependencies(
 }
 
 export interface UserProfile {
+  /** The caller's user id. Matches an approval workflow's approver_user_ids. */
+  id: string;
+  account_id: string;
   username: string;
   email: string;
   full_name?: string | null;
@@ -2306,6 +2314,11 @@ export interface UserProfile {
   permissions?: string[] | null;
   avatar_url?: string | null;
   avatar_source?: string | null;
+  /**
+   * Teams the caller belongs to in account_id. Intersect with an approval
+   * workflow's approver_team_ids to tell whether an approval waits on them.
+   */
+  team_ids: string[];
 }
 
 export interface AvatarResponse {
@@ -2918,12 +2931,25 @@ export async function getFlowPresets(): Promise<any[]> {
   return response.json();
 }
 
-export async function getFlowExecutions(options?: {
+/** One page of executions plus how many rows the filters matched. */
+export interface FlowExecutionsPage {
+  rows: any[];
+  /**
+   * `X-Total-Count` from the server, or null when it did not send one (an
+   * older API). The console says "25 of 1,412 executions" only when it has
+   * the number, never a guess.
+   */
+  total: number | null;
+}
+
+export async function getFlowExecutionsPage(options?: {
   limit?: number;
   skip?: number;
   flowId?: string;
   status?: string | string[];
-}): Promise<any[]> {
+  search?: string;
+  startedAfter?: string;
+}): Promise<FlowExecutionsPage> {
   const params = new URLSearchParams();
   if (options?.limit !== undefined) {
     params.set('limit', options.limit.toString());
@@ -2942,13 +2968,37 @@ export async function getFlowExecutions(options?: {
       params.append('status', status);
     }
   }
+  if (options?.search) {
+    params.set('search', options.search);
+  }
+  if (options?.startedAfter) {
+    params.set('started_after', options.startedAfter);
+  }
   const queryString = params.toString();
   const url = `/api/v1/flows/executions${queryString ? `?${queryString}` : ''}`;
   const response = await fetchWithAuth(url);
   if (!response.ok) {
     throw new Error('Failed to fetch flow executions');
   }
-  return response.json();
+  const rows = await response.json();
+  const header = response.headers?.get?.('X-Total-Count');
+  const parsed = header === null || header === undefined ? NaN : Number(header);
+  return {
+    rows: Array.isArray(rows) ? [...rows] : [],
+    total: Number.isFinite(parsed) ? parsed : null,
+  };
+}
+
+export async function getFlowExecutions(options?: {
+  limit?: number;
+  skip?: number;
+  flowId?: string;
+  status?: string | string[];
+  search?: string;
+  startedAfter?: string;
+}): Promise<any[]> {
+  const page = await getFlowExecutionsPage(options);
+  return page.rows;
 }
 
 export async function getFlowExecution(executionId: string): Promise<any> {
@@ -3057,7 +3107,9 @@ export async function triggerFlowExecution(
 }
 
 export type RunPresetSlug =
-  'automated-issue-implementation' | 'pull-request-reviewer';
+  | 'automated-issue-implementation'
+  | 'pull-request-reviewer'
+  | 'issue-triage-assistant';
 
 export interface RunPresetTarget {
   kind: 'issue' | 'pull_request';
@@ -3066,12 +3118,23 @@ export interface RunPresetTarget {
   number?: number;
 }
 
+export interface RunPresetItemResult {
+  issue_id?: string | null;
+  project_id?: string | null;
+  number?: number | null;
+  execution_id?: string | null;
+  execution_status?: string | null;
+  execution_url?: string | null;
+  error?: string | null;
+}
+
 export interface RunPresetResponse {
   execution_id: string | null;
   flow_id: string;
   flow_name: string;
   flow_created: boolean;
   execution_url: string | null;
+  results?: RunPresetItemResult[] | null;
 }
 
 export class RunPresetError extends Error {
@@ -3096,17 +3159,28 @@ export class RunPresetError extends Error {
 
 export async function runPresetOnTarget(body: {
   preset_slug: RunPresetSlug;
-  target: RunPresetTarget;
+  target?: RunPresetTarget;
+  targets?: RunPresetTarget[];
   confirm_create?: boolean;
 }): Promise<RunPresetResponse> {
+  const payload: {
+    preset_slug: RunPresetSlug;
+    target?: RunPresetTarget;
+    targets?: RunPresetTarget[];
+    confirm_create: boolean;
+  } = {
+    preset_slug: body.preset_slug,
+    confirm_create: body.confirm_create ?? false,
+  };
+  if (body.targets) {
+    payload.targets = body.targets;
+  } else {
+    payload.target = body.target;
+  }
   const response = await fetchWithAuth('/api/v1/flows/run-preset', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      preset_slug: body.preset_slug,
-      target: body.target,
-      confirm_create: body.confirm_create ?? false,
-    }),
+    body: JSON.stringify(payload),
   });
   if (response.ok) {
     return response.json();

@@ -32,6 +32,13 @@ const VIEW_OPTIONS: Array<{
 export class ListToolbar extends LitElement {
   @property({ type: String }) search = '';
   @property({ type: String }) searchPlaceholder = 'Search';
+  /**
+   * The name assistive tech reads for the search field. Defaults to the
+   * placeholder; pages whose placeholder spells out what is searchable
+   * ("Principal, session reference, or source id") pass the short name here
+   * so the field is still announced as "Search sessions".
+   */
+  @property({ type: String }) searchLabel = '';
   @property({ type: String }) view: ListViewMode = 'list';
   @property({ type: Array }) views: ListViewMode[] = ['list', 'cards'];
   @property({ type: String }) toggleLabel = 'View';
@@ -179,7 +186,7 @@ export class ListToolbar extends LitElement {
         >
           <sl-input
             class="search-input"
-            label=${this.searchPlaceholder}
+            label=${this.searchLabel || this.searchPlaceholder}
             placeholder=${this.searchPlaceholder}
             clearable
             .value=${this.search}

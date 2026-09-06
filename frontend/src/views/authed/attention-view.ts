@@ -54,6 +54,7 @@ import {
 } from '../../utils/attention';
 import { REMOVE_AGENT_CONSEQUENCE } from '../../utils/agent-display';
 import { loadAttentionInputs } from '../../utils/attention-data';
+import { publishAttentionSummary } from '../../utils/attention-summary';
 import {
   formatFutureRelativeTime,
   formatLocalDateTime,
@@ -656,6 +657,9 @@ export class AttentionView extends AuthedElement {
 
     this.lastUpdatedAt = new Date().toISOString();
     this.loading = false;
+    // The header's bell has no budget for these nine requests; it states the
+    // counts this page just derived.
+    publishAttentionSummary(this.items);
   }
 
   private get derived() {
