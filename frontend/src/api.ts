@@ -2297,6 +2297,9 @@ export async function commitIssueDependencies(
 }
 
 export interface UserProfile {
+  /** The caller's user id. Matches an approval workflow's approver_user_ids. */
+  id: string;
+  account_id: string;
   username: string;
   email: string;
   full_name?: string | null;
@@ -2306,6 +2309,11 @@ export interface UserProfile {
   permissions?: string[] | null;
   avatar_url?: string | null;
   avatar_source?: string | null;
+  /**
+   * Teams the caller belongs to in account_id. Intersect with an approval
+   * workflow's approver_team_ids to tell whether an approval waits on them.
+   */
+  team_ids: string[];
 }
 
 export interface AvatarResponse {
