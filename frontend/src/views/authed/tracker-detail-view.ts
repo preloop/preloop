@@ -17,6 +17,8 @@ import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
+import '../../components/list-toolbar.ts';
+import type { ResourceAction } from '../../components/resource-actions.ts';
 import {
   fetchWithAuth,
   getFeatures,
@@ -307,27 +309,64 @@ export class TrackerDetailView extends LitElement {
         font-size: var(--console-text-body);
       }
 
-      .issues-controls {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-small);
-        align-items: end;
+      /* Issues and pull requests are collections, so their tabs are panes
+         that span the page: a filter bar, then the table, with no card
+         around them and no title (the tab is the title). Flows is the
+         reference collection page and this is the same bar. */
+      .collection-pane {
+        display: block;
+        width: 100%;
+        padding-top: var(--sl-spacing-medium);
       }
 
-      .issues-controls sl-select,
-      .issues-controls sl-input {
-        min-width: 160px;
+      .collection-pane list-toolbar {
+        margin-bottom: var(--sl-spacing-small);
+      }
+
+      .collection-pane sl-select {
+        min-width: 180px;
+      }
+
+      /* The selects carry a label for assistive tech; the bar has no room to
+         print it, so the placeholder does the naming on screen. */
+      .collection-pane sl-select::part(form-control-label) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      .collection-pane .styled-table {
+        width: 100%;
+      }
+
+      .actions-cell {
+        width: 56px;
+        text-align: right;
+        overflow: visible;
       }
 
       .select-col {
         width: 2.5rem;
       }
 
+      /* One line, the height of a table row, so an empty pane is the same
+         page as a full one rather than a collapsed card. */
       .issues-empty,
       .issues-error,
       .prs-empty,
       .prs-error {
-        padding: var(--sl-spacing-medium) 0;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-x-small);
+        min-height: 72px;
+        border-top: 1px solid var(--console-hairline);
         color: var(--console-meta-color);
         font-size: var(--console-text-body);
       }
@@ -693,8 +732,17 @@ export class TrackerDetailView extends LitElement {
     void this._loadIssues(true);
   }
 
+  /**
+   * The bar reports a search as `search-change` with the text on `detail`;
+   * a bare input reports it on its target. Both are read here so the pane and
+   * the tests can drive the same handler.
+   */
   private _onIssueSearch(event: Event) {
-    this._issueSearch = (event.target as HTMLInputElement).value;
+    const detail = (event as CustomEvent<{ value?: string }>).detail;
+    this._issueSearch =
+      detail && typeof detail.value === 'string'
+        ? detail.value
+        : (event.target as HTMLInputElement).value;
     if (this._issueSearchTimer !== null) {
       window.clearTimeout(this._issueSearchTimer);
     }
@@ -712,6 +760,51 @@ export class TrackerDetailView extends LitElement {
   private _isGitTracker(): boolean {
     const type = this._tracker?.tracker_type?.toLowerCase() || '';
     return type.includes('github') || type.includes('gitlab');
+  }
+
+  /**
+   * How many rows the filters matched, in the place the reference collection
+   * page puts it (the right end of the bar). "N of M" while more are on the
+   * server, because the pane never claims to be showing what it is not.
+   */
+  private _issuesCountLabel(): string {
+    const loaded = this._issues.length;
+    const total = this._issuesTotal;
+    const noun = total === 1 ? 'issue' : 'issues';
+    if (total > loaded) {
+      return `${loaded} of ${total.toLocaleString()} ${noun}`;
+    }
+    return `${total.toLocaleString()} ${noun}`;
+  }
+
+  private _pullRequestsCountLabel(): string {
+    const count = this._pullRequests.length;
+    const noun = this._prNoun();
+    const singular = noun.endsWith('s') ? noun.slice(0, -1) : noun;
+    return `${count} open ${count === 1 ? singular : noun}`;
+  }
+
+  /** Row actions live in the row's kebab, not as a button per row. */
+  private _issueRowActions(issue: IssueListItem): ResourceAction[] {
+    return [
+      {
+        id: 'run-implementer',
+        label: 'Run implementer',
+        icon: 'play',
+        onClick: () => this._runImplementer(issue),
+      },
+    ];
+  }
+
+  private _pullRequestRowActions(pr: PullRequestListItem): ResourceAction[] {
+    return [
+      {
+        id: 'run-reviewer',
+        label: 'Run reviewer',
+        icon: 'play',
+        onClick: () => this._runReviewer(pr),
+      },
+    ];
   }
 
   private _runImplementer(issue: IssueListItem) {
@@ -1026,62 +1119,48 @@ export class TrackerDetailView extends LitElement {
     const canLoadMore = this._issues.length < this._issuesTotal;
 
     return html`
-      <sl-card>
-        <div slot="header" class="section-header">
-          <h2 class="section-title">
-            Issues
+      <div class="collection-pane">
+        <list-toolbar
+          .search=${this._issueSearch}
+          searchPlaceholder="Search key or title"
+          searchLabel="Search issues"
+          .views=${['list']}
+          @search-change=${this._onIssueSearch}
+        >
+          <sl-select
+            label="Project"
+            value=${this._selectedProjectId}
+            @sl-change=${this._onProjectFilter}
+          >
+            ${this._projects.map(
+              (item) =>
+                html`<sl-option value=${item.id}>${item.name}</sl-option>`
+            )}
+          </sl-select>
+          <sl-select
+            label="Status"
+            value=${this._issueStatus}
+            @sl-change=${this._onStatusFilter}
+          >
+            <sl-option value="open">Open</sl-option>
+            <sl-option value="closed">Closed</sl-option>
+            <sl-option value="all">All</sl-option>
+          </sl-select>
+          <sl-button
+            size="small"
+            ?disabled=${this._selectedIssueIds.length === 0}
+            data-testid="run-triage-selected"
+            @click=${() => this._runTriageOnSelected()}
+          >
+            Run triage on selected
             ${
-              this._issuesTotal
-                ? html`<sl-badge variant="neutral" pill class="solid"
-                    >${this._issuesTotal}</sl-badge
-                  >`
-                : ''
+              this._selectedIssueIds.length
+                ? html`(${this._selectedIssueIds.length})`
+                : nothing
             }
-          </h2>
-          <div class="issues-controls">
-            <sl-select
-              size="small"
-              label="Project"
-              value=${this._selectedProjectId}
-              @sl-change=${this._onProjectFilter}
-            >
-              ${this._projects.map(
-                (item) =>
-                  html`<sl-option value=${item.id}>${item.name}</sl-option>`
-              )}
-            </sl-select>
-            <sl-select
-              size="small"
-              label="Status"
-              value=${this._issueStatus}
-              @sl-change=${this._onStatusFilter}
-            >
-              <sl-option value="open">Open</sl-option>
-              <sl-option value="closed">Closed</sl-option>
-              <sl-option value="all">All</sl-option>
-            </sl-select>
-            <sl-input
-              size="small"
-              label="Search"
-              placeholder="Key or title"
-              value=${this._issueSearch}
-              @sl-input=${this._onIssueSearch}
-            ></sl-input>
-            <sl-button
-              size="small"
-              ?disabled=${this._selectedIssueIds.length === 0}
-              data-testid="run-triage-selected"
-              @click=${() => this._runTriageOnSelected()}
-            >
-              Run triage on selected
-              ${
-                this._selectedIssueIds.length
-                  ? html`(${this._selectedIssueIds.length})`
-                  : nothing
-              }
-            </sl-button>
-          </div>
-        </div>
+          </sl-button>
+          <span slot="count">${this._issuesCountLabel()}</span>
+        </list-toolbar>
         ${
           this._issuesError
             ? html`<div class="issues-error">
@@ -1201,16 +1280,16 @@ export class TrackerDetailView extends LitElement {
                               <td title=${issue.updated_at}>
                                 ${formatRelativeTime(issue.updated_at)}
                               </td>
-                              <td>
+                              <td class="actions-cell">
                                 ${
                                   this._isGitTracker()
                                     ? html`
-                                        <sl-button
-                                          size="small"
-                                          @click=${() =>
-                                            this._runImplementer(issue)}
-                                          >Run implementer</sl-button
-                                        >
+                                        <resource-actions
+                                          menu-only
+                                          .actions=${this._issueRowActions(
+                                            issue
+                                          )}
+                                        ></resource-actions>
                                       `
                                     : nothing
                                 }
@@ -1234,7 +1313,7 @@ export class TrackerDetailView extends LitElement {
                     }
                   `
         }
-      </sl-card>
+      </div>
     `;
   }
 
@@ -1247,30 +1326,24 @@ export class TrackerDetailView extends LitElement {
     }
 
     const project = this._selectedProject();
-    const heading = this._isGitlab()
-      ? 'Open merge requests'
-      : 'Open pull requests';
     const empty = `No open ${this._prNoun()} in ${project?.name || 'this project'}.`;
     const errorHost = this._prHost();
 
     return html`
-      <sl-card>
-        <div slot="header" class="section-header">
-          <h2 class="section-title">${heading}</h2>
-          <div class="issues-controls">
-            <sl-select
-              size="small"
-              label="Project"
-              value=${this._selectedProjectId}
-              @sl-change=${this._onProjectFilter}
-            >
-              ${this._projects.map(
-                (item) =>
-                  html`<sl-option value=${item.id}>${item.name}</sl-option>`
-              )}
-            </sl-select>
-          </div>
-        </div>
+      <div class="collection-pane">
+        <list-toolbar .views=${['list']} ?searchable=${false}>
+          <sl-select
+            label="Project"
+            value=${this._selectedProjectId}
+            @sl-change=${this._onProjectFilter}
+          >
+            ${this._projects.map(
+              (item) =>
+                html`<sl-option value=${item.id}>${item.name}</sl-option>`
+            )}
+          </sl-select>
+          <span slot="count">${this._pullRequestsCountLabel()}</span>
+        </list-toolbar>
         <p class="live-note">Live from ${errorHost}, refreshed every minute.</p>
         ${
           this._prsLoading && this._pullRequests.length === 0
@@ -1317,12 +1390,11 @@ export class TrackerDetailView extends LitElement {
                                   : ''
                               }
                             </td>
-                            <td>
-                              <sl-button
-                                size="small"
-                                @click=${() => this._runReviewer(pr)}
-                                >Run reviewer</sl-button
-                              >
+                            <td class="actions-cell">
+                              <resource-actions
+                                menu-only
+                                .actions=${this._pullRequestRowActions(pr)}
+                              ></resource-actions>
                             </td>
                           </tr>
                         `
@@ -1344,7 +1416,7 @@ export class TrackerDetailView extends LitElement {
                   ${this._prsError ? this._renderPrsError() : ''}
                 `
         }
-      </sl-card>
+      </div>
     `;
   }
 

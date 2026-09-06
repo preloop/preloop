@@ -321,6 +321,50 @@ describe('TrackerDetailView', () => {
     );
   });
 
+  // Wave 3 (C10): the Issues tab is a collection pane, not a card. It spans
+  // the page whether it has rows or not, the tab is its title, and the
+  // filters are the bar the Flows list established.
+  it('renders the Issues tab as a full-width pane when it is empty', async () => {
+    fetchStub = stubFetch({ issues: [], total: 0 });
+    const el = await mountView();
+    (el as unknown as { _selectedProjectId: string })._selectedProjectId =
+      projectA.id;
+    await (
+      el as unknown as { _loadIssues: (reset: boolean) => Promise<void> }
+    )._loadIssues(true);
+    await el.updateComplete;
+
+    const panel = el.shadowRoot?.querySelector(
+      'sl-tab-panel[name="issues"] .collection-pane'
+    ) as HTMLElement | null;
+    expect(panel, 'the issues tab renders a pane').to.exist;
+    expect(panel?.querySelector('sl-card'), 'no card around the collection').to
+      .not.exist;
+
+    // Spanning the page: the empty pane is as wide as its tab panel.
+    const panelWidth = panel!.getBoundingClientRect().width;
+    const hostWidth = el
+      .shadowRoot!.querySelector('sl-tab-panel[name="issues"]')!
+      .getBoundingClientRect().width;
+    expect(panelWidth).to.be.greaterThan(0);
+    expect(hostWidth - panelWidth).to.be.lessThan(2);
+
+    // The bar carries search, the project, the status and the count.
+    const toolbar = panel?.querySelector('list-toolbar');
+    expect(toolbar?.getAttribute('searchPlaceholder')).to.equal(
+      'Search key or title'
+    );
+    expect(panel?.querySelectorAll('sl-select').length).to.equal(2);
+    expect(
+      panel?.querySelector('[slot="count"]')?.textContent?.trim()
+    ).to.equal('0 issues');
+
+    // One line where the table would be, not a collapsed card.
+    const empty = panel?.querySelector('.issues-empty') as HTMLElement | null;
+    expect(empty?.textContent).to.contain('No open issues in Alpha');
+    expect(empty!.getBoundingClientRect().height).to.be.at.least(72);
+  });
+
   it('search with no matches uses its own empty line', async () => {
     fetchStub = stubFetch({
       issues: [
@@ -493,7 +537,10 @@ describe('TrackerDetailView', () => {
     await el.updateComplete;
     const text = el.shadowRoot?.textContent || '';
     expect(text).to.contain('Merge requests');
-    expect(text).to.contain('Open merge requests');
+    // The tab is the title, so the pane no longer repeats it as a card
+    // heading; the count on the bar says what is on screen.
+    expect(text).to.not.contain('Open merge requests');
+    expect(text).to.contain('1 open merge request');
     expect(text).to.contain('Live from GitLab, refreshed every minute.');
     expect(text).to.contain('Fix login');
     expect(text).to.contain('#7');
