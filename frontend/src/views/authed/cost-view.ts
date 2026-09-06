@@ -1046,12 +1046,8 @@ export class CostView extends AuthedElement {
   }
 
   /**
-   * Which days the numbers cover, restated beside the range control. The
-   * server's own window is preferred over the client's presets: the four
-   * sibling pages disagree about "30 days", and this one prints what it was
-   * actually given.
+   * The short form of the selected range, for stat labels ("$ est. · 30d").
    */
-  /** The short form of the selected range, for stat labels ("$ est. · 30d"). */
   private rangeChipLabel(): string {
     const option = DATE_RANGE_OPTIONS.find(
       (item) => item.value === this.selectedRange
@@ -1059,6 +1055,12 @@ export class CostView extends AuthedElement {
     return (option?.label || '30d').toLowerCase();
   }
 
+  /**
+   * Which days the numbers cover, restated beside the range control. The
+   * server's own window is preferred over the client's presets: the four
+   * sibling pages disagree about "30 days", and this one prints what it was
+   * actually given.
+   */
   private rangeWindowLabel(): string {
     const params = this.getDateParams();
     const start = new Date(this.summary?.period_start || params.startDate);
