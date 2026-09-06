@@ -53,6 +53,9 @@ const DATE_RANGE_OPTIONS: Array<{ value: TimeRangeKey; label: string }> = [
   { value: 'last-30', label: '30d' },
   { value: 'last-90', label: '90d' },
   { value: 'last-365', label: '1y' },
+  // The window with no bounds. The console lost it when the Filters card
+  // went; the shared util has always been able to resolve it.
+  { value: 'all', label: 'All time' },
 ];
 
 @customElement('api-usage-view')
@@ -551,11 +554,14 @@ export class ApiUsageView extends LitElement {
             return null;
           }),
           // The comparison window is a garnish on one stat: if it fails, the
-          // stat says it has no comparison rather than the page failing.
-          getAccountGatewayUsageSummary({
-            startDate: previousRange.startDate ?? undefined,
-            endDate: previousRange.endDate ?? undefined,
-          }).catch(() => null),
+          // stat says it has no comparison rather than the page failing. All
+          // time has nothing before it, so it costs no request.
+          previousRange.startDate
+            ? getAccountGatewayUsageSummary({
+                startDate: previousRange.startDate,
+                endDate: previousRange.endDate ?? undefined,
+              }).catch(() => null)
+            : Promise.resolve(null),
         ]);
       this.summary = summary;
       this.searchResults = searchResults;
@@ -656,6 +662,10 @@ export class ApiUsageView extends LitElement {
    * spend doubled or moved a percent.
    */
   private spendComparisonDetail(): string {
+    // "All time" has no window before it to compare against.
+    if (!resolvePreviousTimeRange(this.selectedRange).startDate) {
+      return 'All recorded gateway spend';
+    }
     const previousLabel = `prior ${this.rangeChipLabel()}`;
     const current = this.summary?.estimated_cost ?? 0;
     const previous = this.previousSummary?.estimated_cost ?? 0;

@@ -64,6 +64,9 @@ const DATE_RANGE_OPTIONS: Array<{ value: TimeRangeKey; label: string }> = [
   { value: 'last-7', label: '7d' },
   { value: 'last-30', label: '30d' },
   { value: 'last-365', label: '1y' },
+  // The window with no bounds, kept from the Filters card this toolbar
+  // replaced: the shared util resolves it to no start and no end.
+  { value: 'all', label: 'All time' },
 ];
 
 type PriceField =

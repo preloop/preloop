@@ -474,6 +474,63 @@ describe('ApiUsageView', () => {
     expect(text).to.not.contain('session-def456');
   });
 
+  // "All time" survived the Filters card: the shared util resolves it to a
+  // window with no bounds, so the page asks the server for everything.
+  it('offers All time and asks for it without date bounds', async () => {
+    const element = (await fixture(
+      html`<api-usage-view></api-usage-view>`
+    )) as ApiUsageView;
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).summary !== null,
+      'API usage view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const range = element.shadowRoot?.querySelector('time-range-select');
+    expect(
+      ((range as any).options as { value: string; label: string }[]).map(
+        (option) => option.value
+      )
+    ).to.contain('all');
+
+    const before = fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter((url) =>
+        url.startsWith('/api/v1/account/gateway-usage/summary')
+      ).length;
+    range?.dispatchEvent(
+      new CustomEvent('range-change', {
+        detail: { value: 'all' },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await waitUntil(
+      () => !(element as any).loading,
+      'the All time reload never settled',
+      { timeout: 3000 }
+    );
+    await element.updateComplete;
+
+    const summaryCalls = fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter((url) => url.startsWith('/api/v1/account/gateway-usage/summary'))
+      .slice(before);
+    expect(summaryCalls.length).to.be.greaterThan(0);
+    summaryCalls.forEach((url) => {
+      expect(url).to.not.contain('start_date=');
+      expect(url).to.not.contain('end_date=');
+    });
+    // No prior window exists, so no comparison request and no false delta.
+    expect(summaryCalls.length).to.equal(1);
+    expect(element.shadowRoot?.textContent).to.contain(
+      'All recorded gateway spend'
+    );
+  });
+
   // Only the captured interactions depend on the query, so a pause in typing
   // costs one request, not the four the whole page costs.
   it('spends one request on a search, not a whole page reload', async () => {

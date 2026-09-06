@@ -1082,6 +1082,51 @@ describe('AIModelDetailView', () => {
     ).to.be.false;
   });
 
+  // "All time" survived the Filters card here too.
+  it('offers All time and asks for it without date bounds', async () => {
+    const element = (await fixture(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    )) as AIModelDetailView;
+
+    await waitUntil(
+      () => !(element as any).loading,
+      'AI model detail view did not finish loading',
+      { timeout: 5000 }
+    );
+    await element.updateComplete;
+
+    const range = element.shadowRoot?.querySelector('time-range-select');
+    expect(
+      ((range as any).options as { value: string; label: string }[]).map(
+        (option) => option.value
+      )
+    ).to.contain('all');
+
+    const summaryCalls = () =>
+      fetchStub
+        .getCalls()
+        .map((call) => String(call.args[0]))
+        .filter((url) => url.startsWith('/api/v1/ai-models/model-1/summary'));
+    const before = summaryCalls().length;
+
+    range?.dispatchEvent(
+      new CustomEvent('range-change', {
+        detail: { value: 'all' },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await waitUntil(
+      () => summaryCalls().length > before,
+      'the All time reload never reached the server',
+      { timeout: 3000 }
+    );
+
+    const url = summaryCalls().slice(before)[0];
+    expect(url).to.not.contain('start_date=');
+    expect(url).to.not.contain('end_date=');
+  });
+
   // Only the captured interactions depend on the query, so a pause in typing
   // costs one request, not the five the whole page costs.
   it('spends one request on an interaction search and shows the results', async () => {
