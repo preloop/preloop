@@ -13,6 +13,7 @@ import '../../components/list-toolbar.ts';
 import '../../components/resource-actions.ts';
 import '../../components/list-selection.ts';
 import '../../components/time-range-select.ts';
+import '../../components/token-figures.ts';
 import { router } from '../../router';
 import { Router } from '@vaadin/router';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
@@ -47,7 +48,7 @@ import {
   type ExecutionSubjectSource,
 } from '../../utils/execution-subject';
 import consoleStyles from '../../styles/console-styles.css?inline';
-import type { Flow } from '../../types';
+import type { Flow, GatewayTokenUsage } from '../../types';
 import { consoleDialogStyles } from '../../styles/console-dialog';
 import {
   effectiveViewMode,
@@ -113,7 +114,14 @@ export type FlowStatus = 'enabled' | 'paused' | 'draft';
 export type FlowStatusFilter = FlowStatus | 'failing';
 
 export type FlowListSortKey =
-  'flow' | 'trigger' | 'status' | 'last_run' | 'runs' | 'failed' | 'cost';
+  | 'flow'
+  | 'trigger'
+  | 'status'
+  | 'last_run'
+  | 'runs'
+  | 'failed'
+  | 'tokens'
+  | 'cost';
 
 export type SortDirection = 'asc' | 'desc';
 
@@ -140,6 +148,11 @@ export interface FlowListRow {
   lastRunAt: string | null;
   runs: number;
   failed: number;
+  /**
+   * Tokens over the same window as `cost`, or null when the server measured
+   * no window or no run fell in it. Null means unknown, not zero.
+   */
+  tokenUsage: GatewayTokenUsage | null;
   cost: number;
   /** True when runs, failed and cost all come from the server's window. */
   countsFromServer: boolean;
@@ -208,6 +221,11 @@ function compareFlowRowsByKey(
       return a.runs - b.runs;
     case 'failed':
       return a.failed - b.failed;
+    case 'tokens':
+      return (
+        Number(a.tokenUsage?.total_tokens || 0) -
+        Number(b.tokenUsage?.total_tokens || 0)
+      );
     case 'cost':
       return a.cost - b.cost;
     case 'last_run':
@@ -359,6 +377,10 @@ export class FlowsView extends LitElement {
       .col-runs,
       .col-failed {
         width: 84px;
+      }
+      /* Tokens lead the pair, and need room for "12.4K in - 3.1K out". */
+      .col-tokens {
+        width: 170px;
       }
       .col-cost {
         width: 96px;
@@ -1068,6 +1090,9 @@ export class FlowsView extends LitElement {
       // contradict itself.
       const rowCost =
         countsFromServer && rowRuns > 0 ? Number(stats?.cost || 0) : 0;
+      // The same rule for tokens: only a measured window can state them.
+      const rowTokens =
+        countsFromServer && rowRuns > 0 ? stats?.token_usage || null : null;
       const trigger = flowTriggerSummary(flow, this.trackerNames);
       const presetId = flow.source_preset_id
         ? String(flow.source_preset_id)
@@ -1093,6 +1118,7 @@ export class FlowsView extends LitElement {
           null,
         runs: rowRuns,
         failed: rowFailed,
+        tokenUsage: rowTokens,
         cost: rowCost,
         countsFromServer,
         source: flow,
@@ -1703,6 +1729,7 @@ export class FlowsView extends LitElement {
               <col class="col-last-run" />
               <col class="col-runs" />
               <col class="col-failed" />
+              <col class="col-tokens" />
               <col class="col-cost" />
               <col class="col-actions" />
             </colgroup>
@@ -1723,6 +1750,7 @@ export class FlowsView extends LitElement {
                 ${this.renderSortableHeader('last_run', 'Last run')}
                 ${this.renderSortableHeader('runs', 'Runs', true)}
                 ${this.renderSortableHeader('failed', 'Failed', true)}
+                ${this.renderSortableHeader('tokens', 'Tokens', true)}
                 ${this.renderSortableHeader('cost', '$ est.', true)}
                 <th class="actions-cell">
                   <span class="visually-hidden">Actions</span>
@@ -1797,6 +1825,11 @@ export class FlowsView extends LitElement {
               ? row.failed.toLocaleString()
               : html`<span class="muted-cell">0</span>`
           }
+        </td>
+        <!-- Tokens before cost, over the same window, and silent for the
+             same reason the cost is. -->
+        <td class="numeric" title=${`Tokens, last ${this.rangeLabel}`}>
+          <token-figures .usage=${row.tokenUsage}></token-figures>
         </td>
         <!-- Only a server that measured this window can state a spend for
              it. Without stats_since the cost is unknown, and "-" says that;

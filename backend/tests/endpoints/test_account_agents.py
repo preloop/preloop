@@ -478,6 +478,12 @@ def test_account_agents_endpoint_lists_onboarded_agents(client, db_session, test
     assert item["runtime_session_id"] == str(runtime_session.id)
     assert item["managed_mcp_servers"] == ["github"]
     assert item["total_requests"] == 1
+    # The agents list shows tokens before cost, so the split has to be here.
+    assert item["token_usage"]["input_tokens"] == 120
+    assert item["token_usage"]["output_tokens"] == 40
+    assert item["token_usage"]["total_tokens"] == 160
+    assert item["token_usage"]["cache_read_tokens"] == 0
+    assert item["token_usage"]["cache_hit_ratio"] is None
     assert item["estimated_cost"] == 0.12
     assert item["latest_model_alias"] == "openai/gpt-5"
     assert item["latest_provider_name"] == "openai"

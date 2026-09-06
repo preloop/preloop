@@ -69,6 +69,12 @@ export interface FlowExecutionStats {
   last_seen_at?: string | null;
   estimated_cost?: number;
   /**
+   * Tokens over the same period as the counts beside them: the window when
+   * `stats_since` was asked for, all time otherwise. Null means "nothing
+   * attributable in that period", which is not zero tokens.
+   */
+  token_usage?: GatewayTokenUsage | null;
+  /**
    * Present only when the flows request named a window (`stats_since`), and
    * then every field below is measured over that same window, so a list that
    * says "in the last 30d" can say one thing.
@@ -254,10 +260,29 @@ export interface FlowGatewayEventsResponse {
   } | null;
 }
 
+/**
+ * Token totals, split by direction and by cache participation.
+ *
+ * `input_tokens` / `output_tokens` are the product-facing names for the
+ * provider wire names `prompt_tokens` / `completion_tokens`; the backend
+ * always sends both pairs in agreement, so a surface can read either.
+ *
+ * The cache fields describe the input side only: `cache_read_tokens` was
+ * served from a prompt cache, `cache_write_tokens` was written into one and
+ * `uncached_input_tokens` is the remainder the provider read afresh.
+ * `cache_hit_ratio` is null when no request in the aggregate reported a
+ * cache split: unknown, which is not "0% hit".
+ */
 export interface GatewayTokenUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  uncached_input_tokens?: number;
+  cache_hit_ratio?: number | null;
 }
 
 export interface GatewayBudgetSummary {
@@ -490,6 +515,8 @@ export interface ManagedAgentSummary {
   total_requests: number;
   successful_requests?: number;
   failed_requests?: number;
+  /** Tokens the agent spent, stated before cost in the agents list. */
+  token_usage?: GatewayTokenUsage;
   estimated_cost: number;
   configured_model_alias: string | null;
   configured_model_id?: string | null;

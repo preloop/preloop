@@ -971,11 +971,7 @@ def _build_managed_agent_detail_response(
             total_requests=aggregate["total_requests"] if aggregate else 0,
             successful_requests=aggregate["successful_requests"] if aggregate else 0,
             failed_requests=aggregate["failed_requests"] if aggregate else 0,
-            token_usage=GatewayTokenUsage(
-                prompt_tokens=aggregate["prompt_tokens"] if aggregate else 0,
-                completion_tokens=aggregate["completion_tokens"] if aggregate else 0,
-                total_tokens=aggregate["total_tokens"] if aggregate else 0,
-            ),
+            token_usage=GatewayTokenUsage.from_row(aggregate),
             estimated_cost=aggregate["estimated_cost"] if aggregate else 0.0,
             latest_model_alias=aggregate["latest_model_alias"] if aggregate else None,
             latest_provider_name=(

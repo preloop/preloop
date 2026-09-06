@@ -147,6 +147,63 @@ def _fallback_cache_creation(details: Mapping[str, Any]) -> Optional[int]:
     return None
 
 
+def uncached_input_tokens(
+    *,
+    prompt_tokens: Optional[int],
+    cache_read_tokens: Optional[int],
+    cache_write_tokens: Optional[int] = None,
+) -> int:
+    """Return the input tokens that were NOT served from cache.
+
+    Providers report ``prompt_tokens`` inclusive of the cached and rewritten
+    input, so the uncached remainder is the arithmetic identity
+    ``prompt - read - write``. Clamped at zero: a negative remainder would mean
+    the provider's own numbers disagree, and we report zero rather than a
+    nonsense figure.
+
+    Args:
+        prompt_tokens: Provider-reported input total (cache inclusive).
+        cache_read_tokens: Input tokens served from cache.
+        cache_write_tokens: Input tokens written to cache, when reported.
+
+    Returns:
+        The uncached input token count, never negative.
+    """
+    return max(
+        int(prompt_tokens or 0)
+        - int(cache_read_tokens or 0)
+        - int(cache_write_tokens or 0),
+        0,
+    )
+
+
+def compute_cache_hit_ratio(
+    *, cached_tokens: Optional[int], uncached_tokens: Optional[int]
+) -> Optional[float]:
+    """Return the prompt-cache hit ratio, or ``None`` when it is unknowable.
+
+    THE definition of a cache hit rate in this product, used by the session
+    rollup and by every usage aggregate so no two surfaces can disagree:
+    cached input over all input that a cache could have served, that is
+    ``read / (read + uncached input)`` where the uncached side already excludes
+    the cached tokens. Traffic whose provider reported no cache split at all is
+    excluded by the caller rather than folded in as misses, so the ratio always
+    describes covered traffic only.
+
+    Args:
+        cached_tokens: Input tokens served from cache.
+        uncached_tokens: Input tokens the provider had to read afresh.
+
+    Returns:
+        The ratio in ``[0, 1]`` rounded to four decimals, or ``None`` when
+        there is no covered traffic to compute it from.
+    """
+    denominator = int(cached_tokens or 0) + int(uncached_tokens or 0)
+    if denominator <= 0:
+        return None
+    return round(int(cached_tokens or 0) / denominator, 4)
+
+
 @dataclass
 class RequestCacheAccounting:
     """Cache accounting for one gateway request, with honest absences."""
@@ -205,7 +262,11 @@ def build_request_cache_accounting(row: Any) -> RequestCacheAccounting:
     elif read is not None:
         prompt_tokens = _as_int(getattr(row, "prompt_tokens", None))
         if prompt_tokens is not None:
-            miss = max(prompt_tokens - read - (creation or 0), 0)
+            miss = uncached_input_tokens(
+                prompt_tokens=prompt_tokens,
+                cache_read_tokens=read,
+                cache_write_tokens=creation,
+            )
             miss_source = CACHE_MISS_SOURCE_DERIVED
 
     return RequestCacheAccounting(
@@ -420,9 +481,10 @@ def summarize_session_cache(rows: Iterable[Any]) -> SessionCacheSummary:
     summary.cache_write_tokens = write_total if any_write_reported else None
     summary.models = list(groups.values())
 
-    denominator = summary.cached_prompt_tokens + summary.uncached_prompt_tokens
-    if denominator > 0:
-        summary.cache_hit_ratio = round(summary.cached_prompt_tokens / denominator, 4)
+    summary.cache_hit_ratio = compute_cache_hit_ratio(
+        cached_tokens=summary.cached_prompt_tokens,
+        uncached_tokens=summary.uncached_prompt_tokens,
+    )
 
     savings, basis, omitted = _session_cache_savings(summary.models)
     summary.estimated_cache_savings_usd = savings

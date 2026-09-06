@@ -11,6 +11,7 @@ import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import './time-range-select.ts';
+import './token-figures.ts';
 
 import type { BudgetPolicy } from '../api';
 import type { AccountGatewayUsageSummaryResponse } from '../types';
@@ -560,23 +561,25 @@ export class UsageCard extends LitElement {
       ></sl-skeleton>`;
     }
 
-    const usage = this.summary?.token_usage;
+    const usage = this.summary?.token_usage || null;
     const requests = this.summary?.total_requests || 0;
     const parts =
       this.unit === 'dollars'
-        ? [
-            `${this.formatCompactNumber(usage?.total_tokens || 0)} tokens`,
-            `${this.formatCompactNumber(requests)} requests`,
-          ]
-        : [
-            `${this.formatCompactNumber(usage?.prompt_tokens || 0)} prompt`,
-            `${this.formatCompactNumber(usage?.completion_tokens || 0)} completion`,
-            `${this.formatCompactNumber(requests)} requests`,
-          ];
+        ? [`${this.formatCompactNumber(usage?.total_tokens || 0)} tokens`]
+        : [];
+    parts.push(`${this.formatCompactNumber(requests)} requests`);
     if (this.toolCallsCount > 0) {
       parts.push(`${this.formatCompactNumber(this.toolCallsCount)} tool calls`);
     }
-    return html`<div class="secondary-line">${parts.join(' · ')}</div>`;
+    // In dollars the headline is the money, so tokens lead the detail line;
+    // in tokens the headline is the total, so the detail splits it.
+    return html`<div class="secondary-line">
+      ${
+        this.unit === 'dollars'
+          ? nothing
+          : html`<token-figures .usage=${usage} expanded></token-figures> · `
+      }${parts.join(' · ')}
+    </div>`;
   }
 
   /** Inline SVG: a trend line is worth more here than a charting library. */

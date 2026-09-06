@@ -430,6 +430,8 @@ def test_get_execution_metrics_prefers_gateway_usage(db_session, test_user):
         prompt_tokens=120,
         completion_tokens=30,
         total_tokens=150,
+        cache_read_tokens=90,
+        cache_creation_tokens=10,
         estimated_cost=0.42,
     )
 
@@ -442,6 +444,9 @@ def test_get_execution_metrics_prefers_gateway_usage(db_session, test_user):
     assert metrics["token_usage"]["total_tokens"] == 150
     assert metrics["token_usage"]["input_tokens"] == 120
     assert metrics["token_usage"]["output_tokens"] == 30
+    assert metrics["token_usage"]["cache_read_tokens"] == 90
+    assert metrics["token_usage"]["cache_write_tokens"] == 10
+    assert metrics["token_usage"]["uncached_input_tokens"] == 20
     assert metrics["estimated_cost"] == 0.42
     assert metrics["has_pricing"] is True
 

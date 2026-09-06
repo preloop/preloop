@@ -7601,13 +7601,14 @@ paths:
             format: date-time
           - type: 'null'
           description: 'When set, execution_stats also carries the counts for the
-            window starting at this time: runs, failed, cost and last_run_at. The
-            flows list states one period and needs runs and spend measured over the
-            same one.'
+            window starting at this time: runs, failed, cost, token_usage and last_run_at.
+            The flows list states one period and needs runs and spend measured over
+            the same one. Without it, token_usage covers all time, like estimated_cost.'
           title: Stats Since
         description: 'When set, execution_stats also carries the counts for the window
-          starting at this time: runs, failed, cost and last_run_at. The flows list
-          states one period and needs runs and spend measured over the same one.'
+          starting at this time: runs, failed, cost, token_usage and last_run_at.
+          The flows list states one period and needs runs and spend measured over
+          the same one. Without it, token_usage covers all time, like estimated_cost.'
       responses:
         '200':
           description: Successful Response
@@ -12840,6 +12841,13 @@ components:
           title: Models Used
           description: Every distinct model alias this execution used with its request
             count, most used first.
+        token_usage:
+          anyOf:
+          - $ref: '#/components/schemas/GatewayTokenUsage'
+          - type: 'null'
+          description: Tokens this execution's gateway traffic consumed, split by
+            direction and cache participation. Null when the run has no attributable
+            gateway usage, which is not the same as zero.
         id:
           type: string
           format: uuid
@@ -13980,6 +13988,13 @@ components:
           title: Models Used
           description: Every distinct model alias this execution used with its request
             count, most used first.
+        token_usage:
+          anyOf:
+          - $ref: '#/components/schemas/GatewayTokenUsage'
+          - type: 'null'
+          description: Tokens this execution's gateway traffic consumed, split by
+            direction and cache participation. Null when the run has no attributable
+            gateway usage, which is not the same as zero.
         id:
           type: string
           format: uuid
@@ -14109,6 +14124,13 @@ components:
           title: Models Used
           description: Every distinct model alias this execution used with its request
             count, most used first.
+        token_usage:
+          anyOf:
+          - $ref: '#/components/schemas/GatewayTokenUsage'
+          - type: 'null'
+          description: Tokens this execution's gateway traffic consumed, split by
+            direction and cache participation. Null when the run has no attributable
+            gateway usage, which is not the same as zero.
         flow_id:
           type: string
           format: uuid
@@ -14848,9 +14870,64 @@ components:
           type: integer
           title: Total Tokens
           default: 0
+        input_tokens:
+          type: integer
+          title: Input Tokens
+          default: 0
+        output_tokens:
+          type: integer
+          title: Output Tokens
+          default: 0
+        cache_read_tokens:
+          type: integer
+          title: Cache Read Tokens
+          default: 0
+        cache_write_tokens:
+          type: integer
+          title: Cache Write Tokens
+          default: 0
+        uncached_input_tokens:
+          type: integer
+          title: Uncached Input Tokens
+          default: 0
+        cache_hit_ratio:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cache Hit Ratio
       type: object
       title: GatewayTokenUsage
-      description: Token usage totals.
+      description: 'Token usage totals, split by direction and by cache participation.
+
+
+        ``input_tokens`` / ``output_tokens`` are the product-facing names for the
+
+        provider wire names ``prompt_tokens`` / ``completion_tokens``; both pairs
+
+        are always populated and always agree, because the flow-execution endpoint
+
+        already spoke the input/output names and clients should not have to know
+
+        which endpoint they are reading. Callers construct with either pair. A
+
+        payload that sets both names of a pair to different non-zero values is
+
+        rejected rather than left disagreeing.
+
+
+        The cache fields describe the input side only. ``cache_read_tokens`` is
+
+        input served from a prompt cache, ``cache_write_tokens`` is input written
+
+        into one, and ``uncached_input_tokens`` is the remainder the provider had
+
+        to read afresh (see ``uncached_input_tokens`` in
+
+        ``preloop.services.cache_accounting``), counted over the requests whose
+
+        provider actually reported a cache split. ``cache_hit_ratio`` is ``None``
+
+        when no request in the aggregate reported one: unknown, never "0% hit".'
     GatewayToolUsageByAgent:
       properties:
         runtime_principal_type:
@@ -14900,6 +14977,22 @@ components:
         total_tokens:
           type: integer
           title: Total Tokens
+          default: 0
+        input_tokens:
+          type: integer
+          title: Input Tokens
+          default: 0
+        output_tokens:
+          type: integer
+          title: Output Tokens
+          default: 0
+        cache_read_tokens:
+          type: integer
+          title: Cache Read Tokens
+          default: 0
+        cache_write_tokens:
+          type: integer
+          title: Cache Write Tokens
           default: 0
       type: object
       required:
@@ -17320,6 +17413,8 @@ components:
           type: integer
           title: Failed Requests
           default: 0
+        token_usage:
+          $ref: '#/components/schemas/GatewayTokenUsage'
         estimated_cost:
           type: number
           title: Estimated Cost

@@ -346,3 +346,126 @@ async def test_flow_detail_carries_the_execution_count(db_session, test_user):
 
     assert detail.execution_stats["total_execs"] == 3
     assert detail.execution_stats["running_execs"] == 0
+
+
+@pytest.mark.asyncio
+async def test_flow_stats_window_carries_token_split_beside_cost(db_session, test_user):
+    """The flows list states tokens before cost over the same window as cost."""
+    now = datetime.now(UTC)
+    flow = _create_flow(db_session, test_user, name="Window Tokens Flow")
+    recent = crud_flow_execution.create(
+        db_session, FlowExecutionCreate(flow_id=flow.id, status="SUCCEEDED")
+    )
+    old = crud_flow_execution.create(
+        db_session, FlowExecutionCreate(flow_id=flow.id, status="SUCCEEDED")
+    )
+    old.start_time = (now - timedelta(days=60)).replace(tzinfo=None)
+    db_session.flush()
+
+    crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/anthropic/v1/messages",
+        method="POST",
+        status_code=200,
+        duration=0.2,
+        account_id=str(test_user.account_id),
+        flow_id=str(flow.id),
+        flow_execution_id=str(recent.id),
+        model_alias="anthropic/claude-sonnet-4",
+        provider_name="anthropic",
+        prompt_tokens=1_000,
+        completion_tokens=200,
+        total_tokens=1_200,
+        cache_read_tokens=600,
+        cache_creation_tokens=100,
+        estimated_cost=0.05,
+    )
+    # Outside the window: it must not move the tokens the row states.
+    _gateway_row(db_session, test_user, old.id, 0.02, flow_id=flow.id)
+
+    since = now - timedelta(days=30)
+    result = await maybe_await(
+        flows.read_flows(db=db_session, stats_since=since, current_user=test_user)
+    )
+    stats = {
+        str(item.id): item.execution_stats
+        for item in result
+        if str(item.id) == str(flow.id)
+    }[str(flow.id)]
+
+    assert stats["token_usage"]["input_tokens"] == 1_000
+    assert stats["token_usage"]["output_tokens"] == 200
+    assert stats["token_usage"]["total_tokens"] == 1_200
+    assert stats["token_usage"]["cache_read_tokens"] == 600
+    assert stats["token_usage"]["cache_write_tokens"] == 100
+    assert stats["token_usage"]["uncached_input_tokens"] == 300
+    assert stats["cost"] == pytest.approx(0.05)
+
+
+@pytest.mark.asyncio
+async def test_flow_stats_window_without_runs_has_null_token_usage(
+    db_session, test_user
+):
+    """A flow with no run in the window states no tokens, not zero tokens."""
+    _create_flow(db_session, test_user, name="Quiet Window Flow")
+
+    since = datetime.now(UTC) + timedelta(days=1)
+    result = await maybe_await(
+        flows.read_flows(db=db_session, stats_since=since, current_user=test_user)
+    )
+    stats = [item.execution_stats for item in result][0]
+
+    assert stats["token_usage"] is None
+
+
+@pytest.mark.asyncio
+async def test_flow_stats_without_a_window_carry_lifetime_tokens(db_session, test_user):
+    """All-time spend comes with the all-time volume that earned it.
+
+    The agents list asks for flows with no window and prints tokens before
+    cost. Without this the row showed a dollar figure beside a permanently
+    empty tokens cell, which reads as "nothing measured" on traffic that was
+    measured.
+    """
+    flow = _create_flow(db_session, test_user, name="Lifetime Tokens Flow")
+    execution = crud_flow_execution.create(
+        db_session, FlowExecutionCreate(flow_id=flow.id, status="SUCCEEDED")
+    )
+    crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/anthropic/v1/messages",
+        method="POST",
+        status_code=200,
+        duration=0.2,
+        account_id=str(test_user.account_id),
+        flow_id=str(flow.id),
+        flow_execution_id=str(execution.id),
+        model_alias="anthropic/claude-sonnet-4",
+        provider_name="anthropic",
+        prompt_tokens=800,
+        completion_tokens=100,
+        total_tokens=900,
+        cache_read_tokens=500,
+        cache_creation_tokens=50,
+        estimated_cost=0.04,
+    )
+
+    result = await maybe_await(flows.read_flows(db=db_session, current_user=test_user))
+    stats = {
+        str(item.id): item.execution_stats
+        for item in result
+        if str(item.id) == str(flow.id)
+    }[str(flow.id)]
+
+    assert stats["estimated_cost"] == pytest.approx(0.04)
+    assert stats["token_usage"]["input_tokens"] == 800
+    assert stats["token_usage"]["output_tokens"] == 100
+    assert stats["token_usage"]["cache_read_tokens"] == 500
+    assert stats["token_usage"]["cache_write_tokens"] == 50
+    # 800 prompt tokens, 550 of them accounted for by the cache.
+    assert stats["token_usage"]["uncached_input_tokens"] == 250
+
+    detail = await maybe_await(
+        flows.read_flow(db=db_session, flow_id=flow.id, current_user=test_user)
+    )
+    assert detail.execution_stats["token_usage"]["total_tokens"] == 900

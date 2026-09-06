@@ -728,13 +728,26 @@ describe('FlowExecutionView', () => {
       // Nothing the cards carried was dropped: the timing, the cost, the
       // agent and the execution id all have a place in the row.
       expect(stripValue(element, 'strip-duration')).to.equal('2m 0s');
-      // Compact in the strip, exact in the title.
-      expect(stripValue(element, 'strip-tokens')).to.equal('1.2K');
+      // Tokens lead the money in the strip, split in and out, exact in the
+      // title.
+      expect(labels.indexOf('Tokens')).to.be.lessThan(labels.indexOf('$ est.'));
+      const figures = element.shadowRoot!.querySelector(
+        '[data-testid="strip-token-figures"]'
+      ) as HTMLElement & { usage: Record<string, number> };
+      expect(figures).to.exist;
+      expect(figures.usage.input_tokens).to.equal(1000);
+      expect(figures.usage.output_tokens).to.equal(234);
+      const figuresText = (figures.shadowRoot?.textContent || '').replace(
+        /\s+/g,
+        ' '
+      );
+      expect(figuresText).to.contain('1K in');
+      expect(figuresText).to.contain('234 out');
       expect(
         element
           .shadowRoot!.querySelector('[data-testid="strip-tokens"]')
           ?.getAttribute('title')
-      ).to.equal('1,234 tokens');
+      ).to.contain('1,000 input tokens');
       expect(stripValue(element, 'strip-cost')).to.equal('$0.10');
       expect(pageText(element)).to.contain('codex');
       expect(

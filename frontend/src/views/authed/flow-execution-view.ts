@@ -19,7 +19,7 @@ import {
   getFlowExecutionGatewayEvent,
   retryFlowExecution,
 } from '../../api';
-import type { FlowGatewayEvent } from '../../types';
+import type { FlowGatewayEvent, GatewayTokenUsage } from '../../types';
 import {
   formatLocalTime,
   formatRelativeTime,
@@ -45,6 +45,12 @@ import {
   type ExecutionRunner,
 } from '../../utils/execution-presentation';
 import { renderFailureCategoryChip } from '../../utils/failure-category';
+import '../../components/token-figures.ts';
+import {
+  inputTokensOf,
+  outputTokensOf,
+  tokenFiguresTitle,
+} from '../../components/token-figures';
 import '../../components/preloop-gateway-event.ts';
 import '../../components/view-header.ts';
 import '../../components/json-tree.ts';
@@ -99,6 +105,8 @@ interface FlowExecution {
   mcp_usage_logs?: any[];
   tool_calls_count?: number;
   total_tokens?: number;
+  /** The in/out/cache split behind `total_tokens`, when the server attributes one. */
+  token_usage?: GatewayTokenUsage | null;
   estimated_cost?: number;
   execution_logs?: FlowExecutionUpdate[];
 }
@@ -719,6 +727,13 @@ export class FlowExecutionView extends LitElement {
 
   @state()
   private totalTokens = 0;
+
+  /**
+   * The in/out/cache split behind `totalTokens`, or null when the run has no
+   * attributable gateway usage. Null is "not measured", never "zero".
+   */
+  @state()
+  private tokenUsage: GatewayTokenUsage | null = null;
 
   @state()
   private hasPricing = false;
@@ -1432,6 +1447,10 @@ export class FlowExecutionView extends LitElement {
             this.totalTokens,
             metrics.token_usage.total_tokens
           );
+          this.tokenUsage = this.pickRicherUsage(
+            this.tokenUsage,
+            metrics.token_usage as GatewayTokenUsage
+          );
           this.hasPricing = this.hasPricing || metrics.has_pricing;
         } catch (error) {
           console.error('Failed to fetch execution metrics:', error);
@@ -1589,6 +1608,10 @@ export class FlowExecutionView extends LitElement {
       if (typeof this.execution.total_tokens === 'number') {
         this.totalTokens = this.execution.total_tokens;
       }
+      this.tokenUsage = this.pickRicherUsage(
+        this.tokenUsage,
+        this.execution.token_usage ?? null
+      );
       if (typeof this.execution.estimated_cost === 'number') {
         this.budgetUsed = this.execution.estimated_cost;
         // Only a non-zero stored cost proves the execution was priced. A 0
@@ -1599,6 +1622,33 @@ export class FlowExecutionView extends LitElement {
         }
       }
     }
+  }
+
+  /** True when the run has a direction split worth showing in the strip. */
+  private hasTokenSplit(): boolean {
+    return (
+      !!this.tokenUsage &&
+      (inputTokensOf(this.tokenUsage) > 0 ||
+        outputTokensOf(this.tokenUsage) > 0)
+    );
+  }
+
+  /**
+   * Keep whichever split actually states a direction.
+   *
+   * The metrics endpoint and the execution row can both carry a token usage
+   * object, and either can be a bare total with no in/out breakdown. Prefer
+   * the one that says something rather than the one that arrived last.
+   */
+  private pickRicherUsage(
+    current: GatewayTokenUsage | null,
+    candidate: GatewayTokenUsage | null | undefined
+  ): GatewayTokenUsage | null {
+    if (!candidate) return current;
+    const informative = (usage: GatewayTokenUsage | null) =>
+      !!usage && (inputTokensOf(usage) > 0 || outputTokensOf(usage) > 0);
+    if (informative(current) && !informative(candidate)) return current;
+    return candidate;
   }
 
   private hydrateToolActivityLogs() {
@@ -2616,16 +2666,32 @@ ${execution.resolved_input_prompt}</pre>
         <div class="strip-item">
           <span class="strip-label">Tokens</span>
           <!-- Compact at console scale: "1.4M" is the figure to compare,
-               and the exact count stays in the title. -->
+               and the exact count stays in the title. When the run has an
+               attributable split, state input and output separately and say
+               how much of the input the cache served. -->
           <span
             class="strip-value"
             data-testid="strip-tokens"
             title=${
-              this.totalTokens > 0
-                ? `${this.totalTokens.toLocaleString()} tokens`
-                : 'No token usage recorded for this run'
+              this.hasTokenSplit()
+                ? tokenFiguresTitle(this.tokenUsage)
+                : this.totalTokens > 0
+                  ? `${this.totalTokens.toLocaleString()} tokens`
+                  : 'No token usage recorded for this run'
             }
-            >${this.totalTokens > 0 ? formatTokenCount(this.totalTokens) : '—'}</span
+            >${
+              this.hasTokenSplit()
+                ? html`<token-figures
+                    expanded
+                    data-testid="strip-token-figures"
+                    .usage=${this.tokenUsage}
+                  ></token-figures>`
+                : this.totalTokens > 0
+                  ? formatTokenCount(this.totalTokens)
+                  : // The same absence the token figures component prints,
+                    // drawn the same way on the same page.
+                    '-'
+            }</span
           >
         </div>
         <div class="strip-item">

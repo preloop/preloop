@@ -93,3 +93,40 @@ describe('session-list-panel status chips', () => {
     expect(badge?.classList.contains('chip')).to.be.true;
   });
 });
+
+describe('session-list-panel figures', () => {
+  it('states tokens before cost, split in and out', async () => {
+    const el = await renderPanel([
+      makeSession({
+        estimatedCost: 0.42,
+        tokenUsage: {
+          prompt_tokens: 12400,
+          completion_tokens: 3100,
+          total_tokens: 15500,
+          input_tokens: 12400,
+          output_tokens: 3100,
+          cache_read_tokens: 8200,
+          cache_write_tokens: 0,
+          uncached_input_tokens: 3900,
+          cache_hit_ratio: 0.6777,
+        },
+      }),
+    ]);
+
+    const metric = el.shadowRoot?.querySelectorAll('.metric')[1];
+    const figures = metric?.querySelector('token-figures')!;
+    await (figures as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    const tokenText = (figures.shadowRoot?.textContent || '').replace(
+      /\s+/g,
+      ' '
+    );
+    expect(tokenText).to.contain('12.4K in');
+    expect(tokenText).to.contain('3.1K out');
+    expect(tokenText).to.contain('cache 68% hit');
+
+    // Cost follows the tokens in the same line, not the other way round.
+    const rowText = (metric?.textContent || '').replace(/\s+/g, ' ');
+    expect(rowText.trim().endsWith('$0.42')).to.be.true;
+  });
+});

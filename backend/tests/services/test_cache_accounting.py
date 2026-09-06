@@ -10,8 +10,10 @@ from preloop.services.cache_accounting import (
     SAVINGS_OMITTED_NO_CACHE_READS,
     SAVINGS_OMITTED_NO_CATALOG_PRICE,
     build_request_cache_accounting,
+    compute_cache_hit_ratio,
     reported_cache_miss_tokens,
     summarize_session_cache,
+    uncached_input_tokens,
 )
 
 
@@ -359,3 +361,54 @@ class TestSessionSummary:
         openai = models["gpt-4o"]
         assert openai["cache_read_tokens"] == 1_500
         assert openai["write_reported"] is False
+
+
+class TestCacheHitRatioHelper:
+    """The one definition of a cache hit rate, shared by every surface."""
+
+    def test_ratio_is_read_over_read_plus_uncached_input(self):
+        """68% hit means 68% of cache-eligible input came from the cache."""
+        assert (
+            compute_cache_hit_ratio(cached_tokens=8_200, uncached_tokens=3_900)
+            == 0.6777
+        )
+
+    def test_no_covered_traffic_is_unknown_not_zero(self):
+        """Nothing to divide means None: the UI must not print "0% hit"."""
+        assert compute_cache_hit_ratio(cached_tokens=0, uncached_tokens=0) is None
+        assert compute_cache_hit_ratio(cached_tokens=None, uncached_tokens=None) is None
+
+    def test_all_cached_is_one(self):
+        """Every eligible token served from cache is a 100% hit rate."""
+        assert compute_cache_hit_ratio(cached_tokens=500, uncached_tokens=0) == 1.0
+
+    def test_uncached_input_excludes_cache_reads_and_writes(self):
+        """Input totals are cache inclusive, so the miss side subtracts both."""
+        assert (
+            uncached_input_tokens(
+                prompt_tokens=10_000, cache_read_tokens=8_000, cache_write_tokens=500
+            )
+            == 1_500
+        )
+
+    def test_uncached_input_never_negative(self):
+        """Provider numbers that disagree yield zero, never a negative count."""
+        assert (
+            uncached_input_tokens(
+                prompt_tokens=100, cache_read_tokens=400, cache_write_tokens=None
+            )
+            == 0
+        )
+
+    def test_session_rollup_uses_the_shared_definition(self):
+        """The session summary ratio equals the helper on the same numbers."""
+        summary = summarize_session_cache(
+            [
+                _row(prompt_tokens=1_000, cache_read_tokens=800),
+                _row(prompt_tokens=1_000, cache_read_tokens=200),
+            ]
+        )
+        assert summary.cache_hit_ratio == compute_cache_hit_ratio(
+            cached_tokens=summary.cached_prompt_tokens,
+            uncached_tokens=summary.uncached_prompt_tokens,
+        )

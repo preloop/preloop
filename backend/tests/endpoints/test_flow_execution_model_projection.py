@@ -173,3 +173,63 @@ async def test_execution_detail_carries_model_projection(db_session, test_user):
 
     assert detail.model_alias == "openai/gpt-5-codex"
     assert [m.model_alias for m in detail.models_used] == ["openai/gpt-5-codex"]
+
+
+@pytest.mark.asyncio
+async def test_execution_list_carries_token_split(db_session, test_user):
+    """The executions list shows tokens before cost, split in and out with cache."""
+    flow = _create_flow(db_session, test_user, name="Token Split Flow")
+    execution = crud_flow_execution.create(
+        db_session, FlowExecutionCreate(flow_id=flow.id, status="SUCCEEDED")
+    )
+    crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/anthropic/v1/messages",
+        method="POST",
+        status_code=200,
+        duration=0.2,
+        account_id=str(test_user.account_id),
+        flow_execution_id=str(execution.id),
+        model_alias="anthropic/claude-sonnet-4",
+        provider_name="anthropic",
+        prompt_tokens=1_000,
+        completion_tokens=250,
+        total_tokens=1_250,
+        cache_read_tokens=800,
+        cache_creation_tokens=50,
+        estimated_cost=0.02,
+    )
+
+    result = await maybe_await(
+        flows.read_flow_executions(
+            db=db_session, flow_id=flow.id, current_user=test_user
+        )
+    )
+    row = schemas.FlowExecutionListResponse.model_validate(result[0])
+
+    assert row.token_usage is not None
+    assert row.token_usage.input_tokens == 1_000
+    assert row.token_usage.output_tokens == 250
+    assert row.token_usage.total_tokens == 1_250
+    assert row.token_usage.cache_read_tokens == 800
+    assert row.token_usage.cache_write_tokens == 50
+    assert row.token_usage.uncached_input_tokens == 150
+    assert row.token_usage.cache_hit_ratio == 0.8421
+
+
+@pytest.mark.asyncio
+async def test_execution_without_usage_has_null_token_usage(db_session, test_user):
+    """No gateway traffic means unknown tokens, which is not zero tokens."""
+    flow = _create_flow(db_session, test_user, name="No Token Usage Flow")
+    crud_flow_execution.create(
+        db_session, FlowExecutionCreate(flow_id=flow.id, status="SUCCEEDED")
+    )
+
+    result = await maybe_await(
+        flows.read_flow_executions(
+            db=db_session, flow_id=flow.id, current_user=test_user
+        )
+    )
+    row = schemas.FlowExecutionListResponse.model_validate(result[0])
+
+    assert row.token_usage is None

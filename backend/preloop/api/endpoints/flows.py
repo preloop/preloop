@@ -209,9 +209,10 @@ def read_flows(
         Query(
             description=(
                 "When set, execution_stats also carries the counts for the "
-                "window starting at this time: runs, failed, cost and "
-                "last_run_at. The flows list states one period and needs runs "
-                "and spend measured over the same one."
+                "window starting at this time: runs, failed, cost, "
+                "token_usage and last_run_at. The flows list states one "
+                "period and needs runs and spend measured over the same one. "
+                "Without it, token_usage covers all time, like estimated_cost."
             )
         ),
     ] = None,
@@ -238,6 +239,12 @@ def read_flows(
                 "runs": int(getattr(stat, "runs", 0) or 0) if stat else 0,
                 "failed": int(getattr(stat, "failed", 0) or 0) if stat else 0,
                 "cost": float(getattr(stat, "cost", 0.0) or 0.0) if stat else 0.0,
+                # Tokens before cost: null when no run fell in the window,
+                # which the list reads as "nothing to state", not as zero.
+                # This shadows the all-time figure below on purpose, so
+                # `token_usage` always covers the same period as the counts
+                # printed next to it.
+                "token_usage": (getattr(stat, "token_usage", None) if stat else None),
                 "last_run_at": last_run_at.isoformat() if last_run_at else None,
             }
 
@@ -247,6 +254,9 @@ def read_flows(
                 "running_execs": int(s.running_execs or 0),
                 "last_seen_at": s.last_seen_at.isoformat() if s.last_seen_at else None,
                 "estimated_cost": float(s.estimated_cost or 0.0),
+                # All-time tokens beside the all-time spend. A row that
+                # states money and no volume reads as unmeasured traffic.
+                "token_usage": getattr(s, "token_usage", None),
                 **_window_fields(s),
             }
             for s in stats
@@ -260,6 +270,7 @@ def read_flows(
                     "running_execs": 0,
                     "last_seen_at": None,
                     "estimated_cost": 0.0,
+                    "token_usage": None,
                     **_window_fields(),
                 },
             )
@@ -1586,6 +1597,7 @@ def read_flow(
             else None
         ),
         "estimated_cost": float(getattr(stat, "estimated_cost", 0.0) or 0.0),
+        "token_usage": getattr(stat, "token_usage", None),
     }
     return flow
 
