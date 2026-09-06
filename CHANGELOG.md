@@ -126,6 +126,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **OpenCode log-filter tests no longer crash without Node**:
+  `TestOpenCodeLogFilterJs` spawned `node` and raised `FileNotFoundError`
+  in the GitLab agents job (Python slim image) and any local env without
+  Node on `PATH`. Those cases skip; the agents unit job installs `nodejs`
+  so CI still parses and executes the embedded filter.
+
 - **Landing build fails on missing screenshots**: the brand Vite plugin
   now errors when a landing `hero.image` or feature `placeholderImg` is
   missing from `frontend/public`, so a 404 like the onboard-dialog still
