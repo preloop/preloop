@@ -118,3 +118,124 @@ Agents or repository commands can reproduce a marker. Credential-isolated
 publication must use a separate controller/runner-host verifier that observes
 command completion outside that sandbox on an immutable commit artifact. Never
 promote `PRELOOP_VERIFICATION` JSON directly to trusted publication authorization.
+
+### Isolated publication (integration preview)
+
+`git_clone_config.publication_mode` defaults to `legacy` for saved-flow
+compatibility. Legacy mode executes publication in the agent container and
+shares tracker write credentials with that runtime; it is not a credential
+isolation boundary. Operators must explicitly migrate a flow to `isolated`.
+Hosted execution has a controller-owned verification adapter. Private runner
+publication additionally requires the authenticated runner-host protocol. An
+isolated execution without controller-issued evidence fails closed before
+issuing write access.
+
+Isolated flows require `verification.mode: gate`, a nonempty trusted profile,
+and `verification.image` set to a digest-pinned generic toolchain image. That
+image must provide Python 3, Git, a shell, and the dependencies needed by its
+configured checks. Verification does not reuse the agent's virtual environment,
+node_modules, writable caches, or workspace. A check may perform bounded setup
+using dependencies already available in the image, including local package
+caches and service binaries; it cannot download dependencies during verification.
+This is a generic toolchain contract, not a requirement to bake an application
+or its database into the harness image. Missing dependencies fail the check and
+leave the captured work recoverable.
+
+The controller resolves the exact base commit before starting the agent. After
+committing recovery artifacts to durable storage it deletes the owned agent
+runtime and confirms its absence, including residual Kubernetes pods. A missing
+or failed recovery capture retains the original runtime and blocks publication. It derives changed paths from
+the frozen bundle, selects relevant checks from the trusted profile, and runs
+each check in a fresh credential-free checkout of the same head. Docker has no
+network, host mounts, or host namespaces. Kubernetes disables service-account
+automount and applies a deny-all NetworkPolicy. Because policies are additive,
+existing permissive policies matching the verifier's labels block startup.
+Hosted clusters must enforce NetworkPolicy and prevent concurrent policy or
+admission changes from weakening the verifier namespace's isolation. The controller observes process exit codes and confirms every
+verifier runtime was removed before minting writer credentials. Check diagnostics
+retain a bounded scrubbed output tail, per-check elapsed time, and Docker log
+rotation limits runtime log growth.
+If Kubernetes deletion cannot be confirmed, the deny-all NetworkPolicy remains
+with the execution's verifier label for operator recovery; removing it first
+would restore network access to residual pods. Log markers and result files
+never authorize publication.
+
+The isolated path binds a single repository and its base/target branches from
+account-owned flow/project records. It never accepts a webhook clone URL as
+publication authority. GitHub App installation tokens are minted for exactly
+that repository: `contents:read` for the agent, then `contents:write` and
+`pull_requests:write` for the publisher after verification. Stored PATs and
+GitLab publication are rejected in this mode until a broker can enforce their
+scope and lifetime. The standalone metadata/provider client supports both
+GitHub and GitLab. Private runners require an authenticated current capability
+advertisement confirming protocol v1 and a locally available digest-pinned
+trusted helper image. Older runners cannot receive an isolated lease. Private
+source stays on the runner; the controller receives only bounded manifests,
+check outcomes, and the provider receipt.
+
+Private verification is an ordered, nonce-bound handshake. The runner removes
+the agent and residual volume writers, freezes the bundle in independent
+storage, runs the exact controller-selected checks, and confirms verifier
+removal. Only then does the controller issue a repository-scoped writer to the
+trusted publisher helper. Agent result files and ordinary completion messages
+cannot advance publication. Both helper and controller revoke the writer;
+already-invalid token responses make repeated revocation safe.
+
+Recovered private monitoring restores the protected policy and accepted receipt
+without relaunching the agent or replaying credentials. Queued isolated
+executions fail closed on worker recovery because their original lease cannot
+be safely replayed; retry explicitly after an eligible runner is available.
+Private frozen recovery artifacts remain local with a fixed 24-hour retention
+limit after verification or publication failure. A recovered hosted isolated
+execution currently cannot reconstruct its original trusted policy
+snapshot: it fails closed with an explicit diagnostic and retains its original
+runtime for recovery. It does not silently switch to ungated publication.
+
+After runtime cleanup, the control-plane publisher imports a bounded,
+self-contained `branch.bundle` into a fresh bare object store. It never checks
+out repository code, imports agent Git configuration, or runs repository hooks,
+filters, credential helpers or shell commands. Each Git child has a clean
+environment and CPU, memory (Linux), file-size and time limits. HTTPS redirects
+are disabled. The publisher validates the exact verified head, checks the
+expected remote SHA and ancestry, then uses an atomic lease to reject concurrent
+remote changes. It never rewrites unexpected remote history. Provider failures
+mark publication failed and retain captured recovery evidence; retry reuses the
+existing branch and PR. Write tokens are revoked on success/failure and expire
+at the provider-issued deadline if revocation is unavailable.
+
+The controller handoff is `VerifiedPublication(execution_id, head_sha,
+bundle_sha256)`. It is an internal type, not an agent JSON schema. A trusted
+verifier adapter must construct it only after verifying the immutable artifact
+in an environment the agent cannot modify. Agent-written result files or log
+markers cannot establish this attestation. Hosted adapters construct it only
+after the complete trusted verification lifecycle. Deploy the control plane
+separately from agent workloads;
+never mount its process namespace, filesystem, Docker socket or signing keys
+into those workloads.
+
+### PR descriptions and execution provenance
+
+Repository setup selects `git_clone_config.pull_request_template` when set,
+then the conventional GitHub/GitLab default, then the lexicographically first
+named Markdown template. It writes `/workspace/evidence/pr-template.md` for the
+agent to fill. No template uses Summary and Testing. Configured missing,
+invalid, oversized or escaping template paths fail setup. Tests that did not
+run remain unchecked. The implementation preset asks for problem, resulting
+behavior, acceptance evidence, verified commands, limitations and an issue link.
+
+`result.json` retains #420's `pr_title`/`pr_body` fields and aliases. Valid agent
+text wins per field over configured text and commit text. Titles are one line,
+at most 256 UTF-8 bytes; bodies are at most 60,000 UTF-8 bytes. Invalid/missing
+metadata falls back with a diagnostic; no truncation silently changes meaning.
+All publication sources receive execution attribution. The isolated publisher
+owns only the `preloop:executions` HTML-comment region. It upserts trusted
+initial/repair execution links and published SHAs while preserving human edits
+outside that region, including metadata-only repairs. Links use `PRELOOP_URL`
+and existing authorization-protected console routes; tokens and transcripts
+are never provenance inputs. Legacy publication adds the current execution
+block on creation; continuation provenance updates require the isolated path.
+
+Preset synchronization updates uncustomized fields and marks customized saved
+flows as having an available update. Inspect the effective saved prompt and
+configuration before expecting template behavior. The publication-mode switch
+is deliberate and is not silently enabled by updating the prompt.

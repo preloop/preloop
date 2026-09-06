@@ -31,6 +31,7 @@ var workspaceIDRe = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}
 // runnerDockerOpts is the private-runner-only docker run surface. Hosted
 // executors ignore agent_config.runner; only this CLI honors these flags.
 type runnerDockerOpts struct {
+	Publication        *runnerPublication
 	Launch             bool
 	PreserveEntrypoint bool
 	MountDockerSocket  bool
@@ -58,6 +59,12 @@ func defaultNewRunnerJobCmd(image string, env map[string]string, opts runnerDock
 // from the runner process environment and never show up in `ps` output.
 func dockerRunArgs(image string, env map[string]string, opts runnerDockerOpts) []string {
 	args := []string{"run", "--rm"}
+	if opts.Publication != nil {
+		p := opts.Publication
+		// Named publication agents omit --rm so run() can inspect ownership and
+		// prove removal. SIGKILL leftovers are reaped at runner startup.
+		args = []string{"run", "--log-driver", "local", "--log-opt", "max-size=1m", "--log-opt", "max-file=2", "--name", p.agentName, "--label", "preloop.publication_execution=" + p.executionID, "--label", "preloop.publication_nonce=" + p.spec.Nonce, "--mount", "type=volume,src=" + p.exportVolume + ",dst=/preloop-publication-output", "--cap-drop=ALL", "--security-opt=no-new-privileges"}
+	}
 	if opts.Launch && !opts.PreserveEntrypoint {
 		args = append(args, "--entrypoint", "/bin/bash")
 	}

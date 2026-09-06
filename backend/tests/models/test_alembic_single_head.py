@@ -137,4 +137,11 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     }
     approval_api_key = script.get_revision("20260906_approval_api_key")
     assert approval_api_key.down_revision == "20260906_halt_runner_merge"
-    assert script.get_heads() == ["20260906_approval_api_key"]
+    capabilities = script.get_revision("20260906_publication_caps")
+    assert capabilities.down_revision == "20260906_flow_artifacts"
+    publication = script.get_revision("20260906_pub_caps_merge")
+    assert set(publication.down_revision) == {
+        "20260906_approval_api_key",
+        "20260906_publication_caps",
+    }
+    assert script.get_heads() == ["20260906_pub_caps_merge"]

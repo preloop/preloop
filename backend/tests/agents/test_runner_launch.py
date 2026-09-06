@@ -348,3 +348,54 @@ def test_shared_completion_cases_preserve_reports_without_promoting_failure(
         and case["confirmation"] == "success"
     )
     assert result == case["result"]
+
+
+@pytest.mark.asyncio
+async def test_queued_isolated_launch_keeps_restored_pinned_git_configuration(
+    monkeypatch,
+):
+    """Raw queued flow config cannot replace restored authority or read lease."""
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    execution = SimpleNamespace(
+        id=uuid4(),
+        flow_id=uuid4(),
+        trigger_event_details={},
+        resolved_input_prompt="work",
+    )
+    monkeypatch.setattr(
+        "preloop.agents.runner_launch.crud_flow_execution.get",
+        lambda *args, **kwargs: execution,
+    )
+    monkeypatch.setattr(
+        FlowExecutionOrchestrator, "_get_flow_details", lambda *args, **kwargs: None
+    )
+    pinned = {"target_branch": "preloop/bound", "source_branch": "trusted-main"}
+    monkeypatch.setattr(
+        FlowExecutionOrchestrator,
+        "_prepare_execution_context",
+        AsyncMock(
+            return_value={
+                "git_clone_config": pinned,
+                "git_credentials_map": {
+                    "tracker": {"token": "read-only", "permission": "read"}
+                },
+            }
+        ),
+    )
+    build = AsyncMock(return_value={"version": 1, "script": "bootstrap", "env": {}})
+    monkeypatch.setattr("preloop.agents.runner_launch.build_runner_launch", build)
+    await hydrate_runner_job(
+        MagicMock(),
+        {
+            "launch_version": 1,
+            "execution_id": str(execution.id),
+            "publication": {"version": 1},
+            "git_clone_config": {"target_branch": "raw-unbound"},
+        },
+    )
+    assert build.await_args.args[0]["git_clone_config"] == pinned
+    assert (
+        build.await_args.args[0]["git_credentials_map"]["tracker"]["permission"]
+        == "read"
+    )

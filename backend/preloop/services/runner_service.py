@@ -256,6 +256,22 @@ def lease_job(
         runner = crud_flow_runner.claim_idle(db, runner_id=candidate.id)
         if runner is None:
             continue
+        if payload.get("_publication"):
+            capability = runner.publication_capabilities or {}
+            if (
+                capability.get("version") != 1
+                or capability.get("helper_ready") is not True
+                or payload.get("agent_type") not in {"codex", "opencode"}
+            ):
+                db.rollback()
+                continue
+            crud_flow_runner.bind_publication_lease(
+                db,
+                runner_id=runner.id,
+                execution_id=execution_id,
+                account_id=account_id,
+                nonce=payload["_publication"]["nonce"],
+            )
         runner.pending_job = stored
         runner.current_execution_id = execution_id
         runner.status = "busy"

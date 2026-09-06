@@ -15749,6 +15749,23 @@ components:
           title: Create Pull Request
           description: Whether to create a Pull Request / Merge Request
           default: false
+        publication_mode:
+          type: string
+          enum:
+          - legacy
+          - isolated
+          title: Publication Mode
+          description: Legacy publishes inside the agent container. Isolated publishes
+            from the trusted control plane after verification, using scoped App credentials.
+          default: legacy
+        pull_request_template:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Pull Request Template
+          description: Repository-relative PR template; otherwise conventional default
+            then lexical first
         pull_request_title:
           anyOf:
           - type: string
@@ -15826,6 +15843,23 @@ components:
           title: Create Pull Request
           description: Whether to create a Pull Request / Merge Request
           default: false
+        publication_mode:
+          type: string
+          enum:
+          - legacy
+          - isolated
+          title: Publication Mode
+          description: Legacy publishes inside the agent container. Isolated publishes
+            from the trusted control plane after verification, using scoped App credentials.
+          default: legacy
+        pull_request_template:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Pull Request Template
+          description: Repository-relative PR template; otherwise conventional default
+            then lexical first
         pull_request_title:
           anyOf:
           - type: string
@@ -22782,6 +22816,13 @@ components:
         profile:
           $ref: '#/components/schemas/VerificationProfile'
           description: Versioned trusted test profile driving required checks
+        image:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image
+          description: Digest-pinned generic toolchain image for credential-isolated
+            checks. Must contain dependencies required by the trusted profile.
         gate_budget_seconds:
           type: integer
           maximum: 14400.0

@@ -123,6 +123,18 @@ type runnerAPIRecord struct {
 }
 
 type runnerWSMessage struct {
+	Version       int                `json:"version,omitempty"`
+	ExecutionID   string             `json:"execution_id,omitempty"`
+	Nonce         string             `json:"nonce,omitempty"`
+	HeadSHA       string             `json:"head_sha,omitempty"`
+	TreeSHA       string             `json:"tree_sha,omitempty"`
+	BundleSHA256  string             `json:"bundle_sha256,omitempty"`
+	Image         string             `json:"image,omitempty"`
+	BudgetSeconds int                `json:"budget_seconds,omitempty"`
+	Checks        []publicationCheck `json:"checks,omitempty"`
+	Binding       map[string]any     `json:"binding,omitempty"`
+	Lease         map[string]any     `json:"lease,omitempty"`
+
 	Type            string         `json:"type"`
 	Job             map[string]any `json:"job,omitempty"`
 	Halt            bool           `json:"halt,omitempty"`
@@ -149,6 +161,8 @@ func runRunnerFg(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Runner %s (%s) connecting...\n", state.Name, state.ID)
+
+	reapOrphanedPublicationRuntimes()
 
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
@@ -193,15 +207,17 @@ func loadOrRegisterRunner(client *api.Client, name, hostname string, labels []st
 }
 
 type leasedJobOutcome struct {
-	hostExec    bool
-	profile     string
-	logBuffer   *runnerLogBuffer
-	result      map[string]any
-	exitCode    int
-	executionID string
-	status      string
-	errMsg      string
-	lines       []string
+	publicationRequired     bool
+	publicationAcknowledged bool
+	hostExec                bool
+	profile                 string
+	logBuffer               *runnerLogBuffer
+	result                  map[string]any
+	exitCode                int
+	executionID             string
+	status                  string
+	errMsg                  string
+	lines                   []string
 }
 
 func nextRunnerBackoff(current time.Duration) time.Duration {
@@ -238,6 +254,10 @@ func dialRunnerWebsocket(wsURL, token string) (*websocket.Conn, error) {
 }
 
 func writeJobOutcome(conn *websocket.Conn, outcome leasedJobOutcome) error {
+	if outcome.publicationRequired && !outcome.publicationAcknowledged && outcome.status == "SUCCEEDED" {
+		outcome.status = "FAILED"
+		outcome.errMsg = "isolated publication was not confirmed; write requests are never replayed automatically"
+	}
 	if conn == nil {
 		return nil
 	}
@@ -429,11 +449,20 @@ func runRunnerSession(
 	halted *atomic.Bool,
 	lastComplete **leasedJobOutcome,
 ) error {
+	var publication *runnerPublication
+	var publicationEvents <-chan publicationEvent
+	defer func() {
+		if publication != nil {
+			publication.abort()
+		}
+	}()
 	_ = conn.SetReadDeadline(time.Now().Add(runnerReadWait))
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(runnerReadWait))
 	})
 
+	sessionDone := make(chan struct{})
+	defer close(sessionDone)
 	incoming := make(chan runnerWSMessage, 8)
 	readErr := make(chan error, 1)
 	go func() {
@@ -444,9 +473,20 @@ func runRunnerSession(
 				return
 			}
 			_ = conn.SetReadDeadline(time.Now().Add(runnerReadWait))
-			incoming <- msg
+			select {
+			case incoming <- msg:
+			case <-sessionDone:
+				if msg.Lease != nil {
+					delete(msg.Lease, "token")
+				}
+				return
+			}
 		}
 	}()
+
+	if err := conn.WriteJSON(runnerHeartbeatMessage()); err != nil {
+		return fmt.Errorf("initial heartbeat: %w", err)
+	}
 
 	flushPendingOutcome(
 		conn, jobDone, runningCmd, runningExecID, halt, halted, lastComplete,
@@ -478,7 +518,21 @@ func runRunnerSession(
 					}
 				}
 			}
+		case event := <-publicationEvents:
+			if event.outcome != nil {
+				applyJobOutcome(conn, *event.outcome, runningCmd, runningExecID, jobDone, halt, halted, lastComplete)
+				publication.cancel()
+				publication = nil
+				publicationEvents = nil
+			} else if event.message != nil {
+				if err := conn.WriteJSON(event.message); err != nil {
+					return err
+				}
+			}
 		case <-ticker.C:
+			if publication == nil {
+				_ = cleanupPublicationRecovery(time.Now())
+			}
 			// Retention progresses even when the runner receives no new jobs.
 			keep := map[string]bool{}
 			if *runningExecID != "" {
@@ -496,10 +550,33 @@ func runRunnerSession(
 			return fmt.Errorf("runner read: %w", err)
 		case outcome := <-*jobDone:
 			releaseWorkspaceLease(outcome.executionID)
+			if publication != nil {
+				*jobDone = nil
+				*runningCmd = nil
+				publication.start(outcome)
+				continue
+			}
 			applyJobOutcome(
 				conn, outcome, runningCmd, runningExecID, jobDone, halt, halted, lastComplete,
 			)
 		case msg := <-incoming:
+			if strings.HasPrefix(msg.Type, "publication_") {
+				if publication == nil {
+					return errors.New("unexpected publication message without active lease")
+				}
+				if msg.Error != "" {
+					publication.abort()
+					return errors.New("publication controller rejected transition")
+				}
+				if err := publication.accept(msg); err != nil {
+					if msg.Lease != nil {
+						delete(msg.Lease, "token")
+					}
+					publication.abort()
+					return err
+				}
+				continue
+			}
 			if msg.Error != "" {
 				return &runnerFatalError{fmt.Errorf("runner server: %s", msg.Error)}
 			}
@@ -507,6 +584,10 @@ func runRunnerSession(
 				*halt = true
 				fmt.Fprintf(out, "Halt received for %s\n", msg.HaltExecutionID)
 				killRunning()
+				if publication != nil {
+					publication.stopRequested.Store(true)
+					publication.abort()
+				}
 				continue
 			}
 			if msg.Job == nil {
@@ -523,12 +604,15 @@ func runRunnerSession(
 				continue
 			}
 			if err := beginLeasedJob(
-				conn, msg.Job, *halt, out, runningCmd, runningExecID, jobDone, halted, lastComplete,
+				conn, msg.Job, *halt, out, runningCmd, runningExecID, jobDone, halted, lastComplete, &publication,
 			); err != nil {
 				fmt.Fprintf(out, "Job error: %v\n", err)
 				*runningCmd = nil
 				*runningExecID = ""
 				*jobDone = nil
+			}
+			if publication != nil {
+				publicationEvents = publication.events
 			}
 			*halt = false
 		}
@@ -545,10 +629,16 @@ func beginLeasedJob(
 	jobDone *<-chan leasedJobOutcome,
 	halted *atomic.Bool,
 	lastComplete **leasedJobOutcome,
+	publication **runnerPublication,
 ) error {
 	executionID, _ := job["execution_id"].(string)
 	if executionID == "" {
 		return fmt.Errorf("job missing execution_id")
+	}
+	if err := isolatedPublicationHostExecError(job); err != nil {
+		outcome := leasedJobOutcome{executionID: executionID, status: "FAILED", errMsg: err.Error()}
+		rememberOutcome(lastComplete, outcome)
+		return writeJobOutcome(conn, outcome)
 	}
 	if halted != nil {
 		halted.Store(false)
@@ -575,6 +665,25 @@ func beginLeasedJob(
 	}
 
 	opts, optsErr := runnerDockerOptsFromJob(job)
+	var isolated *runnerPublication
+	if optsErr == nil {
+		isolated, optsErr = publicationFromJob(job, opts)
+	}
+	if optsErr != nil {
+		outcome := leasedJobOutcome{executionID: executionID, status: "FAILED", errMsg: optsErr.Error()}
+		rememberOutcome(lastComplete, outcome)
+		return writeJobOutcome(conn, outcome)
+	}
+	if isolated != nil {
+		opts.Publication = isolated
+	}
+	launched := false
+	defer func() {
+		if isolated != nil && !launched {
+			isolated.cancel()
+			_ = isolated.removeVolume(isolated.exportVolume)
+		}
+	}()
 	resumeFrom := jobResumeFrom(job)
 	if optsErr == nil && opts.PersistWorkspace {
 		if hostDir, persistErr := preparePersistWorkspace(executionID, resumeFrom); persistErr == nil {
@@ -670,12 +779,18 @@ func beginLeasedJob(
 		rememberOutcome(lastComplete, outcome)
 		return writeJobOutcome(conn, outcome)
 	}
+	launched = true
+	if publication != nil {
+		*publication = isolated
+	}
 	*runningCmd = cmd
 	*runningExecID = executionID
 	done := make(chan leasedJobOutcome, 1)
 	*jobDone = done
 	go func() {
-		done <- waitDockerJob(cmd, executionID, &buf, halted)
+		outcome := waitDockerJob(cmd, executionID, &buf, halted)
+		outcome.publicationRequired = isolated != nil
+		done <- outcome
 	}()
 	return nil
 }
@@ -731,6 +846,17 @@ func waitDockerJob(cmd *exec.Cmd, executionID string, buf interface{ String() st
 		outcome.status = "FAILED"
 	}
 	return outcome
+}
+
+func isolatedPublicationHostExecError(job map[string]any) error {
+	if jobHostExecProfileName(job) == "" {
+		return nil
+	}
+	raw, exists := job["publication"]
+	if !exists || raw == nil {
+		return nil
+	}
+	return errors.New("native host execution cannot use isolated publication")
 }
 
 func splitNonEmptyLines(output string) []string {

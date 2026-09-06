@@ -13,11 +13,47 @@ from preloop.api.endpoints.runners import (
     _live,
     _parse_runner_execution_id,
     _release_live_runner,
+    _valid_publication_helper_image,
     job_for_heartbeat_ack,
     job_for_runner_replay,
     runner_needs_lease_token,
 )
 from preloop.services.websocket_manager import WebSocketManager
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        "helper@sha256:" + "a" * 64,
+        "registry.example:5000/team/helper:v1.2-rc_1@sha256:" + "0123456789abcdef" * 4,
+    ],
+)
+def test_publication_helper_image_accepts_pinned_references(image: str) -> None:
+    assert _valid_publication_helper_image(image)
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        None,
+        123,
+        "",
+        "helper:latest",
+        "@sha256:" + "a" * 64,
+        "-helper@sha256:" + "a" * 64,
+        "helper@sha256:" + "A" * 64,
+        "helper@sha256:" + "a" * 63,
+        "helper@sha256:" + "a" * 65,
+        "helper@sha256:" + "a" * 64 + "\n",
+        "helper@sha256:helper@sha256:" + "a" * 64,
+        "hélper@sha256:" + "a" * 64,
+        "helper name@sha256:" + "a" * 64,
+        "0" * 1_000_000,
+        "0" * 1_000_000 + "@sha256:" + "a" * 64,
+    ],
+)
+def test_publication_helper_image_rejects_invalid_references(image: object) -> None:
+    assert not _valid_publication_helper_image(image)
 
 
 def test_parse_runner_execution_id_ignores_malformed_values() -> None:
@@ -202,7 +238,36 @@ async def test_completion_confirms_stop_only_on_terminal_owner_ack(
         halt_requested=True,
         status="online",
         reported_status="RUNNING",
+        publication_capabilities=None,
     )
+
+    def set_publication_capabilities(
+        db: object,
+        *,
+        runner_id: UUID,
+        capabilities: dict | None,
+        expected_connection_id: str | None = None,
+        offline: bool = False,
+        clear_lease: bool = False,
+        execution_id: UUID | None = None,
+        reported_status: str | None = None,
+    ) -> bool:
+        """In-memory stand-in for the compare-and-swap capability write."""
+        current = (runner.publication_capabilities or {}).get("connection_id")
+        if expected_connection_id is not None and current != expected_connection_id:
+            return False
+        if execution_id is not None and runner.current_execution_id != execution_id:
+            return False
+        runner.publication_capabilities = capabilities
+        if clear_lease:
+            runner.pending_job = None
+            runner.current_execution_id = None
+            runner.halt_requested = False
+            runner.status = "offline" if offline else "online"
+            if reported_status is not None:
+                runner.reported_status = reported_status
+        return True
+
     execution = SimpleNamespace(status="RUNNING")
     websocket = MagicMock()
     websocket.accept = AsyncMock()
@@ -217,6 +282,11 @@ async def test_completion_confirms_stop_only_on_terminal_owner_ack(
     monkeypatch.setattr(runners, "emit_runner_updated", MagicMock())
     monkeypatch.setattr(runners.crud_flow_runner, "get", lambda *args, **kwargs: runner)
     monkeypatch.setattr(runners.crud_flow_runner, "touch_heartbeat", MagicMock())
+    monkeypatch.setattr(
+        runners.crud_flow_runner,
+        "set_publication_capabilities",
+        set_publication_capabilities,
+    )
     monkeypatch.setattr(
         runners.crud_flow_execution, "get", lambda *args, **kwargs: execution
     )

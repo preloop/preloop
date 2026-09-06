@@ -487,10 +487,9 @@ func newHostExecJobCmd(job map[string]any) (*exec.Cmd, string, time.Duration, er
 }
 
 func runnerHeartbeatMessage() map[string]any {
-	return map[string]any{
-		"type":               "heartbeat",
-		"host_exec_profiles": hostExecAdvertisements(),
-	}
+	msg := publicationHeartbeat()
+	msg["host_exec_profiles"] = hostExecAdvertisements()
+	return msg
 }
 
 func hostExecStructuredResult(raw []byte) (map[string]any, error) {

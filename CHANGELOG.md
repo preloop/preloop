@@ -2624,3 +2624,12 @@ New migration `20260201_policy_engine_enhancements`:
 - Adds AI approval columns to `approval_workflow` table
 - Migrates existing `tool_approval_conditions` data to new schema
 - Run `alembic upgrade head` after updating
+
+### Flow publication integration preview
+
+- Select repository PR templates and validate agent-authored title/body metadata;
+  add execution attribution regardless of metadata fallback source.
+- Add an opt-in trusted publisher with scoped GitHub App credentials, clean Git
+  object import, concurrent-update protection and idempotent PR provenance.
+  Controller verification integration and private runner publication are pending;
+  unsupported isolated executions fail closed before publication.

@@ -1,0 +1,130 @@
+{
+  "job": {
+    "execution_id": "11111111-1111-4111-8111-111111111111",
+    "agent_type": "codex",
+    "launch_version": 1,
+    "publication": {
+      "version": 1,
+      "nonce": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "phase": "agent",
+      "repository_url": "https://github.com/example/project.git",
+      "branch": "preloop/change",
+      "base": "main",
+      "base_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "expected_remote_sha": null,
+      "verification_image": "example/helper@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "verification_budget_seconds": 30
+    }
+  },
+  "requests": [
+    {
+      "version": 1,
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "bundle_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "type": "publication_candidate",
+      "execution_id": "11111111-1111-4111-8111-111111111111",
+      "nonce": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "changed_files": [
+        "backend/api.py"
+      ]
+    },
+    {
+      "version": 1,
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "bundle_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "type": "publication_verified",
+      "execution_id": "11111111-1111-4111-8111-111111111111",
+      "nonce": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "checks": [
+        {
+          "id": "unit",
+          "command": "pytest -q",
+          "timeout_seconds": 900,
+          "exit_code": 0
+        }
+      ],
+      "agent_removed": true,
+      "verifiers_removed": true
+    },
+    {
+      "version": 1,
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "bundle_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "type": "publication_complete",
+      "execution_id": "11111111-1111-4111-8111-111111111111",
+      "nonce": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "publication": {
+        "url": "https://github.com/example/project/pull/7",
+        "number": 7,
+        "branch": "preloop/change",
+        "provider": "github",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "metadata_warnings": []
+      }
+    }
+  ],
+  "replies": [
+    {
+      "version": 1,
+      "execution_id": "11111111-1111-4111-8111-111111111111",
+      "nonce": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "bundle_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "type": "publication_verify",
+      "checks": [
+        {
+          "id": "unit",
+          "command": "pytest -q",
+          "timeout_seconds": 900
+        }
+      ],
+      "image": "example/helper@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "budget_seconds": 30
+    },
+    {
+      "version": 1,
+      "execution_id": "11111111-1111-4111-8111-111111111111",
+      "nonce": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "bundle_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "type": "publication_publish",
+      "binding": {
+        "repository_url": "https://github.com/example/project.git",
+        "branch": "preloop/change",
+        "base": "main",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expected_remote_sha": null,
+        "records": [
+          {
+            "execution_id": "11111111-1111-4111-8111-111111111111",
+            "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "public_url": "http://localhost:8000",
+        "provider": "github",
+        "configured_title": "",
+        "configured_body": "",
+        "issue_number": "1"
+      },
+      "lease": {
+        "token": "write-only-secret",
+        "repository_url": "https://github.com/example/project.git",
+        "expires_at": "2099-01-01T00:00:00+00:00"
+      }
+    },
+    {
+      "version": 1,
+      "execution_id": "11111111-1111-4111-8111-111111111111",
+      "nonce": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "bundle_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "type": "publication_ack"
+    }
+  ]
+}
