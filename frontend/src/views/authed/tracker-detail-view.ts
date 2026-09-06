@@ -14,6 +14,7 @@ import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
+import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
 import {
@@ -38,9 +39,17 @@ import {
   describeTrackerScope,
   groupProjectsByOrganization,
 } from '../../utils/tracker-scope';
-import { formatRelativeTime } from '../../utils/date';
+import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
+import { confirmDialog } from '../../components/confirm-dialog';
+import { trackerKindLabel } from '../../components/tracker-list';
 import { getStatusVariant } from '../../utils/verdict';
 import consoleStyles from '../../styles/console-styles.css?inline';
+
+/** Where the last project read on a tracker is remembered, per session. */
+const PROJECT_MEMORY_KEY = 'preloop.tracker.project.';
+
+/** How many projects we will count open issues for to pick a default. */
+const OPEN_COUNT_PROBE_LIMIT = 8;
 
 interface TrackerDetail {
   id: string;
@@ -65,6 +74,9 @@ export class TrackerDetailView extends LitElement {
 
   @state()
   private _projects: Project[] = [];
+
+  /** Open issues per project, read once to pick the default project. */
+  private _openIssueCounts = new Map<string, number>();
 
   @state()
   private _organizations: Organization[] = [];
@@ -118,6 +130,9 @@ export class TrackerDetailView extends LitElement {
   private _issuesError: string | null = null;
 
   @state()
+  private _selectedIssueIds: string[] = [];
+
+  @state()
   private _pullRequests: PullRequestListItem[] = [];
 
   @state()
@@ -134,6 +149,7 @@ export class TrackerDetailView extends LitElement {
 
   private _trackerId = '';
   private readonly _issuesPageSize = 20;
+  private readonly _triageBatchMax = 25;
   private _issuesRequestId = 0;
   private _issueSearchTimer: number | null = null;
   private readonly _prsPageSize = 20;
@@ -303,6 +319,10 @@ export class TrackerDetailView extends LitElement {
         min-width: 160px;
       }
 
+      .select-col {
+        width: 2.5rem;
+      }
+
       .issues-empty,
       .issues-error,
       .prs-empty,
@@ -405,10 +425,24 @@ export class TrackerDetailView extends LitElement {
       (org) => org.tracker_id === this._trackerId
     );
     const orgIds = new Set(this._organizations.map((org) => org.id));
-    this._projects = allProjects.filter((project) =>
-      orgIds.has(project.organization_id)
-    );
+    this._projects = allProjects
+      .filter((project) => orgIds.has(project.organization_id))
+      .sort((left, right) => (left.name || '').localeCompare(right.name || ''));
+    // The probe costs one request per project, and it only decides which
+    // project the Issues tab opens on. A URL that names one, a project read
+    // earlier this session, or a tab that does not list issues all answer
+    // the question for free, so none of them pays for it.
+    if (
+      this._activeTab === 'issues' &&
+      !this._selectedProjectId &&
+      !this._projectMatching(this._rememberedProjectId())
+    ) {
+      await this._loadOpenIssueCounts();
+    }
     this._ensureSelectedProject();
+    // The address bar states which project the tab opened on, so a reload or
+    // a shared link lands on the same one rather than picking again.
+    this._updateUrl();
     if (this._activeTab === 'issues') {
       await this._loadIssues(true);
     } else if (this._activeTab === 'pull-requests') {
@@ -457,18 +491,93 @@ export class TrackerDetailView extends LitElement {
     window.history.replaceState({}, '', next);
   }
 
+  /**
+   * How many open issues each project has, for the default selection only.
+   *
+   * The count endpoint is one cheap request per project (limit 1, read the
+   * total), so this asks for a handful and gives up quietly on the rest: a
+   * default is worth one round trip, not twenty.
+   */
+  private async _loadOpenIssueCounts(): Promise<void> {
+    const projects = this._projects.slice(0, OPEN_COUNT_PROBE_LIMIT);
+    if (projects.length < 2) return;
+    const counts = new Map<string, number>();
+    await Promise.all(
+      projects.map(async (project) => {
+        try {
+          const page = await listIssues({
+            project_id: project.id,
+            status: 'open',
+            skip: 0,
+            limit: 1,
+          });
+          counts.set(project.id, Number(page.total) || 0);
+        } catch {
+          // A project whose count we could not read simply does not win.
+        }
+      })
+    );
+    this._openIssueCounts = counts;
+  }
+
+  /**
+   * Which project the tabs open on.
+   *
+   * A URL that names one wins. Otherwise the tracker remembers the last one
+   * read this session, and failing that the tab opens on the project with
+   * the most open issues: landing on an empty project because its name
+   * starts with "A" is how the page taught people it was broken.
+   */
   private _ensureSelectedProject() {
     if (this._projects.length === 0) {
       this._selectedProjectId = '';
       return;
     }
-    const requested = this._selectedProjectId;
-    const match = this._projects.find(
+    const requested = this._selectedProjectId || this._rememberedProjectId();
+    const match = this._projectMatching(requested);
+    if (match) {
+      this._selectedProjectId = match.id;
+      // A link followed once is what this tracker is being read on, so the
+      // next visit without the query lands on it too.
+      this._rememberProject(match.id);
+      return;
+    }
+    const busiest = [...this._projects].sort(
+      (left, right) =>
+        (this._openIssueCounts.get(right.id) || 0) -
+        (this._openIssueCounts.get(left.id) || 0)
+    )[0];
+    this._selectedProjectId = busiest ? busiest.id : this._projects[0].id;
+    this._rememberProject(this._selectedProjectId);
+  }
+
+  /** The loaded project an id names, by full id or by its short form. */
+  private _projectMatching(requested: string): Project | undefined {
+    if (!requested) return undefined;
+    return this._projects.find(
       (project) =>
         project.id === requested ||
         this._shortProjectId(project.id) === requested
     );
-    this._selectedProjectId = match ? match.id : this._projects[0].id;
+  }
+
+  /** The project this tracker was last read on, per tab session. */
+  private _rememberedProjectId(): string {
+    if (!this._trackerId) return '';
+    try {
+      return sessionStorage.getItem(PROJECT_MEMORY_KEY + this._trackerId) || '';
+    } catch {
+      return '';
+    }
+  }
+
+  private _rememberProject(projectId: string): void {
+    if (!this._trackerId || !projectId) return;
+    try {
+      sessionStorage.setItem(PROJECT_MEMORY_KEY + this._trackerId, projectId);
+    } catch {
+      // A browser with storage disabled just does not remember.
+    }
   }
 
   private _selectedProject(): Project | undefined {
@@ -487,6 +596,7 @@ export class TrackerDetailView extends LitElement {
     if (reset) {
       this._issuesSkip = 0;
       this._issues = [];
+      this._selectedIssueIds = [];
     }
     this._issuesLoading = true;
     this._issuesError = null;
@@ -548,6 +658,7 @@ export class TrackerDetailView extends LitElement {
 
   private _showIssuesForProject(projectId: string) {
     this._selectedProjectId = projectId;
+    this._rememberProject(projectId);
     this._showTab('issues');
     this._updateUrl();
     void this._loadIssues(true);
@@ -555,6 +666,7 @@ export class TrackerDetailView extends LitElement {
 
   private _showPullRequestsForProject(projectId: string) {
     this._selectedProjectId = projectId;
+    this._rememberProject(projectId);
     this._showTab('pull-requests');
     this._updateUrl();
     void this._loadPullRequests(true);
@@ -564,6 +676,7 @@ export class TrackerDetailView extends LitElement {
     const value = (event.target as HTMLSelectElement).value;
     if (!value || value === this._selectedProjectId) return;
     this._selectedProjectId = value;
+    this._rememberProject(value);
     this._updateUrl();
     if (this._activeTab === 'pull-requests') {
       void this._loadPullRequests(true);
@@ -607,6 +720,47 @@ export class TrackerDetailView extends LitElement {
       target: { kind: 'issue', issue_id: issue.id },
       issueKey: issue.key,
       role: 'implementer',
+    });
+  }
+
+  private _selectedVisibleIssues(): IssueListItem[] {
+    const selected = new Set(this._selectedIssueIds);
+    return this._visibleIssues().filter((issue) => selected.has(issue.id));
+  }
+
+  private _toggleIssueSelection(issueId: string, checked: boolean) {
+    if (checked) {
+      if (this._selectedIssueIds.includes(issueId)) return;
+      if (this._selectedIssueIds.length >= this._triageBatchMax) return;
+      this._selectedIssueIds = [...this._selectedIssueIds, issueId];
+      return;
+    }
+    this._selectedIssueIds = this._selectedIssueIds.filter(
+      (id) => id !== issueId
+    );
+  }
+
+  private _toggleSelectVisible(checked: boolean) {
+    if (!checked) {
+      this._selectedIssueIds = [];
+      return;
+    }
+    const visibleIds = this._visibleIssues().map((issue) => issue.id);
+    this._selectedIssueIds = visibleIds.slice(0, this._triageBatchMax);
+  }
+
+  private _runTriageOnSelected() {
+    const selected = this._selectedVisibleIssues();
+    if (selected.length === 0) return;
+    void openRunPresetDialog({
+      presetSlug: 'issue-triage-assistant',
+      targets: selected.map((issue) => ({
+        kind: 'issue' as const,
+        issue_id: issue.id,
+      })),
+      issueKey:
+        selected.length === 1 ? selected[0].key : `${selected.length} issues`,
+      role: 'triage',
     });
   }
 
@@ -808,13 +962,15 @@ export class TrackerDetailView extends LitElement {
 
   private async handleDelete() {
     if (!this._tracker) return;
-    if (
-      !confirm(
-        `Are you sure you want to delete the tracker "${this._tracker.name}"?`
-      )
-    ) {
-      return;
-    }
+    const confirmed = await confirmDialog({
+      title: 'Delete tracker',
+      message: `Delete the tracker "${this._tracker.name}"?`,
+      detail:
+        'Flows that trigger on it stop firing. The issues themselves stay in the tracker.',
+      confirmLabel: 'Delete tracker',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
 
     this._loading = true;
     try {
@@ -911,6 +1067,19 @@ export class TrackerDetailView extends LitElement {
               value=${this._issueSearch}
               @sl-input=${this._onIssueSearch}
             ></sl-input>
+            <sl-button
+              size="small"
+              ?disabled=${this._selectedIssueIds.length === 0}
+              data-testid="run-triage-selected"
+              @click=${() => this._runTriageOnSelected()}
+            >
+              Run triage on selected
+              ${
+                this._selectedIssueIds.length
+                  ? html`(${this._selectedIssueIds.length})`
+                  : nothing
+              }
+            </sl-button>
           </div>
         </div>
         ${
@@ -942,6 +1111,36 @@ export class TrackerDetailView extends LitElement {
                     <table class="styled-table">
                       <thead>
                         <tr>
+                          <th class="select-col">
+                            <sl-checkbox
+                              ?checked=${
+                                this._visibleIssues().length > 0 &&
+                                this._selectedVisibleIssues().length ===
+                                  Math.min(
+                                    this._visibleIssues().length,
+                                    this._triageBatchMax
+                                  )
+                              }
+                              ?indeterminate=${
+                                this._selectedVisibleIssues().length > 0 &&
+                                this._selectedVisibleIssues().length <
+                                  Math.min(
+                                    this._visibleIssues().length,
+                                    this._triageBatchMax
+                                  )
+                              }
+                              @sl-change=${(event: Event) => {
+                                const checkbox = event.target as {
+                                  checked?: boolean;
+                                };
+                                this._toggleSelectVisible(
+                                  Boolean(checkbox.checked)
+                                );
+                              }}
+                            >
+                              <span class="visually-hidden">Select issues</span>
+                            </sl-checkbox>
+                          </th>
                           <th>Key</th>
                           <th>Title</th>
                           <th>Status</th>
@@ -955,6 +1154,33 @@ export class TrackerDetailView extends LitElement {
                         ${visible.map(
                           (issue) => html`
                             <tr>
+                              <td class="select-col">
+                                <sl-checkbox
+                                  ?checked=${this._selectedIssueIds.includes(
+                                    issue.id
+                                  )}
+                                  ?disabled=${
+                                    !this._selectedIssueIds.includes(
+                                      issue.id
+                                    ) &&
+                                    this._selectedIssueIds.length >=
+                                      this._triageBatchMax
+                                  }
+                                  @sl-change=${(event: Event) => {
+                                    const checkbox = event.target as {
+                                      checked?: boolean;
+                                    };
+                                    this._toggleIssueSelection(
+                                      issue.id,
+                                      Boolean(checkbox.checked)
+                                    );
+                                  }}
+                                >
+                                  <span class="visually-hidden"
+                                    >Select ${issue.key}</span
+                                  >
+                                </sl-checkbox>
+                              </td>
                               <td>
                                 <a
                                   href="/console/trackers/${this._trackerId}/issues/${issue.id}"
@@ -1231,8 +1457,10 @@ export class TrackerDetailView extends LitElement {
     }
 
     const tracker = this._tracker;
-    const createdDate = new Date(tracker.created).toLocaleDateString();
-    const updatedDate = new Date(tracker.last_updated).toLocaleDateString();
+    // Relative in the line, exact in the title: "2d ago" is the fact an
+    // operator is checking, a date is what they check it against.
+    const createdDate = formatRelativeTime(tracker.created);
+    const updatedDate = formatRelativeTime(tracker.last_updated);
     const icon = this._getTrackerIcon();
     const hasAnalytics = this._hasAnyAnalyticsFeature();
     const hasProjects = this._projects.length > 0;
@@ -1270,17 +1498,22 @@ export class TrackerDetailView extends LitElement {
               },
               {
                 id: 'sync',
-                label: 'Sync Now',
+                label: 'Sync now',
                 icon: 'arrow-repeat',
                 loading: this._syncing,
                 disabled: this._syncing,
                 onClick: () => this.handleSync(),
               },
+              // Destructive last, outlined and pushed away from the rest,
+              // so Delete is never the button next to Edit (DESIGN.md,
+              // "Destructive actions").
               {
                 id: 'delete',
                 label: 'Delete',
                 icon: 'trash',
                 variant: 'danger',
+                outline: true,
+                separated: true,
                 onClick: () => this.handleDelete(),
               },
             ]}
@@ -1291,21 +1524,24 @@ export class TrackerDetailView extends LitElement {
         <div class="main-column">
           <div class="tracker-header">
             <sl-icon class="tracker-icon" name=${icon}></sl-icon>
-            <sl-badge variant=${tracker.is_valid ? 'success' : 'warning'} pill>
-              ${tracker.is_valid ? 'Connected' : 'Not validated'}
-            </sl-badge>
+            <sl-badge
+              class="chip"
+              variant=${tracker.is_valid ? 'success' : 'warning'}
+              pill
+              >${tracker.is_valid ? 'Connected' : 'Not validated'}</sl-badge
+            >
           </div>
 
           <div class="tracker-meta">
             <span>
               <sl-icon name="tag"></sl-icon>
-              ${tracker.tracker_type}
+              ${trackerKindLabel(tracker.tracker_type)}
             </span>
-            <span>
+            <span title=${formatLocalDateTime(tracker.created)}>
               <sl-icon name="calendar3"></sl-icon>
               Created ${createdDate}
             </span>
-            <span>
+            <span title=${formatLocalDateTime(tracker.last_updated)}>
               <sl-icon name="clock-history"></sl-icon>
               Updated ${updatedDate}
             </span>

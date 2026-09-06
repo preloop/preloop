@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -401,8 +402,13 @@ func TestNewHostExecJobCmdRejectsUnenforceableModel(t *testing.T) {
 		"prompt":            "x",
 		"model_identifier":  "composer-2.5",
 	})
-	if err == nil || !strings.Contains(err.Error(), "not in the local model_map") {
-		t.Fatalf("err = %v", err)
+	want := "not in the local model_map"
+	if runtime.GOOS == "windows" {
+		// Windows rejects native profiles before checking their model map.
+		want = "host execution requires Unix process-group ownership"
+	}
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v; want %q", err, want)
 	}
 }
 

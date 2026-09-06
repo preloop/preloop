@@ -46,6 +46,9 @@ import '@shoelace-style/shoelace/dist/components/tab/tab.js';
 import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
+import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
+import '@shoelace-style/shoelace/dist/components/menu/menu.js';
+import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../../styles/console-dialog';
 
@@ -382,6 +385,11 @@ export class PoliciesView extends LitElement {
         display: flex;
         align-items: center;
         gap: var(--sl-spacing-small);
+      }
+
+      /* Destructive last, and coloured only in the menu, per DESIGN.md. */
+      .menu-danger::part(base) {
+        color: var(--sl-color-danger-600);
       }
 
       .access-rule-details {
@@ -1833,6 +1841,73 @@ export class PoliciesView extends LitElement {
     return all.filter((rule) => rule.kind === this._ruleFilter);
   }
 
+  /**
+   * The per-card actions, folded into one row menu.
+   *
+   * Twelve rule cards used to mean twelve Delete buttons on screen. The menu
+   * keeps the card quiet and puts the destructive action last, behind a
+   * divider, as DESIGN.md asks.
+   */
+  private renderRuleMenu(rule: {
+    enabled: boolean;
+    modelRule: ModelIORule | null;
+    toolRule: ToolAccessRule | null;
+  }) {
+    const isModel = Boolean(rule.modelRule);
+    const isTool = Boolean(rule.toolRule?.accessRuleId);
+    if (!isModel && !isTool) {
+      return '';
+    }
+    const toggle = () => {
+      if (rule.modelRule) {
+        this.toggleModelIOEnabled(rule.modelRule);
+      } else if (rule.toolRule) {
+        this.toggleToolAccessRule(rule.toolRule);
+      }
+    };
+    const remove = () => {
+      if (rule.modelRule) {
+        this.removeModelIORule(rule.modelRule);
+      } else if (rule.toolRule) {
+        this.removeToolAccessRule(rule.toolRule);
+      }
+    };
+    return html`
+      <div class="rule-menu" @click=${(e: Event) => e.stopPropagation()}>
+        <sl-dropdown hoist>
+          <sl-icon-button
+            slot="trigger"
+            name="three-dots-vertical"
+            label="Rule actions"
+          ></sl-icon-button>
+          <sl-menu>
+            <sl-menu-item
+              @click=${() =>
+                rule.modelRule
+                  ? this.openModelIODialog(rule.modelRule)
+                  : this.openModelIODialog({ toolRule: rule.toolRule! })}
+            >
+              <sl-icon slot="prefix" name="pencil"></sl-icon>
+              Edit
+            </sl-menu-item>
+            <sl-menu-item @click=${toggle}>
+              <sl-icon
+                slot="prefix"
+                name=${rule.enabled ? 'pause' : 'play'}
+              ></sl-icon>
+              ${rule.enabled ? 'Disable' : 'Enable'}
+            </sl-menu-item>
+            <sl-divider></sl-divider>
+            <sl-menu-item class="menu-danger" @click=${remove}>
+              <sl-icon slot="prefix" name="trash"></sl-icon>
+              Delete
+            </sl-menu-item>
+          </sl-menu>
+        </sl-dropdown>
+      </div>
+    `;
+  }
+
   private renderRulesTab() {
     const rules = this.unifiedRules();
     return html`
@@ -1926,61 +2001,7 @@ export class PoliciesView extends LitElement {
                           <sl-badge variant="neutral">
                             ${rule.enabled ? 'Enabled' : 'Disabled'}
                           </sl-badge>
-                          ${
-                            rule.modelRule
-                              ? html`
-                                  <sl-button
-                                    size="small"
-                                    @click=${(e: Event) => {
-                                      e.stopPropagation();
-                                      this.toggleModelIOEnabled(
-                                        rule.modelRule!
-                                      );
-                                    }}
-                                  >
-                                    ${rule.enabled ? 'Disable' : 'Enable'}
-                                  </sl-button>
-                                  <sl-button
-                                    size="small"
-                                    variant="danger"
-                                    outline
-                                    @click=${(e: Event) => {
-                                      e.stopPropagation();
-                                      this.removeModelIORule(rule.modelRule!);
-                                    }}
-                                  >
-                                    Delete
-                                  </sl-button>
-                                `
-                              : rule.toolRule?.accessRuleId
-                                ? html`
-                                    <sl-button
-                                      size="small"
-                                      @click=${(e: Event) => {
-                                        e.stopPropagation();
-                                        this.toggleToolAccessRule(
-                                          rule.toolRule!
-                                        );
-                                      }}
-                                    >
-                                      ${rule.enabled ? 'Disable' : 'Enable'}
-                                    </sl-button>
-                                    <sl-button
-                                      size="small"
-                                      variant="danger"
-                                      outline
-                                      @click=${(e: Event) => {
-                                        e.stopPropagation();
-                                        this.removeToolAccessRule(
-                                          rule.toolRule!
-                                        );
-                                      }}
-                                    >
-                                      Delete
-                                    </sl-button>
-                                  `
-                                : ''
-                          }
+                          ${this.renderRuleMenu(rule)}
                         </div>
                       </div>
                       <div class="access-rule-details">

@@ -3,6 +3,10 @@ import sinon from 'sinon';
 
 import '../../components/view-header.ts';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
+import {
+  ATTENTION_SUMMARY_EVENT,
+  readAttentionSummary,
+} from '../../utils/attention-summary';
 import './dashboard-control-plane-view';
 import type { DashboardView } from './dashboard-control-plane-view';
 
@@ -573,6 +577,33 @@ describe('DashboardView', () => {
     expect(element.shadowRoot?.querySelector('activity-feed')).to.exist;
     expect(element.shadowRoot?.textContent).to.contain('Audit exceptions');
     expect(element.shadowRoot?.textContent).to.contain('need attention');
+  });
+
+  it('publishes the attention counts when the inputs land, not while rendering', async () => {
+    const element = await mountDashboard();
+    await waitUntil(
+      () => element['attentionInputs'] != null,
+      'attention inputs never loaded'
+    );
+    await element.updateComplete;
+
+    const published = readAttentionSummary();
+    expect(published, 'counts published for the header bell').to.not.equal(
+      null
+    );
+    expect(published!.total).to.be.greaterThan(0);
+
+    // Deriving the items is a pure read. It used to dispatch from the getter,
+    // which the template calls, so a render published an event.
+    let events = 0;
+    const onSummary = () => {
+      events += 1;
+    };
+    window.addEventListener(ATTENTION_SUMMARY_EVENT, onSummary);
+    element['attentionMemo'] = null;
+    void element['attentionItems'];
+    window.removeEventListener(ATTENTION_SUMMARY_EVENT, onSummary);
+    expect(events).to.equal(0);
   });
 
   it('subscribes to realtime topics and fetches dashboard data', async () => {

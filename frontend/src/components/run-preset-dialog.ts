@@ -17,9 +17,10 @@ import {
 
 export interface RunPresetDialogOptions {
   presetSlug: RunPresetSlug;
-  target: RunPresetTarget;
+  target?: RunPresetTarget;
+  targets?: RunPresetTarget[];
   issueKey: string;
-  role?: 'implementer' | 'reviewer';
+  role?: 'implementer' | 'reviewer' | 'triage';
 }
 
 /**
@@ -37,7 +38,7 @@ export class RunPresetDialog extends LitElement {
   @state() private flowName = '';
   @state() private flowId = '';
   @state() private issueKey = '';
-  @state() private role: 'implementer' | 'reviewer' = 'implementer';
+  @state() private role: 'implementer' | 'reviewer' | 'triage' = 'implementer';
   @state() private modelAlert = false;
   @state() private errorMessage = '';
 
@@ -82,6 +83,7 @@ export class RunPresetDialog extends LitElement {
       const result = await runPresetOnTarget({
         preset_slug: options.presetSlug,
         target: options.target,
+        targets: options.targets,
         confirm_create: false,
       });
       this.flowName = result.flow_name;
@@ -125,14 +127,21 @@ export class RunPresetDialog extends LitElement {
     if (this.options?.presetSlug === 'pull-request-reviewer') {
       return 'Pull Request Reviewer';
     }
+    if (this.options?.presetSlug === 'issue-triage-assistant') {
+      return 'Issue Triage Assistant';
+    }
     return 'Automated Issue Implementation';
   }
 
   private titleText(): string {
     if (this.mode === 'create') {
-      return this.role === 'reviewer'
-        ? 'Create the reviewer flow?'
-        : 'Create the implementer flow?';
+      if (this.role === 'reviewer') {
+        return 'Create the reviewer flow?';
+      }
+      if (this.role === 'triage') {
+        return 'Create the triage flow?';
+      }
+      return 'Create the implementer flow?';
     }
     if (this.mode === 'disabled') {
       return `${this.flowName} is disabled`;
@@ -181,10 +190,11 @@ export class RunPresetDialog extends LitElement {
       const result = await runPresetOnTarget({
         preset_slug: this.options.presetSlug,
         target: this.options.target,
+        targets: this.options.targets,
         confirm_create: true,
       });
       this.close();
-      this.showSuccessToast(result);
+      this.showRunResultToast(result);
     } catch (error) {
       this.submitting = false;
       if (error instanceof RunPresetError && error.status === 422) {
@@ -195,24 +205,57 @@ export class RunPresetDialog extends LitElement {
     }
   }
 
-  private showSuccessToast(result: RunPresetResponse): void {
+  private showRunResultToast(result: RunPresetResponse): void {
+    const items = result.results;
+    const failures = items?.filter((item) => item.error).length || 0;
+    const created = items?.filter((item) => item.execution_id).length || 0;
     const alert = Object.assign(document.createElement('sl-alert'), {
-      variant: 'success',
+      variant: failures ? 'warning' : 'success',
       duration: Infinity,
       closable: true,
     });
-    alert.innerHTML = '<sl-icon slot="icon" name="check2-circle"></sl-icon>';
-    alert.append(document.createTextNode('Run started'));
-    if (result.execution_url) {
+    const icon = document.createElement('sl-icon');
+    icon.slot = 'icon';
+    icon.setAttribute(
+      'name',
+      failures ? 'exclamation-triangle' : 'check2-circle'
+    );
+    alert.append(icon);
+    const summary = items
+      ? (created
+          ? `${created} ${created === 1 ? 'run' : 'runs'} created.`
+          : 'No runs were created.') +
+        (failures
+          ? ` ${failures} ${failures === 1 ? 'target needs' : 'targets need'} attention.`
+          : '')
+      : 'Run started';
+    alert.append(document.createTextNode(summary));
+    const addRunLink = (parent: HTMLElement, url: string): void => {
       const view = document.createElement('sl-button');
       view.setAttribute('size', 'small');
       view.setAttribute('variant', 'text');
       view.textContent = 'View run';
       view.addEventListener('click', () => {
-        Router.go(result.execution_url || '');
+        Router.go(url);
         void (alert as unknown as { hide: () => Promise<void> }).hide();
       });
-      alert.append(view);
+      parent.append(view);
+    };
+    if (items) {
+      for (const [index, item] of items.entries()) {
+        const line = document.createElement('div');
+        const label =
+          item.project_id && item.number != null
+            ? `Pull request #${item.number}`
+            : `Issue ${index + 1}`;
+        line.append(
+          document.createTextNode(`${label}: ${item.error || 'Run created.'} `)
+        );
+        if (item.execution_url) addRunLink(line, item.execution_url);
+        alert.append(line);
+      }
+    } else if (result.execution_url) {
+      addRunLink(alert, result.execution_url);
     }
     const edit = document.createElement('sl-button');
     edit.setAttribute('size', 'small');

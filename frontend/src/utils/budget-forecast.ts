@@ -10,11 +10,29 @@
  * The projection is deliberately linear. Spend is bursty and this card is not
  * the place for a model with opinions; a straight line is the one rule an
  * operator can carry in their head and check by hand.
+ *
+ * The naming of a budget row lives here too (round 4). Cost and the Overview
+ * both print the same budget, and when each owned its own copy of the label
+ * they drifted within one branch.
  */
+import { css, html, nothing, type TemplateResult } from 'lit';
 
 /** Budget periods the forecast understands. `all_time` has no end to aim at. */
 export type ForecastPeriod =
   'hourly' | 'daily' | 'weekly' | 'monthly' | 'yearly' | 'all_time';
+
+/**
+ * Older policies were written with `month` and `year` where the current
+ * schema says `monthly` and `yearly`. Both spellings mean the same period, so
+ * they are folded here, once, rather than in each caller: when only one caller
+ * folded them the same budget was named "Monthly budget - Sep" on Cost and
+ * "Month budget" on the Overview.
+ */
+function normalizePeriod(period: string): string {
+  if (period === 'month') return 'monthly';
+  if (period === 'year') return 'yearly';
+  return period;
+}
 
 /**
  * Below this the sample is too short to project from: one expensive minute
@@ -62,7 +80,8 @@ export interface BudgetForecast {
  * (`get_period_start` in `models/crud/budget.py`): weeks start on Monday,
  * months on the 1st, years on 1 January.
  */
-export function periodStartFor(period: string, now: Date): Date | null {
+export function periodStartFor(rawPeriod: string, now: Date): Date | null {
+  const period = normalizePeriod(rawPeriod);
   const start = new Date(now.getTime());
   start.setMilliseconds(0);
   start.setSeconds(0);
@@ -91,7 +110,8 @@ export function periodStartFor(period: string, now: Date): Date | null {
 }
 
 /** Exclusive end of the period containing `now`. */
-export function periodEndFor(period: string, now: Date): Date | null {
+export function periodEndFor(rawPeriod: string, now: Date): Date | null {
+  const period = normalizePeriod(rawPeriod);
   const start = periodStartFor(period, now);
   if (!start) return null;
   const end = new Date(start.getTime());
@@ -195,4 +215,85 @@ export function forecastEndLabel(
     day: 'numeric',
     ...(basis === 'utc' ? { timeZone: 'UTC' } : {}),
   });
+}
+
+/**
+ * Which window a budget row is about, in words. "Global spend - 30d" was read
+ * as a rolling total; "Monthly budget - Sep" says the number resets, and says
+ * it the same way on Cost and on the Overview.
+ */
+export function budgetPeriodWindow(
+  rawPeriod: string,
+  now: Date = new Date()
+): string {
+  const period = normalizePeriod(rawPeriod);
+  if (period === 'hourly') return 'this hour';
+  if (period === 'daily') return 'today';
+  if (period === 'weekly') return 'this week';
+  if (period === 'monthly') {
+    return now.toLocaleDateString(undefined, { month: 'short' });
+  }
+  if (period === 'yearly') return String(now.getFullYear());
+  return '';
+}
+
+/**
+ * The full name of a global budget row, for example "Monthly budget - Sep".
+ * Both surfaces call this so a budget cannot be named two things.
+ */
+export function budgetPeriodLabel(
+  rawPeriod: string,
+  now: Date = new Date()
+): string {
+  const period = normalizePeriod(rawPeriod);
+  const base =
+    period === 'all_time'
+      ? 'All time budget'
+      : `${period.charAt(0).toUpperCase()}${period.slice(1)} budget`;
+  const window = budgetPeriodWindow(period, now);
+  return window ? `${base} · ${window}` : base;
+}
+
+/** The tone classes and type for the forecast sentence, shared by both cards. */
+export const budgetForecastStyles = css`
+  .budget-forecast {
+    color: var(--sl-color-neutral-500);
+    font-size: 0.8125rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .budget-forecast.warning {
+    color: var(--sl-color-warning-700);
+  }
+
+  .budget-forecast.danger {
+    color: var(--sl-color-danger-700);
+  }
+`;
+
+/**
+ * The forecast sentence, "On track for $X by Y", with the tone of the limit it
+ * crosses and the arithmetic behind it in the tooltip. Rendered here rather
+ * than in each card so the two surfaces cannot word the same projection
+ * differently. `formatCurrency` stays with the caller because the two cards
+ * round money on their own scales.
+ */
+export function renderBudgetForecast(
+  input: BudgetForecastInput,
+  formatCurrency: (value: number) => string
+): TemplateResult | typeof nothing {
+  const forecast = budgetForecast(input);
+  if (!forecast) return nothing;
+  const percent = Math.round(forecast.elapsedFraction * 100);
+  return html`
+    <div
+      class="budget-forecast ${forecast.tone}"
+      title=${`Straight line from ${formatCurrency(
+        Number(input.spend || 0)
+      )} spent in the first ${percent}% of the period.`}
+    >
+      On track for ${formatCurrency(forecast.amount)} by
+      ${forecastEndLabel(input.period, forecast.end, forecast.endBasis)}
+    </div>
+  `;
 }

@@ -42,8 +42,26 @@ describe('ToolRuleEditor', () => {
       (c) => c.querySelector('.action-label')?.textContent
     );
     expect(labels).to.include('Deny');
-    expect(labels).to.include('Require Approval');
+    expect(labels).to.include('Require approval');
     expect(labels).to.include('Allow');
+  });
+
+  it('defaults a new rule to Require approval, not Deny (B-T3)', async () => {
+    const el = (await fixture(
+      html`<tool-rule-editor
+        .open=${true}
+        .workflows=${[]}
+        .features=${{}}
+      ></tool-rule-editor>`
+    )) as ToolRuleEditor;
+
+    await el.updateComplete;
+
+    const selected = el.shadowRoot?.querySelector('.action-card.selected');
+    expect(
+      selected?.querySelector('.action-label')?.textContent?.trim()
+    ).to.equal('Require approval');
+    expect(selected?.classList.contains('approval')).to.be.true;
   });
 
   it('dispatches close event when Cancel is clicked', async () => {
@@ -97,7 +115,7 @@ describe('ToolRuleEditor', () => {
     await el.updateComplete;
     expect(saveDetail).to.exist;
     expect(saveDetail?.formData).to.exist;
-    expect((saveDetail?.formData as any).action).to.equal('deny');
+    expect((saveDetail?.formData as any).action).to.equal('require_approval');
   });
 
   it('shows Edit label when editing existing rule', async () => {

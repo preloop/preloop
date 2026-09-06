@@ -65,7 +65,44 @@ describe('FlowExecutionsView', () => {
     await tick();
     await el.updateComplete;
     const header = el.shadowRoot?.querySelector('view-header');
-    expect(header?.getAttribute('headerText')).to.equal('Flow Executions');
+    expect(header?.getAttribute('headerText')).to.equal('Flow executions');
+    // The default window is 30 days, so the empty state names it.
+    expect(el.shadowRoot?.textContent).to.contain(
+      'No executions in the last 30 days'
+    );
+  });
+
+  it('offers all time from the empty state and drops the window', async () => {
+    const requested: string[] = [];
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
+      requested.push(String(input));
+      return new Response(JSON.stringify([]), { status: 200 });
+    });
+    const el = (await fixture(
+      html`<flow-executions-view></flow-executions-view>`
+    )) as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+
+    expect(requested.some((url) => url.includes('started_after='))).to.be.true;
+    const widen = el.shadowRoot?.querySelector(
+      'sl-button.widen-range'
+    ) as HTMLElement;
+    expect(widen, 'empty state offers all time').to.exist;
+    expect((widen.textContent || '').trim()).to.equal('Show all time');
+
+    requested.length = 0;
+    widen.click();
+    await tick();
+    await el.updateComplete;
+
+    expect(requested.length).to.be.greaterThan(0);
+    expect(requested.every((url) => !url.includes('started_after='))).to.be
+      .true;
+    const range = el.shadowRoot?.querySelector(
+      'time-range-select'
+    ) as HTMLElement & { value: string };
+    expect(range.value).to.equal('all');
     expect(el.shadowRoot?.textContent).to.contain('No executions found');
   });
 
@@ -191,8 +228,12 @@ describe('FlowExecutionsView', () => {
   it('preselects the status and flow filters from the query string', async () => {
     const requested: string[] = [];
     fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
-      requested.push(String(input));
-      return new Response(JSON.stringify(EXECUTIONS), { status: 200 });
+      const url = String(input);
+      requested.push(url);
+      const body = url.includes('/executions')
+        ? EXECUTIONS
+        : [{ id: 'flow-1', name: 'Nightly Sync' }];
+      return new Response(JSON.stringify(body), { status: 200 });
     });
     const original = window.location.href;
     window.history.replaceState(
@@ -211,17 +252,54 @@ describe('FlowExecutionsView', () => {
       expect(requested.some((url) => url.includes('status=FAILED'))).to.be.true;
       expect(requested.some((url) => url.includes('flow_id=flow-1'))).to.be
         .true;
-      const failedButton = el.shadowRoot?.querySelector(
-        'sl-button[data-status="FAILED"]'
-      );
-      expect(failedButton?.getAttribute('variant')).to.equal('danger');
-      expect(el.shadowRoot?.textContent).to.contain('Flow: Nightly Sync');
+      const status = el.shadowRoot?.querySelector(
+        'sl-select.status-filter'
+      ) as HTMLElement & { value: string };
+      expect(status.value).to.equal('FAILED');
+      const flow = el.shadowRoot?.querySelector(
+        'sl-select.flow-filter'
+      ) as HTMLElement & { value: string };
+      expect(flow.value).to.equal('flow-1');
     } finally {
       window.history.replaceState({}, '', original);
     }
   });
 
-  it('renders filter buttons for all execution statuses', async () => {
+  it('accepts the shorter ?flow= deep link and widens the range for it', async () => {
+    const requested: string[] = [];
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
+      requested.push(String(input));
+      return new Response(JSON.stringify(EXECUTIONS), { status: 200 });
+    });
+    const original = window.location.href;
+    window.history.replaceState(
+      {},
+      '',
+      '/console/flows/executions?flow=flow-2'
+    );
+
+    try {
+      const el = (await fixture(
+        html`<flow-executions-view></flow-executions-view>`
+      )) as FlowExecutionsView;
+      await tick();
+      await el.updateComplete;
+
+      expect(requested.some((url) => url.includes('flow_id=flow-2'))).to.be
+        .true;
+      // A link to one flow's runs must not hide them behind a 30 day window.
+      expect(requested.some((url) => url.includes('started_after='))).to.be
+        .false;
+      const range = el.shadowRoot?.querySelector(
+        'time-range-select'
+      ) as HTMLElement & { value: string };
+      expect(range.value).to.equal('all');
+    } finally {
+      window.history.replaceState({}, '', original);
+    }
+  });
+
+  it('drops a pending search when the view is torn down', async () => {
     fetchStub = stub(EXECUTIONS);
     const el = (await fixture(
       html`<flow-executions-view></flow-executions-view>`
@@ -229,23 +307,59 @@ describe('FlowExecutionsView', () => {
     await tick();
     await el.updateComplete;
 
-    const statuses = [
-      'all',
+    const toolbar = el.shadowRoot?.querySelector('list-toolbar');
+    toolbar?.dispatchEvent(
+      new CustomEvent('search-change', { detail: { value: 'nightly' } })
+    );
+    const callsBefore = fetchStub.callCount;
+    el.remove();
+    await tick(400);
+
+    // The debounced request must not fire against a detached element.
+    expect(fetchStub.callCount).to.equal(callsBefore);
+  });
+
+  it('offers every execution status in the status filter', async () => {
+    fetchStub = stub(EXECUTIONS);
+    const el = (await fixture(
+      html`<flow-executions-view></flow-executions-view>`
+    )) as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+
+    const options = Array.from(
+      el.shadowRoot?.querySelectorAll('sl-select.status-filter sl-option') || []
+    ).map((option) => option.getAttribute('value'));
+    expect(options).to.eql([
+      '',
       'RUNNING',
       'PENDING',
       'SUCCEEDED',
       'FAILED',
       'CANCELLED',
-    ];
-    for (const status of statuses) {
-      const btn = el.shadowRoot?.querySelector(
-        `sl-button[data-status="${status}"]`
-      );
-      expect(btn, `Button for status ${status} should exist`).to.exist;
-    }
+    ]);
   });
 
-  it('reloads executions when a status filter button is clicked', async () => {
+  it('names the filter selects for a screen reader without printing them', async () => {
+    fetchStub = stub(EXECUTIONS);
+    const el = (await fixture(
+      html`<flow-executions-view></flow-executions-view>`
+    )) as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+
+    const flow = el.shadowRoot?.querySelector('sl-select.flow-filter');
+    const status = el.shadowRoot?.querySelector('sl-select.status-filter');
+    expect(flow?.getAttribute('label')).to.equal('Flow');
+    expect(status?.getAttribute('label')).to.equal('Status');
+    const printed = flow?.shadowRoot?.querySelector(
+      '[part~="form-control-label"]'
+    ) as HTMLElement | null;
+    // Named, but clipped: the bar has no room to print the label.
+    expect(printed && printed.getBoundingClientRect().height).to.be.lessThan(2);
+  });
+
+  it('reloads executions when the status filter changes', async () => {
     fetchStub = stub(EXECUTIONS);
     const el = (await fixture(
       html`<flow-executions-view></flow-executions-view>`
@@ -254,21 +368,51 @@ describe('FlowExecutionsView', () => {
     await el.updateComplete;
     const callsBefore = fetchStub.callCount;
 
-    const runningBtn = el.shadowRoot?.querySelector(
-      'sl-button[data-status="RUNNING"]'
-    ) as HTMLElement;
-    expect(runningBtn).to.exist;
-    runningBtn.click();
+    const select = el.shadowRoot?.querySelector(
+      'sl-select.status-filter'
+    ) as HTMLElement & { value: string };
+    expect(select).to.exist;
+    select.value = 'RUNNING';
+    select.dispatchEvent(new CustomEvent('sl-change'));
     await tick();
     await el.updateComplete;
 
-    expect(el.statusFilter).to.equal('RUNNING');
     expect(fetchStub.callCount).to.be.greaterThan(callsBefore);
     expect(
       fetchStub
         .getCalls()
         .some((c) => String(c.args[0]).includes('status=RUNNING'))
     ).to.be.true;
+  });
+
+  it('counts the page against the matched total the server reports', async () => {
+    fetchStub = sinon.stub(window, 'fetch').callsFake(
+      async () =>
+        new Response(JSON.stringify(EXECUTIONS), {
+          status: 200,
+          headers: { 'X-Total-Count': '1412' },
+        })
+    );
+    const el = (await fixture(
+      html`<flow-executions-view></flow-executions-view>`
+    )) as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+
+    const count = el.shadowRoot?.querySelector('[slot="count"]');
+    expect((count?.textContent || '').trim()).to.equal('2 of 1,412 executions');
+  });
+
+  it('counts only what it can see when the server sends no total', async () => {
+    fetchStub = stub(EXECUTIONS);
+    const el = (await fixture(
+      html`<flow-executions-view></flow-executions-view>`
+    )) as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+
+    const count = el.shadowRoot?.querySelector('[slot="count"]');
+    expect((count?.textContent || '').trim()).to.equal('2 executions');
   });
 
   it('surfaces the flow-executions endpoint with pagination params', async () => {
@@ -406,7 +550,7 @@ describe('FlowExecutionsView', () => {
       ]);
     });
 
-    it('shows the alias, the muted provider and +N for a multi model run', async () => {
+    it('shows the alias alone and +N for a multi model run', async () => {
       const el = await renderRows([
         {
           id: 'exec-multi',
@@ -433,12 +577,15 @@ describe('FlowExecutionsView', () => {
       ]);
 
       const cell = el.shadowRoot?.querySelector('tbody .model-cell');
+      // The list has no provider column, so the cell prints the alias once:
+      // "anthropic/claude-sonnet-4 anthropic" said the vendor twice.
       expect(
         cell?.querySelector('.execution-model-alias')?.textContent
-      ).to.equal('anthropic/claude-sonnet-4');
+      ).to.equal('claude-sonnet-4');
+      expect(cell?.querySelector('.execution-model-provider')).to.not.exist;
       expect(
-        cell?.querySelector('.execution-model-provider')?.textContent
-      ).to.equal('anthropic');
+        cell?.querySelector('.execution-model')?.getAttribute('title')
+      ).to.contain('anthropic');
       expect(
         cell?.querySelector('.execution-model-more')?.textContent
       ).to.equal('+1');
@@ -447,7 +594,7 @@ describe('FlowExecutionsView', () => {
       ).to.contain('openai/gpt-5');
     });
 
-    it('chips hosted and private runner kinds on the list', async () => {
+    it('chips only the runner that is not the account default', async () => {
       const el = await renderRows([
         {
           id: 'exec-hosted',
@@ -469,15 +616,15 @@ describe('FlowExecutionsView', () => {
         },
       ]);
 
+      // The account runs hosted by default, so "Hosted" on every row would
+      // just repeat the default; only the run that left it is chipped.
       const badges = Array.from(
         el.shadowRoot!.querySelectorAll('[data-testid="runner-kind-badge"]')
       );
       expect(badges.map((badge) => badge.textContent!.trim())).to.eql([
-        'Hosted',
         'Private',
       ]);
-      expect(badges[0]!.getAttribute('data-runner-kind')).to.equal('hosted');
-      expect(badges[1]!.getAttribute('data-runner-kind')).to.equal('private');
+      expect(badges[0]!.getAttribute('data-runner-kind')).to.equal('private');
     });
 
     it('shows a dash when a run has no attributable model', async () => {

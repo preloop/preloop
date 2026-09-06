@@ -386,18 +386,36 @@ export class AccountView extends LitElement {
         color: var(--sl-color-danger-600);
       }
 
+      /* One hairline row, not five boxes inside a card: DESIGN.md depth
+         limit two. The rule between the numbers separates them; a border and
+         a fill around each one adds a third layer for no information. */
       .usage-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
         gap: 0.75rem;
         margin-top: 1rem;
+        padding-bottom: 0.875rem;
+        border-bottom: 1px solid var(--console-hairline);
+        /* Clips the rule of whichever metric starts a row: see below. */
+        overflow: hidden;
       }
 
+      /* The separator is drawn in the gap to the metric's left rather than on
+         its own border, because a border follows DOM order and this grid
+         wraps: once it does, the first metric of the second row would carry a
+         rule with nothing beside it. Sitting in the gap, that rule falls
+         outside the grid's box and is clipped away. */
       .usage-metric {
-        padding: 0.875rem;
-        border-radius: 12px;
-        border: 1px solid var(--sl-color-neutral-200);
-        background: var(--sl-color-neutral-0);
+        position: relative;
+      }
+
+      .usage-metric::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: -0.375rem;
+        border-left: 1px solid var(--console-hairline);
       }
 
       .usage-label {

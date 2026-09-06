@@ -1,16 +1,17 @@
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
+import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '../../components/view-header.ts';
-import '../../components/single-issue-detail-view.ts';
 import { fetchWithAuth, getIssue } from '../../api';
 import { openRunPresetDialog } from '../../components/run-preset-dialog';
-import type { Issue, IssueListItem } from '../../types';
-import { formatRelativeTime } from '../../utils/date';
+import type { IssueListItem } from '../../types';
+import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
+import { renderMarkdown, markdownBodyCss } from '../../utils/markdown';
 import { getStatusVariant } from '../../utils/verdict';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
@@ -59,14 +60,19 @@ export class TrackerIssueView extends LitElement {
         text-decoration: underline;
       }
 
+      /* One line of facts under the title: key, state, project, freshness. */
       .meta-row {
         display: flex;
         flex-wrap: wrap;
-        gap: var(--sl-spacing-medium);
+        gap: var(--sl-spacing-x-small) var(--sl-spacing-medium);
         align-items: center;
         margin-bottom: var(--sl-spacing-medium);
         font-size: var(--console-text-meta);
         color: var(--console-meta-color);
+      }
+
+      .meta-key {
+        font-family: var(--sl-font-mono);
       }
 
       .meta-row a {
@@ -84,7 +90,13 @@ export class TrackerIssueView extends LitElement {
         align-items: center;
         gap: var(--sl-spacing-small);
       }
+
+      .issue-empty-body {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-body);
+      }
     `,
+    unsafeCSS(markdownBodyCss),
   ];
 
   connectedCallback() {
@@ -104,27 +116,11 @@ export class TrackerIssueView extends LitElement {
     return 'GitHub';
   }
 
-  private _toIssue(item: IssueListItem): Issue {
-    return {
-      id: item.id,
-      title: item.title,
-      description: item.description || '',
-      status: item.status || '',
-      status_id: '',
-      priority: item.priority || '',
-      priority_id: '',
-      project_id: item.project_id,
-      project_name: item.project,
-      organization_id: '',
-      organization_name: item.organization,
-      created_at: item.created_at,
-      updated_at: item.updated_at,
-      key: item.key,
-      source: '',
-      url: item.url,
-      labels: item.labels,
-      assignee: item.assignee,
-    };
+  /** `open` is a database value; "Open" is what the meta line says. */
+  private _statusLabel(status: string | null | undefined): string {
+    const raw = (status || '').trim();
+    if (!raw) return 'Unknown';
+    return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
   }
 
   private _isGitTracker(): boolean {
@@ -139,6 +135,16 @@ export class TrackerIssueView extends LitElement {
       target: { kind: 'issue', issue_id: this._issue.id },
       issueKey: this._issue.key,
       role: 'implementer',
+    });
+  }
+
+  private _runTriage() {
+    if (!this._issue) return;
+    void openRunPresetDialog({
+      presetSlug: 'issue-triage-assistant',
+      target: { kind: 'issue', issue_id: this._issue.id },
+      issueKey: this._issue.key,
+      role: 'triage',
     });
   }
 
@@ -201,13 +207,11 @@ export class TrackerIssueView extends LitElement {
 
     const issue = this._issue;
     const trackerName = this._tracker?.name || 'Tracker';
+    const labels = (issue.labels || []).filter((label) => label);
+    const body = renderMarkdown(issue.description);
 
     return html`
-      <view-header
-        headerText=${issue.key}
-        description=${issue.title}
-        width="narrow"
-      >
+      <view-header headerText=${issue.title} width="narrow">
         <div slot="top" class="breadcrumb">
           <a href="/console/trackers">Trackers</a>
           <span>/</span>
@@ -216,6 +220,9 @@ export class TrackerIssueView extends LitElement {
           <span>${issue.key}</span>
         </div>
         <div slot="main-column" class="header-actions">
+          <sl-button size="small" @click=${() => this._runTriage()}>
+            Run triage
+          </sl-button>
           ${
             this._isGitTracker()
               ? html`
@@ -241,13 +248,25 @@ export class TrackerIssueView extends LitElement {
       <div class="column-layout narrow" style="padding-top: 0;">
         <div class="main-column">
           <div class="meta-row">
-            <sl-badge pill variant=${getStatusVariant(issue.status || '')}
-              >${issue.status}</sl-badge
+            <span class="meta-key">${issue.key}</span>
+            <sl-badge
+              class="chip"
+              pill
+              variant=${getStatusVariant(issue.status || '')}
+              >${this._statusLabel(issue.status)}</sl-badge
             >
             <span>${issue.project}</span>
-            <span title=${issue.updated_at}
+            <span title=${formatLocalDateTime(issue.updated_at)}
               >Updated ${formatRelativeTime(issue.updated_at)}</span
             >
+            ${issue.priority ? html`<span>Priority ${issue.priority}</span>` : ''}
+            ${issue.assignee ? html`<span>Assignee ${issue.assignee}</span>` : ''}
+            ${labels.map(
+              (label) =>
+                html`<sl-badge class="chip" pill variant="neutral"
+                  >${label}</sl-badge
+                >`
+            )}
             ${
               issue.url
                 ? html`<a href=${issue.url} target="_blank" rel="noreferrer"
@@ -256,9 +275,13 @@ export class TrackerIssueView extends LitElement {
                 : ''
             }
           </div>
-          <single-issue-detail-view
-            .issue=${this._toIssue(issue)}
-          ></single-issue-detail-view>
+          ${
+            body
+              ? html`<div class="markdown-body">${unsafeHTML(body)}</div>`
+              : html`<p class="issue-empty-body">
+                  No description on this issue.
+                </p>`
+          }
         </div>
       </div>
     `;

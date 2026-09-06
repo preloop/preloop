@@ -73,19 +73,36 @@ interface User {
   full_name: string | null;
 }
 
+/**
+ * The one filter value that stands for the three approval outcomes.
+ *
+ * Approvals are a single idea to an operator ("show me the decisions") but
+ * three actions in the log, and `sl-option` values cannot carry spaces, so
+ * the option is one token here and expanded into three `event_type` params
+ * when the timeline is fetched.
+ */
+const APPROVAL_DECISION_FILTER = 'approval_decision';
+const APPROVAL_DECISION_ACTIONS = [
+  'approval_approved',
+  'approval_denied',
+  'approval_expired',
+];
+
 // Event type filter options
+// Sentence case throughout: one dropdown, one dialect.
 const EVENT_TYPE_OPTIONS = [
-  { value: 'tool_call', label: 'Tool Calls' },
-  { value: 'model_gateway_request', label: 'Gateway Requests' },
-  { value: 'runtime_session_created', label: 'Sessions Started' },
-  { value: 'runtime_session_updated', label: 'Sessions Updated' },
-  { value: 'runtime_session_ended', label: 'Sessions Ended' },
-  { value: 'config:tool_configuration', label: 'Tool Enabled / Disabled' },
-  { value: 'config:tool_rule', label: 'Rule Changes' },
-  { value: 'config:approval_workflow', label: 'Approval Workflow Changes' },
-  { value: 'config:mcp_server', label: 'MCP Server Changes' },
-  { value: 'config:tracker', label: 'Tracker Changes' },
-  { value: 'config:flow', label: 'Flow Changes' },
+  { value: 'tool_call', label: 'Tool calls' },
+  { value: APPROVAL_DECISION_FILTER, label: 'Approval decisions' },
+  { value: 'model_gateway_request', label: 'Gateway requests' },
+  { value: 'runtime_session_created', label: 'Sessions started' },
+  { value: 'runtime_session_updated', label: 'Sessions updated' },
+  { value: 'runtime_session_ended', label: 'Sessions ended' },
+  { value: 'config:tool_configuration', label: 'Tool enabled or disabled' },
+  { value: 'config:tool_rule', label: 'Rule changes' },
+  { value: 'config:approval_workflow', label: 'Approval workflow changes' },
+  { value: 'config:mcp_server', label: 'MCP server changes' },
+  { value: 'config:tracker', label: 'Tracker changes' },
+  { value: 'config:flow', label: 'Flow changes' },
 ];
 
 /**
@@ -267,6 +284,12 @@ export class AuditView extends AuthedElement {
     params.set('skip', String(skip));
     params.set('limit', String(limit));
     for (const t of this._eventTypeFilters) {
+      if (t === APPROVAL_DECISION_FILTER) {
+        for (const action of APPROVAL_DECISION_ACTIONS) {
+          params.append('event_type', action);
+        }
+        continue;
+      }
       params.append('event_type', t);
     }
     for (const o of this._outcomeFilters) {
@@ -994,6 +1017,22 @@ export class AuditView extends AuthedElement {
 
   // ── Render ─────────────────────────────────────────────────────────
 
+  /**
+   * The event count for the page meta.
+   *
+   * Audit accounts reach six figures quickly and the header is one line, so
+   * anything over a thousand is compacted: 56321 reads as "56.3K".
+   */
+  private _formatEventCount(value: number): string {
+    if (!Number.isFinite(value) || value < 1000) {
+      return String(Math.max(0, Math.trunc(value || 0)));
+    }
+    return new Intl.NumberFormat('en-US', {
+      notation: 'compact',
+      maximumFractionDigits: 1,
+    }).format(value);
+  }
+
   render() {
     return html`
       <view-header
@@ -1001,18 +1040,19 @@ export class AuditView extends AuthedElement {
         description="The permanent record of governed activity: tool calls, approvals, and policy decisions, with outcomes and timestamps."
         width="wide"
       >
-        <sl-badge slot="title-prefix" pill variant="neutral"
-          >${this._total} events</sl-badge
-        >
-        <sl-tooltip slot="title-prefix" content="Live updates over websocket">
-          <span
-            class="live-indicator ${this._livePulse ? 'pulsing' : ''}"
-            aria-label="Realtime updates active"
-          >
-            <span class="live-dot"></span>
-            <span class="live-label">LIVE</span>
-          </span>
-        </sl-tooltip>
+        <span slot="meta" class="header-meta">
+          ${this._formatEventCount(this._total)} events
+          <span class="separator" aria-hidden="true">·</span>
+          <sl-tooltip content="Live updates over websocket">
+            <span
+              class="live-indicator ${this._livePulse ? 'pulsing' : ''}"
+              aria-label="Realtime updates active"
+            >
+              <span class="live-dot"></span>
+              <span class="live-label">LIVE</span>
+            </span>
+          </sl-tooltip>
+        </span>
       </view-header>
       <div class="column-layout wide">
         <div class="main-column audit-view" style="padding-top: 0;">
@@ -1548,6 +1588,20 @@ export class AuditView extends AuthedElement {
         color: var(--sl-color-neutral-900);
       }
       /* ── Live indicator ───────────────────── */
+      /* Page meta reads as one line: "56.3K events · LIVE", title first. */
+      .header-meta {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        white-space: nowrap;
+      }
+
+      /* Meta colour, not hairline: a middot painted at hairline weight is
+         invisible and the meta reads "56.3K events LIVE". */
+      .header-meta .separator {
+        color: var(--console-meta-color);
+      }
+
       .live-indicator {
         display: inline-flex;
         align-items: center;
