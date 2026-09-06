@@ -568,6 +568,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 failures and spend for the same window, from the database.
                 The all-time fields keep their meaning either way, because
                 other callers (the agents view) show lifetime totals.
+                ``token_usage`` follows the counts it sits beside: the window
+                when one is given, all time otherwise.
 
         Returns:
             One row per flow that has ever executed.
@@ -607,13 +609,24 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             .all()
         )
 
-        # Fetch cost stats from actual API usage
+        # Fetch cost and token stats from actual API usage. Tokens are
+        # summed beside the money because a row that states spend and leaves
+        # the token cell empty reads as "we measured nothing" on traffic we
+        # did measure (the agents list asks for these lifetime figures).
         cost_stats = (
             db.query(
                 ApiUsage.flow_id,
                 func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
                     "estimated_cost"
                 ),
+                func.coalesce(func.sum(ApiUsage.prompt_tokens), 0).label(
+                    "prompt_tokens"
+                ),
+                func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
+                    "completion_tokens"
+                ),
+                func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
+                *cache_split_columns(),
             )
             .filter(
                 ApiUsage.flow_id.in_(flow_ids),
@@ -629,6 +642,19 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         )
 
         cost_map = {str(row.flow_id): row.estimated_cost for row in cost_stats}
+        # Lifetime tokens, split the same way the windowed figures are, so a
+        # caller that asks for no window still gets volume before price.
+        token_map = {
+            str(row.flow_id): GatewayTokenUsage.from_row(
+                {
+                    "prompt_tokens": int(row.prompt_tokens or 0),
+                    "completion_tokens": int(row.completion_tokens or 0),
+                    "total_tokens": int(row.total_tokens or 0),
+                    **cache_split_from_row(row),
+                }
+            ).model_dump()
+            for row in cost_stats
+        }
 
         window_map: Dict[str, Dict[str, Any]] = {}
         if start_date is not None:
@@ -723,8 +749,15 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 self.failed = window["failed"] if window else 0
                 self.last_run_at = window["last_run_at"] if window else None
                 self.cost = window["cost"] if window else 0.0
-                # None means "no run in this window", not "no tokens".
-                self.token_usage = window.get("token_usage") if window else None
+                # Tokens are always measured over the same period as the
+                # counts beside them: the window when one was asked for (None
+                # there means "no run in this window", not "no tokens"), the
+                # lifetime otherwise, so a caller that shows lifetime spend
+                # can show the lifetime volume that earned it.
+                if start_date is not None:
+                    self.token_usage = window.get("token_usage") if window else None
+                else:
+                    self.token_usage = token_map.get(str(row.flow_id))
 
         return [FlowStatResponse(row) for row in exec_stats]
 

@@ -7601,13 +7601,14 @@ paths:
             format: date-time
           - type: 'null'
           description: 'When set, execution_stats also carries the counts for the
-            window starting at this time: runs, failed, cost and last_run_at. The
-            flows list states one period and needs runs and spend measured over the
-            same one.'
+            window starting at this time: runs, failed, cost, token_usage and last_run_at.
+            The flows list states one period and needs runs and spend measured over
+            the same one. Without it, token_usage covers all time, like estimated_cost.'
           title: Stats Since
         description: 'When set, execution_stats also carries the counts for the window
-          starting at this time: runs, failed, cost and last_run_at. The flows list
-          states one period and needs runs and spend measured over the same one.'
+          starting at this time: runs, failed, cost, token_usage and last_run_at.
+          The flows list states one period and needs runs and spend measured over
+          the same one. Without it, token_usage covers all time, like estimated_cost.'
       responses:
         '200':
           description: Successful Response
