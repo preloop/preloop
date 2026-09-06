@@ -4,6 +4,7 @@ import sinon from 'sinon';
 import './api-keys-view.ts';
 import type { ApiKeysView } from './api-keys-view';
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
+import { resetConfirmDialogForTests } from '../../../components/confirm-dialog';
 
 describe('ApiKeysView', () => {
   let fetchStub: sinon.SinonStub;
@@ -358,6 +359,134 @@ describe('ApiKeysView', () => {
     expect(actionLists.length).to.equal(2);
     expect(actionLists[0].map((action) => action.id)).to.deep.equal(['revoke']);
     expect(actionLists[1]).to.deep.equal([]);
+  });
+
+  it('revokes every selected key from the bulk bar after listing them', async () => {
+    fetchStub.restore();
+    fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.callsFake(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (
+          url.includes('/api/v1/auth/api-keys') &&
+          !url.includes('/governance') &&
+          (!init || !init.method || init.method === 'GET')
+        ) {
+          return new Response(
+            JSON.stringify([
+              {
+                id: 'key-a',
+                name: 'Build Key',
+                created_at: '2026-03-10T09:00:00Z',
+                last_used_at: null,
+                activity_status: 'idle',
+                expires_at: null,
+              },
+              {
+                id: 'key-b',
+                name: 'Deploy Key',
+                created_at: '2026-03-10T09:00:00Z',
+                last_used_at: null,
+                activity_status: 'idle',
+                expires_at: null,
+              },
+              {
+                id: 'key-c',
+                name: 'Laptop Key',
+                created_at: '2026-03-10T09:00:00Z',
+                last_used_at: null,
+                activity_status: 'idle',
+                expires_at: null,
+              },
+            ]),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.endsWith('/api/v1/features')) {
+          return new Response(JSON.stringify({ features: {} }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    );
+
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'API keys view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const bar = element.shadowRoot!.querySelector('list-bulk-bar')!;
+    expect(bar.shadowRoot!.querySelector('.bulk-bar')).to.equal(null);
+
+    // Pick the first row, then shift-extend to the third.
+    element.selection.toggle('key-a');
+    element.selection.toggle('key-c', true);
+    await element.updateComplete;
+    expect(Array.from(element.selection.selectedIds)).to.deep.equal([
+      'key-a',
+      'key-b',
+      'key-c',
+    ]);
+    expect(
+      bar.shadowRoot!.querySelector('[data-testid="bulk-count"]')!.textContent
+    ).to.contain('3 selected');
+    expect(
+      element
+        .shadowRoot!.querySelector('tr[data-selection-id="key-b"]')!
+        .getAttribute('aria-selected')
+    ).to.equal('true');
+
+    const revokeButton = bar.shadowRoot!.querySelector<HTMLElement>(
+      'sl-button[data-action="revoke"]'
+    )!;
+    await (revokeButton as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    revokeButton.click();
+
+    await waitUntil(
+      () => !!document.querySelector('confirm-dialog'),
+      'no confirm dialog'
+    );
+    const dialog = document.querySelector('confirm-dialog')!;
+    await (dialog as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    const dialogText = dialog.shadowRoot!.textContent!.replace(/\s+/g, ' ');
+    expect(dialogText).to.contain('Revoke 3 keys?');
+    expect(dialogText).to.contain('Build Key, Deploy Key, Laptop Key');
+
+    const deletes = () =>
+      fetchStub
+        .getCalls()
+        .filter((call) => (call.args[1] as RequestInit)?.method === 'DELETE');
+    expect(deletes().length, 'revoked before confirming').to.equal(0);
+
+    const confirmButton = dialog.shadowRoot!.querySelector<HTMLElement>(
+      '[data-testid="confirm-dialog-confirm"]'
+    )!;
+    await (confirmButton as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    confirmButton.click();
+
+    await waitUntil(() => deletes().length === 3, 'not every key was revoked');
+    expect(
+      deletes()
+        .map((call) => String(call.args[0]))
+        .sort()
+    ).to.deep.equal([
+      '/api/v1/auth/api-keys/key-a',
+      '/api/v1/auth/api-keys/key-b',
+      '/api/v1/auth/api-keys/key-c',
+    ]);
+    resetConfirmDialogForTests();
   });
 
   it('renders Agent badge when managed_agent_id is present', async () => {
