@@ -690,6 +690,100 @@ describe('RuntimeSessionsView', () => {
       expect(listCalls().pop()).to.contain('query=workspace-42');
     });
 
+    it('ignores a stale list when a later load already finished', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const listPayload = (id: string, name: string) => ({
+        period_start: '2026-02-08T00:00:00Z',
+        period_end: '2026-03-09T23:59:59Z',
+        query: null,
+        session_source_type: null,
+        status: 'all',
+        total: 1,
+        limit: 50,
+        offset: 0,
+        items: [
+          {
+            id,
+            session_source_type: 'claude_code',
+            session_source_id: 'workspace-42',
+            session_reference: name,
+            runtime_principal_type: 'claude_code',
+            runtime_principal_id: 'workspace-42',
+            runtime_principal_name: name,
+            started_at: '2026-03-09T18:00:00Z',
+            last_activity_at: '2026-03-09T20:00:00Z',
+            ended_at: null,
+            flow_id: null,
+            flow_name: null,
+            flow_execution_id: null,
+            latest_model_alias: 'anthropic/claude-sonnet-4',
+            latest_provider_name: 'Anthropic',
+            is_active_now: true,
+            activity_status: 'active_now',
+            total_requests: 4,
+            successful_requests: 3,
+            failed_requests: 1,
+            token_usage: {
+              prompt_tokens: 1200,
+              completion_tokens: 450,
+              total_tokens: 1650,
+            },
+            estimated_cost: 0.42,
+            last_request_at: '2026-03-09T20:00:00Z',
+          },
+        ],
+      });
+
+      let releaseStale: () => void = () => undefined;
+      const staleHold = new Promise<void>((resolve) => {
+        releaseStale = resolve;
+      });
+      let listCalls = 0;
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/runtime-sessions?')) {
+          listCalls += 1;
+          if (listCalls === 1) {
+            await staleHold;
+            return new Response(
+              JSON.stringify(listPayload('stale-session', 'Stale')),
+              {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+              }
+            );
+          }
+          return new Response(
+            JSON.stringify(listPayload('fresh-session', 'Fresh')),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          );
+        }
+        return new Response('{}', { status: 404 });
+      });
+
+      const first = (element as any).loadSessions();
+      const second = (element as any).loadSessions();
+      releaseStale();
+      await Promise.all([first, second]);
+      await element.updateComplete;
+
+      expect((element as any).sessions.items[0].id).to.equal('fresh-session');
+      expect((element as any).selectedSessionId).to.equal('fresh-session');
+      expect((element as any).loading).to.equal(false);
+    });
+
     it('keeps the hint about what the query matches', async () => {
       const element = (await fixture(
         html`<runtime-sessions-view></runtime-sessions-view>`

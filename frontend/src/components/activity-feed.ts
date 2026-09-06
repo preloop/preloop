@@ -2065,7 +2065,7 @@ export class ActivityFeed extends LitElement {
       </div>`;
     }
     return html`
-      <div class="rows" @scroll=${() => this.measureBelowFold()}>
+      <div class="rows" @scroll=${() => this.scheduleMeasure()}>
         ${repeat(
           this.rows,
           (row) => row.event.id,

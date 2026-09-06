@@ -121,6 +121,7 @@ export class RuntimeSessionsView extends LitElement {
   private unsubscribeRealtime?: () => void;
   private refreshTimer: number | null = null;
   private searchDebounce: number | null = null;
+  private loadSequence = 0;
 
   static styles = [
     unsafeCSS(consoleStyles),
@@ -692,13 +693,16 @@ export class RuntimeSessionsView extends LitElement {
   @state() private isPremium = true;
 
   private async loadSessions(isSoftRefresh = false) {
+    const seq = ++this.loadSequence;
     if (!isSoftRefresh) {
       this.loading = true;
       this.error = null;
     }
 
     try {
-      this.sessions = await getAccountRuntimeSessions(this.buildListParams());
+      const result = await getAccountRuntimeSessions(this.buildListParams());
+      if (seq !== this.loadSequence) return;
+      this.sessions = result;
       if (
         !this.selectedSessionId ||
         !this.sessions.items.some((item) => item.id === this.selectedSessionId)
@@ -710,6 +714,7 @@ export class RuntimeSessionsView extends LitElement {
       // <preloop-session-observer> and load after selection, do not block the
       // list on getAccountRuntimeSessionDetail.
     } catch (error) {
+      if (seq !== this.loadSequence) return;
       console.error('Failed to load sessions:', error);
       if (!isSoftRefresh) {
         this.error =
@@ -718,7 +723,7 @@ export class RuntimeSessionsView extends LitElement {
         this.detail = null;
       }
     } finally {
-      if (!isSoftRefresh) {
+      if (seq === this.loadSequence) {
         this.loading = false;
       }
     }

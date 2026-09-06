@@ -1,4 +1,5 @@
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
+import sinon from 'sinon';
 import './activity-feed.ts';
 import {
   AUDIT_PAGE_SIZE,
@@ -1047,6 +1048,33 @@ describe('activity-feed', () => {
       ingestSessions(el, 9);
       await el.updateComplete;
       expect(el.isUpdatePending).to.equal(false);
+    });
+
+    it('coalesces scroll through scheduleMeasure', async () => {
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed
+          style="--activity-feed-list-max-height: 90px;"
+        ></activity-feed>`
+      );
+      ingestSessions(el, 8);
+      await el.updateComplete;
+      await waitUntil(
+        () => Boolean(el.shadowRoot!.querySelector('.footer .more')),
+        'overflow count never rendered'
+      );
+
+      const schedule = sinon.spy(el as any, 'scheduleMeasure');
+      const measure = sinon.spy(el as any, 'measureBelowFold');
+      try {
+        el.shadowRoot!.querySelector('.rows')!.dispatchEvent(
+          new Event('scroll')
+        );
+        expect(schedule.called).to.equal(true);
+        expect(measure.called).to.equal(false);
+      } finally {
+        schedule.restore();
+        measure.restore();
+      }
     });
 
     it('says nothing when the list fits', async () => {
