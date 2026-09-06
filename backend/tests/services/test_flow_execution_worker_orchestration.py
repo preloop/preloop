@@ -403,3 +403,30 @@ async def test_resume_terminal_merges_pr_binding_into_notify() -> None:
         orchestrator._update_execution_log.await_args.kwargs["result"]["pr_url"]
         == "https://github.com/acme/app/pull/7"
     )
+
+
+@pytest.mark.asyncio
+async def test_missing_flow_preflight_terminates_claimed_execution(
+    db_session: Session, flow_for_claim
+) -> None:
+    """A missing flow cannot leave acknowledged work pending for rediscovery."""
+    from preloop.services import flow_execution_runner as runner
+
+    execution = _create_pending_execution(db_session, flow_for_claim.id)
+    ack = AsyncMock()
+    with (
+        patch.object(runner, "get_db_session", return_value=iter([db_session])),
+        patch.object(db_session, "close"),
+        patch.object(runner.crud_flow, "get", return_value=None),
+        patch.object(runner, "run_existing_execution", new_callable=AsyncMock) as run,
+    ):
+        result = await runner.claim_and_run_execution(str(execution.id), ack=ack)
+    assert result["status"] == "missing_flow"
+    ack.assert_awaited_once()
+    run.assert_not_awaited()
+    db_session.refresh(execution)
+    assert execution.status == "FAILED"
+    assert execution.end_time is not None
+    assert execution.failure_category == "runner_error"
+    assert execution.orchestrator_worker_id is None
+    assert "Flow no longer exists" in execution.error_message

@@ -41,7 +41,11 @@ def orchestrator(mock_db, mock_nats_client):
     orch.execution_log = MagicMock()
     orch.execution_log.id = "test-execution-id"
 
-    return orch
+    with patch(
+        "preloop.services.flow_orchestrator.crud_flow_execution.get_stop_request",
+        return_value=None,
+    ):
+        yield orch
 
 
 class TestLogStreaming:

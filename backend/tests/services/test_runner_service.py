@@ -21,6 +21,14 @@ from preloop.services.runner_service import (
 )
 
 
+@pytest.fixture(autouse=True)
+def runtime_admission_allowed(monkeypatch):
+    monkeypatch.setattr(
+        "preloop.models.crud.crud_flow_execution.admit_runtime_start",
+        lambda *args, **kwargs: True,
+    )
+
+
 def test_resolve_runner_pool_prefers_trigger_override() -> None:
     flow = SimpleNamespace(runner_pool="default")
     pool = resolve_runner_pool(

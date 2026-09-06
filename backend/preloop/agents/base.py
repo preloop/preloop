@@ -141,6 +141,10 @@ class AgentExecutor(ABC):
         """
         pass
 
+    async def is_stopped(self, session_reference: str) -> bool:
+        """Confirm runtime termination after stop; unknown evidence stays false."""
+        return False
+
     @abstractmethod
     async def get_result(self, session_reference: str) -> AgentExecutionResult:
         """

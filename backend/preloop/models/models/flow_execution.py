@@ -106,6 +106,12 @@ class FlowExecution(Base):
     agent_session_reference = Column(
         String, nullable=True
     )  # e.g., agent session ID, K8s job ID, Docker container ID, process ID
+    # Durable emergency-stop intent survives worker restarts and scope recovery.
+    launch_requested_at = Column(DateTime(timezone=True), nullable=True)
+    stop_requested_at = Column(DateTime(timezone=True), nullable=True)
+    stop_reason = Column(String(500), nullable=True)
+    stop_source = Column(String(32), nullable=True)
+    stop_confirmed_at = Column(DateTime(timezone=True), nullable=True)
     # Native CLI agent session (OpenCode/Codex) captured from the container
     # log stream via the PRELOOP_AGENT_SESSION marker:
     # {"agent_type": "opencode", "session_id": "ses_..."}. A correlated

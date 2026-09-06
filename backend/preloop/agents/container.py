@@ -2578,6 +2578,37 @@ class ContainerAgentExecutor(AgentExecutor):
         """
         return analyze_agent_failure(logs_text).message
 
+    async def is_stopped(self, session_reference: str) -> bool:
+        """Verify actual runtime termination after a stop request.
+
+        Status classifiers can return FAILED on lookup errors. They are not
+        termination evidence. Kubernetes foreground deletion is confirmed only
+        once both the Job and its Pods are authoritatively absent.
+        """
+        if self.use_kubernetes:
+            await self._init_kubernetes_clients()
+            try:
+                await self._k8s_batch_api.read_namespaced_job_status(
+                    name=session_reference,
+                    namespace=self.agent_namespace,
+                )
+                return False
+            except ApiException as exc:
+                if exc.status != 404:
+                    raise
+            pods = await self._k8s_core_api.list_namespaced_pod(
+                namespace=self.agent_namespace,
+                label_selector=f"job-name={session_reference}",
+            )
+            return len(pods.items) == 0
+        docker = await self._get_docker_client()
+        container = await docker.containers.get(session_reference)
+        state = (await container.show())["State"]
+        return state.get("Running") is False and state.get("Status") in {
+            "exited",
+            "dead",
+        }
+
     async def stop(self, session_reference: str) -> None:
         """
         Stop a running container.

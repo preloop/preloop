@@ -379,6 +379,18 @@ async def runner_ws(
                 if execution_id is None or execution_id != runner.current_execution_id:
                     await websocket.send_json({"type": "ack"})
                     continue
+                # A normalized failure is not runtime termination evidence.
+                # Keep the lease and halt intent until the owner acknowledges
+                # an actual terminal outcome.
+                if str(raw.get("status") or "").upper() not in {
+                    "SUCCEEDED",
+                    "FAILED",
+                    "STOPPED",
+                }:
+                    await websocket.send_json(
+                        {"type": "error", "error": "Invalid runner completion status"}
+                    )
+                    continue
                 status, completion_error, result = validate_runner_completion(
                     raw, leased_job=runner.pending_job or {}
                 )
@@ -390,6 +402,10 @@ async def runner_ws(
                 execution = crud_flow_execution.get(db, id=execution_id)
                 if execution:
                     execution.status = status
+                    if status in {"SUCCEEDED", "FAILED", "STOPPED"}:
+                        crud_flow_execution.confirm_stop(
+                            db, execution_id=execution_id, commit=False
+                        )
                     execution.end_time = datetime.now(timezone.utc)
                     if completion_error:
                         execution.error_message = completion_error

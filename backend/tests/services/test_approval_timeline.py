@@ -5,12 +5,16 @@ approval detail pages can render the complete history: requested, notified,
 opened, voted, resolved/expired.
 """
 
+import asyncio
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.orm import Session
+from preloop.models import models
+from preloop.models.crud import crud_account_halt
 from preloop.models.models.approval_event import ApprovalEvent
 from preloop.models.models import ApprovalRequest, ApprovalWorkflow
 from preloop.services.approval_service import ApprovalService
@@ -46,6 +50,8 @@ def _add_call_index(db, event: ApprovalEvent) -> int:
 
 def make_service():
     db = AsyncMock()
+    # AsyncSession.run_sync returns no tools halt for ordinary timeline cases.
+    db.run_sync.return_value = None
     return ApprovalService(db, "https://app.test.com"), db
 
 
@@ -182,8 +188,11 @@ class TestExpiryEvent:
                 "preloop.models.db.session.get_async_db_session",
                 new=_fake_poll_session,
             ):
-                with pytest.raises(TimeoutError):
-                    await service.wait_for_approval(request.id, poll_interval=0)
+                with pytest.raises(TimeoutError, match="expired without response"):
+                    await asyncio.wait_for(
+                        service.wait_for_approval(request.id, poll_interval=0.01),
+                        timeout=2,
+                    )
 
         expired_events = [e for e in _events_added_to(db) if e.event_type == "expired"]
         assert len(expired_events) == 1
@@ -193,6 +202,38 @@ class TestExpiryEvent:
         commit_index = _first_commit_index(db)
         assert add_index != -1 and commit_index != -1
         assert add_index < commit_index
+
+    @pytest.mark.parametrize("halt_active", [False, True])
+    async def test_overdue_approval_expiry_respects_persisted_tools_halt(
+        self, db_session: Session, test_user: models.User, halt_active: bool
+    ) -> None:
+        """A real halt row freezes a deadline; an absent halt permits expiry."""
+        if halt_active:
+            crud_account_halt.set_scopes(
+                db_session,
+                account_id=test_user.account_id,
+                scopes=["tools"],
+                active=True,
+                user_id=test_user.id,
+                now=datetime.now(timezone.utc) - timedelta(minutes=1),
+            )
+        service, db = make_service()
+        # Execute the production halt CRUD callback against the local test DB.
+        db.run_sync.side_effect = lambda callback: callback(db_session)
+        request = make_request()
+        request.account_id = test_user.account_id
+        request.expires_at = datetime.utcnow() - timedelta(seconds=1)
+        expired = make_request(status="expired")
+        service.update_approval_request = AsyncMock(return_value=expired)
+
+        result = await service._reject_if_not_actionable(request)
+
+        if halt_active:
+            assert result is None
+            service.update_approval_request.assert_not_awaited()
+        else:
+            assert result is expired
+            service.update_approval_request.assert_awaited_once()
 
 
 class TestNotificationEvents:

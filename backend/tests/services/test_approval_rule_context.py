@@ -524,6 +524,7 @@ async def test_create_approval_request_stores_the_snapshot_on_the_row():
     db.add = MagicMock()
     db.commit = AsyncMock()
     db.refresh = AsyncMock()
+    db.run_sync = AsyncMock(return_value=None)
     service = ApprovalService(db, "http://localhost:8000")
     service._broadcast_approval_update = AsyncMock()
 
@@ -560,6 +561,7 @@ async def test_create_approval_request_defaults_to_no_snapshot():
     db.add = MagicMock()
     db.commit = AsyncMock()
     db.refresh = AsyncMock()
+    db.run_sync = AsyncMock(return_value=None)
     service = ApprovalService(db, "http://localhost:8000")
     service._broadcast_approval_update = AsyncMock()
 

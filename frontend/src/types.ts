@@ -1820,6 +1820,29 @@ export interface ApprovalBypassStatus {
   soonest_expiry?: string | null;
 }
 
+/** Traffic classes the account kill switch can halt independently. */
+export type KillSwitchScope = 'gateway' | 'tools' | 'flows';
+
+/** One currently-halted scope with its activation audit data. */
+export interface KillSwitchScopeState {
+  scope: KillSwitchScope;
+  activated_by_user_id: string | null;
+  activated_by_username: string | null;
+  activated_at: string | null;
+  reason: string | null;
+}
+
+/**
+ * Aggregate kill-switch state used to drive the halted-state banner.
+ *
+ * `active` is true when any scope is halted; each halted scope carries who
+ * activated it, when, and why, so the banner can attribute the halt.
+ */
+export interface KillSwitchStatus {
+  active: boolean;
+  scopes: KillSwitchScopeState[];
+}
+
 /**
  * Optional payload carried on an approve/decline decision.
  *

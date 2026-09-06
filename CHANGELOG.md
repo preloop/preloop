@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Account emergency halt**: audited gateway/tool/flow controls, persistent
+  console banner, frozen approval deadlines and durable managed runtime stop
+  requests with explicit termination confirmation. Recovery is staged, records
+  a reason and preserves outstanding stops across process restart or re-enable.
+
 - **Approved flow environments and workspace recovery**: optional pinned profiles
   provide bounded setup and isolated services. Hosted executions can retain encrypted,
   scoped checkpoints and recover unpushed commits plus dirty/untracked files. Private

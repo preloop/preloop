@@ -106,6 +106,17 @@ class RemoteRunnerExecutor(AgentExecutor):
     async def get_status(self, session_reference: str) -> AgentStatus:
         execution_id = _execution_id_from_ref(session_reference)
         execution = crud_flow_execution.get(self.db, id=execution_id, refresh=True)
+        stop_request = crud_flow_execution.get_stop_request(
+            self.db, execution_id=execution_id
+        )
+        if stop_request:
+            # Only completion from the owning runner (or pre-lease cancellation)
+            # confirms termination; server-side status changes are not evidence.
+            return (
+                AgentStatus.STOPPED
+                if stop_request["confirmed_at"]
+                else AgentStatus.RUNNING
+            )
         if execution and _map_status(execution.status) in (
             AgentStatus.SUCCEEDED,
             AgentStatus.FAILED,
@@ -172,8 +183,6 @@ class RemoteRunnerExecutor(AgentExecutor):
         runner_id = _runner_id_from_ref(session_reference)
         if runner_id:
             runner = crud_flow_runner.get(self.db, id=runner_id)
-            if runner and runner.halt_requested:
-                return AgentStatus.STOPPED
             if runner and runner.reported_status:
                 return _map_status(runner.reported_status)
         if execution:
@@ -192,6 +201,14 @@ class RemoteRunnerExecutor(AgentExecutor):
             artifacts=execution.result if execution else None,
         )
 
+    async def is_stopped(self, session_reference: str) -> bool:
+        """Confirm only the owning runner's terminal acknowledgment."""
+        request = crud_flow_execution.get_stop_request(
+            self.db,
+            execution_id=_execution_id_from_ref(session_reference),
+        )
+        return request is not None and request["confirmed_at"] is not None
+
     async def get_result_artifact(
         self, session_reference: str
     ) -> Optional[Dict[str, Any]]:
@@ -202,15 +219,9 @@ class RemoteRunnerExecutor(AgentExecutor):
         return execution.result if execution else None
 
     async def stop(self, session_reference: str) -> None:
-        runner_id = _runner_id_from_ref(session_reference)
-        if not runner_id:
-            return
-        runner = crud_flow_runner.get(self.db, id=runner_id)
-        if not runner:
-            return
-        runner.halt_requested = True
-        self.db.add(runner)
-        self.db.commit()
+        execution_id = _execution_id_from_ref(session_reference)
+        if execution_id:
+            crud_flow_execution.request_runner_stop(self.db, execution_id=execution_id)
 
     async def cleanup(self) -> None:
         return None

@@ -23,6 +23,7 @@ from preloop.models.models.ai_model import AIModel
 from preloop.models.models.user import User
 from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
 from preloop.services.execution_metrics import project_execution_totals
+from preloop.services.kill_switch import FlowHaltActiveError
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.utils.hashing import compute_content_hash
 from preloop.utils.audit import log_config_change
@@ -1334,6 +1335,13 @@ def _display_name(user: User) -> str:
     return name or getattr(user, "username", None) or getattr(user, "email", "") or ""
 
 
+def _halted_response() -> HTTPException:
+    """Distinct 403 for manual triggers blocked by the kill switch (#157)."""
+    from preloop.services.kill_switch import FLOW_DENIAL_MESSAGE
+
+    return HTTPException(status_code=403, detail=FLOW_DENIAL_MESSAGE)
+
+
 def _validate_matrix(
     db: Session, matrix: Any, account_id: uuid.UUID
 ) -> List[Dict[str, Any]]:
@@ -1445,20 +1453,26 @@ async def trigger_flow_execution(
         validated_matrix = _validate_matrix(
             db, matrix, account_id=current_user.account_id
         )
-        return await trigger_service.trigger_flow_matrix(
+        try:
+            return await trigger_service.trigger_flow_matrix(
+                flow_id=flow_id,
+                matrix=validated_matrix,
+                test_mode=True,
+                trigger_event_data=trigger_event_data,
+                triggered_by=_display_name(current_user),
+            )
+        except FlowHaltActiveError:
+            raise _halted_response()
+
+    try:
+        result = await trigger_service.trigger_flow(
             flow_id=flow_id,
-            matrix=validated_matrix,
             test_mode=True,
             trigger_event_data=trigger_event_data,
             triggered_by=_display_name(current_user),
         )
-
-    result = await trigger_service.trigger_flow(
-        flow_id=flow_id,
-        test_mode=True,
-        trigger_event_data=trigger_event_data,
-        triggered_by=_display_name(current_user),
-    )
+    except FlowHaltActiveError:
+        raise _halted_response()
 
     return result
 
@@ -1511,13 +1525,16 @@ async def retry_flow_execution(
     from preloop.services.flow_trigger_service import FlowTriggerService
 
     trigger_service = FlowTriggerService(db)
-    result = await trigger_service.trigger_flow(
-        flow_id=original.flow_id,
-        test_mode=False,
-        trigger_event_data=original.trigger_event_details,
-        retry_of_execution_id=original.id,
-        triggered_by=_display_name(current_user),
-    )
+    try:
+        result = await trigger_service.trigger_flow(
+            flow_id=original.flow_id,
+            test_mode=False,
+            trigger_event_data=original.trigger_event_details,
+            retry_of_execution_id=original.id,
+            triggered_by=_display_name(current_user),
+        )
+    except FlowHaltActiveError:
+        raise _halted_response()
 
     return result
 
@@ -2002,6 +2019,11 @@ async def trigger_flow_via_webhook(
             test_mode=False,
             trigger_event_data=event_data,
         )
+    except FlowHaltActiveError:
+        # The account kill switch halts new executions (#157): nothing was
+        # created, so a clean 403 (not 202/500) tells webhook senders this
+        # trigger was deliberately refused, not lost.
+        raise _halted_response()
     except FlowDispatchError as e:
         # The execution row was committed before dispatch failed: report 202
         # with the execution id so callers can poll, and do NOT claim that no

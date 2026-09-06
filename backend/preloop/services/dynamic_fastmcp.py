@@ -26,6 +26,7 @@ from preloop.services.mcp_client_pool import get_mcp_client_pool
 from preloop.models.crud import crud_mcp_server, crud_tool_configuration
 from preloop.models.db.session import get_db_session as get_db
 from preloop.api.endpoints.tools import BUILTIN_TOOLS
+from preloop.services import kill_switch as kill_switch_service
 from preloop.services.subject_governance import is_tool_enabled_for_subject
 
 logger = logging.getLogger(__name__)
@@ -788,6 +789,10 @@ async def {internal_name}({params_str}) -> str:
                 transport=mcp_server.transport,
             )
 
+            # Approval and connection setup may outlive the initial halt check.
+            denial = await self._halt_dispatch_denial(account_id)
+            if denial:
+                return denial
             # Call tool on external server
             result = await client.call_tool(tool_name, arguments)
             logger.info(
@@ -955,6 +960,67 @@ async def {internal_name}({params_str}) -> str:
 
         # Get current user context
         user_context = self._get_current_user_context()
+
+        # ── Account kill switch (#157) ───────────────────────────────────
+        # One account-scoped control that halts ALL tool calls. Runs before
+        # every other per-call check (justification, enablement, policy) so
+        # an emergency stop cannot be shadowed, and also runs on the async
+        # post-approval re-execution path (_bypass_approval_var): an
+        # approval granted before (or even during) the halt must not let a
+        # tool execute while the account is halted.
+        if user_context:
+            try:
+
+                def _check_kill_switch():
+                    db = next(get_db())
+                    try:
+                        return kill_switch_service.tools_halted(
+                            db, user_context.account_id
+                        )
+                    finally:
+                        db.close()
+
+                tools_are_halted = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(None, _check_kill_switch),
+                    timeout=30,
+                )
+            except Exception as e:
+                # SECURITY: fail closed — if halt state cannot be verified,
+                # block the call rather than risk executing tools during an
+                # emergency.
+                logger.error(
+                    f"Kill-switch check failed for tool '{name}': {e}. "
+                    f"Blocking tool call (fail closed)."
+                )
+                return ToolResult(
+                    content=[
+                        TextContent(
+                            type="text",
+                            text=(
+                                "Error: Unable to verify account halt state "
+                                f"for tool '{name}'. Please try again."
+                            ),
+                        )
+                    ]
+                )
+            if tools_are_halted:
+                logger.warning(
+                    f"Tool '{name}' for user {user_context.username} rejected "
+                    f"by account kill switch"
+                )
+                denied_text = kill_switch_service.TOOL_DENIAL_MESSAGE
+                if name == "permission_prompt":
+                    # Claude Code parses this tool's response as its
+                    # permission behavior schema; a plain string would
+                    # surface as a confusing parse failure instead of a
+                    # clean deny.
+                    denied_text = json.dumps(
+                        {
+                            "behavior": "deny",
+                            "message": kill_switch_service.TOOL_DENIAL_MESSAGE,
+                        }
+                    )
+                return ToolResult(content=[TextContent(type="text", text=denied_text)])
 
         # ── Server-side justification enforcement ─────────────────────────
         # Schema injection alone isn't sufficient — clients can skip
@@ -1487,16 +1553,44 @@ async def {internal_name}({params_str}) -> str:
 
         return result
 
+    async def _halt_dispatch_denial(self, account_id: str) -> Optional[str]:
+        """Check fresh halt state after waits and fail closed before dispatch."""
+
+        def check() -> bool:
+            db = next(get_db())
+            try:
+                return "tools" in kill_switch_service.crud_account_halt.active_scopes(
+                    db, account_id=account_id
+                )
+            finally:
+                db.close()
+
+        try:
+            halted = await asyncio.wait_for(asyncio.to_thread(check), timeout=5)
+        except Exception:
+            logger.exception("Unable to verify halt state before tool dispatch")
+            return "Access denied: unable to verify account halt state"
+        return kill_switch_service.TOOL_DENIAL_MESSAGE if halted else None
+
     async def call_registered_tool_without_policy(
         self,
         name: str,
         arguments: dict | None = None,
+        *,
+        account_id: str,
     ):
         """Execute an already-registered tool without re-running policy checks.
 
         Async approval polling calls this only after the original tool call has
         been approved and claimed for idempotent re-execution.
         """
+        # The durable approval owns this dispatch, even without HTTP context.
+        denial = await self._halt_dispatch_denial(account_id)
+        if denial:
+            from fastmcp.tools.tool import ToolResult
+            from mcp.types import TextContent
+
+            return ToolResult(content=[TextContent(type="text", text=denial)])
         translation_token = None
         if name in self._registered_proxied_tools:
             translation_token = _is_proxy_translation_var.set(True)

@@ -35,6 +35,13 @@ SYSTEM_PERMISSIONS: Dict[str, List[Dict[str, str]]] = {
             "name": "manage_account",
             "description": "Manage account settings and configuration",
         },
+        {
+            "name": "manage_kill_switch",
+            "description": (
+                "Activate and lift the account kill switch (emergency halt "
+                "of all agent activity)"
+            ),
+        },
         {"name": "close_account", "description": "Close/delete the account"},
     ],
     "billing": [

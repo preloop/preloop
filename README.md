@@ -49,6 +49,8 @@ Onboarding, the MCP firewall, human approvals, and cutting session cost. Recorde
 
 Guides: [docs.preloop.ai](https://docs.preloop.ai). Start here: [onboard local agents (60s)](https://docs.preloop.ai/quickstart-cli/).
 
+The [account kill switch](docs/guide/account-kill-switch.md) blocks gateway and tool traffic, freezes pending approval deadlines, and requests termination of active managed flow executions, with audited staged recovery.
+
 ## What you get
 
 Jobs teams otherwise buy from several vendors, in one Apache 2.0 stack:
