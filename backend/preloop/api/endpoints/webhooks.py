@@ -36,6 +36,9 @@ DEFAULT_GITHUB_SUBSCRIBED_EVENTS = [
     "check_run",
     "check_suite",
     "workflow_run",
+    "pull_request_review",
+    "pull_request_review_comment",
+    "status",
 ]
 DEFAULT_GITLAB_SUBSCRIBED_EVENTS = [
     "Push Hook",
@@ -747,6 +750,8 @@ async def receive_webhook(
             "process_webhook_event",
             tracker_type=tracker_type.lower(),
             event_type=actual_event_type,
+            delivery_id=request.headers.get("X-GitHub-Delivery")
+            or request.headers.get("X-Gitlab-Event-UUID"),
             payload=parsed_payload,
             tracker_id=str(
                 resolved_tracker.id

@@ -28,6 +28,7 @@ DISPATCHABLE_TASKS: tuple[str, ...] = (
     "execute_flow",
     "resume_flow_execution",
     "cleanup_flow_workspaces",
+    "reconcile_flow_feedback",
 )
 
 
@@ -561,3 +562,14 @@ async def resume_flow_execution(
 
     logger.info("resume_flow_execution task started for execution %s", execution_id)
     return await claim_and_run_execution(execution_id, resume=True, ack=_ack)
+
+
+async def reconcile_flow_feedback() -> int:
+    """Advance durable PR subscriptions without keeping runners idle."""
+    from preloop.services.flow_feedback import run_feedback_tick
+
+    db = next(get_db_session())
+    try:
+        return await run_feedback_tick(db)
+    finally:
+        db.close()

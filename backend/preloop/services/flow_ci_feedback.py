@@ -21,7 +21,11 @@ from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_flow_execution
 from preloop.models.models.flow_execution import FlowExecution
-from preloop.services.flow_pr_binding import find_bound_execution, normalize_pr_url
+from preloop.services.flow_pr_binding import (
+    find_bound_execution,
+    normalize_pr_url,
+    resume_cli_session_of,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -427,6 +431,9 @@ def bind_ci_failure_resume_or_skip(
         "pr_url": pr_url,
         "source_branch": result.get("pr_source_branch") or failure.get("branch"),
     }
+    cli_session = resume_cli_session_of(execution)
+    if cli_session:
+        resume["cli_session"] = cli_session
     event_data["_resume"] = resume
     event_data[CI_FAILURE_KEY] = {
         "provider": failure.get("provider"),

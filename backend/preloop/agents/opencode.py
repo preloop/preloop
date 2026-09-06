@@ -387,12 +387,24 @@ if [ "$PRELOOP_CLI_SESSION_RESTORED" -eq 1 ] && [ -n "$PRELOOP_CLI_SESSION_ID" ]
     if opencode run --help 2>&1 | grep -q -- '--session'; then
         OPENCODE_RESUME_ARGS="--session $PRELOOP_CLI_SESSION_ID"
     else
-        OPENCODE_RESUME_ARGS="--continue"
+        echo "PRELOOP_NATIVE_RESUME resume_failed: explicit OpenCode resume unavailable"
+        exit 1
     fi
 elif [ "$PRELOOP_CLI_SESSION_RESTORED" -eq 1 ]; then
-    OPENCODE_RESUME_ARGS="--continue"
+    echo "PRELOOP_NATIVE_RESUME resume_failed: missing explicit session id"
+    exit 1
 fi
 """
+        from .session_runtime import native_session_blocks
+
+        native = native_session_blocks(
+            execution_context,
+            "opencode",
+            '"${XDG_DATA_HOME:-$HOME/.local/share}/opencode"',
+            '"$_pl_sid"',
+        )
+        if native:
+            blocks.update(native)
         return blocks
 
     def _build_opencode_script(self, execution_context: Dict[str, Any]) -> str:
@@ -408,6 +420,11 @@ fi
             Shell script to execute
         """
         prompt = execution_context["prompt"]
+        native_resume_guard = (
+            '"0"'
+            if execution_context.get("confirmation_nudge")
+            else '"${PRELOOP_CLI_SESSION_RESTORED:-0}"'
+        )
         model = execution_context.get("opencode_model") or execution_context.get(
             "model_identifier"
         )
@@ -473,9 +490,9 @@ fi
             completion_nudge_block = build_completion_nudge_block(
                 agent_label="opencode",
                 exit_code_var="OPENCODE_EXIT_CODE",
-                resume_probe="opencode run --help 2>&1 | grep -q -- '--continue'",
+                resume_probe="opencode run --help 2>&1 | grep -q -- '--session'",
                 resume_command=(
-                    "$PRELOOP_NUDGE_TIMEOUT opencode run --continue "
+                    '$PRELOOP_NUDGE_TIMEOUT opencode run --session "$_pl_sid" '
                     "--format json --print-logs --log-level WARN "
                     f"--model {opencode_model_arg} --dangerously-skip-permissions "
                     f'-- "$(cat {NUDGE_PROMPT_PATH})" 2>&1 '
@@ -708,6 +725,11 @@ echo ""
 echo "=================================================="
 echo "OpenCode CLI exited with code: $OPENCODE_EXIT_CODE"
 echo "=================================================="
+if [ {native_resume_guard} -eq 1 ] && [ "$OPENCODE_EXIT_CODE" -ne 0 ]; then
+    echo 'PRELOOP_NATIVE_RESUME {{"mode":"resume_failed","reason":"native_cli_exit"}}'
+    {session_blocks["pack"]}
+    exit "$OPENCODE_EXIT_CODE"
+fi
 {completion_nudge_block}{session_blocks["pack"]}{post_exec_block}
 # Exit with opencode's exit code
 exit $OPENCODE_EXIT_CODE

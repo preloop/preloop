@@ -146,6 +146,20 @@ async def run_scheduler_async(
             catalog_sync_interval_hours,
         )
 
+    async def _publish_feedback_tick() -> None:
+        try:
+            await event_bus_service.publish_task("reconcile_flow_feedback")
+        except Exception:
+            logger.exception("Failed to publish feedback reconciliation")
+
+    scheduler.add_job(
+        _publish_feedback_tick,
+        trigger=IntervalTrigger(seconds=15),
+        id="flow_feedback_reconciliation",
+        replace_existing=True,
+        misfire_grace_time=30,
+    )
+
     # Hourly workspace retention pass: delete captured workspace snapshots
     # and Docker agent-workspace-* volumes older than the retention window.
     async def _publish_workspace_cleanup() -> None:

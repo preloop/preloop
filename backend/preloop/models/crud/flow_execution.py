@@ -226,6 +226,23 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db.flush()
         return db_obj
 
+    def record_native_resume(
+        self, db: Session, *, execution_id: uuid.UUID, outcome: dict
+    ) -> None:
+        """Persist only the native resume outcome, never session content."""
+        execution = self.get(db, id=execution_id)
+        if execution is None:
+            return
+        execution.result = {
+            **(execution.result or {}),
+            "native_resume": {
+                key: outcome[key]
+                for key in ("mode", "reason", "session_id")
+                if key in outcome
+            },
+        }
+        db.commit()
+
     def get_by_flow(
         self,
         db: Session,

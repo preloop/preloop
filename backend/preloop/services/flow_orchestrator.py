@@ -1143,6 +1143,10 @@ class FlowExecutionOrchestrator:
                         f"No resolver found for prefix '{prefix}' and simple resolution failed for {{{{{placeholder}}}}}"
                     )
 
+        feedback_prompt = (self.trigger_event_data or {}).get("_feedback_prompt")
+        if isinstance(feedback_prompt, str):
+            resolved_prompt += "\n\n" + feedback_prompt
+
         # Resume runs always learn to inspect rebase-conflict.txt, because
         # the rebase happens after this prompt is resolved. Keep this before
         # the success-confirmation instruction, which must stay last.
@@ -2024,6 +2028,30 @@ class FlowExecutionOrchestrator:
             "trigger_project_id": self._resolve_trigger_project_id(),
         }
 
+        from preloop.services.flow_feedback import resolve_native_checkpoint
+
+        resume = (self.trigger_event_data or {}).get("_resume") or {}
+        native = (
+            resolve_native_checkpoint(
+                self.db,
+                account_id=self.flow.account_id,
+                flow_id=self.flow.id,
+                execution_id=self.execution_log.id,
+                resume=resume,
+            )
+            if resume.get("thread_id")
+            else None
+        )
+        if resume.get("thread_id"):
+            execution_context["checkpoint_resume_authorized"] = True
+            execution_context["thread_id"] = resume["thread_id"]
+        if native:
+            resume["cli_session"] = native
+            if isinstance(native.get("artifact_reference"), dict):
+                execution_context["native_session_reference"] = native[
+                    "artifact_reference"
+                ]
+
         # Correlated resume: hand the runner the prior execution's workspace
         # so unpushed commits (and scratch state) survive into this run.
         restore_archive = self._resolve_workspace_restore_archive()
@@ -2210,7 +2238,14 @@ class FlowExecutionOrchestrator:
 
                 # Native CLI session id reported by the agent script, so a
                 # later PR-comment resume can invoke the CLI resume flag.
-                if AGENT_SESSION_MARKER in stripped_line:
+                if any(
+                    marker in stripped_line
+                    for marker in (
+                        AGENT_SESSION_MARKER,
+                        "PRELOOP_NATIVE_SESSION_ARTIFACT ",
+                        "PRELOOP_NATIVE_RESUME ",
+                    )
+                ):
                     self._note_agent_session(stripped_line)
 
                 # In-place completion nudge markers printed by the agent
@@ -2830,6 +2865,30 @@ class FlowExecutionOrchestrator:
         session id on the row; a retried attempt resets ``_agent_session``
         and overwrites the record with the new session.
         """
+        from preloop.agents.session_runtime import parse_native_artifact_marker
+
+        if "PRELOOP_NATIVE_RESUME " in line and self.execution_log is not None:
+            try:
+                outcome = json.loads(line.split("PRELOOP_NATIVE_RESUME ", 1)[1])
+                if isinstance(outcome, dict) and outcome.get("mode") in {
+                    "native_resume",
+                    "cold_handoff",
+                    "resume_failed",
+                }:
+                    crud_flow_execution.record_native_resume(
+                        self.db, execution_id=self.execution_log.id, outcome=outcome
+                    )
+                    self.execution_logger.log_milestone("native_resume", outcome)
+            except ValueError:
+                pass
+            return
+        artifact = parse_native_artifact_marker(line)
+        if artifact and self.execution_log is not None:
+            expected_thread = (self.trigger_event_data or {}).get("_session_thread_id")
+            if artifact.get("thread_id") == expected_thread:
+                self._agent_session = artifact
+                record_cli_session(self.db, self.execution_log.id, artifact)
+            return
         parsed = parse_agent_session_marker(line)
         if not parsed:
             return
@@ -2852,11 +2911,17 @@ class FlowExecutionOrchestrator:
         (reconnects can drop the tail). ``_note_agent_session`` does the
         actual persistence, so this only rescues a missed line.
         """
-        if self._agent_session is None and output_summary:
+        if output_summary:
             for line in output_summary.splitlines():
-                if AGENT_SESSION_MARKER in line:
+                if any(
+                    marker in line
+                    for marker in (
+                        AGENT_SESSION_MARKER,
+                        "PRELOOP_NATIVE_SESSION_ARTIFACT ",
+                        "PRELOOP_NATIVE_RESUME ",
+                    )
+                ):
                     self._note_agent_session(line)
-                    break
 
     def _bind_opened_pr(self, output_summary: Optional[str]) -> None:
         """Persist the wrapper-opened PR on this execution's result.
