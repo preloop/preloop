@@ -634,6 +634,22 @@ describe('AgentDetailView', () => {
     expect(stripText).to.contain('$0.57');
     expect(stripText).to.contain('4 requests');
 
+    // Volume leads the money on the strip as it does in the lists, so the
+    // card this replaced did not take the token split down with it.
+    const figures = strip?.querySelector(
+      '[data-testid="agent-token-figures"] token-figures'
+    ) as (HTMLElement & { updateComplete: Promise<unknown> }) | null;
+    expect(figures, 'the strip states the token split').to.exist;
+    await figures!.updateComplete;
+    const figuresText = (figures!.shadowRoot?.textContent || '').replace(
+      /\s+/g,
+      ' '
+    );
+    expect(figuresText).to.contain('300 in');
+    expect(figuresText).to.contain('120 out');
+    // This aggregate reported no cache fields, so no hit rate is claimed.
+    expect(figuresText).to.not.contain('hit');
+
     // One range control, the shared one, holding the selected window.
     const range = strip?.querySelector('time-range-select');
     expect(range, 'the strip carries the shared range control').to.exist;
