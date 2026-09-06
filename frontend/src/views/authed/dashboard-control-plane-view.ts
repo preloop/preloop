@@ -426,6 +426,14 @@ export class DashboardView extends AuthedElement {
    * or the ask failed. Never rendered as a zero when it is unknown.
    */
   @state() private auditEventCount: number | null = null;
+  /**
+   * True while the figures on the Audit trail line are being measured for
+   * the range on screen. It covers a range change too, which keeps the
+   * other `fetching*` flags false on purpose (the numbers already up stay
+   * up while they are replaced), and would otherwise leave last window's
+   * sessions and audit events sitting under the new range's label.
+   */
+  @state() private fetchingAuditTrail = false;
 
   private unsubscribeRealtime?: () => void;
   private refreshInFlight = false;
@@ -2122,6 +2130,12 @@ export class DashboardView extends AuthedElement {
     this.lastFetchStartedAt = Date.now();
     markOverviewTiming('overview-fetch-start');
 
+    // Both the sessions figure (this wave) and the audit figure (the
+    // deferred wave) are about to be re-measured for `startDateStr`, so the
+    // line steps aside until both are in rather than restating the last
+    // window's numbers under the new label.
+    this.fetchingAuditTrail = true;
+
     if (!options.preserveLoadingState) {
       this.fetchingGatewaySummary = true;
       this.fetchingRecentExecutions = true;
@@ -2261,6 +2275,8 @@ export class DashboardView extends AuthedElement {
       this.fetchingBudget = false;
       this.fetchingAudit = false;
       this.fetchingMCPAndTools = false;
+      // The deferred wave never ran, so nothing else will clear this.
+      this.fetchingAuditTrail = false;
       this.loading = false;
     } finally {
       this.refreshInFlight = false;
@@ -2335,17 +2351,25 @@ export class DashboardView extends AuthedElement {
     const params = new URLSearchParams();
     params.set('limit', '1');
     params.set('start_date', startDateStr);
-    const count = await this.catchWith403Handling(
-      fetchWithAuth(`/api/v1/audit-logs/grouped?${params}`).then((response) => {
-        if (!response.ok) {
-          throw new Error('Failed to count audit events');
-        }
-        return response.json() as Promise<{ total?: number }>;
-      }),
-      null
-    );
-    this.auditEventCount =
-      count && typeof count.total === 'number' ? count.total : null;
+    try {
+      const count = await this.catchWith403Handling(
+        fetchWithAuth(`/api/v1/audit-logs/grouped?${params}`).then(
+          (response) => {
+            if (!response.ok) {
+              throw new Error('Failed to count audit events');
+            }
+            return response.json() as Promise<{ total?: number }>;
+          }
+        ),
+        null
+      );
+      this.auditEventCount =
+        count && typeof count.total === 'number' ? count.total : null;
+    } finally {
+      // This is the last figure the line waits on: the sessions count landed
+      // with the fold, above.
+      this.fetchingAuditTrail = false;
+    }
   }
 
   /**
@@ -3989,13 +4013,18 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
-   * True once every figure on the Audit trail line has answered. The line
-   * arrives complete rather than growing an item at a time under the
-   * reader's eyes.
+   * True once every figure on the Audit trail line has answered for the
+   * range on screen. The line arrives complete rather than growing an item
+   * at a time under the reader's eyes, and a range change hides it until
+   * the new window's numbers are in: a figure from the last window under a
+   * new label is worse than no line.
    */
   private get auditTrailResolved(): boolean {
     return (
-      !this.loading && !this.fetchingRecentExecutions && !this.fetchingAudit
+      !this.loading &&
+      !this.fetchingRecentExecutions &&
+      !this.fetchingAudit &&
+      !this.fetchingAuditTrail
     );
   }
 

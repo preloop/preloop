@@ -50,6 +50,8 @@ describe('DashboardView', () => {
   let breakdownCalls = 0;
   /** Holds every gateway summary call, for tests about a range change. */
   let summaryGate: Promise<void> | null;
+  /** Holds the Audit trail's count call (`limit=1`), not the page of events. */
+  let auditCountGate: Promise<void> | null;
   /** null means RBAC is off, so every permission check passes. */
   let mePermissions: string[] | null;
 
@@ -62,6 +64,7 @@ describe('DashboardView', () => {
     breakdownGate = null;
     breakdownCalls = 0;
     summaryGate = null;
+    auditCountGate = null;
     mePermissions = null;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
@@ -462,6 +465,9 @@ describe('DashboardView', () => {
         }
 
         if (url.startsWith('/api/v1/audit-logs/grouped')) {
+          if (/[?&]limit=1(&|$)/.test(url) && auditCountGate) {
+            await auditCountGate;
+          }
           return json(auditResponse);
         }
 
@@ -1553,6 +1559,69 @@ describe('DashboardView', () => {
             url.includes('start_date=')
         );
       expect(counted.length, 'one range-scoped audit count').to.equal(1);
+    });
+
+    it('withholds the audit trail while a range change re-measures it', async () => {
+      const inRange = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      allApprovalRequestsResponse = [
+        {
+          id: 'approval-2',
+          tool_name: 'send_email',
+          status: 'approved',
+          requested_at: inRange,
+          resolved_at: inRange,
+        },
+      ];
+
+      const element = await mountLoaded();
+      const trailText = () =>
+        (element.shadowRoot?.querySelector('.audit-trail')?.textContent ?? '')
+          .replace(/\s+/g, ' ')
+          .trim();
+      expect(trailText(), 'the 30d line').to.contain('1 audit event');
+
+      // The new range holds more of everything. A range change keeps the
+      // other fetching flags false on purpose, so without a flag of its own
+      // the line would restate these old figures under the new "24h" label.
+      let releaseCount = () => {};
+      auditCountGate = new Promise<void>((resolve) => {
+        releaseCount = resolve;
+      });
+      auditResponse = { ...auditResponse, total: 9 };
+      runtimeSessionsResponse = { ...runtimeSessionsResponse, total: 4 };
+
+      const usage = element.shadowRoot?.querySelector('usage-card') as Element;
+      usage.dispatchEvent(
+        new CustomEvent('range-change', {
+          detail: { value: 'day' },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await waitUntil(
+        () => element['totalRuntimeSessionsCount'] === 4,
+        'the fold never reloaded for the new range'
+      );
+      await element.updateComplete;
+
+      expect(element['auditTrailResolved'], 'still measuring').to.be.false;
+      expect(
+        element.shadowRoot?.querySelector('.audit-trail'),
+        'no line while the count is still open'
+      ).to.not.exist;
+
+      auditCountGate = null;
+      releaseCount();
+      await waitUntil(
+        () => element['auditTrailResolved'],
+        'the audit trail never resolved'
+      );
+      await element.updateComplete;
+
+      const settled = trailText();
+      expect(settled, 'the new range label').to.contain('24h');
+      expect(settled).to.contain('4 sessions');
+      expect(settled).to.contain('9 audit events');
     });
 
     it('leaves the audit trail out when the range holds no record', async () => {
