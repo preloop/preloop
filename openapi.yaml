@@ -12840,6 +12840,13 @@ components:
           title: Models Used
           description: Every distinct model alias this execution used with its request
             count, most used first.
+        token_usage:
+          anyOf:
+          - $ref: '#/components/schemas/GatewayTokenUsage'
+          - type: 'null'
+          description: Tokens this execution's gateway traffic consumed, split by
+            direction and cache participation. Null when the run has no attributable
+            gateway usage, which is not the same as zero.
         id:
           type: string
           format: uuid
@@ -13980,6 +13987,13 @@ components:
           title: Models Used
           description: Every distinct model alias this execution used with its request
             count, most used first.
+        token_usage:
+          anyOf:
+          - $ref: '#/components/schemas/GatewayTokenUsage'
+          - type: 'null'
+          description: Tokens this execution's gateway traffic consumed, split by
+            direction and cache participation. Null when the run has no attributable
+            gateway usage, which is not the same as zero.
         id:
           type: string
           format: uuid
@@ -14109,6 +14123,13 @@ components:
           title: Models Used
           description: Every distinct model alias this execution used with its request
             count, most used first.
+        token_usage:
+          anyOf:
+          - $ref: '#/components/schemas/GatewayTokenUsage'
+          - type: 'null'
+          description: Tokens this execution's gateway traffic consumed, split by
+            direction and cache participation. Null when the run has no attributable
+            gateway usage, which is not the same as zero.
         flow_id:
           type: string
           format: uuid
@@ -14848,9 +14869,60 @@ components:
           type: integer
           title: Total Tokens
           default: 0
+        input_tokens:
+          type: integer
+          title: Input Tokens
+          default: 0
+        output_tokens:
+          type: integer
+          title: Output Tokens
+          default: 0
+        cache_read_tokens:
+          type: integer
+          title: Cache Read Tokens
+          default: 0
+        cache_write_tokens:
+          type: integer
+          title: Cache Write Tokens
+          default: 0
+        uncached_input_tokens:
+          type: integer
+          title: Uncached Input Tokens
+          default: 0
+        cache_hit_ratio:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cache Hit Ratio
       type: object
       title: GatewayTokenUsage
-      description: Token usage totals.
+      description: 'Token usage totals, split by direction and by cache participation.
+
+
+        ``input_tokens`` / ``output_tokens`` are the product-facing names for the
+
+        provider wire names ``prompt_tokens`` / ``completion_tokens``; both pairs
+
+        are always populated and always agree, because the flow-execution endpoint
+
+        already spoke the input/output names and clients should not have to know
+
+        which endpoint they are reading. Callers construct with either pair.
+
+
+        The cache fields describe the input side only. ``cache_read_tokens`` is
+
+        input served from a prompt cache, ``cache_write_tokens`` is input written
+
+        into one, and ``uncached_input_tokens`` is the remainder the provider had
+
+        to read afresh (see ``uncached_input_tokens`` in
+
+        ``preloop.services.cache_accounting``), counted over the requests whose
+
+        provider actually reported a cache split. ``cache_hit_ratio`` is ``None``
+
+        when no request in the aggregate reported one: unknown, never "0% hit".'
     GatewayToolUsageByAgent:
       properties:
         runtime_principal_type:
@@ -14900,6 +14972,22 @@ components:
         total_tokens:
           type: integer
           title: Total Tokens
+          default: 0
+        input_tokens:
+          type: integer
+          title: Input Tokens
+          default: 0
+        output_tokens:
+          type: integer
+          title: Output Tokens
+          default: 0
+        cache_read_tokens:
+          type: integer
+          title: Cache Read Tokens
+          default: 0
+        cache_write_tokens:
+          type: integer
+          title: Cache Write Tokens
           default: 0
       type: object
       required:
@@ -15449,7 +15537,7 @@ components:
           description: Description for the Pull/Merge Request
         verification:
           anyOf:
-          - $ref: '#/components/schemas/VerificationPolicy'
+          - $ref: '#/components/schemas/VerificationPolicy-Input'
           - type: 'null'
           description: 'Publication gate policy: required checks a commit must pass
             before the flow pushes it or opens a pull request'
@@ -15526,7 +15614,7 @@ components:
           description: Description for the Pull/Merge Request
         verification:
           anyOf:
-          - $ref: '#/components/schemas/VerificationPolicy'
+          - $ref: '#/components/schemas/VerificationPolicy-Output'
           - type: 'null'
           description: 'Publication gate policy: required checks a commit must pass
             before the flow pushes it or opens a pull request'
@@ -17296,6 +17384,8 @@ components:
           type: integer
           title: Failed Requests
           default: 0
+        token_usage:
+          $ref: '#/components/schemas/GatewayTokenUsage'
         estimated_cost:
           type: number
           title: Estimated Cost
@@ -22416,7 +22506,7 @@ components:
       - reason
       title: VerificationCommand
       description: 'One required check: a shell command plus why it exists.'
-    VerificationPolicy:
+    VerificationPolicy-Input:
       properties:
         mode:
           type: string
@@ -22426,7 +22516,7 @@ components:
           title: Mode
           default: gate
         profile:
-          $ref: '#/components/schemas/VerificationProfile'
+          $ref: '#/components/schemas/VerificationProfile-Input'
           description: Versioned trusted test profile driving required checks
         gate_budget_seconds:
           type: integer
@@ -22450,7 +22540,85 @@ components:
         leave the workspace. There is no draft-publication exception: unverified
 
         work stays unpushed.'
-    VerificationProfile:
+    VerificationPolicy-Output:
+      properties:
+        mode:
+          type: string
+          enum:
+          - 'off'
+          - gate
+          title: Mode
+          default: gate
+        profile:
+          $ref: '#/components/schemas/VerificationProfile-Output'
+          description: Versioned trusted test profile driving required checks
+        gate_budget_seconds:
+          type: integer
+          maximum: 14400.0
+          minimum: 30.0
+          title: Gate Budget Seconds
+          description: Wall-clock budget for the whole verification run; a check that
+            cannot start inside it is blocked, not failed
+          default: 3600
+      type: object
+      required:
+      - profile
+      title: VerificationPolicy
+      description: 'Publication gate policy inside ``git_clone_config`` (issue #428).
+
+
+        ``mode: "gate"`` requires the runner-controlled verifier to allow
+
+        publication (push / pull-request creation) before the agent''s commits
+
+        leave the workspace. There is no draft-publication exception: unverified
+
+        work stays unpushed.'
+    VerificationProfile-Input:
+      properties:
+        version:
+          type: string
+          const: v1
+          title: Version
+          default: v1
+        profile_id:
+          type: string
+          title: Profile Id
+          description: Stable profile name, e.g. 'default'
+        description:
+          type: string
+          title: Description
+          default: ''
+        always:
+          items:
+            $ref: '#/components/schemas/VerificationCommand'
+          type: array
+          title: Always
+        rules:
+          items:
+            $ref: '#/components/schemas/ProfileRule'
+          type: array
+          title: Rules
+        unknown_default:
+          items:
+            $ref: '#/components/schemas/VerificationCommand'
+          type: array
+          title: Unknown Default
+      type: object
+      required:
+      - profile_id
+      title: VerificationProfile
+      description: 'Versioned, trusted set of required checks for a repository.
+
+
+        Ships with the flow configuration, not inside the repository under test.
+
+        Inexpensive ``always`` hooks are required on every change; rules match
+
+        the changed-file diff; ``unknown_default`` covers unknown impact so a
+
+        diff never resolves to an empty required list.'
+    VerificationProfile-Output:
       properties:
         version:
           type: string

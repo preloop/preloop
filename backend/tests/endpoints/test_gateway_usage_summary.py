@@ -1152,3 +1152,98 @@ def test_runtime_session_detail_includes_normalized_tool_activity_for_non_flow_s
         and item["status"] == "success"
         for item in activity_body["items"]
     )
+
+
+def test_gateway_usage_summary_splits_input_output_and_cache(
+    client, db_session, test_user
+):
+    """Every usage aggregate should expose direction and cache splits, not just a total."""
+    runtime_session = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id="split-principal",
+        session_reference="claude-split",
+        runtime_principal_type="claude_code",
+        runtime_principal_id="split-principal",
+        runtime_principal_name="Split Principal",
+        started_at=datetime.now(UTC),
+        last_activity_at=datetime.now(UTC),
+    )
+    db_session.commit()
+    crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/anthropic/v1/messages",
+        method="POST",
+        status_code=200,
+        duration=0.2,
+        user_id=str(test_user.id),
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(runtime_session.id),
+        model_alias="anthropic/claude-sonnet-4",
+        provider_name="anthropic",
+        prompt_tokens=12_100,
+        completion_tokens=3_100,
+        total_tokens=15_200,
+        cache_read_tokens=8_200,
+        cache_creation_tokens=1_000,
+        estimated_cost=0.42,
+    )
+
+    response = client.get("/api/v1/account/gateway-usage/summary")
+
+    assert response.status_code == 200
+    body = response.json()
+    totals = body["token_usage"]
+    assert totals["input_tokens"] == 12_100
+    assert totals["output_tokens"] == 3_100
+    assert totals["prompt_tokens"] == totals["input_tokens"]
+    assert totals["completion_tokens"] == totals["output_tokens"]
+    assert totals["cache_read_tokens"] == 8_200
+    assert totals["cache_write_tokens"] == 1_000
+    # Input totals are cache inclusive, so misses are prompt minus read minus write.
+    assert totals["uncached_input_tokens"] == 2_900
+    assert totals["cache_hit_ratio"] == 0.7387
+
+    by_model = body["usage_by_model"][0]["token_usage"]
+    assert by_model["input_tokens"] == 12_100
+    assert by_model["output_tokens"] == 3_100
+    assert by_model["cache_read_tokens"] == 8_200
+    assert by_model["cache_write_tokens"] == 1_000
+
+    by_session = body["usage_by_session"][0]["token_usage"]
+    assert by_session["input_tokens"] == 12_100
+    assert by_session["output_tokens"] == 3_100
+    assert by_session["cache_read_tokens"] == 8_200
+    assert by_session["cache_write_tokens"] == 1_000
+
+
+def test_gateway_usage_summary_reports_unknown_cache_hit_ratio(
+    client, db_session, test_user
+):
+    """Providers that report no cache fields leave the ratio unknown, not zero."""
+    crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/openai/v1/responses",
+        method="POST",
+        status_code=200,
+        duration=0.1,
+        user_id=str(test_user.id),
+        account_id=str(test_user.account_id),
+        model_alias="openai/gpt-5",
+        provider_name="openai",
+        prompt_tokens=400,
+        completion_tokens=100,
+        total_tokens=500,
+        estimated_cost=0.01,
+    )
+
+    response = client.get("/api/v1/account/gateway-usage/summary")
+
+    assert response.status_code == 200
+    totals = response.json()["token_usage"]
+    assert totals["input_tokens"] == 400
+    assert totals["output_tokens"] == 100
+    assert totals["cache_read_tokens"] == 0
+    assert totals["cache_write_tokens"] == 0
+    assert totals["cache_hit_ratio"] is None

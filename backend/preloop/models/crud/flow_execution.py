@@ -13,6 +13,7 @@ from preloop.models.models.flow_execution import (
     FlowExecution,
 )
 from preloop.models.models.flow import Flow
+from preloop.schemas.gateway_usage import GatewayTokenUsage
 from preloop.models.schemas.flow_execution import (
     FlowExecutionCreate,
     FlowExecutionUpdate,
@@ -575,7 +576,11 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             return []
 
         from sqlalchemy import func, case
-        from preloop.models.crud.api_usage import exclude_replay_usage_condition
+        from preloop.models.crud.api_usage import (
+            cache_split_columns,
+            cache_split_from_row,
+            exclude_replay_usage_condition,
+        )
         from preloop.models.models.api_usage import ApiUsage
         from preloop.services.flow_failure_category import FAILURE_STATUSES
 
@@ -656,6 +661,16 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
                         "estimated_cost"
                     ),
+                    func.coalesce(func.sum(ApiUsage.prompt_tokens), 0).label(
+                        "prompt_tokens"
+                    ),
+                    func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
+                        "completion_tokens"
+                    ),
+                    func.coalesce(func.sum(ApiUsage.total_tokens), 0).label(
+                        "total_tokens"
+                    ),
+                    *cache_split_columns(),
                 )
                 .join(self.model, ApiUsage.flow_execution_id == self.model.id)
                 .filter(
@@ -671,12 +686,26 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 str(row.flow_id): float(row.estimated_cost or 0.0)
                 for row in window_cost
             }
+            # Tokens for the same window as the cost, so the flows list can
+            # lead with volume and price it second.
+            window_token_map = {
+                str(row.flow_id): GatewayTokenUsage.from_row(
+                    {
+                        "prompt_tokens": int(row.prompt_tokens or 0),
+                        "completion_tokens": int(row.completion_tokens or 0),
+                        "total_tokens": int(row.total_tokens or 0),
+                        **cache_split_from_row(row),
+                    }
+                ).model_dump()
+                for row in window_cost
+            }
             for row in window_stats:
                 window_map[str(row.flow_id)] = {
                     "runs": int(row.runs or 0),
                     "failed": int(row.failed or 0),
                     "last_run_at": row.last_run_at,
                     "cost": window_cost_map.get(str(row.flow_id), 0.0),
+                    "token_usage": window_token_map.get(str(row.flow_id)),
                 }
 
         class FlowStatResponse:
@@ -694,6 +723,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 self.failed = window["failed"] if window else 0
                 self.last_run_at = window["last_run_at"] if window else None
                 self.cost = window["cost"] if window else 0.0
+                # None means "no run in this window", not "no tokens".
+                self.token_usage = window.get("token_usage") if window else None
 
         return [FlowStatResponse(row) for row in exec_stats]
 

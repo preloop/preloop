@@ -192,6 +192,9 @@ def read_flows(
                 "runs": int(getattr(stat, "runs", 0) or 0) if stat else 0,
                 "failed": int(getattr(stat, "failed", 0) or 0) if stat else 0,
                 "cost": float(getattr(stat, "cost", 0.0) or 0.0) if stat else 0.0,
+                # Tokens before cost: null when no run fell in the window,
+                # which the list reads as "nothing to state", not as zero.
+                "token_usage": (getattr(stat, "token_usage", None) if stat else None),
                 "last_run_at": last_run_at.isoformat() if last_run_at else None,
             }
 

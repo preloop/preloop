@@ -5,8 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
+from preloop.services.cache_accounting import compute_cache_hit_ratio
 from preloop.utils.agent_kind import (
     AGENT_KIND_SHAPE_ERROR,
     is_valid_agent_kind,
@@ -15,11 +16,78 @@ from preloop.utils.agent_kind import (
 
 
 class GatewayTokenUsage(BaseModel):
-    """Token usage totals."""
+    """Token usage totals, split by direction and by cache participation.
+
+    ``input_tokens`` / ``output_tokens`` are the product-facing names for the
+    provider wire names ``prompt_tokens`` / ``completion_tokens``; both pairs
+    are always populated and always agree, because the flow-execution endpoint
+    already spoke the input/output names and clients should not have to know
+    which endpoint they are reading. Callers construct with either pair.
+
+    The cache fields describe the input side only. ``cache_read_tokens`` is
+    input served from a prompt cache, ``cache_write_tokens`` is input written
+    into one, and ``uncached_input_tokens`` is the remainder the provider had
+    to read afresh (see ``uncached_input_tokens`` in
+    ``preloop.services.cache_accounting``), counted over the requests whose
+    provider actually reported a cache split. ``cache_hit_ratio`` is ``None``
+    when no request in the aggregate reported one: unknown, never "0% hit".
+    """
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    #: Aliases of prompt/completion kept in sync by the validator below.
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    uncached_input_tokens: int = 0
+    cache_hit_ratio: Optional[float] = None
+
+    @model_validator(mode="after")
+    def _mirror_direction_names(self) -> "GatewayTokenUsage":
+        """Keep the wire names and the product names in agreement.
+
+        Whichever pair the caller supplied wins for both, so an aggregate that
+        was built from ``prompt_tokens`` answers ``input_tokens`` too, and the
+        hit ratio is derived once from the shared helper.
+        """
+        if self.prompt_tokens and not self.input_tokens:
+            self.input_tokens = self.prompt_tokens
+        elif self.input_tokens and not self.prompt_tokens:
+            self.prompt_tokens = self.input_tokens
+        if self.completion_tokens and not self.output_tokens:
+            self.output_tokens = self.completion_tokens
+        elif self.output_tokens and not self.completion_tokens:
+            self.completion_tokens = self.output_tokens
+        if self.cache_hit_ratio is None:
+            self.cache_hit_ratio = compute_cache_hit_ratio(
+                cached_tokens=self.cache_read_tokens,
+                uncached_tokens=self.uncached_input_tokens,
+            )
+        return self
+
+    @classmethod
+    def from_row(cls, row: Optional[Any]) -> "GatewayTokenUsage":
+        """Build totals from an aggregate row mapping, tolerating old shapes.
+
+        Args:
+            row: A mapping produced by one of the ``crud_api_usage``
+                aggregates, or ``None`` for "no traffic".
+
+        Returns:
+            The token totals; missing cache keys mean the aggregate does not
+            report a cache split, which surfaces as ``cache_hit_ratio=None``.
+        """
+        row = row or {}
+        return cls(
+            prompt_tokens=int(row.get("prompt_tokens") or 0),
+            completion_tokens=int(row.get("completion_tokens") or 0),
+            total_tokens=int(row.get("total_tokens") or 0),
+            cache_read_tokens=int(row.get("cache_read_tokens") or 0),
+            cache_write_tokens=int(row.get("cache_write_tokens") or 0),
+            uncached_input_tokens=int(row.get("uncached_input_tokens") or 0),
+        )
 
 
 class GatewayBudgetSummary(BaseModel):
@@ -39,6 +107,10 @@ class GatewayUsageByDay(BaseModel):
     request_count: int = 0
     estimated_cost: float = 0.0
     total_tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
 
 class GatewayUsageByModel(BaseModel):
@@ -300,6 +372,10 @@ class ManagedAgentSummary(BaseModel):
     total_requests: int = 0
     successful_requests: int = 0
     failed_requests: int = 0
+    #: Tokens before cost: the agents list leads with volume and prices it
+    #: second, so the registry row carries the same split as every other
+    #: aggregate instead of cost alone.
+    token_usage: GatewayTokenUsage = Field(default_factory=GatewayTokenUsage)
     estimated_cost: float = 0.0
     configured_model_alias: Optional[str] = None
     configured_model_id: Optional[str] = None

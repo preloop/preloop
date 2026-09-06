@@ -106,7 +106,11 @@ def get_execution_totals(
         ``estimated_cost`` is ``None`` when nothing could be priced, which is
         "unknown", not "free".
     """
-    from preloop.models.crud.api_usage import exclude_replay_usage_condition
+    from preloop.models.crud.api_usage import (
+        cache_split_columns,
+        cache_split_from_row,
+        exclude_replay_usage_condition,
+    )
     from preloop.models.models.api_usage import ApiUsage
     from preloop.models.models.flow_execution import FlowExecution
     from preloop.models.models.flow_execution_log import FlowExecutionLog
@@ -188,6 +192,12 @@ def get_execution_totals(
             ApiUsage.flow_execution_id.label("execution_id"),
             func.sum(ApiUsage.estimated_cost).label("estimated_cost"),
             func.count(ApiUsage.id).label("requests"),
+            func.coalesce(func.sum(ApiUsage.prompt_tokens), 0).label("prompt_tokens"),
+            func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
+                "completion_tokens"
+            ),
+            func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
+            *cache_split_columns(),
         )
         .filter(
             ApiUsage.action_type == "model_gateway",
@@ -231,15 +241,25 @@ def get_execution_totals(
                 None if raw_cost is None else round(float(raw_cost), _ROLLUP_DECIMALS)
             )
             has_gateway_usage = True
+            # Tokens before cost on every list, so the row carries the same
+            # in/out/cache split the execution page shows.
+            token_usage = {
+                "prompt_tokens": int(cost_row.prompt_tokens or 0),
+                "completion_tokens": int(cost_row.completion_tokens or 0),
+                "total_tokens": int(cost_row.total_tokens or 0),
+                **cache_split_from_row(cost_row),
+            }
         else:
             stored_cost = row.stored_cost
             estimated_cost = None if stored_cost is None else float(stored_cost)
             has_gateway_usage = False
+            token_usage = None
 
         totals[execution_id] = {
             "tool_calls": tool_calls,
             "estimated_cost": estimated_cost,
             "has_gateway_usage": has_gateway_usage,
+            "token_usage": token_usage,
         }
     return totals
 
@@ -265,6 +285,12 @@ def project_execution_totals(db: Session, executions: List[Any]) -> None:
             continue
         set_committed_value(execution, "tool_calls_count", total["tool_calls"])
         set_committed_value(execution, "estimated_cost", total["estimated_cost"])
+        token_usage = total.get("token_usage")
+        if token_usage:
+            # Plain attribute, like ``models_used``: a read-model projection
+            # the response schema picks up, never an edit to a mapped column.
+            execution.token_usage = token_usage
+            set_committed_value(execution, "total_tokens", token_usage["total_tokens"])
 
 
 class ExecutionMetricsService:

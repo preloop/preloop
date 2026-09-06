@@ -15,6 +15,11 @@ from ..models.api_usage import ApiUsage
 from ..models.managed_agent import ManagedAgent
 from ..models.runtime_session import RuntimeSession
 from ..models.user import User
+from .api_usage import (
+    EMPTY_CACHE_SPLIT,
+    cache_split_columns,
+    cache_split_from_row,
+)
 from .base import CRUDBase
 
 MANAGED_AGENT_ACTIVE_WINDOW = timedelta(minutes=10)
@@ -156,6 +161,7 @@ def _empty_usage_aggregate() -> dict[str, Any]:
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "total_tokens": 0,
+        **EMPTY_CACHE_SPLIT,
         "estimated_cost": 0.0,
         "latest_model_alias": None,
         "latest_provider_name": None,
@@ -243,6 +249,7 @@ def _usage_aggregates_for_principals(
             func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
                 "estimated_cost"
             ),
+            *cache_split_columns(),
         )
         .filter(
             ApiUsage.account_id == account_id,
@@ -271,6 +278,7 @@ def _usage_aggregates_for_principals(
                 "completion_tokens": int(row.completion_tokens or 0),
                 "total_tokens": int(row.total_tokens or 0),
                 "estimated_cost": float(row.estimated_cost or 0.0),
+                **cache_split_from_row(row),
             }
         )
 
@@ -309,6 +317,29 @@ def _usage_aggregates_for_principals(
         results[key]["last_request_at"] = row.last_request_at
 
     return results
+
+
+def _token_usage_from_aggregate(aggregate: dict[str, Any]) -> dict[str, Any]:
+    """Return the token-figure block a managed-agent summary carries.
+
+    The agents list shows tokens before cost, so the registry row needs the
+    same in/out/cache split every other aggregate returns rather than the
+    total alone.
+
+    Args:
+        aggregate: One principal usage aggregate.
+
+    Returns:
+        A mapping accepted by ``GatewayTokenUsage``.
+    """
+    return {
+        "prompt_tokens": aggregate.get("prompt_tokens", 0),
+        "completion_tokens": aggregate.get("completion_tokens", 0),
+        "total_tokens": aggregate.get("total_tokens", 0),
+        "cache_read_tokens": aggregate.get("cache_read_tokens", 0),
+        "cache_write_tokens": aggregate.get("cache_write_tokens", 0),
+        "uncached_input_tokens": aggregate.get("uncached_input_tokens", 0),
+    }
 
 
 def _usage_aggregate_for_principal(
@@ -953,6 +984,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             summary["total_requests"] = aggregate["total_requests"]
             summary["successful_requests"] = aggregate["successful_requests"]
             summary["failed_requests"] = aggregate["failed_requests"]
+            summary["token_usage"] = _token_usage_from_aggregate(aggregate)
             summary["estimated_cost"] = aggregate["estimated_cost"]
             summary["latest_model_alias"] = aggregate["latest_model_alias"]
             summary["latest_provider_name"] = aggregate["latest_provider_name"]
@@ -1052,6 +1084,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         summary["total_requests"] = aggregate["total_requests"]
         summary["successful_requests"] = aggregate["successful_requests"]
         summary["failed_requests"] = aggregate["failed_requests"]
+        summary["token_usage"] = _token_usage_from_aggregate(aggregate)
         summary["estimated_cost"] = aggregate["estimated_cost"]
         summary["latest_model_alias"] = aggregate["latest_model_alias"]
         summary["latest_provider_name"] = aggregate["latest_provider_name"]

@@ -158,11 +158,7 @@ class ModelGatewayUsageService:
             total_requests=totals["request_count"],
             successful_requests=totals["success_count"],
             failed_requests=totals["error_count"],
-            token_usage=GatewayTokenUsage(
-                prompt_tokens=totals["prompt_tokens"],
-                completion_tokens=totals["completion_tokens"],
-                total_tokens=totals["total_tokens"],
-            ),
+            token_usage=GatewayTokenUsage.from_row(totals),
             estimated_cost=totals["estimated_cost"],
             unpriced_requests=totals.get("unpriced_requests", 0),
             unpriced_tokens=totals.get("unpriced_tokens", 0),
@@ -231,11 +227,7 @@ class ModelGatewayUsageService:
             total_requests=totals["request_count"],
             successful_requests=totals["success_count"],
             failed_requests=totals["error_count"],
-            token_usage=GatewayTokenUsage(
-                prompt_tokens=totals["prompt_tokens"],
-                completion_tokens=totals["completion_tokens"],
-                total_tokens=totals["total_tokens"],
-            ),
+            token_usage=GatewayTokenUsage.from_row(totals),
             estimated_cost=totals["estimated_cost"],
             budget=budget,
             usage_by_model=[self._model_row_to_schema(row) for row in usage_by_model],
@@ -243,11 +235,7 @@ class ModelGatewayUsageService:
                 GatewayUsageByExecution(
                     flow_execution_id=row["flow_execution_id"],
                     request_count=row["request_count"],
-                    token_usage=GatewayTokenUsage(
-                        prompt_tokens=row["prompt_tokens"],
-                        completion_tokens=row["completion_tokens"],
-                        total_tokens=row["total_tokens"],
-                    ),
+                    token_usage=GatewayTokenUsage.from_row(row),
                     estimated_cost=row["estimated_cost"],
                     last_request_at=row["last_request_at"],
                 )
@@ -295,11 +283,7 @@ class ModelGatewayUsageService:
             total_requests=totals["request_count"],
             successful_requests=totals["success_count"],
             failed_requests=totals["error_count"],
-            token_usage=GatewayTokenUsage(
-                prompt_tokens=totals["prompt_tokens"],
-                completion_tokens=totals["completion_tokens"],
-                total_tokens=totals["total_tokens"],
-            ),
+            token_usage=GatewayTokenUsage.from_row(totals),
             estimated_cost=totals["estimated_cost"],
             requests_by_day=[GatewayUsageByDay(**row) for row in requests_by_day],
             usage_by_session=[
@@ -354,11 +338,7 @@ class ModelGatewayUsageService:
             total_requests=totals["request_count"],
             successful_requests=totals["success_count"],
             failed_requests=totals["error_count"],
-            token_usage=GatewayTokenUsage(
-                prompt_tokens=totals["prompt_tokens"],
-                completion_tokens=totals["completion_tokens"],
-                total_tokens=totals["total_tokens"],
-            ),
+            token_usage=GatewayTokenUsage.from_row(totals),
             estimated_cost=totals["estimated_cost"],
             requests_by_day=[GatewayUsageByDay(**row) for row in requests_by_day],
             usage_by_model=[self._model_row_to_schema(row) for row in usage_by_model],
@@ -493,11 +473,7 @@ class ModelGatewayUsageService:
             model_alias=row["model_alias"],
             provider_name=row["provider_name"],
             request_count=row["request_count"],
-            token_usage=GatewayTokenUsage(
-                prompt_tokens=row["prompt_tokens"],
-                completion_tokens=row["completion_tokens"],
-                total_tokens=row["total_tokens"],
-            ),
+            token_usage=GatewayTokenUsage.from_row(row),
             estimated_cost=row["estimated_cost"],
             unpriced_request_count=row.get("unpriced_request_count") or 0,
             zero_priced_request_count=row.get("zero_priced_request_count") or 0,
@@ -511,11 +487,7 @@ class ModelGatewayUsageService:
             flow_id=row["flow_id"],
             flow_name=row["flow_name"],
             request_count=row["request_count"],
-            token_usage=GatewayTokenUsage(
-                prompt_tokens=row["prompt_tokens"],
-                completion_tokens=row["completion_tokens"],
-                total_tokens=row["total_tokens"],
-            ),
+            token_usage=GatewayTokenUsage.from_row(row),
             estimated_cost=row["estimated_cost"],
         )
 
@@ -541,11 +513,7 @@ class ModelGatewayUsageService:
             model_alias=row["model_alias"],
             provider_name=row["provider_name"],
             request_count=row["request_count"],
-            token_usage=GatewayTokenUsage(
-                prompt_tokens=row["prompt_tokens"],
-                completion_tokens=row["completion_tokens"],
-                total_tokens=row["total_tokens"],
-            ),
+            token_usage=GatewayTokenUsage.from_row(row),
             estimated_cost=row["estimated_cost"],
             last_request_at=row["last_request_at"],
         )
@@ -576,11 +544,7 @@ class ModelGatewayUsageService:
             api_key_id=item["api_key_id"],
             api_key_name=item["api_key_name"],
             estimated_cost=item["estimated_cost"],
-            token_usage=GatewayTokenUsage(
-                prompt_tokens=item["prompt_tokens"],
-                completion_tokens=item["completion_tokens"],
-                total_tokens=item["total_tokens"],
-            ),
+            token_usage=GatewayTokenUsage.from_row(item),
             excerpt=item["excerpt"],
             meta_data=item["meta_data"],
         )

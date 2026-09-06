@@ -15,6 +15,7 @@ from ..models.flow_execution import FlowExecution
 from ..models.managed_agent import ManagedAgent
 from ..models.runtime_session import RuntimeSession
 from ..models.user import User
+from ...services.cache_accounting import uncached_input_tokens
 from ...utils.jsonb_sanitize import sanitize_for_jsonb
 from .base import CRUDBase
 
@@ -49,6 +50,77 @@ def exclude_replay_usage_condition():
         purpose_expr.is_(None),
         purpose_expr != REPLAY_VALIDATION_PURPOSE,
     )
+
+
+def cache_covered_condition():
+    """Return a filter for rows whose provider reported a cache split.
+
+    A NULL cache column means "the provider said nothing about caching", which
+    is not the same claim as zero cached tokens. Aggregates therefore compute
+    the hit ratio over covered rows only, exactly as the per-session rollup in
+    ``preloop.services.cache_accounting`` does, instead of folding blind rows
+    in as misses.
+
+    Returns:
+        A SQLAlchemy boolean expression suitable for a FILTER clause.
+    """
+    return or_(
+        ApiUsage.cache_read_tokens.isnot(None),
+        ApiUsage.cache_creation_tokens.isnot(None),
+    )
+
+
+def cache_split_columns() -> list:
+    """Return the aggregate columns backing the cache half of token figures.
+
+    Returns:
+        Labelled sums for cache reads, cache writes, and the input tokens of
+        the cache-covered rows (the base the uncached remainder is derived
+        from).
+    """
+    return [
+        func.coalesce(func.sum(ApiUsage.cache_read_tokens), 0).label(
+            "cache_read_tokens"
+        ),
+        func.coalesce(func.sum(ApiUsage.cache_creation_tokens), 0).label(
+            "cache_write_tokens"
+        ),
+        func.coalesce(
+            func.sum(ApiUsage.prompt_tokens).filter(cache_covered_condition()), 0
+        ).label("covered_prompt_tokens"),
+    ]
+
+
+def cache_split_from_row(row: Any) -> Dict[str, int]:
+    """Turn the :func:`cache_split_columns` sums into response keys.
+
+    Args:
+        row: A result row carrying the labels from :func:`cache_split_columns`.
+
+    Returns:
+        ``cache_read_tokens``, ``cache_write_tokens`` and
+        ``uncached_input_tokens`` for one aggregate.
+    """
+    read = int(getattr(row, "cache_read_tokens", 0) or 0)
+    write = int(getattr(row, "cache_write_tokens", 0) or 0)
+    covered = int(getattr(row, "covered_prompt_tokens", 0) or 0)
+    return {
+        "cache_read_tokens": read,
+        "cache_write_tokens": write,
+        "uncached_input_tokens": uncached_input_tokens(
+            prompt_tokens=covered,
+            cache_read_tokens=read,
+            cache_write_tokens=write,
+        ),
+    }
+
+
+#: The cache half of a token figure when there was no traffic at all.
+EMPTY_CACHE_SPLIT: Dict[str, int] = {
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 0,
+    "uncached_input_tokens": 0,
+}
 
 
 # Cap for :meth:`CRUDApiUsage.get_by_ids` so a pathological caller cannot
@@ -874,6 +946,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 ),
                 0,
             ).label("unpriced_tokens"),
+            *cache_split_columns(),
         ).filter(
             ApiUsage.action_type == "model_gateway",
             ApiUsage.account_id == account_id,
@@ -909,6 +982,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 "estimated_cost": 0.0,
                 "unpriced_requests": 0,
                 "unpriced_tokens": 0,
+                **EMPTY_CACHE_SPLIT,
             }
         return {
             "request_count": int(row.request_count or 0),
@@ -920,6 +994,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             "estimated_cost": float(row.estimated_cost or 0.0),
             "unpriced_requests": int(row.unpriced_requests or 0),
             "unpriced_tokens": int(row.unpriced_tokens or 0),
+            **cache_split_from_row(row),
         }
 
     def get_unpriced_model_breakdown(
@@ -1262,6 +1337,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 func.sum(case((ApiUsage.status_code >= 400, 1), else_=0)), 0
             ).label("failed_request_count"),
             func.max(ApiUsage.timestamp).label("last_request_at"),
+            *cache_split_columns(),
         ).filter(
             # Aggregate by model identity; aliases that share ai_model_id still
             # appear as separate groups when model_alias differs (intentional —
@@ -1317,6 +1393,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 "zero_priced_request_count": int(row.zero_priced_request_count or 0),
                 "failed_request_count": int(row.failed_request_count or 0),
                 "last_request_at": row.last_request_at,
+                **cache_split_from_row(row),
             }
             for row in rows
         ]
@@ -1349,6 +1426,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
                     "estimated_cost"
                 ),
+                *cache_split_columns(),
             )
             .outerjoin(Flow, ApiUsage.flow_id == Flow.id)
             .filter(
@@ -1381,6 +1459,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 "completion_tokens": int(row.completion_tokens or 0),
                 "total_tokens": int(row.total_tokens or 0),
                 "estimated_cost": float(row.estimated_cost or 0.0),
+                **cache_split_from_row(row),
             }
             for row in rows
         ]
@@ -1411,6 +1490,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                     "estimated_cost"
                 ),
                 func.max(ApiUsage.timestamp).label("last_request_at"),
+                *cache_split_columns(),
             )
             .filter(
                 ApiUsage.action_type == "model_gateway",
@@ -1436,6 +1516,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 "total_tokens": int(row.total_tokens or 0),
                 "estimated_cost": float(row.estimated_cost or 0.0),
                 "last_request_at": row.last_request_at,
+                **cache_split_from_row(row),
             }
             for row in rows
         ]
@@ -1507,6 +1588,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                     "estimated_cost"
                 ),
                 func.max(ApiUsage.timestamp).label("last_request_at"),
+                *cache_split_columns(),
             )
             .outerjoin(Flow, ApiUsage.flow_id == Flow.id)
             .outerjoin(FlowExecution, ApiUsage.flow_execution_id == FlowExecution.id)
@@ -1587,6 +1669,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 "total_tokens": int(row.total_tokens or 0),
                 "estimated_cost": float(row.estimated_cost or 0.0),
                 "last_request_at": row.last_request_at,
+                **cache_split_from_row(row),
             }
             for row in rows
         ]
@@ -1669,9 +1752,14 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             bucket.label("bucket"),
             func.count(ApiUsage.id).label("request_count"),
             func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
+            func.coalesce(func.sum(ApiUsage.prompt_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
+                "output_tokens"
+            ),
             func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
                 "estimated_cost"
             ),
+            *cache_split_columns(),
         ).filter(
             ApiUsage.action_type == "model_gateway",
             ApiUsage.account_id == account_id,
@@ -1694,6 +1782,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 "date": row.bucket.date().isoformat(),
                 "request_count": int(row.request_count or 0),
                 "total_tokens": int(row.total_tokens or 0),
+                "input_tokens": int(row.input_tokens or 0),
+                "output_tokens": int(row.output_tokens or 0),
+                "cache_read_tokens": int(row.cache_read_tokens or 0),
+                "cache_write_tokens": int(row.cache_write_tokens or 0),
                 "estimated_cost": float(row.estimated_cost or 0.0),
             }
             for row in rows
@@ -1839,6 +1931,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 func.coalesce(
                     func.sum(ApiUsage.completion_tokens).filter(unpriced_condition), 0
                 ).label("unpriced_completion_tokens"),
+                *cache_split_columns(),
             )
             .filter(
                 ApiUsage.action_type == "model_gateway",
@@ -1854,6 +1947,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                     "total_tokens": 0,
                     "input_tokens": 0,
                     "output_tokens": 0,
+                    **EMPTY_CACHE_SPLIT,
                 },
                 "estimated_cost": 0.0,
                 "has_pricing": False,
@@ -1873,6 +1967,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 "total_tokens": int(row.total_tokens or 0),
                 "input_tokens": int(row.prompt_tokens or 0),
                 "output_tokens": int(row.completion_tokens or 0),
+                **cache_split_from_row(row),
             },
             "estimated_cost": (
                 round(float(raw_cost), 6) if raw_cost is not None else None
