@@ -73,7 +73,7 @@ def get_approval_request(
     request_id: uuid.UUID,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
-) -> ApprovalRequest:
+) -> ApprovalRequestResponse:
     """Get an approval request by ID.
 
     Args:
@@ -98,7 +98,7 @@ def get_approval_request(
     # Track who opened the request (one timeline entry per viewer).
     _record_viewed_event(db, approval_request, current_user.id)
 
-    return approval_request
+    return ApprovalRequestResponse.model_validate(approval_request)
 
 
 @router.get("/{request_id}/history", response_model=list[ApprovalEventResponse])
@@ -171,7 +171,7 @@ def list_approval_requests(
     skip: int = Query(0, description="Number of results to skip"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
-) -> list[ApprovalRequest]:
+) -> list[ApprovalRequestResponse]:
     """List approval requests for the current account.
 
     Args:
@@ -185,7 +185,7 @@ def list_approval_requests(
         List of approval requests
     """
     # Use CRUD layer to get approval requests with filters
-    return crud_approval_request.get_multi_by_account(
+    rows = crud_approval_request.get_multi_by_account(
         db,
         account_id=current_user.account_id,
         execution_id=execution_id,
@@ -193,6 +193,7 @@ def list_approval_requests(
         skip=skip,
         limit=limit,
     )
+    return [ApprovalRequestResponse.model_validate(row) for row in rows]
 
 
 @router.post("/{request_id}/approve", response_model=ApprovalRequestResponse)
