@@ -2671,8 +2671,8 @@ defaults:
               <span class="version-date">
                 ${this.formatVersionDate(version.created_at)}
                 ${
-                  version.created_by_username
-                    ? ` by ${version.created_by_username}`
+                  version.created_by_user_id
+                    ? ` by ${version.created_by_user_id}`
                     : ''
                 }
               </span>

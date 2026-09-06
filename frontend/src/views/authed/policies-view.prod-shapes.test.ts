@@ -198,6 +198,7 @@ describe('Policies page against real API shapes', () => {
       '.version-header'
     ) as HTMLElement;
     expect(header, 'no version row rendered').to.exist;
+    expect(header.textContent?.replace(/\s+/g, ' ')).to.contain('by user-9');
     header.click();
     await m.element.updateComplete;
 

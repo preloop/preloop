@@ -131,7 +131,7 @@ describe('PoliciesView', () => {
               tag: null,
               description: 'Initial snapshot',
               created_at: '2026-06-01T10:00:00Z',
-              created_by_username: 'alice',
+              created_by_user_id: '9f1d0f2e-0000-4000-8000-000000000009',
               is_active: true,
               snapshot_summary: {
                 mcp_servers_count: 0,
@@ -1139,7 +1139,7 @@ describe('PoliciesView', () => {
       tag: null,
       description: 'Older',
       created_at: '2026-05-01T10:00:00Z',
-      created_by_username: 'alice',
+      created_by_user_id: '9f1d0f2e-0000-4000-8000-000000000009',
       is_active: false,
       snapshot_summary: {
         mcp_servers_count: 0,

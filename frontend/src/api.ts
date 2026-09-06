@@ -3957,7 +3957,8 @@ export interface PolicyVersion {
   description: string | null;
   /** Null when the payload omits it, so the row can leave the date out. */
   created_at: string | null;
-  created_by_username: string | null;
+  /** UUID from PolicyVersionMetadata.created_by_user_id; null if omitted. */
+  created_by_user_id: string | null;
   is_active: boolean;
   snapshot_summary: PolicyVersionSummary;
 }
@@ -4006,7 +4007,7 @@ export function normalizePolicyVersions(payload: unknown): PolicyVersion[] {
           tag: asNullableString(row.tag),
           description: asNullableString(row.description),
           created_at: asNullableString(row.created_at),
-          created_by_username: asNullableString(row.created_by_username),
+          created_by_user_id: asNullableString(row.created_by_user_id),
           is_active: Boolean(row.is_active),
           snapshot_summary: {
             mcp_servers_count: asNumber(

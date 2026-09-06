@@ -88,6 +88,18 @@ describe('policy version and diff shapes', () => {
       expect(version.created_at).to.equal(null);
     });
 
+    it('reads created_by_user_id from the API payload', () => {
+      const [fromApi] = normalizePolicyVersions(PROD_VERSIONS_PAYLOAD);
+      const [omitted] = normalizePolicyVersions([
+        { id: 'v1', version_number: 1 },
+      ]);
+
+      expect(fromApi.created_by_user_id).to.equal(
+        '9f1d0f2e-0000-4000-8000-000000000009'
+      );
+      expect(omitted.created_by_user_id).to.equal(null);
+    });
+
     it('drops a row without an id so keys cannot collide', () => {
       const versions = normalizePolicyVersions([
         { id: 'v1', version_number: 1 },
