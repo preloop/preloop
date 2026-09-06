@@ -82,16 +82,14 @@ def test_register_profiles_can_be_selected_for_lease(
         "completion_protocol": "host_exec",
         "model_identifier": "team-fast",
     }
-    assert (
-        lease_job(
-            db_session,
-            account_id=test_user.account_id,
-            pool="native-registration",
-            execution_id=execution.id,
-            payload={**payload, "model_identifier": "unknown"},
-        )
-        is None
+    unsupported = lease_job(
+        db_session,
+        account_id=test_user.account_id,
+        pool="native-registration",
+        execution_id=execution.id,
+        payload={**payload, "model_identifier": "unknown"},
     )
+    assert unsupported is None
     leased = lease_job(
         db_session,
         account_id=test_user.account_id,
