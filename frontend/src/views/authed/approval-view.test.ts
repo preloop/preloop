@@ -591,19 +591,29 @@ describe('ApprovalView', () => {
       return element;
     }
 
+    /** The attribution line lives in its own shadow root. */
+    function attributionOf(element: ApprovalView) {
+      const line = element
+        .shadowRoot!.querySelector('.fact-strip')!
+        .querySelector('attribution-line')!;
+      return {
+        links: Array.from(line.shadowRoot!.querySelectorAll('a')),
+        text: line.shadowRoot!.textContent!.replace(/\s+/g, ' ').trim(),
+      };
+    }
+
     it('links the agent and the session, and shortens the ids', async () => {
       const element = await stripOf();
 
       const strip = element.shadowRoot!.querySelector('.fact-strip')!;
-      const links = Array.from(strip.querySelectorAll('a')).map((a) =>
-        a.getAttribute('href')
-      );
-      expect(links).to.include('/console/agents/agent-1');
+      const { links, text: attribution } = attributionOf(element);
+      const hrefs = links.map((a) => a.getAttribute('href'));
+      expect(hrefs).to.include('/console/agents/agent-1');
       // The link keeps the whole session id; only the label is shortened.
-      expect(links).to.include(
+      expect(hrefs).to.include(
         `/console/runtime-sessions?sessionId=${SESSION_UUID}`
       );
-      const sessionLink = Array.from(strip.querySelectorAll('a')).find((a) =>
+      const sessionLink = links.find((a) =>
         a.getAttribute('href')!.includes('runtime-sessions')
       )!;
       expect(sessionLink.textContent!.trim()).to.equal(
@@ -611,7 +621,7 @@ describe('ApprovalView', () => {
       );
 
       const text = strip.textContent!.replace(/\s+/g, ' ');
-      expect(text).to.contain('Claude Code');
+      expect(attribution).to.contain('Claude Code');
       expect(text).to.contain('shell_command');
       // Eight characters of the request id, never the full UUID.
       expect(strip.querySelector('.request-id')!.textContent!.trim()).to.equal(
@@ -619,6 +629,54 @@ describe('ApprovalView', () => {
       );
       expect(text).to.not.contain(REQUEST_UUID);
       expect(strip.querySelector('.copy-id')).to.exist;
+    });
+
+    it('names the agent, key, session and run from the summaries', async () => {
+      const element = await stripOf({
+        managed_agent_name: null,
+        agent: {
+          id: 'agent-9',
+          name: 'Claude Code (laptop)',
+          kind: 'claude_code',
+        },
+        api_key: { id: 'key-9', name: 'claude-code-laptop' },
+        session: { id: SESSION_UUID, subject: 'feature/attribution' },
+        flow_execution: {
+          id: 'exec-9',
+          flow_id: 'flow-9',
+          flow_name: 'Nightly audit',
+        },
+      });
+
+      const { links, text } = attributionOf(element);
+      expect(text).to.contain('Claude Code (laptop)');
+      expect(text).to.contain('claude-code-laptop');
+      expect(text).to.contain('feature/attribution');
+      expect(text).to.contain('Nightly audit');
+      // The generic label is gone: every part is a specific, clickable thing.
+      expect(text).to.not.contain('AI agent');
+      expect(links.map((a) => a.getAttribute('href'))).to.have.members([
+        '/console/agents/agent-9',
+        '/console/settings/api-keys/key-9',
+        `/console/runtime-sessions?sessionId=${SESSION_UUID}`,
+        '/console/flows/executions/exec-9',
+      ]);
+    });
+
+    it('shows only the key when only the key is known', async () => {
+      const element = await stripOf({
+        managed_agent_id: null,
+        managed_agent_name: null,
+        runtime_session_id: null,
+        api_key: { id: 'key-only', name: 'ci-deploy' },
+      });
+
+      const { links, text } = attributionOf(element);
+      expect(text).to.contain('ci-deploy');
+      expect(text).to.not.contain('AI agent');
+      expect(links.map((a) => a.getAttribute('href'))).to.deep.equal([
+        '/console/settings/api-keys/key-only',
+      ]);
     });
 
     it('shows the deadline while pending and drops it once resolved', async () => {
