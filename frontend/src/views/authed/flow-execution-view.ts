@@ -1668,7 +1668,9 @@ export class FlowExecutionView extends LitElement {
    * at the same second are one call recorded twice. Without any of those the
    * fallback is the second it happened plus everything the call measured:
    * two distinct calls that agree on model, status, tokens, cost and
-   * duration inside the same second are not something a run does.
+   * duration inside the same second are not something a run does, unless
+   * they are two audit rows with different `api_usage_id`s: the loop below
+   * treats those as the two calls the gateway recorded.
    */
   private getGatewayCallIdentity(event: FlowGatewayEvent): string {
     const payload = event.payload || {};
@@ -1679,8 +1681,9 @@ export class FlowExecutionView extends LitElement {
       payload.upstream_request_id ||
       payload.request_fingerprint ||
       '';
-    if (correlation) return `${correlation}:${second}`;
+    if (correlation) return `correlated:${correlation}:${second}`;
     return [
+      'fingerprint',
       second,
       payload.model_alias ?? payload.requested_model ?? 'no-model',
       payload.status_code ?? 'no-status',
@@ -2029,7 +2032,9 @@ export class FlowExecutionView extends LitElement {
       }
     }
 
-    const seenGatewayCalls = new Set<string>();
+    // identity -> the `api_usage_id`s already listed under it ('' for a row
+    // that carries none, such as one read off the container stream).
+    const seenGatewayCalls = new Map<string, Set<string>>();
     for (const event of this.gatewayEvents) {
       // The gateway-events endpoint returns every log row of the execution,
       // not only the model calls. The non-call rows are the same rows the
@@ -2039,8 +2044,27 @@ export class FlowExecutionView extends LitElement {
       // and once from its audit row, is one call. Listing it twice made a
       // run look like it called the model four times when it called twice.
       const identity = this.getGatewayCallIdentity(event);
-      if (seenGatewayCalls.has(identity)) continue;
-      seenGatewayCalls.add(identity);
+      const usageId =
+        typeof event.payload?.api_usage_id === 'string'
+          ? event.payload.api_usage_id
+          : '';
+      const listed = seenGatewayCalls.get(identity);
+      if (listed) {
+        // A run that fans out identical prompts inside one second produces
+        // rows the fingerprint cannot tell apart. Two audit rows with
+        // different usage ids are two calls the gateway recorded, so only
+        // the correlated identity, or a row with no usage id of its own,
+        // collapses into what is already there.
+        const twoRecordedCalls =
+          identity.startsWith('fingerprint:') &&
+          usageId !== '' &&
+          !listed.has(usageId) &&
+          [...listed].some((seen) => seen !== '');
+        if (!twoRecordedCalls) continue;
+        listed.add(usageId);
+      } else {
+        seenGatewayCalls.set(identity, new Set([usageId]));
+      }
       items.push({
         kind: 'gateway',
         key: `gateway-${this.getGatewayEventKey(event)}`,

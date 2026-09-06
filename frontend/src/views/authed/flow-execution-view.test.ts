@@ -1094,6 +1094,56 @@ describe('FlowExecutionView', () => {
       ).to.equal(1);
     });
 
+    it('keeps two fanned-out calls apart when only the usage id differs', async () => {
+      // No correlation id anywhere, same second, same numbers: the only
+      // evidence that the gateway recorded two calls is the usage id.
+      const element = await load('exec-1');
+      const original = (element as any).gatewayEvents[0];
+      const withoutCorrelation = {
+        ...original,
+        payload: { ...original.payload, upstream_request_id: undefined },
+      };
+      (element as any).gatewayEvents = [
+        withoutCorrelation,
+        {
+          ...withoutCorrelation,
+          id: 'evt-fanout',
+          payload: { ...withoutCorrelation.payload, api_usage_id: 'usage-9' },
+        },
+      ];
+      await element.updateComplete;
+
+      expect(
+        element.shadowRoot!.querySelectorAll(
+          '.timeline-stream preloop-gateway-event'
+        ).length
+      ).to.equal(2);
+    });
+
+    it('still collapses a stream row onto the audit row without a usage id', async () => {
+      const element = await load('exec-1');
+      const original = (element as any).gatewayEvents[0];
+      const audit = {
+        ...original,
+        payload: { ...original.payload, upstream_request_id: undefined },
+      };
+      (element as any).gatewayEvents = [
+        audit,
+        {
+          ...audit,
+          id: 'evt-stream',
+          payload: { ...audit.payload, api_usage_id: undefined },
+        },
+      ];
+      await element.updateComplete;
+
+      expect(
+        element.shadowRoot!.querySelectorAll(
+          '.timeline-stream preloop-gateway-event'
+        ).length
+      ).to.equal(1);
+    });
+
     it('keeps two genuinely different model calls apart', async () => {
       const element = await load('exec-1');
       const original = (element as any).gatewayEvents[0];
