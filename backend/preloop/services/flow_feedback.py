@@ -78,12 +78,11 @@ def register_thread(
             else uuid.uuid4()
         )
     except (ValueError, TypeError, AttributeError):
-        tracker_uuid = None
-        session_thread_id = None
+        logger.warning("Cannot bind feedback: tracker or session id is not a UUID")
+        return
     if (
         not repository_id
         or tracker_uuid is None
-        or session_thread_id is None
         or provider not in {"github", "gitlab"}
         or not parts[-1].isdigit()
     ):
