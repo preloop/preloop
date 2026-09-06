@@ -20,6 +20,9 @@ from preloop.models.db.session import get_async_db_session, get_db_session
 from preloop.models.models import ApprovalRequest
 from preloop.models.models.user import User
 from preloop.models.schemas.approval_request import (
+    ApprovalBatchDecision,
+    ApprovalBatchItemResult,
+    ApprovalBatchResponse,
     ApprovalRequestResponse,
     ApprovalDecision,
     ApprovalEventResponse,
@@ -427,3 +430,118 @@ async def decide_request(
         return ApprovalRequestResponse.model_validate(
             await attributed_async(async_db, updated)
         )
+
+
+@router.post("/decide-batch", response_model=ApprovalBatchResponse)
+@require_permission("decide_approvals")
+async def decide_requests_batch(
+    decision: ApprovalBatchDecision,
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+    # Required by @require_permission (fail-closed checks kwargs["db"]).
+    # Handler body uses get_async_db_session() for ApprovalService work.
+    db: Session = Depends(get_db_session),
+) -> ApprovalBatchResponse:
+    """Approve or decline several requests with one decision.
+
+    An operator clearing an inbox picks the rows first and decides once. Doing
+    that as N round trips means N approvals racing for the same expiry window
+    and N chances for the page to lose track of which ones landed, so the
+    console sends the whole selection here.
+
+    The batch never fails as a whole: each request is decided on its own and
+    reported on its own, so an id that expired while the operator was reading
+    costs that row and nothing else.
+
+    Args:
+        decision: The ids to decide, the decision, and an optional comment
+        request: HTTP request
+        current_user: Current authenticated user
+        db: Injected for the permission check
+
+    Returns:
+        One result per requested id, in the order they were sent
+    """
+    _ = db  # Injected for @require_permission; not used by handler body.
+    base_url = os.getenv("PRELOOP_URL", str(request.base_url).rstrip("/"))
+
+    results: list[ApprovalBatchItemResult] = []
+    async with get_async_db_session() as async_db:
+        approval_service = ApprovalService(async_db, base_url)
+
+        # Sequential on purpose. Each decision writes the request, appends
+        # timeline events and broadcasts, and several of those running at once
+        # against one session is how a batch turns into a deadlock.
+        for request_id in decision.unique_ids:
+            approval_request = await approval_service.get_approval_request(request_id)
+            if not approval_request:
+                results.append(
+                    ApprovalBatchItemResult(
+                        id=request_id, ok=False, error="Approval request not found"
+                    )
+                )
+                continue
+            if approval_request.account_id != current_user.account_id:
+                # Same message as "not found" on purpose: a caller must not be
+                # able to probe another account's request ids.
+                results.append(
+                    ApprovalBatchItemResult(
+                        id=request_id, ok=False, error="Approval request not found"
+                    )
+                )
+                continue
+            if approval_request.status != "pending":
+                results.append(
+                    ApprovalBatchItemResult(
+                        id=request_id,
+                        ok=False,
+                        status=approval_request.status,
+                        error=f"Request already {approval_request.status}",
+                    )
+                )
+                continue
+
+            try:
+                if decision.approved:
+                    updated = await approval_service.approve_request(
+                        request_id,
+                        decision.comment,
+                        user_id=current_user.id,
+                        channel=AUTHENTICATED_DECISION_CHANNEL,
+                    )
+                else:
+                    updated = await approval_service.decline_request(
+                        request_id,
+                        decision.comment,
+                        user_id=current_user.id,
+                        channel=AUTHENTICATED_DECISION_CHANNEL,
+                    )
+            except Exception as error:  # noqa: BLE001 - one bad id, not the batch
+                logger.warning(
+                    "Batch decision failed for approval %s: %s",
+                    request_id,
+                    error,
+                    exc_info=True,
+                )
+                results.append(
+                    ApprovalBatchItemResult(
+                        id=request_id, ok=False, error="Failed to process decision"
+                    )
+                )
+                continue
+
+            if not updated:
+                results.append(
+                    ApprovalBatchItemResult(
+                        id=request_id, ok=False, error="Failed to process decision"
+                    )
+                )
+                continue
+
+            results.append(
+                ApprovalBatchItemResult(
+                    id=request_id, ok=True, status=getattr(updated, "status", None)
+                )
+            )
+
+    return ApprovalBatchResponse(results=results)
