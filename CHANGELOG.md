@@ -30,7 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requested through the builtin `request_approval` tool's optional
   `publication_candidates` (exact `repository_url`, `branch`, `base`,
   `head_sha` tuples). Context text is not authority. Ordinary callers that
-  omit the parameter are unchanged. Guide:
+  omit the parameter are unchanged. Managed execution and agent API keys
+  cannot approve, decline, decide, or batch-decide a publication-authority
+  request; human console/JWT and token-link decisions are unchanged. Guide:
   `docs/guide/flows/product-evidence.md`.
 
 

@@ -16,6 +16,7 @@ from preloop.services.approval_attribution import (
     attributed_async,
 )
 from preloop.services.approval_service import ApprovalService
+from preloop.services.product_provenance import confers_publication_authority
 from preloop.models.crud import crud_approval_event, crud_approval_request
 from preloop.models.db.session import get_async_db_session, get_db_session
 from preloop.models.models import ApprovalRequest
@@ -40,6 +41,41 @@ logger = logging.getLogger(__name__)
 #: Channel label recorded on the timeline for decisions made through the
 #: authenticated API (web console and mobile app sessions).
 AUTHENTICATED_DECISION_CHANNEL = "console"
+
+
+def _managed_execution_credential(current_user: User) -> bool:
+    """True when this principal authenticated with a managed execution key.
+
+    Reads the API key attached by JWT/API-key auth, not agent-supplied
+    body fields. JWT console sessions have no ``_auth_api_key``. Personal
+    keys without ``flow_execution_id`` or ``managed_agent_id`` are not
+    managed execution credentials. Non-dict ``context_data`` is ignored
+    so mocked users without a real key stay allowed.
+    """
+    api_key = getattr(current_user, "_auth_api_key", None)
+    if api_key is None:
+        return False
+    context = api_key.context_data if isinstance(api_key.context_data, dict) else {}
+    return bool(context.get("flow_execution_id") or context.get("managed_agent_id"))
+
+
+def _reject_managed_publication_decision(
+    current_user: User, approval_request: ApprovalRequest
+) -> None:
+    """Deny managed execution/agent credentials a publication-authority vote.
+
+    Runs before ApprovalService so a blocked call leaves pending state
+    and votes unchanged. Canonical ``action=isolated_publication`` and
+    legacy ``publish`` / ``isolated_publication`` tool or action names
+    are in scope. Ordinary unrelated approvals are not. This layer does
+    not import security_maintenance; that guard stays on the maintenance
+    clone and both must remain after merge.
+    """
+    if not confers_publication_authority(approval_request):
+        return
+    if not _managed_execution_credential(current_user):
+        return
+    raise HTTPException(status_code=403, detail="managed_credential_cannot_decide")
 
 
 async def _async_db_session() -> AsyncGenerator[AsyncSession, None]:
@@ -296,6 +332,8 @@ async def approve_request(
                 detail=f"Request already {approval_request.status}",
             )
 
+        _reject_managed_publication_decision(current_user, approval_request)
+
         # Approve (pass user_id for quorum tracking)
         updated = await approval_service.approve_request(
             request_id,
@@ -364,6 +402,8 @@ async def decline_request(
                 status_code=400,
                 detail=f"Request already {approval_request.status}",
             )
+
+        _reject_managed_publication_decision(current_user, approval_request)
 
         # Decline (pass user_id for quorum tracking)
         updated = await approval_service.decline_request(
@@ -436,6 +476,8 @@ async def decide_request(
                 status_code=400,
                 detail=f"Request already {approval_request.status}",
             )
+
+        _reject_managed_publication_decision(current_user, approval_request)
 
         # Approve or decline based on decision (pass user_id for quorum tracking)
         if decision.approved:
@@ -536,6 +578,14 @@ async def decide_requests_batch(
                     status=approval_request.status,
                     error=f"Request already {approval_request.status}",
                 )
+            )
+            continue
+        try:
+            _reject_managed_publication_decision(current_user, approval_request)
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+            results.append(
+                ApprovalBatchItemResult(id=request_id, ok=False, error=detail)
             )
             continue
         # A past-deadline row is not pre-checked here. Expiry belongs to

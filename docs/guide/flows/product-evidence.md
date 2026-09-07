@@ -187,7 +187,9 @@ error and do not create a row.
 **Human workflow:** a reviewer opens the pending request in the console
 (`/console/approval/<id>`) or the in-session notice, confirms the listed
 destinations and frozen SHAs, and approves through the ordinary
-approval surface. Auto-approved and AI-decided rows still cannot
+approval surface. Managed execution and agent API keys cannot decide a
+publication-authority request (canonical `isolated_publication` and
+legacy `publish` forms). Auto-approved and AI-decided rows still cannot
 satisfy publication. After approval, isolated publication compares the
 saved tuples to the candidates about to be minted; a modified SHA, a
 swapped pairing, a source-base tuple, or a row from another execution

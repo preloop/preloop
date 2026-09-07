@@ -733,6 +733,34 @@ def _approved_candidate_keys(args: Mapping[str, Any]) -> set[tuple[str, str, str
     return keys
 
 
+PUBLICATION_DECISION_ACTIONS = frozenset({"isolated_publication", "publish"})
+
+
+def publication_decision_action(record: Any) -> str:
+    """Action name used to match a publication approval row.
+
+    ``tool_args.action`` wins when present; otherwise ``tool_name``. Mint
+    enforcement uses the same name, so HTTP origin guards stay aligned
+    with ``authorize_publication_decision``.
+    """
+    args = getattr(record, "tool_args", None)
+    if not isinstance(args, Mapping):
+        args = {}
+    return str(args.get("action") or getattr(record, "tool_name", "") or "").strip()
+
+
+def confers_publication_authority(record: Any) -> bool:
+    """True when deciding this row could satisfy a publication human gate.
+
+    Canonical supported rows are ``request_approval`` with
+    ``action=isolated_publication``. Legacy recognized forms used
+    ``tool_name`` or ``action`` of ``isolated_publication`` or ``publish``.
+    Ordinary ``request_approval`` without those actions does not confer
+    publication authority.
+    """
+    return publication_decision_action(record) in PUBLICATION_DECISION_ACTIONS
+
+
 def authorize_publication_decision(
     records: Sequence[Any],
     *,
@@ -788,10 +816,8 @@ def authorize_publication_decision(
         args = getattr(record, "tool_args", None)
         if not isinstance(args, Mapping):
             continue
-        named = str(
-            args.get("action") or getattr(record, "tool_name", "") or ""
-        ).strip()
-        if named not in {action, "publish", "isolated_publication"}:
+        named = publication_decision_action(record)
+        if named not in {action, *PUBLICATION_DECISION_ACTIONS}:
             continue
         approved = _approved_candidate_keys(args)
         if wanted <= approved:

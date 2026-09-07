@@ -189,6 +189,7 @@ class TestGetCurrentUser:
                 result = jwt_module.get_current_user(api_key, db=mock_session)
 
                 assert result == mock_user
+                assert result._auth_api_key is mock_api_key
 
     def test_get_current_user_api_key_expired(self, mock_user):
         """Test failure when API key is expired."""

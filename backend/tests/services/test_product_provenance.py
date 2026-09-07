@@ -20,6 +20,7 @@ from preloop.services.product_provenance import (
     RuntimeProvenanceFacts,
     UnauthorizedProductMappingError,
     authorize_publication_decision,
+    confers_publication_authority,
     enforce_saved_publication_approval,
     extract_product_provenance_payload,
     publication_approval_allows,
@@ -215,6 +216,41 @@ def _approval(*candidates: dict[str, str], **overrides: object) -> object:
     )
     body.update(overrides)
     return SimpleNamespace(**body)
+
+
+def test_confers_publication_authority_matches_canonical_and_legacy_forms() -> None:
+    from types import SimpleNamespace
+
+    assert confers_publication_authority(
+        SimpleNamespace(
+            tool_name="request_approval",
+            tool_args={"action": "isolated_publication"},
+        )
+    )
+    assert confers_publication_authority(
+        SimpleNamespace(tool_name="request_approval", tool_args={"action": "publish"})
+    )
+    assert confers_publication_authority(
+        SimpleNamespace(tool_name="isolated_publication", tool_args={})
+    )
+    assert confers_publication_authority(
+        SimpleNamespace(tool_name="publish", tool_args={"command": "ignored"})
+    )
+    assert not confers_publication_authority(
+        SimpleNamespace(tool_name="request_approval", tool_args={})
+    )
+    assert not confers_publication_authority(
+        SimpleNamespace(
+            tool_name="request_approval",
+            tool_args={"operation": "ordinary ask", "context": "no scope"},
+        )
+    )
+    assert not confers_publication_authority(
+        SimpleNamespace(tool_name="shell_command", tool_args={"command": "echo"})
+    )
+    assert not confers_publication_authority(
+        SimpleNamespace(tool_name="security_maintenance", tool_args={})
+    )
 
 
 def test_expired_and_unrelated_approvals_do_not_authorize() -> None:
