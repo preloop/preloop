@@ -880,6 +880,104 @@ def test_swapped_sbom_content_rejected_despite_same_verdict(
         )
 
 
+def test_rejected_decision_rejected_despite_same_envelope(
+    tmp_path: Path, duediligence_result: dict[str, Any]
+) -> None:
+    packed = clone(duediligence_result)
+    packed["decision"] = dict(packed["decision"])
+    packed["decision"]["outcome"] = "rejected"
+    archive = _make_evidence_archive(packed)
+
+    def opener(request: object, timeout: int = 0) -> _FakeResponse:
+        url = _request_url(request)
+        if url.endswith("/evidence-status"):
+            raise _http_error(url, 404)
+        return _FakeResponse(archive, headers={"content-type": "application/gzip"})
+
+    with pytest.raises(CraCIError, match="content|inconsistent|rejected"):
+        fetch_evidence(
+            "https://preloop.example.com",
+            "token",
+            "exec-1",
+            tmp_path / "evidence.tar.gz",
+            opener=opener,
+            max_retries=1,
+            api_result=duediligence_result,
+        )
+
+
+def test_gate_waiver_and_gap_mutations_rejected(
+    tmp_path: Path, releaseaudit_result: dict[str, Any]
+) -> None:
+    gate = clone(releaseaudit_result)
+    gate["vuln_scan"] = dict(gate["vuln_scan"])
+    gate["vuln_scan"]["gate"] = dict(gate["vuln_scan"]["gate"])
+    gate["vuln_scan"]["gate"]["passed"] = False
+    waived = clone(releaseaudit_result)
+    waived["vuln_scan"] = dict(waived["vuln_scan"])
+    waived["vuln_scan"]["gate"] = dict(waived["vuln_scan"]["gate"])
+    waived["vuln_scan"]["gate"]["waivers_applied"] = [
+        {
+            "id": "CVE-2024-0001",
+            "reason": "invented",
+            "author": "agent@example.com",
+            "date": "2026-08-20",
+        }
+    ]
+    gapped = clone(releaseaudit_result)
+    gapped["gap_register"] = {"items": [], "history_rows": []}
+
+    for packed in (gate, waived, gapped):
+        archive = _make_evidence_archive(packed)
+
+        def opener(
+            request: object, timeout: int = 0, body: bytes = archive
+        ) -> _FakeResponse:
+            url = _request_url(request)
+            if url.endswith("/evidence-status"):
+                raise _http_error(url, 404)
+            return _FakeResponse(body, headers={"content-type": "application/gzip"})
+
+        with pytest.raises(CraCIError, match="content|inconsistent|rejected"):
+            fetch_evidence(
+                "https://preloop.example.com",
+                "token",
+                "exec-1",
+                tmp_path / "evidence.tar.gz",
+                opener=opener,
+                max_retries=1,
+                api_result=releaseaudit_result,
+            )
+
+
+def test_controller_annotations_allowed_when_agent_json_matches(
+    tmp_path: Path, sbomaudit_result: dict[str, Any]
+) -> None:
+    archive = _make_evidence_archive(sbomaudit_result)
+    api = clone(sbomaudit_result)
+    api["trusted_publication"] = {"url": "https://example.com/pr/1"}
+    api["verification"] = {"status": "passed", "source": "sandbox_log"}
+    api["dossier"] = {"id": "dossier-1"}
+    api["provenance"] = {"controller": True}
+
+    def opener(request: object, timeout: int = 0) -> _FakeResponse:
+        url = _request_url(request)
+        if url.endswith("/evidence-status"):
+            raise _http_error(url, 404)
+        return _FakeResponse(archive, headers={"content-type": "application/gzip"})
+
+    dest = fetch_evidence(
+        "https://preloop.example.com",
+        "token",
+        "exec-1",
+        tmp_path / "evidence.tar.gz",
+        opener=opener,
+        max_retries=1,
+        api_result=api,
+    )
+    assert dest.read_bytes() == archive
+
+
 def test_agent_evidence_annotation_is_not_controller_digest(
     tmp_path: Path, sbomaudit_result: dict[str, Any]
 ) -> None:

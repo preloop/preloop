@@ -2,9 +2,10 @@
 
 Uses ``preloop.services.flow_artifacts`` for gzip/tar validation and
 ``result.json`` extraction. Download acceptance binds the controller
-digest. Packed agent JSON is compared on SBOM/finding content, not only
-schema/verdict/status. Server ``evidence`` annotations on the API result
-are not a substitute for that digest.
+digest. Packed agent JSON is compared in full after stripping only known
+controller-added publication/provenance/dossier/verification metadata.
+Unknown agent fields are not ignored. Server ``evidence`` annotations on
+the API result are not a substitute for the controller digest.
 """
 
 from __future__ import annotations
@@ -26,22 +27,19 @@ EVIDENCE_SHA256_HEADER = "x-preloop-evidence-sha256"
 AVAILABLE_STATUS = "available"
 
 _RESULT_NAMES = frozenset({"result.json", "workspace/result.json"})
-_CONTENT_KEYS = (
-    "findings",
-    "sbom",
-    "source",
-    "source_sbom",
-    "sbom_audit",
-    "vuln_scan",
-    "inventory",
-    "checks",
-    "minimum_elements",
-    "license_flags",
-    "component",
-    "record",
-    "coverage",
-    "art14_candidates",
-    "inputs_declared",
+# Known controller-added keys. Packed agent JSON is compared in full after
+# these are removed from both sides. Unknown agent fields stay bound.
+_CONTROLLER_RESULT_KEYS = frozenset(
+    {
+        "trusted_publication",
+        "_private_publication",
+        "evidence_upload",
+        "verification",
+        "verification_reported",
+        "container_termination",
+        "provenance",
+        "dossier",
+    }
 )
 _VALIDATE_MESSAGES = {
     "artifact_oversized": "evidence archive exceeds size bound",
@@ -216,10 +214,15 @@ def _unwrap_result(obj: Any) -> Optional[Mapping[str, Any]]:
     return obj
 
 
+def _agent_content(obj: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: value for key, value in obj.items() if key not in _CONTROLLER_RESULT_KEYS
+    }
+
+
 def _content_fingerprint(obj: Mapping[str, Any]) -> str:
-    subset = {key: obj.get(key) for key in _CONTENT_KEYS if key in obj}
     encoded = json.dumps(
-        subset, sort_keys=True, default=str, separators=(",", ":")
+        _agent_content(obj), sort_keys=True, default=str, separators=(",", ":")
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -230,8 +233,11 @@ def results_bind_content(
 ) -> None:
     """Bind packed result.json to the persisted result beyond envelope fields.
 
-    Schema/verdict/status/flow must still agree, and SBOM/finding content
-    must fingerprint-match. Controller ``evidence`` annotations are ignored.
+    Schema/verdict/status/flow must still agree. Remaining sanitized agent
+    JSON must fingerprint-match after removing only known controller-added
+    publication/provenance/dossier/verification metadata. Unknown fields
+    are compared, so a packed rejected decision cannot bind to an accepted
+    API result.
     """
     candidate = _unwrap_result(api_result)
     if candidate is None:

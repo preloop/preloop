@@ -577,6 +577,44 @@ class TestDueDiligenceDecision:
         )
         assert not result.ok
 
+    def test_ai_approved_request_cannot_record_accepted(
+        self, duediligence_result: dict[str, Any]
+    ) -> None:
+        payload = clone(duediligence_result)
+        result = validate_cra_result(
+            payload,
+            authority=AUTHORITY_REQUIRED,
+            platform_approvals=[
+                PlatformApproval(
+                    id="11111111-1111-1111-1111-111111111111",
+                    status="approved",
+                    tool_name="request_approval",
+                    operation=payload["decision"]["approval_operation"],
+                    decided_by_ai=True,
+                )
+            ],
+        )
+        assert not result.ok
+
+    def test_auto_approved_request_cannot_record_accepted(
+        self, duediligence_result: dict[str, Any]
+    ) -> None:
+        payload = clone(duediligence_result)
+        result = validate_cra_result(
+            payload,
+            authority=AUTHORITY_REQUIRED,
+            platform_approvals=[
+                PlatformApproval(
+                    id="11111111-1111-1111-1111-111111111111",
+                    status="approved",
+                    tool_name="request_approval",
+                    operation=payload["decision"]["approval_operation"],
+                    auto_approved_reason="bypass",
+                )
+            ],
+        )
+        assert not result.ok
+
     def test_expired_approval_cannot_record_accepted(
         self, duediligence_result: dict[str, Any]
     ) -> None:
@@ -859,10 +897,7 @@ class TestGateWaiverRecompute:
             ],
         )
         assert not result.ok
-        assert any(
-            "ask_user" in item or WAIVE_FINDING_OPERATION in item
-            for item in result.failures
-        )
+        assert any("ask_user" in item for item in result.failures)
 
     def test_request_approval_for_different_finding_cannot_waive(
         self, releaseaudit_result: dict[str, Any]
@@ -1002,7 +1037,7 @@ class TestGateWaiverRecompute:
         )
         assert not result.ok
 
-    def test_canonical_waive_finding_may_waive(
+    def test_canonical_waive_finding_does_not_waive(
         self, releaseaudit_result: dict[str, Any]
     ) -> None:
         waiver = _waiver(approval_id="appr-1")
@@ -1026,11 +1061,101 @@ class TestGateWaiverRecompute:
                         "finding_ids": ["CVE-2024-0001"],
                         "decision": "waive",
                         "reason": waiver["reason"],
+                        "author": waiver["author"],
+                        "date": waiver["date"],
                     },
                 )
             ],
         )
-        assert result.ok, result.failures
+        assert not result.ok
+
+    def test_ai_approved_ask_user_cannot_waive(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        waiver = _waiver(approval_id="appr-1")
+        payload = _release_with_kevs(
+            releaseaudit_result,
+            [_kev_finding()],
+            [waiver],
+            passed=True,
+            unwaived=[],
+        )
+        answer = json.dumps([{"id": waiver["id"], "reason": waiver["reason"]}])
+        result = validate_cra_result(
+            payload,
+            platform_approvals=[
+                PlatformApproval(
+                    id="appr-1",
+                    status="approved",
+                    tool_name="ask_user",
+                    tool_args={
+                        "question": "Which residual risks do you accept?",
+                        "options": [waiver["id"]],
+                    },
+                    tool_result={
+                        "answer": answer,
+                        "answered_by": waiver["author"],
+                        "answered_at": f"{waiver['date']}T12:00:00Z",
+                    },
+                    responses=[
+                        {
+                            "user_id": waiver["author"],
+                            "decision": "approved",
+                            "comment": answer,
+                            "timestamp": f"{waiver['date']}T12:00:00Z",
+                        }
+                    ],
+                    approver_comment=answer,
+                    resolved_at=f"{waiver['date']}T12:00:00Z",
+                    decided_by_ai=True,
+                )
+            ],
+        )
+        assert not result.ok
+
+    def test_auto_approved_ask_user_cannot_waive(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        waiver = _waiver(approval_id="appr-1")
+        payload = _release_with_kevs(
+            releaseaudit_result,
+            [_kev_finding()],
+            [waiver],
+            passed=True,
+            unwaived=[],
+        )
+        answer = json.dumps([{"id": waiver["id"], "reason": waiver["reason"]}])
+        result = validate_cra_result(
+            payload,
+            platform_approvals=[
+                PlatformApproval(
+                    id="appr-1",
+                    status="approved",
+                    tool_name="ask_user",
+                    tool_args={
+                        "question": "Which residual risks do you accept?",
+                        "options": [waiver["id"]],
+                    },
+                    tool_result={
+                        "answer": answer,
+                        "answered_by": waiver["author"],
+                        "answered_at": f"{waiver['date']}T12:00:00Z",
+                    },
+                    responses=[
+                        {
+                            "user_id": waiver["author"],
+                            "decision": "approved",
+                            "comment": answer,
+                            "timestamp": f"{waiver['date']}T12:00:00Z",
+                        }
+                    ],
+                    approver_comment=answer,
+                    resolved_at=f"{waiver['date']}T12:00:00Z",
+                    auto_approved_reason="bypass",
+                )
+            ],
+        )
+        assert not result.ok
 
     def test_ask_user_exact_tool_result_may_waive(
         self, releaseaudit_result: dict[str, Any]

@@ -49,8 +49,6 @@ from preloop.cra.schemas import (
     UNSUPPORTED_ERROR,
     VULNSCAN_REQUIRED,
     VULNSCAN_STATUSES,
-    WAIVE_FINDING_DECISIONS,
-    WAIVE_FINDING_OPERATION,
     expected_cra_schema_from_prompt,
     is_cra_schema_id,
     is_known_cra_result_schema,
@@ -69,7 +67,6 @@ _PASS_OR_FINDINGS = frozenset({"pass", "pass_with_findings"})
 _GAP_STATUSES = frozenset({"gap", "partial"})
 _WAIVER_CONTENT_FIELDS = ("id", "reason", "author", "date")
 _WAIVER_METADATA_KEYS = frozenset({"approval_id"})
-_WAIVER_SCOPE_FIELDS = frozenset({"scope", "expiry", "package", "version", "purl"})
 _FINDING_ACCEPT_LINE = re.compile(
     r"^\s*(?P<id>[A-Za-z0-9][A-Za-z0-9._+-]{2,})\s*:\s*(?P<reason>\S.*)$"
 )
@@ -141,6 +138,8 @@ class PlatformApproval:
     responses: Optional[Sequence[Any]] = None
     approver_comment: Optional[str] = None
     resolved_at: Optional[str] = None
+    decided_by_ai: bool = False
+    auto_approved_reason: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -1139,81 +1138,9 @@ def _date_matches(date: str, dates: set[str]) -> bool:
     return any(item.startswith(date) or date.startswith(item[:10]) for item in dates)
 
 
-def _canonical_finding_ids(args: Mapping[str, Any]) -> set[str]:
-    raw = args.get("finding_ids")
-    if isinstance(raw, str):
-        raw = [raw]
-    keys: set[str] = set()
-    if not isinstance(raw, list):
-        return keys
-    for item in raw:
-        if isinstance(item, str):
-            key = normalize_waiver_id(item)
-            if key:
-                keys.add(key)
-    return keys
-
-
-def _waiver_canonical_request_approval_matches(
-    approval: PlatformApproval, entry: Mapping[str, Any]
-) -> bool:
-    """Bind a waiver only to the canonical waive_finding operation.
-
-    Operation/context/reasoning prose is not a waiver decision. Finding ids
-    must be an exact list membership, not a substring.
-    """
-    if approval.tool_name != "request_approval":
-        return False
-    if approval.status != "approved":
-        return False
-    approval_id = str(entry.get("approval_id") or "").strip().lower()
-    if not approval_id or approval.id.strip().lower() != approval_id:
-        return False
-    operation = (approval.operation or "").strip()
-    args = approval.tool_args if isinstance(approval.tool_args, Mapping) else {}
-    if not operation:
-        raw_op = args.get("operation")
-        operation = raw_op.strip() if isinstance(raw_op, str) else ""
-    if operation != WAIVE_FINDING_OPERATION:
-        return False
-    decision = args.get("decision")
-    if decision is not None and not json_in(decision, WAIVE_FINDING_DECISIONS):
-        return False
-    finding = normalize_waiver_id(entry.get("id"))
-    if not finding:
-        return False
-    structured = []
-    for key in ("waiver", "waivers"):
-        structured.extend(_collect_waiver_mappings(args.get(key)))
-    if structured:
-        for candidate in structured:
-            if normalize_waiver_id(candidate.get("id")) != finding:
-                continue
-            field_mismatch = False
-            for key, value in candidate.items():
-                if key in _WAIVER_METADATA_KEYS:
-                    continue
-                if _waiver_field_text(entry.get(key)) != _waiver_field_text(value):
-                    field_mismatch = True
-                    break
-            if field_mismatch:
-                continue
-            if any(
-                key in entry and key not in candidate for key in _WAIVER_SCOPE_FIELDS
-            ):
-                continue
-            return True
-        return False
-    allowed = _canonical_finding_ids(args)
-    if finding not in allowed:
-        return False
-    if any(key in entry for key in _WAIVER_SCOPE_FIELDS):
-        return False
-    reason = args.get("reason")
-    if isinstance(reason, str) and reason.strip():
-        if str(entry.get("reason") or "").strip() != reason.strip():
-            return False
-    return True
+def _human_platform_decision(approval: PlatformApproval) -> bool:
+    """True when the stored row is a human decision, not AI or auto-approval."""
+    return not approval.decided_by_ai and approval.auto_approved_reason is None
 
 
 def _ask_user_waiver_matches(
@@ -1223,6 +1150,8 @@ def _ask_user_waiver_matches(
     if approval.tool_name != "ask_user":
         return False
     if approval.status != "approved":
+        return False
+    if not _human_platform_decision(approval):
         return False
     approval_id = str(entry.get("approval_id") or "").strip().lower()
     if not approval_id or approval.id.strip().lower() != approval_id:
@@ -1266,8 +1195,6 @@ def _waiver_platform_matches(
 ) -> bool:
     if approval.tool_name == "ask_user":
         return _ask_user_waiver_matches(approval, entry)
-    if approval.tool_name == "request_approval":
-        return _waiver_canonical_request_approval_matches(approval, entry)
     return False
 
 
@@ -1283,9 +1210,10 @@ def _enforce_authentic_waivers(
 
     Non-object entries are reported rather than dropped. File waivers must
     match immutable contents exactly (including optional scope fields).
-    Interactive waivers bind stored ``ask_user`` tool_result/responses or a
-    canonical ``waive_finding`` request_approval. Ambiguous approvals do not
-    confer waiver authority.
+    Interactive waivers bind stored ``ask_user`` tool_result/responses.
+    ``request_approval`` rows, including a ``waive_finding`` operation, do
+    not confer waiver authority. Ambiguous approvals do not confer waiver
+    authority.
     """
     failures: list[str] = []
     valid_entries, invalid = validate_waiver_entries(applied)
@@ -1319,8 +1247,7 @@ def _enforce_authentic_waivers(
                 if not matched_approval:
                     failures.append(
                         f"{path} waiver {entry.get('id')!r} approval_id is not "
-                        "a granted ask_user waiver or canonical "
-                        f"{WAIVE_FINDING_OPERATION} approval for this finding"
+                        "a granted ask_user waiver for this finding"
                     )
                     continue
         if delivered_present:
@@ -1339,8 +1266,7 @@ def _enforce_authentic_waivers(
         failures.append(
             f"{path} waiver {entry.get('id')!r} is agent-asserted and "
             "does not match delivered waiver input or an authentic "
-            "ask_user / waive_finding approval; authentic human approval "
-            "is required"
+            "ask_user approval; authentic human approval is required"
         )
     return failures, authentic
 
@@ -1600,12 +1526,15 @@ def _due_diligence_approval_matches(
 
     ``ask_user`` answers are not component-risk approvals. Missing
     ``tool_args.operation`` cannot authorize an unrelated granted row.
+    AI-judged and auto-approved rows cannot record a human decision.
     """
     expected_status = "approved" if outcome == "accepted" else "declined"
     for approval in approvals:
         if approval.tool_name != "request_approval":
             continue
         if approval.status != expected_status:
+            continue
+        if not _human_platform_decision(approval):
             continue
         if not approval.operation or approval.operation != operation:
             continue

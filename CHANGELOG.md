@@ -15,12 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Default release policy is a clean pass; `pass_with_findings` is explicit;
   fail and unknown verdicts cannot be accepted. Evidence archives use the
   durable size caps, gzip/tar integrity, digest binding, and content
-  fingerprints so schema/verdict/status alone cannot swap SBOM or findings.
-  Claimed approvals and waivers fail closed when platform authority is
-  unavailable; due-diligence matching requires an exact `request_approval`
-  operation. Interactive release-audit waivers bind stored `ask_user`
-  answers (exact finding ids and human reason); ambiguous
-  `request_approval` prose is not a waiver. KEV/CVSS gate thresholds come
+  fingerprints so a packed rejected decision cannot bind to an accepted
+  API result when envelope/SBOM fields match. Known controller
+  publication/provenance/dossier/verification annotations are ignored;
+  unknown agent fields are compared. Claimed approvals and waivers fail
+  closed when platform authority is unavailable; due-diligence matching
+  requires an exact human `request_approval` operation (AI-judged and
+  auto-approved rows are rejected). Interactive release-audit waivers
+  bind stored `ask_user` answers (exact finding ids and human reason);
+  ambiguous `request_approval` prose, including `waive_finding`, is
+  not a waiver. KEV/CVSS gate thresholds come
   from trigger/CI `gate.fail_on_kev` / `gate.fail_on_cvss_gte` (default
   KEV or CVSS >= 9.0), never from model-authored `gate.policy` text.
   Webhook URLs are redacted in errors and the webhook POST is

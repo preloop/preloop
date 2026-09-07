@@ -244,6 +244,8 @@ def test_load_platform_approvals_copies_ask_user_delivery(monkeypatch: Any) -> N
     ]
     row.approver_comment = '[{"id":"CVE-2024-0001","reason":"Feature not compiled."}]'
     row.resolved_at = "2026-08-20T12:00:00Z"
+    row.decided_by_ai = False
+    row.auto_approved_reason = None
 
     monkeypatch.setattr(
         "preloop.models.crud.crud_approval_request.get_multi_by_execution",
@@ -255,6 +257,30 @@ def test_load_platform_approvals_copies_ask_user_delivery(monkeypatch: Any) -> N
     assert loaded[0].tool_result["answered_by"] == "release-manager@example.com"
     assert loaded[0].responses is not None
     assert loaded[0].approver_comment is not None
+    assert loaded[0].decided_by_ai is False
+    assert loaded[0].auto_approved_reason is None
+
+
+def test_load_platform_approvals_copies_nonhuman_flags(monkeypatch: Any) -> None:
+    row = MagicMock()
+    row.id = "appr-ai"
+    row.status = "approved"
+    row.tool_name = "request_approval"
+    row.tool_args = {"operation": "Component risk decision: libexample@1.4.2"}
+    row.tool_result = None
+    row.responses = None
+    row.approver_comment = None
+    row.resolved_at = "2026-08-20T12:00:00Z"
+    row.decided_by_ai = True
+    row.auto_approved_reason = "bypass"
+
+    monkeypatch.setattr(
+        "preloop.models.crud.crud_approval_request.get_multi_by_execution",
+        lambda *_args, **_kwargs: [row],
+    )
+    loaded = load_platform_approvals(MagicMock(), "exec-1")
+    assert loaded[0].decided_by_ai is True
+    assert loaded[0].auto_approved_reason == "bypass"
 
 
 def test_malformed_error_envelope_failures_do_not_crash(

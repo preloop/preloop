@@ -123,6 +123,7 @@ def load_platform_approvals(db: Any, execution_id: Any) -> list[PlatformApproval
             value = tool_args.get("operation")
             if isinstance(value, str) and value.strip():
                 operation = value.strip()
+        raw_reason = getattr(row, "auto_approved_reason", None)
         loaded.append(
             PlatformApproval(
                 id=str(getattr(row, "id", "")),
@@ -134,6 +135,10 @@ def load_platform_approvals(db: Any, execution_id: Any) -> list[PlatformApproval
                 responses=getattr(row, "responses", None),
                 approver_comment=getattr(row, "approver_comment", None),
                 resolved_at=_resolved_at_text(getattr(row, "resolved_at", None)),
+                decided_by_ai=getattr(row, "decided_by_ai", False) is True,
+                auto_approved_reason=(
+                    raw_reason if isinstance(raw_reason, str) else None
+                ),
             )
         )
     return loaded
