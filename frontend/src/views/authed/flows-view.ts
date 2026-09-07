@@ -13,7 +13,7 @@ import '../../components/list-toolbar.ts';
 import '../../components/resource-actions.ts';
 import '../../components/list-selection.ts';
 import '../../components/time-range-select.ts';
-import '../../components/token-figures.ts';
+import { totalTokensOf } from '../../components/token-figures';
 import { router } from '../../router';
 import { Router } from '@vaadin/router';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
@@ -222,10 +222,7 @@ function compareFlowRowsByKey(
     case 'failed':
       return a.failed - b.failed;
     case 'tokens':
-      return (
-        Number(a.tokenUsage?.total_tokens || 0) -
-        Number(b.tokenUsage?.total_tokens || 0)
-      );
+      return totalTokensOf(a.tokenUsage) - totalTokensOf(b.tokenUsage);
     case 'cost':
       return a.cost - b.cost;
     case 'last_run':

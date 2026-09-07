@@ -1376,7 +1376,8 @@ describe('sortAgentListRows', () => {
   it('sorts tokens by the total the cell states', () => {
     // The cell shows the total and nothing else, so the column sorts by the
     // total: a row whose header says 900K outranks one that says 15.5K,
-    // whatever the in/out split behind them.
+    // whatever the in/out split behind them. When the payload has directions
+    // and no total, the cell adds them up, and so does the sort.
     const tokenRows = [
       makeRow({
         id: 'small',
@@ -1388,14 +1389,23 @@ describe('sortAgentListRows', () => {
         name: 'Large',
         tokenUsage: { total_tokens: 900000, input_tokens: 100 },
       }),
+      makeRow({
+        id: 'split',
+        name: 'Split',
+        tokenUsage: {
+          input_tokens: 400,
+          output_tokens: 100,
+          total_tokens: 0,
+        } as AgentListRow['tokenUsage'],
+      }),
       makeRow({ id: 'none', name: 'None', tokenUsage: null }),
     ];
     expect(
       sortAgentListRows(tokenRows, 'tokens', 'desc').map((row) => row.id)
-    ).to.deep.equal(['large', 'small', 'none']);
+    ).to.deep.equal(['large', 'small', 'split', 'none']);
     expect(
       sortAgentListRows(tokenRows, 'tokens', 'asc').map((row) => row.id)
-    ).to.deep.equal(['none', 'small', 'large']);
+    ).to.deep.equal(['none', 'split', 'small', 'large']);
   });
 
   it('sorts last seen newest first and keeps never-seen agents last', () => {

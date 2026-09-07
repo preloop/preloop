@@ -26,7 +26,7 @@ import '../../components/resource-actions.ts';
 import '../../components/list-selection.ts';
 import '../../components/talk-button.ts';
 import '../../components/confirm-dialog.ts';
-import '../../components/token-figures.ts';
+import { totalTokensOf } from '../../components/token-figures';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
 import {
@@ -229,9 +229,9 @@ export interface AgentListRow {
   source: any;
 }
 
-/** Total tokens for sorting; an unmeasured row sorts as zero, not as noise. */
+/** Total tokens for sorting; matches the figure the cell states. */
 function tokenTotal(usage: GatewayTokenUsage | null): number {
-  return Number(usage?.total_tokens || 0);
+  return totalTokensOf(usage);
 }
 
 function timestampValue(value: string | null): number {

@@ -1171,7 +1171,8 @@ describe('FlowsView', () => {
     });
 
     it('sorts tokens by the total the cell states', () => {
-      // The list cell shows one total, and the column sorts by it.
+      // The list cell shows one total, and the column sorts by it — including
+      // the in+out fallback when the payload has directions and no total.
       const rows = [
         makeRow({
           id: 'b',
@@ -1183,14 +1184,23 @@ describe('FlowsView', () => {
           name: 'Gamma',
           tokenUsage: { total_tokens: 900000, input_tokens: 100 } as any,
         }),
+        makeRow({
+          id: 'd',
+          name: 'Delta',
+          tokenUsage: {
+            input_tokens: 400,
+            output_tokens: 100,
+            total_tokens: 0,
+          } as any,
+        }),
         makeRow({ id: 'a', name: 'Alpha', tokenUsage: null }),
       ];
       expect(
         sortFlowListRows(rows, 'tokens', 'desc').map((row) => row.name)
-      ).to.deep.equal(['Gamma', 'Beta', 'Alpha']);
+      ).to.deep.equal(['Gamma', 'Beta', 'Delta', 'Alpha']);
       expect(
         sortFlowListRows(rows, 'tokens', 'asc').map((row) => row.name)
-      ).to.deep.equal(['Alpha', 'Beta', 'Gamma']);
+      ).to.deep.equal(['Alpha', 'Delta', 'Beta', 'Gamma']);
     });
 
     it('matches the search against everything the row shows', () => {
