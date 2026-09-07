@@ -75,6 +75,30 @@ class IsolatedPublicationTarget:
         )
 
 
+def observed_checkout_shas(policy: Any, archive: bytes | None) -> dict[str, str]:
+    """SHAs proven present in frozen bundles. Requested pins are not observed."""
+    from preloop.services.publication_worker import inspect_bundle
+
+    targets = policy_targets(policy)
+    if not targets or not archive:
+        return {}
+    if len(targets) > 1:
+        bundles = read_named_publication_bundles(archive, targets)
+    else:
+        bundles = {targets[0].slug: read_publication_bundle(archive)}
+    observed: dict[str, str] = {}
+    for target in targets:
+        bundle = bundles.get(target.slug)
+        if not bundle or not target.base_sha:
+            continue
+        try:
+            inspect_bundle(bundle, target.base_sha)
+        except PublicationError:
+            continue
+        observed[target.repository_url] = target.base_sha
+    return observed
+
+
 def is_multi_repo_policy(policy: Any) -> bool:
     """True when isolated publication is bound to more than one repository."""
     targets = getattr(policy, "targets", None) or ()
@@ -182,7 +206,15 @@ def empty_receipt(target: IsolatedPublicationTarget, *, error: str) -> dict[str,
         "url": None,
         "number": None,
         "branch": target.branch,
+        "base": target.base,
+        "base_sha": target.base_sha,
+        "expected_remote_sha": target.expected_remote_sha,
         "head_sha": None,
+        "records": [
+            {"execution_id": record.execution_id, "head_sha": record.head_sha}
+            for record in target.previous_records
+        ],
+        "tracker_id": target.tracker_id,
         "error": error,
     }
 
@@ -191,6 +223,18 @@ def published_receipt(
     target: IsolatedPublicationTarget, result: Mapping[str, Any]
 ) -> dict[str, Any]:
     """Remote commit/PR identity returned by the trusted publisher."""
+    records = result.get("records")
+    if not isinstance(records, list):
+        records = [
+            *[
+                {"execution_id": record.execution_id, "head_sha": record.head_sha}
+                for record in target.previous_records
+            ],
+            {
+                "execution_id": result.get("execution_id"),
+                "head_sha": result.get("head_sha"),
+            },
+        ]
     return {
         "repository_url": target.repository_url,
         "clone_path": target.clone_path,
@@ -199,8 +243,13 @@ def published_receipt(
         "url": result.get("url"),
         "number": result.get("number"),
         "branch": result.get("branch") or target.branch,
+        "base": result.get("base") or target.base,
+        "base_sha": target.base_sha,
+        "expected_remote_sha": result.get("head_sha") or target.expected_remote_sha,
         "provider": result.get("provider"),
         "head_sha": result.get("head_sha"),
+        "records": records,
+        "tracker_id": target.tracker_id,
         "metadata_warnings": result.get("metadata_warnings") or [],
         "error": None,
     }
@@ -224,6 +273,17 @@ def aggregate_publication_receipts(
         "complete": complete,
         "repositories": rows,
     }
+    if rows:
+        body["bindings"] = [
+            {
+                "repository_url": row.get("repository_url"),
+                "clone_path": row.get("clone_path"),
+                "branch": row.get("branch"),
+                "base": row.get("base"),
+                "base_sha": row.get("base_sha"),
+            }
+            for row in rows
+        ]
     if len(rows) == 1 and published:
         only = published[0]
         body.update(

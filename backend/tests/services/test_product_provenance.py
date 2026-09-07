@@ -18,8 +18,10 @@ from preloop.services.product_provenance import (
     ProductProvenanceError,
     RuntimeProvenanceFacts,
     UnauthorizedProductMappingError,
+    authorize_publication_decision,
     extract_product_provenance_payload,
     publication_approval_allows,
+    publication_approval_required,
     sha256_digest,
     validate_product_provenance,
 )
@@ -103,7 +105,7 @@ def test_two_code_repos_and_compliance_verify() -> None:
 
 
 def test_mismatched_sha_is_rejected() -> None:
-    with pytest.raises(MismatchedProductMappingError, match="trusted checkout"):
+    with pytest.raises(MismatchedProductMappingError, match="observed checkout"):
         validate_product_provenance(
             _mapping(),
             _facts(clone_shas={FIRMWARE: SHA_A, APP: SHA_A, COMPLIANCE: SHA_C}),
@@ -179,23 +181,97 @@ def test_single_repo_legacy_mapping_may_be_unverified() -> None:
     assert record.repositories[0].sha_status == "declared_unverified"
 
 
+def test_expired_and_unrelated_approvals_do_not_authorize() -> None:
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    expired = SimpleNamespace(
+        status="approved",
+        decided_by_ai=False,
+        auto_approved_reason=None,
+        expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+        tool_name="isolated_publication",
+        tool_args={
+            "action": "isolated_publication",
+            "repositories": [FIRMWARE],
+            "commits": [SHA_A],
+        },
+    )
+    unrelated = SimpleNamespace(
+        status="approved",
+        decided_by_ai=False,
+        auto_approved_reason=None,
+        expires_at=None,
+        tool_name="isolated_publication",
+        tool_args={
+            "action": "isolated_publication",
+            "repositories": [APP],
+            "commits": [SHA_B],
+        },
+    )
+    with pytest.raises(ProductProvenanceError, match="human platform approval"):
+        authorize_publication_decision(
+            [expired, unrelated],
+            required=True,
+            repository_urls=[FIRMWARE],
+            commits=[SHA_A],
+        )
+    assert publication_approval_required({"publication_approval": True}) is True
+
+
 def test_denied_publication_approval_refuses() -> None:
-    with pytest.raises(ProductProvenanceError, match="declined"):
-        publication_approval_allows(
-            {
-                "id": "11111111-1111-4111-8111-111111111111",
-                "status": "declined",
-                "decided_by_ai": False,
-                "auto_approved_reason": None,
-            },
-            required_id="11111111-1111-4111-8111-111111111111",
+    from types import SimpleNamespace
+
+    with pytest.raises(ProductProvenanceError, match="human platform approval"):
+        authorize_publication_decision(
+            [
+                SimpleNamespace(
+                    status="declined",
+                    decided_by_ai=False,
+                    auto_approved_reason=None,
+                    expires_at=None,
+                    tool_name="isolated_publication",
+                    tool_args={
+                        "action": "isolated_publication",
+                        "repositories": [FIRMWARE],
+                        "commits": [SHA_A],
+                    },
+                )
+            ],
+            required=True,
+            repository_urls=[FIRMWARE],
+            commits=[SHA_A],
         )
 
 
 def test_agent_written_approval_id_is_not_authority() -> None:
-    with pytest.raises(ProductProvenanceError, match="not authority"):
+    with pytest.raises(ProductProvenanceError, match="not publication policy"):
         publication_approval_allows(
             None, required_id="11111111-1111-4111-8111-111111111111"
+        )
+    assert publication_approval_required({"publication_approval": "required"}) is True
+    assert publication_approval_required({}) is False
+
+
+def test_unobserved_pin_is_not_verified_checkout() -> None:
+    record = validate_product_provenance(
+        _mapping(),
+        _facts(
+            clone_shas={},
+            requested_pins={FIRMWARE: SHA_A, APP: SHA_B, COMPLIANCE: SHA_C},
+        ),
+    )
+    assert record is not None
+    assert record.mapping_status == "pin_matched"
+    assert {repo.sha_status for repo in record.repositories} == {"pin_matched"}
+    with pytest.raises(MismatchedProductMappingError, match="Unobserved"):
+        validate_product_provenance(
+            _mapping(),
+            _facts(
+                clone_shas={},
+                requested_pins={FIRMWARE: SHA_A, APP: SHA_B, COMPLIANCE: SHA_C},
+            ),
+            require_observed=True,
         )
 
 

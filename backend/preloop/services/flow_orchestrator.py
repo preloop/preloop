@@ -4736,19 +4736,33 @@ class FlowExecutionOrchestrator:
 
     async def _persist_isolated_recovery(self) -> None:
         """Keep the original runtime unless recoverable work is durably saved."""
+        from preloop.services.multi_repo_publication import (
+            is_multi_repo_policy,
+            policy_targets,
+            read_named_publication_bundles,
+        )
         from preloop.services.publication_worker import inspect_bundle
-        from preloop.services.trusted_publisher import read_publication_bundle
+        from preloop.services.trusted_publisher import (
+            PublicationError,
+            read_publication_bundle,
+        )
 
         archive = getattr(self, "_evidence_archive", None)
         workspace = getattr(self, "_workspace_snapshot", None)
+        policy = getattr(self, "_isolated_publication_policy", None)
         if workspace is None:
-            # A valid self-contained Git bundle can preserve committed work
-            # when the full workspace exceeds its capture budget.
-            await asyncio.to_thread(
-                inspect_bundle,
-                read_publication_bundle(archive or b""),
-                self._isolated_publication_policy.base_sha,
-            )
+            if policy is None:
+                raise PublicationError("Isolated recovery has no publication policy")
+            targets = policy_targets(policy)
+            if is_multi_repo_policy(policy):
+                bundles = read_named_publication_bundles(archive or b"", targets)
+                for target in targets:
+                    inspect_bundle(bundles[target.slug], target.base_sha)
+            else:
+                inspect_bundle(
+                    read_publication_bundle(archive or b""),
+                    policy.base_sha,
+                )
         crud_flow_execution.capture_publication_recovery(
             self.db, db_obj=self.execution_log, archive=archive, workspace=workspace
         )
@@ -4786,10 +4800,16 @@ class FlowExecutionOrchestrator:
             git_config = dict(flow.git_clone_config)
         policy = getattr(self, "_isolated_publication_policy", None)
         clone_shas: dict[str, str] = {}
+        requested_pins: dict[str, str] = {}
         if policy is not None:
+            from preloop.services.multi_repo_publication import observed_checkout_shas
+
+            archive = getattr(self, "_evidence_archive", None)
+            if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
+                clone_shas = observed_checkout_shas(policy, bytes(archive))
             for target in policy_targets(policy):
                 if target.base_sha:
-                    clone_shas[target.repository_url] = target.base_sha
+                    requested_pins[target.repository_url] = target.base_sha
             if getattr(policy, "targets", None):
                 git_config["repositories"] = [
                     {
@@ -4798,56 +4818,25 @@ class FlowExecutionOrchestrator:
                     }
                     for target in policy_targets(policy)
                 ]
-        remotes, paths, trusted = facts_from_git_clone_config(
+        remotes, paths, _configured = facts_from_git_clone_config(
             git_config, clone_shas=clone_shas
         )
-        approval = None
-        required_id = None
-        if isinstance(mapping, dict):
-            required_id = mapping.get("publication_approval_id")
-            publication = mapping.get("publication")
-            if isinstance(publication, dict):
-                required_id = publication.get("approval_id") or required_id
-        if required_id and flow is not None:
-            from preloop.models.crud import crud_approval_request
-
-            execution_id = str(
-                getattr(self, "execution_id", None)
-                or getattr(getattr(self, "execution_log", None), "id", "")
-                or ""
-            )
-            records = crud_approval_request.get_multi_by_execution(
-                self.db,
-                execution_id=execution_id,
-                account_id=str(flow.account_id),
-            )
-            for record in records:
-                if str(record.id) == str(required_id):
-                    approval = {
-                        "id": str(record.id),
-                        "status": record.status,
-                        "decided_by_ai": bool(record.decided_by_ai),
-                        "auto_approved_reason": record.auto_approved_reason,
-                    }
-                    break
-        return (
-            RuntimeProvenanceFacts(
-                authorized_remotes=remotes,
-                clone_paths=paths,
-                clone_shas=trusted,
-                sbom_bytes=sbom_bytes,
-                sbom_path=observed_path,
-                publication_approval=approval,
-            ),
-            required_id,
+        return RuntimeProvenanceFacts(
+            authorized_remotes=remotes,
+            clone_paths=paths,
+            clone_shas=clone_shas,
+            sbom_bytes=sbom_bytes,
+            sbom_path=observed_path,
+            requested_pins=requested_pins,
         )
 
-    def _verify_product_provenance_record(self) -> Any:
+    def _verify_product_provenance_record(
+        self, *, require_observed: bool = False
+    ) -> Any:
         """Validate optional product mapping against trusted facts. None if unused."""
         from preloop.services.product_provenance import (
             ProductProvenanceError,
             extract_product_provenance_payload,
-            publication_approval_allows,
             validate_product_provenance,
         )
         from preloop.services.trusted_publisher import PublicationError
@@ -4857,16 +4846,60 @@ class FlowExecutionOrchestrator:
         mapping = extract_product_provenance_payload(
             getattr(self, "trigger_event_data", None)
         )
-        facts, required_id = self._product_runtime_facts()
+        facts = self._product_runtime_facts()
         try:
-            record = validate_product_provenance(mapping, facts)
-            if mapping is not None:
-                publication_approval_allows(
-                    facts.publication_approval, required_id=required_id
-                )
+            return validate_product_provenance(
+                mapping, facts, require_observed=require_observed
+            )
         except ProductProvenanceError as exc:
             raise PublicationError(str(exc)) from exc
-        return record
+
+    def _authorize_product_publication(self, provenance: Any) -> None:
+        """Bind a human approval to exact targets/commits when the flow requires it."""
+        from preloop.models.crud import crud_approval_request
+        from preloop.services.multi_repo_publication import policy_targets
+        from preloop.services.product_provenance import (
+            ProductProvenanceError,
+            authorize_publication_decision,
+            publication_approval_required,
+        )
+        from preloop.services.trusted_publisher import PublicationError
+
+        flow = getattr(self, "flow", None)
+        if flow is None:
+            return
+        config = (
+            flow.git_clone_config if isinstance(flow.git_clone_config, dict) else {}
+        )
+        if not publication_approval_required(config):
+            return
+        policy = getattr(self, "_isolated_publication_policy", None)
+        targets = policy_targets(policy) if policy is not None else ()
+        urls = [target.repository_url for target in targets]
+        commits = []
+        if provenance is not None:
+            commits = [repo.sha for repo in provenance.repositories]
+        elif targets:
+            commits = [target.base_sha for target in targets if target.base_sha]
+        execution_id = str(
+            getattr(self, "execution_id", None)
+            or getattr(getattr(self, "execution_log", None), "id", "")
+            or ""
+        )
+        records = crud_approval_request.get_multi_by_execution(
+            self.db,
+            execution_id=execution_id,
+            account_id=str(flow.account_id),
+        )
+        try:
+            authorize_publication_decision(
+                records,
+                required=True,
+                repository_urls=urls,
+                commits=commits,
+            )
+        except ProductProvenanceError as exc:
+            raise PublicationError(str(exc)) from exc
 
     def _attach_product_evidence_records(
         self,
@@ -4876,14 +4909,21 @@ class FlowExecutionOrchestrator:
         publication: Dict[str, Any] | None = None,
     ) -> None:
         """Write control-plane provenance and dossier; never trust agent copies."""
+        from uuid import UUID
+
+        from preloop.services.flow_artifacts import (
+            EvidenceUnavailableError,
+            load_evidence,
+        )
         from preloop.services.product_dossier import (
-            DossierManifestError,
             build_dossier_manifest,
+            strip_control_plane_result,
         )
 
         if getattr(self, "flow", None) is None:
             return
-        result = dict(agent_result.get("result") or {})
+        raw_result = strip_control_plane_result(dict(agent_result.get("result") or {}))
+        result = dict(raw_result)
         if provenance is not None:
             result["product_provenance"] = provenance.as_dict()
         execution_id = str(
@@ -4892,6 +4932,8 @@ class FlowExecutionOrchestrator:
             or ""
         )
         approvals: list[Any] = []
+        evidence_receipt: dict[str, Any] | None = None
+        execution = getattr(self, "execution_log", None)
         if execution_id:
             from preloop.models.crud import crud_approval_request
 
@@ -4900,19 +4942,27 @@ class FlowExecutionOrchestrator:
                 execution_id=execution_id,
                 account_id=str(self.flow.account_id),
             )
+        if execution is not None:
+            try:
+                _, evidence_receipt = load_evidence(
+                    self.db,
+                    account_id=UUID(str(self.flow.account_id)),
+                    execution=execution,
+                )
+            except EvidenceUnavailableError as exc:
+                evidence_receipt = exc.receipt
         artifacts = result.get("artifacts")
-        try:
-            dossier = build_dossier_manifest(
-                execution_id=execution_id,
-                result=result,
-                provenance=provenance,
-                artifact_refs=artifacts if isinstance(artifacts, dict) else {},
-                approvals=approvals,
-                publication=publication,
-            )
-            result["dossier_manifest"] = dossier
-        except DossierManifestError:
-            pass
+        dossier = build_dossier_manifest(
+            execution_id=execution_id,
+            result=result,
+            provenance=provenance,
+            artifact_refs=artifacts if isinstance(artifacts, dict) else {},
+            approvals=approvals,
+            publication=publication,
+            evidence_receipt=evidence_receipt,
+            raw_result=raw_result,
+        )
+        result["dossier_manifest"] = dossier
         agent_result["result"] = result
 
     async def _finish_isolated_publication(self, agent_result: Dict[str, Any]) -> None:
@@ -4929,7 +4979,11 @@ class FlowExecutionOrchestrator:
         from preloop.services.trusted_publisher import PublicationError
 
         try:
-            provenance = self._verify_product_provenance_record()
+            provenance = self._verify_product_provenance_record(
+                require_observed=getattr(self, "_isolated_publication_policy", None)
+                is not None
+            )
+            self._authorize_product_publication(provenance)
         except PublicationError as exc:
             if agent_result.get("status") == "SUCCEEDED":
                 agent_result["status"] = "FAILED"

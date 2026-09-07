@@ -1,8 +1,8 @@
 """Deterministic CRA dossier manifest and content digests.
 
-Platform-owned. Agent result JSON cannot mint human approvals. Blob storage
-and evidence receipts belong to the evidence workstream; this module reports
-interoperable integration fields only.
+Platform-owned. Agent result JSON cannot mint human approvals. Evidence
+bytes and retention are taken from inspect_evidence / load_evidence
+receipts (kind=evidence). This module does not invent availability.
 """
 
 from __future__ import annotations
@@ -19,6 +19,12 @@ from preloop.services.product_provenance import (
 from preloop.utils.secret_scrubbing import scrub_secrets
 
 DOSSIER_MANIFEST_SCHEMA = "preloop.cra.dossier_manifest/v1"
+CONTROL_PLANE_RESULT_KEYS = (
+    "product_provenance",
+    "dossier_manifest",
+    "trusted_publication",
+    "_private_publication",
+)
 _SENSITIVE_KEYS = frozenset(
     {
         "token",
@@ -58,6 +64,48 @@ def _json_default(value: Any) -> str:
     if isinstance(value, UUID):
         return str(value)
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def strip_control_plane_result(result: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Agent-authored result without control-plane annotations."""
+    cleaned = dict(result or {})
+    for key in CONTROL_PLANE_RESULT_KEYS:
+        cleaned.pop(key, None)
+    return cleaned
+
+
+def portable_evidence_fields(receipt: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Copy server-owned evidence receipt fields. Never claim unverified retention."""
+    if not isinstance(receipt, Mapping):
+        return {
+            "kind": "evidence",
+            "status": "missing",
+            "sha256": None,
+            "artifact_id": None,
+            "retention_hours": None,
+            "integrity_verified": False,
+            "retained": False,
+        }
+    status = str(receipt.get("status") or "missing")
+    verified = bool(receipt.get("integrity_verified"))
+    digest = receipt.get("sha256") or receipt.get("digest")
+    retention = receipt.get("retention_hours")
+    if status != "available":
+        retention = None
+    return {
+        "kind": "evidence",
+        "status": status,
+        "sha256": digest,
+        "artifact_id": receipt.get("artifact_id"),
+        "execution_id": receipt.get("execution_id"),
+        "transport": receipt.get("transport"),
+        "retention_hours": retention,
+        "integrity_verified": verified,
+        "retained": bool(status == "available" and verified and digest),
+        "object_lock": False,
+        "legal_hold": False,
+        "error": receipt.get("error"),
+    }
 
 
 def content_digest(value: Any) -> str:
@@ -138,21 +186,34 @@ def build_dossier_manifest(
     approvals: Sequence[Any] = (),
     publication: Mapping[str, Any] | None = None,
     generated_at: datetime | None = None,
+    evidence_receipt: Mapping[str, Any] | None = None,
+    raw_result: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic, redacted dossier manifest.
 
-    Evidence blob storage and receipts are owned by the evidence workstream.
-    ``evidence_integration`` reports the fields that workstream should bind.
+    ``raw_result`` is the agent result without control-plane keys.
+    ``result`` is the annotated result (provenance/publication) without
+    ``dossier_manifest``. Evidence fields come from inspect/load receipts.
     """
     try:
         UUID(str(execution_id))
     except (ValueError, TypeError, AttributeError) as exc:
         raise DossierManifestError("Dossier requires the execution UUID") from exc
     generated = generated_at or datetime.now(timezone.utc)
-    safe_result = redact_value(dict(result or {}))
+    annotated = redact_value(strip_control_plane_result(dict(result or {})))
+    if provenance is not None:
+        annotated["product_provenance"] = redact_value(provenance.as_dict())
+    if publication:
+        annotated["trusted_publication"] = redact_value(dict(publication))
+    raw = redact_value(
+        strip_control_plane_result(
+            dict(raw_result) if raw_result is not None else dict(result or {})
+        )
+    )
     safe_artifacts = redact_value(dict(artifact_refs or {}))
     safe_publication = redact_value(dict(publication or {})) if publication else None
     platform_approvals = redact_value(platform_approvals_from_records(approvals))
+    evidence = portable_evidence_fields(evidence_receipt)
     source_inputs: dict[str, Any]
     if provenance is None:
         source_inputs = {
@@ -165,11 +226,11 @@ def build_dossier_manifest(
         }
     else:
         source_inputs = provenance.as_dict()
-    body = {
+    raw_digest = content_digest(raw)
+    annotated_digest = content_digest(annotated)
+    identity = {
         "schema": DOSSIER_MANIFEST_SCHEMA,
         "execution_id": str(execution_id),
-        "generated_at": generated,
-        "result": safe_result,
         "source_inputs": source_inputs,
         "artifact_refs": safe_artifacts,
         "platform_approvals": platform_approvals,
@@ -178,24 +239,13 @@ def build_dossier_manifest(
             "Machine-generated evidence for conformity assessment support. "
             "Not a conformity assessment, certification, or legal advice."
         ),
+        "raw_result_digest": raw_digest,
+        "annotated_result_digest": annotated_digest,
     }
-    digest_input = {
-        key: body[key]
-        for key in (
-            "schema",
-            "execution_id",
-            "result",
-            "source_inputs",
-            "artifact_refs",
-            "platform_approvals",
-            "publication",
-            "disclaimer",
-        )
-    }
-    manifest_digest = content_digest(digest_input)
-    result_digest = content_digest(safe_result)
+    manifest_digest = content_digest(identity)
     content = {
-        "result_digest": result_digest,
+        "raw_result_digest": raw_digest,
+        "annotated_result_digest": annotated_digest,
         "source_input_digest": content_digest(source_inputs),
         "artifact_refs_digest": content_digest(safe_artifacts),
         "approvals_digest": content_digest(platform_approvals),
@@ -203,24 +253,16 @@ def build_dossier_manifest(
         if safe_publication is not None
         else None,
     }
-    content_hash = content_digest(content)
-    body["digests"] = {
-        "manifest": manifest_digest,
-        "content": content_hash,
-        **content,
-    }
-    body["evidence_integration"] = {
-        "artifact_kind": "cra_evidence",
-        "execution_id": str(execution_id),
-        "manifest_digest": manifest_digest,
-        "content_digest": content_hash,
-        "result_digest": result_digest,
-        "blob_storage": "evidence_workstream",
-        "receipt": None,
-        "note": (
-            "Blob bytes, availability, and retention receipts are owned by the "
-            "evidence workstream. This manifest is the interoperable identity."
-        ),
+    body = {
+        **identity,
+        "generated_at": generated,
+        "result": annotated,
+        "digests": {
+            "manifest": manifest_digest,
+            "content": content_digest(content),
+            **content,
+        },
+        "evidence": evidence,
     }
     parsed = json.loads(canonical_json(body).decode("utf-8"))
     if not isinstance(parsed, dict):

@@ -13,12 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optional `product_provenance` (`preloop.cra.product_provenance/v1`) names
   a supported release, build, SBOM digest, and constituent repos+SHAs.
   Product-mode audits reject duplicate, ambiguous, unauthorized, or
-  mismatched mappings against trusted checkout facts and supplied artifact
-  bytes. Agent-written SHAs are declarations, not build attestation. A
-  deterministic dossier manifest records result/input/artifact digests and
-  platform approval ids only. Hosted isolated publication can publish the
-  CRA code-repos-plus-compliance-repo topology with per-repo receipts;
-  local commits and partial remotes are not success. Guide:
+  mismatched mappings against pinned, then observed, checkout SHAs and
+  supplied artifact bytes. A moving branch tip is not a verified checkout.
+  Agent-written SHAs are declarations, not build attestation. A
+  deterministic dossier manifest records raw versus annotated result
+  digests and a `kind=evidence` receipt. Hosted and private isolated
+  publication can publish the CRA code-repos-plus-compliance-repo topology
+  with per-repo receipts; resume keeps branch/base/head history; local
+  commits and partial remotes are not success. Guide:
   `docs/guide/flows/product-evidence.md`.
 
 

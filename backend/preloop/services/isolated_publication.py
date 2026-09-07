@@ -29,7 +29,7 @@ from preloop.services.multi_repo_publication import (
     is_multi_repo_policy,
     repository_role,
 )
-from preloop.services.product_provenance import normalize_repository_url
+from preloop.services.product_provenance import is_git_sha, normalize_repository_url
 from preloop.services.trusted_publisher import (
     PublicationBinding,
     PublicationError,
@@ -81,12 +81,57 @@ def _prior_binding_for_remote(
     rows = prior_publication.get("repositories")
     if isinstance(rows, list) and rows:
         for row in rows:
-            if isinstance(row, dict) and row.get("repository_url") == repository_url:
-                return {**prior_publication, **row}
+            if not isinstance(row, dict):
+                continue
+            if row.get("repository_url") == repository_url:
+                return dict(row)
         return None
     if prior_publication.get("repository_url") == repository_url:
-        return prior_publication
+        return dict(prior_publication)
     return None
+
+
+def resume_topology_matches(
+    prior_publication: dict[str, Any],
+    repositories: list[dict[str, Any]],
+) -> None:
+    """Refuse adding, removing, or remapping remotes/clone paths on resume."""
+    from preloop.services.product_provenance import clone_path_slug
+
+    rows = prior_publication.get("repositories")
+    prior_rows: list[dict[str, Any]]
+    if isinstance(rows, list) and rows:
+        prior_rows = [row for row in rows if isinstance(row, dict)]
+    elif prior_publication.get("repository_url"):
+        prior_rows = [prior_publication]
+    else:
+        raise PublicationError(
+            "Continuation requires a trusted publication binding; legacy PRs must be explicitly migrated"
+        )
+    prior_ids = {
+        (
+            normalize_repository_url(str(row["repository_url"])),
+            clone_path_slug(str(row.get("clone_path") or "workspace")),
+        )
+        for row in prior_rows
+        if row.get("repository_url")
+    }
+    current_ids = {
+        (
+            normalize_repository_url(str(row["repository_url"])),
+            clone_path_slug(
+                str(row.get("clone_path") or f"workspace-{index + 1}")
+                if index
+                else str(row.get("clone_path") or "workspace")
+            ),
+        )
+        for index, row in enumerate(repositories)
+        if row.get("repository_url")
+    }
+    if prior_ids != current_ids:
+        raise PublicationError(
+            "Resume cannot add, remove, or remap constituent repositories"
+        )
 
 
 async def _bind_isolated_repository(
@@ -152,18 +197,19 @@ async def _bind_isolated_repository(
     )
     prior_binding = _prior_binding_for_remote(prior_publication, repository_url)
     previous_records: tuple[PublicationRecord, ...] = ()
+    repo_branch = branch
     if resume:
         if prior_binding is None:
             raise PublicationError(
                 "Continuation requires a trusted publication binding; legacy PRs must be explicitly migrated"
             )
         raw_records = prior_binding.get("records")
-        if not raw_records and isinstance(prior_publication, dict):
-            raw_records = prior_publication.get("records")
         if isinstance(raw_records, list) and raw_records:
             previous_records = tuple(
                 PublicationRecord(**record) for record in raw_records
             )
+        if isinstance(prior_binding.get("branch"), str) and prior_binding["branch"]:
+            repo_branch = str(prior_binding["branch"])
     clone_path = str(
         repository.get("clone_path")
         or ("workspace" if index == 0 else f"workspace-{index + 1}")
@@ -186,14 +232,16 @@ async def _bind_isolated_repository(
             raise PublicationError(
                 "Resolved repository does not match publication binding"
             )
-        base = (
-            (prior_binding or {}).get("base")
-            or config.get("source_branch")
-            or info["default_branch"]
-        )
+        configured_base = repository.get("source_branch") or repository.get("branch")
+        if resume and prior_binding is not None and prior_binding.get("base"):
+            base = str(prior_binding["base"])
+        else:
+            base = (
+                configured_base or config.get("source_branch") or info["default_branch"]
+            )
         PublicationBinding(
             repository_url,
-            branch,
+            repo_branch,
             base,
             "0" * 40,
             None,
@@ -201,20 +249,32 @@ async def _bind_isolated_repository(
             settings.preloop_url,
             "github",
         )
-        response = await client.get(
-            f"https://api.github.com/repos/{project_path}/git/ref/heads/{base}",
-            headers=headers,
-            timeout=30,
-            follow_redirects=False,
-        )
-        response.raise_for_status()
-        base_sha = response.json()["object"]["sha"]
-        if not isinstance(base_sha, str) or not re.fullmatch(r"[a-f0-9]{40}", base_sha):
-            raise PublicationError(
-                "Provider did not resolve an exact trusted base commit"
+        pinned = None
+        if (
+            resume
+            and prior_binding is not None
+            and is_git_sha(prior_binding.get("base_sha"))
+        ):
+            pinned = str(prior_binding["base_sha"]).lower()
+        if pinned is None:
+            response = await client.get(
+                f"https://api.github.com/repos/{project_path}/git/ref/heads/{base}",
+                headers=headers,
+                timeout=30,
+                follow_redirects=False,
             )
+            response.raise_for_status()
+            base_sha = response.json()["object"]["sha"]
+            if not isinstance(base_sha, str) or not re.fullmatch(
+                r"[a-f0-9]{40}", base_sha
+            ):
+                raise PublicationError(
+                    "Provider did not resolve an exact trusted base commit"
+                )
+        else:
+            base_sha = pinned
         response = await client.get(
-            f"https://api.github.com/repos/{project_path}/git/ref/heads/{branch}",
+            f"https://api.github.com/repos/{project_path}/git/ref/heads/{repo_branch}",
             headers=headers,
             timeout=30,
             follow_redirects=False,
@@ -224,6 +284,14 @@ async def _bind_isolated_repository(
         else:
             response.raise_for_status()
             expected_remote = response.json()["object"]["sha"]
+        if resume and prior_binding is not None:
+            published_head = prior_binding.get("head_sha")
+            if prior_binding.get("status") == "published" and is_git_sha(
+                published_head
+            ):
+                expected_remote = str(published_head).lower()
+            elif is_git_sha(prior_binding.get("expected_remote_sha")):
+                expected_remote = str(prior_binding["expected_remote_sha"]).lower()
         if not resume and expected_remote is not None:
             raise PublicationError(
                 "Configured publication branch already exists; use a unique target branch or resume its bound execution"
@@ -240,7 +308,7 @@ async def _bind_isolated_repository(
         repository_url=repository_url,
         clone_path=clone_path,
         role=role,
-        branch=branch,
+        branch=repo_branch,
         base=base,
         expected_remote_sha=expected_remote,
         base_sha=base_sha,
@@ -251,6 +319,10 @@ async def _bind_isolated_repository(
         "repository_url": repository_url,
         "tracker_id": str(tracker.id),
         "clone_path": clone_path,
+        "source_branch": base,
+        "target_branch": repo_branch,
+        "commit": base_sha if not resume else (expected_remote or base_sha),
+        "pin_sha": base_sha,
     }
     return target, resolved, read_lease, base, expected_remote, previous_records
 
@@ -288,11 +360,6 @@ async def prepare_isolated_publication(
     repositories = [dict(row) for row in (config.get("repositories") or [])]
     if not repositories:
         repositories = [{}]
-    if private and len(repositories) > 1:
-        raise PublicationError(
-            "Isolated private-runner publication supports one bound repository; "
-            "hosted isolated publication supports the product code+compliance topology"
-        )
     trigger = context.get("trigger_event_data") or {}
     payload = (
         trigger.get("payload") if isinstance(trigger.get("payload"), dict) else trigger
@@ -322,7 +389,15 @@ async def prepare_isolated_publication(
             raise PublicationError(
                 "Continuation requires a trusted publication binding; legacy PRs must be explicitly migrated"
             )
-        branch = str(prior_publication.get("branch") or branch)
+        resume_topology_matches(prior_publication, repositories)
+        prior_rows = prior_publication.get("repositories")
+        if isinstance(prior_rows, list) and prior_rows:
+            first_row = prior_rows[0] if isinstance(prior_rows[0], dict) else {}
+            branch = str(
+                first_row.get("branch") or prior_publication.get("branch") or branch
+            )
+        elif prior_publication.get("branch"):
+            branch = str(prior_publication["branch"])
 
     targets: list[IsolatedPublicationTarget] = []
     resolved_repos: list[dict[str, Any]] = []
@@ -388,20 +463,20 @@ async def prepare_isolated_publication(
     )
     config["repositories"] = resolved_repos
     config["source_branch"] = first_base
-    config["target_branch"] = branch
+    config["target_branch"] = primary.branch
     context["git_clone_config"] = config
     context["git_credentials_map"] = credentials
     context["trigger_tracker_id"] = str(primary.tracker_id)
     if resume:
         context["trigger_event_data"] = {
             **trigger,
-            "_resume": {**resume, "source_branch": branch},
+            "_resume": {**resume, "source_branch": primary.branch},
         }
     return IsolatedPublicationPolicy(
         str(primary.tracker_id),
         str(flow.account_id),
         primary.repository_url,
-        branch,
+        primary.branch,
         first_base,
         first_expected,
         execution_id,

@@ -484,7 +484,7 @@ def test_container_exports_per_repo_bundles_without_push() -> None:
 
 
 @pytest.mark.asyncio
-async def test_private_runner_still_rejects_product_topology(tracker: Any) -> None:
+async def test_private_runner_prepares_product_topology(tracker: Any) -> None:
     from preloop.services.isolated_publication import prepare_isolated_publication
 
     tracker.id = "tracker"
@@ -511,6 +511,11 @@ async def test_private_runner_still_rejects_product_topology(tracker: Any) -> No
                     "clone_path": "firmware",
                 },
                 {
+                    "repository_url": APP,
+                    "tracker_id": "tracker",
+                    "clone_path": "companion-app",
+                },
+                {
                     "repository_url": COMPLIANCE,
                     "tracker_id": "tracker",
                     "clone_path": "compliance",
@@ -519,6 +524,40 @@ async def test_private_runner_still_rejects_product_topology(tracker: Any) -> No
         },
         "trigger_event_data": {},
     }
+    responses: list[httpx.Response] = []
+    for name in (
+        "example/firmware",
+        "example/companion-app",
+        "example/product-compliance",
+    ):
+        responses.extend(
+            [
+                httpx.Response(
+                    200,
+                    json={"full_name": name, "default_branch": "main"},
+                    request=httpx.Request("GET", "https://api.github.com"),
+                ),
+                httpx.Response(
+                    200,
+                    json={"object": {"sha": "b" * 40}},
+                    request=httpx.Request("GET", "https://api.github.com"),
+                ),
+                httpx.Response(
+                    404, request=httpx.Request("GET", "https://api.github.com")
+                ),
+            ]
+        )
+    client = AsyncMock()
+    client.get.side_effect = responses
+
+    async def mint(
+        tracker_obj: Any, url: str, *, write: bool, client: Any
+    ) -> PublicationLease:
+        assert write is False
+        return PublicationLease(
+            f"read-{url}", url, datetime.now(timezone.utc) + timedelta(minutes=10)
+        )
+
     with (
         patch(
             "preloop.services.runner_service.resolve_runner_pool",
@@ -528,9 +567,35 @@ async def test_private_runner_still_rejects_product_topology(tracker: Any) -> No
             "preloop.services.private_publication.restore_private_publication",
             new=AsyncMock(return_value=None),
         ),
+        patch(
+            "preloop.services.isolated_publication.crud_tracker.get_by_id_and_account",
+            return_value=tracker,
+        ),
+        patch("preloop.services.isolated_publication.validate_publication_tracker"),
+        patch(
+            "preloop.services.isolated_publication.httpx.AsyncClient",
+            return_value=MagicMock(
+                __aenter__=AsyncMock(return_value=client),
+                __aexit__=AsyncMock(return_value=None),
+            ),
+        ),
+        patch(
+            "preloop.services.isolated_publication.mint_repository_lease",
+            new=AsyncMock(side_effect=mint),
+        ),
+        patch(
+            "preloop.services.isolated_publication.revoke_repository_lease",
+            new=AsyncMock(),
+        ),
     ):
-        with pytest.raises(PublicationError, match="private-runner"):
-            await prepare_isolated_publication(MagicMock(), flow, context)
+        policy = await prepare_isolated_publication(MagicMock(), flow, context)
+    assert policy.private is True
+    assert len(policy.targets) == 3
+    assert {target.clone_path for target in policy.targets} == {
+        "firmware",
+        "companion-app",
+        "compliance",
+    }
 
 
 @pytest.mark.asyncio
@@ -639,3 +704,646 @@ async def test_prepare_hosted_multi_repo_mints_per_repo_read_leases(
     assert policy.targets[2].role == "compliance"
     assert context["git_credentials_map"][FIRMWARE]["permission"] == "read"
     assert "write" not in str(context["git_credentials_map"])
+
+
+def _verification_config() -> dict[str, Any]:
+    return {
+        "mode": "gate",
+        "image": "toolchain@sha256:" + "a" * 64,
+        "profile": {
+            "profile_id": "test",
+            "version": "v1",
+            "always": [{"id": "check", "command": "true", "reason": "required"}],
+        },
+    }
+
+
+def _bind_responses(*pairs: tuple[str, str, str]) -> list[httpx.Response]:
+    """Repo info + base ref + missing publication branch, in bind order."""
+    responses: list[httpx.Response] = []
+    dummy = httpx.Request("GET", "https://api.github.com")
+    for name, base_sha, _branch in pairs:
+        responses.extend(
+            [
+                httpx.Response(
+                    200,
+                    json={"full_name": name, "default_branch": "main"},
+                    request=dummy,
+                ),
+                httpx.Response(200, json={"object": {"sha": base_sha}}, request=dummy),
+                httpx.Response(404, request=dummy),
+            ]
+        )
+    return responses
+
+
+def _resume_bind_responses(*pairs: tuple[str, str | None]) -> list[httpx.Response]:
+    """Resume uses a stored base pin, so only repo info + publication branch."""
+    responses: list[httpx.Response] = []
+    dummy = httpx.Request("GET", "https://api.github.com")
+    for name, expected in pairs:
+        responses.append(
+            httpx.Response(
+                200,
+                json={"full_name": name, "default_branch": "main"},
+                request=dummy,
+            )
+        )
+        if expected is None:
+            responses.append(httpx.Response(404, request=dummy))
+        else:
+            responses.append(
+                httpx.Response(200, json={"object": {"sha": expected}}, request=dummy)
+            )
+    return responses
+
+
+def test_pinned_clone_does_not_follow_a_moving_branch() -> None:
+    executor = ContainerAgentExecutor(agent_type="codex", config={}, image="test")
+    pin = "a" * 40
+    moved = "f" * 40
+    commands = executor._build_repository_clone_command_block(
+        repo_config={
+            "repository_url": FIRMWARE,
+            "clone_path": "firmware",
+            "source_branch": "main",
+            "target_branch": "preloop/flow-1",
+            "pin_sha": pin,
+            "commit": pin,
+        },
+        repo_index=0,
+        execution_context={
+            "git_clone_config": {"publication_mode": "isolated"},
+            "git_credentials_map": {
+                FIRMWARE: {
+                    "token": "read-only",
+                    "tracker_type": "github",
+                    "permission": "read",
+                }
+            },
+        },
+        source_branch="main",
+        target_branch="preloop/flow-1",
+        commit_sha=moved,
+        trigger_data={},
+    )
+    assert commands is not None
+    script = "\n".join(commands)
+    assert pin in script
+    assert "git clone --branch main" not in script
+    assert "A moving branch tip is not a verified checkout" in script
+    assert (
+        f"git checkout --force {pin}" in script
+        or f"git checkout --force '{pin}'" in script
+    )
+
+
+def test_per_repo_clone_config_keeps_distinct_bases() -> None:
+    executor = ContainerAgentExecutor(agent_type="codex", config={}, image="test")
+    firmware_pin = "a" * 40
+    app_pin = "b" * 40
+    firmware = executor._build_repository_clone_command_block(
+        repo_config={
+            "repository_url": FIRMWARE,
+            "clone_path": "firmware",
+            "source_branch": "main",
+            "target_branch": "preloop/flow-1",
+            "pin_sha": firmware_pin,
+        },
+        repo_index=0,
+        execution_context={"git_clone_config": {}, "git_credentials_map": {}},
+        source_branch="main",
+        target_branch="preloop/flow-1",
+        commit_sha=None,
+        trigger_data={},
+    )
+    app = executor._build_repository_clone_command_block(
+        repo_config={
+            "repository_url": APP,
+            "clone_path": "companion-app",
+            "source_branch": "release",
+            "target_branch": "preloop/flow-1",
+            "pin_sha": app_pin,
+        },
+        repo_index=1,
+        execution_context={"git_clone_config": {}, "git_credentials_map": {}},
+        source_branch="main",
+        target_branch="preloop/flow-1",
+        commit_sha=None,
+        trigger_data={},
+    )
+    assert firmware is not None and app is not None
+    firmware_script = "\n".join(firmware)
+    app_script = "\n".join(app)
+    assert firmware_pin in firmware_script
+    assert app_pin in app_script
+    assert firmware_pin not in app_script
+    assert "release" not in firmware_script or app_pin in app_script
+
+
+@pytest.mark.asyncio
+async def test_prepare_pins_distinct_per_repo_bases(tracker: Any) -> None:
+    from preloop.services.isolated_publication import prepare_isolated_publication
+
+    tracker.id = "tracker"
+    flow = SimpleNamespace(account_id="account", id="flow")
+    firmware_sha, app_sha, compliance_sha = "a" * 40, "b" * 40, "c" * 40
+    context = {
+        "execution_id": EXECUTION,
+        "git_clone_config": {
+            "publication_mode": "isolated",
+            "verification": _verification_config(),
+            "repositories": [
+                {
+                    "repository_url": FIRMWARE,
+                    "tracker_id": "tracker",
+                    "clone_path": "firmware",
+                    "source_branch": "main",
+                },
+                {
+                    "repository_url": APP,
+                    "tracker_id": "tracker",
+                    "clone_path": "companion-app",
+                    "source_branch": "release",
+                },
+                {
+                    "repository_url": COMPLIANCE,
+                    "tracker_id": "tracker",
+                    "clone_path": "compliance",
+                    "source_branch": "docs",
+                },
+            ],
+        },
+        "trigger_event_data": {},
+    }
+    client = AsyncMock()
+    client.get.side_effect = _bind_responses(
+        ("example/firmware", firmware_sha, "main"),
+        ("example/companion-app", app_sha, "release"),
+        ("example/product-compliance", compliance_sha, "docs"),
+    )
+
+    async def mint(
+        tracker_obj: Any, url: str, *, write: bool, client: Any
+    ) -> PublicationLease:
+        return PublicationLease(
+            f"read-{url}", url, datetime.now(timezone.utc) + timedelta(minutes=10)
+        )
+
+    with (
+        patch("preloop.services.runner_service.resolve_runner_pool", return_value=None),
+        patch(
+            "preloop.services.isolated_publication.crud_tracker.get_by_id_and_account",
+            return_value=tracker,
+        ),
+        patch("preloop.services.isolated_publication.validate_publication_tracker"),
+        patch(
+            "preloop.services.isolated_publication.mint_repository_lease",
+            new=AsyncMock(side_effect=mint),
+        ),
+        patch("preloop.services.isolated_publication.httpx.AsyncClient") as factory,
+    ):
+        factory.return_value.__aenter__.return_value = client
+        policy = await prepare_isolated_publication(MagicMock(), flow, context)
+    assert [target.base for target in policy.targets] == ["main", "release", "docs"]
+    assert [target.base_sha for target in policy.targets] == [
+        firmware_sha,
+        app_sha,
+        compliance_sha,
+    ]
+    pins = {
+        row["clone_path"]: row["pin_sha"]
+        for row in context["git_clone_config"]["repositories"]
+    }
+    assert pins == {
+        "firmware": firmware_sha,
+        "companion-app": app_sha,
+        "compliance": compliance_sha,
+    }
+
+
+@pytest.mark.asyncio
+async def test_prepare_partial_publish_resume_does_not_duplicate_prs(
+    tmp_path: Path, tracker: Any
+) -> None:
+    from preloop.services.isolated_publication import prepare_isolated_publication
+    from preloop.services.multi_repo_publication import (
+        IncompleteMultiRepoPublicationError,
+        finish_multi_repo_isolated_publication,
+    )
+
+    tracker.id = "tracker"
+    flow = SimpleNamespace(account_id="account", id="flow")
+    _, fw_head, fw_bundle = _init_repo(tmp_path, "firmware", "fw")
+    _, app_head, app_bundle = _init_repo(tmp_path, "app", "app")
+    _, comp_head, comp_bundle = _init_repo(tmp_path, "compliance", "pack")
+    archive = _archive(
+        {"firmware": fw_bundle, "companion-app": app_bundle, "compliance": comp_bundle}
+    )
+    first_context = {
+        "execution_id": EXECUTION,
+        "git_clone_config": {
+            "publication_mode": "isolated",
+            "verification": _verification_config(),
+            "repositories": [
+                {
+                    "repository_url": FIRMWARE,
+                    "tracker_id": "tracker",
+                    "clone_path": "firmware",
+                },
+                {
+                    "repository_url": APP,
+                    "tracker_id": "tracker",
+                    "clone_path": "companion-app",
+                },
+                {
+                    "repository_url": COMPLIANCE,
+                    "tracker_id": "tracker",
+                    "clone_path": "compliance",
+                },
+            ],
+        },
+        "trigger_event_data": {},
+    }
+    client = AsyncMock()
+    client.get.side_effect = _bind_responses(
+        ("example/firmware", fw_head, "main"),
+        ("example/companion-app", app_head, "main"),
+        ("example/product-compliance", comp_head, "main"),
+    )
+
+    async def mint(
+        tracker_obj: Any, url: str, *, write: bool, client: Any
+    ) -> PublicationLease:
+        return PublicationLease(
+            f"read-{url}", url, datetime.now(timezone.utc) + timedelta(minutes=10)
+        )
+
+    with (
+        patch("preloop.services.runner_service.resolve_runner_pool", return_value=None),
+        patch(
+            "preloop.services.isolated_publication.crud_tracker.get_by_id_and_account",
+            return_value=tracker,
+        ),
+        patch("preloop.services.isolated_publication.validate_publication_tracker"),
+        patch(
+            "preloop.services.isolated_publication.mint_repository_lease",
+            new=AsyncMock(side_effect=mint),
+        ),
+        patch("preloop.services.isolated_publication.httpx.AsyncClient") as factory,
+    ):
+        factory.return_value.__aenter__.return_value = client
+        first_policy = await prepare_isolated_publication(
+            MagicMock(), flow, first_context
+        )
+
+    created_prs: list[str] = []
+    remote_heads: dict[str, str] = {}
+    fail_compliance = True
+
+    async def publisher(**kwargs: Any) -> dict[str, Any]:
+        nonlocal fail_compliance
+        binding = kwargs["binding"]
+        url = binding.repository_url
+        observed = remote_heads.get(url)
+        if url == COMPLIANCE and fail_compliance:
+            fail_compliance = False
+            raise PublicationError("compliance remote rejected")
+        if observed == binding.head_sha:
+            slug = {
+                FIRMWARE: "firmware",
+                APP: "companion-app",
+                COMPLIANCE: "product-compliance",
+            }[url]
+            return {
+                "url": f"https://github.com/example/{slug}/pull/1",
+                "number": 1,
+                "branch": binding.branch,
+                "provider": "github",
+                "head_sha": binding.head_sha,
+                "metadata_warnings": [],
+            }
+        if observed != binding.expected_remote_sha:
+            raise PublicationError("remote compare-and-swap mismatch")
+        if url in created_prs:
+            raise AssertionError(f"duplicate pull request for {url}")
+        created_prs.append(url)
+        remote_heads[url] = binding.head_sha
+        slug = {
+            FIRMWARE: "firmware",
+            APP: "companion-app",
+            COMPLIANCE: "product-compliance",
+        }[url]
+        return {
+            "url": f"https://github.com/example/{slug}/pull/1",
+            "number": 1,
+            "branch": binding.branch,
+            "provider": "github",
+            "head_sha": binding.head_sha,
+            "metadata_warnings": [],
+        }
+
+    async def verify(policy: Any, bundle: bytes) -> SimpleNamespace:
+        digest = hashlib.sha256(bundle).hexdigest()
+        head = {
+            hashlib.sha256(fw_bundle).hexdigest(): fw_head,
+            hashlib.sha256(app_bundle).hexdigest(): app_head,
+            hashlib.sha256(comp_bundle).hexdigest(): comp_head,
+        }[digest]
+        return SimpleNamespace(
+            verification=VerifiedPublication(EXECUTION, head, digest)
+        )
+
+    with (
+        patch(
+            "preloop.services.multi_repo_publication.crud_tracker.get_by_id_and_account",
+            return_value=tracker,
+        ),
+        patch(
+            "preloop.services.multi_repo_publication.publish_verified_bundle",
+            new=AsyncMock(side_effect=publisher),
+        ),
+        patch(
+            "preloop.services.multi_repo_publication.mint_repository_lease",
+            new=AsyncMock(
+                return_value=PublicationLease(
+                    "write",
+                    FIRMWARE,
+                    datetime.now(timezone.utc) + timedelta(minutes=10),
+                )
+            ),
+        ),
+        patch(
+            "preloop.services.multi_repo_publication.revoke_repository_lease",
+            new=AsyncMock(),
+        ),
+    ):
+        with pytest.raises(IncompleteMultiRepoPublicationError) as first:
+            await finish_multi_repo_isolated_publication(
+                db=MagicMock(),
+                policy=first_policy,
+                agent_result={"result": {}},
+                archive=archive,
+                verify=verify,
+            )
+    receipt = first.value.receipt
+    assert receipt["complete"] is False
+    assert created_prs == [FIRMWARE, APP]
+
+    resume_execution = "22222222-2222-4222-8222-222222222222"
+    prior = SimpleNamespace(flow_id="flow", result={"trusted_publication": receipt})
+    resume_context = {
+        "execution_id": resume_execution,
+        "git_clone_config": first_context["git_clone_config"],
+        "trigger_event_data": {"_resume": {"execution_id": EXECUTION}},
+    }
+    resume_client = AsyncMock()
+    published_fw = next(
+        row for row in receipt["repositories"] if row["repository_url"] == FIRMWARE
+    )
+    published_app = next(
+        row for row in receipt["repositories"] if row["repository_url"] == APP
+    )
+    resume_client.get.side_effect = _resume_bind_responses(
+        ("example/firmware", published_fw["head_sha"]),
+        ("example/companion-app", published_app["head_sha"]),
+        ("example/product-compliance", None),
+    )
+    with (
+        patch("preloop.services.runner_service.resolve_runner_pool", return_value=None),
+        patch(
+            "preloop.services.isolated_publication.crud_tracker.get_by_id_and_account",
+            return_value=tracker,
+        ),
+        patch("preloop.services.isolated_publication.validate_publication_tracker"),
+        patch(
+            "preloop.services.isolated_publication.crud_flow_execution.get",
+            return_value=prior,
+        ),
+        patch(
+            "preloop.services.isolated_publication.mint_repository_lease",
+            new=AsyncMock(side_effect=mint),
+        ),
+        patch("preloop.services.isolated_publication.httpx.AsyncClient") as factory,
+    ):
+        factory.return_value.__aenter__.return_value = resume_client
+        resumed = await prepare_isolated_publication(MagicMock(), flow, resume_context)
+    by_url = {target.repository_url: target for target in resumed.targets}
+    assert by_url[FIRMWARE].branch == published_fw["branch"]
+    assert by_url[FIRMWARE].expected_remote_sha == published_fw["head_sha"]
+    assert by_url[FIRMWARE].previous_records
+    assert by_url[APP].expected_remote_sha == published_app["head_sha"]
+    assert by_url[COMPLIANCE].expected_remote_sha is None
+
+    async def verify_resume(policy: Any, bundle: bytes) -> SimpleNamespace:
+        digest = hashlib.sha256(bundle).hexdigest()
+        head = {
+            hashlib.sha256(fw_bundle).hexdigest(): fw_head,
+            hashlib.sha256(app_bundle).hexdigest(): app_head,
+            hashlib.sha256(comp_bundle).hexdigest(): comp_head,
+        }[digest]
+        return SimpleNamespace(
+            verification=VerifiedPublication(resume_execution, head, digest)
+        )
+
+    with (
+        patch(
+            "preloop.services.multi_repo_publication.crud_tracker.get_by_id_and_account",
+            return_value=tracker,
+        ),
+        patch(
+            "preloop.services.multi_repo_publication.publish_verified_bundle",
+            new=AsyncMock(side_effect=publisher),
+        ),
+        patch(
+            "preloop.services.multi_repo_publication.mint_repository_lease",
+            new=AsyncMock(
+                return_value=PublicationLease(
+                    "write",
+                    COMPLIANCE,
+                    datetime.now(timezone.utc) + timedelta(minutes=10),
+                )
+            ),
+        ),
+        patch(
+            "preloop.services.multi_repo_publication.revoke_repository_lease",
+            new=AsyncMock(),
+        ),
+    ):
+        recovered = await finish_multi_repo_isolated_publication(
+            db=MagicMock(),
+            policy=resumed,
+            agent_result={"result": {}},
+            archive=archive,
+            verify=verify_resume,
+        )
+    assert recovered["complete"] is True
+    assert created_prs == [FIRMWARE, APP, COMPLIANCE]
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_topology_remap(tracker: Any) -> None:
+    from preloop.services.isolated_publication import prepare_isolated_publication
+
+    tracker.id = "tracker"
+    flow = SimpleNamespace(account_id="account", id="flow")
+    prior = SimpleNamespace(
+        flow_id="flow",
+        result={
+            "trusted_publication": {
+                "branch": "preloop/flow-11111111",
+                "repositories": [
+                    {
+                        "repository_url": FIRMWARE,
+                        "clone_path": "firmware",
+                        "branch": "preloop/flow-11111111",
+                        "base": "main",
+                        "base_sha": "a" * 40,
+                        "status": "published",
+                    },
+                    {
+                        "repository_url": APP,
+                        "clone_path": "companion-app",
+                        "branch": "preloop/flow-11111111",
+                        "base": "main",
+                        "base_sha": "b" * 40,
+                        "status": "failed",
+                    },
+                ],
+            }
+        },
+    )
+    context = {
+        "execution_id": "22222222-2222-4222-8222-222222222222",
+        "git_clone_config": {
+            "publication_mode": "isolated",
+            "verification": _verification_config(),
+            "repositories": [
+                {
+                    "repository_url": FIRMWARE,
+                    "tracker_id": "tracker",
+                    "clone_path": "firmware",
+                },
+                {
+                    "repository_url": COMPLIANCE,
+                    "tracker_id": "tracker",
+                    "clone_path": "compliance",
+                },
+            ],
+        },
+        "trigger_event_data": {"_resume": {"execution_id": EXECUTION}},
+    }
+    with (
+        patch("preloop.services.runner_service.resolve_runner_pool", return_value=None),
+        patch(
+            "preloop.services.isolated_publication.crud_flow_execution.get",
+            return_value=prior,
+        ),
+        patch(
+            "preloop.services.isolated_publication.crud_tracker.get_by_id_and_account",
+            return_value=tracker,
+        ),
+        patch("preloop.services.isolated_publication.validate_publication_tracker"),
+    ):
+        with pytest.raises(PublicationError, match="cannot add, remove, or remap"):
+            await prepare_isolated_publication(MagicMock(), flow, context)
+
+
+@pytest.mark.asyncio
+async def test_named_recovery_persists_three_repo_archive_without_workspace(
+    tmp_path: Path,
+) -> None:
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    _, fw_head, fw_bundle = _init_repo(tmp_path, "firmware", "fw")
+    _, app_head, app_bundle = _init_repo(tmp_path, "app", "app")
+    _, comp_head, comp_bundle = _init_repo(tmp_path, "compliance", "pack")
+    archive = _archive(
+        {"firmware": fw_bundle, "companion-app": app_bundle, "compliance": comp_bundle}
+    )
+    targets = (
+        _target(FIRMWARE, "firmware", base_sha=fw_head),
+        _target(APP, "companion-app", base_sha=app_head),
+        _target(COMPLIANCE, "compliance", role="compliance", base_sha=comp_head),
+    )
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.db = MagicMock()
+    orchestrator.execution_log = SimpleNamespace(id="execution")
+    orchestrator.execution_logger = MagicMock()
+    orchestrator._workspace_snapshot = None
+    orchestrator._evidence_archive = archive
+    orchestrator._isolated_publication_policy = _policy(targets)
+    await orchestrator._persist_isolated_recovery()
+    orchestrator.db.commit.assert_called_once()
+    assert orchestrator.execution_log.evidence_archive == archive
+
+
+@pytest.mark.asyncio
+async def test_missing_named_bundle_keeps_runtime(tmp_path: Path) -> None:
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    _, fw_head, fw_bundle = _init_repo(tmp_path, "firmware", "fw")
+    _, app_head, app_bundle = _init_repo(tmp_path, "app", "app")
+    archive = _archive({"firmware": fw_bundle, "companion-app": app_bundle})
+    targets = (
+        _target(FIRMWARE, "firmware", base_sha=fw_head),
+        _target(APP, "companion-app", base_sha=app_head),
+        _target(COMPLIANCE, "compliance", role="compliance", base_sha="c" * 40),
+    )
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.db = MagicMock()
+    orchestrator.execution_log = SimpleNamespace(id="execution")
+    orchestrator.execution_logger = MagicMock()
+    orchestrator._workspace_snapshot = None
+    orchestrator._evidence_archive = archive
+    orchestrator._isolated_publication_policy = _policy(targets)
+    with pytest.raises(PublicationError, match="missing a bundle"):
+        await orchestrator._persist_isolated_recovery()
+    orchestrator.db.commit.assert_not_called()
+
+
+def test_private_descriptor_lists_named_targets() -> None:
+    from preloop.services.private_publication import public_publication_descriptor
+
+    targets = (
+        _target(FIRMWARE, "firmware", base_sha="a" * 40),
+        _target(APP, "companion-app", base_sha="b" * 40),
+        _target(COMPLIANCE, "compliance", role="compliance", base_sha="c" * 40),
+    )
+    descriptor = public_publication_descriptor(
+        {
+            "nonce": "n" * 64,
+            "phase": "agent",
+            "policy": {
+                "tracker_id": "tracker",
+                "repository_url": FIRMWARE,
+                "branch": "preloop/flow-11111111",
+                "base": "main",
+                "base_sha": "a" * 40,
+                "expected_remote_sha": None,
+                "verification_image": "img",
+                "verification_policy": {"gate_budget_seconds": 30},
+                "targets": [
+                    {
+                        "tracker_id": target.tracker_id,
+                        "repository_url": target.repository_url,
+                        "clone_path": target.clone_path,
+                        "role": target.role,
+                        "branch": target.branch,
+                        "base": target.base,
+                        "expected_remote_sha": target.expected_remote_sha,
+                        "base_sha": target.base_sha,
+                        "previous_records": [],
+                    }
+                    for target in targets
+                ],
+            },
+        }
+    )
+    assert len(descriptor["targets"]) == 3
+    assert [row["clone_path"] for row in descriptor["targets"]] == [
+        "firmware",
+        "companion-app",
+        "compliance",
+    ]
+    assert "token" not in str(descriptor)

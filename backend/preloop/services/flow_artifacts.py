@@ -219,3 +219,171 @@ def get_artifact(
         max_expanded_bytes=settings.flow_artifact_expanded_max_bytes,
     )
     return archive
+
+
+EVIDENCE_UNAVAILABLE_HTTP = {
+    "missing": 404,
+    "expired": 410,
+    "failed": 409,
+}
+
+
+class EvidenceUnavailableError(Exception):
+    """Evidence cannot be served; ``code`` is missing, expired, or failed."""
+
+    def __init__(self, code: str, receipt: dict[str, Any]) -> None:
+        if code not in EVIDENCE_UNAVAILABLE_HTTP:
+            raise ValueError("evidence_status_invalid")
+        super().__init__(f"evidence_{code}")
+        self.code = code
+        self.receipt = receipt
+        self.status_code = EVIDENCE_UNAVAILABLE_HTTP[code]
+
+
+def evidence_receipt(
+    *,
+    status: str,
+    execution_id: Any,
+    transport: str,
+    artifact: Any = None,
+    archive: bytes | None = None,
+    error: str | None = None,
+    integrity_verified: bool = False,
+) -> dict[str, Any]:
+    """Server-owned evidence receipt. Availability is not download integrity."""
+    manifest = dict(getattr(artifact, "manifest", None) or {})
+    digest = manifest.get("sha256")
+    if not digest and archive:
+        digest = hashlib.sha256(archive).hexdigest()
+    expires = getattr(artifact, "expires_at", None) or manifest.get("expires_at")
+    if expires is not None and hasattr(expires, "isoformat"):
+        expires = expires.isoformat()
+    retention = getattr(settings, "flow_evidence_retention_hours", None)
+    return {
+        "version": 1,
+        "kind": "evidence",
+        "status": status,
+        "transport": transport,
+        "execution_id": str(execution_id) if execution_id is not None else None,
+        "artifact_id": str(artifact.id) if artifact is not None else None,
+        "sha256": digest,
+        "digest": digest,
+        "expires_at": expires,
+        "retention_hours": retention if status == "available" else None,
+        "object_lock": False,
+        "legal_hold": False,
+        "integrity_verified": integrity_verified,
+        "error": error,
+    }
+
+
+def inspect_evidence(
+    db: Session, *, account_id: UUID, execution: Any
+) -> dict[str, Any]:
+    """Live availability for download/finalize; artifact state wins over stale available."""
+    stored = getattr(execution, "evidence_receipt", None)
+    stored = dict(stored) if isinstance(stored, dict) else {}
+    if stored.get("status") == "failed":
+        failed = dict(stored)
+        failed["kind"] = "evidence"
+        failed["integrity_verified"] = False
+        return failed
+    thread_id = artifact_thread_id(
+        getattr(execution, "trigger_event_details", None), execution.id
+    )
+    artifact = crud.latest(
+        db,
+        account_id=account_id,
+        flow_id=execution.flow_id,
+        thread_id=thread_id,
+        execution_id=execution.id,
+        kind="evidence",
+    )
+    now = datetime.now(UTC)
+    if artifact is not None:
+        expired = artifact.expires_at <= now or artifact.ciphertext is None
+        status = "expired" if expired else str(artifact.availability or "available")
+        if status not in {"available", "expired", "failed"}:
+            status = "expired" if expired else "available"
+        return evidence_receipt(
+            status=status,
+            execution_id=execution.id,
+            transport="direct",
+            artifact=artifact,
+        )
+    archive = getattr(execution, "evidence_archive", None)
+    if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
+        return evidence_receipt(
+            status="available",
+            execution_id=execution.id,
+            transport="legacy",
+            archive=bytes(archive),
+        )
+    return evidence_receipt(
+        status="missing",
+        execution_id=execution.id,
+        transport=str(stored.get("transport") or "none"),
+        error=stored.get("error"),
+    )
+
+
+def load_evidence(
+    db: Session, *, account_id: UUID, execution: Any
+) -> tuple[bytes, dict[str, Any]]:
+    """Return verified evidence bytes or raise ``EvidenceUnavailableError``."""
+    receipt = inspect_evidence(db, account_id=account_id, execution=execution)
+    status = str(receipt.get("status") or "missing")
+    if status in {"missing", "failed", "expired"}:
+        raise EvidenceUnavailableError(status, receipt)
+    if receipt.get("transport") == "legacy":
+        archive = bytes(getattr(execution, "evidence_archive", None) or b"")
+        if not archive:
+            raise EvidenceUnavailableError("missing", receipt)
+        digest = hashlib.sha256(archive).hexdigest()
+        expected = receipt.get("sha256") or receipt.get("digest")
+        if expected and expected != digest:
+            failed = evidence_receipt(
+                status="failed",
+                execution_id=execution.id,
+                transport="legacy",
+                archive=archive,
+                error="artifact_digest_mismatch",
+            )
+            raise EvidenceUnavailableError("failed", failed)
+        verified = evidence_receipt(
+            status="available",
+            execution_id=execution.id,
+            transport="legacy",
+            archive=archive,
+            integrity_verified=True,
+        )
+        return archive, verified
+    thread_id = artifact_thread_id(
+        getattr(execution, "trigger_event_details", None), execution.id
+    )
+    artifact = crud.latest(
+        db,
+        account_id=account_id,
+        flow_id=execution.flow_id,
+        thread_id=thread_id,
+        execution_id=execution.id,
+        kind="evidence",
+    )
+    if artifact is None:
+        raise EvidenceUnavailableError("missing", receipt)
+    archive = get_artifact(
+        db,
+        account_id=account_id,
+        flow_id=execution.flow_id,
+        thread_id=thread_id,
+        reference=artifact_reference(artifact),
+    )
+    verified = evidence_receipt(
+        status="available",
+        execution_id=execution.id,
+        transport="direct",
+        artifact=artifact,
+        archive=archive,
+        integrity_verified=True,
+    )
+    return archive, verified

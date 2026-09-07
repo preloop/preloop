@@ -75,8 +75,9 @@ publication mode. The platform checks:
 
 - every mapped remote is an authorized repository on this account/flow
 - clone paths are unique and match the flow config
-- each mapped SHA equals the trusted checkout SHA (the source-branch
-  commit the control plane resolved before the agent ran)
+- each mapped SHA equals the immutable commit the control plane pinned
+  and later observed in a frozen checkout bundle. A moving branch tip
+  is never a verified checkout.
 - the mapped SBOM digest equals the sha256 of the supplied artifact bytes
 
 Ambiguous, duplicate, or mismatched mappings fail the execution. A
@@ -87,7 +88,8 @@ repository outside the manifest or account is never published.
 These are the claims this mapping **can** support:
 
 - "This audit ran against these remotes at these SHAs, which matched
-  the trusted clone."
+  frozen checkout bundles (or, before freeze, a controller-resolved pin
+  recorded as `pin_matched`, not `verified`)."
 - "This SBOM file, with this digest, was the artifact supplied to the
   run."
 - "These platform approval ids, reviewers (user ids), times, and
@@ -106,10 +108,11 @@ it could:
 - Human approval invented from model output. Reviewer names and
   timestamps come from the approval audit trail, or they are omitted.
 - Certification, CE marking, or a completed conformity assessment.
-- Legal hold, object-lock, or WORM retention of evidence blobs. Blob
-  storage and availability receipts are the evidence workstream; the
-  dossier manifest reports interoperable digests and
-  `evidence_integration` fields for that binding.
+- Legal hold, object-lock, or WORM retention of evidence blobs. The
+  dossier copies a server-owned `kind=evidence` receipt (`sha256`,
+  status, retention hours, `integrity_verified`) from
+  `inspect_evidence` / `load_evidence`. Availability polls are not
+  download integrity. `retained` is true only after a verified receipt.
 - A successful **product** publication when any one repository failed
   to push or open its pull request. Local commits are not success.
   Partial remote receipts stay on the execution; the run is failed.
@@ -121,23 +124,27 @@ it could:
 
 ## Isolated multi-repo publication
 
-Hosted isolated publication exports one git bundle per authorized
-checkout, verifies each bundle against the trusted profile, then
-publishes with a repository-scoped GitHub App lease. Write credentials
-never enter the agent environment. The private-runner isolated protocol
-remains single-repository; product topology uses hosted isolated
-publication (or legacy in-container publication, which is a different
-trust boundary).
+Hosted and private isolated publication export one git bundle per
+authorized checkout (`evidence/repos/<clone_path>/branch.bundle`),
+verify each bundle, then publish with a repository-scoped GitHub App
+lease. Write credentials never enter the agent environment. The private
+runner protocol repeats freeze/verify/publish per target; credentials
+stay on the controller. Partial remote failure keeps the per-repo
+receipt. A later execution resume reuses each original
+branch/base/expected head/history. Already-published remotes are not
+opened as duplicate pull requests. Adding, removing, or remapping
+constituent repositories on resume is refused.
 
-Per-repo receipts include the remote URL, PR URL, number, branch, and
-head SHA. `trusted_publication.complete` is true only when every
-authorized repository published.
+Per-repo receipts include the remote URL, PR URL, number, branch, base,
+records, and head SHA. `trusted_publication.complete` is true only when
+every authorized repository published.
 
 ## Dossier manifest
 
 After a run the control plane writes `dossier_manifest`
 (`preloop.cra.dossier_manifest/v1`) onto the execution result. It
-hashes the redacted result, the verified mapping, artifact refs, and
-platform approvals. Sensitive fields are redacted. Evidence workers
-should bind blob storage to `evidence_integration.manifest_digest` and
-`content_digest`; this workstream does not store the bytes.
+records separate digests for the raw agent result and the annotated
+control-plane result (mapping and publication receipts). Sensitive
+fields are redacted. The dossier does not hash itself. Evidence fields
+come from a `kind=evidence` receipt; missing or unverified evidence is
+reported as not retained.

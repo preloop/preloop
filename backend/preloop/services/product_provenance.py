@@ -10,8 +10,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
-from dataclasses import dataclass
-from typing import Any, Mapping
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from preloop.utils.workspace_seed import (
@@ -122,22 +123,29 @@ class VerifiedProductProvenance:
             ],
             "unverified_reasons": list(self.unverified_reasons),
             "attestation": (
-                "Verified SHAs matched trusted checkout or supplied artifact "
-                "digests. Agent-written SHAs are declarations, not a "
-                "cryptographic build attestation."
+                "verified means the SHA was present in a frozen checkout "
+                "bundle. pin_matched means it equalled a controller-resolved "
+                "commit that has not been observed in a bundle. Agent-written "
+                "SHAs are declarations, not a cryptographic build attestation."
             ),
         }
 
 
 @dataclass(frozen=True)
 class RuntimeProvenanceFacts:
-    """Trusted facts observed by the control plane, never by the agent."""
+    """Trusted facts observed by the control plane, never by the agent.
+
+    ``clone_shas`` are observed checkout identities (frozen bundle contains
+    the pin). ``requested_pins`` are controller-resolved commits that have
+    not been observed yet and must not be labelled ``verified``.
+    """
 
     authorized_remotes: tuple[str, ...]
     clone_paths: tuple[str, ...]
     clone_shas: Mapping[str, str]
     sbom_bytes: bytes | None
     sbom_path: str | None
+    requested_pins: Mapping[str, str] = field(default_factory=dict)
     publication_approval: Mapping[str, Any] | None = None
 
 
@@ -303,6 +311,11 @@ def facts_from_git_clone_config(
     return tuple(remotes), tuple(paths), trusted_shas
 
 
+def is_git_sha(value: Any) -> bool:
+    """True when ``value`` is an exact 40-hex git object name."""
+    return isinstance(value, str) and bool(_GIT_SHA.fullmatch(value.lower()))
+
+
 def _require_git_sha(value: Any) -> str:
     if not isinstance(value, str) or not _GIT_SHA.fullmatch(value.lower()):
         raise MismatchedProductMappingError(
@@ -427,6 +440,7 @@ def validate_product_provenance(
     facts: RuntimeProvenanceFacts,
     *,
     require_mapping: bool = False,
+    require_observed: bool = False,
 ) -> VerifiedProductProvenance | None:
     """Validate an optional mapping against trusted facts.
 
@@ -435,6 +449,9 @@ def validate_product_provenance(
         facts: Control-plane checkout URLs/SHAs and supplied SBOM bytes.
         require_mapping: When True (product-mode audits that opted in), a
             missing mapping fails rather than falling back to legacy.
+        require_observed: When True, product-mode SHAs must match frozen
+            checkout bundles. Controller-resolved pins alone are not
+            ``verified``.
 
     Returns:
         A verified record, or None when the mapping is absent and not required.
@@ -506,38 +523,53 @@ def validate_product_provenance(
                 "Product mapping requires a supplied SBOM artifact to verify its digest"
             )
     else:
-        observed = sha256_digest(artifact_bytes)
+        observed_digest = sha256_digest(artifact_bytes)
         if declared_digest is None:
-            sbom_digest = observed
+            sbom_digest = observed_digest
             sbom_status = "verified"
-        elif declared_digest != observed:
+        elif declared_digest != observed_digest:
             raise MismatchedProductMappingError(
                 "Mapped SBOM digest does not match the supplied artifact bytes"
             )
         else:
-            sbom_digest = observed
+            sbom_digest = observed_digest
             sbom_status = "verified"
 
-    trusted = {
+    observed_shas = {
         normalize_repository_url(remote): _require_git_sha(sha)
         for remote, sha in facts.clone_shas.items()
+    }
+    pins = {
+        normalize_repository_url(remote): _require_git_sha(sha)
+        for remote, sha in (facts.requested_pins or {}).items()
     }
     repositories: list[ProvenanceRepository] = []
     unverified: list[str] = []
     for row in declared:
         status = "declared_unverified"
-        trusted_sha = trusted.get(row["remote"])
-        if trusted_sha is None:
+        observed_sha = observed_shas.get(row["remote"])
+        pin_sha = pins.get(row["remote"])
+        if observed_sha is not None:
+            if observed_sha != row["sha"]:
+                raise MismatchedProductMappingError(
+                    f"Mapped SHA for {row['clone_path']} does not match the observed checkout"
+                )
+            status = "verified"
+        elif pin_sha is not None:
+            if pin_sha != row["sha"]:
+                raise MismatchedProductMappingError(
+                    f"Mapped SHA for {row['clone_path']} does not match the resolved pin"
+                )
+            status = "pin_matched"
+            unverified.append(
+                f"{row['clone_path']}: pin matched the controller-resolved "
+                "commit; an unobserved requested SHA is not a verified checkout"
+            )
+        else:
             unverified.append(
                 f"{row['clone_path']}: no trusted checkout SHA; agent-written "
                 "SHA is not a build attestation"
             )
-        elif trusted_sha != row["sha"]:
-            raise MismatchedProductMappingError(
-                f"Mapped SHA for {row['clone_path']} does not match the trusted checkout"
-            )
-        else:
-            status = "verified"
         repositories.append(
             ProvenanceRepository(
                 remote=row["remote"],
@@ -548,12 +580,22 @@ def validate_product_provenance(
             )
         )
 
-    if any(repo.sha_status != "verified" for repo in repositories):
+    if require_observed and any(repo.sha_status != "verified" for repo in repositories):
+        raise MismatchedProductMappingError(
+            "Unobserved requested SHA is not a verified checkout"
+        )
+    if any(repo.sha_status == "declared_unverified" for repo in repositories):
         if len(repositories) > 1:
             raise MismatchedProductMappingError(
                 "Product-mode mapping SHAs could not be verified against trusted checkout facts"
             )
         mapping_status = "declared_unverified"
+    elif any(repo.sha_status != "verified" for repo in repositories):
+        mapping_status = "pin_matched"
+        if sbom_status != "verified" and len(repositories) > 1:
+            raise MismatchedProductMappingError(
+                "Product-mode mapping requires a verified SBOM digest from supplied artifact bytes"
+            )
     elif sbom_status != "verified":
         if len(repositories) > 1:
             raise MismatchedProductMappingError(
@@ -575,33 +617,86 @@ def validate_product_provenance(
     )
 
 
+def publication_approval_required(config: Mapping[str, Any] | None) -> bool:
+    """Whether the saved flow requires a human publication approval.
+
+    An optional mapping field is not a policy. Only ``git_clone_config``.
+    """
+    if not isinstance(config, Mapping):
+        return False
+    value = config.get("publication_approval")
+    return value in {True, "required", "require"}
+
+
+def authorize_publication_decision(
+    records: Sequence[Any],
+    *,
+    required: bool,
+    repository_urls: Sequence[str],
+    commits: Sequence[str],
+    action: str = "isolated_publication",
+    now: datetime | None = None,
+) -> None:
+    """Refuse publication unless a human approval matches targets/action/commits.
+
+    Unknown, missing, expired, declined, AI-decided, or unrelated rows deny
+    when ``required`` is true. They never authorize.
+    """
+    if not required:
+        return
+    wanted_urls = {normalize_repository_url(url) for url in repository_urls}
+    wanted_commits = {_require_git_sha(sha) for sha in commits}
+    if not wanted_urls or not wanted_commits:
+        raise ProductProvenanceError(
+            "Publication approval cannot be bound without exact repository and commit scope"
+        )
+    moment = now or datetime.now(timezone.utc)
+    for record in records:
+        if str(getattr(record, "status", "") or "") != "approved":
+            continue
+        if getattr(record, "decided_by_ai", False) or getattr(
+            record, "auto_approved_reason", None
+        ):
+            continue
+        expires = getattr(record, "expires_at", None)
+        if expires is not None:
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if expires <= moment:
+                continue
+        args = getattr(record, "tool_args", None)
+        if not isinstance(args, Mapping):
+            continue
+        named = str(
+            args.get("action") or getattr(record, "tool_name", "") or ""
+        ).strip()
+        if named not in {action, "publish", "isolated_publication"}:
+            continue
+        raw_repos = args.get("repositories") or args.get("repository_urls") or []
+        raw_commits = args.get("commits") or args.get("head_shas") or []
+        if not isinstance(raw_repos, list) or not isinstance(raw_commits, list):
+            continue
+        try:
+            scoped_urls = {normalize_repository_url(str(item)) for item in raw_repos}
+            scoped_commits = {_require_git_sha(item) for item in raw_commits}
+        except (ProductProvenanceError, MismatchedProductMappingError):
+            continue
+        if scoped_urls == wanted_urls and scoped_commits == wanted_commits:
+            return
+    raise ProductProvenanceError(
+        "Publication requires a human platform approval bound to these "
+        "repositories, commits, and action"
+    )
+
+
 def publication_approval_allows(
     approval: Mapping[str, Any] | None,
     *,
     required_id: str | None,
 ) -> None:
-    """Refuse publication when a declared platform approval is missing or denied.
-
-    Agent-authored approval identifiers are ignored unless they match a
-    platform record passed in ``approval``.
-    """
-    if not required_id:
-        return
-    if not isinstance(approval, Mapping):
-        raise ProductProvenanceError(
-            "Publication requires a platform approval record; agent-written ids are not authority"
-        )
-    identifier = str(approval.get("id") or "")
-    if identifier != required_id:
-        raise ProductProvenanceError(
-            "Declared publication approval id does not match the platform record"
-        )
-    status = str(approval.get("status") or "")
-    if status != "approved":
-        raise ProductProvenanceError(
-            f"Publication approval is {status or 'missing'}; refusing to publish"
-        )
-    if approval.get("decided_by_ai") or approval.get("auto_approved_reason"):
-        raise ProductProvenanceError(
-            "Publication approval was not a human platform decision"
-        )
+    """Legacy helper. Do not treat a caller-supplied id as publication policy."""
+    del approval, required_id
+    raise ProductProvenanceError(
+        "A caller-supplied approval id is not publication policy; configure "
+        "git_clone_config.publication_approval"
+    )

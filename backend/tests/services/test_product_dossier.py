@@ -53,23 +53,23 @@ def test_manifest_is_deterministic_and_redacts_secrets() -> None:
     assert first["schema"] == DOSSIER_MANIFEST_SCHEMA
     assert first["result"]["token"] == "[REDACTED]"
     assert first["source_inputs"]["status"] == "legacy_unmapped"
-    assert first["evidence_integration"]["blob_storage"] == "evidence_workstream"
-    assert first["evidence_integration"]["receipt"] is None
-    assert first["digests"]["manifest"] == content_digest(
+    assert first["evidence"]["kind"] == "evidence"
+    assert first["evidence"]["retained"] is False
+    assert first["evidence"]["integrity_verified"] is False
+    assert "blob_storage" not in first
+    assert "evidence_integration" not in first
+    assert first["digests"]["raw_result_digest"] == content_digest(
         {
-            key: first[key]
-            for key in (
-                "schema",
-                "execution_id",
-                "result",
-                "source_inputs",
-                "artifact_refs",
-                "platform_approvals",
-                "publication",
-                "disclaimer",
-            )
+            "schema": "preloop.cra.releaseaudit/v1",
+            "verdict": "pass",
+            "token": "[REDACTED]",
         }
     )
+    assert (
+        first["digests"]["annotated_result_digest"]
+        == first["digests"]["raw_result_digest"]
+    )
+    assert "dossier_manifest" not in first["result"]
 
 
 def test_platform_approvals_ignore_agent_reviewer_and_keep_ids() -> None:
@@ -147,3 +147,34 @@ def test_manifest_includes_verified_mapping_not_agent_sha_attestation() -> None:
     assert manifest["source_inputs"]["mapping_status"] == "verified"
     assert "not a cryptographic" in manifest["source_inputs"]["attestation"].lower()
     assert manifest["source_inputs"]["repositories"][0]["sha_status"] == "verified"
+    assert (
+        manifest["digests"]["raw_result_digest"]
+        != manifest["digests"]["annotated_result_digest"]
+    )
+    assert "product_provenance" in manifest["result"]
+    assert "dossier_manifest" not in manifest["result"]
+
+
+def test_manifest_copies_verified_evidence_receipt_not_placeholders() -> None:
+    manifest = build_dossier_manifest(
+        execution_id=EXECUTION,
+        result={"verdict": "pass"},
+        provenance=None,
+        artifact_refs={},
+        generated_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+        evidence_receipt={
+            "kind": "evidence",
+            "status": "available",
+            "sha256": "d" * 64,
+            "artifact_id": "44444444-4444-4444-8444-444444444444",
+            "execution_id": EXECUTION,
+            "integrity_verified": True,
+            "retention_hours": 720,
+        },
+    )
+    assert manifest["evidence"]["kind"] == "evidence"
+    assert manifest["evidence"]["sha256"] == "d" * 64
+    assert manifest["evidence"]["retained"] is True
+    assert manifest["evidence"]["integrity_verified"] is True
+    assert "evidence_workstream" not in str(manifest)
+    assert manifest["evidence"]["object_lock"] is False
