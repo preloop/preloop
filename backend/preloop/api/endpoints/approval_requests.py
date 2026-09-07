@@ -42,6 +42,17 @@ logger = logging.getLogger(__name__)
 AUTHENTICATED_DECISION_CHANNEL = "console"
 
 
+async def _advance_security_maintenance(db: Session, updated: ApprovalRequest) -> None:
+    """Let a console/token ApprovalService decision advance a maintenance item."""
+    if getattr(updated, "tool_name", None) != "security_maintenance":
+        return
+    from preloop.services.security_maintenance import SecurityMaintenanceService
+
+    db.expire_all()
+    service = SecurityMaintenanceService(db, account_id=updated.account_id)
+    await service.reconcile_platform_approval(updated.id)
+
+
 async def _async_db_session() -> AsyncGenerator[AsyncSession, None]:
     """Yield an async session for handlers that must not block the event loop.
 
@@ -306,6 +317,8 @@ async def approve_request(
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to approve request")
 
+        await _advance_security_maintenance(db, updated)
+
         # Name the agent, key, session and flow run on the async session the
         # handler already holds (the sync request session would block the
         # event loop), then convert while the write session is still open to
@@ -374,6 +387,8 @@ async def decline_request(
         )
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to decline request")
+
+        await _advance_security_maintenance(db, updated)
 
         # Name the agent, key, session and flow run on the async session the
         # handler already holds (the sync request session would block the
@@ -455,6 +470,8 @@ async def decide_request(
 
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to process decision")
+
+        await _advance_security_maintenance(db, updated)
 
         # Name the agent, key, session and flow run on the async session the
         # handler already holds (the sync request session would block the

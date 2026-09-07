@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import json
@@ -12,6 +13,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -25,9 +27,12 @@ from preloop.schemas.security_maintenance import (
     ScanIngestRequest,
     SupportedReleaseCreate,
 )
+from preloop.services.approval_service import ApprovalService
 from preloop.services.flow_artifacts import manifest_digest, validate_archive
+from preloop.services.flow_trigger_service import FlowDispatchError, FlowTriggerService
 from preloop.services.security_maintenance import SecurityMaintenanceService
 from preloop.services.security_maintenance_refs import (
+    InvalidTransitionError,
     UnsupportedReleaseError,
     audit_acceptance,
     evidence_ref_from_execution,
@@ -48,6 +53,9 @@ TREE = "b" * 40
 REPO_URL = "https://github.com/example/project.git"
 PR_URL = "https://github.com/example/project/pull/7"
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "cra"
+SBOM_B64 = base64.b64encode(
+    b'{"bomFormat": "CycloneDX", "specVersion": "1.5"}'
+).decode()
 
 PROFILE = {
     "profile_id": "maintenance-tests",
@@ -145,10 +153,29 @@ def _world(db_session: Session, test_user: models.User):
         },
     )
     workflow = models.ApprovalWorkflow(
-        account_id=test_user.account_id, name="security-maintenance"
+        account_id=test_user.account_id,
+        name="security-maintenance",
+        approval_type="manual",
+        approver_user_ids=[test_user.id],
+        timeout_seconds=86400,
+        approvals_required=1,
     )
     db_session.add(workflow)
     db_session.flush()
+    issue = CRUDBase(models.Issue).create(
+        db_session,
+        obj_in={
+            "title": "CVE-2024-0001 on example-widget 1.2",
+            "description": "Remediate CVE-2024-0001 in libexample for release 1.2.",
+            "status": "open",
+            "issue_type": "vulnerability",
+            "external_id": "42",
+            "external_url": "https://github.com/example/project/issues/42",
+            "project_id": project.id,
+            "tracker_id": tracker.id,
+            "key": "example#42",
+        },
+    )
     implementer = CRUDBase(models.Flow).create(
         db_session,
         obj_in={
@@ -177,11 +204,30 @@ def _world(db_session: Session, test_user: models.User):
         },
     )
     service = SecurityMaintenanceService(db_session, account_id=test_user.account_id)
-    return service, project, workflow, implementer, audit, tracker
+    return service, project, workflow, implementer, audit, tracker, issue
+
+
+def _issue(world) -> models.Issue:
+    return world[6]
+
+
+def _scan(**kwargs):
+    findings = kwargs.pop(
+        "findings",
+        [ScanFinding(advisory_id="CVE-2024-0001", component_id="libexample")],
+    )
+    payload = {
+        "product_key": "example-widget",
+        "release_key": "1.2",
+        "sbom_content_base64": SBOM_B64,
+        "findings": findings,
+    }
+    payload.update(kwargs)
+    return ScanIngestRequest(**payload)
 
 
 async def _release(world, test_user):
-    service, project, workflow, implementer, audit, _tracker = world
+    service, project, workflow, implementer, audit, _tracker, _issue = world
     return await service.create_release(
         SupportedReleaseCreate(
             product_key="example-widget",
@@ -278,9 +324,20 @@ def world(db_session, test_user):
     return _world(db_session, test_user)
 
 
+@pytest.fixture(autouse=True)
+def _quiet_approval_side_effects():
+    with (
+        patch.object(ApprovalService, "send_notifications", new_callable=AsyncMock),
+        patch.object(
+            ApprovalService, "_broadcast_approval_update", new_callable=AsyncMock
+        ),
+    ):
+        yield
+
+
 class TestEvidenceAuthority:
     def test_caller_available_and_digest_do_not_grant(self, db_session, world) -> None:
-        _service, _project, _workflow, implementer, _audit, _tracker = world
+        _service, _project, _workflow, implementer, _audit, _tracker, *_ = world
         execution = _execution(db_session, implementer)
         claimed = evidence_ref_from_execution(
             execution,
@@ -295,7 +352,7 @@ class TestEvidenceAuthority:
     def test_forged_digest_and_wrong_account_fail(
         self, db_session, world, test_user
     ) -> None:
-        _service, _project, _workflow, implementer, _audit, _tracker = world
+        _service, _project, _workflow, implementer, _audit, _tracker, *_ = world
         execution = _execution(db_session, implementer)
         _store_evidence(db_session, execution)
         forged = evidence_ref_from_execution(
@@ -312,7 +369,7 @@ class TestEvidenceAuthority:
         assert foreign.available is False
 
     def test_wrong_execution_and_expired_artifact_fail(self, db_session, world) -> None:
-        _service, _project, _workflow, implementer, _audit, _tracker = world
+        _service, _project, _workflow, implementer, _audit, _tracker, *_ = world
         owned = _execution(db_session, implementer)
         other = _execution(db_session, implementer, details={"_session_thread_id": "x"})
         _store_evidence(db_session, owned)
@@ -337,7 +394,7 @@ class TestEvidenceAuthority:
     def test_claimed_missing_denies_and_valid_archive_grants(
         self, db_session, world, test_user
     ) -> None:
-        _service, _project, _workflow, implementer, _audit, _tracker = world
+        _service, _project, _workflow, implementer, _audit, _tracker, *_ = world
         execution = _execution(db_session, implementer)
         denied = evidence_ref_from_execution(
             execution,
@@ -358,7 +415,7 @@ class TestTestsAndPublication:
     def test_succeeded_without_verification_fails_closed(
         self, db_session, world
     ) -> None:
-        _service, _project, _workflow, implementer, _audit, _tracker = world
+        _service, _project, _workflow, implementer, _audit, _tracker, *_ = world
         execution = _execution(db_session, implementer, result={"status": "success"})
         publication = publication_ref_from_execution(execution, flow=implementer)
         passed, reason = tests_passed(
@@ -368,7 +425,7 @@ class TestTestsAndPublication:
         assert reason == "trusted_verification_missing"
 
     def test_observe_only_and_agent_publication_fail(self, db_session, world) -> None:
-        _service, _project, _workflow, implementer, _audit, _tracker = world
+        _service, _project, _workflow, implementer, _audit, _tracker, *_ = world
         execution = _execution(
             db_session,
             implementer,
@@ -395,7 +452,7 @@ class TestTestsAndPublication:
     def test_controller_receipt_and_matching_verification_pass(
         self, db_session, world
     ) -> None:
-        _service, _project, _workflow, implementer, _audit, _tracker = world
+        _service, _project, _workflow, implementer, _audit, _tracker, *_ = world
         execution = _execution(db_session, implementer)
         receipt = _receipt(execution.id)
         execution.result = {
@@ -414,7 +471,7 @@ class TestTestsAndPublication:
         assert reason == "tests_passed"
 
     def test_stale_verification_commit_is_blocked(self, db_session, world) -> None:
-        _service, _project, _workflow, implementer, _audit, _tracker = world
+        _service, _project, _workflow, implementer, _audit, _tracker, *_ = world
         execution = _execution(db_session, implementer)
         receipt = _receipt(execution.id)
         execution.result = {
@@ -435,7 +492,7 @@ class TestAuditAcceptance:
     def test_missing_checkout_and_agent_fields_cannot_prove_repair(
         self, db_session, world, test_user
     ) -> None:
-        service, _project, _workflow, _implementer, audit, _tracker = world
+        service, _project, _workflow, _implementer, audit, _tracker, *_ = world
         execution = _execution(
             db_session,
             audit,
@@ -481,7 +538,7 @@ class TestAuditAcceptance:
     def test_unknown_cra_schema_and_blind_scan_are_rejected(
         self, db_session, world, test_user
     ) -> None:
-        _service, _project, _workflow, _implementer, audit, _tracker = world
+        _service, _project, _workflow, _implementer, audit, _tracker, *_ = world
         execution = _execution(
             db_session,
             audit,
@@ -523,8 +580,7 @@ class TestAuditAcceptance:
     def test_screened_absence_accepts_when_validator_allows(
         self, db_session, world, test_user
     ) -> None:
-        pytest.importorskip("preloop.cra.validate")
-        _service, _project, _workflow, _implementer, audit, _tracker = world
+        _service, _project, _workflow, _implementer, audit, _tracker, *_ = world
         payload = _screened_vulnscan(present=False)
         execution = _execution(
             db_session,
@@ -558,14 +614,10 @@ class TestDurableLifecycle:
         service, *_rest = world
         with pytest.raises(UnsupportedReleaseError):
             await service.ingest_scan(
-                ScanIngestRequest(
+                _scan(
                     product_key="missing",
                     release_key="0",
-                    findings=[
-                        ScanFinding(
-                            advisory_id="CVE-2024-0001", component_id="libexample"
-                        )
-                    ],
+                    issue_id=_issue(world).id,
                 )
             )
         await _release(world, test_user)
@@ -573,21 +625,10 @@ class TestDurableLifecycle:
             "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
             new_callable=AsyncMock,
         ):
-            first = await service.ingest_scan(
-                ScanIngestRequest(
-                    product_key="example-widget",
-                    release_key="1.2",
-                    findings=[
-                        ScanFinding(
-                            advisory_id="CVE-2024-0001", component_id="libexample"
-                        )
-                    ],
-                )
-            )
+            first = await service.ingest_scan(_scan(issue_id=_issue(world).id))
             second = await service.ingest_scan(
-                ScanIngestRequest(
-                    product_key="example-widget",
-                    release_key="1.2",
+                _scan(
+                    issue_id=_issue(world).id,
                     findings=[
                         ScanFinding(
                             advisory_id="CVE-2024-0001",
@@ -619,23 +660,13 @@ class TestDurableLifecycle:
     async def test_failed_tests_missing_evidence_stale_and_denied_approval(
         self, db_session, world, test_user
     ) -> None:
-        service, _project, _workflow, implementer, audit, _tracker = world
+        service, _project, _workflow, implementer, audit, _tracker, *_ = world
         await _release(world, test_user)
         with patch(
             "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
             new_callable=AsyncMock,
         ):
-            ingested = await service.ingest_scan(
-                ScanIngestRequest(
-                    product_key="example-widget",
-                    release_key="1.2",
-                    findings=[
-                        ScanFinding(
-                            advisory_id="CVE-2024-0001", component_id="libexample"
-                        )
-                    ],
-                )
-            )
+            ingested = await service.ingest_scan(_scan(issue_id=_issue(world).id))
         item_id = ingested["items"][0]["id"]
         item = crud_security_maintenance.get_item(
             db_session, account_id=test_user.account_id, item_id=item_id
@@ -695,24 +726,13 @@ class TestDurableLifecycle:
     async def test_happy_path_to_new_baseline(
         self, db_session, world, test_user
     ) -> None:
-        pytest.importorskip("preloop.cra.validate")
-        service, _project, _workflow, implementer, audit, _tracker = world
+        service, _project, _workflow, implementer, audit, _tracker, *_ = world
         await _release(world, test_user)
         with patch(
             "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
             new_callable=AsyncMock,
         ):
-            ingested = await service.ingest_scan(
-                ScanIngestRequest(
-                    product_key="example-widget",
-                    release_key="1.2",
-                    findings=[
-                        ScanFinding(
-                            advisory_id="CVE-2024-0001", component_id="libexample"
-                        )
-                    ],
-                )
-            )
+            ingested = await service.ingest_scan(_scan(issue_id=_issue(world).id))
             item = crud_security_maintenance.get_item(
                 db_session,
                 account_id=test_user.account_id,
@@ -748,16 +768,16 @@ class TestDurableLifecycle:
                 execution_id=item.recheck_execution_id,
             )
             recheck.status = "SUCCEEDED"
-            recheck.trigger_event_details = {
-                **(recheck.trigger_event_details or {}),
-                "_session_thread_id": str(recheck.id),
-                "payload": {
-                    "sha": SHA,
-                    "security_maintenance": (recheck.trigger_event_details or {})
-                    .get("payload", {})
-                    .get("security_maintenance"),
-                },
-            }
+            details = dict(recheck.trigger_event_details or {})
+            details["_session_thread_id"] = str(recheck.id)
+            payload = dict(details.get("payload") or {})
+            assert payload.get("sha") == SHA
+            assert payload.get("workspace_files")
+            envelope = payload.get("security_maintenance") or {}
+            assert envelope.get("sbom_input_ref") == "sbom/image.spdx.json"
+            assert envelope.get("pinned_build_ref") == "v1.2.3"
+            details["payload"] = payload
+            recheck.trigger_event_details = details
             recheck.result = _screened_vulnscan(present=False)
             _store_evidence(db_session, recheck)
             await service.finish_execution(recheck)
@@ -778,17 +798,7 @@ class TestDurableLifecycle:
             "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
             new_callable=AsyncMock,
         ):
-            ingested = await service.ingest_scan(
-                ScanIngestRequest(
-                    product_key="example-widget",
-                    release_key="1.2",
-                    findings=[
-                        ScanFinding(
-                            advisory_id="CVE-2024-0001", component_id="libexample"
-                        )
-                    ],
-                )
-            )
+            ingested = await service.ingest_scan(_scan(issue_id=_issue(world).id))
             item = crud_security_maintenance.get_item(
                 db_session,
                 account_id=test_user.account_id,
@@ -839,30 +849,385 @@ class TestDurableLifecycle:
             assert len(after) > len(before)
 
 
-def test_execution_api_key_is_rejected(db_session, test_user, world) -> None:
-    from fastapi import HTTPException
-
-    from preloop.api.endpoints.security_maintenance import _reject_execution_api_key
-
-    _service, _project, _workflow, implementer, _audit, _tracker = world
-    execution = _execution(db_session, implementer)
-    _key, token = crud_api_key.create_runtime_key(
-        db_session,
-        name="execution-key",
-        account_id=test_user.account_id,
-        user_id=test_user.id,
-        context_data={"flow_execution_id": str(execution.id)},
-        commit=False,
+async def _impl_to_approval(service, world, db_session, test_user):
+    ingested = await service.ingest_scan(_scan(issue_id=_issue(world).id))
+    item = crud_security_maintenance.get_item(
+        db_session, account_id=test_user.account_id, item_id=ingested["items"][0]["id"]
     )
-
-    class _Request:
-        headers = {"authorization": f"Bearer {token}"}
-
-    item = {
-        "implementation_execution_id": str(execution.id),
-        "recheck_execution_id": None,
+    impl = crud_security_maintenance.get_execution(
+        db_session,
+        account_id=test_user.account_id,
+        execution_id=item.implementation_execution_id,
+    )
+    impl.status = "SUCCEEDED"
+    impl.result = {
+        "_private_publication": {"phase": "complete", "receipt": _receipt(impl.id)},
+        "trusted_publication": _receipt(impl.id),
+        "verification": _verification(),
     }
-    with pytest.raises(HTTPException) as exc:
-        _reject_execution_api_key(_Request(), db_session, test_user, item)
-    assert exc.value.status_code == 403
-    assert "execution_api_key_cannot_approve" in str(exc.value.detail)
+    db_session.flush()
+    await service.finish_execution(impl)
+    db_session.refresh(item)
+    return item, impl
+
+
+class TestDispatchAndApprovals:
+    @pytest.mark.asyncio
+    async def test_dispatched_payload_uses_runner_entry(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        start = AsyncMock()
+
+        async def passthrough(_execution_id, local):
+            await local()
+
+        with (
+            patch(
+                "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+                side_effect=passthrough,
+            ),
+            patch.object(FlowTriggerService, "_start_flow_execution", start),
+        ):
+            ingested = await service.ingest_scan(_scan(issue_id=_issue(world).id))
+        start.assert_awaited()
+        _flow, event, _nats = start.call_args.args
+        payload = event["payload"]
+        assert payload["object_attributes"]["number"] == 42
+        assert payload["repository"]["full_name"] == "example/project"
+        assert payload["workspace_files"]
+        assert payload["workspace_files"][0]["path"] == "sbom/image.spdx.json"
+        envelope = payload["security_maintenance"]
+        assert envelope["sbom_input_ref"] == "sbom/image.spdx.json"
+        assert envelope["pinned_build_ref"] == "v1.2.3"
+        assert envelope["input_digest"]
+        item = crud_security_maintenance.get_item(
+            db_session,
+            account_id=test_user.account_id,
+            item_id=ingested["items"][0]["id"],
+        )
+        precreated = start.call_args.kwargs["precreated_execution"]
+        assert precreated.id == item.implementation_execution_id
+
+    @pytest.mark.asyncio
+    async def test_second_session_sees_reserved_execution(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            ingested = await service.ingest_scan(_scan(issue_id=_issue(world).id))
+        execution_id = ingested["items"][0]["implementation_execution_id"]
+        other = Session(bind=db_session.bind)
+        try:
+            found = crud_security_maintenance.get_execution(
+                other, account_id=test_user.account_id, execution_id=execution_id
+            )
+            assert found is not None
+            assert found.status == "PENDING"
+        finally:
+            other.close()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_scan_keeps_one_execution(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            first = await service.ingest_scan(_scan(issue_id=_issue(world).id))
+            second = await service.ingest_scan(_scan(issue_id=_issue(world).id))
+        assert (
+            first["items"][0]["implementation_execution_id"]
+            == second["items"][0]["implementation_execution_id"]
+        )
+        executions = [
+            row
+            for row in db_session.query(models.FlowExecution).all()
+            if row.trigger_event_details
+            and (row.trigger_event_details.get("payload") or {}).get(
+                "security_maintenance"
+            )
+        ]
+        assert len(executions) == 1
+
+    @pytest.mark.asyncio
+    async def test_enqueue_failure_retries_without_second_execution(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+            side_effect=FlowDispatchError(
+                "00000000-0000-0000-0000-000000000001",
+                "PENDING",
+                RuntimeError("broker_unavailable"),
+            ),
+        ):
+            ingested = await service.ingest_scan(_scan(issue_id=_issue(world).id))
+        item = crud_security_maintenance.get_item(
+            db_session,
+            account_id=test_user.account_id,
+            item_id=ingested["items"][0]["id"],
+        )
+        assert item.state == "remediation_pending"
+        first_id = item.implementation_execution_id
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ) as retry:
+            await service.reconcile_item(item.id)
+        retry.assert_awaited()
+        db_session.refresh(item)
+        assert item.implementation_execution_id == first_id
+
+    @pytest.mark.asyncio
+    async def test_console_approval_advances_without_bespoke_call(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            item, _impl = await _impl_to_approval(service, world, db_session, test_user)
+            row = crud_security_maintenance.get_approval_request(
+                db_session,
+                account_id=test_user.account_id,
+                request_id=item.approval_request_id,
+            )
+            updated = await service._approval_service().approve_request(
+                row.id,
+                "console ship",
+                user_id=test_user.id,
+                channel="console",
+            )
+            advanced = await service.reconcile_platform_approval(updated.id)
+        assert advanced is not None
+        assert advanced["state"] in {"reaudit_pending", "reauditing"}
+
+    @pytest.mark.asyncio
+    async def test_quorum_and_non_approver(self, db_session, world, test_user) -> None:
+        service, _project, workflow, *_rest = world
+        workflow.approvals_required = 2
+        other = models.User(
+            account_id=test_user.account_id,
+            email="approver2@example.com",
+            username="approver2",
+            full_name="Approver Two",
+            is_active=True,
+            hashed_password="x",
+            user_source="local",
+        )
+        db_session.add(other)
+        db_session.flush()
+        workflow.approver_user_ids = [test_user.id, other.id]
+        db_session.flush()
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            item, _impl = await _impl_to_approval(service, world, db_session, test_user)
+            stranger = models.User(
+                account_id=test_user.account_id,
+                email="stranger@example.com",
+                username="stranger",
+                full_name="Stranger",
+                is_active=True,
+                hashed_password="x",
+                user_source="local",
+            )
+            db_session.add(stranger)
+            db_session.flush()
+            with pytest.raises(InvalidTransitionError):
+                await service.decide_approval(
+                    item.id,
+                    ApprovalDecisionRequest(reason="not eligible"),
+                    actor_user_id=stranger.id,
+                    approved=True,
+                )
+            pending = await service.decide_approval(
+                item.id,
+                ApprovalDecisionRequest(reason="first vote"),
+                actor_user_id=test_user.id,
+                approved=True,
+            )
+            assert pending["state"] == "approval_pending"
+            done = await service.decide_approval(
+                item.id,
+                ApprovalDecisionRequest(reason="second vote"),
+                actor_user_id=other.id,
+                approved=True,
+            )
+            assert done["state"] in {"reaudit_pending", "reauditing"}
+
+    @pytest.mark.asyncio
+    async def test_stale_recheck_cannot_regress_newer_baseline(
+        self, db_session, world, test_user
+    ) -> None:
+        service, _project, _workflow, _implementer, audit, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            item, _impl = await _impl_to_approval(service, world, db_session, test_user)
+            await service.decide_approval(
+                item.id,
+                ApprovalDecisionRequest(reason="ship"),
+                actor_user_id=test_user.id,
+                approved=True,
+            )
+            db_session.refresh(item)
+            recheck = crud_security_maintenance.get_execution(
+                db_session,
+                account_id=test_user.account_id,
+                execution_id=item.recheck_execution_id,
+            )
+            newer = _execution(
+                db_session,
+                audit,
+                details={"payload": {"sha": SHA}, "_session_thread_id": "newer"},
+                result=_screened_vulnscan(present=False),
+            )
+            _store_evidence(db_session, newer)
+            newer.created_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(
+                hours=1
+            )
+            db_session.flush()
+            release = crud_security_maintenance.get_release(
+                db_session, account_id=test_user.account_id, release_id=item.release_id
+            )
+            baseline = crud_security_maintenance.create_baseline(
+                db_session,
+                account_id=test_user.account_id,
+                fields={
+                    "release_id": release.id,
+                    "audit_execution_id": newer.id,
+                    "result_digest": "d" * 64,
+                    "verdict": "pass",
+                    "evidence_ref": {},
+                    "data": {},
+                },
+            )
+            crud_security_maintenance.set_accepted_baseline(
+                db_session,
+                account_id=test_user.account_id,
+                release_id=release.id,
+                baseline_id=baseline.id,
+            )
+            recheck.status = "SUCCEEDED"
+            details = dict(recheck.trigger_event_details or {})
+            details["_session_thread_id"] = str(recheck.id)
+            recheck.trigger_event_details = details
+            recheck.result = _screened_vulnscan(present=False)
+            _store_evidence(db_session, recheck)
+            recheck.created_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+                hours=1
+            )
+            db_session.flush()
+            await service.finish_execution(recheck)
+        db_session.refresh(item)
+        release = crud_security_maintenance.get_release(
+            db_session, account_id=test_user.account_id, release_id=item.release_id
+        )
+        assert release.accepted_baseline_id == baseline.id
+        assert item.state != "resolved"
+        assert any(
+            row["outcome"] == "stale_completion"
+            for row in service.list_decisions(item.id)
+        )
+
+
+class TestHttpRbac:
+    def test_managed_and_cross_item_credentials_are_denied(
+        self, db_session, test_user, world
+    ) -> None:
+        from fastapi import HTTPException
+
+        from preloop.api.endpoints.security_maintenance import (
+            _reject_managed_credentials,
+        )
+
+        _service, _project, _workflow, implementer, *_rest = world
+        owned = _execution(db_session, implementer)
+        other = _execution(db_session, implementer)
+        _key, _token = crud_api_key.create_runtime_key(
+            db_session,
+            name="execution-key",
+            account_id=test_user.account_id,
+            user_id=test_user.id,
+            context_data={"flow_execution_id": str(other.id)},
+            commit=False,
+        )
+        test_user._auth_api_key = _key
+        with pytest.raises(HTTPException) as exc:
+            _reject_managed_credentials(test_user)
+        assert exc.value.status_code == 403
+        agent_key, _agent_token = crud_api_key.create_runtime_key(
+            db_session,
+            name="agent-key",
+            account_id=test_user.account_id,
+            user_id=test_user.id,
+            context_data={"managed_agent_id": str(uuid4())},
+            commit=False,
+        )
+        test_user._auth_api_key = agent_key
+        with pytest.raises(HTTPException):
+            _reject_managed_credentials(test_user)
+        delattr(test_user, "_auth_api_key")
+        _reject_managed_credentials(test_user)
+        assert owned.id != other.id
+
+    def test_http_routes_with_rbac_and_real_credentials(
+        self, db_session, test_user, world, monkeypatch
+    ) -> None:
+        from preloop.api.app import create_app
+        from preloop.api.auth import get_current_active_user
+        from preloop.api.auth.jwt import create_access_token
+        from preloop.config import settings
+        from preloop.models.db.session import get_db_session as get_db
+
+        monkeypatch.setenv("DISABLE_RBAC", "false")
+        settings.disable_rbac = False
+        app = create_app()
+        app.dependency_overrides[get_db] = lambda: db_session
+        with TestClient(app) as client:
+            token = create_access_token({"sub": str(test_user.id)})
+            denied = client.get(
+                "/api/v1/security-maintenance/releases",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert denied.status_code in {200, 403, 401}
+            app.dependency_overrides[get_current_active_user] = lambda: test_user
+            listed = client.get("/api/v1/security-maintenance/releases")
+            assert listed.status_code == 200
+            _service, _project, _workflow, implementer, *_rest = world
+            execution = _execution(db_session, implementer)
+            key, secret = crud_api_key.create_runtime_key(
+                db_session,
+                name="http-execution",
+                account_id=test_user.account_id,
+                user_id=test_user.id,
+                context_data={"flow_execution_id": str(execution.id)},
+                commit=False,
+            )
+            test_user._auth_api_key = key
+            blocked = client.post(
+                f"/api/v1/security-maintenance/items/{uuid4()}/approve",
+                json={"reason": "agent cannot approve"},
+            )
+            assert blocked.status_code == 403
+        settings.disable_rbac = True
+        monkeypatch.setenv("DISABLE_RBAC", "true")

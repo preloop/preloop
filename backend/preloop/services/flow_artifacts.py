@@ -18,6 +18,11 @@ from preloop.models.schemas.flow_artifact import ArtifactManifest, ArtifactRefer
 from preloop.utils.encryption import _get_fernet
 
 MAX_MEMBERS = 100_000
+EVIDENCE_UNAVAILABLE_HTTP = {
+    "missing": 404,
+    "expired": 410,
+    "failed": 409,
+}
 
 
 def artifact_thread_id(trigger: Any, execution_id: Any) -> str:
@@ -219,3 +224,234 @@ def get_artifact(
         max_expanded_bytes=settings.flow_artifact_expanded_max_bytes,
     )
     return archive
+
+
+class EvidenceUnavailableError(Exception):
+    """Evidence cannot be served; ``code`` is missing, expired, or failed."""
+
+    def __init__(self, code: str, receipt: dict[str, Any]) -> None:
+        if code not in EVIDENCE_UNAVAILABLE_HTTP:
+            raise ValueError("evidence_status_invalid")
+        super().__init__(f"evidence_{code}")
+        self.code = code
+        self.receipt = receipt
+        self.status_code = EVIDENCE_UNAVAILABLE_HTTP[code]
+
+
+def _evidence_retention_hours() -> int:
+    return int(
+        getattr(settings, "flow_evidence_retention_hours", None)
+        or settings.workspace_snapshot_ttl_hours
+    )
+
+
+def evidence_receipt(
+    *,
+    status: str,
+    execution_id: Any,
+    transport: str,
+    artifact: Any = None,
+    archive: bytes | None = None,
+    error: str | None = None,
+    integrity_verified: bool = False,
+) -> dict[str, Any]:
+    """Build a public receipt with no payload bytes or credentials.
+
+    ``sha256`` / ``digest`` are identity metadata from the stored manifest.
+    They are not proof of a verified download unless ``integrity_verified``.
+    """
+    manifest = dict(getattr(artifact, "manifest", None) or {})
+    digest = manifest.get("sha256")
+    if not digest and archive:
+        digest = hashlib.sha256(archive).hexdigest()
+    expires = getattr(artifact, "expires_at", None) or manifest.get("expires_at")
+    if hasattr(expires, "isoformat"):
+        expires = expires.isoformat()
+    created = manifest.get("created_at") or getattr(artifact, "created_at", None)
+    if hasattr(created, "isoformat"):
+        created = created.isoformat()
+    return {
+        "version": 1,
+        "kind": "evidence",
+        "status": status,
+        "transport": transport,
+        "execution_id": str(execution_id) if execution_id is not None else None,
+        "artifact_id": str(artifact.id) if artifact is not None else None,
+        "manifest_sha256": getattr(artifact, "manifest_sha256", None),
+        "sha256": digest,
+        "digest": digest,
+        "size_bytes": (
+            manifest.get("size_bytes")
+            if artifact is not None
+            else (len(archive) if archive else None)
+        ),
+        "expanded_bytes": manifest.get("expanded_bytes"),
+        "created_at": created,
+        "expires_at": expires,
+        "retention_hours": _evidence_retention_hours(),
+        "object_lock": False,
+        "legal_hold": False,
+        "integrity_verified": integrity_verified,
+        "error": error,
+    }
+
+
+def _as_receipt_dict(value: Any) -> dict[str, Any]:
+    """Copy a persisted receipt mapping; ignore ORM mocks and other objects."""
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _mark_status_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
+    """Availability metadata for polls; never a verified-download claim."""
+    status = str(receipt.get("status") or "missing")
+    expires = receipt.get("expires_at")
+    if status == "available" and expires:
+        try:
+            exp = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=UTC)
+            if exp <= datetime.now(UTC):
+                status = "expired"
+        except ValueError:
+            pass
+    out = dict(receipt)
+    out["status"] = status
+    out["kind"] = "evidence"
+    out["integrity_verified"] = False
+    digest = out.get("digest") or out.get("sha256")
+    if digest:
+        out["digest"] = digest
+        out.setdefault("sha256", digest)
+    out.setdefault("object_lock", False)
+    out.setdefault("legal_hold", False)
+    return out
+
+
+def inspect_evidence(
+    db: Session, *, account_id: UUID, execution: Any
+) -> dict[str, Any]:
+    """Live availability for download/finalize; artifact state wins over stale available."""
+    stored = _as_receipt_dict(getattr(execution, "evidence_receipt", None))
+    if stored.get("status") == "failed":
+        return _mark_status_receipt(stored)
+    thread_id = artifact_thread_id(execution.trigger_event_details, execution.id)
+    artifact = crud.latest(
+        db,
+        account_id=account_id,
+        flow_id=execution.flow_id,
+        thread_id=thread_id,
+        execution_id=execution.id,
+        kind="evidence",
+    )
+    now = datetime.now(UTC)
+    if artifact is not None:
+        expired = artifact.expires_at <= now or artifact.ciphertext is None
+        status = "expired" if expired else str(artifact.availability or "available")
+        if status not in {"available", "expired", "failed"}:
+            status = "expired" if expired else "available"
+        return evidence_receipt(
+            status=status,
+            execution_id=execution.id,
+            transport="direct",
+            artifact=artifact,
+        )
+    archive = getattr(execution, "evidence_archive", None)
+    if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
+        return evidence_receipt(
+            status="available",
+            execution_id=execution.id,
+            transport="legacy",
+        )
+    return evidence_receipt(
+        status="missing",
+        execution_id=execution.id,
+        transport=str(stored.get("transport") or "none"),
+        error=stored.get("error"),
+    )
+
+
+def load_evidence(
+    db: Session, *, account_id: UUID, execution: Any
+) -> tuple[bytes, dict[str, Any]]:
+    """Return verified evidence bytes or raise ``EvidenceUnavailableError``."""
+    receipt = inspect_evidence(db, account_id=account_id, execution=execution)
+    status = str(receipt.get("status") or "missing")
+    if status == "missing":
+        raise EvidenceUnavailableError("missing", receipt)
+    if status == "failed":
+        raise EvidenceUnavailableError("failed", receipt)
+    if status == "expired":
+        raise EvidenceUnavailableError("expired", receipt)
+    if receipt.get("transport") == "legacy":
+        archive = bytes(execution.evidence_archive or b"")
+        if not archive:
+            raise EvidenceUnavailableError("missing", receipt)
+        digest = hashlib.sha256(archive).hexdigest()
+        expected = receipt.get("sha256") or receipt.get("digest")
+        if expected and expected != digest:
+            failed = evidence_receipt(
+                status="failed",
+                execution_id=execution.id,
+                transport="legacy",
+                archive=archive,
+                error="artifact_digest_mismatch",
+            )
+            raise EvidenceUnavailableError("failed", failed)
+        verified = evidence_receipt(
+            status="available",
+            execution_id=execution.id,
+            transport="legacy",
+            archive=archive,
+            integrity_verified=True,
+        )
+        return archive, verified
+    thread_id = artifact_thread_id(execution.trigger_event_details, execution.id)
+    artifact = crud.latest(
+        db,
+        account_id=account_id,
+        flow_id=execution.flow_id,
+        thread_id=thread_id,
+        execution_id=execution.id,
+        kind="evidence",
+    )
+    if artifact is None:
+        raise EvidenceUnavailableError("missing", receipt)
+    try:
+        archive = get_artifact(
+            db,
+            account_id=account_id,
+            flow_id=execution.flow_id,
+            thread_id=thread_id,
+            reference=artifact_reference(artifact),
+        )
+    except ValueError as exc:
+        code = str(exc)
+        if code == "artifact_expired":
+            raise EvidenceUnavailableError(
+                "expired",
+                evidence_receipt(
+                    status="expired",
+                    execution_id=execution.id,
+                    transport="direct",
+                    artifact=artifact,
+                    error=code,
+                ),
+            ) from exc
+        raise EvidenceUnavailableError(
+            "failed",
+            evidence_receipt(
+                status="failed",
+                execution_id=execution.id,
+                transport="direct",
+                artifact=artifact,
+                error=code,
+            ),
+        ) from exc
+    return archive, evidence_receipt(
+        status="available",
+        execution_id=execution.id,
+        transport="direct",
+        artifact=artifact,
+        archive=archive,
+        integrity_verified=True,
+    )

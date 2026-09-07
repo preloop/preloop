@@ -125,6 +125,178 @@ class CRUDSecurityMaintenance:
             .where(models.Issue.id == issue_id, models.Tracker.account_id == account_id)
         )
 
+    def get_issue_for_project(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        project_id: UUID,
+        issue_id: UUID,
+    ) -> models.Issue | None:
+        """Resolve a tracker issue that belongs to this tenant project."""
+        return db.scalar(
+            select(models.Issue)
+            .join(models.Tracker, models.Issue.tracker_id == models.Tracker.id)
+            .where(
+                models.Issue.id == issue_id,
+                models.Issue.project_id == project_id,
+                models.Tracker.account_id == account_id,
+            )
+        )
+
+    def get_organization(
+        self, db: Session, *, account_id: UUID, organization_id: UUID
+    ) -> models.Organization | None:
+        """Resolve an organization through the tenant tracker."""
+        return db.scalar(
+            select(models.Organization)
+            .join(models.Tracker, models.Organization.tracker_id == models.Tracker.id)
+            .where(
+                models.Organization.id == organization_id,
+                models.Tracker.account_id == account_id,
+            )
+        )
+
+    def get_or_create_tool_configuration(
+        self, db: Session, *, account_id: UUID, tool_name: str
+    ) -> models.ToolConfiguration:
+        """Return the account tool row, creating it with a flush-only write."""
+        row = db.scalar(
+            select(models.ToolConfiguration).where(
+                models.ToolConfiguration.account_id == account_id,
+                models.ToolConfiguration.tool_name == tool_name,
+                models.ToolConfiguration.managed_agent_id.is_(None),
+            )
+        )
+        if row is not None:
+            return row
+        row = models.ToolConfiguration(
+            account_id=account_id,
+            tool_name=tool_name,
+            tool_source="builtin",
+        )
+        db.add(row)
+        db.flush()
+        return row
+
+    def apply_workflow_policy(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        workflow_id: UUID,
+        owner_user_id: UUID | None,
+        escalation_user_ids: list[UUID],
+        timeout_seconds: int,
+    ) -> models.ApprovalWorkflow:
+        """Persist owner, escalation, and timeout onto the platform workflow."""
+        workflow = self.get_approval_workflow(
+            db, account_id=account_id, workflow_id=workflow_id
+        )
+        if workflow is None:
+            raise ValueError("approval_workflow_unavailable")
+        approvers = list(workflow.approver_user_ids or [])
+        if owner_user_id is not None and owner_user_id not in approvers:
+            approvers.append(owner_user_id)
+        workflow.approver_user_ids = approvers or None
+        escalation = list(workflow.escalation_user_ids or [])
+        for user_id in escalation_user_ids:
+            if user_id not in escalation:
+                escalation.append(user_id)
+        workflow.escalation_user_ids = escalation or None
+        workflow.timeout_seconds = timeout_seconds
+        db.flush()
+        return workflow
+
+    def update_release(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        release_id: UUID,
+        fields: dict[str, Any],
+    ) -> models.SecurityMaintenanceRelease | None:
+        """Update mutable inventory fields. Caller holds the release lock."""
+        row = self.get_release(db, account_id=account_id, release_id=release_id)
+        if row is None:
+            return None
+        for key, value in fields.items():
+            setattr(row, key, value)
+        db.flush()
+        return row
+
+    def update_item(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        item_id: UUID,
+        fields: dict[str, Any],
+    ) -> models.SecurityMaintenanceItem | None:
+        """Update work-item fields. Caller holds the identity or item lock."""
+        row = self.get_item(db, account_id=account_id, item_id=item_id)
+        if row is None:
+            return None
+        for key, value in fields.items():
+            setattr(row, key, value)
+        db.flush()
+        return row
+
+    def get_item_by_approval_request(
+        self, db: Session, *, account_id: UUID, request_id: UUID
+    ) -> models.SecurityMaintenanceItem | None:
+        """Find the work item bound to a platform approval request."""
+        return db.scalar(
+            select(models.SecurityMaintenanceItem).where(
+                models.SecurityMaintenanceItem.account_id == account_id,
+                models.SecurityMaintenanceItem.approval_request_id == request_id,
+            )
+        )
+
+    def list_reconcile_items(
+        self, db: Session, *, account_id: UUID
+    ) -> list[models.SecurityMaintenanceItem]:
+        """Items that may need expiry, enqueue retry, or approval follow-up."""
+        return list(
+            db.scalars(
+                select(models.SecurityMaintenanceItem)
+                .where(
+                    models.SecurityMaintenanceItem.account_id == account_id,
+                    models.SecurityMaintenanceItem.state.in_(
+                        (
+                            "tests_passed",
+                            "approval_pending",
+                            "remediation_pending",
+                            "reaudit_pending",
+                        )
+                    ),
+                )
+                .order_by(models.SecurityMaintenanceItem.created_at)
+            )
+        )
+
+    def set_accepted_baseline(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        release_id: UUID,
+        baseline_id: UUID,
+        expected_current: UUID | None = None,
+    ) -> models.SecurityMaintenanceRelease:
+        """Write accepted_baseline_id at release scope. Caller holds the lock."""
+        release = self.get_release(db, account_id=account_id, release_id=release_id)
+        if release is None:
+            raise ValueError("release_not_found")
+        if (
+            expected_current is not None
+            and release.accepted_baseline_id != expected_current
+        ):
+            raise ValueError("accepted_baseline_conflict")
+        release.accepted_baseline_id = baseline_id
+        db.flush()
+        return release
+
     @asynccontextmanager
     async def locked(
         self, db: Session, account_id: UUID, token: str

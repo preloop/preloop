@@ -3,12 +3,11 @@
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
 from preloop.models import models
-from preloop.models.crud import crud_api_key
 from preloop.models.db.session import get_db_session
 from preloop.schemas.security_maintenance import (
     ApprovalDecisionRequest,
@@ -51,32 +50,14 @@ def _service(db: Session, user: models.User) -> SecurityMaintenanceService:
     return SecurityMaintenanceService(db, account_id=user.account_id)
 
 
-def _reject_execution_api_key(
-    request: Request,
-    db: Session,
-    user: models.User,
-    item: dict[str, Any] | None = None,
-) -> None:
-    """An agent's execution API key cannot approve or resume its own repair."""
-    header = request.headers.get("authorization") or ""
-    if not header.lower().startswith("bearer "):
-        return
-    token = header.split(" ", 1)[1].strip()
-    if not token or "." in token:
-        return
-    api_key = crud_api_key.get_by_key(db, key=token, account_id=str(user.account_id))
+def _reject_managed_credentials(current_user: models.User) -> None:
+    """Deny managed execution/agent credentials for human maintenance decisions."""
+    api_key = getattr(current_user, "_auth_api_key", None)
     if api_key is None:
         return
-    context = api_key.context_data or {}
-    execution_id = context.get("flow_execution_id")
-    if not execution_id:
-        return
-    bound = {
-        str(item.get("implementation_execution_id") or ""),
-        str(item.get("recheck_execution_id") or ""),
-    }
-    if item is None or str(execution_id) in bound:
-        raise HTTPException(403, "execution_api_key_cannot_approve")
+    context = api_key.context_data if isinstance(api_key.context_data, dict) else {}
+    if context.get("flow_execution_id") or context.get("managed_agent_id"):
+        raise HTTPException(403, "managed_credential_cannot_decide")
 
 
 @router.get("/releases")
@@ -209,11 +190,15 @@ def get_item(
     db: Session = Depends(get_db_session),
     current_user: models.User = Depends(get_current_active_user),
 ) -> dict[str, Any]:
-    """Return one work item."""
-    try:
-        return _service(db, current_user).get_item(item_id)
-    except CrossAccountError as exc:
-        raise HTTPException(404, str(exc)) from exc
+    """Return one work item after an idempotent reconcile pass."""
+
+    async def operation() -> dict[str, Any]:
+        try:
+            return await _service(db, current_user).reconcile_item(item_id)
+        except CrossAccountError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    return run_lifecycle_endpoint(operation)
 
 
 @router.get("/items/{item_id}/decisions")
@@ -235,16 +220,14 @@ def list_decisions(
 def approve_item(
     item_id: UUID,
     body: ApprovalDecisionRequest,
-    request: Request,
     db: Session = Depends(get_db_session),
     current_user: models.User = Depends(get_current_active_user),
 ) -> dict[str, Any]:
-    """Record a human approval. Execution API keys are rejected."""
+    """Record a human approval through the platform approval workflow."""
 
     async def operation() -> dict[str, Any]:
         try:
-            item = _service(db, current_user).get_item(item_id)
-            _reject_execution_api_key(request, db, current_user, item)
+            _reject_managed_credentials(current_user)
             return await _service(db, current_user).decide_approval(
                 item_id,
                 body,
@@ -266,7 +249,6 @@ def approve_item(
 def deny_item(
     item_id: UUID,
     body: ApprovalDecisionRequest,
-    request: Request,
     db: Session = Depends(get_db_session),
     current_user: models.User = Depends(get_current_active_user),
 ) -> dict[str, Any]:
@@ -274,8 +256,7 @@ def deny_item(
 
     async def operation() -> dict[str, Any]:
         try:
-            item = _service(db, current_user).get_item(item_id)
-            _reject_execution_api_key(request, db, current_user, item)
+            _reject_managed_credentials(current_user)
             return await _service(db, current_user).decide_approval(
                 item_id,
                 body,
@@ -293,7 +274,6 @@ def deny_item(
 def escalate_item(
     item_id: UUID,
     body: ApprovalDecisionRequest,
-    request: Request,
     db: Session = Depends(get_db_session),
     current_user: models.User = Depends(get_current_active_user),
 ) -> dict[str, Any]:
@@ -301,8 +281,7 @@ def escalate_item(
 
     async def operation() -> dict[str, Any]:
         try:
-            item = _service(db, current_user).get_item(item_id)
-            _reject_execution_api_key(request, db, current_user, item)
+            _reject_managed_credentials(current_user)
             return await _service(db, current_user).escalate_item(
                 item_id, body, actor_user_id=current_user.id
             )
@@ -317,7 +296,6 @@ def escalate_item(
 def resume_item(
     item_id: UUID,
     body: ResumeRequest,
-    request: Request,
     db: Session = Depends(get_db_session),
     current_user: models.User = Depends(get_current_active_user),
 ) -> dict[str, Any]:
@@ -325,8 +303,7 @@ def resume_item(
 
     async def operation() -> dict[str, Any]:
         try:
-            item = _service(db, current_user).get_item(item_id)
-            _reject_execution_api_key(request, db, current_user, item)
+            _reject_managed_credentials(current_user)
             return await _service(db, current_user).resume(
                 item_id, body, actor_user_id=current_user.id
             )

@@ -68,6 +68,14 @@ class ScanFinding(BaseModel):
     present: bool = True
 
 
+class WorkspaceSeedInput(BaseModel):
+    """Inline workspace seed carried on the existing trigger contract."""
+
+    model_config = ConfigDict(extra="forbid")
+    path: str = Field(min_length=1, max_length=512)
+    content_base64: str = Field(min_length=1)
+
+
 class ScanIngestRequest(BaseModel):
     """Trusted controller ingest. Missing product/release is unsupported."""
 
@@ -77,6 +85,9 @@ class ScanIngestRequest(BaseModel):
     input_kind: str = Field(default="cyclonedx-json", min_length=1, max_length=64)
     source: str = Field(default="local", min_length=1, max_length=64)
     execution_id: UUID | None = None
+    issue_id: UUID | None = None
+    sbom_content_base64: str | None = None
+    workspace_files: list[WorkspaceSeedInput] = Field(default_factory=list)
     evidence_ref: dict[str, Any] = Field(default_factory=dict)
     findings: list[ScanFinding] = Field(default_factory=list)
     available: bool = True

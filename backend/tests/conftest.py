@@ -1,39 +1,20 @@
 """Pytest configuration file for Preloop tests."""
 
 from typing import Generator
+import importlib.util
 import inspect
 import os
-import sys
-import types
 from pathlib import Path
 
 os.environ.setdefault("PRELOOP_DISABLE_TELEMETRY", "true")
 
-
-def _load_sibling_cra() -> None:
-    """Expose the contracts worker's validator without vendoring it."""
-    try:
-        import preloop.cra.validate  # noqa: F401
-
-        return
-    except ImportError:
-        pass
-    sibling = Path(
-        "/Users/dimo/git/spacecode/preloop-ee/tmp/cra-production/contracts/"
-        "backend/preloop/cra"
-    )
-    if not sibling.is_dir():
-        return
-    # Importing `preloop` here is safe: cra is not part of this clone yet.
-    import preloop
-
-    package = types.ModuleType("preloop.cra")
-    package.__path__ = [str(sibling)]
-    sys.modules["preloop.cra"] = package
-    preloop.cra = package
-
-
-_load_sibling_cra()
+_overlay = Path(__file__).with_name("conftest_overlay.py")
+if _overlay.is_file():
+    _spec = importlib.util.spec_from_file_location("conftest_overlay", _overlay)
+    if _spec is not None and _spec.loader is not None:
+        _module = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_module)
+        _module.install_cra_overlay()
 
 import pytest  # noqa: E402
 import fastapi  # noqa: E402
@@ -83,7 +64,6 @@ def pytest_configure(config):
     # Set TESTING mode to skip external service connections (NATS, MCP, etc.)
     os.environ["TESTING"] = "true"
     os.environ["PRELOOP_DISABLE_TELEMETRY"] = "true"
-    _load_sibling_cra()
 
     # Disable RBAC permission checks during unit tests
     # This ensures tests work consistently regardless of whether the EE RBAC

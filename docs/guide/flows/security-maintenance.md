@@ -9,7 +9,14 @@ Clone **Automated Issue Implementation** (`011`) for the repair flow and a
 read-only CRA audit preset (`004`–`007`, unchanged) for the recheck. Optional
 preset `014` is a conservative implementation overlay: isolated publication,
 a verification gate, and no agent approval tools. Configure inventory through
-the API, not by pasting a model-output URL.
+the API, not by pasting a model-output URL. Scan ingest must name an existing
+tracker issue so implementation receives a real issue body, number, and
+repository. The trigger payload carries the pinned build, SBOM bytes or path,
+prior baseline result, and published SHA on the existing workspace/trigger
+contracts. Recheck checks out the verified published commit. Human decisions
+go through the platform approval workflow (owner, escalation, quorum, expiry);
+approving the linked request in the console advances the item without a second
+maintenance-specific call.
 
 ## Opt in a release
 

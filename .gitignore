@@ -38,6 +38,8 @@ ENV/
 
 # Testing
 .coverage
+backend/tests/conftest_overlay.py
+backend/tests/.overlay/
 htmlcov/
 .pytest_cache/
 .test_durations

@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from json import dumps
 from typing import Any, Sequence
 from uuid import UUID
@@ -19,12 +18,24 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
+from preloop.cra.schemas import (
+    DATABASE_SOURCES,
+    SCHEMA_RELEASEAUDIT_V1,
+    SCHEMA_VULNSCAN_V1,
+    is_known_cra_result_schema,
+)
+from preloop.cra.validate import (
+    AUTHORITY_REQUIRED,
+    PlatformApproval,
+    validate_cra_result,
+)
 from preloop.models import models
 from preloop.models.crud import flow_artifact as artifact_crud
-from preloop.models.schemas.flow_artifact import ArtifactReference
 from preloop.services.flow_artifacts import (
+    EvidenceUnavailableError,
     artifact_thread_id,
-    get_artifact,
+    inspect_evidence,
+    load_evidence,
     validate_archive,
 )
 from preloop.services.flow_failure_category import (
@@ -34,52 +45,6 @@ from preloop.services.flow_failure_category import (
 from preloop.services.private_publication import trusted_private_receipt
 from preloop.services.trusted_publisher import PublicationError
 from preloop.utils.verification_selection import evaluate_from_raw
-
-
-try:
-    from preloop.services.flow_artifacts import (
-        EvidenceUnavailable,
-        inspect_evidence,
-        load_evidence,
-    )
-except ImportError:  # Evidence worker not yet merged into this clone.
-    inspect_evidence = None
-    load_evidence = None
-
-    class EvidenceUnavailable(Exception):  # noqa: N818
-        """Local stand-in until the shared evidence service lands."""
-
-        def __init__(self, code: str, receipt: dict[str, Any] | None = None) -> None:
-            super().__init__(f"evidence_{code}")
-            self.code = code
-            self.receipt = receipt or {}
-
-
-try:
-    from preloop.cra.validate import PlatformApproval, validate_cra_result
-except ImportError:  # Contracts worker not yet merged into this clone.
-    PlatformApproval = None  # type: ignore[misc, assignment]
-    validate_cra_result = None
-
-try:
-    from preloop.cra.schemas import (
-        DATABASE_SOURCES,
-        SCHEMA_RELEASEAUDIT_V1,
-        SCHEMA_VULNSCAN_V1,
-        is_known_cra_result_schema,
-    )
-except ImportError:
-    DATABASE_SOURCES = frozenset({"osv_purl", "osv_git"})
-    SCHEMA_RELEASEAUDIT_V1 = "preloop.cra.releaseaudit/v1"
-    SCHEMA_VULNSCAN_V1 = "preloop.cra.vulnscan/v1"
-
-    def is_known_cra_result_schema(value: object) -> bool:
-        return value in {
-            "preloop.cra.sbomaudit/v1",
-            SCHEMA_VULNSCAN_V1,
-            SCHEMA_RELEASEAUDIT_V1,
-            "preloop.cra.duediligence/v1",
-        }
 
 
 HEX40 = re.compile(r"[0-9a-f]{40}")
@@ -211,7 +176,7 @@ def evidence_ref_from_execution(
             execution=execution,
             claimed_artifact_id=claimed_id,
         )
-    except EvidenceUnavailable as exc:
+    except EvidenceUnavailableError as exc:
         return EvidenceRef(
             kind=str((exc.receipt or {}).get("transport") or "missing"),
             available=False,
@@ -220,6 +185,15 @@ def evidence_ref_from_execution(
             or claimed_id,
             digest=_optional_str((exc.receipt or {}).get("sha256")) or claimed_digest,
             reason=f"evidence_{exc.code}",
+        )
+    if receipt.get("integrity_verified") is not True:
+        return EvidenceRef(
+            kind=str(receipt.get("kind") or EVIDENCE_KIND),
+            available=False,
+            execution_id=execution.id,
+            artifact_id=_optional_str(receipt.get("artifact_id")) or claimed_id,
+            digest=_optional_str(receipt.get("sha256")) or claimed_digest,
+            reason="evidence_not_verified",
         )
     stored_digest = _optional_str(receipt.get("sha256"))
     stored_id = _optional_str(receipt.get("artifact_id"))
@@ -382,13 +356,6 @@ def audit_acceptance(
             reason="missing_evidence",
             digest=digest,
         )
-    if validate_cra_result is None:
-        return AuditAcceptance(
-            accepted=False,
-            verdict="incomplete",
-            reason="cra_validator_unavailable",
-            digest=digest,
-        )
     checkout = controller_checkout_sha(execution, flow=flow)
     if candidate_revision:
         if not _hex40(checkout):
@@ -414,6 +381,7 @@ def audit_acceptance(
         prompt=prompt,
         platform_approvals=approvals,
         require_coverage=require_finding_absent,
+        authority=AUTHORITY_REQUIRED,
     )
     schema_id = cra.schema_id
     if cra.skipped or not schema_id or not is_known_cra_result_schema(schema_id):
@@ -535,29 +503,6 @@ def _load_bound_evidence(
     execution: models.FlowExecution,
     claimed_artifact_id: str | None,
 ) -> tuple[bytes, dict[str, Any]]:
-    if inspect_evidence is not None and load_evidence is not None:
-        return _load_shared_evidence(
-            db,
-            account_id=account_id,
-            execution=execution,
-            claimed_artifact_id=claimed_artifact_id,
-        )
-    return _load_local_evidence(
-        db,
-        account_id=account_id,
-        execution=execution,
-        claimed_artifact_id=claimed_artifact_id,
-    )
-
-
-def _load_shared_evidence(
-    db: Session,
-    *,
-    account_id: UUID,
-    execution: models.FlowExecution,
-    claimed_artifact_id: str | None,
-) -> tuple[bytes, dict[str, Any]]:
-    assert inspect_evidence is not None and load_evidence is not None
     if claimed_artifact_id:
         artifact = _bound_artifact(
             db,
@@ -566,87 +511,19 @@ def _load_shared_evidence(
             artifact_id=claimed_artifact_id,
         )
         if artifact is None:
-            raise EvidenceUnavailable(
+            raise EvidenceUnavailableError(
                 "missing",
                 {"status": "missing", "execution_id": str(execution.id)},
             )
     archive, receipt = load_evidence(db, account_id=account_id, execution=execution)
     kind = str(receipt.get("kind") or EVIDENCE_KIND)
     if kind not in {EVIDENCE_KIND, "legacy"}:
-        raise EvidenceUnavailable(
+        raise EvidenceUnavailableError(
             "failed",
             {**receipt, "error": "artifact_kind_mismatch"},
         )
+    inspect_evidence(db, account_id=account_id, execution=execution)
     return archive, {**receipt, "kind": kind}
-
-
-def _load_local_evidence(
-    db: Session,
-    *,
-    account_id: UUID,
-    execution: models.FlowExecution,
-    claimed_artifact_id: str | None,
-) -> tuple[bytes, dict[str, Any]]:
-    thread_id = artifact_thread_id(execution.trigger_event_details, execution.id)
-    artifact = None
-    if claimed_artifact_id:
-        artifact = _bound_artifact(
-            db,
-            account_id=account_id,
-            execution=execution,
-            artifact_id=claimed_artifact_id,
-        )
-        if artifact is None:
-            raise EvidenceUnavailable(
-                "missing",
-                {"status": "missing", "execution_id": str(execution.id)},
-            )
-    else:
-        artifact = artifact_crud.latest(
-            db,
-            account_id=account_id,
-            flow_id=execution.flow_id,
-            thread_id=thread_id,
-            execution_id=execution.id,
-            kind=EVIDENCE_KIND,
-        )
-    if artifact is not None:
-        return _open_artifact(
-            db, account_id=account_id, execution=execution, artifact=artifact
-        )
-    archive = getattr(execution, "evidence_archive", None)
-    if archive:
-        body = bytes(archive)
-        digest = hashlib.sha256(body).hexdigest()
-        try:
-            validate_archive(
-                body,
-                max_bytes=_evidence_max_bytes(),
-                max_expanded_bytes=settings.flow_artifact_expanded_max_bytes,
-            )
-        except ValueError as exc:
-            raise EvidenceUnavailable(
-                "failed",
-                {
-                    "status": "failed",
-                    "transport": "legacy",
-                    "sha256": digest,
-                    "execution_id": str(execution.id),
-                    "error": str(exc),
-                },
-            ) from exc
-        return body, {
-            "status": "available",
-            "transport": "legacy",
-            "kind": "legacy",
-            "sha256": digest,
-            "execution_id": str(execution.id),
-            "artifact_id": None,
-        }
-    raise EvidenceUnavailable(
-        "missing",
-        {"status": "missing", "execution_id": str(execution.id), "transport": "none"},
-    )
 
 
 def _bound_artifact(
@@ -671,91 +548,6 @@ def _bound_artifact(
     if artifact is None or artifact.execution_id != execution.id:
         return None
     return artifact
-
-
-def _open_artifact(
-    db: Session,
-    *,
-    account_id: UUID,
-    execution: models.FlowExecution,
-    artifact: models.FlowArtifact,
-) -> tuple[bytes, dict[str, Any]]:
-    kind = str(artifact.kind or "")
-    if kind != EVIDENCE_KIND:
-        raise EvidenceUnavailable(
-            "failed",
-            {
-                "status": "failed",
-                "error": "artifact_kind_mismatch",
-                "execution_id": str(execution.id),
-                "artifact_id": str(artifact.id),
-            },
-        )
-    expires = artifact.expires_at
-    now = datetime.now(UTC)
-    if expires is not None and expires.tzinfo is None:
-        expires = expires.replace(tzinfo=UTC)
-    if expires is not None and expires <= now:
-        raise EvidenceUnavailable(
-            "expired",
-            {
-                "status": "expired",
-                "execution_id": str(execution.id),
-                "artifact_id": str(artifact.id),
-            },
-        )
-    availability = str(artifact.availability or "available")
-    if availability != "available" or artifact.ciphertext is None:
-        code = "failed" if availability == "failed" else "expired"
-        if availability == "missing":
-            code = "missing"
-        raise EvidenceUnavailable(
-            code,
-            {
-                "status": availability,
-                "execution_id": str(execution.id),
-                "artifact_id": str(artifact.id),
-            },
-        )
-    thread_id = artifact_thread_id(execution.trigger_event_details, execution.id)
-    reference = ArtifactReference(
-        artifact_id=artifact.id,
-        execution_id=artifact.execution_id,
-        manifest_sha256=artifact.manifest_sha256,
-    )
-    try:
-        archive = get_artifact(
-            db,
-            account_id=account_id,
-            flow_id=execution.flow_id,
-            thread_id=thread_id,
-            reference=reference,
-        )
-    except ValueError as exc:
-        code = str(exc)
-        status = "expired" if code == "artifact_expired" else "failed"
-        if code == "artifact_missing":
-            status = "missing"
-        raise EvidenceUnavailable(
-            status if status in {"missing", "expired", "failed"} else "failed",
-            {
-                "status": status,
-                "error": code,
-                "execution_id": str(execution.id),
-                "artifact_id": str(artifact.id),
-            },
-        ) from exc
-    manifest = dict(artifact.manifest or {})
-    digest = str(manifest.get("sha256") or hashlib.sha256(archive).hexdigest())
-    return archive, {
-        "status": "available",
-        "transport": "direct",
-        "kind": kind,
-        "sha256": digest,
-        "execution_id": str(execution.id),
-        "artifact_id": str(artifact.id),
-        "manifest_sha256": artifact.manifest_sha256,
-    }
 
 
 def _publication_from_controller_receipt(
@@ -903,8 +695,8 @@ def _verdict_from_cra(payload: dict[str, Any], schema_id: str) -> str:
 
 
 def _platform_approvals(rows: Sequence[Any] | None) -> list[Any] | None:
-    if rows is None or PlatformApproval is None:
-        return None
+    if rows is None:
+        return []
     out: list[Any] = []
     for row in rows:
         if isinstance(row, PlatformApproval):

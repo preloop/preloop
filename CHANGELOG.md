@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Security-maintenance repair: platform ApprovalService votes and console
+  resolution, commit-before-enqueue dispatch, trigger-delivered SBOM/baseline
+  inputs, CRUD-only persistence, and managed-credential denial for human
+  decisions.
+
 ### Added
 
 - **Supported-release vulnerability maintenance**: opt-in product/release
