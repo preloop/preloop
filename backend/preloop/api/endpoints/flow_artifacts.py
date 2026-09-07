@@ -148,7 +148,12 @@ def upload_artifact(
         )
     except ValueError as exc:
         flow_artifact.rollback(db)
-        raise HTTPException(422, str(exc)) from exc
+        code = str(exc)
+        if code == "artifact_execution_closed":
+            raise HTTPException(409, code) from exc
+        if code == "artifact_execution_missing":
+            raise HTTPException(404, code) from exc
+        raise HTTPException(422, code) from exc
 
 
 @router.get("/flows/executions/{execution_id}/artifacts")

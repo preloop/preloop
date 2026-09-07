@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import ColumnElement, and_, or_
@@ -280,6 +280,12 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db.flush()
         return db_obj
 
+    OPEN_ARTIFACT_PUT_STATUSES = (
+        "PENDING",
+        "INITIALIZING",
+        "RUNNING",
+    )
+
     def set_evidence_receipt(
         self, db: Session, *, db_obj: FlowExecution, receipt: dict[str, Any]
     ) -> FlowExecution:
@@ -291,6 +297,59 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db_obj.evidence_receipt = receipt  # type: ignore[assignment]
         db.flush()
         return db_obj
+
+    def lock_for_artifact_put(
+        self,
+        db: Session,
+        *,
+        execution_id: uuid.UUID,
+        require_open: bool = True,
+    ) -> FlowExecution:
+        """Lock the execution and refresh identity before authorizing a PUT.
+
+        ``populate_existing`` replaces a stale identity-map status so a
+        completion committed on another session is visible. External uploads
+        pass ``require_open=True``; controller retention after terminal
+        failure passes False.
+        """
+        execution = (
+            db.query(FlowExecution)
+            .filter(FlowExecution.id == execution_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if execution is None:
+            raise ValueError("artifact_execution_missing")
+        if require_open and execution.status not in self.OPEN_ARTIFACT_PUT_STATUSES:
+            raise ValueError("artifact_execution_closed")
+        return execution
+
+    def apply_runner_completion(
+        self,
+        db: Session,
+        *,
+        db_obj: FlowExecution,
+        status: str,
+        error: str | None = None,
+        result: dict[str, Any] | None = None,
+    ) -> FlowExecution:
+        """Persist terminal runner status and sanitized result via CRUD.
+
+        Protected publication keys are merged from the locked current row
+        inside ``update``; this method does not refresh the whole identity.
+        """
+        if status in {"SUCCEEDED", "FAILED", "STOPPED"}:
+            self.confirm_stop(db, execution_id=db_obj.id, commit=False)
+        payload: dict[str, Any] = {
+            "status": status,
+            "end_time": datetime.now(timezone.utc),
+        }
+        if error:
+            payload["error_message"] = error
+        if result is not None:
+            payload["result"] = result
+        return self.update(db, db_obj=db_obj, obj_in=FlowExecutionUpdate(**payload))
 
     def set_workspace_snapshot(
         self, db: Session, *, db_obj: FlowExecution, archive: Optional[bytes]

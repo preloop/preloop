@@ -567,6 +567,40 @@ describe('ApprovalView', () => {
     expect(element.shadowRoot?.querySelector('.decision-bar')).to.not.exist;
   });
 
+  it('lists frozen publication destinations for a scoped request_approval', async () => {
+    fetchStub = createFetchStub({
+      request: pendingRequest({
+        tool_name: 'request_approval',
+        tool_args: {
+          operation: 'publish isolated product repositories',
+          context: 'frozen checkouts are ready',
+          reasoning: 'human review before writer leases',
+          action: 'isolated_publication',
+          candidates: [
+            {
+              repository_url: 'https://github.com/example/firmware.git',
+              branch: 'preloop/change',
+              base: 'main',
+              head_sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            },
+          ],
+        },
+      }),
+    });
+    const element = (await fixture(
+      html`<approval-view .requestId=${'req-1'}></approval-view>`
+    )) as ApprovalView;
+
+    await waitUntil(() => !(element as any).loading, 'still loading');
+    await element.updateComplete;
+
+    const text = element.shadowRoot?.textContent ?? '';
+    expect(text).to.contain('Publication destinations');
+    expect(text).to.contain('https://github.com/example/firmware.git');
+    expect(text).to.contain('preloop/change');
+    expect(text).to.contain('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+  });
+
   describe('the fact strip', () => {
     // Full length ids, so "shows eight characters" is actually testable.
     const REQUEST_UUID = '3f2a9c14-6b7d-4e58-9a01-77b1c0d2e3f4';

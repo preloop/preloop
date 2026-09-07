@@ -47,6 +47,57 @@ _HEX40 = re.compile(r"[a-f0-9]{40}")
 _HEX64 = re.compile(r"[a-f0-9]{64}")
 
 
+def _target_snapshot(target: Any) -> dict[str, Any]:
+    return {
+        "tracker_id": target.tracker_id,
+        "repository_url": target.repository_url,
+        "clone_path": target.clone_path,
+        "role": target.role,
+        "branch": target.branch,
+        "base": target.base,
+        "expected_remote_sha": target.expected_remote_sha,
+        "base_sha": target.base_sha,
+        "previous_records": [asdict(record) for record in target.previous_records],
+    }
+
+
+def _targets_from_policy_snapshot(saved: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = saved.get("targets")
+    if isinstance(rows, list) and rows:
+        return [row for row in rows if isinstance(row, dict)]
+    return [
+        {
+            "tracker_id": saved["tracker_id"],
+            "repository_url": saved["repository_url"],
+            "clone_path": saved.get("clone_path") or "workspace",
+            "role": saved.get("role") or "code",
+            "branch": saved["branch"],
+            "base": saved["base"],
+            "expected_remote_sha": saved.get("expected_remote_sha"),
+            "base_sha": saved["base_sha"],
+            "previous_records": saved.get("previous_records") or [],
+        }
+    ]
+
+
+def _select_target(policy: dict[str, Any], message: dict[str, Any]) -> dict[str, Any]:
+    rows = _targets_from_policy_snapshot(policy)
+    requested = message.get("repository_url")
+    if requested is None:
+        if len(rows) > 1:
+            raise PublicationError(
+                "Multi-repo publication candidate must name its repository_url"
+            )
+        return rows[0]
+    from preloop.services.product_provenance import normalize_repository_url
+
+    wanted = normalize_repository_url(str(requested))
+    for row in rows:
+        if normalize_repository_url(str(row["repository_url"])) == wanted:
+            return row
+    raise PublicationError("Publication target is outside the authorized manifest")
+
+
 def persist_private_publication(
     db: Session, flow: models.Flow, policy: IsolatedPublicationPolicy
 ) -> None:
@@ -72,6 +123,11 @@ def persist_private_publication(
     }
     snapshot["previous_records"] = [
         asdict(record) for record in policy.previous_records
+    ]
+    from preloop.services.multi_repo_publication import policy_targets
+
+    snapshot["targets"] = [
+        _target_snapshot(target) for target in policy_targets(policy)
     ]
     snapshot["verification_policy"] = policy.verification_policy.model_dump(mode="json")
     snapshot["flow_id"] = str(flow.id)
@@ -99,24 +155,37 @@ def public_publication_descriptor(state: dict[str, Any]) -> dict[str, Any]:
     if state.get("phase") != "agent":
         raise PublicationError("Private publication cannot replay a consumed launch")
     policy = state["policy"]
-    return {
-        "version": 1,
-        "nonce": state["nonce"],
-        "phase": "agent",
-        **{
-            key: policy[key]
+    targets = _targets_from_policy_snapshot(policy)
+    public_targets = [
+        {
+            key: row[key]
             for key in (
                 "repository_url",
+                "clone_path",
+                "role",
                 "branch",
                 "base",
                 "base_sha",
                 "expected_remote_sha",
-                "verification_image",
             )
-        },
+        }
+        for row in targets
+    ]
+    primary = targets[0]
+    return {
+        "version": 1,
+        "nonce": state["nonce"],
+        "phase": "agent",
+        "repository_url": primary["repository_url"],
+        "branch": primary["branch"],
+        "base": primary["base"],
+        "base_sha": primary["base_sha"],
+        "expected_remote_sha": primary.get("expected_remote_sha"),
+        "verification_image": policy["verification_image"],
         "verification_budget_seconds": policy["verification_policy"][
             "gate_budget_seconds"
         ],
+        "targets": public_targets,
     }
 
 
@@ -140,7 +209,12 @@ async def restore_private_publication(
     execution = crud_flow_execution.get(
         db, id=context["execution_id"], account_id=str(flow.account_id), refresh=True
     )
-    state = (execution.result or {}).get(STATE_KEY) if execution else None
+    if execution is None:
+        return None
+    result: dict[str, Any] = (
+        execution.result if isinstance(execution.result, dict) else {}
+    )
+    state = result.get(STATE_KEY)
     if not isinstance(state, dict):
         return None
     public_publication_descriptor(state)
@@ -154,40 +228,80 @@ async def restore_private_publication(
     ):
         raise PublicationError("Private publication restore binding mismatch")
     _authorized_flow(db, saved)
-    tracker = crud_tracker.get_by_id_and_account(
-        db, id=saved["tracker_id"], account_id=saved["account_id"]
-    )
-    if tracker is None:
-        raise PublicationError("Publication tracker is no longer authorized")
+    from preloop.services.multi_repo_publication import IsolatedPublicationTarget
+    from preloop.services.product_provenance import normalize_repository_url
+
+    target_rows = _targets_from_policy_snapshot(saved)
+    restored_targets: list[IsolatedPublicationTarget] = []
+    leases: list[PublicationLease] = []
+    credentials: dict[str, dict[str, str]] = {}
     async with httpx.AsyncClient() as client:
-        read_lease = await mint_repository_lease(
-            tracker, saved["repository_url"], write=False, client=client
-        )
+        try:
+            for row in target_rows:
+                tracker = crud_tracker.get_by_id_and_account(
+                    db, id=row["tracker_id"], account_id=saved["account_id"]
+                )
+                if tracker is None:
+                    raise PublicationError(
+                        "Publication tracker is no longer authorized"
+                    )
+                lease = await mint_repository_lease(
+                    tracker, row["repository_url"], write=False, client=client
+                )
+                leases.append(lease)
+                credentials[normalize_repository_url(row["repository_url"])] = {
+                    "token": lease.token,
+                    "tracker_type": "github",
+                    "permission": "read",
+                }
+                if str(row["tracker_id"]) not in credentials:
+                    credentials[str(row["tracker_id"])] = credentials[
+                        normalize_repository_url(row["repository_url"])
+                    ]
+                restored_targets.append(
+                    IsolatedPublicationTarget(
+                        tracker_id=str(row["tracker_id"]),
+                        repository_url=row["repository_url"],
+                        clone_path=str(row.get("clone_path") or "workspace"),
+                        role=str(row.get("role") or "code"),
+                        branch=row["branch"],
+                        base=row["base"],
+                        expected_remote_sha=row.get("expected_remote_sha"),
+                        base_sha=row["base_sha"],
+                        previous_records=tuple(
+                            PublicationRecord(**record)
+                            for record in (row.get("previous_records") or [])
+                        ),
+                    )
+                )
+        except Exception:
+            for lease in leases:
+                await revoke_repository_lease(lease, client)
+            raise
+    primary = restored_targets[0]
     config = dict(context.get("git_clone_config") or flow.git_clone_config or {})
-    repositories = config.get("repositories") or [{}]
     config["repositories"] = [
         {
-            **repositories[0],
-            "repository_url": saved["repository_url"],
-            "tracker_id": saved["tracker_id"],
+            "repository_url": target.repository_url,
+            "tracker_id": target.tracker_id,
+            "clone_path": target.clone_path,
+            "source_branch": target.base,
+            "target_branch": target.branch,
+            "commit": target.expected_remote_sha or target.base_sha,
+            "pin_sha": target.base_sha,
         }
+        for target in restored_targets
     ]
-    config["source_branch"] = saved["base"]
-    config["target_branch"] = saved["branch"]
+    config["source_branch"] = primary.base
+    config["target_branch"] = primary.branch
     context["git_clone_config"] = config
-    context["git_credentials_map"] = {
-        saved["tracker_id"]: {
-            "token": read_lease.token,
-            "tracker_type": "github",
-            "permission": "read",
-        }
-    }
-    context["trigger_tracker_id"] = saved["tracker_id"]
+    context["git_credentials_map"] = credentials
+    context["trigger_tracker_id"] = primary.tracker_id
     trigger = context.get("trigger_event_data") or {}
     if trigger.get("_resume"):
         context["trigger_event_data"] = {
             **trigger,
-            "_resume": {**trigger["_resume"], "source_branch": saved["branch"]},
+            "_resume": {**trigger["_resume"], "source_branch": primary.branch},
         }
     return IsolatedPublicationPolicy(
         **{
@@ -213,9 +327,11 @@ async def restore_private_publication(
         verification_policy=ResolvedVerificationPolicy.model_validate(
             saved["verification_policy"]
         ),
-        read_lease=read_lease,
+        read_lease=leases[0],
         private=True,
         nonce=state["nonce"],
+        targets=tuple(restored_targets),
+        read_leases=tuple(leases),
     )
 
 
@@ -237,6 +353,26 @@ def load_private_monitoring_policy(
     if saved["flow_id"] != str(flow.id) or saved["execution_id"] != str(execution.id):
         raise PublicationError("Private publication recovery binding mismatch")
     _authorized_flow(db, saved)
+    from preloop.services.multi_repo_publication import IsolatedPublicationTarget
+
+    target_rows = _targets_from_policy_snapshot(saved)
+    restored_targets = tuple(
+        IsolatedPublicationTarget(
+            tracker_id=str(row["tracker_id"]),
+            repository_url=row["repository_url"],
+            clone_path=str(row.get("clone_path") or "workspace"),
+            role=str(row.get("role") or "code"),
+            branch=row["branch"],
+            base=row["base"],
+            expected_remote_sha=row.get("expected_remote_sha"),
+            base_sha=row["base_sha"],
+            previous_records=tuple(
+                PublicationRecord(**record)
+                for record in (row.get("previous_records") or [])
+            ),
+        )
+        for row in target_rows
+    )
     return IsolatedPublicationPolicy(
         **{
             key: saved[key]
@@ -264,6 +400,7 @@ def load_private_monitoring_policy(
         read_lease=None,
         private=True,
         nonce=state["nonce"],
+        targets=restored_targets,
     )
 
 
@@ -446,16 +583,30 @@ class PrivatePublicationController:
         policy = state["policy"]
         event = message.get("type")
         identity = _manifest(message, candidate=event == "publication_candidate")
+        target = _select_target(
+            policy,
+            {
+                **message,
+                "repository_url": message.get("repository_url")
+                or state.get("current_target_url"),
+            },
+        )
         envelope = {
             "version": 1,
             "execution_id": str(execution_id),
             "nonce": nonce,
+            "repository_url": target["repository_url"],
             **{key: identity[key] for key in ("head_sha", "tree_sha", "bundle_sha256")},
         }
         if event == "publication_candidate":
             if state["phase"] != "agent":
                 raise PublicationError(
                     "Publication candidate phase was already consumed"
+                )
+            already = dict(state.get("target_receipts") or {})
+            if target["repository_url"] in already:
+                raise PublicationError(
+                    "Publication candidate repeats a repository that already has a receipt"
                 )
             verification = ResolvedVerificationPolicy.model_validate(
                 policy["verification_policy"]
@@ -485,6 +636,7 @@ class PrivatePublicationController:
                     "phase": "verifying",
                     "manifest": identity,
                     "checks": checks,
+                    "current_target_url": target["repository_url"],
                     "verification_deadline": min(
                         state["deadline"],
                         datetime.now(timezone.utc).timestamp()
@@ -535,22 +687,23 @@ class PrivatePublicationController:
                     "Publication checks do not match required successful commands"
                 )
             tracker = crud_tracker.get_by_id_and_account(
-                self.db, id=policy["tracker_id"], account_id=str(self.account_id)
+                self.db, id=target["tracker_id"], account_id=str(self.account_id)
             )
             if tracker is None:
                 raise PublicationError("Publication tracker is no longer authorized")
             publishing = self._transition(state, {**state, "phase": "publishing"})
+            previous = tuple(
+                PublicationRecord(**record)
+                for record in (target.get("previous_records") or [])
+            )
             binding = PublicationBinding(
-                policy["repository_url"],
-                policy["branch"],
-                policy["base"],
+                target["repository_url"],
+                target["branch"],
+                target["base"],
                 identity["head_sha"],
-                policy["expected_remote_sha"],
+                target.get("expected_remote_sha"),
                 (
-                    *[
-                        PublicationRecord(**record)
-                        for record in policy["previous_records"]
-                    ],
+                    *previous,
                     PublicationRecord(str(execution_id), identity["head_sha"]),
                 ),
                 settings.preloop_url,
@@ -560,6 +713,17 @@ class PrivatePublicationController:
                 policy["issue_number"],
             )
             try:
+                from preloop.services.product_provenance import (
+                    require_human_publication_approval,
+                )
+
+                require_human_publication_approval(
+                    self.db,
+                    flow=_authorized_flow(self.db, policy),
+                    account_id=str(self.account_id),
+                    execution_id=str(execution_id),
+                    candidates=[binding],
+                )
                 async with httpx.AsyncClient() as client:
                     self.writer = await mint_repository_lease(
                         tracker, binding.repository_url, write=True, client=client
@@ -608,7 +772,7 @@ class PrivatePublicationController:
                 raise PublicationError("Invalid publication receipt")
             number = receipt.get("number")
             project = (
-                policy["repository_url"]
+                target["repository_url"]
                 .removeprefix("https://github.com/")
                 .removesuffix(".git")
             )
@@ -616,7 +780,7 @@ class PrivatePublicationController:
                 type(number) is not int
                 or number < 1
                 or receipt.get("url") != f"https://github.com/{project}/pull/{number}"
-                or receipt.get("branch") != policy["branch"]
+                or receipt.get("branch") != target["branch"]
                 or receipt.get("provider") != "github"
                 or receipt.get("head_sha") != identity["head_sha"]
             ):
@@ -625,10 +789,14 @@ class PrivatePublicationController:
                 )
             receipt = {
                 **receipt,
-                "repository_url": policy["repository_url"],
-                "base": policy["base"],
+                "repository_url": target["repository_url"],
+                "clone_path": target.get("clone_path"),
+                "role": target.get("role"),
+                "base": target["base"],
+                "base_sha": target["base_sha"],
+                "status": "published",
                 "records": [
-                    *policy["previous_records"],
+                    *(target.get("previous_records") or []),
                     {
                         "execution_id": str(execution_id),
                         "head_sha": identity["head_sha"],
@@ -636,10 +804,39 @@ class PrivatePublicationController:
                 ],
             }
             await self.revoke()
+            receipts = dict(state.get("target_receipts") or {})
+            receipts[target["repository_url"]] = receipt
+            remaining = [
+                row
+                for row in _targets_from_policy_snapshot(policy)
+                if row["repository_url"] not in receipts
+            ]
+            if remaining:
+                updated = {
+                    **state,
+                    "phase": "agent",
+                    "target_receipts": receipts,
+                    "receipt": None,
+                }
+                updated.pop("manifest", None)
+                updated.pop("checks", None)
+                updated.pop("current_target_url", None)
+                self._transition(state, updated)
+                return {**envelope, "type": "publication_ack"}
+            from preloop.services.multi_repo_publication import (
+                aggregate_publication_receipts,
+            )
+
+            aggregated = aggregate_publication_receipts(list(receipts.values()))
             self._transition(
                 state,
-                {**state, "phase": "complete", "receipt": receipt},
-                receipt=receipt,
+                {
+                    **state,
+                    "phase": "complete",
+                    "target_receipts": receipts,
+                    "receipt": aggregated,
+                },
+                receipt=aggregated,
             )
             return {**envelope, "type": "publication_ack"}
         raise PublicationError("Unknown publication protocol event")

@@ -118,7 +118,20 @@ supplied SBOM bytes. Filename and pin matches alone are not enough.
    that new inventory. CRA results are validated by the contracts layer.
    Missing evidence, unknown `preloop.cra.*` schemas, incomplete scans, and
    unscreened components cannot prove the advisory is gone. Checkout proof is
-   the controller `HEAD.txt` in the evidence pack, not `payload.sha`. Initial
+   the controller-verified frozen publication checkout (observed bundle SHA
+   or `product_provenance` repositories with `sha_status=verified`), not
+   agent-writable `HEAD.txt` and not `payload.sha`. Audit and recheck flows
+   must name `git_clone_config.repositories[].repository_url`. When
+   `pinned_build_ref` or the published SHA is an exact git object name, the
+   controller writes a `product_provenance` mapping onto the trigger.
+   Hosted and private audit/recheck post-exec export that checkout into the
+   existing evidence `branch.bundle` path even when there are no code
+   changes, no target branch, and publication is off. The export does not
+   commit, push, open a pull request, or receive writer credentials.
+   Isolated publication keeps its own exporter. Completion verifies the
+   mapping against those frozen bundle members. The mapping is checkout
+   observation, not a signed build attestation. Tag-like pins stay
+   unverified until a bundle proves the checkout. Initial
    baseline acceptance requires the audit execution scheduled above.
 5. Only an accepted recheck writes a new baseline. Prior decisions stay
    append-only. Resume retries without rewriting history.

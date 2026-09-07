@@ -109,4 +109,7 @@ controller-owned verification and the contracts CRA validator; caller-supplied
 evidence ids and agent `finding_absent` fields do not grant. Platform
 `ApprovalRequest` rows carry human decisions. Dispatch claims expire so a
 crash between claim and enqueue cannot strand a still-`PENDING` execution.
+Audit/recheck completion observes frozen Git bundles from evidence when the
+flow names repository URLs and the pin is an exact git SHA; `HEAD.txt` is
+not checkout proof.
 See [Supported-release vulnerability maintenance](docs/guide/flows/security-maintenance.md).

@@ -6,9 +6,10 @@ import json
 import logging
 import socket
 import secrets
+from copy import deepcopy
 from datetime import datetime, timezone
 from string import ascii_letters, digits
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
@@ -40,12 +41,13 @@ from preloop.services.private_publication import (
 )
 from preloop.services.trusted_publisher import PublicationError
 from preloop.services.host_exec import (
+    apply_runner_completion_to_execution,
     finalize_runner_completion,
     normalize_host_exec_advertisements,
 )
 from preloop.cra.persist import (
+    apply_cra_fail_closed_completion,
     apply_cra_persist_boundary,
-    cra_fail_closed_error_message,
     resolve_persist_authority,
 )
 from preloop.utils.permissions import require_permission
@@ -503,10 +505,17 @@ async def runner_ws(
                         {"type": "error", "error": "Invalid runner completion status"}
                     )
                     continue
-                status, completion_error, result = finalize_runner_completion(
-                    raw, pending_job=runner.pending_job
+                # Snapshot the leased job before close/clear_lease commit so
+                # evidence_direct_upload and isolated flags stay local.
+                leased_job = (
+                    deepcopy(runner.pending_job)
+                    if isinstance(runner.pending_job, Mapping)
+                    else None
                 )
-                isolated = bool((runner.pending_job or {}).get("_publication"))
+                status, completion_error, result = finalize_runner_completion(
+                    raw, pending_job=leased_job
+                )
+                isolated = bool((leased_job or {}).get("_publication"))
                 execution = crud_flow_execution.get(
                     db, id=execution_id, account_id=str(runner.account_id), refresh=True
                 )
@@ -531,14 +540,9 @@ async def runner_ws(
                     authority=authority,
                 )
                 result = decision.artifact
-                if decision.fail_closed_status == "FAILED" and status == "SUCCEEDED":
-                    status = "FAILED"
-                    completion_error = (
-                        completion_error or cra_fail_closed_error_message(decision)
-                    )
-                elif decision.invalid:
-                    status = "FAILED"
-                    completion_error = cra_fail_closed_error_message(decision)
+                status, completion_error = apply_cra_fail_closed_completion(
+                    status, completion_error, decision
+                )
                 if isolated:
                     if status == "SUCCEEDED":
                         try:
@@ -561,29 +565,16 @@ async def runner_ws(
                     break
                 execution = crud_flow_execution.get(db, id=execution_id)
                 if execution:
-                    execution.status = status
-                    if status in {"SUCCEEDED", "FAILED", "STOPPED"}:
-                        crud_flow_execution.confirm_stop(
-                            db, execution_id=execution_id, commit=False
-                        )
-                    execution.end_time = datetime.now(timezone.utc)
-                    if completion_error:
-                        execution.error_message = completion_error
-
-                    if result is not None:
-                        clean_result = {
-                            key: value
-                            for key, value in result.items()
-                            if key
-                            not in {"trusted_publication", "_private_publication"}
-                        }
-                        protected = {
-                            key: value
-                            for key, value in (execution.result or {}).items()
-                            if key in {"trusted_publication", "_private_publication"}
-                        }
-                        execution.result = {**clean_result, **protected}
-                    db.add(execution)
+                    apply_runner_completion_to_execution(
+                        db,
+                        execution,
+                        account_id=runner.account_id,
+                        status=status,
+                        error=completion_error,
+                        result=result if isinstance(result, dict) else None,
+                        message=raw,
+                        pending_job=leased_job,
+                    )
                     crud_api_key.deactivate_runtime_keys_for_flow_execution(
                         db,
                         account_id=runner.account_id,

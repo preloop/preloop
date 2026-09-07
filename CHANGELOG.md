@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Security-maintenance repair: rebuilt SBOM ingest after approval, controller
-  checkout `HEAD.txt`, per-component screening, background reconcile without
+  checkout from frozen publication records (not agent-writable `HEAD.txt`),
+  per-component screening, background reconcile without
   GET, per-request approval policy, and managed-credential denial on console
   approval routes. Recheck removal is derived from the submitted SBOM bytes
   (advertised CycloneDX/SPDX JSON), not from model inventory omission.
@@ -27,9 +28,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   initial-baseline retry route redeliver a still-`PENDING` execution id;
   a live claim is not duplicated, and a started or finished execution is
   not restarted. Legacy `dispatching` records without a timestamp are
-  treated as expired.
+  treated as expired. Claim helpers flush and re-read the locked row and
+  bound execution with `populate_existing` so a second session cannot
+  finish or redeliver from a stale identity-map copy.
+- Security-maintenance audit and recheck completion observes frozen Git
+  bundles even when isolated publication is off. A hex40 pin plus
+  `git_clone_config.repositories[].repository_url` produces a controller
+  `product_provenance` mapping; agent `HEAD.txt` and forged
+  `sha_status=verified` rows cannot establish checkout. Hosted and
+  private post-exec export `evidence/branch.bundle` for those opted-in
+  audits even with no code changes, no target branch, and publication
+  off. The export does not commit, push, open a pull request, or mint
+  writer credentials. Isolated publication is unchanged. The mapping is
+  checkout observation, not signed build attestation.
 
 ### Added
+
+- **CRA runtime result.json contracts and fail-closed CI gate**: versioned
+  validation for presets 004–007 at the hosted and private-runner persist
+  boundary, contradiction reconciliation, and `python -m preloop.cra.ci`.
+  Default release policy is a clean pass; `pass_with_findings` is explicit;
+  fail and unknown verdicts cannot be accepted. Evidence archives use the
+  durable size caps, gzip/tar integrity, digest binding, and content
+  fingerprints so a packed rejected decision cannot bind to an accepted
+  API result when envelope/SBOM fields match. Known controller
+  publication/provenance/dossier/verification annotations are ignored;
+  unknown agent fields are compared. Claimed approvals and waivers fail
+  closed when platform authority is unavailable; due-diligence matching
+  requires an exact human `request_approval` operation (AI-judged and
+  auto-approved rows are rejected). Interactive release-audit waivers
+  bind stored `ask_user` answers (exact finding ids and human reason);
+  ambiguous `request_approval` prose, including `waive_finding`, is
+  not a waiver. KEV/CVSS gate thresholds come
+  from trigger/CI `gate.fail_on_kev` / `gate.fail_on_cvss_gte` (default
+  KEV or CVSS >= 9.0), never from model-authored `gate.policy` text.
+  Webhook URLs are redacted in errors and the webhook POST is
+  not retried. Guide: `docs/guide/flows/security-audit-presets.md`.
 
 - **Supported-release vulnerability maintenance**: opt-in product/release
   inventory, one durable item per advisory/component, implementation then
@@ -47,18 +81,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`FLOW_EVIDENCE_RETENTION_HOURS`) and is not a legal hold. Guide:
   `docs/guide/flows/evidence-storage.md`. Status polls use the persisted
   receipt only (`kind=evidence`); download headers carry the verified
-  digest. Tracking: issues #268, #386.
-- **CRA runtime result.json contracts and fail-closed CI gate**: versioned
-  validation for presets 004–007 at the hosted and private-runner persist
-  boundary, contradiction reconciliation, and `python -m preloop.cra.ci`.
-  Default release policy is a clean pass; `pass_with_findings` is explicit;
-  fail and unknown verdicts cannot be accepted. Evidence archives are
-  size-bounded and checked for gzip/tar integrity plus required
-  `result.json` / `evidence/` membership. Claimed approvals and waivers
-  fail closed when platform authority is unavailable; due-diligence
-  matching requires an exact `request_approval` operation. Webhook URLs
-  are redacted in errors and the webhook POST is not retried. Guide:
-  `docs/guide/flows/security-audit-presets.md`.
+  digest. Tracking: issues #268, #386. Private Docker completions carry the
+  trusted bootstrap `evidence_upload` outcome (`uploaded` / `failed` /
+  `absent`) outside agent JSON so a failed final PUT cannot leave a stale
+  trap artifact marked available. The upload outcome is emitted even when
+  `result.json` is missing or invalid. WebSocket complete snapshots the
+  leased job before publication close and lease clear so a direct-upload
+  flag is not lost when `pending_job` is committed to null.
+
+- **Product/release provenance mapping and isolated multi-repo publication**:
+  optional `product_provenance` (`preloop.cra.product_provenance/v1`) names
+  a supported release, build, SBOM digest, and constituent repos+SHAs.
+  Product-mode audits reject duplicate, ambiguous, unauthorized, or
+  mismatched mappings against pinned, then observed, checkout SHAs and
+  supplied artifact bytes. A moving branch tip is not a verified checkout.
+  Agent-written SHAs are declarations, not build attestation. A
+  deterministic dossier manifest records raw versus annotated result
+  digests and a `kind=evidence` receipt. Hosted and private isolated
+  publication can publish the CRA code-repos-plus-compliance-repo topology
+  with per-repo receipts; resume keeps branch/base/head history; local
+  commits and partial remotes are not success. Optional
+  `git_clone_config.publication_approval` binds a human platform approval
+  to each frozen candidate `(repository, branch, base, head_sha)` before
+  any writer lease is minted. A missing saved execution or flow, or an
+  unreadable clone config, refuses the lease instead of treating absence
+  as opt-out. Human decisions have `auto_approved_reason is None`. Default
+  flows without that opt-in are unchanged. Isolated publication approval is
+  requested through the builtin `request_approval` tool's optional
+  `publication_candidates` (exact `repository_url`, `branch`, `base`,
+  `head_sha` tuples). Context text is not authority. Ordinary callers that
+  omit the parameter are unchanged. Managed execution and agent API keys
+  cannot approve, decline, decide, or batch-decide a publication-authority
+  request; human console/JWT and token-link decisions are unchanged. Guide:
+  `docs/guide/flows/product-evidence.md`.
 
 - **Per-flow label-based model routing**: a flow can store optional ordered
   rules in `agent_config.model_routing` that map current issue labels
@@ -206,6 +261,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adds a page by dropping a markdown file.
 
 ### Fixed
+
+- **Maintenance checkout uses frozen publication records**: `HEAD.txt` in an
+  evidence archive is not release or build provenance. Recheck matches the
+  candidate SHA against controller-verified `product_provenance` repositories
+  (`sha_status=verified`) and isolated publication receipts.
+
+- **CRA evidence binding recognizes controller `product_provenance` and
+  `dossier_manifest` annotations**: packed agent JSON is still compared in
+  full. Those controller records (and the older `provenance`/`dossier`
+  spellings) do not fail a matching pack; a changed decision, waiver, or
+  gate still does.
+
+- **Invalid CRA completion keeps the original runner failure**: when a
+  private runner already reported `FAILED` or `STOPPED`, persist-time
+  contract diagnostics are appended instead of replacing that reason.
+  Known credential formats are scrubbed first.
+
+- **Duplicate evidence-identity helpers after a stacked merge** are
+  removed. Artifact cache identity, execution refresh, and terminal
+  receipts keep a single canonical implementation.
+
+- **Ordinary evidence capture ignores non-string transport errors**:
+  `evidence_transport_error` is only a failure when it is a non-empty
+  string. Truthy mock auto-attributes no longer drop a getter-captured
+  pack before it is persisted.
+
+- **Checkpoint restore keeps its own response cap**: the shared artifact
+  client reads workspace archives up to `PRELOOP_CHECKPOINT_MAX_BYTES`
+  even when `PRELOOP_EVIDENCE_MAX_BYTES` is also set. Evidence PUTs stay
+  on the evidence cap.
+
+- **Hosted Docker direct upload stores once**: the EXIT-trap PUT is the
+  durable write. After exit the control plane binds that artifact from
+  `PRELOOP_EVIDENCE` log lines and does not copy leftover workspace files
+  into a second store.
 
 - Prevent database waits in authentication and approval summaries from blocking
   the API event loop; cancellation now waits for shared-session workers to finish.

@@ -24,13 +24,24 @@ Docker runners receive an execution-bound JWT (`aud=flow-artifact`,
 `result.json` when present) and PUT it to
 `/api/v1/flows/executions/{id}/artifacts`. Kubernetes logs then carry only
 `PRELOOP_ARTIFACT_*` status markers and `PRELOOP_EVIDENCE committed|failed|absent`
-lines — never the pack bytes. Workspace checkpoints stay on the separate
-`workspace` / `native_session` kinds; private runners still do not receive
-hosted workspace checkpoint capabilities.
+lines — never the pack bytes. Hosted Docker uses the same EXIT-trap PUT;
+after exit the control plane reads those `PRELOOP_EVIDENCE` lines and binds
+the stored artifact instead of copying `/workspace/evidence` a second time.
+Workspace checkpoints stay on the separate `workspace` / `native_session`
+kinds; private runners still do not receive hosted workspace checkpoint
+capabilities. Checkpoint restore reads up to
+`PRELOOP_CHECKPOINT_MAX_BYTES` even when the smaller evidence cap is set.
 
 The capability names one account, flow, thread, execution, kind and
 operation. It is not a storage credential. Agent containers never receive
 `SECURITY__ENCRYPTION_KEY`.
+
+Private Docker completions report the final evidence PUT as top-level
+`evidence_upload` (`uploaded`, `failed`, or `absent`) next to `result`.
+That field is runner bootstrap metadata and is emitted even when
+`result.json` is missing or invalid; agent `result` JSON cannot set it.
+A failed or missing final PUT is stored as `failed`/`missing` even
+when an earlier trap artifact exists.
 
 ## Validation, encryption, quota
 
@@ -70,9 +81,9 @@ no decrypt, no archive hash). Status polls are not an integrity proof.
 | `failed` | 409 `evidence_failed` | Transport, integrity, or persist failed |
 
 Receipt fields include `kind=evidence`, `artifact_id`, `sha256`/`digest`,
-`execution_id`, and `status`. Maintenance/provenance consumers should
-treat `available: true` from a poll as insufficient; they must use the
-stored artifact id and digest, then confirm on download.
+`execution_id`, and `status`. Release consumers should treat `available: true`
+from a poll as insufficient; they must use the stored artifact id and digest,
+then confirm on download.
 
 `object_lock` and `legal_hold` are always `false`. Do not treat a passing
 CRA `result.json` as proof the pack is available: check the receipt, then

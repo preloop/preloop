@@ -3,7 +3,9 @@
 import hashlib
 import io
 import json
+import logging
 import tarfile
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -17,8 +19,20 @@ from preloop.models.crud import flow_artifact as crud
 from preloop.models.schemas.flow_artifact import ArtifactManifest, ArtifactReference
 from preloop.utils.encryption import _get_fernet
 
+logger = logging.getLogger(__name__)
+
 MAX_MEMBERS = 100_000
-RESERVED_RESULT_FIELDS = ("trusted_publication", "_private_publication")
+RESERVED_RESULT_FIELDS = (
+    "trusted_publication",
+    "_private_publication",
+    "evidence_upload",
+    "product_provenance",
+    "dossier_manifest",
+)
+EVIDENCE_UPLOAD_OUTCOMES = frozenset({"uploaded", "failed", "absent"})
+TERMINAL_EXECUTION_STATUSES = frozenset(
+    {"SUCCEEDED", "FAILED", "STOPPED", "CANCELLED", "TIMED_OUT"}
+)
 ArtifactKind = Literal["workspace", "native_session", "evidence"]
 EVIDENCE_UNAVAILABLE_HTTP = {
     "missing": 404,
@@ -184,12 +198,11 @@ def evidence_receipt(
 
 
 def sanitize_captured_result(result: Any) -> dict[str, Any] | None:
-    """Strip control-plane publication keys from captured agent JSON.
+    """Strip reserved control-plane keys from captured agent JSON.
 
-    Shared integration point with the contracts worker: CRA schema validation
-    consumes ``flow_execution.result`` after this helper runs. Getter capture
-    and tar ``result.json`` extraction both use it so reserved keys cannot
-    enter the persisted result.
+    Getter capture and tar ``result.json`` extraction both use this helper so
+    reserved keys cannot enter the persisted execution result. Agent JSON
+    cannot author evidence upload outcome or publication receipts.
     """
     if not isinstance(result, dict):
         return None
@@ -227,6 +240,138 @@ def _as_receipt_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def execution_is_terminal(execution: Any) -> bool:
+    """True once the execution can no longer accept a live evidence refresh."""
+    return str(getattr(execution, "status", "") or "") in TERMINAL_EXECUTION_STATUSES
+
+
+def trusted_evidence_upload(message: Mapping[str, Any] | None) -> str | None:
+    """Final evidence PUT outcome from runner completion metadata.
+
+    Only a top-level string field is trusted. Agent ``result`` JSON cannot
+    author this value. Non-string JSON is ``failed``, never an exception.
+    """
+    if not isinstance(message, Mapping):
+        return None
+    if "evidence_upload" not in message:
+        return None
+    raw = message.get("evidence_upload")
+    if isinstance(raw, str) and raw in EVIDENCE_UPLOAD_OUTCOMES:
+        return raw
+    if raw is None or raw == "":
+        return None
+    return "failed"
+
+
+def job_requires_evidence_upload(pending_job: Mapping[str, Any] | None) -> bool:
+    """True when this lease was configured for direct evidence upload."""
+    if not isinstance(pending_job, Mapping):
+        return False
+    if pending_job.get("completion_protocol") == "host_exec":
+        return False
+    return pending_job.get("evidence_direct_upload") is True
+
+
+def _bound_evidence_artifact(
+    db: Session, *, account_id: UUID, execution: Any, receipt: Mapping[str, Any]
+) -> Any | None:
+    """Load the immutable artifact named by a terminal receipt, or None."""
+    raw_id = receipt.get("artifact_id")
+    if not raw_id:
+        return None
+    try:
+        artifact_id = UUID(str(raw_id))
+    except ValueError:
+        return None
+    thread_id = artifact_thread_id(execution.trigger_event_details, execution.id)
+    artifact = crud.get(
+        db,
+        artifact_id=artifact_id,
+        account_id=account_id,
+        flow_id=execution.flow_id,
+        thread_id=thread_id,
+    )
+    if (
+        artifact is None
+        or artifact.execution_id != execution.id
+        or artifact.kind != "evidence"
+    ):
+        return None
+    expected = receipt.get("sha256") or receipt.get("digest")
+    manifest = dict(getattr(artifact, "manifest", None) or {})
+    digest = manifest.get("sha256")
+    if expected and digest and expected != digest:
+        return None
+    return artifact
+
+
+def bind_terminal_evidence(
+    db: Session,
+    *,
+    account_id: UUID,
+    execution: Any,
+    evidence_upload: str | None,
+) -> dict[str, Any] | None:
+    """Persist the trusted final upload outcome on a terminal execution.
+
+    ``uploaded`` freezes the latest committed evidence row. ``failed`` and
+    ``absent`` persist those statuses so a later ``latest()`` cannot revive an
+    earlier trap artifact. A missing field leaves live capture in charge.
+    """
+    from preloop.models.crud import crud_flow_execution
+
+    if evidence_upload is None:
+        return None
+    transport = "direct"
+    if evidence_upload == "failed":
+        receipt = evidence_receipt(
+            status="failed",
+            execution_id=execution.id,
+            transport=transport,
+            error="evidence_upload_failed",
+        )
+    elif evidence_upload == "absent":
+        receipt = evidence_receipt(
+            status="missing",
+            execution_id=execution.id,
+            transport=transport,
+            error="evidence_absent",
+        )
+    elif evidence_upload == "uploaded":
+        thread_id = artifact_thread_id(execution.trigger_event_details, execution.id)
+        artifact = crud.latest(
+            db,
+            account_id=account_id,
+            flow_id=execution.flow_id,
+            thread_id=thread_id,
+            execution_id=execution.id,
+            kind="evidence",
+        )
+        if artifact is None or artifact.ciphertext is None:
+            receipt = evidence_receipt(
+                status="failed",
+                execution_id=execution.id,
+                transport=transport,
+                error="evidence_upload_missing",
+            )
+        else:
+            receipt = evidence_receipt(
+                status="available",
+                execution_id=execution.id,
+                transport=transport,
+                artifact=artifact,
+            )
+    else:
+        receipt = evidence_receipt(
+            status="failed",
+            execution_id=execution.id,
+            transport=transport,
+            error="evidence_upload_invalid",
+        )
+    crud_flow_execution.set_evidence_receipt(db, db_obj=execution, receipt=receipt)
+    return receipt
+
+
 def _mark_status_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
     """Availability metadata for polls; never a verified-download claim."""
     status = str(receipt.get("status") or "missing")
@@ -239,7 +384,10 @@ def _mark_status_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
             if exp <= datetime.now(UTC):
                 status = "expired"
         except ValueError:
-            pass
+            # Receipt expiry is advisory for polls. A malformed timestamp
+            # must not flip available to expired or raise into the status
+            # endpoint; download still verifies digest.
+            logger.debug("Ignoring unparseable evidence receipt expires_at")
     out = dict(receipt)
     out["status"] = status
     out["kind"] = "evidence"
@@ -277,13 +425,51 @@ def public_evidence_status(execution: Any) -> dict[str, Any]:
     )
 
 
+def _receipt_for_artifact(execution: Any, artifact: Any) -> dict[str, Any]:
+    """Build a receipt from a scoped evidence row's current availability."""
+    now = datetime.now(UTC)
+    expired = artifact.expires_at <= now or artifact.ciphertext is None
+    status = "expired" if expired else str(artifact.availability or "available")
+    if status not in {"available", "expired", "failed"}:
+        status = "expired" if expired else "available"
+    return evidence_receipt(
+        status=status,
+        execution_id=execution.id,
+        transport="direct",
+        artifact=artifact,
+    )
+
+
 def inspect_evidence(
     db: Session, *, account_id: UUID, execution: Any
 ) -> dict[str, Any]:
-    """Live availability for download/finalize; artifact state wins over stale available."""
+    """Live availability for download/finalize.
+
+    Before terminal close, refresh from ``latest()`` so a postprocessing PUT
+    replaces an EXIT-trap artifact. Once a terminal receipt is bound, serve
+    that immutable ``artifact_id`` (and verify scope/digest) instead of a
+    newer unrelated row.
+    """
     stored = _as_receipt_dict(getattr(execution, "evidence_receipt", None))
-    if stored.get("status") == "failed":
-        return _mark_status_receipt(stored)
+    if execution_is_terminal(execution):
+        if stored.get("status") in {"failed", "missing", "expired"}:
+            return _mark_status_receipt(stored)
+        if stored.get("artifact_id"):
+            artifact = _bound_evidence_artifact(
+                db, account_id=account_id, execution=execution, receipt=stored
+            )
+            if artifact is None:
+                return evidence_receipt(
+                    status="failed",
+                    execution_id=execution.id,
+                    transport=str(stored.get("transport") or "direct"),
+                    error="artifact_scope_mismatch",
+                )
+            return _receipt_for_artifact(execution, artifact)
+        if stored.get("status") == "available" and stored.get("transport") == "legacy":
+            archive = getattr(execution, "evidence_archive", None)
+            if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
+                return _mark_status_receipt(stored)
     thread_id = artifact_thread_id(execution.trigger_event_details, execution.id)
     artifact = crud.latest(
         db,
@@ -293,18 +479,8 @@ def inspect_evidence(
         execution_id=execution.id,
         kind="evidence",
     )
-    now = datetime.now(UTC)
     if artifact is not None:
-        expired = artifact.expires_at <= now or artifact.ciphertext is None
-        status = "expired" if expired else str(artifact.availability or "available")
-        if status not in {"available", "expired", "failed"}:
-            status = "expired" if expired else "available"
-        return evidence_receipt(
-            status=status,
-            execution_id=execution.id,
-            transport="direct",
-            artifact=artifact,
-        )
+        return _receipt_for_artifact(execution, artifact)
     archive = getattr(execution, "evidence_archive", None)
     if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
         return evidence_receipt(
@@ -312,7 +488,7 @@ def inspect_evidence(
             execution_id=execution.id,
             transport="legacy",
         )
-    if stored.get("status") == "failed":
+    if stored.get("status") in {"failed", "missing", "expired"}:
         return _mark_status_receipt(stored)
     return evidence_receipt(
         status="missing",
@@ -358,14 +534,28 @@ def load_evidence(
         )
         return archive, verified
     thread_id = artifact_thread_id(execution.trigger_event_details, execution.id)
-    artifact = crud.latest(
-        db,
-        account_id=account_id,
-        flow_id=execution.flow_id,
-        thread_id=thread_id,
-        execution_id=execution.id,
-        kind="evidence",
-    )
+    artifact = None
+    if execution_is_terminal(execution) and receipt.get("artifact_id"):
+        artifact = _bound_evidence_artifact(
+            db, account_id=account_id, execution=execution, receipt=receipt
+        )
+        if artifact is None:
+            failed = evidence_receipt(
+                status="failed",
+                execution_id=execution.id,
+                transport="direct",
+                error="artifact_scope_mismatch",
+            )
+            raise EvidenceUnavailableError("failed", failed)
+    else:
+        artifact = crud.latest(
+            db,
+            account_id=account_id,
+            flow_id=execution.flow_id,
+            thread_id=thread_id,
+            execution_id=execution.id,
+            kind="evidence",
+        )
     if artifact is None:
         raise EvidenceUnavailableError("missing", receipt)
     try:
@@ -418,8 +608,13 @@ def put_artifact(
     execution_id: UUID,
     kind: ArtifactKind,
     archive: bytes,
+    require_execution_open: bool = True,
 ) -> ArtifactReference:
-    """Validate and atomically commit encrypted bytes and metadata."""
+    """Validate and atomically commit encrypted bytes and metadata.
+
+    Capability PUTs keep ``require_execution_open=True``. Controller-owned
+    retention after a failed run passes False.
+    """
     expanded = validate_archive(
         archive,
         max_bytes=artifact_max_bytes(kind),
@@ -483,6 +678,7 @@ def put_artifact(
             ),
         },
         quota_bytes=settings.flow_artifact_account_quota_bytes,
+        require_execution_open=require_execution_open,
     )
     return artifact_reference(artifact)
 

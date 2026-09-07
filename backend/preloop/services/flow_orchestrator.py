@@ -512,6 +512,7 @@ class FlowExecutionOrchestrator:
         # the agent_result dict so it never travels through NATS updates.
         self._evidence_archive: Optional[bytes] = None
         self._evidence_receipt: Optional[Dict[str, Any]] = None
+        self._evidence_artifact_id: Optional[str] = None
         # tar.gz of /workspace captured before the runtime is torn down, so a
         # run that failed before pushing can be downloaded or resumed.
         self._workspace_snapshot: Optional[bytes] = None
@@ -2237,6 +2238,8 @@ class FlowExecutionOrchestrator:
                     self.db, self.flow, self._isolated_publication_policy
                 )
 
+        self._verify_product_provenance_record()
+
         # Isolated mode never resolves the existing broad tracker token.
         if self.flow.git_clone_config and self._isolated_publication_policy is None:
             repositories = self.flow.git_clone_config.get("repositories", [])
@@ -3036,14 +3039,136 @@ class FlowExecutionOrchestrator:
         sanitized = sanitize_captured_result(artifact)
         return self._persist_cra_result_boundary(sanitized)
 
+    def _cra_prompt_text(self) -> Optional[str]:
+        """Configured flow prompt used to detect an expected CRA result schema."""
+        flow = getattr(self, "flow", None)
+        template = getattr(flow, "prompt_template", None) if flow is not None else None
+        if isinstance(template, str) and template.strip():
+            return template
+        execution_log = getattr(self, "execution_log", None)
+        resolved = getattr(execution_log, "resolved_input_prompt", None)
+        if isinstance(resolved, str) and resolved.strip():
+            return resolved
+        return None
+
+    def _persist_cra_result_boundary(
+        self, artifact: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Validate CRA result.json after capture/sanitize."""
+        from preloop.cra.persist import (
+            apply_cra_persist_boundary,
+            resolve_persist_authority,
+        )
+
+        execution = getattr(self, "execution_log", None)
+        execution_id = getattr(execution, "id", None)
+        prompt = self._cra_prompt_text()
+        approvals, authority = resolve_persist_authority(
+            artifact, getattr(self, "db", None), execution_id, prompt=prompt
+        )
+        decision = apply_cra_persist_boundary(
+            artifact,
+            prompt=prompt,
+            trigger_payload=getattr(self, "trigger_event_data", None),
+            platform_approvals=approvals,
+            authority=authority,
+        )
+        self._cra_persist_decision = decision
+        persisted = decision.artifact
+        logger = getattr(self, "execution_logger", None)
+        if isinstance(persisted, dict) and logger is not None:
+            logger.log_milestone(
+                "result_artifact_captured",
+                {
+                    "keys": sorted(persisted.keys())[:20],
+                    "cra_invalid": decision.invalid,
+                },
+            )
+        return persisted
+
+    def _apply_cra_fail_closed(
+        self, final_status: str, error_message: Optional[str]
+    ) -> tuple[str, Optional[str]]:
+        """Deny a successful release when CRA persist validation failed closed."""
+        from preloop.cra.persist import apply_cra_fail_closed_completion
+
+        decision = getattr(self, "_cra_persist_decision", None)
+        if decision is None:
+            return final_status, error_message
+        return apply_cra_fail_closed_completion(final_status, error_message, decision)
+
+    def _sync_evidence_artifact_identity(
+        self, artifact_id: Any, archive: bytes | None = None
+    ) -> None:
+        """Drop cached pack bytes when the bound artifact identity changes."""
+        new_id = str(artifact_id) if artifact_id is not None else None
+        current = getattr(self, "_evidence_artifact_id", None)
+        if new_id != current:
+            self._evidence_archive = None
+            self._evidence_artifact_id = new_id
+        if archive is not None:
+            self._evidence_archive = archive
+
+    def _refresh_execution_for_evidence(self) -> Any:
+        """Reload receipt/status committed by the runner completion handler."""
+        execution = self.execution_log
+        if execution is None:
+            return None
+        db = getattr(self, "db", None)
+        refresh = getattr(db, "refresh", None)
+        if callable(refresh):
+            try:
+                refresh(execution)
+            except Exception as exc:
+                # Keep the in-memory row. Refresh can fail on a detached or
+                # already-expired identity; evidence bind then uses whatever
+                # receipt that object still carries.
+                logger.debug(
+                    "Skipping execution refresh before evidence bind (%s)",
+                    type(exc).__name__,
+                )
+        return execution
+
+    def _terminal_bound_evidence_receipt(self) -> dict[str, Any] | None:
+        """Trusted receipt written at completion; not agent JSON."""
+        from preloop.services.flow_artifacts import execution_is_terminal
+
+        execution = self._refresh_execution_for_evidence()
+        if execution is None or not execution_is_terminal(execution):
+            return None
+        stored = getattr(execution, "evidence_receipt", None)
+        if isinstance(stored, dict) and stored.get("status"):
+            return stored
+        return None
+
     async def _evidence_bytes_for_result_extract(self) -> Optional[bytes]:
         """Decrypt stored evidence once when result.json is only in the pack.
 
         Status polls never call this. Direct-path receipts stay metadata-only
-        until the result getter misses and we need the packed JSON.
+        until the result getter misses and we need the packed JSON. Cached
+        bytes are used only when they still match the bound artifact identity.
         """
-        if self._evidence_archive:
-            return self._evidence_archive
+        wanted = None
+        bound = self._terminal_bound_evidence_receipt()
+        receipt = (
+            bound
+            if isinstance(bound, dict)
+            else (
+                self._evidence_receipt
+                if isinstance(self._evidence_receipt, dict)
+                else {}
+            )
+        )
+        status = str(receipt.get("status") or "")
+        if status in {"failed", "missing", "expired"}:
+            return None
+        wanted = receipt.get("artifact_id")
+        cached = getattr(self, "_evidence_archive", None)
+        cached_id = getattr(self, "_evidence_artifact_id", None)
+        if cached is not None and (not wanted or str(cached_id) == str(wanted)):
+            return cached
+        if wanted and str(cached_id) != str(wanted):
+            self._evidence_archive = None
         if not settings.flow_artifact_direct_upload:
             return None
         execution = self.execution_log
@@ -3057,14 +3182,38 @@ class FlowExecutionOrchestrator:
             get_artifact,
         )
 
-        stored = crud_flow_artifact.latest(
-            self.db,
-            account_id=flow.account_id,
-            flow_id=flow.id,
-            thread_id=artifact_thread_id(execution.trigger_event_details, execution.id),
-            execution_id=execution.id,
-            kind="evidence",
-        )
+        thread_id = artifact_thread_id(execution.trigger_event_details, execution.id)
+        stored = None
+        if wanted:
+            try:
+                from uuid import UUID
+
+                stored = crud_flow_artifact.get(
+                    self.db,
+                    artifact_id=UUID(str(wanted)),
+                    account_id=flow.account_id,
+                    flow_id=flow.id,
+                    thread_id=thread_id,
+                )
+            except ValueError:
+                stored = None
+            if stored is not None and (
+                stored.execution_id != execution.id
+                or stored.kind != "evidence"
+                or stored.ciphertext is None
+            ):
+                stored = None
+            if stored is None:
+                return None
+        elif stored is None:
+            stored = crud_flow_artifact.latest(
+                self.db,
+                account_id=flow.account_id,
+                flow_id=flow.id,
+                thread_id=thread_id,
+                execution_id=execution.id,
+                kind="evidence",
+            )
         if stored is None or stored.ciphertext is None:
             return None
         try:
@@ -3072,73 +3221,13 @@ class FlowExecutionOrchestrator:
                 self.db,
                 account_id=flow.account_id,
                 flow_id=flow.id,
-                thread_id=artifact_thread_id(
-                    execution.trigger_event_details, execution.id
-                ),
+                thread_id=thread_id,
                 reference=artifact_reference(stored),
             )
         except ValueError:
             return None
-        self._evidence_archive = archive
+        self._sync_evidence_artifact_identity(stored.id, archive)
         return archive
-
-    def _cra_prompt_text(self) -> Optional[str]:
-        """Configured flow prompt used to detect an expected CRA result schema."""
-        flow = self.flow
-        template = getattr(flow, "prompt_template", None) if flow is not None else None
-        if isinstance(template, str) and template.strip():
-            return template
-        resolved = getattr(self.execution_log, "resolved_input_prompt", None)
-        if isinstance(resolved, str) and resolved.strip():
-            return resolved
-        return None
-
-    def _persist_cra_result_boundary(
-        self, artifact: Optional[Dict[str, Any]]
-    ) -> Optional[Dict[str, Any]]:
-        """Validate CRA result.json at the hosted persist boundary."""
-        from preloop.cra.persist import (
-            apply_cra_persist_boundary,
-            resolve_persist_authority,
-        )
-
-        execution_id = getattr(self.execution_log, "id", None)
-        approvals, authority = resolve_persist_authority(
-            artifact, self.db, execution_id, prompt=self._cra_prompt_text()
-        )
-        decision = apply_cra_persist_boundary(
-            artifact,
-            prompt=self._cra_prompt_text(),
-            trigger_payload=self.trigger_event_data,
-            platform_approvals=approvals,
-            authority=authority,
-        )
-        self._cra_persist_decision = decision
-        persisted = decision.artifact
-        if isinstance(persisted, dict):
-            self.execution_logger.log_milestone(
-                "result_artifact_captured",
-                {
-                    "keys": sorted(persisted.keys())[:20],
-                    "cra_invalid": decision.invalid,
-                },
-            )
-        return persisted
-
-    def _apply_cra_fail_closed(
-        self, final_status: str, error_message: Optional[str]
-    ) -> tuple[str, Optional[str]]:
-        """Deny a successful release when CRA persist validation failed closed."""
-        from preloop.cra.persist import cra_fail_closed_error_message
-
-        decision = getattr(self, "_cra_persist_decision", None)
-        if decision is None:
-            return final_status, error_message
-        if decision.invalid:
-            return "FAILED", cra_fail_closed_error_message(decision)
-        if decision.fail_closed_status == "FAILED" and final_status == "SUCCEEDED":
-            return "FAILED", error_message or cra_fail_closed_error_message(decision)
-        return final_status, error_message
 
     async def _capture_evidence_archive(
         self, agent_executor: Any, session_reference: str
@@ -3158,9 +3247,22 @@ class FlowExecutionOrchestrator:
             put_artifact,
         )
 
-        execution = self.execution_log
+        execution = self._refresh_execution_for_evidence()
         flow = self.flow
         direct = bool(settings.flow_artifact_direct_upload) and execution is not None
+
+        bound = self._terminal_bound_evidence_receipt()
+        if bound is not None:
+            status = str(bound.get("status") or "")
+            if status in {"failed", "missing", "expired"}:
+                self._evidence_receipt = bound
+                self._evidence_archive = None
+                self._evidence_artifact_id = None
+                return
+            if status == "available" and bound.get("artifact_id"):
+                self._evidence_receipt = bound
+                self._sync_evidence_artifact_identity(bound.get("artifact_id"))
+                return
 
         getter = getattr(agent_executor, "get_evidence_archive", None)
         archive: bytes | None = None
@@ -3173,7 +3275,14 @@ class FlowExecutionOrchestrator:
             if isinstance(captured, (bytes, bytearray)) and captured:
                 archive = bytes(captured)
 
-        transport_error = getattr(agent_executor, "evidence_transport_error", None)
+        raw_transport_error = getattr(agent_executor, "evidence_transport_error", None)
+        # Production sets a string; mocks (AsyncMock) auto-create truthy
+        # attributes that must not be treated as a real upload failure.
+        transport_error = (
+            raw_transport_error
+            if isinstance(raw_transport_error, str) and raw_transport_error
+            else None
+        )
         if transport_error:
             self._evidence_receipt = evidence_receipt(
                 status="failed",
@@ -3202,6 +3311,7 @@ class FlowExecutionOrchestrator:
                     execution_id=execution.id,
                     kind="evidence",
                     archive=archive,
+                    require_execution_open=False,
                 )
             except ValueError as exc:
                 self._evidence_receipt = evidence_receipt(
@@ -3224,7 +3334,9 @@ class FlowExecutionOrchestrator:
                     execution.trigger_event_details, execution.id
                 ),
             )
-            self._evidence_archive = archive
+            self._sync_evidence_artifact_identity(
+                stored.id if stored is not None else None, archive
+            )
             self._evidence_receipt = evidence_receipt(
                 status="available",
                 execution_id=execution.id,
@@ -3239,7 +3351,7 @@ class FlowExecutionOrchestrator:
             return
 
         if archive is not None:
-            self._evidence_archive = archive
+            self._sync_evidence_artifact_identity(None, archive)
             if execution is not None:
                 self._evidence_receipt = evidence_receipt(
                     status="available",
@@ -3265,6 +3377,7 @@ class FlowExecutionOrchestrator:
                 kind="evidence",
             )
             if stored is not None and stored.ciphertext is not None:
+                self._sync_evidence_artifact_identity(stored.id)
                 self._evidence_receipt = evidence_receipt(
                     status="available",
                     execution_id=execution.id,
@@ -4986,19 +5099,33 @@ class FlowExecutionOrchestrator:
 
     async def _persist_isolated_recovery(self) -> None:
         """Keep the original runtime unless recoverable work is durably saved."""
+        from preloop.services.multi_repo_publication import (
+            is_multi_repo_policy,
+            policy_targets,
+            read_named_publication_bundles,
+        )
         from preloop.services.publication_worker import inspect_bundle
-        from preloop.services.trusted_publisher import read_publication_bundle
+        from preloop.services.trusted_publisher import (
+            PublicationError,
+            read_publication_bundle,
+        )
 
         archive = getattr(self, "_evidence_archive", None)
         workspace = getattr(self, "_workspace_snapshot", None)
+        policy = getattr(self, "_isolated_publication_policy", None)
         if workspace is None:
-            # A valid self-contained Git bundle can preserve committed work
-            # when the full workspace exceeds its capture budget.
-            await asyncio.to_thread(
-                inspect_bundle,
-                read_publication_bundle(archive or b""),
-                self._isolated_publication_policy.base_sha,
-            )
+            if policy is None:
+                raise PublicationError("Isolated recovery has no publication policy")
+            targets = policy_targets(policy)
+            if is_multi_repo_policy(policy):
+                bundles = read_named_publication_bundles(archive or b"", targets)
+                for target in targets:
+                    inspect_bundle(bundles[target.slug], target.base_sha)
+            else:
+                inspect_bundle(
+                    read_publication_bundle(archive or b""),
+                    policy.base_sha,
+                )
         crud_flow_execution.capture_publication_recovery(
             self.db, db_obj=self.execution_log, archive=archive, workspace=workspace
         )
@@ -5007,19 +5134,281 @@ class FlowExecutionOrchestrator:
             {"execution_id": str(self.execution_log.id)},
         )
 
+    def _load_evidence_archive_bytes(self) -> bytes | None:
+        """Load the persisted evidence archive for checkout observation."""
+        from uuid import UUID
+
+        from preloop.services.flow_artifacts import (
+            EvidenceUnavailableError,
+            load_evidence,
+        )
+
+        execution = getattr(self, "execution_log", None)
+        flow = getattr(self, "flow", None)
+        if execution is None or flow is None or getattr(self, "db", None) is None:
+            return None
+        account_id = getattr(flow, "account_id", None)
+        if account_id is None:
+            return None
+        try:
+            archive, _receipt = load_evidence(
+                self.db,
+                account_id=UUID(str(account_id)),
+                execution=execution,
+            )
+        except EvidenceUnavailableError:
+            return None
+        if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
+            self._evidence_archive = bytes(archive)
+            return bytes(archive)
+        return None
+
+    def _product_runtime_facts(self) -> Any:
+        """Trusted checkout URLs/SHAs and supplied SBOM bytes for mapping checks."""
+        from preloop.services.multi_repo_publication import policy_targets
+        from preloop.services.product_provenance import (
+            RuntimeProvenanceFacts,
+            extract_product_provenance_payload,
+            facts_from_git_clone_config,
+            facts_from_workspace_files,
+        )
+
+        mapping = extract_product_provenance_payload(
+            getattr(self, "trigger_event_data", None)
+        )
+        sbom_path = None
+        if isinstance(mapping, dict):
+            sbom = mapping.get("sbom")
+            if isinstance(sbom, dict) and isinstance(sbom.get("path"), str):
+                sbom_path = sbom["path"]
+        sbom_bytes, observed_path = (None, None)
+        if mapping is not None:
+            sbom_bytes, observed_path = facts_from_workspace_files(
+                getattr(self, "trigger_event_data", None), sbom_path=sbom_path
+            )
+        git_config: dict[str, Any] = {}
+        flow = getattr(self, "flow", None)
+        if flow is not None and isinstance(flow.git_clone_config, dict):
+            git_config = dict(flow.git_clone_config)
+        policy = getattr(self, "_isolated_publication_policy", None)
+        clone_shas: dict[str, str] = {}
+        requested_pins: dict[str, str] = {}
+        archive = getattr(self, "_evidence_archive", None)
+        if not isinstance(archive, (bytes, bytearray, memoryview)) or not bytes(
+            archive
+        ):
+            archive = self._load_evidence_archive_bytes()
+        if policy is not None:
+            from preloop.services.multi_repo_publication import observed_checkout_shas
+
+            if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
+                clone_shas = observed_checkout_shas(policy, bytes(archive))
+            for target in policy_targets(policy):
+                if target.base_sha:
+                    requested_pins[target.repository_url] = target.base_sha
+            if getattr(policy, "targets", None):
+                git_config["repositories"] = [
+                    {
+                        "repository_url": target.repository_url,
+                        "clone_path": target.clone_path,
+                    }
+                    for target in policy_targets(policy)
+                ]
+        else:
+            from preloop.services.multi_repo_publication import (
+                observed_checkout_shas,
+                policy_targets as checkout_targets,
+            )
+            from preloop.services.security_maintenance_refs import (
+                checkout_observation_policy,
+            )
+
+            checkout = checkout_observation_policy(
+                flow, execution=getattr(self, "execution_log", None)
+            )
+            if checkout is not None:
+                if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(
+                    archive
+                ):
+                    from preloop.services.trusted_publisher import PublicationError
+
+                    try:
+                        clone_shas = observed_checkout_shas(checkout, bytes(archive))
+                    except PublicationError:
+                        clone_shas = {}
+                for target in checkout_targets(checkout):
+                    if target.base_sha:
+                        requested_pins[target.repository_url] = target.base_sha
+        remotes, paths, _configured = facts_from_git_clone_config(
+            git_config, clone_shas=clone_shas
+        )
+        return RuntimeProvenanceFacts(
+            authorized_remotes=remotes,
+            clone_paths=paths,
+            clone_shas=clone_shas,
+            sbom_bytes=sbom_bytes,
+            sbom_path=observed_path,
+            requested_pins=requested_pins,
+        )
+
+    def _verify_product_provenance_record(
+        self, *, require_observed: bool = False
+    ) -> Any:
+        """Validate optional product mapping against trusted facts. None if unused."""
+        from preloop.services.product_provenance import (
+            ProductProvenanceError,
+            extract_product_provenance_payload,
+            validate_product_provenance,
+        )
+        from preloop.services.trusted_publisher import PublicationError
+
+        if getattr(self, "flow", None) is None:
+            return None
+        mapping = extract_product_provenance_payload(
+            getattr(self, "trigger_event_data", None)
+        )
+        facts = self._product_runtime_facts()
+        try:
+            return validate_product_provenance(
+                mapping, facts, require_observed=require_observed
+            )
+        except ProductProvenanceError as exc:
+            raise PublicationError(str(exc)) from exc
+
+    def _product_evidence_opt_in(
+        self,
+        agent_result: Dict[str, Any] | None = None,
+        *,
+        provenance: Any = None,
+        publication: Dict[str, Any] | None = None,
+    ) -> bool:
+        """Dossier and approval reads only for mapping, CRA, or explicit context."""
+        if provenance is not None or publication:
+            return True
+        if getattr(self, "_isolated_publication_policy", None) is not None:
+            return True
+        from preloop.services.product_provenance import (
+            extract_product_provenance_payload,
+        )
+
+        if extract_product_provenance_payload(
+            getattr(self, "trigger_event_data", None)
+        ):
+            return True
+        raw = agent_result.get("result") if isinstance(agent_result, dict) else None
+        if isinstance(raw, dict) and str(raw.get("schema") or "").startswith(
+            "preloop.cra."
+        ):
+            return True
+        context = getattr(self, "_product_evidence_context", None)
+        return isinstance(context, dict) and bool(context.get("product_evidence"))
+
+    def _attach_product_evidence_records(
+        self,
+        agent_result: Dict[str, Any],
+        *,
+        provenance: Any = None,
+        publication: Dict[str, Any] | None = None,
+    ) -> None:
+        """Write control-plane provenance and dossier; never trust agent copies."""
+        from uuid import UUID
+
+        from preloop.services.flow_artifacts import (
+            EvidenceUnavailableError,
+            load_evidence,
+        )
+        from preloop.services.product_dossier import (
+            build_dossier_manifest,
+            strip_control_plane_result,
+        )
+
+        if getattr(self, "flow", None) is None:
+            return
+        if not self._product_evidence_opt_in(
+            agent_result, provenance=provenance, publication=publication
+        ):
+            return
+        raw_result = strip_control_plane_result(dict(agent_result.get("result") or {}))
+        result = dict(raw_result)
+        if provenance is not None:
+            result["product_provenance"] = provenance.as_dict()
+        execution_id = str(
+            getattr(self, "execution_id", None)
+            or getattr(getattr(self, "execution_log", None), "id", "")
+            or ""
+        )
+        approvals: list[Any] = []
+        evidence_receipt: dict[str, Any] | None = None
+        execution = getattr(self, "execution_log", None)
+        if execution_id:
+            from preloop.models.crud import crud_approval_request
+
+            approvals = crud_approval_request.get_multi_by_execution(
+                self.db,
+                execution_id=execution_id,
+                account_id=str(self.flow.account_id),
+            )
+        if execution is not None:
+            try:
+                _, evidence_receipt = load_evidence(
+                    self.db,
+                    account_id=UUID(str(self.flow.account_id)),
+                    execution=execution,
+                )
+            except EvidenceUnavailableError as exc:
+                evidence_receipt = exc.receipt
+        artifacts = result.get("artifacts")
+        dossier = build_dossier_manifest(
+            execution_id=execution_id,
+            result=result,
+            provenance=provenance,
+            artifact_refs=artifacts if isinstance(artifacts, dict) else {},
+            approvals=approvals,
+            publication=publication,
+            evidence_receipt=evidence_receipt,
+            raw_result=raw_result,
+        )
+        result["dossier_manifest"] = dossier
+        agent_result["result"] = result
+
     async def _finish_isolated_publication(self, agent_result: Dict[str, Any]) -> None:
         """Run trusted publication after runtime cleanup; failure changes status."""
-        policy = getattr(self, "_isolated_publication_policy", None)
-        if policy is None:
+        if not self._product_evidence_opt_in(agent_result):
             return
         reported_result = agent_result.get("result")
         if isinstance(reported_result, dict):
             reported_result = dict(reported_result)
             reported_result.pop("trusted_publication", None)
             reported_result.pop("_private_publication", None)
+            reported_result.pop("product_provenance", None)
+            reported_result.pop("dossier_manifest", None)
             agent_result["result"] = reported_result
+        provenance = None
+        from preloop.services.trusted_publisher import PublicationError
+
+        try:
+            provenance = self._verify_product_provenance_record(
+                require_observed=getattr(self, "_isolated_publication_policy", None)
+                is not None
+            )
+        except PublicationError as exc:
+            if agent_result.get("status") == "SUCCEEDED":
+                agent_result["status"] = "FAILED"
+                agent_result["error_message"] = str(exc)
+                if getattr(self, "execution_logger", None) is not None:
+                    self.execution_logger.log_milestone(
+                        "product_provenance_failed", {"reason": str(exc)}
+                    )
+        self._attach_product_evidence_records(agent_result, provenance=provenance)
+        policy = getattr(self, "_isolated_publication_policy", None)
+        if policy is None:
+            return
         import httpx
         from preloop.services.isolated_publication import finish_isolated_publication
+        from preloop.services.multi_repo_publication import (
+            IncompleteMultiRepoPublicationError,
+            is_multi_repo_policy,
+        )
         from preloop.services.publication_credentials import revoke_repository_lease
         from preloop.services.trusted_publisher import PublicationError
 
@@ -5058,40 +5447,73 @@ class FlowExecutionOrchestrator:
                 if executor is None:
                     raise PublicationError("Missing trusted verifier runtime adapter")
                 try:
-                    verified = await verify_hosted_publication(
-                        executor,
-                        policy,
-                        read_publication_bundle(self._evidence_archive or b""),
-                    )
-                    self._publication_verification = verified.verification
-                    self.execution_logger.log_milestone(
-                        "trusted_verification_succeeded",
-                        {
-                            "manifest": verified.manifest,
-                            "checks": list(verified.checks),
-                            "image": verified.image,
-                        },
-                    )
+                    if is_multi_repo_policy(policy):
+
+                        async def verify(target_policy: Any, bundle: bytes) -> Any:
+                            return await verify_hosted_publication(
+                                executor, target_policy, bundle
+                            )
+
+                        publication = await finish_isolated_publication(
+                            self.db,
+                            policy,
+                            agent_result,
+                            self._evidence_archive,
+                            None,
+                            verify=verify,
+                        )
+                    else:
+                        verified = await verify_hosted_publication(
+                            executor,
+                            policy,
+                            read_publication_bundle(self._evidence_archive or b""),
+                        )
+                        self._publication_verification = verified.verification
+                        self.execution_logger.log_milestone(
+                            "trusted_verification_succeeded",
+                            {
+                                "manifest": verified.manifest,
+                                "checks": list(verified.checks),
+                                "image": verified.image,
+                            },
+                        )
+                        publication = await finish_isolated_publication(
+                            self.db,
+                            policy,
+                            agent_result,
+                            self._evidence_archive,
+                            getattr(self, "_publication_verification", None),
+                        )
                 finally:
                     await executor.cleanup()
-                publication = await finish_isolated_publication(
-                    self.db,
-                    policy,
-                    agent_result,
-                    self._evidence_archive,
-                    getattr(self, "_publication_verification", None),
-                )
             result = dict(agent_result.get("result") or {})
             result["trusted_publication"] = publication
             agent_result["result"] = result
             self._opened_pr = publication
+            self._attach_product_evidence_records(
+                agent_result, provenance=provenance, publication=publication
+            )
             self.execution_logger.log_milestone(
                 "trusted_publication_succeeded",
                 {
-                    "url": publication["url"],
-                    "head_sha": publication["head_sha"],
+                    "url": publication.get("url"),
+                    "head_sha": publication.get("head_sha"),
+                    "complete": publication.get("complete", True),
                     "metadata_warnings": publication.get("metadata_warnings", []),
                 },
+            )
+        except IncompleteMultiRepoPublicationError as exc:
+            agent_result["status"] = "FAILED"
+            agent_result["error_message"] = str(exc)
+            result = dict(agent_result.get("result") or {})
+            result["trusted_publication"] = exc.receipt
+            agent_result["result"] = result
+            self._attach_product_evidence_records(
+                agent_result, provenance=provenance, publication=exc.receipt
+            )
+            self.execution_logger.log_milestone(
+                "trusted_publication_failed",
+                {"reason": str(exc), "receipt": exc.receipt},
             )
         except PublicationError as exc:
             agent_result["status"] = "FAILED"
@@ -5105,15 +5527,19 @@ class FlowExecutionOrchestrator:
                 failure["verification"] = exc.evidence
             self.execution_logger.log_milestone("trusted_publication_failed", failure)
         finally:
-            if policy.read_lease is not None:
+            leases = tuple(getattr(policy, "read_leases", ()) or ())
+            if not leases and getattr(policy, "read_lease", None) is not None:
+                leases = (policy.read_lease,)
+            if leases:
                 async with httpx.AsyncClient() as client:
-                    try:
-                        await revoke_repository_lease(policy.read_lease, client)
-                    except PublicationError as exc:
-                        self.execution_logger.log_milestone(
-                            "publication_credential_revocation_failed",
-                            {"reason": str(exc)},
-                        )
+                    for lease in leases:
+                        try:
+                            await revoke_repository_lease(lease, client)
+                        except PublicationError as exc:
+                            self.execution_logger.log_milestone(
+                                "publication_credential_revocation_failed",
+                                {"reason": str(exc)},
+                            )
 
     async def run(self):
         """

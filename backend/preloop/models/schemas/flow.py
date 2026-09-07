@@ -92,6 +92,15 @@ class GitCloneConfig(BaseModel):
             "the trusted control plane after verification, using scoped App credentials."
         ),
     )
+    publication_approval: Optional[Union[bool, Literal["required", "require"]]] = Field(
+        default=None,
+        description=(
+            "When true, required, or require, isolated publication mints a "
+            "writer lease only after a human platform approval covers each "
+            "frozen candidate repository, branch, base, and head SHA. "
+            "Default flows omit this and keep existing publication behaviour."
+        ),
+    )
     pull_request_template: Optional[str] = Field(
         default=None,
         max_length=512,

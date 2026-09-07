@@ -491,7 +491,12 @@ class CRUDSecurityMaintenance:
     async def locked(
         self, db: Session, account_id: UUID, token: str
     ) -> AsyncIterator[None]:
-        """Serialize one identity or release without blocking the event loop."""
+        """Serialize one identity or release without blocking the event loop.
+
+        Does not expire the caller's identity map: pending writes stay until
+        the claim helpers flush and re-read locked rows with
+        ``populate_existing``.
+        """
         key = int.from_bytes(
             sha256(f"sm:{account_id}:{token}".encode()).digest()[:8],
             "big",
@@ -721,7 +726,12 @@ class CRUDSecurityMaintenance:
     def _lock_item(
         self, db: Session, *, account_id: UUID, item_id: UUID
     ) -> models.SecurityMaintenanceItem | None:
-        """Load one item with a row lock for CAS dispatch ownership."""
+        """Load one item with a row lock for CAS dispatch ownership.
+
+        Flushes pending writes, then ``populate_existing`` so another
+        session's committed claim or state replaces a stale identity-map copy.
+        """
+        db.flush()
         return db.scalar(
             select(models.SecurityMaintenanceItem)
             .where(
@@ -729,12 +739,18 @@ class CRUDSecurityMaintenance:
                 models.SecurityMaintenanceItem.account_id == account_id,
             )
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
 
     def _lock_release(
         self, db: Session, *, account_id: UUID, release_id: UUID
     ) -> models.SecurityMaintenanceRelease | None:
-        """Load one release with a row lock for CAS dispatch ownership."""
+        """Load one release with a row lock for CAS dispatch ownership.
+
+        Flushes pending writes, then ``populate_existing`` so another
+        session's committed claim replaces a stale identity-map copy.
+        """
+        db.flush()
         return db.scalar(
             select(models.SecurityMaintenanceRelease)
             .where(
@@ -742,14 +758,26 @@ class CRUDSecurityMaintenance:
                 models.SecurityMaintenanceRelease.account_id == account_id,
             )
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
 
     def _pending_bound_execution(
         self, db: Session, *, account_id: UUID, execution_id: UUID
     ) -> models.FlowExecution | None:
-        """Return the tenant execution only while it is still PENDING."""
-        execution = self.get_execution(
-            db, account_id=account_id, execution_id=execution_id
+        """Return the tenant execution only while it is still PENDING.
+
+        Re-reads through ``populate_existing`` so a RUNNING or terminal status
+        committed on another session is not hidden by the identity map.
+        """
+        db.flush()
+        execution = db.scalar(
+            select(models.FlowExecution)
+            .join(models.Flow, models.FlowExecution.flow_id == models.Flow.id)
+            .where(
+                models.FlowExecution.id == execution_id,
+                models.Flow.account_id == account_id,
+            )
+            .execution_options(populate_existing=True)
         )
         if execution is None or execution.status != "PENDING":
             return None

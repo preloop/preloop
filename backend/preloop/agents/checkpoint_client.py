@@ -5,6 +5,7 @@ harness only. Transport credentials are execution capabilities, never storage
 credentials. Uploads commit only after the complete archive validates.
 """
 
+import errno
 import hashlib
 import io
 import json
@@ -174,32 +175,50 @@ def _lstat_regular(path: Path) -> os.stat_result:
 
 
 def _read_bounded(path: Path, *, expected: os.stat_result, limit: int) -> bytes:
-    """Read at most ``limit`` bytes. Growth past the lstat size is a TOCTOU failure.
+    """Read at most ``limit`` bytes from the same inode ``expected`` named.
 
     ``expected.st_size`` is checked before any read so a huge or sparse file
-    cannot be allocated into memory.
+    cannot be allocated into memory. The path is opened with ``O_NOFOLLOW``
+    and the fd is ``fstat``ed so a substituted symlink cannot be followed.
     """
     if expected.st_size > limit:
         raise ValueError("evidence_expansion_limit")
-    data = bytearray()
-    with open(path, "rb") as fh:
+    flags = os.O_RDONLY
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if nofollow:
+        flags |= nofollow
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if getattr(exc, "errno", None) in {errno.ELOOP, errno.EMLINK}:
+            raise ValueError("evidence_unsafe_member") from exc
+        raise ValueError("evidence_busy") from exc
+    try:
+        observed = os.fstat(fd)
+        if stat.S_ISLNK(observed.st_mode) or not stat.S_ISREG(observed.st_mode):
+            raise ValueError("evidence_unsafe_member")
+        if (
+            observed.st_ino != expected.st_ino
+            or observed.st_dev != expected.st_dev
+            or observed.st_size != expected.st_size
+            or observed.st_mtime_ns != expected.st_mtime_ns
+        ):
+            raise ValueError("evidence_busy")
+        data = bytearray()
         while True:
-            chunk = fh.read(_READ_CHUNK)
+            chunk = os.read(fd, _READ_CHUNK)
             if not chunk:
                 break
             data.extend(chunk)
-            if len(data) > expected.st_size:
-                raise ValueError("evidence_busy")
-            if len(data) > limit:
-                raise ValueError("evidence_expansion_limit")
-    after = path.lstat()
-    if (
-        after.st_size != expected.st_size
-        or after.st_mtime_ns != expected.st_mtime_ns
-        or len(data) != expected.st_size
-    ):
-        raise ValueError("evidence_busy")
-    return bytes(data)
+            if len(data) > expected.st_size or len(data) > limit:
+                raise ValueError(
+                    "evidence_expansion_limit" if len(data) > limit else "evidence_busy"
+                )
+        if len(data) != expected.st_size:
+            raise ValueError("evidence_busy")
+        return bytes(data)
+    finally:
+        os.close(fd)
 
 
 def pack_evidence(root: Path, *, max_bytes: int, max_expanded_bytes: int) -> bytes:
@@ -294,8 +313,27 @@ def pack_evidence(root: Path, *, max_bytes: int, max_expanded_bytes: int) -> byt
     return body
 
 
+def response_read_limit(*, url: str | None = None) -> int:
+    """Bound this HTTP response by the operation that owns the URL.
+
+    Evidence and workspace checkpoints share ``request()`` but not a size
+    cap. Preferring ``PRELOOP_EVIDENCE_MAX_BYTES`` (32 MiB) would truncate a
+    legal checkpoint restore once both variables are set.
+    """
+    default = 32 * 1024 * 1024
+    evidence_url = os.environ.get("PRELOOP_EVIDENCE_URL")
+    if url is not None and evidence_url and url == evidence_url:
+        return int(os.environ.get("PRELOOP_EVIDENCE_MAX_BYTES", str(default)))
+    return int(os.environ.get("PRELOOP_CHECKPOINT_MAX_BYTES", str(default)))
+
+
 def request(
-    method: str, token: str, data: bytes | None = None, *, url: str | None = None
+    method: str,
+    token: str,
+    data: bytes | None = None,
+    *,
+    url: str | None = None,
+    max_bytes: int | None = None,
 ) -> bytes:
     """Use only the operator-provided endpoint and scoped capability."""
     target = url or os.environ["PRELOOP_CHECKPOINT_URL"]
@@ -309,12 +347,7 @@ def request(
         },
     )
     with urllib.request.urlopen(req, timeout=120) as response:
-        limit = int(
-            os.environ.get(
-                "PRELOOP_EVIDENCE_MAX_BYTES",
-                os.environ.get("PRELOOP_CHECKPOINT_MAX_BYTES", str(32 * 1024 * 1024)),
-            )
-        )
+        limit = max_bytes if max_bytes is not None else response_read_limit(url=target)
         body = response.read(limit + 1)
         if len(body) > limit:
             raise ValueError("checkpoint_response_oversized")
@@ -421,13 +454,14 @@ def main() -> None:
                     flush=True,
                 )
         except Exception as exc:
-            label = (
-                "PRELOOP_EVIDENCE failed "
-                if len(sys.argv) > 1 and sys.argv[1] == "evidence"
-                else "PRELOOP_CHECKPOINT failed "
-            )
-            print(label + type(exc).__name__, flush=True)
-            raise SystemExit(2 if str(exc) == "evidence_absent" else 1) from None
+            if len(sys.argv) > 1 and sys.argv[1] == "evidence":
+                if str(exc) == "evidence_absent":
+                    print("PRELOOP_EVIDENCE absent", flush=True)
+                    raise SystemExit(2) from None
+                print("PRELOOP_EVIDENCE failed " + type(exc).__name__, flush=True)
+                raise SystemExit(1) from None
+            print("PRELOOP_CHECKPOINT failed " + type(exc).__name__, flush=True)
+            raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

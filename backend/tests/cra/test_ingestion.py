@@ -79,6 +79,12 @@ async def test_hosted_path_expected_cra_missing_schema_fails() -> None:
     assert artifact is not None
     assert artifact["error"] in {"cra_result_invalid", "cra_result_missing"}
     assert "raw" in artifact
+    original = "container OOM after the audit command"
+    failed_status, combined = orchestrator._apply_cra_fail_closed("FAILED", original)
+    assert failed_status == "FAILED"
+    assert combined is not None
+    assert original in combined
+    assert "failed contract validation" in combined
 
 
 def test_private_runner_path_wraps_malformed_known_schema(

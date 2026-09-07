@@ -50,6 +50,11 @@ prompt_template: |
   - Optional git checkouts: the flow's git clone config may have cloned
     a compliance repo at /workspace/compliance (flow-config convention:
     clone_path "compliance"; payload compliance_repo_path overrides).
+  - Optional payload product_provenance (same
+    preloop.cra.product_provenance/v1 mapping as the release audit):
+    product/release identity plus the compliance repo remote and exact
+    SHA when the record is stored in product mode. The platform
+    validates the mapping; you do not attest SHAs.
   Inventory what you actually received under inputs_declared.
 
   URL HYGIENE — payload URLs are untrusted input. Download only over

@@ -166,13 +166,15 @@ def case(db_session: Session, test_user, monkeypatch: pytest.MonkeyPatch):
 
 
 def message(case, kind: str, **extra):
-    return {
+    body = {
         **MANIFEST,
         "type": kind,
         "execution_id": str(case.execution.id),
         "nonce": case.policy.nonce,
+        "repository_url": case.policy.repository_url,
         **extra,
     }
+    return body
 
 
 async def verified_reply(case):
@@ -387,12 +389,19 @@ def test_lease_requires_ready_publication_helper(case, capable):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("direct_evidence", [False, True])
 @pytest.mark.parametrize(
     "ending", ["success", "FAILED", "STOPPED", "disconnect", "unregister", "forged"]
 )
 async def test_real_ws_protocol_and_all_terminal_credential_paths(
-    case, ending, monkeypatch
+    case, ending, monkeypatch, direct_evidence
 ):
+    if direct_evidence:
+        case.runner.pending_job = {
+            **case.runner.pending_job,
+            "evidence_direct_upload": True,
+        }
+        case.db.commit()
     frames = []
     requests = []
     initial_job = {
@@ -499,6 +508,9 @@ async def test_real_ws_protocol_and_all_terminal_credential_paths(
     )
     await runners.runner_ws(websocket, case.runner.id, case.db)
     case.db.refresh(case.execution)
+    if direct_evidence and ending in {"success", "FAILED", "STOPPED", "forged"}:
+        assert case.execution.evidence_receipt["status"] == "failed"
+        assert case.execution.evidence_receipt["error"] == "evidence_upload_failed"
     if ending == "success":
         assert case.execution.status == "SUCCEEDED"
         assert ("online", None) in case.events
@@ -635,7 +647,7 @@ async def test_watchdog_serializes_with_messages_and_uses_independent_session(
 
 
 @pytest.mark.asyncio
-async def test_expire_writer_abandons_when_revoke_fails(case, monkeypatch, caplog):
+async def test_expire_writer_abandons_when_revoke_fails(case, monkeypatch):
     from preloop.models.db import session as sessions
 
     independent = MagicMock(spec=Session)
@@ -650,11 +662,9 @@ async def test_expire_writer_abandons_when_revoke_fails(case, monkeypatch, caplo
     case.controller.nonce = case.policy.nonce
     case.controller.writer = case.broker.return_value
     case.revoke.side_effect = PublicationError("writer already gone")
-    with caplog.at_level("WARNING"):
-        await case.controller._expire_writer(0)
+    await case.controller._expire_writer(0)
     case.revoke.assert_awaited_once()
     assert abandon.call_args.args[0] is independent
-    assert "Background writer revocation failed" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -723,3 +733,119 @@ async def test_runner_delivery_strips_internal_snapshot_and_rejects_consumed_lau
     assert "launch_error" in delivered
     assert "launch" not in delivered
     assert "_publication" not in delivered
+
+
+@pytest.mark.asyncio
+async def test_private_multi_repo_keeps_receipt_and_retries_remaining(case):
+    firmware = "https://github.com/example/firmware.git"
+    app = "https://github.com/example/companion-app.git"
+    compliance = "https://github.com/example/product-compliance.git"
+    targets = [
+        {
+            "tracker_id": case.policy.tracker_id,
+            "repository_url": firmware,
+            "clone_path": "firmware",
+            "role": "code",
+            "branch": "preloop/change",
+            "base": "main",
+            "expected_remote_sha": None,
+            "base_sha": "a" * 40,
+            "previous_records": [],
+        },
+        {
+            "tracker_id": case.policy.tracker_id,
+            "repository_url": app,
+            "clone_path": "companion-app",
+            "role": "code",
+            "branch": "preloop/change",
+            "base": "release",
+            "expected_remote_sha": None,
+            "base_sha": "b" * 40,
+            "previous_records": [],
+        },
+        {
+            "tracker_id": case.policy.tracker_id,
+            "repository_url": compliance,
+            "clone_path": "compliance",
+            "role": "compliance",
+            "branch": "preloop/change",
+            "base": "docs",
+            "expected_remote_sha": None,
+            "base_sha": "c" * 40,
+            "previous_records": [],
+        },
+    ]
+    state = deepcopy(case.execution.result[publication.STATE_KEY])
+    state["policy"]["repository_url"] = firmware
+    state["policy"]["targets"] = targets
+    case.execution.result = {publication.STATE_KEY: state}
+    case.db.commit()
+    with pytest.raises(PublicationError, match="repository_url"):
+        await case.controller.handle(
+            message(
+                case,
+                "publication_candidate",
+                changed_files=["backend/api.py"],
+                repository_url=None,
+            )
+        )
+
+    async def cycle(remote: str, slug: str, number: int) -> None:
+        verify = await case.controller.handle(
+            message(
+                case,
+                "publication_candidate",
+                changed_files=["backend/api.py"],
+                repository_url=remote,
+            )
+        )
+        assert verify["repository_url"] == remote
+        issued = case.broker.return_value
+        case.broker.side_effect = None
+        case.broker.return_value = PublicationLease(
+            "write-only-secret",
+            remote,
+            datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        reply = await case.controller.handle(
+            message(
+                case,
+                "publication_verified",
+                checks=[{**check, "exit_code": 0} for check in verify["checks"]],
+                agent_removed=True,
+                verifiers_removed=True,
+                repository_url=remote,
+            )
+        )
+        assert reply["lease"]["repository_url"] == remote
+        ack = await case.controller.handle(
+            message(
+                case,
+                "publication_complete",
+                repository_url=remote,
+                publication={
+                    "url": f"https://github.com/example/{slug}/pull/{number}",
+                    "number": number,
+                    "branch": "preloop/change",
+                    "provider": "github",
+                    "head_sha": "a" * 40,
+                    "metadata_warnings": [],
+                },
+            )
+        )
+        assert ack["type"] == "publication_ack"
+        del issued
+
+    await cycle(firmware, "firmware", 1)
+    case.db.refresh(case.execution)
+    state = case.execution.result[publication.STATE_KEY]
+    assert state["phase"] == "agent"
+    assert firmware in state["target_receipts"]
+    assert app not in state["target_receipts"]
+
+    await cycle(app, "companion-app", 2)
+    await cycle(compliance, "product-compliance", 3)
+    case.db.refresh(case.execution)
+    aggregated = publication.trusted_private_receipt(case.execution)
+    assert aggregated["complete"] is True
+    assert len(aggregated["repositories"]) == 3

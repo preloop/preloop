@@ -68,7 +68,9 @@ unscreened components by count from the source matrix. The machine
 Retrieve the structured result with
 `GET /api/v1/flows/executions/{execution_id}/result`. Download the
 captured evidence tarball with
-`GET /api/v1/flows/executions/{id}/evidence`.
+`GET /api/v1/flows/executions/{id}/evidence`. Operator runbook for
+transport, receipts, and retention:
+[Evidence storage and retention](evidence-storage.md).
 
 ## result.json contract
 
@@ -493,7 +495,15 @@ Waivers are human-authored inputs (`waivers.json` / `waivers.yaml` in
 the seed, or payload `waivers`). The agent never authors a waiver. An
 entry missing `id`, `reason`, `author`, or `date` is invalid and waives
 nothing. Interactive collection (`waiver_collection: "interactive"`)
-uses the built-in `ask_user` channel once, batched; timeout fails closed.
+uses the built-in `ask_user` channel once, batched; the human answer is
+JSON `{id, reason}` per selected finding id. Persist authenticates that
+stored `tool_result` / `responses` content — `status=approved` or a CVE
+mentioned in the question is not a waiver. Timeout fails closed.
+
+The severity gate is KEV or CVSS >= 9.0 unless the trigger/CI payload
+sets `gate.fail_on_kev` / `gate.fail_on_cvss_gte` (CVSS in `[0, 10]`).
+Agent `gate.policy` display text never changes the threshold. There is
+no per-product policy table.
 
 Heuristic sources stay labeled and never enter the severity gate.
 `pkg:generic` and `pkg:github` are not db-resolvable by purl; they may
@@ -687,10 +697,18 @@ secrets. The webhook URL is a bearer secret: do not print it, and do
 not retry the POST after an ambiguous network or HTTP 5xx error.
 
 The helper validates `result.json` against the CRA contracts, requires a
-bounded gzip evidence archive with `result.json` plus `evidence/`
-members, and denies release on `fail` or unknown verdicts. Default
-policy is a clean `pass` only. `pass_with_findings` is an explicit
-`--policy pass_with_findings` choice. There is no failure-bypass mode.
+bounded gzip evidence archive (the durable `FLOW_EVIDENCE_MAX_BYTES` /
+`FLOW_ARTIFACT_EXPANDED_MAX_BYTES` caps), binds the controller digest,
+and compares packed SBOM/finding content rather than schema/verdict/status
+alone. Default legacy capture may omit `result.json` from the tarball;
+those packs are accepted only with a matching controller digest plus the
+authenticated API result. Release is denied on `fail` or unknown
+verdicts. Default policy is a clean `pass` only. `pass_with_findings` is
+an explicit `--policy pass_with_findings` choice. There is no
+failure-bypass mode.
+
+See [Evidence storage and retention](evidence-storage.md) for transport,
+receipts, and retention.
 
 Overall deadline is the selected flow's `timeout_seconds` plus a 120s
 startup buffer (Release Security Audit is 7200s). Set

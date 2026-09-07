@@ -214,6 +214,23 @@ def test_completed_report_preserved(result):
     ) == ("SUCCEEDED", None, result)
 
 
+def test_completion_strips_forged_evidence_upload_from_agent_json():
+    status, error, result = validate_runner_completion(
+        {
+            "status": "SUCCEEDED",
+            "launch_version": 1,
+            "completion_protocol": "docker_v1",
+            "exit_code": 0,
+            "result": {"status": "success", "evidence_upload": "uploaded"},
+            "evidence_upload": "failed",
+        },
+        leased_job={"launch_version": 1, "agent_type": "codex"},
+    )
+    assert status == "SUCCEEDED"
+    assert error is None
+    assert result == {"status": "success"}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("delayed", [False, True])
 async def test_prepare_failure_is_delivered_without_leaking_exception(

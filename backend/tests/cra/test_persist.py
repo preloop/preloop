@@ -9,7 +9,10 @@ import pytest
 
 from preloop.cra.persist import (
     CraAuthorityUnavailableError,
+    apply_cra_fail_closed_completion,
     apply_cra_persist_boundary,
+    cra_fail_closed_completion_error,
+    cra_fail_closed_error_message,
     delivered_waivers_from_trigger,
     load_platform_approvals,
     resolve_persist_authority,
@@ -222,3 +225,174 @@ def test_resolve_authority_failed_lookup_is_required_none(
     )
     assert approvals is None
     assert authority == "required"
+
+
+def test_load_platform_approvals_copies_ask_user_delivery(monkeypatch: Any) -> None:
+    row = MagicMock()
+    row.id = "appr-1"
+    row.status = "approved"
+    row.tool_name = "ask_user"
+    row.tool_args = {"question": "Which findings?", "options": ["CVE-2024-0001"]}
+    row.tool_result = {
+        "answer": '[{"id":"CVE-2024-0001","reason":"Feature not compiled."}]',
+        "answered_by": "release-manager@example.com",
+        "answered_at": "2026-08-20T12:00:00Z",
+    }
+    row.responses = [
+        {
+            "user_id": "release-manager@example.com",
+            "decision": "approved",
+            "comment": '[{"id":"CVE-2024-0001","reason":"Feature not compiled."}]',
+        }
+    ]
+    row.approver_comment = '[{"id":"CVE-2024-0001","reason":"Feature not compiled."}]'
+    row.resolved_at = "2026-08-20T12:00:00Z"
+    row.decided_by_ai = False
+    row.auto_approved_reason = None
+
+    monkeypatch.setattr(
+        "preloop.models.crud.crud_approval_request.get_multi_by_execution",
+        lambda *_args, **_kwargs: [row],
+    )
+    loaded = load_platform_approvals(MagicMock(), "exec-1")
+    assert len(loaded) == 1
+    assert loaded[0].tool_name == "ask_user"
+    assert loaded[0].tool_result["answered_by"] == "release-manager@example.com"
+    assert loaded[0].responses is not None
+    assert loaded[0].approver_comment is not None
+    assert loaded[0].decided_by_ai is False
+    assert loaded[0].auto_approved_reason is None
+
+
+def test_load_platform_approvals_copies_nonhuman_flags(monkeypatch: Any) -> None:
+    row = MagicMock()
+    row.id = "appr-ai"
+    row.status = "approved"
+    row.tool_name = "request_approval"
+    row.tool_args = {"operation": "Component risk decision: libexample@1.4.2"}
+    row.tool_result = None
+    row.responses = None
+    row.approver_comment = None
+    row.resolved_at = "2026-08-20T12:00:00Z"
+    row.decided_by_ai = True
+    row.auto_approved_reason = "bypass"
+
+    monkeypatch.setattr(
+        "preloop.models.crud.crud_approval_request.get_multi_by_execution",
+        lambda *_args, **_kwargs: [row],
+    )
+    loaded = load_platform_approvals(MagicMock(), "exec-1")
+    assert loaded[0].decided_by_ai is True
+    assert loaded[0].auto_approved_reason == "bypass"
+
+
+def test_malformed_error_envelope_failures_do_not_crash(
+    releaseaudit_result: dict[str, Any],
+) -> None:
+    payload = {
+        "error": INVALID_ERROR,
+        "failures": [{}],
+        "raw": releaseaudit_result,
+    }
+    decision = apply_cra_persist_boundary(
+        payload,
+        prompt="Required shape (preloop.cra.releaseaudit/v1): {}",
+    )
+    assert decision.invalid
+    assert all(isinstance(item, str) for item in decision.validation.failures)
+    assert isinstance(decision.detail, str)
+    assert decision.artifact is not None
+    assert decision.artifact.get("raw") == releaseaudit_result
+    assert decision.artifact.get("error") == INVALID_ERROR
+
+
+def test_gap_register_nested_json_is_invalid_not_exception(
+    releaseaudit_result: dict[str, Any],
+) -> None:
+    payload = clone(releaseaudit_result)
+    payload["gap_register"] = {
+        "items": [{"status": {}}],
+        "history_rows": [42],
+    }
+    decision = apply_cra_persist_boundary(payload)
+    assert decision.invalid
+    assert decision.artifact is not None
+    assert decision.artifact.get("error") == INVALID_ERROR
+    assert "raw" in decision.artifact
+
+
+def test_trigger_gate_override_is_authoritative(
+    releaseaudit_result: dict[str, Any],
+) -> None:
+    payload = clone(releaseaudit_result)
+    finding = {
+        "id": "CVE-2026-0001",
+        "pkg": "libexample",
+        "version": "1.0",
+        "severity": "high",
+        "cvss": 8.0,
+        "epss": None,
+        "kev": False,
+        "fix_version": None,
+        "vex_status": None,
+        "sources": ["osv_purl"],
+        "match_kind": "database",
+        "waived": False,
+        "aliases": None,
+    }
+    payload["vuln_scan"]["findings"] = [finding]
+    payload["vuln_scan"]["counts_by_severity"] = {
+        "critical": 0,
+        "high": 1,
+        "medium": 0,
+        "low": 0,
+        "unknown": 0,
+    }
+    payload["vuln_scan"]["gate"]["passed"] = True
+    payload["vuln_scan"]["gate"]["passed_before_waivers"] = True
+    payload["vuln_scan"]["gate"]["policy"] = "fail on CVSS >= 99"
+    payload["vuln_scan"]["gate"]["waivers_applied"] = []
+    payload["verdict"] = "pass_with_findings"
+    default_decision = apply_cra_persist_boundary(payload)
+    assert not default_decision.invalid
+    override = apply_cra_persist_boundary(
+        payload, trigger_payload={"gate": {"fail_on_cvss_gte": 7.0}}
+    )
+    assert override.invalid
+
+
+_GITHUB_PAT = "github_pat_11ABCDEFG0aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+
+
+@pytest.mark.parametrize("status", ["FAILED", "STOPPED"])
+def test_invalid_cra_keeps_original_failure_and_contract_diagnostics(
+    vulnscan_result: dict[str, Any], status: str
+) -> None:
+    payload = clone(vulnscan_result)
+    del payload["gate"]
+    decision = apply_cra_persist_boundary(payload)
+    assert decision.invalid
+    original = (
+        f"container OOM while cloning https://{_GITHUB_PAT}@github.com/acme/app.git"
+    )
+    failed_status, error = apply_cra_fail_closed_completion(status, original, decision)
+    assert failed_status == "FAILED"
+    assert error is not None
+    assert "container OOM" in error
+    assert "failed contract validation" in error
+    assert _GITHUB_PAT not in error
+    assert "[REDACTED]" in error
+    contract = cra_fail_closed_error_message(decision)
+    assert error == cra_fail_closed_completion_error(decision, original)
+    assert contract in error
+
+
+def test_invalid_cra_without_original_error_is_contract_only(
+    vulnscan_result: dict[str, Any],
+) -> None:
+    payload = clone(vulnscan_result)
+    del payload["gate"]
+    decision = apply_cra_persist_boundary(payload)
+    status, error = apply_cra_fail_closed_completion("SUCCEEDED", None, decision)
+    assert status == "FAILED"
+    assert error == cra_fail_closed_error_message(decision)

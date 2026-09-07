@@ -9,11 +9,10 @@ publication, and verification helpers. It does not vendor the CRA validator.
 from __future__ import annotations
 
 import hashlib
-import io
 import re
-import tarfile
 from dataclasses import dataclass, field
 from json import dumps
+from types import SimpleNamespace
 from typing import Any, Sequence
 from uuid import UUID
 
@@ -52,11 +51,6 @@ from preloop.utils.verification_selection import evaluate_from_raw
 HEX40 = re.compile(r"[0-9a-f]{40}")
 EVIDENCE_KIND = "evidence"
 SCREENING_SCHEMAS = frozenset({SCHEMA_VULNSCAN_V1, SCHEMA_RELEASEAUDIT_V1})
-HEAD_TXT_MEMBERS = (
-    "HEAD.txt",
-    "evidence/HEAD.txt",
-    "workspace/evidence/HEAD.txt",
-)
 
 
 class SecurityMaintenanceError(ValueError):
@@ -485,38 +479,189 @@ def controller_checkout_sha(
     db: Session | None = None,
     account_id: UUID | None = None,
 ) -> str | None:
-    """SHA recorded by the controller checkout, never trigger payload.sha."""
-    del flow
-    if db is None or account_id is None:
-        return None
-    try:
-        archive, _receipt = load_evidence(
-            db, account_id=account_id, execution=execution
-        )
-    except EvidenceUnavailableError:
-        return None
-    return _head_txt_from_archive(archive)
+    """SHA from controller-verified frozen publication checkout records.
 
-
-def _head_txt_from_archive(archive: bytes) -> str | None:
-    try:
-        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
-            names = {
-                member.name: member for member in tar.getmembers() if member.isfile()
-            }
-            for path in HEAD_TXT_MEMBERS:
-                member = names.get(path)
-                if member is None or member.size > 64:
-                    continue
-                source = tar.extractfile(member)
-                if source is None:
-                    continue
-                text = source.read().decode("ascii", errors="ignore").strip().lower()
-                if _hex40(text):
-                    return text
-    except (tarfile.TarError, OSError, UnicodeDecodeError):
+    Agent-writable ``HEAD.txt`` and trigger ``payload.sha`` are not authority.
+    A forged evidence archive cannot establish release or build provenance.
+    """
+    shas = _frozen_checkout_shas(execution, flow=flow, db=db, account_id=account_id)
+    if not shas:
         return None
+    publication = publication_ref_from_execution(execution, flow=flow)
+    if publication.available and _hex40(publication.sha):
+        bound = str(publication.sha).lower()
+        if bound in shas:
+            return bound
+    if len(shas) == 1:
+        return next(iter(shas))
     return None
+
+
+def _frozen_checkout_shas(
+    execution: models.FlowExecution,
+    *,
+    flow: models.Flow | None,
+    db: Session | None,
+    account_id: UUID | None,
+) -> set[str]:
+    """Collect SHAs proven by frozen bundles or controller provenance records.
+
+    Observed bundle SHAs are authoritative. Agent-written
+    ``product_provenance`` rows cannot add or override them. ``HEAD.txt`` is
+    never read. When no bundle is present, controller-attached verified
+    records and isolated publication receipts remain available for helper
+    coverage.
+    """
+    found: set[str] = set()
+    publication = publication_ref_from_execution(execution, flow=flow)
+    if publication.available and _hex40(publication.sha):
+        found.add(str(publication.sha).lower())
+    observed: set[str] = set()
+    if db is not None and account_id is not None:
+        try:
+            archive, _receipt = load_evidence(
+                db, account_id=account_id, execution=execution
+            )
+        except EvidenceUnavailableError:
+            archive = None
+        else:
+            policy = checkout_observation_policy(flow, execution)
+            if policy is not None:
+                from preloop.services.multi_repo_publication import (
+                    observed_checkout_shas,
+                )
+                from preloop.services.trusted_publisher import PublicationError
+
+                try:
+                    for sha in observed_checkout_shas(policy, archive).values():
+                        if _hex40(sha):
+                            observed.add(str(sha).lower())
+                except PublicationError:
+                    observed = set()
+    if observed:
+        return observed
+    result = execution.result if isinstance(execution.result, dict) else {}
+    provenance = result.get("product_provenance")
+    if isinstance(provenance, dict):
+        rows = provenance.get("repositories")
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("sha_status") or "") != "verified":
+                    continue
+                sha = _optional_str(row.get("sha"))
+                if _hex40(sha):
+                    found.add(str(sha).lower())
+    return found
+
+
+def checkout_observation_policy(
+    flow: models.Flow | None,
+    execution: models.FlowExecution | None = None,
+) -> Any | None:
+    """Rebuild checkout targets so frozen evidence bundles can be inspected.
+
+    Pins come from the trusted flow config or the controller envelope on the
+    execution (published SHA / hex40 pinned build). Trigger ``payload.sha`` is
+    not used. ``git_clone_config.repositories[].repository_url`` must be set;
+    project/tracker ids alone cannot prove a remote.
+    """
+    git = (flow.git_clone_config if flow is not None else None) or {}
+    if not isinstance(git, dict):
+        return None
+    envelope, mapping_pins = _execution_checkout_pins(execution)
+    from preloop.services.multi_repo_publication import IsolatedPublicationTarget
+
+    targets: list[Any] = []
+    rows = git.get("repositories")
+    if not isinstance(rows, list):
+        rows = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        url = _optional_str(row.get("repository_url"))
+        pin = _optional_str(row.get("commit") or row.get("pin_sha") or row.get("sha"))
+        if not _hex40(pin):
+            pin = mapping_pins.get(_normalize_remote(url) if url else "")
+        if not _hex40(pin):
+            pin = envelope
+        if url is None or not _hex40(pin):
+            continue
+        path = str(row.get("clone_path") or f"workspace-{index + 1}")
+        targets.append(
+            IsolatedPublicationTarget(
+                tracker_id=str(row.get("tracker_id") or ""),
+                repository_url=url,
+                clone_path=path,
+                role=str(row.get("role") or "code"),
+                branch=str(row.get("branch") or "main"),
+                base=str(row.get("base") or "main"),
+                expected_remote_sha=None,
+                base_sha=str(pin).lower(),
+            )
+        )
+    if not targets:
+        return None
+    return SimpleNamespace(targets=tuple(targets))
+
+
+def _checkout_policy_from_flow(
+    flow: models.Flow | None,
+    execution: models.FlowExecution | None = None,
+) -> Any | None:
+    """Alias for :func:`checkout_observation_policy`."""
+    return checkout_observation_policy(flow, execution)
+
+
+def _execution_checkout_pins(
+    execution: models.FlowExecution | None,
+) -> tuple[str | None, dict[str, str]]:
+    """Controller envelope SHA plus mapping pins keyed by normalized remote."""
+    if execution is None:
+        return None, {}
+    details = getattr(execution, "trigger_event_details", None)
+    if not isinstance(details, dict):
+        return None, {}
+    payload = details.get("payload")
+    if not isinstance(payload, dict):
+        payload = details
+    envelope = payload.get("security_maintenance")
+    envelope_sha = None
+    if isinstance(envelope, dict):
+        for key in ("published_sha", "pinned_build_ref"):
+            value = _optional_str(envelope.get(key))
+            if _hex40(value):
+                envelope_sha = str(value).lower()
+                break
+    mapping = payload.get("product_provenance")
+    pins: dict[str, str] = {}
+    if isinstance(mapping, dict):
+        rows = mapping.get("repositories")
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                remote = _normalize_remote(
+                    _optional_str(row.get("remote") or row.get("repository_url"))
+                )
+                sha = _optional_str(
+                    row.get("sha") or row.get("commit") or row.get("head_sha")
+                )
+                if remote and _hex40(sha):
+                    pins[remote] = str(sha).lower()
+    return envelope_sha, pins
+
+
+def _normalize_remote(url: str | None) -> str:
+    if not url:
+        return ""
+    from preloop.services.product_provenance import normalize_repository_url
+
+    try:
+        return normalize_repository_url(url)
+    except Exception:
+        return url.strip().lower().rstrip("/")
 
 
 def human_platform_approval(row: models.ApprovalRequest | None) -> str:

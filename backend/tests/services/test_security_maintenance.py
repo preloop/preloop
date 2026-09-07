@@ -12,12 +12,13 @@ import tarfile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from preloop.models import models
 from preloop.models.crud import crud_api_key, crud_security_maintenance, flow_artifact
@@ -247,7 +248,12 @@ def _audit_git(project_id, tracker_id) -> dict:
         "enabled": True,
         "create_pull_request": False,
         "repositories": [
-            {"project_id": str(project_id), "tracker_id": str(tracker_id)}
+            {
+                "project_id": str(project_id),
+                "tracker_id": str(tracker_id),
+                "repository_url": REPO_URL,
+                "clone_path": "workspace-1",
+            }
         ],
     }
 
@@ -381,6 +387,24 @@ def _archive_members(files: dict[str, bytes]) -> bytes:
     return stream.getvalue()
 
 
+def _attach_verified_checkout(execution, sha: str) -> None:
+    result = dict(execution.result or {})
+    result["product_provenance"] = {
+        "schema": "preloop.cra.product_provenance/v1",
+        "mapping_status": "verified",
+        "repositories": [
+            {
+                "remote": "https://github.com/example/firmware.git",
+                "sha": sha,
+                "clone_path": "firmware",
+                "role": "code",
+                "sha_status": "verified",
+            }
+        ],
+    }
+    execution.result = result
+
+
 def _store_evidence(
     db_session,
     execution,
@@ -390,6 +414,7 @@ def _store_evidence(
     sha: str = SHA,
     extra=None,
     include_head: bool = True,
+    attach_checkout: bool | None = None,
 ) -> bytes:
     members = {"result.json": b'{"ok": true}'}
     if include_head:
@@ -408,6 +433,11 @@ def _store_evidence(
         **(execution.trigger_event_details or {}),
         "_session_thread_id": thread_id,
     }
+    previous_status = execution.status
+    if previous_status not in {"PENDING", "INITIALIZING", "RUNNING"}:
+        # Direct upload happens while the execution is still open.
+        execution.status = "RUNNING"
+        db_session.flush()
     manifest = {
         "version": 1,
         "kind": "evidence",
@@ -436,6 +466,13 @@ def _store_evidence(
         },
         quota_bytes=50_000_000,
     )
+    if previous_status not in {"PENDING", "INITIALIZING", "RUNNING"}:
+        execution.status = previous_status
+        db_session.flush()
+    if attach_checkout is None:
+        attach_checkout = include_head
+    if attach_checkout:
+        _attach_verified_checkout(execution, sha)
     return archive
 
 
@@ -1554,70 +1591,52 @@ class TestRebuildCheckoutAndSweep:
             other.close()
             connection.close()
 
-    def test_checkout_ignores_payload_sha_and_requires_head_txt(
+    def test_checkout_ignores_payload_sha_and_head_txt(
         self, db_session, world, test_user
     ) -> None:
         from preloop.services.security_maintenance_refs import controller_checkout_sha
 
         _service, _project, _workflow, _implementer, audit, *_ = world
-        execution = _execution(
-            db_session,
-            audit,
-            details={"payload": {"sha": SHA}, "_session_thread_id": "no-head"},
-        )
-        _store_evidence(db_session, execution, extra={"result.json": b"{}"})
-        # Default store writes HEAD.txt; overwrite with archive that has none.
-        execution.trigger_event_details = {
-            **(execution.trigger_event_details or {}),
-            "_session_thread_id": str(execution.id),
-        }
         missing = _execution(
             db_session,
             audit,
             details={"payload": {"sha": SHA}, "_session_thread_id": "missing-head"},
         )
-        archive = _archive_members({"result.json": b'{"ok": true}'})
-        now = datetime.now(UTC)
-        sha256 = hashlib.sha256(archive).hexdigest()
-        expanded = validate_archive(
-            archive, max_bytes=1_000_000, max_expanded_bytes=2_000_000
-        )
-        thread_id = str(missing.id)
-        missing.trigger_event_details = {
-            **(missing.trigger_event_details or {}),
-            "_session_thread_id": thread_id,
-        }
-        manifest = {
-            "version": 1,
-            "kind": "evidence",
-            "execution_id": str(missing.id),
-            "thread_id": thread_id,
-            "sha256": sha256,
-            "size_bytes": len(archive),
-            "expanded_bytes": expanded,
-            "created_at": now.isoformat(),
-            "expires_at": (now + timedelta(hours=1)).isoformat(),
-            "metadata": {},
-        }
-        flow_artifact.store(
+        _store_evidence(
             db_session,
-            values={
-                "account_id": missing.flow.account_id,
-                "flow_id": missing.flow_id,
-                "thread_id": thread_id,
-                "execution_id": missing.id,
-                "kind": "evidence",
-                "manifest": manifest,
-                "manifest_sha256": manifest_digest(manifest),
-                "ciphertext": _get_fernet().encrypt(archive),
-                "availability": "available",
-                "expires_at": now + timedelta(hours=1),
-            },
-            quota_bytes=50_000_000,
+            missing,
+            extra={"result.json": b'{"ok": true}'},
+            include_head=True,
+            attach_checkout=False,
         )
         assert (
             controller_checkout_sha(
-                missing, db=db_session, account_id=test_user.account_id
+                missing, db=db_session, account_id=test_user.account_id, flow=audit
+            )
+            is None
+        )
+        unverified = _execution(db_session, audit)
+        _store_evidence(
+            db_session, unverified, include_head=True, attach_checkout=False
+        )
+        result = dict(unverified.result or {})
+        result["product_provenance"] = {
+            "schema": "preloop.cra.product_provenance/v1",
+            "mapping_status": "declared_unverified",
+            "repositories": [
+                {
+                    "remote": "https://github.com/example/firmware.git",
+                    "sha": SHA,
+                    "clone_path": "firmware",
+                    "role": "code",
+                    "sha_status": "declared_unverified",
+                }
+            ],
+        }
+        unverified.result = result
+        assert (
+            controller_checkout_sha(
+                unverified, db=db_session, account_id=test_user.account_id, flow=audit
             )
             is None
         )
@@ -1625,7 +1644,7 @@ class TestRebuildCheckoutAndSweep:
         _store_evidence(db_session, present, sha=SHA)
         assert (
             controller_checkout_sha(
-                present, db=db_session, account_id=test_user.account_id
+                present, db=db_session, account_id=test_user.account_id, flow=audit
             )
             == SHA
         )
@@ -2696,3 +2715,523 @@ class TestDispatchClaimRecovery:
         )
         db_session.refresh(release)
         assert _baseline_dispatch(release)["dispatch_state"] == "dispatched"
+
+    @pytest.mark.asyncio
+    async def test_two_session_preloaded_item_sees_fresh_claim_and_running(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("dispatch_interrupted"),
+        ):
+            with pytest.raises(RuntimeError, match="dispatch_interrupted"):
+                await service.ingest_scan(_scan(issue_id=_issue(world).id))
+        session_a = db_session
+        item_a = crud_security_maintenance.list_reconcile_items(
+            session_a, account_id=test_user.account_id
+        )[0]
+        item_id = item_a.id
+        execution_id = item_a.implementation_execution_id
+        execution_a = crud_security_maintenance.get_execution(
+            session_a, account_id=test_user.account_id, execution_id=execution_id
+        )
+        assert execution_a is not None
+        assert execution_a.status == "PENDING"
+        old_claim = UUID(str(_item_dispatch(item_a)["dispatch_claim_id"]))
+        stale_now = self.clock.current + timedelta(
+            seconds=DEFAULT_DISPATCH_CLAIM_STALE_SECONDS + 1
+        )
+        session_b = Session(bind=session_a.connection())
+        try:
+            fresh = crud_security_maintenance.claim_item_dispatch(
+                session_b,
+                account_id=test_user.account_id,
+                item_id=item_id,
+                execution_id=execution_id,
+                kind="implementation",
+                now=stale_now,
+            )
+            session_b.flush()
+            assert fresh is not None
+            assert fresh != old_claim
+            refused = crud_security_maintenance.claim_item_dispatch(
+                session_a,
+                account_id=test_user.account_id,
+                item_id=item_id,
+                execution_id=execution_id,
+                kind="implementation",
+                now=stale_now,
+            )
+            assert refused is None
+            stale_finish = crud_security_maintenance.finish_item_dispatch(
+                session_a,
+                account_id=test_user.account_id,
+                item_id=item_id,
+                execution_id=execution_id,
+                kind="implementation",
+                claim_id=old_claim,
+                dispatched=False,
+            )
+            assert stale_finish is None
+            execution_b = crud_security_maintenance.get_execution(
+                session_b, account_id=test_user.account_id, execution_id=execution_id
+            )
+            execution_b.status = "RUNNING"
+            session_b.flush()
+            running_claim = crud_security_maintenance.claim_item_dispatch(
+                session_a,
+                account_id=test_user.account_id,
+                item_id=item_id,
+                execution_id=execution_id,
+                kind="implementation",
+                now=stale_now + timedelta(seconds=1),
+            )
+            assert running_claim is None
+        finally:
+            session_b.close()
+
+    @pytest.mark.asyncio
+    async def test_two_session_preloaded_baseline_sees_fresh_claim(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        created = await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("dispatch_interrupted"),
+        ):
+            with pytest.raises(RuntimeError, match="dispatch_interrupted"):
+                await service.schedule_baseline_audit(created["id"], SBOM_B64)
+        session_a = db_session
+        release_a = crud_security_maintenance.get_release(
+            session_a, account_id=test_user.account_id, release_id=created["id"]
+        )
+        audit = _baseline_dispatch(release_a)
+        execution_id = UUID(str(audit["execution_id"]))
+        old_claim = UUID(str(audit["dispatch_claim_id"]))
+        execution_a = crud_security_maintenance.get_execution(
+            session_a, account_id=test_user.account_id, execution_id=execution_id
+        )
+        assert execution_a is not None
+        assert execution_a.status == "PENDING"
+        stale_now = self.clock.current + timedelta(
+            seconds=DEFAULT_DISPATCH_CLAIM_STALE_SECONDS + 1
+        )
+        session_b = Session(bind=session_a.connection())
+        try:
+            fresh = crud_security_maintenance.claim_baseline_dispatch(
+                session_b,
+                account_id=test_user.account_id,
+                release_id=release_a.id,
+                execution_id=execution_id,
+                now=stale_now,
+            )
+            session_b.flush()
+            assert fresh is not None
+            assert fresh != old_claim
+            refused = crud_security_maintenance.claim_baseline_dispatch(
+                session_a,
+                account_id=test_user.account_id,
+                release_id=release_a.id,
+                execution_id=execution_id,
+                now=stale_now,
+            )
+            assert refused is None
+            stale_finish = crud_security_maintenance.finish_baseline_dispatch(
+                session_a,
+                account_id=test_user.account_id,
+                release_id=release_a.id,
+                execution_id=execution_id,
+                claim_id=old_claim,
+                dispatched=False,
+            )
+            assert stale_finish is None
+        finally:
+            session_b.close()
+
+
+async def _finalize_controller_provenance(db_session, execution, flow, result):
+    """Run the real completion attach path. Does not assign verified rows."""
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.flow = flow
+    orchestrator.db = db_session
+    orchestrator.execution_id = str(execution.id)
+    orchestrator.execution_log = execution
+    orchestrator.trigger_event_data = execution.trigger_event_details
+    orchestrator._isolated_publication_policy = None
+    orchestrator.execution_logger = MagicMock()
+    orchestrator._evidence_archive = None
+    payload = {"status": "SUCCEEDED", "result": copy.deepcopy(result)}
+    payload["result"]["product_provenance"] = {
+        "schema": "preloop.cra.product_provenance/v1",
+        "mapping_status": "verified",
+        "repositories": [
+            {
+                "remote": "https://github.com/example/forged.git",
+                "sha": "f" * 40,
+                "clone_path": "forged",
+                "role": "code",
+                "sha_status": "verified",
+            }
+        ],
+    }
+    await orchestrator._finish_isolated_publication(payload)
+    execution.result = payload.get("result") or {}
+    execution.status = payload["status"]
+    db_session.flush()
+    return payload
+
+
+def _store_frozen_bundle(
+    db_session, execution, bundle: bytes, *, decoy_sha: str
+) -> bytes:
+    return _store_evidence(
+        db_session,
+        execution,
+        sha=decoy_sha,
+        include_head=True,
+        attach_checkout=False,
+        extra={"evidence/branch.bundle": bundle},
+    )
+
+
+def _pin_audit_workspace_clone(audit: models.Flow) -> None:
+    config = dict(audit.git_clone_config or {})
+    rows = list(config.get("repositories") or [])
+    if rows and isinstance(rows[0], dict):
+        rows[0] = {**rows[0], "clone_path": "/workspace"}
+        config["repositories"] = rows
+        audit.git_clone_config = config
+        flag_modified(audit, "git_clone_config")
+
+
+def _run_readonly_checkout_export(
+    workspace: Path, trigger: dict | None, git_config: dict | None
+) -> bytes:
+    """Run the actual hosted/private post-exec exporter against a local Git tree."""
+    import subprocess
+
+    from preloop.agents.container import ContainerAgentExecutor
+
+    executor = ContainerAgentExecutor(agent_type="codex", config={}, image="test")
+    script = executor._prepare_git_post_execution_commands(
+        {
+            "git_clone_config": git_config,
+            "trigger_event_data": trigger,
+        }
+    )
+    assert "git bundle create" in script
+    assert " HEAD " in script or script.rstrip().endswith("HEAD")
+    for forbidden in (
+        "git push",
+        "git commit",
+        "curl",
+        "PRELOOP_GIT_TOKEN",
+        "contents:write",
+        "/preloop-publication-output",
+    ):
+        assert forbidden not in script
+    adapted = script.replace("/workspace", str(workspace))
+    subprocess.run(
+        ["bash", "-c", adapted],
+        check=True,
+        cwd=workspace,
+        env={
+            **os.environ,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+        },
+    )
+    produced = workspace / "evidence" / "branch.bundle"
+    assert produced.is_file()
+    return produced.read_bytes()
+
+
+class TestControllerFrozenCheckoutAuthority:
+    @pytest.mark.asyncio
+    async def test_http_baseline_then_recheck_uses_controller_bundle_facts(
+        self, db_session, world, test_user, tmp_path
+    ) -> None:
+        from preloop.api.app import create_app
+        from preloop.api.auth import get_current_active_user
+        from preloop.models.db.session import get_db_session as get_db
+        from preloop.services.flow_artifacts import inspect_evidence, load_evidence
+        from preloop.services.security_maintenance_refs import controller_checkout_sha
+        from preloop.services.publication_worker import inspect_bundle
+        from preloop.services.trusted_publisher import read_publication_bundle
+        from tests.services.test_multi_repo_publication import _git, _init_repo
+
+        service, project, workflow, implementer, audit, *_ = world
+        _pin_audit_workspace_clone(audit)
+        repo, baseline_sha, _prebuilt = _init_repo(
+            tmp_path, "workspace", "example firmware"
+        )
+        del _prebuilt
+        decoy = "d" * 40
+        created = await service.create_release(
+            SupportedReleaseCreate(
+                product_key="example-widget",
+                release_key="1.2",
+                display_name="Example Widget 1.2",
+                project_id=project.id,
+                pinned_build_ref=baseline_sha,
+                sbom_input_ref="sbom/image.spdx.json",
+                audit_flow_id=audit.id,
+                implementation_flow_id=implementer.id,
+                recheck_flow_id=audit.id,
+                approval_workflow_id=workflow.id,
+                approval_owner_user_id=test_user.id,
+            )
+        )
+        app = create_app()
+        app.dependency_overrides[get_db] = lambda: db_session
+        app.dependency_overrides[get_current_active_user] = lambda: test_user
+        audit_path = (
+            f"/api/v1/security-maintenance/releases/{created['id']}/baseline/audit"
+        )
+        with (
+            patch(
+                "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+                new_callable=AsyncMock,
+            ),
+            TestClient(app) as client,
+        ):
+            scheduled = client.post(audit_path, json={"sbom_content_base64": SBOM_B64})
+            assert scheduled.status_code == 200
+            execution_id = scheduled.json()["execution_id"]
+            execution = crud_security_maintenance.get_execution(
+                db_session,
+                account_id=test_user.account_id,
+                execution_id=UUID(execution_id),
+            )
+            payload = (execution.trigger_event_details or {}).get("payload") or {}
+            mapping = payload.get("product_provenance") or {}
+            assert mapping["repositories"][0]["sha"] == baseline_sha
+            assert mapping["repositories"][0]["remote"] == REPO_URL
+            baseline_bundle = _run_readonly_checkout_export(
+                repo, execution.trigger_event_details, audit.git_clone_config
+            )
+            _store_frozen_bundle(
+                db_session, execution, baseline_bundle, decoy_sha=decoy
+            )
+            archive, receipt = load_evidence(
+                db_session, account_id=test_user.account_id, execution=execution
+            )
+            inspect_evidence(
+                db_session, account_id=test_user.account_id, execution=execution
+            )
+            assert receipt.get("kind") == "evidence"
+            inspect_bundle(read_publication_bundle(archive), baseline_sha)
+            finalized = await _finalize_controller_provenance(
+                db_session, execution, audit, _screened_vulnscan(present=False)
+            )
+            assert finalized["status"] == "SUCCEEDED"
+            provenance = execution.result["product_provenance"]
+            assert provenance["mapping_status"] == "verified"
+            assert provenance["repositories"][0]["sha"] == baseline_sha
+            assert provenance["repositories"][0]["sha_status"] == "verified"
+            assert provenance["repositories"][0]["remote"] == REPO_URL
+            assert "forged.git" not in str(provenance)
+            assert (
+                controller_checkout_sha(
+                    execution,
+                    flow=audit,
+                    db=db_session,
+                    account_id=test_user.account_id,
+                )
+                == baseline_sha
+            )
+            accepted = client.post(
+                f"/api/v1/security-maintenance/releases/{created['id']}/baseline",
+                json={"audit_execution_id": execution_id},
+            )
+            assert accepted.status_code == 200
+
+            (repo / "fix.txt").write_text("patched libexample")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "repair")
+            repair_sha = _git(repo, "rev-parse", "HEAD")
+
+            forged = _execution(
+                db_session,
+                audit,
+                status="SUCCEEDED",
+                result=_screened_vulnscan(present=False),
+                details=execution.trigger_event_details,
+            )
+            _store_frozen_bundle(db_session, forged, baseline_bundle, decoy_sha=decoy)
+            forged.result = {
+                **_screened_vulnscan(present=False),
+                "product_provenance": {
+                    "schema": "preloop.cra.product_provenance/v1",
+                    "mapping_status": "verified",
+                    "repositories": [
+                        {
+                            "remote": REPO_URL,
+                            "sha": decoy,
+                            "clone_path": "workspace-1",
+                            "role": "code",
+                            "sha_status": "verified",
+                        }
+                    ],
+                },
+            }
+            assert (
+                controller_checkout_sha(
+                    forged, flow=audit, db=db_session, account_id=test_user.account_id
+                )
+                == baseline_sha
+            )
+
+            ingested = await service.ingest_scan(_scan(issue_id=_issue(world).id))
+            item = crud_security_maintenance.get_item(
+                db_session,
+                account_id=test_user.account_id,
+                item_id=ingested["items"][0]["id"],
+            )
+            impl = crud_security_maintenance.get_execution(
+                db_session,
+                account_id=test_user.account_id,
+                execution_id=item.implementation_execution_id,
+            )
+            impl.status = "SUCCEEDED"
+            impl.result = {
+                "_private_publication": {
+                    "phase": "complete",
+                    "receipt": _receipt(impl.id, sha=repair_sha),
+                },
+                "trusted_publication": _receipt(impl.id, sha=repair_sha),
+                "verification": _verification(commit=repair_sha),
+            }
+            db_session.flush()
+            await service.finish_execution(impl)
+            db_session.refresh(item)
+            approved = await service.decide_approval(
+                item.id,
+                ApprovalDecisionRequest(reason="Ship the supported-release patch"),
+                actor_user_id=test_user.id,
+                approved=True,
+            )
+            assert approved["state"] == "awaiting_build"
+            await service.submit_rebuilt_inputs(
+                item.id,
+                RebuiltInputsRequest(
+                    published_sha=repair_sha, sbom_content_base64=REMOVED_SBOM_B64
+                ),
+                actor_user_id=test_user.id,
+            )
+            db_session.refresh(item)
+            recheck = crud_security_maintenance.get_execution(
+                db_session,
+                account_id=test_user.account_id,
+                execution_id=item.recheck_execution_id,
+            )
+            recheck_payload = (recheck.trigger_event_details or {}).get("payload") or {}
+            assert recheck_payload["product_provenance"]["repositories"][0]["sha"] == (
+                repair_sha
+            )
+            repair_bundle = _run_readonly_checkout_export(
+                repo, recheck.trigger_event_details, audit.git_clone_config
+            )
+            _store_frozen_bundle(db_session, recheck, repair_bundle, decoy_sha=decoy)
+            await _finalize_controller_provenance(
+                db_session, recheck, audit, _omitted_target_vulnscan()
+            )
+            assert recheck.status == "SUCCEEDED"
+            assert (
+                controller_checkout_sha(
+                    recheck, flow=audit, db=db_session, account_id=test_user.account_id
+                )
+                == repair_sha
+            )
+            await service.finish_execution(recheck)
+            db_session.refresh(item)
+            assert item.state == "resolved"
+            release = crud_security_maintenance.get_release(
+                db_session, account_id=test_user.account_id, release_id=item.release_id
+            )
+            assert release.accepted_baseline_id is not None
+            assert str(release.accepted_baseline_id) != accepted.json()["id"]
+
+    @pytest.mark.asyncio
+    async def test_wrong_repo_mapping_and_missing_bundle_are_denied(
+        self, db_session, world, test_user, tmp_path
+    ) -> None:
+        from preloop.services.security_maintenance_refs import controller_checkout_sha
+        from tests.services.test_multi_repo_publication import _init_repo
+
+        service, project, workflow, implementer, audit, *_ = world
+        _repo, baseline_sha, baseline_bundle = _init_repo(
+            tmp_path, "firmware", "example firmware"
+        )
+        created = await service.create_release(
+            SupportedReleaseCreate(
+                product_key="example-widget",
+                release_key="1.2",
+                display_name="Example Widget 1.2",
+                project_id=project.id,
+                pinned_build_ref=baseline_sha,
+                sbom_input_ref="sbom/image.spdx.json",
+                audit_flow_id=audit.id,
+                implementation_flow_id=implementer.id,
+                recheck_flow_id=audit.id,
+                approval_workflow_id=workflow.id,
+                approval_owner_user_id=test_user.id,
+            )
+        )
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            scheduled = await service.schedule_baseline_audit(created["id"], SBOM_B64)
+        execution = crud_security_maintenance.get_execution(
+            db_session,
+            account_id=test_user.account_id,
+            execution_id=UUID(scheduled["execution_id"]),
+        )
+        details = dict(execution.trigger_event_details or {})
+        payload = dict(details.get("payload") or {})
+        mapping = dict(payload.get("product_provenance") or {})
+        repos = list(mapping.get("repositories") or [])
+        repos[0] = dict(repos[0], remote="https://github.com/example/other.git")
+        mapping["repositories"] = repos
+        payload["product_provenance"] = mapping
+        details["payload"] = payload
+        execution.trigger_event_details = details
+        _store_frozen_bundle(db_session, execution, baseline_bundle, decoy_sha="d" * 40)
+        finalized = await _finalize_controller_provenance(
+            db_session, execution, audit, _screened_vulnscan(present=False)
+        )
+        assert finalized["status"] == "FAILED"
+        provenance = (execution.result or {}).get("product_provenance") or {}
+        assert provenance.get("mapping_status") != "verified"
+        missing_bundle = _execution(
+            db_session,
+            audit,
+            details=execution.trigger_event_details,
+        )
+        _store_evidence(
+            db_session,
+            missing_bundle,
+            include_head=True,
+            attach_checkout=False,
+            sha="d" * 40,
+        )
+        assert (
+            controller_checkout_sha(
+                missing_bundle,
+                flow=audit,
+                db=db_session,
+                account_id=test_user.account_id,
+            )
+            is None
+        )

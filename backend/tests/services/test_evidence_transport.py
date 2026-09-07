@@ -6,9 +6,11 @@ import json
 import os
 import subprocess
 import sys
+import urllib.request
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 from uuid import uuid4
 
 import pytest
@@ -359,6 +361,18 @@ def test_read_bounded_rejects_growth_after_lstat(tmp_path: Path) -> None:
         _read_bounded(path, expected=before, limit=1024)
 
 
+def test_read_bounded_rejects_symlink_replacement(tmp_path: Path) -> None:
+    path = tmp_path / "findings.json"
+    secret = tmp_path / "secret.json"
+    secret.write_bytes(b"secret-not-for-archive")
+    path.write_bytes(b"abc")
+    before = path.lstat()
+    path.unlink()
+    path.symlink_to(secret)
+    with pytest.raises(ValueError, match="evidence_unsafe_member|evidence_busy"):
+        _read_bounded(path, expected=before, limit=1024)
+
+
 def test_public_status_does_not_query_artifacts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -395,6 +409,7 @@ def test_inspect_failed_receipt_is_not_resurrected_by_live_artifact(
         "transport": "direct",
         "error": "evidence_upload_failed",
     }
+    execution.status = "FAILED"
     monkeypatch.setattr(
         "preloop.services.flow_artifacts.crud.latest",
         lambda *args, **kwargs: Mock(id=uuid4(), ciphertext=b"x"),
@@ -403,13 +418,55 @@ def test_inspect_failed_receipt_is_not_resurrected_by_live_artifact(
     assert receipt["status"] == "failed"
 
 
+def test_inspect_live_refresh_before_finalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execution = Mock()
+    execution.id = uuid4()
+    execution.flow_id = uuid4()
+    execution.trigger_event_details = {}
+    execution.evidence_archive = None
+    execution.status = "RUNNING"
+    execution.evidence_receipt = {
+        "status": "failed",
+        "transport": "direct",
+        "error": "evidence_upload_failed",
+    }
+    live = Mock(
+        id=uuid4(),
+        ciphertext=b"x",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        availability="available",
+        manifest={"sha256": "abc"},
+        manifest_sha256="def",
+        kind="evidence",
+        execution_id=execution.id,
+    )
+    monkeypatch.setattr(
+        "preloop.services.flow_artifacts.crud.latest",
+        lambda *args, **kwargs: live,
+    )
+    receipt = inspect_evidence(Mock(), account_id=uuid4(), execution=execution)
+    assert receipt["status"] == "available"
+    assert receipt["artifact_id"] == str(live.id)
+
+
 def test_sanitize_strips_reserved_publication_keys() -> None:
     cleaned = sanitize_captured_result(
         {
             "verdict": "fail",
             "trusted_publication": {"url": "https://example.com/forged"},
             "_private_publication": {"phase": "complete"},
+            "product_provenance": {"mapping_status": "verified"},
+            "dossier_manifest": {"schema": "forged"},
         }
+    )
+    assert cleaned == {"verdict": "fail"}
+
+
+def test_sanitize_strips_forged_evidence_upload() -> None:
+    cleaned = sanitize_captured_result(
+        {"verdict": "fail", "evidence_upload": "uploaded"}
     )
     assert cleaned == {"verdict": "fail"}
 
@@ -426,7 +483,6 @@ async def test_getterless_executor_strips_forged_keys_from_tar_result(
     (workspace / "result.json").write_text(
         json.dumps(
             {
-                "schema": "preloop.cra.vulnscan/v1",
                 "verdict": "fail",
                 "trusted_publication": {"url": "https://example.com/forged"},
                 "_private_publication": {"phase": "complete"},
@@ -492,6 +548,29 @@ async def test_final_upload_failure_overrides_stale_trap_archive() -> None:
     executor.get_evidence_archive = AsyncMock(return_value=None)
     await orchestrator._capture_evidence_archive(executor, "job")
     assert orchestrator._evidence_receipt["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_non_string_transport_error_does_not_drop_getter_archive() -> None:
+    """Only a real error string is a transport failure; mock auto-attrs are not."""
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    archive = b"\x1f\x8b" + b"fake-evidence-tar-gz"
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator._evidence_archive = None
+    orchestrator._evidence_receipt = None
+    orchestrator._workspace_snapshot = None
+    orchestrator.execution_log = Mock(
+        id=uuid4(), status="RUNNING", trigger_event_details={}
+    )
+    orchestrator.flow = None
+    orchestrator.db = Mock()
+    orchestrator.execution_logger = Mock()
+    executor = AsyncMock()
+    executor.get_evidence_archive = AsyncMock(return_value=archive)
+    await orchestrator._capture_evidence_archive(executor, "job")
+    assert orchestrator._evidence_archive == archive
+    assert orchestrator._evidence_receipt["status"] == "available"
 
 
 def test_kubernetes_direct_upload_failure_is_honest(tmp_path: Path) -> None:
@@ -609,3 +688,234 @@ def test_stale_marker_does_not_skip_repeat_upload(
     assert json.loads(marker.read_text())["artifact_id"] != (
         "00000000-0000-0000-0000-000000000099"
     )
+
+
+class _FakeHttpResponse:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def read(self, n: int = -1) -> bytes:
+        if n < 0:
+            return self._body
+        return self._body[:n]
+
+    def __enter__(self) -> "_FakeHttpResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+
+def test_checkpoint_restore_read_limit_ignores_smaller_evidence_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from preloop.agents import checkpoint_client as cc
+
+    evidence_cap = 32 * 1024 * 1024
+    checkpoint_cap = 512 * 1024 * 1024
+    body = os.urandom(evidence_cap + 1)
+    monkeypatch.setenv("PRELOOP_EVIDENCE_MAX_BYTES", str(evidence_cap))
+    monkeypatch.setenv("PRELOOP_CHECKPOINT_MAX_BYTES", str(checkpoint_cap))
+    monkeypatch.setenv("PRELOOP_CHECKPOINT_URL", "https://example.com/checkpoint")
+    monkeypatch.setenv("PRELOOP_EVIDENCE_URL", "https://example.com/evidence")
+
+    def fake_urlopen(
+        req: urllib.request.Request, timeout: int = 0
+    ) -> _FakeHttpResponse:
+        return _FakeHttpResponse(body)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    restored = cc.request("GET", "checkpoint-token")
+    assert restored == body
+    with pytest.raises(ValueError, match="checkpoint_response_oversized"):
+        cc.request(
+            "GET",
+            "evidence-token",
+            url=os.environ["PRELOOP_EVIDENCE_URL"],
+        )
+
+
+def test_pack_evidence_stays_on_evidence_cap_when_checkpoint_cap_is_larger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence_cap = 32 * 1024 * 1024
+    monkeypatch.setenv("PRELOOP_EVIDENCE_MAX_BYTES", str(evidence_cap))
+    monkeypatch.setenv("PRELOOP_CHECKPOINT_MAX_BYTES", str(512 * 1024 * 1024))
+    workspace = tmp_path / "workspace"
+    evidence = workspace / "evidence"
+    evidence.mkdir(parents=True)
+    (evidence / "huge.bin").write_bytes(os.urandom(evidence_cap + 1))
+    with pytest.raises(ValueError, match="evidence_oversized|evidence_expansion_limit"):
+        pack_evidence(
+            workspace,
+            max_bytes=int(os.environ["PRELOOP_EVIDENCE_MAX_BYTES"]),
+            max_expanded_bytes=2 * 1024**3,
+        )
+
+
+def test_malformed_receipt_expiry_stays_available() -> None:
+    execution = SimpleNamespace(
+        evidence_receipt={
+            "status": "available",
+            "kind": "evidence",
+            "expires_at": "not-a-timestamp",
+        },
+        evidence_archive=None,
+    )
+    status = public_evidence_status(execution)
+    assert status["status"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_hosted_docker_direct_capture_binds_existing_artifact_without_reupload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from preloop.agents.base import AgentStatus
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    monkeypatch.setattr(settings, "flow_artifact_direct_upload", True)
+    stored_id = uuid4()
+    stored = SimpleNamespace(
+        id=stored_id,
+        ciphertext=b"encrypted",
+        manifest={"sha256": "a" * 64, "size_bytes": 12},
+        expires_at=None,
+        created_at=None,
+    )
+    puts: list[object] = []
+
+    def boom_put(*args: object, **kwargs: object) -> None:
+        puts.append(kwargs)
+        raise AssertionError("direct docker capture must not store a second copy")
+
+    monkeypatch.setattr("preloop.services.flow_artifacts.put_artifact", boom_put)
+    monkeypatch.setattr(
+        "preloop.models.crud.flow_artifact.latest",
+        lambda *args, **kwargs: stored,
+    )
+
+    executor = ContainerAgentExecutor(
+        "codex", {}, image="test-image:latest", use_kubernetes=False
+    )
+    mock_container = AsyncMock()
+    type(mock_container).id = PropertyMock(return_value="container-123")
+    mock_container.log = AsyncMock(
+        return_value=[
+            b"PRELOOP_EVIDENCE committed 00000000-0000-0000-0000-000000000001"
+        ]
+    )
+    mock_container.show = AsyncMock(
+        return_value={
+            "State": {
+                "Running": False,
+                "Status": "exited",
+                "ExitCode": 0,
+                "OOMKilled": False,
+                "Error": "",
+            },
+            "Name": "/agent",
+            "Id": "container-123",
+        }
+    )
+    mock_container.get_archive = AsyncMock(
+        side_effect=AssertionError("must not re-fetch leftover files")
+    )
+    mock_container.start = AsyncMock()
+    docker = AsyncMock()
+    docker.images.inspect = AsyncMock()
+    docker.containers.create = AsyncMock(return_value=mock_container)
+    docker.containers.get = AsyncMock(return_value=mock_container)
+
+    with patch("preloop.agents.container.aiodocker.Docker", return_value=docker):
+        session = await executor.start(
+            {
+                "flow_id": str(uuid4()),
+                "execution_id": str(uuid4()),
+                "prompt": "do work",
+                "agent_config": {},
+                "evidence_env": {"PRELOOP_EVIDENCE_PUT_TOKEN": "scoped-token"},
+            }
+        )
+        result = await executor.get_result(session)
+        assert result.status == AgentStatus.SUCCEEDED
+        captured = await executor.get_evidence_archive(session)
+        assert captured is None
+        assert executor.evidence_transport_error is None
+
+        orchestrator = object.__new__(FlowExecutionOrchestrator)
+        orchestrator._evidence_archive = None
+        orchestrator._evidence_receipt = None
+        orchestrator._evidence_artifact_id = None
+        orchestrator.execution_log = SimpleNamespace(
+            id=uuid4(),
+            status="RUNNING",
+            trigger_event_details={},
+            evidence_receipt=None,
+        )
+        orchestrator.flow = SimpleNamespace(id=uuid4(), account_id=uuid4())
+        orchestrator.db = Mock()
+        orchestrator.execution_logger = Mock()
+        await orchestrator._capture_evidence_archive(executor, session)
+
+    assert puts == []
+    assert orchestrator._evidence_receipt is not None
+    assert orchestrator._evidence_receipt["status"] == "available"
+    assert orchestrator._evidence_receipt["artifact_id"] == str(stored_id)
+    mock_container.get_archive.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_hosted_docker_failed_direct_upload_does_not_store_leftovers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    monkeypatch.setattr(settings, "flow_artifact_direct_upload", True)
+    monkeypatch.setattr(
+        "preloop.services.flow_artifacts.put_artifact",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("failed upload must not re-store leftover files")
+        ),
+    )
+    monkeypatch.setattr(
+        "preloop.models.crud.flow_artifact.latest",
+        lambda *args, **kwargs: SimpleNamespace(
+            id=uuid4(), ciphertext=b"stale", manifest={"sha256": "b" * 64}
+        ),
+    )
+
+    executor = ContainerAgentExecutor(
+        "codex", {}, image="test-image:latest", use_kubernetes=False
+    )
+    executor._direct_evidence = True
+    mock_container = AsyncMock()
+    mock_container.log = AsyncMock(return_value=[b"PRELOOP_EVIDENCE failed OSError"])
+    mock_container.get_archive = AsyncMock(
+        side_effect=AssertionError("must not re-fetch leftover files")
+    )
+    docker = AsyncMock()
+    docker.containers.get = AsyncMock(return_value=mock_container)
+
+    with patch("preloop.agents.container.aiodocker.Docker", return_value=docker):
+        captured = await executor.get_evidence_archive("container-123")
+        assert captured is None
+        assert executor.evidence_transport_error == "evidence_upload_failed"
+
+        orchestrator = object.__new__(FlowExecutionOrchestrator)
+        orchestrator._evidence_archive = None
+        orchestrator._evidence_receipt = None
+        orchestrator._evidence_artifact_id = None
+        orchestrator.execution_log = SimpleNamespace(
+            id=uuid4(),
+            status="RUNNING",
+            trigger_event_details={},
+            evidence_receipt=None,
+        )
+        orchestrator.flow = SimpleNamespace(id=uuid4(), account_id=uuid4())
+        orchestrator.db = Mock()
+        orchestrator.execution_logger = Mock()
+        await orchestrator._capture_evidence_archive(executor, "container-123")
+
+    assert orchestrator._evidence_receipt is not None
+    assert orchestrator._evidence_receipt["status"] == "failed"
+    mock_container.get_archive.assert_not_called()

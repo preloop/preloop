@@ -669,6 +669,16 @@ class SecurityMaintenanceService:
                 },
             },
         }
+        mapping = _controller_product_mapping(
+            flow,
+            product_key=release.product_key,
+            release_key=release.release_key,
+            checkout_sha=release.pinned_build_ref,
+            sbom_path=release.sbom_input_ref,
+            sbom_digest=sbom_digest,
+        )
+        if mapping is not None:
+            event["payload"]["product_provenance"] = mapping
         execution = crud_security_maintenance.create_execution(
             self.db, flow_id=flow.id, event=event
         )
@@ -1500,6 +1510,16 @@ class SecurityMaintenanceService:
                 "repository": project.identifier,
             },
         }
+        mapping = _controller_product_mapping(
+            flow,
+            product_key=release.product_key,
+            release_key=release.release_key,
+            checkout_sha=sha if kind == "recheck" else pin,
+            sbom_path=sbom_input_ref,
+            sbom_digest=_sbom_bytes_digest(sbom_b64) if sbom_b64 else None,
+        )
+        if mapping is not None:
+            payload["product_provenance"] = mapping
         parse_workspace_files(payload)
         return {
             "source": str(issue.tracker_id),
@@ -2066,6 +2086,61 @@ def _sbom_bytes_digest(content_base64: str) -> str:
     except Exception:
         raw = content_base64.encode()
     return sha256(raw).hexdigest()
+
+
+def _controller_product_mapping(
+    flow: models.Flow,
+    *,
+    product_key: str,
+    release_key: str,
+    checkout_sha: str | None,
+    sbom_path: str,
+    sbom_digest: str | None,
+) -> dict[str, Any] | None:
+    """Controller-authored mapping for audit/recheck checkout verification.
+
+    Emitted only when the flow names repository URLs and the checkout is an
+    exact git SHA. Tag-like ``pinned_build_ref`` values stay legacy.
+    """
+    from preloop.services.product_provenance import (
+        PRODUCT_PROVENANCE_SCHEMA,
+        is_git_sha,
+    )
+
+    if not is_git_sha(checkout_sha):
+        return None
+    git = flow.git_clone_config if isinstance(flow.git_clone_config, dict) else {}
+    rows = git.get("repositories") or []
+    repositories: list[dict[str, str]] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        url = row.get("repository_url")
+        if not isinstance(url, str) or not url.strip():
+            continue
+        pin = row.get("commit") or row.get("pin_sha") or row.get("sha") or checkout_sha
+        if not is_git_sha(pin):
+            continue
+        repositories.append(
+            {
+                "remote": url.strip(),
+                "sha": str(pin).lower(),
+                "clone_path": str(row.get("clone_path") or f"workspace-{index + 1}"),
+                "role": str(row.get("role") or "code"),
+            }
+        )
+    if not repositories:
+        return None
+    mapping: dict[str, Any] = {
+        "schema": PRODUCT_PROVENANCE_SCHEMA,
+        "product": {"name": product_key},
+        "release": {"identifier": release_key, "channel": "supported"},
+        "repositories": repositories,
+        "sbom": {"path": sbom_path},
+    }
+    if sbom_digest:
+        mapping["sbom"]["digest"] = f"sha256:{sbom_digest}"
+    return mapping
 
 
 def _rebuilt_omits_target(
