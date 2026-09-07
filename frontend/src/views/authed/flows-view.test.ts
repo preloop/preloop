@@ -1171,7 +1171,7 @@ describe('FlowsView', () => {
     });
 
     it('sorts tokens by the total the cell states', () => {
-      // The list cell shows one total, and the column sorts by it — including
+      // The list cell shows one total, and the column sorts by it, including
       // the in+out fallback when the payload has directions and no total.
       const rows = [
         makeRow({
