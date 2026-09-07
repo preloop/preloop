@@ -875,7 +875,7 @@ describe('PreloopDeployWizard CLI path polling', () => {
     expect((el as any).cliPollingActive).to.equal(true);
     const text = (el.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
     expect(text).to.contain(
-      'Waiting for the CLI — onboarded agents appear here automatically.'
+      'Waiting for the CLI. Onboarded agents appear here automatically.'
     );
     // The baseline snapshot fetch fires immediately.
     await waitUntil(() => listCallCount >= 1, 'baseline fetch', {
@@ -969,5 +969,212 @@ describe('PreloopDeployWizard CLI path polling', () => {
     );
     // Soft window ~3m; hard cap ~10m from start.
     expect((el as any).cliPollHardStop - before).to.be.at.least(9 * 60 * 1000);
+  });
+});
+
+/**
+ * Step progress, the single-primary action bar, and the phone layout.
+ *
+ * The wizard used to render the same static dialog label on every screen with
+ * no sense of position, and clipped long commands with `white-space: nowrap`
+ * inside an `overflow-x: auto` box, which is invisible to a page-level "does
+ * it scroll sideways" check. These tests pin both.
+ */
+describe('PreloopDeployWizard step progress and phone layout', () => {
+  let fetchStub: sinon.SinonStub;
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.callsFake(
+      async () =>
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+    );
+  });
+
+  afterEach(() => {
+    document.querySelectorAll('preloop-deploy-wizard').forEach((el) => {
+      (el as any).cancelFirstDataPolling?.();
+      (el as any).cancelCliAgentPolling?.();
+    });
+    fetchStub.restore();
+    localStorage.clear();
+  });
+
+  const PHONE_WIDTH = 390;
+
+  /** Mount the wizard in a phone-width column, the way a 390px viewport does. */
+  async function mountNarrow(
+    initialPath?: string
+  ): Promise<PreloopDeployWizard> {
+    const host = (await fixture(html`
+      <div style="width: ${PHONE_WIDTH}px;">
+        <preloop-deploy-wizard
+          initial-path=${initialPath || 'choose'}
+        ></preloop-deploy-wizard>
+      </div>
+    `)) as HTMLElement;
+    const el = host.querySelector(
+      'preloop-deploy-wizard'
+    ) as PreloopDeployWizard;
+    await el.updateComplete;
+    return el;
+  }
+
+  function stepText(el: PreloopDeployWizard): string {
+    return (
+      el.shadowRoot?.querySelector('.wizard-step-count')?.textContent || ''
+    )
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function rail(el: PreloopDeployWizard): HTMLElement | null {
+    return el.shadowRoot?.querySelector('.wizard-step-rail') || null;
+  }
+
+  function cardByText(
+    el: PreloopDeployWizard,
+    text: string
+  ): HTMLElement | undefined {
+    return (
+      Array.from(
+        el.shadowRoot?.querySelectorAll('.wizard-option-button') || []
+      ) as HTMLElement[]
+    ).find((b) => b.textContent?.includes(text));
+  }
+
+  /**
+   * Nothing inside the component may stick out past the column it was given.
+   * Measured on the rendered boxes rather than on the document, because the
+   * clipping this guards against happens inside the component.
+   */
+  function expectNoHorizontalOverflow(el: PreloopDeployWizard, step: string) {
+    const shell = el.shadowRoot?.querySelector('.wizard-shell') as HTMLElement;
+    expect(shell, `${step}: shell renders`).to.exist;
+    expect(shell.scrollWidth, `${step}: shell scrollWidth`).to.be.at.most(
+      PHONE_WIDTH + 1
+    );
+    const right = el.getBoundingClientRect().right;
+    Array.from(el.shadowRoot?.querySelectorAll('*') || []).forEach((node) => {
+      const rect = (node as HTMLElement).getBoundingClientRect();
+      if (rect.width === 0) {
+        return;
+      }
+      expect(
+        Math.round(rect.right),
+        `${step}: ${(node as HTMLElement).className || node.tagName} right edge`
+      ).to.be.at.most(Math.round(right) + 1);
+    });
+    // A command must wrap, not scroll: a clipped command cannot be read.
+    Array.from(el.shadowRoot?.querySelectorAll('.command-code') || []).forEach(
+      (code) => {
+        const box = code as HTMLElement;
+        expect(box.scrollWidth, `${step}: command block`).to.be.at.most(
+          box.clientWidth + 1
+        );
+      }
+    );
+  }
+
+  it('numbers the choose path and draws a rail only once the total is known', async () => {
+    const el = await mountNarrow('choose');
+    expect(stepText(el)).to.equal('Step 1');
+    expect(rail(el), 'no rail on a branch screen').to.equal(null);
+
+    cardByText(el, 'Govern Existing Agents')!.click();
+    await el.updateComplete;
+    expect(stepText(el)).to.equal('Step 2');
+    expect(rail(el)).to.equal(null);
+
+    cardByText(el, 'Autodiscover via CLI')!.click();
+    await el.updateComplete;
+    expect(stepText(el)).to.contain('Step 3 of 3');
+    expect(rail(el)!.children.length).to.equal(3);
+    expect(rail(el)!.querySelectorAll('.done').length).to.equal(3);
+  });
+
+  it('counts the custom path from the step the wizard was opened on', async () => {
+    // Deep-linked at govern (the agents-view dialog): govern is step 1, so the
+    // custom path runs 2, 3, 4 rather than repeating a phantom step 1.
+    const el = await mountNarrow('govern');
+    expect(stepText(el)).to.equal('Step 1');
+
+    cardByText(el, 'Connect a custom agent')!.click();
+    await el.updateComplete;
+    expect(stepText(el)).to.contain('Step 2 of 4');
+    expect(rail(el)!.querySelectorAll('.done').length).to.equal(2);
+
+    (el as any).customDisplayName = 'Support triage agent';
+    (el as any).handleCustomContinueToModels();
+    await el.updateComplete;
+    expect(stepText(el)).to.contain('Step 3 of 4');
+    expect(rail(el)!.querySelectorAll('.done').length).to.equal(3);
+  });
+
+  it('gives each step one primary action with Back as text beside it', async () => {
+    const el = await mountNarrow('govern');
+    cardByText(el, 'Connect a custom agent')!.click();
+    await el.updateComplete;
+
+    const actions = el.shadowRoot?.querySelector(
+      '.wizard-actions'
+    ) as HTMLElement;
+    expect(actions, 'action bar').to.exist;
+    const primaries = actions.querySelectorAll('sl-button[variant="primary"]');
+    expect(primaries.length, 'exactly one primary').to.equal(1);
+    expect(primaries[0].textContent?.trim()).to.equal('Continue');
+    const back = actions.querySelector('.wizard-back') as HTMLElement;
+    expect(back, 'back button').to.exist;
+    expect(back.getAttribute('variant')).to.equal('text');
+  });
+
+  it('states what is about to be registered before minting a credential', async () => {
+    const el = await mountNarrow('govern');
+    cardByText(el, 'Connect a custom agent')!.click();
+    await el.updateComplete;
+    (el as any).customDisplayName = 'Support triage agent';
+    (el as any).customTagsInput = 'env=prod';
+    (el as any).handleCustomContinueToModels();
+    await el.updateComplete;
+
+    const summary = el.shadowRoot?.querySelector('.wizard-summary');
+    expect(summary, 'summary block').to.exist;
+    const text = (summary?.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.contain('Support triage agent');
+    expect(text).to.contain('env=prod');
+    expect(text).to.contain('shown once');
+  });
+
+  it('does not overflow horizontally at 390px on any step', async () => {
+    const choose = await mountNarrow('choose');
+    expectNoHorizontalOverflow(choose, 'choose');
+
+    const govern = await mountNarrow('govern');
+    expectNoHorizontalOverflow(govern, 'govern');
+
+    const cli = await mountNarrow('cli');
+    await cli.updateComplete;
+    expectNoHorizontalOverflow(cli, 'cli');
+
+    const custom = await mountNarrow('custom');
+    expectNoHorizontalOverflow(custom, 'custom-name');
+
+    (custom as any).customDisplayName = 'Support triage agent';
+    (custom as any).handleCustomContinueToModels();
+    await custom.updateComplete;
+    expectNoHorizontalOverflow(custom, 'custom-models');
+
+    // The result screen carries the longest strings in the wizard: a minted
+    // token and a multi-line snippet.
+    (custom as any).customCredentialToken =
+      'pl_gw_9f3c2a7e5b1d4c8f6a0e2b7d9c4f1a3e0b8d6c4a2f1e9b7d5c3a1f0e8d6c4b2';
+    (custom as any).customModelAlias = 'openai/gpt-4o';
+    (custom as any).customSubStep = 'result';
+    await custom.updateComplete;
+    expectNoHorizontalOverflow(custom, 'custom-result');
   });
 });

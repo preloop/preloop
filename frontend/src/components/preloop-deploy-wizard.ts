@@ -1,4 +1,5 @@
-import { LitElement, html, css, nothing } from 'lit';
+import { LitElement, html, nothing, unsafeCSS } from 'lit';
+import type { TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
@@ -6,7 +7,6 @@ import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
-import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import {
@@ -23,6 +23,8 @@ import type { ManagedAgentModelBindingSyncItem } from '../api';
 import type { AIModel, ManagedAgentSummary } from '../types';
 import './preloop-flow-form';
 import './preloop-agent-deployer';
+import consoleStyles from '../styles/console-styles.css?inline';
+import { deployWizardStyles } from '../styles/deploy-wizard';
 
 type OnboardingPath = 'choose' | 'govern' | 'cli' | 'deploy' | 'custom';
 
@@ -47,222 +49,7 @@ const FIRST_DATA_SUCCESS_DISMISS_MS = 2000;
 
 @customElement('preloop-deploy-wizard')
 export class PreloopDeployWizard extends LitElement {
-  static styles = css`
-    :host {
-      display: block;
-      width: 100%;
-    }
-
-    .wizard-shell {
-      width: 100%;
-      max-width: 820px;
-      margin: 0 auto;
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-large);
-      color: var(--sl-color-neutral-800);
-    }
-
-    .wizard-shell.wide {
-      max-width: 920px;
-    }
-
-    .wizard-header {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-2x-small);
-    }
-
-    .wizard-title {
-      color: var(--sl-color-neutral-900);
-      font-size: var(--sl-font-size-large);
-      font-weight: var(--sl-font-weight-semibold);
-      line-height: 1.25;
-      margin: 0;
-    }
-
-    .wizard-copy {
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-medium);
-      line-height: 1.55;
-      margin: 0;
-    }
-
-    .wizard-card-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: var(--sl-spacing-large);
-      width: 100%;
-    }
-
-    .wizard-option-button {
-      display: block;
-      width: 100%;
-      height: 100%;
-    }
-
-    .wizard-option-button::part(base) {
-      width: 100%;
-      height: auto;
-      min-height: 132px;
-      padding: var(--sl-spacing-large);
-      justify-content: flex-start;
-      text-align: left;
-      align-items: center;
-      text-wrap: wrap;
-    }
-
-    .wizard-option-body {
-      display: flex;
-      align-items: flex-start;
-      gap: var(--sl-spacing-medium);
-    }
-
-    .wizard-option-icon {
-      width: 44px;
-      height: 44px;
-      border-radius: var(--sl-border-radius-large);
-      color: var(--sl-color-primary-600);
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      flex: 0 0 auto;
-    }
-
-    .wizard-option-icon sl-icon {
-      font-size: 1.35rem;
-    }
-
-    .wizard-option-copy {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-2x-small);
-      min-width: 0;
-    }
-
-    .wizard-option-title {
-      color: var(--sl-color-neutral-900);
-      font-size: var(--sl-font-size-medium);
-      font-weight: var(--sl-font-weight-semibold);
-      line-height: 1.3;
-    }
-
-    .wizard-option-description {
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-small);
-      font-weight: var(--sl-font-weight-normal);
-      line-height: 1.45;
-    }
-
-    .wizard-panel {
-      width: 100%;
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-large);
-      background: var(--sl-color-neutral-0);
-      box-shadow: var(--sl-shadow-small);
-      padding: var(--sl-spacing-large);
-      box-sizing: border-box;
-    }
-
-    .command-steps {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-large);
-    }
-
-    .command-step {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-2x-small);
-    }
-
-    .command-label {
-      color: var(--sl-color-neutral-800);
-      font-weight: var(--sl-font-weight-semibold);
-    }
-
-    .command-row {
-      display: flex;
-      align-items: center;
-      gap: var(--sl-spacing-small);
-    }
-
-    .command-code {
-      flex: 1;
-      min-width: 0;
-      background: var(--sl-color-neutral-100);
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      color: var(--sl-color-neutral-800);
-      font-family: var(--sl-font-mono);
-      font-size: var(--sl-font-size-small);
-      padding: var(--sl-spacing-small) var(--sl-spacing-medium);
-      overflow-x: auto;
-      white-space: nowrap;
-    }
-
-    .wizard-back {
-      align-self: flex-start;
-      margin-left: calc(-1 * var(--sl-spacing-small));
-    }
-
-    .custom-form {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-medium);
-    }
-
-    .custom-error {
-      width: 100%;
-    }
-
-    .command-snippet {
-      margin: 0;
-      white-space: pre;
-      line-height: 1.5;
-    }
-
-    .conn-status {
-      width: 100%;
-    }
-
-    .cli-connected-line {
-      color: var(--sl-color-success-600);
-      font-size: var(--sl-font-size-small);
-      font-weight: var(--sl-font-weight-semibold);
-    }
-
-    .cli-connected-link {
-      color: var(--sl-color-primary-600);
-      display: inline-block;
-      font-size: var(--sl-font-size-small);
-      margin-top: var(--sl-spacing-2x-small);
-    }
-
-    .conn-status .conn-waiting {
-      margin-top: var(--sl-spacing-x-small);
-    }
-
-    .conn-waiting {
-      display: flex;
-      align-items: center;
-      gap: var(--sl-spacing-small);
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-small);
-    }
-
-    .conn-waiting sl-spinner {
-      font-size: 1rem;
-    }
-
-    @media (max-width: 640px) {
-      .wizard-option-body,
-      .command-row {
-        align-items: stretch;
-        flex-direction: column;
-      }
-    }
-  `;
+  static styles = [unsafeCSS(consoleStyles), deployWizardStyles];
 
   @property({ type: Array })
   aiModels: AIModel[] = [];
@@ -907,6 +694,162 @@ agent.invoke(
 )`;
   }
 
+  /**
+   * Where this screen sits in the path. `total` is null on a screen that
+   * branches: the wizard cannot honestly promise a length before the user has
+   * picked a path, so the header shows the number alone rather than inventing
+   * a total it may not keep.
+   */
+  private stepPosition(): { index: number; total: number | null } {
+    // The choose screen only counts as a step when the wizard starts there.
+    // Deep links (initial-path="govern" from the agents view) start at 1.
+    const base = this.initialPath === 'choose' ? 1 : 0;
+    switch (this.onboardingPath) {
+      case 'choose':
+        return { index: 1, total: null };
+      case 'govern':
+        return { index: base + 1, total: null };
+      case 'cli':
+        return { index: base + 2, total: base + 2 };
+      case 'custom': {
+        const first = base + 2;
+        const offset =
+          this.customSubStep === 'name'
+            ? 0
+            : this.customSubStep === 'models'
+              ? 1
+              : 2;
+        return { index: first + offset, total: first + 2 };
+      }
+      default:
+        return this.deploySubStep === 'type'
+          ? { index: base + 1, total: null }
+          : { index: base + 2, total: base + 2 };
+    }
+  }
+
+  /** Steps already taken when the nested deployer takes over the screen. */
+  private deployerStepOffset(): number {
+    return (this.initialPath === 'choose' ? 1 : 0) + 1;
+  }
+
+  /**
+   * Every step opens the same way: which step this is, what it is for, and one
+   * line of context. The rail is only drawn when the total is known.
+   */
+  private renderStepHeader(title: string, copy: unknown) {
+    const { index, total } = this.stepPosition();
+    return html`
+      <div class="wizard-header">
+        <div class="wizard-step-count">
+          <span
+            >${total === null ? `Step ${index}` : `Step ${index} of ${total}`}</span
+          >
+          ${
+            total === null
+              ? nothing
+              : html`
+                  <span class="wizard-step-rail" aria-hidden="true">
+                    ${Array.from(
+                      { length: total },
+                      (_unused, i) =>
+                        html`<span class=${i < index ? 'done' : ''}></span>`
+                    )}
+                  </span>
+                `
+          }
+        </div>
+        ${
+          this.hideStepTitle
+            ? nothing
+            : html`<h3 class="wizard-title">${title}</h3>`
+        }
+        <p class="wizard-copy">${copy}</p>
+      </div>
+    `;
+  }
+
+  /**
+   * One action bar per step: the primary action on the right, Back as a text
+   * button on the left. Back stays in the DOM before the primary so the
+   * keyboard reaches the step's main action last.
+   */
+  private renderActions(showBack: boolean, primary: unknown = nothing) {
+    if (!showBack && primary === nothing) {
+      return nothing;
+    }
+    return html`
+      <div class="wizard-actions">
+        ${
+          showBack
+            ? html`
+                <sl-button
+                  class="wizard-back"
+                  variant="text"
+                  size="small"
+                  @click=${this.handleBack}
+                >
+                  <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
+                </sl-button>
+              `
+            : nothing
+        }
+        ${primary}
+      </div>
+    `;
+  }
+
+  /** A choice on a branch screen: icon column, title, one line, chevron. */
+  private renderOptionCard(
+    icon: string,
+    title: string,
+    description: string,
+    onClick: () => void
+  ): TemplateResult {
+    return html`
+      <button type="button" class="wizard-option-button" @click=${onClick}>
+        <sl-icon class="wizard-option-icon" name=${icon}></sl-icon>
+        <span class="wizard-option-copy">
+          <span class="wizard-option-title">${title}</span>
+          <span class="wizard-option-description">${description}</span>
+        </span>
+        <sl-icon class="wizard-option-arrow" name="chevron-right"></sl-icon>
+      </button>
+    `;
+  }
+
+  /** A labelled, copyable command. Long commands wrap; they never clip. */
+  private renderCommandStep(
+    label: string,
+    command: string,
+    index?: number
+  ): TemplateResult {
+    return html`
+      <div class="command-step">
+        <div class="command-label">
+          ${index ? html`<span class="command-index">${index}</span>` : nothing}
+          <span>${label}</span>
+        </div>
+        <div class="command-row">
+          <code class="command-code">${command}</code>
+          <sl-copy-button .value=${command}></sl-copy-button>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderError() {
+    if (!this.customError) {
+      return nothing;
+    }
+    return html`
+      <div class="notice danger" role="alert">
+        <sl-icon name="exclamation-octagon"></sl-icon>
+        <span>${this.customError}</span>
+      </div>
+    `;
+  }
+
   render() {
     return html`
       <div style="width: 100%;">
@@ -928,56 +871,31 @@ agent.invoke(
   private renderChoosePathState() {
     return html`
       <div class="wizard-shell">
-        <div class="wizard-header" style="text-align: center;">
-          <p class="wizard-copy">
-            Preloop is the open source control plane for AI agents. Connect or
-            deploy your first agent to begin.
-          </p>
-        </div>
+        ${this.renderStepHeader(
+          'Choose how to start',
+          `Preloop is the open source control plane for AI agents. Connect the
+           agents you already run, or deploy a new one.`
+        )}
         <div class="wizard-card-grid">
-          <sl-button
-            class="wizard-option-button"
-            variant="default"
-            @click=${() => {
+          ${this.renderOptionCard(
+            'shield-check',
+            'Govern Existing Agents',
+            'Connect agents you already run, via CLI autodiscovery or by onboarding a custom agent.',
+            () => {
               this.onboardingPath = 'govern';
               this.requestUpdate();
-            }}
-          >
-            <div class="wizard-option-body">
-              <span class="wizard-option-icon">
-                <sl-icon name="shield-check"></sl-icon>
-              </span>
-              <span class="wizard-option-copy">
-                <span class="wizard-option-title">Govern Existing Agents</span>
-                <span class="wizard-option-description">
-                  Connect agents you already run — via CLI autodiscovery or by
-                  onboarding a custom agent
-                </span>
-              </span>
-            </div>
-          </sl-button>
-
-          <sl-button
-            class="wizard-option-button"
-            variant="default"
-            @click=${() => {
+            }
+          )}
+          ${this.renderOptionCard(
+            'cloud-arrow-up',
+            'Deploy New Agents',
+            'Spin up a new persistent agent or an event-driven flow.',
+            () => {
               this.onboardingPath = 'deploy';
               this.deploySubStep = 'type';
               this.requestUpdate();
-            }}
-          >
-            <div class="wizard-option-body">
-              <span class="wizard-option-icon">
-                <sl-icon name="cloud-arrow-up"></sl-icon>
-              </span>
-              <span class="wizard-option-copy">
-                <span class="wizard-option-title">Deploy New Agents</span>
-                <span class="wizard-option-description">
-                  Spin up new persistent agents or flows
-                </span>
-              </span>
-            </div>
-          </sl-button>
+            }
+          )}
         </div>
       </div>
     `;
@@ -993,80 +911,36 @@ agent.invoke(
     const hideGovernBack = this.hideBack || this.initialPath === 'govern';
     return html`
       <div class="wizard-shell">
-        ${
-          hideGovernBack
-            ? nothing
-            : html`
-                <sl-button
-                  class="wizard-back"
-                  variant="text"
-                  size="small"
-                  @click=${this.handleBack}
-                >
-                  <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
-                </sl-button>
-              `
-        }
-
-        <div class="wizard-header">
-          ${
-            this.hideStepTitle
-              ? nothing
-              : html`<h3 class="wizard-title">Govern Existing Agents</h3>`
-          }
-          <p class="wizard-copy">
-            Bring agents you already run under Preloop's control plane. Let the
-            CLI autodiscover local agents, or onboard a custom agent the CLI
-            can't reach.
-          </p>
-        </div>
+        ${this.renderStepHeader(
+          'Govern existing agents',
+          `Bring agents you already run under Preloop's control plane. The CLI
+           can autodiscover local agents, or you can onboard a custom agent it
+           cannot reach.`
+        )}
 
         <div class="wizard-card-grid">
-          <sl-button
-            class="wizard-option-button"
-            variant="default"
-            @click=${() => {
+          ${this.renderOptionCard(
+            'terminal',
+            'Autodiscover via CLI',
+            'Install the Preloop CLI and discover local running agents automatically.',
+            () => {
               this.onboardingPath = 'cli';
               this.requestUpdate();
-            }}
-          >
-            <div class="wizard-option-body">
-              <span class="wizard-option-icon">
-                <sl-icon name="terminal"></sl-icon>
-              </span>
-              <span class="wizard-option-copy">
-                <span class="wizard-option-title">Autodiscover via CLI</span>
-                <span class="wizard-option-description">
-                  Install the Preloop CLI and discover local running agents
-                  automatically
-                </span>
-              </span>
-            </div>
-          </sl-button>
-
-          <sl-button
-            class="wizard-option-button"
-            variant="default"
-            @click=${() => {
+            }
+          )}
+          ${this.renderOptionCard(
+            'plug',
+            'Connect a custom agent',
+            "Onboard an existing agent (LangGraph, custom SDK) the CLI can't discover.",
+            () => {
               this.resetCustomState();
               this.onboardingPath = 'custom';
               this.requestUpdate();
-            }}
-          >
-            <div class="wizard-option-body">
-              <span class="wizard-option-icon">
-                <sl-icon name="plug"></sl-icon>
-              </span>
-              <span class="wizard-option-copy">
-                <span class="wizard-option-title">Connect a custom agent</span>
-                <span class="wizard-option-description">
-                  Onboard an existing agent (LangGraph, custom SDK) the CLI
-                  can't discover
-                </span>
-              </span>
-            </div>
-          </sl-button>
+            }
+          )}
         </div>
+
+        ${this.renderActions(!hideGovernBack)}
       </div>
     `;
   }
@@ -1083,73 +957,35 @@ agent.invoke(
 
     return html`
       <div class="wizard-shell">
-        ${
-          this.hideBack
-            ? nothing
-            : html`
-                <sl-button
-                  class="wizard-back"
-                  variant="text"
-                  size="small"
-                  @click=${this.handleBack}
-                >
-                  <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
-                </sl-button>
-              `
-        }
+        ${this.renderStepHeader(
+          'Install the CLI and discover agents',
+          `Run these three commands on the machine where your agents live. It
+           takes about two minutes.`
+        )}
 
-        <div class="wizard-header">
-          ${
-            this.hideStepTitle
-              ? nothing
-              : html`
-                  <h3 class="wizard-title">
-                    Onboard Existing Agent via Preloop CLI
-                  </h3>
-                `
-          }
-          <p class="wizard-copy">
-            Run these commands on the machine where your agents live. Takes
-            about two minutes.
-          </p>
-        </div>
-
-        <div class="wizard-panel command-steps">
-          <div class="command-step">
-            <div class="command-label">1. Install the Preloop CLI tool</div>
-            <div class="command-row">
-              <code class="command-code">${installCommand}</code>
-              <sl-copy-button .value=${installCommand}></sl-copy-button>
-            </div>
-          </div>
-
-          <div class="command-step">
-            <div class="command-label">2. Authenticate CLI session</div>
-            <div class="command-row">
-              <code class="command-code">${loginCommand}</code>
-              <sl-copy-button .value=${loginCommand}></sl-copy-button>
-            </div>
-          </div>
-
-          <div class="command-step">
-            <div class="command-label">
-              3. Discover and onboard local agents
-            </div>
-            <div class="command-row">
-              <code class="command-code">preloop agents discover</code>
-              <sl-copy-button value="preloop agents discover"></sl-copy-button>
-            </div>
-          </div>
-
+        <div class="command-steps">
+          ${this.renderCommandStep(
+            'Install the Preloop CLI tool',
+            installCommand,
+            1
+          )}
+          ${this.renderCommandStep('Authenticate the CLI session', loginCommand, 2)}
+          ${this.renderCommandStep(
+            'Discover and onboard local agents',
+            'preloop agents discover',
+            3
+          )}
           ${this.renderCliConnStatus()}
         </div>
 
         <p class="wizard-copy">
-          The CLI lists what it finds — Claude Code, Cursor, Codex CLI,
-          OpenClaw, Gemini CLI and more — and asks before onboarding each one.
-          Onboarded agents appear on the Agents page; their first model call
-          shows up under Sessions.
+          The CLI lists what it finds (Claude Code, Cursor, Codex CLI, OpenClaw,
+          Gemini CLI and more) and asks before onboarding each one. Onboarded
+          agents appear on the Agents page; their first model call shows up
+          under Sessions.
         </p>
+
+        ${this.renderActions(!this.hideBack)}
       </div>
     `;
   }
@@ -1188,7 +1024,7 @@ agent.invoke(
                 <div class="conn-waiting">
                   <sl-spinner></sl-spinner>
                   <span>
-                    Waiting for the CLI — onboarded agents appear here
+                    Waiting for the CLI. Onboarded agents appear here
                     automatically.
                   </span>
                 </div>
@@ -1203,20 +1039,6 @@ agent.invoke(
     return html`
       <div class="wizard-shell">
         ${
-          this.hideBack
-            ? nothing
-            : html`
-                <sl-button
-                  class="wizard-back"
-                  variant="text"
-                  size="small"
-                  @click=${this.handleBack}
-                >
-                  <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
-                </sl-button>
-              `
-        }
-        ${
           this.customSubStep === 'name'
             ? this.renderCustomNameState()
             : this.customSubStep === 'models'
@@ -1229,35 +1051,20 @@ agent.invoke(
 
   private renderCustomNameState() {
     return html`
-      <div class="wizard-header">
-        ${
-          this.hideStepTitle
-            ? nothing
-            : html`<h3 class="wizard-title">Connect a custom agent</h3>`
-        }
-        <p class="wizard-copy">
-          Register an existing agent (LangGraph, custom SDK) the CLI can't
-          discover. We'll mint a gateway credential so it can route model
-          traffic through Preloop.
-        </p>
-      </div>
+      ${this.renderStepHeader(
+        'Name the agent',
+        `Register an existing agent (LangGraph, custom SDK) the CLI cannot
+         discover. Preloop mints a gateway credential so the agent can route
+         model traffic through the control plane.`
+      )}
 
-      <div class="wizard-panel custom-form">
-        ${
-          this.customError
-            ? html`
-                <sl-alert variant="danger" open class="custom-error">
-                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                  ${this.customError}
-                </sl-alert>
-              `
-            : nothing
-        }
+      <div class="wizard-form">
+        ${this.renderError()}
 
         <sl-input
           label="Agent name"
           name="display_name"
-          placeholder="e.g. Support triage agent"
+          help-text="The name you will recognise in the console, for example Support triage agent."
           required
           ?disabled=${this.customBusy}
           .value=${this.customDisplayName}
@@ -1267,9 +1074,9 @@ agent.invoke(
         ></sl-input>
 
         <sl-textarea
-          label="Description (optional)"
+          label="Description"
           name="description"
-          placeholder="What does this agent do?"
+          help-text="Optional. One line on what this agent does."
           rows="2"
           ?disabled=${this.customBusy}
           .value=${this.customDescription}
@@ -1279,25 +1086,29 @@ agent.invoke(
         ></sl-textarea>
 
         <sl-input
-          label="Tags (optional)"
+          label="Tags"
           name="tags"
-          placeholder="e.g. env=prod team=support beta"
-          help-text="Space-separated. Use key=value for pairs, or just key for a label."
+          help-text="Optional. Space-separated: key=value for pairs, or just key for a label. For example env=prod team=support."
           ?disabled=${this.customBusy}
           .value=${this.customTagsInput}
           @sl-input=${(e: Event) => {
             this.customTagsInput = (e.target as HTMLInputElement).value;
           }}
         ></sl-input>
-
-        <sl-button
-          variant="primary"
-          ?disabled=${!this.customDisplayName.trim()}
-          @click=${this.handleCustomContinueToModels}
-        >
-          Continue
-        </sl-button>
       </div>
+
+      ${this.renderActions(
+        !this.hideBack,
+        html`
+          <sl-button
+            variant="primary"
+            ?disabled=${!this.customDisplayName.trim()}
+            @click=${this.handleCustomContinueToModels}
+          >
+            Continue
+          </sl-button>
+        `
+      )}
     `;
   }
 
@@ -1306,7 +1117,7 @@ agent.invoke(
   // from MCP/HTTP servers and built-ins, and persists governance via separate
   // per-subject endpoints; it has no notion of "define this new agent's tool
   // surface" and no register-time persistence path. Wiring it here would require
-  // new backend endpoints (out of scope for this task — account.py must not
+  // new backend endpoints (out of scope for this task: account.py must not
   // change). Tool selection is therefore deferred pending a dedicated backend
   // endpoint. Tags + models ship now.
   private renderCustomModelState() {
@@ -1317,29 +1128,14 @@ agent.invoke(
       (!hasModels || this.customSelectedModelIds.length > 0);
 
     return html`
-      <div class="wizard-header">
-        ${
-          this.hideStepTitle
-            ? nothing
-            : html`<h3 class="wizard-title">Choose allowed models</h3>`
-        }
-        <p class="wizard-copy">
-          Pick which models this agent may use through the Preloop gateway. The
-          first model becomes the default the example snippet routes to.
-        </p>
-      </div>
+      ${this.renderStepHeader(
+        'Choose allowed models',
+        `Pick the models this agent may use through the Preloop gateway. The
+         first one becomes the default the example snippet routes to.`
+      )}
 
-      <div class="wizard-panel custom-form">
-        ${
-          this.customError
-            ? html`
-                <sl-alert variant="danger" open class="custom-error">
-                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                  ${this.customError}
-                </sl-alert>
-              `
-            : nothing
-        }
+      <div class="wizard-form">
+        ${this.renderError()}
         ${
           hasModels
             ? html`
@@ -1349,6 +1145,7 @@ agent.invoke(
                   multiple
                   clearable
                   placeholder="Select one or more models"
+                  help-text="The agent may only call the models you grant it here."
                   ?disabled=${this.customBusy}
                   .value=${this.customSelectedModelIds}
                   @sl-change=${(e: Event) => {
@@ -1373,22 +1170,71 @@ agent.invoke(
                 </sl-select>
               `
             : html`
-                <sl-alert variant="primary" open class="custom-error">
-                  <sl-icon slot="icon" name="info-circle"></sl-icon>
-                  No gateway-enabled models are configured for this account. You
-                  can register the agent now and set its allowed model later.
-                </sl-alert>
+                <div class="notice info">
+                  <sl-icon name="info-circle"></sl-icon>
+                  <span>
+                    No gateway-enabled models are configured for this account.
+                    You can register the agent now and set its allowed model
+                    later.
+                  </span>
+                </div>
               `
         }
+        ${this.renderCustomSummary(enabledModels)}
+      </div>
 
-        <sl-button
-          variant="primary"
-          ?loading=${this.customBusy}
-          ?disabled=${!canRegister}
-          @click=${this.handleCustomRegister}
-        >
-          Register agent &amp; mint credential
-        </sl-button>
+      ${this.renderActions(
+        !this.hideBack,
+        html`
+          <sl-button
+            variant="primary"
+            ?loading=${this.customBusy}
+            ?disabled=${!canRegister}
+            @click=${this.handleCustomRegister}
+          >
+            Register agent &amp; mint credential
+          </sl-button>
+        `
+      )}
+    `;
+  }
+
+  /**
+   * What the next click is about to create. Registering mints a credential
+   * that is shown once, so the last screen before it states the agent it is
+   * about to register rather than asking the user to remember two screens
+   * back.
+   */
+  private renderCustomSummary(enabledModels: AIModel[]) {
+    const selected = enabledModels.filter((model) =>
+      this.customSelectedModelIds.includes(model.id)
+    );
+    const tags = Object.entries(this.parseCustomTags()).map(
+      ([key, value]) => `${key}=${value}`
+    );
+    const row = (key: string, value: unknown) => html`
+      <div class="wizard-summary-row">
+        <span class="wizard-summary-key">${key}</span>
+        <span class="wizard-summary-value">${value}</span>
+      </div>
+    `;
+    return html`
+      <div class="wizard-summary">
+        <div class="wizard-summary-title">About to register</div>
+        ${row('Agent', this.customDisplayName.trim() || 'Not set')}
+        ${
+          this.customDescription.trim()
+            ? row('Description', this.customDescription.trim())
+            : nothing
+        }
+        ${tags.length > 0 ? row('Tags', tags.join(' ')) : nothing}
+        ${row(
+          'Models',
+          selected.length > 0
+            ? selected.map((model) => model.name).join(', ')
+            : 'None selected'
+        )}
+        ${row('Credential', 'One gateway credential, shown once')}
       </div>
     `;
   }
@@ -1399,44 +1245,32 @@ agent.invoke(
     const snippet = this.buildCustomSnippet(baseUrl, token);
 
     return html`
-      <div class="wizard-header">
-        ${
-          this.hideStepTitle
-            ? nothing
-            : html`<h3 class="wizard-title">Your agent is connected</h3>`
-        }
-        <p class="wizard-copy">
-          Point your agent at the Preloop gateway using the base URL and
-          credential below, then route model traffic through it.
-        </p>
-      </div>
+      ${this.renderStepHeader(
+        'Your agent is connected',
+        `Point your agent at the Preloop gateway with the base URL and
+         credential below, then route its model traffic through it.`
+      )}
 
-      <div class="wizard-panel command-steps">
-        <sl-alert variant="warning" open>
-          <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+      <div class="notice warning">
+        <sl-icon name="exclamation-triangle"></sl-icon>
+        <span>
           This credential token is shown only once and cannot be recovered. Copy
           it now and store it securely.
-        </sl-alert>
+        </span>
+      </div>
 
-        <div class="command-step">
-          <div class="command-label">Gateway base URL (OpenAI-compatible)</div>
-          <div class="command-row">
-            <code class="command-code">${baseUrl}</code>
-            <sl-copy-button .value=${baseUrl}></sl-copy-button>
-          </div>
-        </div>
-
-        <div class="command-step">
-          <div class="command-label">Gateway credential (api_key)</div>
-          <div class="command-row">
-            <code class="command-code">${token}</code>
-            <sl-copy-button .value=${token}></sl-copy-button>
-          </div>
-        </div>
+      <div class="command-steps">
+        ${this.renderCommandStep(
+          'Gateway base URL (OpenAI-compatible)',
+          baseUrl
+        )}
+        ${this.renderCommandStep('Gateway credential (api_key)', token)}
 
         <div class="command-step">
           <div class="command-label">
-            Example: LangGraph + OpenAI SDK with a per-run session id
+            <span
+              >Example: LangGraph + OpenAI SDK with a per-run session id</span
+            >
           </div>
           <div class="command-row">
             <pre class="command-code command-snippet">${snippet}</pre>
@@ -1445,25 +1279,30 @@ agent.invoke(
         </div>
 
         ${this.renderCustomConnStatus()}
-
-        <sl-button
-          variant=${
-            this.customConnState === 'connected' ? 'success' : 'primary'
-          }
-          @click=${() => {
-            this.cancelFirstDataPolling();
-            this.customCredentialToken = null;
-            this.dispatchEvent(
-              new CustomEvent('deploy-wizard-done', {
-                bubbles: true,
-                composed: true,
-              })
-            );
-          }}
-        >
-          Done
-        </sl-button>
       </div>
+
+      ${this.renderActions(
+        !this.hideBack,
+        html`
+          <sl-button
+            variant=${
+              this.customConnState === 'connected' ? 'success' : 'primary'
+            }
+            @click=${() => {
+              this.cancelFirstDataPolling();
+              this.customCredentialToken = null;
+              this.dispatchEvent(
+                new CustomEvent('deploy-wizard-done', {
+                  bubbles: true,
+                  composed: true,
+                })
+              );
+            }}
+          >
+            Done
+          </sl-button>
+        `
+      )}
     `;
   }
 
@@ -1472,19 +1311,23 @@ agent.invoke(
       const count = this.customConnRequestCount;
       const label =
         count > 0
-          ? `Agent connected — ${count} request${count === 1 ? '' : 's'} received`
+          ? `Agent connected: ${count} request${count === 1 ? '' : 's'} received`
           : 'Agent connected';
       return html`
-        <sl-alert variant="success" open class="conn-status">
-          <sl-icon slot="icon" name="check-circle"></sl-icon>
-          ${label}
-        </sl-alert>
+        <div class="conn-status">
+          <div class="conn-connected">
+            <sl-icon name="check-circle"></sl-icon>
+            <span>${label}</span>
+          </div>
+        </div>
       `;
     }
     return html`
-      <div class="conn-status conn-waiting">
-        <sl-spinner></sl-spinner>
-        <span>Waiting for your agent's first request…</span>
+      <div class="conn-status">
+        <div class="conn-waiting">
+          <sl-spinner></sl-spinner>
+          <span>Waiting for your agent's first request…</span>
+        </div>
       </div>
     `;
   }
@@ -1497,122 +1340,79 @@ agent.invoke(
           .computeFeatureEnabled=${this.computeFeatureEnabled}
           .isEnterprise=${this.isEnterprise}
           .isAdmin=${this.isAdmin}
+          .stepOffset=${this.deployerStepOffset()}
           @deploy-agent-success=${this.handleAgentDeploySuccess}
           @deploy-cancel=${this.handleAgentDeployCancel}
         ></preloop-agent-deployer>
       `;
     }
 
+    if (this.deploySubStep === 'flow-config') {
+      return html`
+        <div class="wizard-shell wide">
+          ${this.renderStepHeader(
+            'Configure the event-driven flow',
+            `Start an agent when an event fires (issue created, webhook) and
+             stop it when the run completes.`
+          )}
+          <div class="wizard-section">
+            <preloop-flow-form
+              @flow-submit=${async (e: CustomEvent) => {
+                const payload = e.detail.flow;
+                try {
+                  const newFlow = await createFlow(payload);
+                  this.dispatchEvent(
+                    new CustomEvent('deploy-flow-success', {
+                      bubbles: true,
+                      composed: true,
+                      detail: { flow: newFlow },
+                    })
+                  );
+                } catch (error: any) {
+                  const form = e.target as HTMLElement & {
+                    formError?: string;
+                  };
+                  form.formError = error?.message || 'Failed to create flow.';
+                }
+              }}
+              @flow-cancel=${() => {
+                this.deploySubStep = 'type';
+              }}
+            ></preloop-flow-form>
+          </div>
+        </div>
+      `;
+    }
+
     return html`
-      <div class="wizard-shell wide">
-        <sl-button
-          class="wizard-back"
-          variant="text"
-          size="small"
-          @click=${this.handleBack}
-        >
-          <sl-icon name="arrow-left" slot="prefix"></sl-icon> Back
-        </sl-button>
+      <div class="wizard-shell">
+        ${this.renderStepHeader(
+          'Deploy a new agent',
+          'Choose how the new agent should run.'
+        )}
 
-        ${
-          this.deploySubStep === 'type'
-            ? html`
-                <div class="wizard-header">
-                  <h3 class="wizard-title">Deploy New Agent or Flow</h3>
-                  <p class="wizard-copy">
-                    Choose how the new agent should run.
-                  </p>
-                </div>
+        <div class="wizard-card-grid">
+          ${this.renderOptionCard(
+            'server',
+            'Deploy Persistent Agent',
+            'Run a long-lived agent that stays connected and picks up work continuously.',
+            () => {
+              this.deploySubStep = 'agent-host';
+              this.requestUpdate();
+            }
+          )}
+          ${this.renderOptionCard(
+            'diagram-3',
+            'Configure Event-Driven Flow',
+            'Start an agent when an event fires (issue created, webhook), stop it when the run completes.',
+            () => {
+              this.deploySubStep = 'flow-config';
+              this.requestUpdate();
+            }
+          )}
+        </div>
 
-                <div class="wizard-card-grid">
-                  <sl-button
-                    class="wizard-option-button"
-                    variant="default"
-                    @click=${() => {
-                      this.deploySubStep = 'agent-host';
-                      this.requestUpdate();
-                    }}
-                  >
-                    <div class="wizard-option-body">
-                      <span class="wizard-option-icon">
-                        <sl-icon name="server"></sl-icon>
-                      </span>
-                      <span class="wizard-option-copy">
-                        <span class="wizard-option-title">
-                          Deploy Persistent Agent
-                        </span>
-                        <span class="wizard-option-description">
-                          Run a long-lived agent that stays connected and picks
-                          up work continuously.
-                        </span>
-                      </span>
-                    </div>
-                  </sl-button>
-
-                  <sl-button
-                    class="wizard-option-button"
-                    variant="default"
-                    @click=${() => {
-                      this.deploySubStep = 'flow-config';
-                      this.requestUpdate();
-                    }}
-                  >
-                    <div class="wizard-option-body">
-                      <span class="wizard-option-icon">
-                        <sl-icon name="diagram-3"></sl-icon>
-                      </span>
-                      <span class="wizard-option-copy">
-                        <span class="wizard-option-title">
-                          Configure Event-Driven Flow
-                        </span>
-                        <span class="wizard-option-description">
-                          Start an agent when an event fires (issue created,
-                          webhook), stop it when the run completes.
-                        </span>
-                      </span>
-                    </div>
-                  </sl-button>
-                </div>
-              `
-            : nothing
-        }
-        ${
-          this.deploySubStep === 'flow-config'
-            ? html`
-                <div class="wizard-header">
-                  <h3 class="wizard-title">
-                    Configure Event-Driven Agentic Flow
-                  </h3>
-                </div>
-                <div class="wizard-panel">
-                  <preloop-flow-form
-                    @flow-submit=${async (e: CustomEvent) => {
-                      const payload = e.detail.flow;
-                      try {
-                        const newFlow = await createFlow(payload);
-                        this.dispatchEvent(
-                          new CustomEvent('deploy-flow-success', {
-                            bubbles: true,
-                            composed: true,
-                            detail: { flow: newFlow },
-                          })
-                        );
-                      } catch (error: any) {
-                        const form = e.target as HTMLElement & {
-                          formError?: string;
-                        };
-                        form.formError =
-                          error?.message || 'Failed to create flow.';
-                      }
-                    }}
-                    @flow-cancel=${() => {
-                      this.deploySubStep = 'type';
-                    }}
-                  ></preloop-flow-form>
-                </div>
-              `
-            : nothing
-        }
+        ${this.renderActions(!this.hideBack && this.initialPath !== 'deploy')}
       </div>
     `;
   }
