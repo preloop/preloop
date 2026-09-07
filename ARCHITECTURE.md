@@ -93,3 +93,14 @@ manual completion alone does not start an audit. Readiness consumes approved
 execution-environment capabilities rather than implementing test setup. See
 [Issue readiness and completion audits](docs/guide/flows/issue-lifecycle.md) for
 policy, API and recovery configuration.
+
+### Security maintenance controller
+
+`services/security_maintenance.py` coordinates opt-in supported-release
+inventory, one work item per product/release/advisory/component, and
+fail-closed completion. Inventory is API-configured. Implementation uses the
+existing flow dispatcher and isolated publication receipts (`head_sha`).
+Tests and baselines require controller-owned verification and the contracts
+CRA validator; caller-supplied evidence ids and agent `finding_absent`
+fields do not grant. Platform `ApprovalRequest` rows carry human decisions.
+See [Supported-release vulnerability maintenance](docs/guide/flows/security-maintenance.md).

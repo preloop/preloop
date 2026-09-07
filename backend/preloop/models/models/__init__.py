@@ -85,11 +85,21 @@ from .oauth_mcp_token import (
 from .budget import BudgetPolicy, BudgetSpendActivity, BudgetPeriod
 
 from .issue_lifecycle import IssueLifecycle
+from .security_maintenance import (
+    SecurityMaintenanceBaseline,
+    SecurityMaintenanceDecision,
+    SecurityMaintenanceItem,
+    SecurityMaintenanceRelease,
+)
 
 __all__ = [
     "FlowFeedback",
     "FlowThread",
     "IssueLifecycle",
+    "SecurityMaintenanceRelease",
+    "SecurityMaintenanceItem",
+    "SecurityMaintenanceDecision",
+    "SecurityMaintenanceBaseline",
     "Base",
     "Account",
     "AccountHalt",

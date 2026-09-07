@@ -2,23 +2,54 @@
 
 from typing import Generator
 import inspect
-
-import pytest
 import os
-import fastapi
-from dotenv import load_dotenv
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+import sys
+import types
+from pathlib import Path
 
-from unittest.mock import patch, MagicMock
+os.environ.setdefault("PRELOOP_DISABLE_TELEMETRY", "true")
 
-from fastapi.testclient import TestClient
 
-from preloop.api.app import create_app
-from preloop.api.auth import get_current_active_user
-from preloop.models.db.session import get_db_session as get_db
-from preloop.models.models.user import User
-from preloop.models.crud import crud_account, crud_user
+def _load_sibling_cra() -> None:
+    """Expose the contracts worker's validator without vendoring it."""
+    try:
+        import preloop.cra.validate  # noqa: F401
+
+        return
+    except ImportError:
+        pass
+    sibling = Path(
+        "/Users/dimo/git/spacecode/preloop-ee/tmp/cra-production/contracts/"
+        "backend/preloop/cra"
+    )
+    if not sibling.is_dir():
+        return
+    # Importing `preloop` here is safe: cra is not part of this clone yet.
+    import preloop
+
+    package = types.ModuleType("preloop.cra")
+    package.__path__ = [str(sibling)]
+    sys.modules["preloop.cra"] = package
+    preloop.cra = package
+
+
+_load_sibling_cra()
+
+import pytest  # noqa: E402
+import fastapi  # noqa: E402
+from dotenv import load_dotenv  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import Session  # noqa: E402
+
+from unittest.mock import patch, MagicMock  # noqa: E402
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from preloop.api.app import create_app  # noqa: E402
+from preloop.api.auth import get_current_active_user  # noqa: E402
+from preloop.models.db.session import get_db_session as get_db  # noqa: E402
+from preloop.models.models.user import User  # noqa: E402
+from preloop.models.crud import crud_account, crud_user  # noqa: E402
 
 
 async def maybe_await(result):
@@ -51,6 +82,8 @@ def pytest_configure(config):
     """
     # Set TESTING mode to skip external service connections (NATS, MCP, etc.)
     os.environ["TESTING"] = "true"
+    os.environ["PRELOOP_DISABLE_TELEMETRY"] = "true"
+    _load_sibling_cra()
 
     # Disable RBAC permission checks during unit tests
     # This ensures tests work consistently regardless of whether the EE RBAC

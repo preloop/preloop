@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Supported-release vulnerability maintenance**: opt-in product/release
+  inventory, one durable item per advisory/component, implementation then
+  human approval then re-audit before a new baseline. Completion reads
+  controller publication receipts and evidence artifacts; agent availability
+  flags, test claims, and approval JSON are not authority. Guide:
+  `docs/guide/flows/security-maintenance.md`. Presets `004`–`007` are
+  unchanged; `011` remains the generic implementer and `014` is a
+  conservative isolated-publication overlay.
+
 - **Per-flow label-based model routing**: a flow can store optional ordered
   rules in `agent_config.model_routing` that map current issue labels
   (`any` / `all`) to an account-owned model and compatible harness. The
