@@ -11,14 +11,25 @@ from preloop.models import models
 
 
 def store(
-    db: Session, *, values: dict[str, Any], quota_bytes: int
+    db: Session,
+    *,
+    values: dict[str, Any],
+    quota_bytes: int,
+    require_execution_open: bool = True,
 ) -> models.FlowArtifact:
-    """Serialize account writes and enforce retained ciphertext quota."""
+    """Serialize account writes and enforce retained ciphertext quota.
+
+    External capability PUTs pass ``require_execution_open=True``. Controller
+    retention after a terminal failure passes False so recovery artifacts can
+    still commit.
+    """
     from preloop.models.crud import crud_flow_execution
 
     # Execution row first so a terminal close cannot commit during this PUT.
-    crud_flow_execution.lock_open_for_artifact_put(
-        db, execution_id=values["execution_id"]
+    crud_flow_execution.lock_for_artifact_put(
+        db,
+        execution_id=values["execution_id"],
+        require_open=require_execution_open,
     )
     now = datetime.now()
     values.setdefault("created_at", now)

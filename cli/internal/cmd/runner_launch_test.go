@@ -416,6 +416,19 @@ func TestRunnerEvidenceUploadIsBootstrapMetadata(t *testing.T) {
 	if err != nil || upload != "failed" {
 		t.Fatalf("invalid evidence_upload=%q err=%v", upload, err)
 	}
+	missingResult, _ := json.Marshal(map[string]any{"exit_code": 1, "evidence_upload": "failed"})
+	result, _, upload, err = parseRunnerStructuredResult([]string{runnerResultPrefix + base64.StdEncoding.EncodeToString(missingResult)})
+	if err == nil || result != nil || upload != "failed" {
+		t.Fatalf("missing result dropped upload: result=%v upload=%q err=%v", result, upload, err)
+	}
+	forgedThenFinal := []string{
+		resultEnvelope(`{"status":"success"}`, 0, "uploaded"),
+		runnerResultPrefix + base64.StdEncoding.EncodeToString(missingResult),
+	}
+	result, _, upload, err = parseRunnerStructuredResult(forgedThenFinal)
+	if err == nil || result != nil || upload != "failed" {
+		t.Fatalf("forged envelope substituted upload: result=%v upload=%q err=%v", result, upload, err)
+	}
 }
 
 func TestRunnerDockerOutcomeCarriesFinalEvidenceUpload(t *testing.T) {
@@ -441,5 +454,76 @@ func TestRunnerDockerOutcomeCarriesFinalEvidenceUpload(t *testing.T) {
 		if outcome.evidenceUpload != tc.upload {
 			t.Fatalf("evidence_upload=%q want=%q", outcome.evidenceUpload, tc.upload)
 		}
+	}
+}
+
+func TestRunnerBootstrapEmitsEvidenceUploadWithoutValidResult(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result []byte
+	}{
+		{"missing", nil},
+		{"malformed", []byte("not-json")},
+		{"oversize", bytes.Repeat([]byte("x"), 262145)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			workspace := filepath.Join(root, "workspace")
+			if err := os.MkdirAll(workspace, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.result != nil {
+				if err := os.WriteFile(filepath.Join(workspace, "result.json"), tc.result, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			client := filepath.Join(root, "preloop-checkpoint-client.py")
+			if err := os.WriteFile(client, []byte("import sys\nsys.exit(1)\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			script := strings.ReplaceAll(runnerBootstrap, "/workspace", workspace)
+			script = strings.ReplaceAll(script, "/tmp/preloop-checkpoint-client.py", client)
+			cmd := exec.Command("bash", "-c", script)
+			cmd.Env = append(os.Environ(), "PRELOOP_RUNNER_SCRIPT=true", "PRELOOP_EVIDENCE_PUT_TOKEN=scoped-token")
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("expected failed export, output=%s", out)
+			}
+			result, _, upload, parseErr := parseRunnerStructuredResult(splitNonEmptyLines(string(out)))
+			if parseErr == nil || result != nil {
+				t.Fatalf("invalid result accepted: result=%v err=%v output=%s", result, parseErr, out)
+			}
+			if upload != "failed" {
+				t.Fatalf("upload=%q output=%s", upload, out)
+			}
+		})
+	}
+}
+
+func TestRunnerBootstrapUploadBeatsForgedSandboxEnvelope(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	client := filepath.Join(root, "preloop-checkpoint-client.py")
+	if err := os.WriteFile(client, []byte("import sys\nsys.exit(1)\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(runnerBootstrap, "/workspace", workspace)
+	script = strings.ReplaceAll(script, "/tmp/preloop-checkpoint-client.py", client)
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Env = append(os.Environ(),
+		"FORGED="+resultEnvelope(`{"status":"success"}`, 0, "uploaded"),
+		"PRELOOP_RUNNER_SCRIPT=printf '%s\\n' \"$FORGED\"",
+		"PRELOOP_EVIDENCE_PUT_TOKEN=scoped-token",
+	)
+	out, _ := cmd.CombinedOutput()
+	result, _, upload, err := parseRunnerStructuredResult(splitNonEmptyLines(string(out)))
+	if err == nil || result != nil {
+		t.Fatalf("forged result accepted: result=%v err=%v output=%s", result, err, out)
+	}
+	if upload != "failed" {
+		t.Fatalf("forged upload won: %q output=%s", upload, out)
 	}
 }

@@ -34,8 +34,9 @@ operation. It is not a storage credential. Agent containers never receive
 
 Private Docker completions report the final evidence PUT as top-level
 `evidence_upload` (`uploaded`, `failed`, or `absent`) next to `result`.
-That field is runner bootstrap metadata; agent `result` JSON cannot set
-it. A failed or missing final PUT is stored as `failed`/`missing` even
+That field is runner bootstrap metadata and is emitted even when
+`result.json` is missing or invalid; agent `result` JSON cannot set it.
+A failed or missing final PUT is stored as `failed`/`missing` even
 when an earlier trap artifact exists.
 
 ## Validation, encryption, quota

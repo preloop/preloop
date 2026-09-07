@@ -37,7 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   digest. Tracking: issues #268, #386. Private Docker completions carry the
   trusted bootstrap `evidence_upload` outcome (`uploaded` / `failed` /
   `absent`) outside agent JSON so a failed final PUT cannot leave a stale
-  trap artifact marked available.
+  trap artifact marked available. The upload outcome is emitted even when
+  `result.json` is missing or invalid. WebSocket complete snapshots the
+  leased job before publication close and lease clear so a direct-upload
+  flag is not lost when `pending_job` is committed to null.
 
 - **Per-flow label-based model routing**: a flow can store optional ordered
   rules in `agent_config.model_routing` that map current issue labels

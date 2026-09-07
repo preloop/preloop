@@ -3183,9 +3183,19 @@ class FlowExecutionOrchestrator:
         bytes are used only when they still match the bound artifact identity.
         """
         wanted = None
+        bound = self._terminal_bound_evidence_receipt()
         receipt = (
-            self._evidence_receipt if isinstance(self._evidence_receipt, dict) else {}
+            bound
+            if isinstance(bound, dict)
+            else (
+                self._evidence_receipt
+                if isinstance(self._evidence_receipt, dict)
+                else {}
+            )
         )
+        status = str(receipt.get("status") or "")
+        if status in {"failed", "missing", "expired"}:
+            return None
         wanted = receipt.get("artifact_id")
         cached = getattr(self, "_evidence_archive", None)
         cached_id = getattr(self, "_evidence_artifact_id", None)
@@ -3328,6 +3338,7 @@ class FlowExecutionOrchestrator:
                     execution_id=execution.id,
                     kind="evidence",
                     archive=archive,
+                    require_execution_open=False,
                 )
             except ValueError as exc:
                 self._evidence_receipt = evidence_receipt(

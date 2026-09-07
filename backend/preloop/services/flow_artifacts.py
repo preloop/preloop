@@ -243,17 +243,28 @@ def execution_is_terminal(execution: Any) -> bool:
 def trusted_evidence_upload(message: Mapping[str, Any] | None) -> str | None:
     """Final evidence PUT outcome from runner completion metadata.
 
-    Only the top-level completion field is trusted. Agent ``result`` JSON
-    cannot author this value.
+    Only a top-level string field is trusted. Agent ``result`` JSON cannot
+    author this value. Non-string JSON is ``failed``, never an exception.
     """
     if not isinstance(message, Mapping):
         return None
+    if "evidence_upload" not in message:
+        return None
     raw = message.get("evidence_upload")
-    if raw in EVIDENCE_UPLOAD_OUTCOMES:
-        return str(raw)
+    if isinstance(raw, str) and raw in EVIDENCE_UPLOAD_OUTCOMES:
+        return raw
     if raw is None or raw == "":
         return None
     return "failed"
+
+
+def job_requires_evidence_upload(pending_job: Mapping[str, Any] | None) -> bool:
+    """True when this lease was configured for direct evidence upload."""
+    if not isinstance(pending_job, Mapping):
+        return False
+    if pending_job.get("completion_protocol") == "host_exec":
+        return False
+    return pending_job.get("evidence_direct_upload") is True
 
 
 def _bound_evidence_artifact(
@@ -589,8 +600,13 @@ def put_artifact(
     execution_id: UUID,
     kind: ArtifactKind,
     archive: bytes,
+    require_execution_open: bool = True,
 ) -> ArtifactReference:
-    """Validate and atomically commit encrypted bytes and metadata."""
+    """Validate and atomically commit encrypted bytes and metadata.
+
+    Capability PUTs keep ``require_execution_open=True``. Controller-owned
+    retention after a failed run passes False.
+    """
     expanded = validate_archive(
         archive,
         max_bytes=artifact_max_bytes(kind),
@@ -654,6 +670,7 @@ def put_artifact(
             ),
         },
         quota_bytes=settings.flow_artifact_account_quota_bytes,
+        require_execution_open=require_execution_open,
     )
     return artifact_reference(artifact)
 

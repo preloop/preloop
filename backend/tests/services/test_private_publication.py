@@ -387,12 +387,19 @@ def test_lease_requires_ready_publication_helper(case, capable):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("direct_evidence", [False, True])
 @pytest.mark.parametrize(
     "ending", ["success", "FAILED", "STOPPED", "disconnect", "unregister", "forged"]
 )
 async def test_real_ws_protocol_and_all_terminal_credential_paths(
-    case, ending, monkeypatch
+    case, ending, monkeypatch, direct_evidence
 ):
+    if direct_evidence:
+        case.runner.pending_job = {
+            **case.runner.pending_job,
+            "evidence_direct_upload": True,
+        }
+        case.db.commit()
     frames = []
     requests = []
     initial_job = {
@@ -499,6 +506,9 @@ async def test_real_ws_protocol_and_all_terminal_credential_paths(
     )
     await runners.runner_ws(websocket, case.runner.id, case.db)
     case.db.refresh(case.execution)
+    if direct_evidence and ending in {"success", "FAILED", "STOPPED", "forged"}:
+        assert case.execution.evidence_receipt["status"] == "failed"
+        assert case.execution.evidence_receipt["error"] == "evidence_upload_failed"
     if ending == "success":
         assert case.execution.status == "SUCCEEDED"
         assert ("online", None) in case.events
