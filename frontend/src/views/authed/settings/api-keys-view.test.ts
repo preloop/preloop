@@ -532,6 +532,42 @@ describe('ApiKeysView', () => {
     expect(bodyTop(), 'clearing moved the key rows').to.equal(before);
   });
 
+  it('anchors the bar to a block every engine positions against', async () => {
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'API keys view did not finish loading'
+    );
+    element.selection.toggle('key-1');
+    await element.updateComplete;
+    await nextFrame();
+
+    // WebKit does not treat a positioned table section as a containing block,
+    // so a bar anchored to the thead escapes to the viewport there. It hangs
+    // off a plain wrapper around the table instead.
+    const overlay =
+      element.shadowRoot!.querySelector<HTMLElement>('.head-bulk-bar')!;
+    expect(overlay.closest('table'), 'the bar sits outside the table').to.equal(
+      null
+    );
+    expect(
+      (overlay.offsetParent as HTMLElement | null)?.classList.contains(
+        'table-shell'
+      ),
+      'the wrapper is what positions the bar'
+    ).to.equal(true);
+
+    // And it still covers the header row it stands in for.
+    const head = element
+      .shadowRoot!.querySelector('thead')!
+      .getBoundingClientRect();
+    const bar = overlay.getBoundingClientRect();
+    expect(Math.round(bar.top)).to.equal(Math.round(head.top));
+    expect(Math.round(bar.width)).to.equal(Math.round(head.width));
+  });
+
   it('renders Agent badge when managed_agent_id is present', async () => {
     fetchStub.restore();
     fetchStub = sinon.stub(window, 'fetch');
