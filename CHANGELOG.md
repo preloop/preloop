@@ -46,6 +46,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leased job before publication close and lease clear so a direct-upload
   flag is not lost when `pending_job` is committed to null.
 
+- **Product/release provenance mapping and isolated multi-repo publication**:
+  optional `product_provenance` (`preloop.cra.product_provenance/v1`) names
+  a supported release, build, SBOM digest, and constituent repos+SHAs.
+  Product-mode audits reject duplicate, ambiguous, unauthorized, or
+  mismatched mappings against pinned, then observed, checkout SHAs and
+  supplied artifact bytes. A moving branch tip is not a verified checkout.
+  Agent-written SHAs are declarations, not build attestation. A
+  deterministic dossier manifest records raw versus annotated result
+  digests and a `kind=evidence` receipt. Hosted and private isolated
+  publication can publish the CRA code-repos-plus-compliance-repo topology
+  with per-repo receipts; resume keeps branch/base/head history; local
+  commits and partial remotes are not success. Optional
+  `git_clone_config.publication_approval` binds a human platform approval
+  to each frozen candidate `(repository, branch, base, head_sha)` before
+  any writer lease is minted. A missing saved execution or flow, or an
+  unreadable clone config, refuses the lease instead of treating absence
+  as opt-out. Human decisions have `auto_approved_reason is None`. Default
+  flows without that opt-in are unchanged. Guide:
+  `docs/guide/flows/product-evidence.md`.
+
+
 - **Per-flow label-based model routing**: a flow can store optional ordered
   rules in `agent_config.model_routing` that map current issue labels
   (`any` / `all`) to an account-owned model and compatible harness. The

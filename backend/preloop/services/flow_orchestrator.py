@@ -2238,6 +2238,8 @@ class FlowExecutionOrchestrator:
                     self.db, self.flow, self._isolated_publication_policy
                 )
 
+        self._verify_product_provenance_record()
+
         # Isolated mode never resolves the existing broad tracker token.
         if self.flow.git_clone_config and self._isolated_publication_policy is None:
             repositories = self.flow.git_clone_config.get("repositories", [])
@@ -5087,19 +5089,33 @@ class FlowExecutionOrchestrator:
 
     async def _persist_isolated_recovery(self) -> None:
         """Keep the original runtime unless recoverable work is durably saved."""
+        from preloop.services.multi_repo_publication import (
+            is_multi_repo_policy,
+            policy_targets,
+            read_named_publication_bundles,
+        )
         from preloop.services.publication_worker import inspect_bundle
-        from preloop.services.trusted_publisher import read_publication_bundle
+        from preloop.services.trusted_publisher import (
+            PublicationError,
+            read_publication_bundle,
+        )
 
         archive = getattr(self, "_evidence_archive", None)
         workspace = getattr(self, "_workspace_snapshot", None)
+        policy = getattr(self, "_isolated_publication_policy", None)
         if workspace is None:
-            # A valid self-contained Git bundle can preserve committed work
-            # when the full workspace exceeds its capture budget.
-            await asyncio.to_thread(
-                inspect_bundle,
-                read_publication_bundle(archive or b""),
-                self._isolated_publication_policy.base_sha,
-            )
+            if policy is None:
+                raise PublicationError("Isolated recovery has no publication policy")
+            targets = policy_targets(policy)
+            if is_multi_repo_policy(policy):
+                bundles = read_named_publication_bundles(archive or b"", targets)
+                for target in targets:
+                    inspect_bundle(bundles[target.slug], target.base_sha)
+            else:
+                inspect_bundle(
+                    read_publication_bundle(archive or b""),
+                    policy.base_sha,
+                )
         crud_flow_execution.capture_publication_recovery(
             self.db, db_obj=self.execution_log, archive=archive, workspace=workspace
         )
@@ -5108,19 +5124,223 @@ class FlowExecutionOrchestrator:
             {"execution_id": str(self.execution_log.id)},
         )
 
+    def _product_runtime_facts(self) -> Any:
+        """Trusted checkout URLs/SHAs and supplied SBOM bytes for mapping checks."""
+        from preloop.services.multi_repo_publication import policy_targets
+        from preloop.services.product_provenance import (
+            RuntimeProvenanceFacts,
+            extract_product_provenance_payload,
+            facts_from_git_clone_config,
+            facts_from_workspace_files,
+        )
+
+        mapping = extract_product_provenance_payload(
+            getattr(self, "trigger_event_data", None)
+        )
+        sbom_path = None
+        if isinstance(mapping, dict):
+            sbom = mapping.get("sbom")
+            if isinstance(sbom, dict) and isinstance(sbom.get("path"), str):
+                sbom_path = sbom["path"]
+        sbom_bytes, observed_path = (None, None)
+        if mapping is not None:
+            sbom_bytes, observed_path = facts_from_workspace_files(
+                getattr(self, "trigger_event_data", None), sbom_path=sbom_path
+            )
+        git_config: dict[str, Any] = {}
+        flow = getattr(self, "flow", None)
+        if flow is not None and isinstance(flow.git_clone_config, dict):
+            git_config = dict(flow.git_clone_config)
+        policy = getattr(self, "_isolated_publication_policy", None)
+        clone_shas: dict[str, str] = {}
+        requested_pins: dict[str, str] = {}
+        if policy is not None:
+            from preloop.services.multi_repo_publication import observed_checkout_shas
+
+            archive = getattr(self, "_evidence_archive", None)
+            if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
+                clone_shas = observed_checkout_shas(policy, bytes(archive))
+            for target in policy_targets(policy):
+                if target.base_sha:
+                    requested_pins[target.repository_url] = target.base_sha
+            if getattr(policy, "targets", None):
+                git_config["repositories"] = [
+                    {
+                        "repository_url": target.repository_url,
+                        "clone_path": target.clone_path,
+                    }
+                    for target in policy_targets(policy)
+                ]
+        remotes, paths, _configured = facts_from_git_clone_config(
+            git_config, clone_shas=clone_shas
+        )
+        return RuntimeProvenanceFacts(
+            authorized_remotes=remotes,
+            clone_paths=paths,
+            clone_shas=clone_shas,
+            sbom_bytes=sbom_bytes,
+            sbom_path=observed_path,
+            requested_pins=requested_pins,
+        )
+
+    def _verify_product_provenance_record(
+        self, *, require_observed: bool = False
+    ) -> Any:
+        """Validate optional product mapping against trusted facts. None if unused."""
+        from preloop.services.product_provenance import (
+            ProductProvenanceError,
+            extract_product_provenance_payload,
+            validate_product_provenance,
+        )
+        from preloop.services.trusted_publisher import PublicationError
+
+        if getattr(self, "flow", None) is None:
+            return None
+        mapping = extract_product_provenance_payload(
+            getattr(self, "trigger_event_data", None)
+        )
+        facts = self._product_runtime_facts()
+        try:
+            return validate_product_provenance(
+                mapping, facts, require_observed=require_observed
+            )
+        except ProductProvenanceError as exc:
+            raise PublicationError(str(exc)) from exc
+
+    def _product_evidence_opt_in(
+        self,
+        agent_result: Dict[str, Any] | None = None,
+        *,
+        provenance: Any = None,
+        publication: Dict[str, Any] | None = None,
+    ) -> bool:
+        """Dossier and approval reads only for mapping, CRA, or explicit context."""
+        if provenance is not None or publication:
+            return True
+        if getattr(self, "_isolated_publication_policy", None) is not None:
+            return True
+        from preloop.services.product_provenance import (
+            extract_product_provenance_payload,
+        )
+
+        if extract_product_provenance_payload(
+            getattr(self, "trigger_event_data", None)
+        ):
+            return True
+        raw = agent_result.get("result") if isinstance(agent_result, dict) else None
+        if isinstance(raw, dict) and str(raw.get("schema") or "").startswith(
+            "preloop.cra."
+        ):
+            return True
+        context = getattr(self, "_product_evidence_context", None)
+        return isinstance(context, dict) and bool(context.get("product_evidence"))
+
+    def _attach_product_evidence_records(
+        self,
+        agent_result: Dict[str, Any],
+        *,
+        provenance: Any = None,
+        publication: Dict[str, Any] | None = None,
+    ) -> None:
+        """Write control-plane provenance and dossier; never trust agent copies."""
+        from uuid import UUID
+
+        from preloop.services.flow_artifacts import (
+            EvidenceUnavailableError,
+            load_evidence,
+        )
+        from preloop.services.product_dossier import (
+            build_dossier_manifest,
+            strip_control_plane_result,
+        )
+
+        if getattr(self, "flow", None) is None:
+            return
+        if not self._product_evidence_opt_in(
+            agent_result, provenance=provenance, publication=publication
+        ):
+            return
+        raw_result = strip_control_plane_result(dict(agent_result.get("result") or {}))
+        result = dict(raw_result)
+        if provenance is not None:
+            result["product_provenance"] = provenance.as_dict()
+        execution_id = str(
+            getattr(self, "execution_id", None)
+            or getattr(getattr(self, "execution_log", None), "id", "")
+            or ""
+        )
+        approvals: list[Any] = []
+        evidence_receipt: dict[str, Any] | None = None
+        execution = getattr(self, "execution_log", None)
+        if execution_id:
+            from preloop.models.crud import crud_approval_request
+
+            approvals = crud_approval_request.get_multi_by_execution(
+                self.db,
+                execution_id=execution_id,
+                account_id=str(self.flow.account_id),
+            )
+        if execution is not None:
+            try:
+                _, evidence_receipt = load_evidence(
+                    self.db,
+                    account_id=UUID(str(self.flow.account_id)),
+                    execution=execution,
+                )
+            except EvidenceUnavailableError as exc:
+                evidence_receipt = exc.receipt
+        artifacts = result.get("artifacts")
+        dossier = build_dossier_manifest(
+            execution_id=execution_id,
+            result=result,
+            provenance=provenance,
+            artifact_refs=artifacts if isinstance(artifacts, dict) else {},
+            approvals=approvals,
+            publication=publication,
+            evidence_receipt=evidence_receipt,
+            raw_result=raw_result,
+        )
+        result["dossier_manifest"] = dossier
+        agent_result["result"] = result
+
     async def _finish_isolated_publication(self, agent_result: Dict[str, Any]) -> None:
         """Run trusted publication after runtime cleanup; failure changes status."""
-        policy = getattr(self, "_isolated_publication_policy", None)
-        if policy is None:
+        if not self._product_evidence_opt_in(agent_result):
             return
         reported_result = agent_result.get("result")
         if isinstance(reported_result, dict):
             reported_result = dict(reported_result)
             reported_result.pop("trusted_publication", None)
             reported_result.pop("_private_publication", None)
+            reported_result.pop("product_provenance", None)
+            reported_result.pop("dossier_manifest", None)
             agent_result["result"] = reported_result
+        provenance = None
+        from preloop.services.trusted_publisher import PublicationError
+
+        try:
+            provenance = self._verify_product_provenance_record(
+                require_observed=getattr(self, "_isolated_publication_policy", None)
+                is not None
+            )
+        except PublicationError as exc:
+            if agent_result.get("status") == "SUCCEEDED":
+                agent_result["status"] = "FAILED"
+                agent_result["error_message"] = str(exc)
+                if getattr(self, "execution_logger", None) is not None:
+                    self.execution_logger.log_milestone(
+                        "product_provenance_failed", {"reason": str(exc)}
+                    )
+        self._attach_product_evidence_records(agent_result, provenance=provenance)
+        policy = getattr(self, "_isolated_publication_policy", None)
+        if policy is None:
+            return
         import httpx
         from preloop.services.isolated_publication import finish_isolated_publication
+        from preloop.services.multi_repo_publication import (
+            IncompleteMultiRepoPublicationError,
+            is_multi_repo_policy,
+        )
         from preloop.services.publication_credentials import revoke_repository_lease
         from preloop.services.trusted_publisher import PublicationError
 
@@ -5159,40 +5379,73 @@ class FlowExecutionOrchestrator:
                 if executor is None:
                     raise PublicationError("Missing trusted verifier runtime adapter")
                 try:
-                    verified = await verify_hosted_publication(
-                        executor,
-                        policy,
-                        read_publication_bundle(self._evidence_archive or b""),
-                    )
-                    self._publication_verification = verified.verification
-                    self.execution_logger.log_milestone(
-                        "trusted_verification_succeeded",
-                        {
-                            "manifest": verified.manifest,
-                            "checks": list(verified.checks),
-                            "image": verified.image,
-                        },
-                    )
+                    if is_multi_repo_policy(policy):
+
+                        async def verify(target_policy: Any, bundle: bytes) -> Any:
+                            return await verify_hosted_publication(
+                                executor, target_policy, bundle
+                            )
+
+                        publication = await finish_isolated_publication(
+                            self.db,
+                            policy,
+                            agent_result,
+                            self._evidence_archive,
+                            None,
+                            verify=verify,
+                        )
+                    else:
+                        verified = await verify_hosted_publication(
+                            executor,
+                            policy,
+                            read_publication_bundle(self._evidence_archive or b""),
+                        )
+                        self._publication_verification = verified.verification
+                        self.execution_logger.log_milestone(
+                            "trusted_verification_succeeded",
+                            {
+                                "manifest": verified.manifest,
+                                "checks": list(verified.checks),
+                                "image": verified.image,
+                            },
+                        )
+                        publication = await finish_isolated_publication(
+                            self.db,
+                            policy,
+                            agent_result,
+                            self._evidence_archive,
+                            getattr(self, "_publication_verification", None),
+                        )
                 finally:
                     await executor.cleanup()
-                publication = await finish_isolated_publication(
-                    self.db,
-                    policy,
-                    agent_result,
-                    self._evidence_archive,
-                    getattr(self, "_publication_verification", None),
-                )
             result = dict(agent_result.get("result") or {})
             result["trusted_publication"] = publication
             agent_result["result"] = result
             self._opened_pr = publication
+            self._attach_product_evidence_records(
+                agent_result, provenance=provenance, publication=publication
+            )
             self.execution_logger.log_milestone(
                 "trusted_publication_succeeded",
                 {
-                    "url": publication["url"],
-                    "head_sha": publication["head_sha"],
+                    "url": publication.get("url"),
+                    "head_sha": publication.get("head_sha"),
+                    "complete": publication.get("complete", True),
                     "metadata_warnings": publication.get("metadata_warnings", []),
                 },
+            )
+        except IncompleteMultiRepoPublicationError as exc:
+            agent_result["status"] = "FAILED"
+            agent_result["error_message"] = str(exc)
+            result = dict(agent_result.get("result") or {})
+            result["trusted_publication"] = exc.receipt
+            agent_result["result"] = result
+            self._attach_product_evidence_records(
+                agent_result, provenance=provenance, publication=exc.receipt
+            )
+            self.execution_logger.log_milestone(
+                "trusted_publication_failed",
+                {"reason": str(exc), "receipt": exc.receipt},
             )
         except PublicationError as exc:
             agent_result["status"] = "FAILED"
@@ -5206,15 +5459,19 @@ class FlowExecutionOrchestrator:
                 failure["verification"] = exc.evidence
             self.execution_logger.log_milestone("trusted_publication_failed", failure)
         finally:
-            if policy.read_lease is not None:
+            leases = tuple(getattr(policy, "read_leases", ()) or ())
+            if not leases and getattr(policy, "read_lease", None) is not None:
+                leases = (policy.read_lease,)
+            if leases:
                 async with httpx.AsyncClient() as client:
-                    try:
-                        await revoke_repository_lease(policy.read_lease, client)
-                    except PublicationError as exc:
-                        self.execution_logger.log_milestone(
-                            "publication_credential_revocation_failed",
-                            {"reason": str(exc)},
-                        )
+                    for lease in leases:
+                        try:
+                            await revoke_repository_lease(lease, client)
+                        except PublicationError as exc:
+                            self.execution_logger.log_milestone(
+                                "publication_credential_revocation_failed",
+                                {"reason": str(exc)},
+                            )
 
     async def run(self):
         """

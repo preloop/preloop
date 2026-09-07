@@ -103,17 +103,28 @@ func publicationHeartbeat() map[string]any {
 	return map[string]any{"type": "heartbeat", "publication_capabilities": capabilities}
 }
 
+type publicationTargetSpec struct {
+	RepositoryURL     string  `json:"repository_url"`
+	ClonePath         string  `json:"clone_path"`
+	Role              string  `json:"role"`
+	Branch            string  `json:"branch"`
+	Base              string  `json:"base"`
+	BaseSHA           string  `json:"base_sha"`
+	ExpectedRemoteSHA *string `json:"expected_remote_sha"`
+}
+
 type publicationLeaseSpec struct {
-	Version                   int     `json:"version"`
-	Nonce                     string  `json:"nonce"`
-	Phase                     string  `json:"phase"`
-	RepositoryURL             string  `json:"repository_url"`
-	Branch                    string  `json:"branch"`
-	Base                      string  `json:"base"`
-	BaseSHA                   string  `json:"base_sha"`
-	ExpectedRemoteSHA         *string `json:"expected_remote_sha"`
-	VerificationImage         string  `json:"verification_image"`
-	VerificationBudgetSeconds int     `json:"verification_budget_seconds"`
+	Version                   int                      `json:"version"`
+	Nonce                     string                   `json:"nonce"`
+	Phase                     string                   `json:"phase"`
+	RepositoryURL             string                   `json:"repository_url"`
+	Branch                    string                   `json:"branch"`
+	Base                      string                   `json:"base"`
+	BaseSHA                   string                   `json:"base_sha"`
+	ExpectedRemoteSHA         *string                  `json:"expected_remote_sha"`
+	VerificationImage         string                   `json:"verification_image"`
+	VerificationBudgetSeconds int                      `json:"verification_budget_seconds"`
+	Targets                   []publicationTargetSpec  `json:"targets"`
 }
 type publicationManifest struct {
 	Version      int      `json:"version"`
@@ -176,6 +187,18 @@ func publicationFromJob(job map[string]any, opts runnerDockerOpts) (*runnerPubli
 	}
 	if spec.ExpectedRemoteSHA != nil && !publicationSHA.MatchString(*spec.ExpectedRemoteSHA) {
 		return nil, errors.New("invalid publication remote revision")
+	}
+	if len(spec.Targets) > 1 {
+		seen := map[string]bool{}
+		for _, target := range spec.Targets {
+			if target.ClonePath == "" || strings.ContainsAny(target.ClonePath, "/\\") || seen[target.ClonePath] {
+				return nil, errors.New("multi-repo publication requires unique clone_path bindings")
+			}
+			seen[target.ClonePath] = true
+			if target.RepositoryURL == "" || target.Branch == "" || target.Base == "" || !publicationSHA.MatchString(target.BaseSHA) {
+				return nil, errors.New("invalid publication target binding")
+			}
+		}
 	}
 	repository, err := url.Parse(spec.RepositoryURL)
 	if err != nil || repository.Scheme != "https" || repository.Hostname() == "" || repository.User != nil || repository.RawQuery != "" || repository.Fragment != "" {
@@ -471,101 +494,132 @@ func (p *runnerPublication) run(agentSucceeded bool) error {
 	// This deadline includes remote replies, not only Docker subprocesses.
 	timer := time.AfterFunc(time.Duration(p.spec.VerificationBudgetSeconds)*time.Second+120*time.Second, p.cancel)
 	defer timer.Stop()
-	if _, err := publicationDocker(ctx, nil, "volume", "create", "--label", "preloop.publication_execution="+p.executionID, p.frozenVolume); err != nil {
-		return errors.New("publication frozen volume creation failed")
+	targets := p.spec.Targets
+	if len(targets) == 0 {
+		targets = []publicationTargetSpec{{
+			RepositoryURL:     p.spec.RepositoryURL,
+			Branch:            p.spec.Branch,
+			Base:              p.spec.Base,
+			BaseSHA:           p.spec.BaseSHA,
+			ExpectedRemoteSHA: p.spec.ExpectedRemoteSHA,
+		}}
 	}
-	p.frozenCreated = true
-	input, _ := json.Marshal(map[string]any{"base_sha": p.spec.BaseSHA})
-	output, err := p.runContainer(ctx, "freeze", p.helperImage, input, []string{"type=volume,src=" + p.exportVolume + ",dst=/source,readonly", "type=volume,src=" + p.frozenVolume + ",dst=/input"}, []string{"python", "-m", "preloop.services.publication_worker", "freeze"}, false)
-	if err != nil {
-		return err
-	}
-	if json.Unmarshal(output, &p.manifest) != nil || p.manifest.Version != 1 || !publicationSHA.MatchString(p.manifest.HeadSHA) || !publicationSHA.MatchString(p.manifest.TreeSHA) || !publicationDigestRE.MatchString(p.manifest.BundleSHA256) || len(p.manifest.ChangedFiles) > 10000 {
-		return errors.New("invalid frozen publication manifest")
-	}
-	p.frozenReady = true
-	if err := p.removeVolume(p.exportVolume); err != nil {
-		return err
-	}
-	p.exportVolume = ""
-	candidate := p.envelope("publication_candidate")
-	candidate["changed_files"] = p.manifest.ChangedFiles
-	verify, err := p.awaitPhase("publication_verify", candidate)
-	if err != nil {
-		return err
-	}
-	if verify.Image != p.spec.VerificationImage || verify.BudgetSeconds < 1 || verify.BudgetSeconds > p.spec.VerificationBudgetSeconds || len(verify.Checks) == 0 || len(verify.Checks) > 100 {
-		return errors.New("publication verification policy is missing or does not match trusted lease")
-	}
-	verificationCtx, stopChecks := context.WithTimeout(ctx, time.Duration(verify.BudgetSeconds)*time.Second)
-	defer stopChecks()
-	seen := map[string]bool{}
-	checks := make([]publicationCheck, 0, len(verify.Checks))
-	for _, check := range verify.Checks {
-		if check.ID == "" || len(check.ID) > 200 || seen[check.ID] || check.Command == "" || len(check.Command) > 32768 || check.TimeoutSeconds < 1 || check.TimeoutSeconds > 3600 {
-			return errors.New("invalid publication verification check")
+	for index, target := range targets {
+		if target.RepositoryURL == "" || target.Branch == "" || target.Base == "" || !publicationSHA.MatchString(target.BaseSHA) {
+			return errors.New("invalid publication target binding")
 		}
-		seen[check.ID] = true
-		checkCtx, stop := context.WithTimeout(verificationCtx, time.Duration(check.TimeoutSeconds)*time.Second)
-		script := publicationVerifierScript(p.manifest.HeadSHA, check.Command)
-		_, err = p.runContainer(checkCtx, "verify", verify.Image, []byte(script), []string{"type=volume,src=" + p.frozenVolume + ",dst=/input,readonly"}, []string{"/bin/bash", "-se"}, false)
-		stop()
+		p.spec.RepositoryURL = target.RepositoryURL
+		p.spec.Branch = target.Branch
+		p.spec.Base = target.Base
+		p.spec.BaseSHA = target.BaseSHA
+		p.spec.ExpectedRemoteSHA = target.ExpectedRemoteSHA
+		if _, err := publicationDocker(ctx, nil, "volume", "create", "--label", "preloop.publication_execution="+p.executionID, p.frozenVolume); err != nil {
+			return errors.New("publication frozen volume creation failed")
+		}
+		p.frozenCreated = true
+		freezeReq := map[string]any{"base_sha": target.BaseSHA}
+		if target.ClonePath != "" && len(targets) > 1 {
+			freezeReq["clone_path"] = target.ClonePath
+		}
+		input, _ := json.Marshal(freezeReq)
+		output, err := p.runContainer(ctx, "freeze", p.helperImage, input, []string{"type=volume,src=" + p.exportVolume + ",dst=/source,readonly", "type=volume,src=" + p.frozenVolume + ",dst=/input"}, []string{"python", "-m", "preloop.services.publication_worker", "freeze"}, false)
 		if err != nil {
 			return err
 		}
-		check.ExitCode = 0
-		checks = append(checks, check)
-	}
-	if err := p.volumeUnused(p.frozenVolume); err != nil {
-		return err
-	}
-	verified := p.envelope("publication_verified")
-	verified["checks"] = checks
-	verified["agent_removed"] = true
-	verified["verifiers_removed"] = true
-	publish, err := p.awaitPhase("publication_publish", verified)
-	if err != nil {
-		return err
-	}
-	defer func() {
+		if json.Unmarshal(output, &p.manifest) != nil || p.manifest.Version != 1 || !publicationSHA.MatchString(p.manifest.HeadSHA) || !publicationSHA.MatchString(p.manifest.TreeSHA) || !publicationDigestRE.MatchString(p.manifest.BundleSHA256) || len(p.manifest.ChangedFiles) > 10000 {
+			return errors.New("invalid frozen publication manifest")
+		}
+		p.frozenReady = true
+		if index == len(targets)-1 {
+			if err := p.removeVolume(p.exportVolume); err != nil {
+				return err
+			}
+			p.exportVolume = ""
+		}
+		candidate := p.envelope("publication_candidate")
+		candidate["changed_files"] = p.manifest.ChangedFiles
+		candidate["repository_url"] = target.RepositoryURL
+		verify, err := p.awaitPhase("publication_verify", candidate)
+		if err != nil {
+			return err
+		}
+		if verify.Image != p.spec.VerificationImage || verify.BudgetSeconds < 1 || verify.BudgetSeconds > p.spec.VerificationBudgetSeconds || len(verify.Checks) == 0 || len(verify.Checks) > 100 {
+			return errors.New("publication verification policy is missing or does not match trusted lease")
+		}
+		verificationCtx, stopChecks := context.WithTimeout(ctx, time.Duration(verify.BudgetSeconds)*time.Second)
+		seen := map[string]bool{}
+		checks := make([]publicationCheck, 0, len(verify.Checks))
+		for _, check := range verify.Checks {
+			if check.ID == "" || len(check.ID) > 200 || seen[check.ID] || check.Command == "" || len(check.Command) > 32768 || check.TimeoutSeconds < 1 || check.TimeoutSeconds > 3600 {
+				stopChecks()
+				return errors.New("invalid publication verification check")
+			}
+			seen[check.ID] = true
+			checkCtx, stop := context.WithTimeout(verificationCtx, time.Duration(check.TimeoutSeconds)*time.Second)
+			script := publicationVerifierScript(p.manifest.HeadSHA, check.Command)
+			_, err = p.runContainer(checkCtx, "verify", verify.Image, []byte(script), []string{"type=volume,src=" + p.frozenVolume + ",dst=/input,readonly"}, []string{"/bin/bash", "-se"}, false)
+			stop()
+			if err != nil {
+				stopChecks()
+				return err
+			}
+			check.ExitCode = 0
+			checks = append(checks, check)
+		}
+		stopChecks()
+		if err := p.volumeUnused(p.frozenVolume); err != nil {
+			return err
+		}
+		verified := p.envelope("publication_verified")
+		verified["checks"] = checks
+		verified["agent_removed"] = true
+		verified["verifiers_removed"] = true
+		verified["repository_url"] = target.RepositoryURL
+		publish, err := p.awaitPhase("publication_publish", verified)
+		if err != nil {
+			return err
+		}
+		if err = p.validateWriteReply(publish); err != nil {
+			if publish.Lease != nil {
+				delete(publish.Lease, "token")
+			}
+			return err
+		}
+		payload, err := publicationPublishInput(publish.Binding, publish.Lease, p.manifest.BundleSHA256)
+		if err != nil {
+			return errors.New("invalid publication helper request")
+		}
+		expiry, _ := time.Parse(time.RFC3339Nano, publish.Lease["expires_at"].(string))
+		publishCtx, stopPublish := context.WithDeadline(ctx, expiry)
+		output, err = p.runContainer(publishCtx, "publish", p.helperImage, payload, []string{"type=volume,src=" + p.frozenVolume + ",dst=/input,readonly"}, []string{"python", "-m", "preloop.services.publication_worker", "publish"}, true)
+		stopPublish()
+		for i := range payload {
+			payload[i] = 0
+		}
 		if publish.Lease != nil {
 			delete(publish.Lease, "token")
 		}
-	}()
-	if err = p.validateWriteReply(publish); err != nil {
-		return err
-	}
-	payload, err := publicationPublishInput(publish.Binding, publish.Lease, p.manifest.BundleSHA256)
-	if err != nil {
-		return errors.New("invalid publication helper request")
-	}
-	expiry, _ := time.Parse(time.RFC3339Nano, publish.Lease["expires_at"].(string))
-	publishCtx, stopPublish := context.WithDeadline(ctx, expiry)
-	output, err = p.runContainer(publishCtx, "publish", p.helperImage, payload, []string{"type=volume,src=" + p.frozenVolume + ",dst=/input,readonly"}, []string{"python", "-m", "preloop.services.publication_worker", "publish"}, true)
-	stopPublish()
-	for i := range payload {
-		payload[i] = 0
-	}
-	if err != nil {
-		return err
-	}
-	var receipt map[string]any
-	if json.Unmarshal(output, &receipt) != nil || receipt["head_sha"] != p.manifest.HeadSHA || receipt["branch"] != p.spec.Branch {
-		return errors.New("invalid publication receipt")
-	}
-	if token, _ := publish.Lease["token"].(string); token != "" && bytes.Contains(output, []byte(token)) {
-		return errors.New("unsafe publication receipt")
-	}
-	delete(publish.Lease, "token")
-	completed := p.envelope("publication_complete")
-	completed["publication"] = receipt
-	if _, err = p.awaitPhase("publication_ack", completed); err != nil {
-		return err
-	}
-	if err = p.removeVolume(p.frozenVolume); err != nil {
-		_, _ = p.retainRecovery()
-	} else {
-		p.frozenVolume = ""
+		if err != nil {
+			return err
+		}
+		var receipt map[string]any
+		if json.Unmarshal(output, &receipt) != nil || receipt["head_sha"] != p.manifest.HeadSHA || receipt["branch"] != p.spec.Branch {
+			return errors.New("invalid publication receipt")
+		}
+		if token, _ := publish.Lease["token"].(string); token != "" && bytes.Contains(output, []byte(token)) {
+			return errors.New("unsafe publication receipt")
+		}
+		completed := p.envelope("publication_complete")
+		completed["publication"] = receipt
+		completed["repository_url"] = target.RepositoryURL
+		if _, err = p.awaitPhase("publication_ack", completed); err != nil {
+			return err
+		}
+		if err = p.removeVolume(p.frozenVolume); err != nil {
+			_, _ = p.retainRecovery()
+			return err
+		}
+		p.frozenReady = false
 	}
 	return nil
 }

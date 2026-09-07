@@ -280,6 +280,75 @@ func TestPublicationCompleteOnlyAfterRemovalVerificationAndAck(t *testing.T) {
 		}
 	}
 }
+func TestPublicationMultiRepoFreezePassesClonePath(t *testing.T) {
+	p, fake := setupPublication(t)
+	p.spec.Targets = []publicationTargetSpec{
+		{RepositoryURL: "https://github.com/example/firmware.git", ClonePath: "firmware", Branch: "implementation", Base: "main", BaseSHA: strings.Repeat("e", 40)},
+		{RepositoryURL: "https://github.com/example/companion-app.git", ClonePath: "companion-app", Branch: "implementation", Base: "release", BaseSHA: strings.Repeat("a", 40)},
+		{RepositoryURL: "https://github.com/example/product-compliance.git", ClonePath: "compliance", Role: "compliance", Branch: "implementation", Base: "docs", BaseSHA: strings.Repeat("b", 40)},
+	}
+	done := make(chan []string, 1)
+	go func() {
+		var seen []string
+		completes := 0
+		for {
+			select {
+			case event := <-p.events:
+				if event.message == nil {
+					continue
+				}
+				kind := event.message["type"].(string)
+				seen = append(seen, kind)
+				replyKind := map[string]string{"publication_candidate": "publication_verify", "publication_verified": "publication_publish", "publication_complete": "publication_ack"}[kind]
+				reply := publicationReply(p, replyKind)
+				if reply.Type == "publication_publish" {
+					reply.Binding["repository_url"] = p.spec.RepositoryURL
+					reply.Lease["repository_url"] = p.spec.RepositoryURL
+				}
+				_ = p.accept(reply)
+				if kind == "publication_complete" {
+					completes++
+					if completes == 3 {
+						done <- seen
+						return
+					}
+				}
+			case <-p.ctx.Done():
+				done <- seen
+				return
+			}
+		}
+	}()
+	if err := p.run(true); err != nil {
+		t.Fatal(err)
+	}
+	seen := <-done
+	if strings.Count(strings.Join(seen, ","), "publication_candidate") != 3 {
+		t.Fatal(seen)
+	}
+	var freezeInputs []map[string]any
+	for i, args := range fake.calls {
+		if args[0] != "run" || args[len(args)-1] != "freeze" {
+			continue
+		}
+		var request map[string]any
+		if json.Unmarshal(fake.inputs[i], &request) != nil {
+			t.Fatal("freeze stdin")
+		}
+		freezeInputs = append(freezeInputs, request)
+	}
+	if len(freezeInputs) != 3 {
+		t.Fatalf("freeze count %d", len(freezeInputs))
+	}
+	clones := []string{}
+	for _, request := range freezeInputs {
+		clone, _ := request["clone_path"].(string)
+		clones = append(clones, clone)
+	}
+	if strings.Join(clones, ",") != "firmware,companion-app,compliance" {
+		t.Fatal(clones)
+	}
+}
 func TestPublicationRefusesUnprovenRemoval(t *testing.T) {
 	for _, kind := range []string{"failed", "delayed", "residual"} {
 		t.Run(kind, func(t *testing.T) {

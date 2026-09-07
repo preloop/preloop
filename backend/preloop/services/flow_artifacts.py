@@ -26,6 +26,8 @@ RESERVED_RESULT_FIELDS = (
     "trusted_publication",
     "_private_publication",
     "evidence_upload",
+    "product_provenance",
+    "dossier_manifest",
 )
 EVIDENCE_UPLOAD_OUTCOMES = frozenset({"uploaded", "failed", "absent"})
 TERMINAL_EXECUTION_STATUSES = frozenset(

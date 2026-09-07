@@ -16271,6 +16271,19 @@ components:
           description: Legacy publishes inside the agent container. Isolated publishes
             from the trusted control plane after verification, using scoped App credentials.
           default: legacy
+        publication_approval:
+          anyOf:
+          - type: boolean
+          - type: string
+            enum:
+            - required
+            - require
+          - type: 'null'
+          title: Publication Approval
+          description: When true, required, or require, isolated publication mints
+            a writer lease only after a human platform approval covers each frozen
+            candidate repository, branch, base, and head SHA. Default flows omit this
+            and keep existing publication behaviour.
         pull_request_template:
           anyOf:
           - type: string
@@ -16365,6 +16378,19 @@ components:
           description: Legacy publishes inside the agent container. Isolated publishes
             from the trusted control plane after verification, using scoped App credentials.
           default: legacy
+        publication_approval:
+          anyOf:
+          - type: boolean
+          - type: string
+            enum:
+            - required
+            - require
+          - type: 'null'
+          title: Publication Approval
+          description: When true, required, or require, isolated publication mints
+            a writer lease only after a human platform approval covers each frozen
+            candidate repository, branch, base, and head SHA. Default flows omit this
+            and keep existing publication behaviour.
         pull_request_template:
           anyOf:
           - type: string

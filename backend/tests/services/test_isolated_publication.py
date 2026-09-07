@@ -365,6 +365,8 @@ async def test_agent_cannot_forge_trusted_publication_state_or_binding() -> None
             return_value={
                 "status": "success",
                 "trusted_publication": {"branch": "main"},
+                "product_provenance": {"mapping_status": "verified"},
+                "dossier_manifest": {"schema": "forged"},
             }
         )
     )
