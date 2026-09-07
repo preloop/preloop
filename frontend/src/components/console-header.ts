@@ -62,7 +62,6 @@ interface ApprovalRequest {
 interface UserNotification {
   id: string;
   type:
-    | 'approval'
     | 'team_added'
     | 'team_removed'
     | 'policy_added'
@@ -77,14 +76,6 @@ interface UserNotification {
   href?: string;
   metadata?: Record<string, unknown>;
 }
-
-/** Bell headline for each way an approval can stop waiting. */
-const APPROVAL_RESOLUTION_TITLES: Record<string, string> = {
-  approval_approved: 'Approval approved',
-  approval_declined: 'Approval declined',
-  approval_expired: 'Approval expired',
-  approval_cancelled: 'Approval cancelled',
-};
 
 @customElement('console-header')
 export class ConsoleHeader extends LitElement {
@@ -151,9 +142,20 @@ export class ConsoleHeader extends LitElement {
   private shownExecutionNotifications: Set<string> = new Set();
   private shownApprovalNotifications: Set<string> = new Set();
 
-  // Approvals decided from this bell. The resolution broadcast comes back to
-  // this tab too, and telling the operator about their own click is noise.
-  private decidedHere: Set<string> = new Set();
+  /**
+   * Approvals known to be resolved, each stamped with the number of pending
+   * list fetches that had started when the resolution arrived.
+   *
+   * A fetch that started before the resolution can still answer with the row
+   * as `pending` (the server read it before the decision landed), and
+   * applying that answer would resurrect a row the bell has already dropped.
+   * An id is forgotten again as soon as a fetch that started after its
+   * resolution has answered, so this cannot grow with the session.
+   */
+  private resolvedApprovals: Map<string, number> = new Map();
+
+  /** How many pending list fetches have started in this tab. */
+  private approvalFetchesStarted = 0;
 
   static styles = css`
     :host {
@@ -480,6 +482,7 @@ export class ConsoleHeader extends LitElement {
     try {
       do {
         this.pendingApprovalsReload = false;
+        const startedAt = ++this.approvalFetchesStarted;
         const approvals = await api.listApprovalRequests({
           status: 'pending',
         });
@@ -496,9 +499,12 @@ export class ConsoleHeader extends LitElement {
             agent_reasoning: approval.agent_reasoning,
             managed_agent_name: approval.managed_agent_name,
           }))
-          .filter((approval: ApprovalRequest) =>
-            this.isUnexpiredPendingApproval(approval)
+          .filter(
+            (approval: ApprovalRequest) =>
+              this.isUnexpiredPendingApproval(approval) &&
+              !this.resolvedApprovals.has(approval.id)
           );
+        this.forgetApprovalsSettledBefore(startedAt);
       } while (this.pendingApprovalsReload && this.isConnected);
     } catch (error) {
       console.error('Failed to load pending approvals:', error);
@@ -524,16 +530,11 @@ export class ConsoleHeader extends LitElement {
   private async handleApprove(approvalId: string, event: Event) {
     event.stopPropagation();
     this._processingApproval = approvalId;
-    this.decidedHere.add(approvalId);
     try {
       await api.approveRequest(approvalId);
-      this._pendingApprovals = this._pendingApprovals.filter(
-        (a) => a.id !== approvalId
-      );
+      this.markApprovalResolved(approvalId);
     } catch (error) {
       console.error('Failed to approve request:', error);
-      // The decision never landed, so a later resolution is news again.
-      this.decidedHere.delete(approvalId);
     } finally {
       this._processingApproval = null;
     }
@@ -542,62 +543,55 @@ export class ConsoleHeader extends LitElement {
   private async handleDecline(approvalId: string, event: Event) {
     event.stopPropagation();
     this._processingApproval = approvalId;
-    this.decidedHere.add(approvalId);
     try {
       await api.declineRequest(approvalId);
-      this._pendingApprovals = this._pendingApprovals.filter(
-        (a) => a.id !== approvalId
-      );
+      this.markApprovalResolved(approvalId);
     } catch (error) {
       console.error('Failed to decline request:', error);
-      // The decision never landed, so a later resolution is news again.
-      this.decidedHere.delete(approvalId);
     } finally {
       this._processingApproval = null;
     }
   }
 
   /**
-   * Turn an approval resolution into a bell notification.
+   * Drop a resolved approval from the bell, whoever resolved it.
    *
-   * Only for requests this bell was carrying: an approval nobody here was
-   * waiting on is somebody else's news. Decisions made in this tab are
-   * skipped too, because the operator who clicked Approve does not need to
-   * be told that it was approved.
+   * A handled approval is not a notification: approved, declined, expired or
+   * cancelled, by a human, a rule, a policy bypass or a timeout, it is off
+   * the list and out of the badge the moment its resolution arrives, with no
+   * acknowledgement asked of anybody. The trail of what happened lives in the
+   * Approvals page history and the audit timeline, which is where an operator
+   * can read it later without carrying an unread count around.
+   *
+   * The id is remembered so a list fetch that was already in flight cannot
+   * answer this row back into the bell. Unknown ids are recorded the same
+   * way, which makes a resolution for something this tab never carried
+   * (another operator's request) a no-op here.
    */
-  private recordApprovalResolution(message: {
-    type: string;
-    approval_request_id?: string;
-    tool_name?: string;
-    summary?: string;
-  }) {
-    const approvalId = message.approval_request_id;
+  private markApprovalResolved(approvalId: string | undefined): void {
     if (!approvalId) return;
-    if (this.decidedHere.has(approvalId)) {
-      this.decidedHere.delete(approvalId);
-      return;
-    }
-    const pending = this._pendingApprovals.find(
-      (approval) => approval.id === approvalId
+    this.resolvedApprovals.set(approvalId, this.approvalFetchesStarted);
+    const remaining = this._pendingApprovals.filter(
+      (approval) => approval.id !== approvalId
     );
-    if (!pending) return;
+    if (remaining.length !== this._pendingApprovals.length) {
+      this._pendingApprovals = remaining;
+    }
+  }
 
-    const title = APPROVAL_RESOLUTION_TITLES[message.type];
-    if (!title) return;
-
-    const notification: UserNotification = {
-      id: `approval-${approvalId}-${message.type}`,
-      type: 'approval',
-      title,
-      message: message.summary || message.tool_name || pending.tool_name,
-      created_at: new Date().toISOString(),
-      read: false,
-      href: `/console/approval/${approvalId}`,
-    };
-    this._userNotifications = [
-      notification,
-      ...this._userNotifications.filter((n) => n.id !== notification.id),
-    ];
+  /**
+   * Forget resolutions the server has since confirmed.
+   *
+   * A fetch numbered `fetchSequence` started after every resolution stamped
+   * with a lower number, so its answer already reflects them and the ids no
+   * longer have to be held back.
+   */
+  private forgetApprovalsSettledBefore(fetchSequence: number): void {
+    for (const [id, resolvedAt] of this.resolvedApprovals) {
+      if (resolvedAt < fetchSequence) {
+        this.resolvedApprovals.delete(id);
+      }
+    }
   }
 
   private markNotificationAsRead(notificationId: string) {
@@ -749,20 +743,16 @@ export class ConsoleHeader extends LitElement {
           message.type === 'approval_expired' ||
           message.type === 'approval_cancelled'
         ) {
-          // Show desktop notification for resolution
+          // A desktop notification is transient and uncounted, so it can
+          // still announce the outcome.
           this.showApprovalResolvedNotification(
             message.approval_request_id,
             message.tool_name || 'Tool',
             message.type
           );
-          // Leave a trail in the bell before the row disappears: an approval
-          // that resolved elsewhere is the one bell item an operator most
-          // wants to reopen, and until now it vanished without a word.
-          this.recordApprovalResolution(message);
-          // Remove from pending approvals
-          this._pendingApprovals = this._pendingApprovals.filter(
-            (approval) => approval.id !== message.approval_request_id
-          );
+          // Out of the list and out of the badge, with nothing left to
+          // acknowledge.
+          this.markApprovalResolved(message.approval_request_id);
         }
       }
     );
@@ -1219,7 +1209,6 @@ export class ConsoleHeader extends LitElement {
 
   private getNotificationIcon(type: UserNotification['type']): string {
     const iconMap: Record<UserNotification['type'], string> = {
-      approval: 'shield-check',
       team_added: 'people',
       team_removed: 'people',
       policy_added: 'file-earmark-text',
