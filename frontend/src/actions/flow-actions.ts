@@ -71,12 +71,26 @@ export function flowActions(
         href: ctx.onEdit ? undefined : `${flowDetailUrl(flow)}?edit=true`,
         onClick: ctx.onEdit ? () => ctx.onEdit!(flow) : undefined,
       },
+      // Two ids, not one toggle: a bulk bar over a mixed selection can then
+      // say honestly that neither Pause nor Resume suits all of them.
       {
-        id: 'toggle-enabled',
-        label: flow.is_enabled ? 'Pause' : 'Resume',
-        icon: flow.is_enabled ? 'pause-circle' : 'play-circle',
-        variant: flow.is_enabled ? 'default' : 'success',
+        id: 'pause',
+        label: 'Pause',
+        icon: 'pause-circle',
+        variant: 'default',
         loading: busy,
+        available: (item) => item.is_enabled,
+        onClick: ctx.onToggleEnabled
+          ? () => ctx.onToggleEnabled!(flow)
+          : undefined,
+      },
+      {
+        id: 'resume',
+        label: 'Resume',
+        icon: 'play-circle',
+        variant: 'success',
+        loading: busy,
+        available: (item) => !item.is_enabled,
         onClick: ctx.onToggleEnabled
           ? () => ctx.onToggleEnabled!(flow)
           : undefined,

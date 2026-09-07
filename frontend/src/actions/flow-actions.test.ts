@@ -16,13 +16,10 @@ describe('flowActions', () => {
       'open',
       'run-now',
       'edit',
-      'toggle-enabled',
+      'pause',
       'delete',
     ]);
     expect(actions.find((a) => a.id === 'run-now')!.disabled).to.equal(false);
-    expect(actions.find((a) => a.id === 'toggle-enabled')!.label).to.equal(
-      'Pause'
-    );
   });
 
   it('keeps Run now visible but disabled on a paused flow', () => {
@@ -30,9 +27,8 @@ describe('flowActions', () => {
     const run = actions.find((action) => action.id === 'run-now')!;
     expect(run.disabled).to.equal(true);
     expect(run.tooltip).to.equal('Resume the flow before running it');
-    expect(actions.find((a) => a.id === 'toggle-enabled')!.label).to.equal(
-      'Resume'
-    );
+    expect(actionIds(actions)).to.contain('resume');
+    expect(actionIds(actions)).to.not.contain('pause');
   });
 
   it('links Edit to the flow page in edit mode when no handler is wired', () => {
@@ -65,11 +61,11 @@ describe('flowActions', () => {
   it('offers a paused and a running flow only their common actions', () => {
     const running = flowActions({ id: 'a', is_enabled: true }, ctx);
     const paused = flowActions({ id: 'b', is_enabled: false }, ctx);
-    // Run now survives nothing: it is disabled on the paused flow.
+    // Run now is disabled on the paused flow, and neither Pause nor Resume
+    // suits both, so only what they truly share is left.
     expect(actionIds(intersectActions([running, paused]))).to.deep.equal([
       'open',
       'edit',
-      'toggle-enabled',
       'delete',
     ]);
   });

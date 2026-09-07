@@ -6,6 +6,7 @@ import {
   getFlow,
   createFlow,
   updateFlow,
+  deleteFlow,
   getTrackers,
   getAIModels,
   listOrganizations,
@@ -47,6 +48,8 @@ import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '../../components/icon-selector.ts';
 import '../../components/resource-actions.ts';
 import type { ResourceAction } from '../../components/resource-actions.ts';
+import { actionsFor } from '../../actions';
+import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { getTrackerEventOptions } from '../../constants/tracker-event-types';
 import type { Flow } from '../../types';
@@ -517,38 +520,54 @@ export class FlowView extends LitElement {
   }
 
   /**
-   * The three commands, named as the list's kebab names them.
+   * What this flow offers, from the one registry the flows list reads
+   * (`src/actions/flow-actions.ts`).
    *
-   * The header used to say "Edit Flow / Disable / Test Run" for what the list
-   * calls "Edit / Pause / Run now". "Test Run" was the worst of the three: it
-   * suggests a rehearsal, and it starts a real execution that spends real
-   * money, from the same dialog the list's Run now opens.
+   * The page used to name the same two actions `edit-flow` and `test-run`
+   * where the list said `edit` and `run-now` ("Test Run" was the worst of the
+   * two: it suggests a rehearsal, and it starts a real run that spends real
+   * money), and it could not delete the flow it was showing.
    */
   private getFlowActions(): ResourceAction[] {
-    const actions: ResourceAction[] = [
+    return actionsFor(
+      'flow',
       {
-        id: 'edit-flow',
-        label: 'Edit',
-        icon: 'pencil',
-        href: `/console/flows/${this.flowId}?edit=true`,
+        id: this.flowId || '',
+        name: this.flow?.name,
+        is_enabled: !!this.flow?.is_enabled,
       },
       {
-        id: 'toggle-enabled',
-        label: this.flow.is_enabled ? 'Pause' : 'Resume',
-        variant: this.flow.is_enabled ? 'default' : 'success',
-        icon: this.flow.is_enabled ? 'pause-circle' : 'play-circle',
-        onClick: () => this.toggleFlowEnabled(),
-      },
-      {
-        id: 'test-run',
-        label: 'Run now',
-        variant: 'primary',
-        icon: 'play-circle',
-        disabled: !this.flow.is_enabled,
-        onClick: () => this.testRun(),
-      },
-    ];
-    return actions;
+        onRun: () => void this.testRun(),
+        onToggleEnabled: () => void this.toggleFlowEnabled(),
+        onDelete: () => void this.deleteFlow(),
+      }
+    );
+  }
+
+  /** Deletes the flow this page is showing, then goes back to the list. */
+  private async deleteFlow(): Promise<void> {
+    if (!this.flowId) return;
+    const confirmed = await confirmDialog({
+      title: 'Delete flow',
+      message: `Delete "${this.flow?.name || 'this flow'}"?`,
+      detail:
+        'The flow and its trigger stop immediately. Past runs stay in the executions list. This cannot be undone.',
+      confirmLabel: 'Delete flow',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    try {
+      await deleteFlow(this.flowId);
+      showToast(`Deleted ${this.flow?.name || 'the flow'}.`, 'success');
+      Router.go('/console/flows');
+    } catch (error) {
+      showToast(
+        error instanceof Error && error.message
+          ? error.message
+          : 'Could not delete the flow. Try again.',
+        'danger'
+      );
+    }
   }
 
   render() {

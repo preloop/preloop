@@ -197,19 +197,30 @@ describe('FlowView detail page language', () => {
   it('uses the list verbs in the header actions', async () => {
     // The header said "Edit Flow / Disable / Test Run" for the three commands
     // the list kebab calls Edit, Pause and Run now, and "Test Run" implied a
-    // rehearsal of a run that spends real money.
+    // rehearsal of a run that spends real money. Both surfaces now read the
+    // same registry, so the page can also delete the flow it is showing.
     const element = await renderDetail();
     try {
       const labels = element
         .getFlowActions()
         .map((action: any) => action.label);
-      expect(labels).to.eql(['Edit', 'Pause', 'Run now']);
+      expect(labels).to.eql(['Run now', 'Edit', 'Pause', 'Delete']);
 
       const paused = await renderDetail({ is_enabled: false });
       try {
-        expect(
-          paused.getFlowActions().map((action: any) => action.label)
-        ).to.eql(['Edit', 'Resume', 'Run now']);
+        const pausedActions = paused.getFlowActions();
+        expect(pausedActions.map((action: any) => action.label)).to.eql([
+          'Run now',
+          'Edit',
+          'Resume',
+          'Delete',
+        ]);
+        // Run now stays on screen, disabled, and says what has to change.
+        const run = pausedActions.find(
+          (action: any) => action.id === 'run-now'
+        );
+        expect(run.disabled).to.equal(true);
+        expect(run.tooltip).to.equal('Resume the flow before running it');
       } finally {
         paused.remove();
       }
