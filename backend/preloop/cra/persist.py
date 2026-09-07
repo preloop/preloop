@@ -27,6 +27,7 @@ from preloop.cra.validate import (
     AuthorityMode,
     CraValidationResult,
     PlatformApproval,
+    json_in,
     result_claims_authority,
     validate_cra_result,
     wrap_invalid_cra_result,
@@ -124,6 +125,7 @@ def load_platform_approvals(db: Any, execution_id: Any) -> list[PlatformApproval
                 status=str(getattr(row, "status", "") or ""),
                 tool_name=str(getattr(row, "tool_name", "") or ""),
                 operation=operation,
+                tool_args=dict(tool_args) if isinstance(tool_args, Mapping) else None,
             )
         )
     return loaded
@@ -133,13 +135,18 @@ def resolve_persist_authority(
     artifact: Any,
     db: Any,
     execution_id: Any,
+    *,
+    prompt: Optional[str] = None,
+    expected_schema: Optional[str] = None,
 ) -> tuple[Optional[list[PlatformApproval]], AuthorityMode]:
-    """Load approvals only when the result claims a human decision.
+    """Load approvals only when a CRA result claims a human decision.
 
-    Non-CRA JSON and CRA results with no claimed waiver/decision do not
-    query the approval table (avoids a persist-path performance regression).
+    Non-CRA JSON, including objects that happen to contain a ``decision``
+    field, does not query the approval table.
     """
-    if not result_claims_authority(artifact):
+    if not result_claims_authority(
+        artifact, prompt=prompt, expected_schema=expected_schema
+    ):
         return None, AUTHORITY_OFFLINE
     try:
         return load_platform_approvals(db, execution_id), AUTHORITY_REQUIRED
@@ -167,12 +174,15 @@ def apply_cra_persist_boundary(
     expected = expected_schema or expected_cra_schema_from_prompt(prompt)
     payload: Any = dict(artifact) if isinstance(artifact, Mapping) else artifact
 
-    if isinstance(payload, Mapping) and payload.get("error") in CAPTURE_ERROR_CODES:
-        if expected or is_cra_schema_id(
-            (payload.get("raw") or {}).get("schema")
-            if isinstance(payload.get("raw"), Mapping)
-            else payload.get("schema")
-        ):
+    if isinstance(payload, Mapping) and json_in(
+        payload.get("error"), CAPTURE_ERROR_CODES
+    ):
+        raw = payload.get("raw")
+        if isinstance(raw, Mapping):
+            raw_schema = raw.get("schema")
+        else:
+            raw_schema = payload.get("schema")
+        if expected or is_cra_schema_id(raw_schema):
             failures = list(payload.get("failures") or [])
             if not failures:
                 failures = [str(payload.get("detail") or payload["error"])]

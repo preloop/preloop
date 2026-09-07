@@ -8,6 +8,7 @@ waivers never count as authentic human approval.
 
 from __future__ import annotations
 
+from collections.abc import Set
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Optional, Sequence
 
@@ -48,13 +49,36 @@ from preloop.cra.schemas import (
     is_known_cra_result_schema,
 )
 from preloop.security.gap_register import validate_gap_register
-from preloop.security.waivers import validate_waiver_entries
+from preloop.security.waivers import (
+    apply_waivers,
+    normalize_waiver_id,
+    validate_waiver_entries,
+)
 
 _SEVERITY_COUNT_KEYS = ("critical", "high", "medium", "low", "unknown")
+_WRAP_ERROR_CODES = frozenset({INVALID_ERROR, MISSING_ERROR, UNSUPPORTED_ERROR})
+_RECORDED_OUTCOMES = frozenset({"accepted", "rejected"})
+_PASS_OR_FINDINGS = frozenset({"pass", "pass_with_findings"})
+_GAP_STATUSES = frozenset({"gap", "partial"})
+_WAIVER_CONTENT_FIELDS = ("id", "reason", "author", "date")
 
 AuthorityMode = Literal["offline", "required"]
 AUTHORITY_OFFLINE: AuthorityMode = "offline"
 AUTHORITY_REQUIRED: AuthorityMode = "required"
+
+
+def json_in(value: Any, options: Set[Any]) -> bool:
+    """Return whether ``value`` is in ``options`` without raising on JSON.
+
+    Arbitrary result.json may put lists or objects where a string enum is
+    expected. ``value in frozenset`` raises ``TypeError`` for those.
+    """
+    if isinstance(value, (list, dict)):
+        return False
+    try:
+        return value in options
+    except TypeError:
+        return False
 
 
 class CraResultValidationError(ValueError):
@@ -78,6 +102,7 @@ class PlatformApproval:
     status: str
     tool_name: str
     operation: Optional[str] = None
+    tool_args: Optional[Mapping[str, Any]] = None
 
 
 @dataclass
@@ -111,11 +136,7 @@ def wrap_invalid_cra_result(
     Callers persist this object so diagnosis is possible without inventing a
     successful pack.
     """
-    if isinstance(raw, Mapping) and raw.get("error") in {
-        INVALID_ERROR,
-        MISSING_ERROR,
-        UNSUPPORTED_ERROR,
-    }:
+    if isinstance(raw, Mapping) and json_in(raw.get("error"), _WRAP_ERROR_CODES):
         return dict(raw)
     payload: dict[str, Any] = {
         "error": error,
@@ -196,11 +217,11 @@ def _check_envelope(
         failures.append(f"{path}.runner must be an object")
     else:
         kind = runner.get("kind")
-        if kind is not None and kind not in RUNNER_KINDS:
+        if kind is not None and not json_in(kind, RUNNER_KINDS):
             failures.append(
                 f"{path}.runner.kind must be hosted|self_hosted|null, got {kind!r}"
             )
-    if schema_id in SCHEMAS_WITHOUT_STATUS and "status" in obj:
+    if json_in(schema_id, SCHEMAS_WITHOUT_STATUS) and "status" in obj:
         failures.append(
             f"{path}.status is not part of {schema_id}; completion is the verdict"
         )
@@ -239,7 +260,7 @@ def _check_source(source: Any, *, path: str) -> list[str]:
         return [f"{path} must be an object"]
     failures: list[str] = []
     fmt = source.get("format")
-    if fmt not in SBOM_FORMATS:
+    if not json_in(fmt, SBOM_FORMATS):
         failures.append(f"{path}.format must be spdx|cyclonedx, got {fmt!r}")
     spec = source.get("spec_version")
     if not isinstance(spec, str) or not spec:
@@ -308,7 +329,7 @@ def _check_license_flags(flags: Any, *, path: str) -> list[str]:
             failures.append(f"{path}[{idx}] must be an object")
             continue
         flag = item.get("flag")
-        if flag not in LICENSE_FLAGS:
+        if not json_in(flag, LICENSE_FLAGS):
             failures.append(
                 f"{path}[{idx}].flag must be deny|flag|missing, got {flag!r}"
             )
@@ -404,11 +425,11 @@ def _validate_sbom_body(
     if require_delta_null and "delta" in obj and obj.get("delta") is not None:
         failures.append(f"{path}.delta must be null in this schema")
     verdict = obj.get("verdict")
-    if verdict not in AUDIT_VERDICTS and verdict != AUDIT_INCOMPLETE_VERDICT:
+    if not json_in(verdict, AUDIT_VERDICTS) and verdict != AUDIT_INCOMPLETE_VERDICT:
         failures.append(
             f"{path}.verdict must be pass|pass_with_findings|fail, got {verdict!r}"
         )
-    elif verdict in AUDIT_VERDICTS:
+    elif json_in(verdict, AUDIT_VERDICTS):
         failures.extend(_reconcile_sbom_verdict(obj, path=path, verdict=verdict))
     return failures, advisories
 
@@ -441,7 +462,7 @@ def _check_source_matrix(matrix: Any, *, path: str) -> tuple[list[str], list[str
             continue
         kind = entry.get("kind")
         expected_kind = "database" if key in DATABASE_SOURCES else "heuristic"
-        if kind not in SOURCE_KINDS:
+        if not json_in(kind, SOURCE_KINDS):
             failures.append(f"{path}.{key}.kind must be database|heuristic")
         elif key in DATABASE_SOURCES and kind != "database":
             failures.append(f"{path}.{key}.kind must be database")
@@ -549,7 +570,7 @@ def _finding_enters_gate(finding: Mapping[str, Any]) -> bool:
     if (
         isinstance(sources, list)
         and sources
-        and all(src in HEURISTIC_SOURCES for src in sources)
+        and all(json_in(src, HEURISTIC_SOURCES) for src in sources)
     ):
         return False
     return True
@@ -564,7 +585,7 @@ def _check_finding(item: Any, *, path: str, allow_waived: bool) -> list[str]:
     if not isinstance(item.get("pkg"), str):
         failures.append(f"{path}.pkg must be a string")
     severity = item.get("severity")
-    if severity not in FINDING_SEVERITIES:
+    if not json_in(severity, FINDING_SEVERITIES):
         failures.append(f"{path}.severity must be a known severity, got {severity!r}")
     cvss = item.get("cvss")
     if cvss is not None and not _is_number(cvss):
@@ -580,7 +601,7 @@ def _check_finding(item: Any, *, path: str, allow_waived: bool) -> list[str]:
     if not isinstance(sources, list):
         failures.append(f"{path}.sources must be a list")
     match_kind = item.get("match_kind")
-    if match_kind not in MATCH_KINDS:
+    if not json_in(match_kind, MATCH_KINDS):
         failures.append(f"{path}.match_kind must be database|heuristic")
     if allow_waived and "waived" in item and not _is_bool(item.get("waived")):
         failures.append(
@@ -606,7 +627,9 @@ def _check_counts_by_severity(
             )
     expected = {key: 0 for key in _SEVERITY_COUNT_KEYS}
     for item in findings:
-        if isinstance(item, Mapping) and item.get("severity") in expected:
+        if isinstance(item, Mapping) and json_in(
+            item.get("severity"), frozenset(_SEVERITY_COUNT_KEYS)
+        ):
             expected[str(item["severity"])] += 1
     if all(_is_int(counts.get(key)) for key in _SEVERITY_COUNT_KEYS):
         for key in _SEVERITY_COUNT_KEYS:
@@ -619,8 +642,10 @@ def _check_counts_by_severity(
     return failures
 
 
-def _default_gate_failures(findings: Sequence[Any], *, cvss_gte: float) -> list[str]:
-    failing: list[str] = []
+def _default_gate_failures(
+    findings: Sequence[Any], *, cvss_gte: float
+) -> list[dict[str, Any]]:
+    failing: list[dict[str, Any]] = []
     for item in findings:
         if not isinstance(item, Mapping):
             continue
@@ -632,8 +657,18 @@ def _default_gate_failures(findings: Sequence[Any], *, cvss_gte: float) -> list[
         if kev or high_cvss:
             finding_id = str(item.get("id") or "")
             if finding_id:
-                failing.append(finding_id)
+                aliases = item.get("aliases")
+                failing.append(
+                    {
+                        "id": finding_id,
+                        "aliases": aliases if isinstance(aliases, list) else [],
+                    }
+                )
     return failing
+
+
+def _gate_failure_ids(items: Sequence[Mapping[str, Any]]) -> list[str]:
+    return [str(item.get("id") or "") for item in items if item.get("id")]
 
 
 def _parse_cvss_threshold(policy: object) -> float:
@@ -655,6 +690,20 @@ def _parse_cvss_threshold(policy: object) -> float:
         return float("".join(digits))
     except ValueError:
         return DEFAULT_GATE_CVSS
+
+
+def _unwaived_id_set(values: Any) -> set[str]:
+    keys: set[str] = set()
+    if not isinstance(values, list):
+        return keys
+    for item in values:
+        if isinstance(item, Mapping):
+            key = normalize_waiver_id(item.get("id"))
+        else:
+            key = normalize_waiver_id(item)
+        if key:
+            keys.add(key)
+    return keys
 
 
 def _check_gate(
@@ -681,7 +730,13 @@ def _check_gate(
         failures.append(f"{path}.policy must be a non-empty string")
     cvss_gte = _parse_cvss_threshold(policy)
     computed = _default_gate_failures(findings, cvss_gte=cvss_gte)
-    applied = gate.get("waivers_applied") or []
+    computed_ids = _gate_failure_ids(computed)
+    applied_raw = gate.get("waivers_applied")
+    if "waivers_applied" in gate and not isinstance(applied_raw, list):
+        failures.append(f"{path}.waivers_applied must be a list")
+        applied_raw = []
+    elif applied_raw is None:
+        applied_raw = []
     if release_fields:
         before = gate.get("passed_before_waivers")
         if "passed_before_waivers" in gate and not _is_bool(before):
@@ -690,7 +745,6 @@ def _check_gate(
                 f"{type(before).__name__}"
             )
         for list_key in (
-            "waivers_applied",
             "unwaived_failures",
             "waivers_invalid",
             "waivers_unmatched",
@@ -700,48 +754,76 @@ def _check_gate(
         if _is_bool(before) and before is True and computed:
             failures.append(
                 f"{path}.passed_before_waivers is true but unwaived gate "
-                f"failures are present: {computed}"
+                f"failures are present: {computed_ids}"
             )
         if _is_bool(before) and before is False and not computed and passed is True:
             failures.append(
                 f"{path}.passed_before_waivers is false with no computed "
                 "gate failures; do not fabricate a pre-waiver fail"
             )
-        if isinstance(applied, list) and applied:
+        authentic: list[Mapping[str, Any]] = []
+        if isinstance(applied_raw, list) and applied_raw:
             if authority == AUTHORITY_REQUIRED and platform_approvals is None:
                 failures.append(
                     f"{path}.waivers_applied claimed but platform approval "
                     "authority is unavailable; fail closed"
                 )
             else:
-                failures.extend(
-                    _enforce_authentic_waivers(
-                        applied,
-                        delivered_waivers=delivered_waivers,
-                        platform_approvals=platform_approvals,
-                        path=f"{path}.waivers_applied",
-                        authority=authority,
-                    )
+                auth_fail, authentic = _enforce_authentic_waivers(
+                    applied_raw,
+                    delivered_waivers=delivered_waivers,
+                    platform_approvals=platform_approvals,
+                    path=f"{path}.waivers_applied",
+                    authority=authority,
                 )
-        unwaived = gate.get("unwaived_failures")
-        if isinstance(unwaived, list) and unwaived and passed is True:
-            failures.append(f"{path}.passed is true but unwaived_failures is non-empty")
-        if passed is True and computed and not applied:
+                failures.extend(auth_fail)
+        outcome = apply_waivers(computed, authentic)
+        expected_passed = bool(outcome["gate_passed_after_waivers"])
+        if passed is True and not expected_passed:
             failures.append(
-                f"{path}.passed is true but KEV/CVSS gate failures {computed} "
-                "are unwaived"
+                f"{path}.passed is true but remaining unwaived KEV/CVSS "
+                f"failures {outcome['unwaived_failures']} are not covered"
             )
-        if passed is False and not computed:
-            reported_unwaived = [str(item) for item in (unwaived or []) if item]
-            if not reported_unwaived:
+        if passed is False and expected_passed:
+            failures.append(
+                f"{path}.passed is false but deterministic waiver application "
+                "covers every computed gate failure"
+            )
+        submitted_applied = {
+            normalize_waiver_id(entry.get("id"))
+            for entry in applied_raw
+            if isinstance(entry, Mapping)
+        }
+        submitted_applied.discard("")
+        expected_applied = {
+            normalize_waiver_id(entry["id"]) for entry in outcome["waivers_applied"]
+        }
+        if submitted_applied != expected_applied:
+            failures.append(
+                f"{path}.waivers_applied ids {sorted(submitted_applied)} != "
+                f"deterministic set {sorted(expected_applied)}"
+            )
+        if "unwaived_failures" in gate:
+            submitted_unwaived = _unwaived_id_set(gate.get("unwaived_failures"))
+            expected_unwaived = {
+                normalize_waiver_id(item) for item in outcome["unwaived_failures"]
+            }
+            expected_unwaived.discard("")
+            if submitted_unwaived != expected_unwaived:
                 failures.append(
-                    f"{path}.passed is false but no gate-entering finding "
-                    "fails the policy and unwaived_failures is empty"
+                    f"{path}.unwaived_failures {sorted(submitted_unwaived)} != "
+                    f"deterministic set {sorted(expected_unwaived)}"
                 )
+        elif passed is True and outcome["unwaived_failures"]:
+            failures.append(
+                f"{path}.passed is true but unwaived_failures is missing "
+                f"for remaining {outcome['unwaived_failures']}"
+            )
     else:
         if passed is True and computed:
             failures.append(
-                f"{path}.passed is true but KEV/CVSS gate failures {computed} remain"
+                f"{path}.passed is true but KEV/CVSS gate failures "
+                f"{computed_ids} remain"
             )
         if passed is False and not computed:
             failures.append(
@@ -751,6 +833,44 @@ def _check_gate(
     return failures
 
 
+def _delivered_waiver_matches(
+    applied: Mapping[str, Any], delivered: Mapping[str, Any]
+) -> bool:
+    for name in _WAIVER_CONTENT_FIELDS:
+        left = str(applied.get(name) or "").strip()
+        right = str(delivered.get(name) or "").strip()
+        if left != right:
+            return False
+    return True
+
+
+def _waiver_request_approval_matches(
+    approval: PlatformApproval, entry: Mapping[str, Any]
+) -> bool:
+    """Bind a waiver to the CRA ``request_approval`` contract.
+
+    ``delete_file`` and other tools cannot authorize a CVE waiver. The
+    finding id must appear in ``operation`` or the stored ``context`` /
+    ``reasoning`` arguments.
+    """
+    if approval.tool_name != "request_approval":
+        return False
+    if approval.status != "approved":
+        return False
+    approval_id = str(entry.get("approval_id") or "").strip().lower()
+    if not approval_id or approval.id.strip().lower() != approval_id:
+        return False
+    finding = normalize_waiver_id(entry.get("id"))
+    if not finding:
+        return False
+    args = approval.tool_args if isinstance(approval.tool_args, Mapping) else {}
+    operation = approval.operation or ""
+    context = args.get("context") if isinstance(args.get("context"), str) else ""
+    reasoning = args.get("reasoning") if isinstance(args.get("reasoning"), str) else ""
+    haystack = normalize_waiver_id(" ".join((operation, str(context), str(reasoning))))
+    return finding in haystack
+
+
 def _enforce_authentic_waivers(
     applied: Sequence[Any],
     *,
@@ -758,29 +878,29 @@ def _enforce_authentic_waivers(
     platform_approvals: Optional[Sequence[PlatformApproval]],
     path: str,
     authority: AuthorityMode = AUTHORITY_OFFLINE,
-) -> list[str]:
-    """Agent-authored waiver lists never confer authentic human approval."""
+) -> tuple[list[str], list[Mapping[str, Any]]]:
+    """Agent-authored waiver lists never confer authentic human approval.
+
+    Non-object entries are reported rather than dropped. Delivered file
+    waivers must match id/reason/author/date exactly. Interactive waivers
+    must bind a ``request_approval`` whose operation/context names the
+    finding.
+    """
     failures: list[str] = []
-    valid_entries, invalid = validate_waiver_entries(
-        [item for item in applied if isinstance(item, Mapping)]
-    )
+    valid_entries, invalid = validate_waiver_entries(applied)
     for message in invalid:
         failures.append(f"{path}: {message}")
-    delivered_ids = {
-        str(entry.get("id") or "").strip().lower()
-        for entry in (delivered_waivers or [])
-        if isinstance(entry, Mapping)
-    }
-    approval_ids = {
-        approval.id.strip().lower()
-        for approval in (platform_approvals or [])
-        if approval.status == "approved" and approval.id
-    }
+    authentic: list[Mapping[str, Any]] = []
     delivered_present = delivered_waivers is not None
     for entry in valid_entries:
-        waiver_id = str(entry.get("id") or "").strip().lower()
         approval_id = str(entry.get("approval_id") or "").strip().lower()
-        matched_input = delivered_present and waiver_id in delivered_ids
+        matched_input = False
+        if delivered_present:
+            matched_input = any(
+                isinstance(candidate, Mapping)
+                and _delivered_waiver_matches(entry, candidate)
+                for candidate in delivered_waivers or []
+            )
         matched_approval = False
         if approval_id:
             if platform_approvals is None:
@@ -790,21 +910,36 @@ def _enforce_authentic_waivers(
                         "but platform approval authority is unavailable"
                     )
                     continue
-            elif approval_id not in approval_ids:
+            else:
+                matched_approval = any(
+                    _waiver_request_approval_matches(approval, entry)
+                    for approval in platform_approvals
+                )
+                if not matched_approval:
+                    failures.append(
+                        f"{path} waiver {entry.get('id')!r} approval_id is not "
+                        "a granted request_approval whose operation/context "
+                        "covers this finding"
+                    )
+                    continue
+        if delivered_present:
+            if not matched_input:
                 failures.append(
-                    f"{path} waiver {entry.get('id')!r} approval_id is not a "
-                    "granted platform approval for this execution"
+                    f"{path} waiver {entry.get('id')!r} does not match the "
+                    "delivered waiver contents (id, reason, author, date)"
                 )
                 continue
-            else:
-                matched_approval = True
-        if not matched_input and not matched_approval:
-            failures.append(
-                f"{path} waiver {entry.get('id')!r} is agent-asserted and "
-                "does not match delivered waiver input or a platform "
-                "approval_id; authentic human approval is required"
-            )
-    return failures
+            authentic.append(entry)
+            continue
+        if matched_approval:
+            authentic.append(entry)
+            continue
+        failures.append(
+            f"{path} waiver {entry.get('id')!r} is agent-asserted and "
+            "does not match delivered waiver input or a scoped "
+            "request_approval; authentic human approval is required"
+        )
+    return failures, authentic
 
 
 def _validate_vuln_body(
@@ -884,7 +1019,7 @@ def _validate_sbomaudit(
     failures.extend(body_fail)
     verdict = obj.get("verdict")
     incomplete = verdict == AUDIT_INCOMPLETE_VERDICT
-    completed = verdict in AUDIT_VERDICTS
+    completed = json_in(verdict, AUDIT_VERDICTS)
     return failures, advisories, completed, incomplete
 
 
@@ -898,7 +1033,7 @@ def _validate_vulnscan(
     failures = _require_keys(obj, VULNSCAN_REQUIRED, path="result")
     failures.extend(_check_envelope(obj, schema_id=SCHEMA_VULNSCAN_V1))
     status = obj.get("status")
-    if status not in VULNSCAN_STATUSES:
+    if not json_in(status, VULNSCAN_STATUSES):
         failures.append(f"result.status must be success|error, got {status!r}")
     if "verdict" in obj:
         failures.append("result.verdict is not part of preloop.cra.vulnscan/v1")
@@ -921,7 +1056,7 @@ def _reconcile_release_verdict(
 ) -> list[str]:
     failures: list[str] = []
     overall = obj.get("verdict")
-    if overall not in AUDIT_VERDICTS and overall != AUDIT_INCOMPLETE_VERDICT:
+    if not json_in(overall, AUDIT_VERDICTS) and overall != AUDIT_INCOMPLETE_VERDICT:
         return failures
     if overall == AUDIT_INCOMPLETE_VERDICT:
         return failures
@@ -961,7 +1096,7 @@ def _reconcile_release_verdict(
         )
     if (
         overall == "fail"
-        and sbom_verdict in {"pass", "pass_with_findings"}
+        and json_in(sbom_verdict, _PASS_OR_FINDINGS)
         and gate_passed is True
     ):
         failures.append(
@@ -1016,7 +1151,7 @@ def _validate_releaseaudit(
                 item
                 for item in items
                 if isinstance(item, Mapping)
-                and item.get("status") in {"gap", "partial"}
+                and json_in(item.get("status"), _GAP_STATUSES)
             ]
             ready = gap.get("ready")
             secrets_count = gap.get("secrets_findings_count")
@@ -1033,13 +1168,13 @@ def _validate_releaseaudit(
     if storage is not None and not isinstance(storage, Mapping):
         failures.append("result.evidence_storage must be an object or null")
     verdict = obj.get("verdict")
-    if verdict not in AUDIT_VERDICTS and verdict != AUDIT_INCOMPLETE_VERDICT:
+    if not json_in(verdict, AUDIT_VERDICTS) and verdict != AUDIT_INCOMPLETE_VERDICT:
         failures.append(
             f"result.verdict must be pass|pass_with_findings|fail, got {verdict!r}"
         )
     failures.extend(_reconcile_release_verdict(obj))
     incomplete = verdict == AUDIT_INCOMPLETE_VERDICT
-    completed = verdict in AUDIT_VERDICTS
+    completed = json_in(verdict, AUDIT_VERDICTS)
     return failures, advisories, completed, incomplete
 
 
@@ -1077,9 +1212,9 @@ def _validate_duediligence(
     advisories: list[str] = []
     status = obj.get("status")
     verdict = obj.get("verdict")
-    if status not in DUEDILIGENCE_STATUSES:
+    if not json_in(status, DUEDILIGENCE_STATUSES):
         failures.append(f"result.status must be success|error, got {status!r}")
-    if verdict not in DUEDILIGENCE_VERDICTS:
+    if not json_in(verdict, DUEDILIGENCE_VERDICTS):
         failures.append(f"result.verdict must be recorded|error, got {verdict!r}")
     component = obj.get("component")
     if not isinstance(component, Mapping):
@@ -1110,7 +1245,7 @@ def _validate_duediligence(
         outcome = None
     else:
         outcome = decision.get("outcome")
-        if outcome not in DUEDILIGENCE_OUTCOMES:
+        if not json_in(outcome, DUEDILIGENCE_OUTCOMES):
             failures.append(
                 "result.decision.outcome must be accepted|rejected|pending, "
                 f"got {outcome!r}"
@@ -1122,7 +1257,7 @@ def _validate_duediligence(
             )
         decided_via = decision.get("decided_via")
         operation = decision.get("approval_operation")
-        if outcome in {"accepted", "rejected"}:
+        if json_in(outcome, _RECORDED_OUTCOMES):
             if decided_via != "preloop_approval":
                 failures.append(
                     "result.decision.decided_via must be preloop_approval "
@@ -1157,14 +1292,14 @@ def _validate_duediligence(
     if verdict == "recorded":
         if status != "success":
             failures.append("result.verdict recorded requires result.status success")
-        if outcome not in {"accepted", "rejected"}:
+        if not json_in(outcome, _RECORDED_OUTCOMES):
             failures.append(
                 "result.verdict recorded requires decision.outcome accepted or rejected"
             )
     if (
         verdict == "error"
         and status == "success"
-        and outcome in {"accepted", "rejected"}
+        and json_in(outcome, _RECORDED_OUTCOMES)
     ):
         failures.append(
             "result.verdict is error but a human accepted/rejected decision "
@@ -1205,21 +1340,32 @@ def _release_denied_for(
     return True
 
 
-def result_claims_authority(payload: Any) -> bool:
-    """Return True when the result asserts a human approval, waiver, or decision.
+def result_claims_authority(
+    payload: Any,
+    *,
+    expected_schema: Optional[str] = None,
+    prompt: Optional[str] = None,
+) -> bool:
+    """Return True when a CRA result asserts a human approval, waiver, or decision.
 
-    Used to decide whether the persist boundary must query platform
-    approvals. Structural/offline schema validation does not query.
+    Non-CRA JSON never starts an approval query, even if it contains a
+    ``decision`` object. Expected CRA context (prompt / schema) or an
+    actual CRA schema id is required first.
     """
     if not isinstance(payload, Mapping):
         return False
+    expected = expected_schema or expected_cra_schema_from_prompt(prompt)
     source: Mapping[str, Any] = payload
-    if payload.get("error") in {INVALID_ERROR, MISSING_ERROR, UNSUPPORTED_ERROR}:
+    if json_in(payload.get("error"), _WRAP_ERROR_CODES):
         raw = payload.get("raw")
         if isinstance(raw, Mapping):
             source = raw
         else:
             return False
+    claimed = source.get("schema") if isinstance(source.get("schema"), str) else None
+    looking_at_cra = bool(expected) or is_cra_schema_id(claimed)
+    if not looking_at_cra:
+        return False
     gate = source.get("gate")
     if isinstance(gate, Mapping):
         applied = gate.get("waivers_applied")
@@ -1247,10 +1393,9 @@ def result_claims_authority(payload: Any) -> bool:
             ):
                 return True
     decision = source.get("decision")
-    if isinstance(decision, Mapping) and decision.get("outcome") in {
-        "accepted",
-        "rejected",
-    }:
+    if isinstance(decision, Mapping) and json_in(
+        decision.get("outcome"), _RECORDED_OUTCOMES
+    ):
         return True
     return False
 
@@ -1322,7 +1467,7 @@ def validate_cra_result(
     }:
         schema_id = None
 
-    if payload.get("error") in {INVALID_ERROR, MISSING_ERROR, UNSUPPORTED_ERROR}:
+    if json_in(payload.get("error"), _WRAP_ERROR_CODES):
         detail = str(payload.get("detail") or payload["error"])
         return CraValidationResult(
             ok=False,

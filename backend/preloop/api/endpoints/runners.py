@@ -521,7 +521,7 @@ async def runner_ws(
                         prompt = flow.prompt_template
                 result_artifact = result if isinstance(result, dict) else None
                 approvals, authority = resolve_persist_authority(
-                    result_artifact, db, execution_id
+                    result_artifact, db, execution_id, prompt=prompt
                 )
                 decision = apply_cra_persist_boundary(
                     result_artifact,

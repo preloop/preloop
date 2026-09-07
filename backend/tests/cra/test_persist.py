@@ -28,6 +28,27 @@ def test_non_cra_json_unchanged() -> None:
     assert decision.artifact == payload
 
 
+def test_error_list_does_not_crash() -> None:
+    payload: dict[str, Any] = {"error": []}
+    decision = apply_cra_persist_boundary(payload)
+    assert decision.validation.skipped
+    assert decision.artifact == payload
+
+
+def test_error_object_does_not_crash() -> None:
+    payload: dict[str, Any] = {"error": {}}
+    decision = apply_cra_persist_boundary(payload)
+    assert decision.validation.skipped
+    assert decision.artifact == payload
+
+
+def test_other_schema_error_object_unchanged() -> None:
+    payload = {"schema": "other/v1", "error": {"message": "example"}}
+    decision = apply_cra_persist_boundary(payload)
+    assert decision.validation.skipped
+    assert decision.artifact == payload
+
+
 def test_malformed_known_schema_preserves_raw(
     sbomaudit_result: dict[str, Any],
 ) -> None:
@@ -138,6 +159,27 @@ def test_resolve_authority_does_not_query_non_cra(monkeypatch: Any) -> None:
     )
     approvals, authority = resolve_persist_authority(
         {"status": "success", "summary": "ok"}, MagicMock(), "exec-1"
+    )
+    assert approvals is None
+    assert authority == "offline"
+    assert called["n"] == 0
+
+
+def test_resolve_authority_ignores_non_cra_decision(monkeypatch: Any) -> None:
+    called = {"n": 0}
+
+    def boom(*_args: Any, **_kwargs: Any) -> list[Any]:
+        called["n"] += 1
+        return []
+
+    monkeypatch.setattr(
+        "preloop.models.crud.crud_approval_request.get_multi_by_execution",
+        boom,
+    )
+    approvals, authority = resolve_persist_authority(
+        {"decision": {"outcome": "accepted"}, "status": "ok"},
+        MagicMock(),
+        "exec-1",
     )
     assert approvals is None
     assert authority == "offline"

@@ -14,6 +14,7 @@ from preloop.cra.schemas import (
 from preloop.cra.validate import (
     AUTHORITY_REQUIRED,
     PlatformApproval,
+    result_claims_authority,
     validate_cra_result,
 )
 
@@ -614,3 +615,314 @@ class TestSchemaDifferences:
         result = validate_cra_result(payload)
         assert not result.ok
         assert any("verdict is not part of" in item for item in result.failures)
+
+
+def _kev_finding(
+    finding_id: str = "CVE-2024-0001",
+    *,
+    aliases: list[str] | None = None,
+    severity: str = "critical",
+) -> dict[str, Any]:
+    return {
+        "id": finding_id,
+        "pkg": "libexample",
+        "version": "1.0",
+        "severity": severity,
+        "cvss": 9.8,
+        "epss": None,
+        "kev": True,
+        "fix_version": None,
+        "vex_status": None,
+        "sources": ["osv_purl"],
+        "match_kind": "database",
+        "waived": True,
+        "aliases": aliases,
+    }
+
+
+def _waiver(
+    finding_id: str = "CVE-2024-0001",
+    *,
+    reason: str = "Feature not compiled into the shipped image.",
+    author: str = "release-manager@example.com",
+    date: str = "2026-08-20",
+    approval_id: str | None = None,
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "id": finding_id,
+        "reason": reason,
+        "author": author,
+        "date": date,
+    }
+    if approval_id is not None:
+        entry["approval_id"] = approval_id
+    return entry
+
+
+def _release_with_kevs(
+    payload: dict[str, Any],
+    findings: list[dict[str, Any]],
+    waivers: list[Any],
+    *,
+    passed: bool = True,
+    unwaived: list[Any] | None = None,
+) -> dict[str, Any]:
+    out = clone(payload)
+    out["vuln_scan"]["findings"] = findings
+    counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0}
+    for item in findings:
+        severity = item.get("severity")
+        if severity in counts:
+            counts[str(severity)] += 1
+    out["vuln_scan"]["counts_by_severity"] = counts
+    out["vuln_scan"]["gate"]["passed"] = passed
+    out["vuln_scan"]["gate"]["passed_before_waivers"] = False
+    out["vuln_scan"]["gate"]["waivers_applied"] = waivers
+    if unwaived is not None:
+        out["vuln_scan"]["gate"]["unwaived_failures"] = unwaived
+    out["verdict"] = "pass_with_findings"
+    return out
+
+
+class TestUnhashableJsonMembership:
+    def test_non_cra_error_list_is_unchanged(self) -> None:
+        payload: dict[str, Any] = {"error": []}
+        result = validate_cra_result(payload)
+        assert result.skipped
+        assert result.ok
+
+    def test_non_cra_error_object_is_unchanged(self) -> None:
+        payload: dict[str, Any] = {"error": {}}
+        result = validate_cra_result(payload)
+        assert result.skipped
+
+    def test_other_schema_error_object_is_unchanged(self) -> None:
+        payload = {"schema": "other/v1", "error": {"message": "example"}}
+        result = validate_cra_result(payload)
+        assert result.skipped
+
+    def test_nested_primitives_lists_objects_never_crash(
+        self, sbomaudit_result: dict[str, Any], vulnscan_result: dict[str, Any]
+    ) -> None:
+        mutations: list[tuple[dict[str, Any], dict[str, Any]]] = [
+            (sbomaudit_result, {"error": []}),
+            (sbomaudit_result, {"error": {}}),
+            (sbomaudit_result, {"error": {"message": "example"}}),
+            (sbomaudit_result, {"schema": ["preloop.cra.sbomaudit/v1"]}),
+            (sbomaudit_result, {"schema": {"id": "preloop.cra.sbomaudit/v1"}}),
+            (sbomaudit_result, {"verdict": ["pass"]}),
+            (sbomaudit_result, {"verdict": {"value": "pass"}}),
+            (sbomaudit_result, {"runner": {"kind": ["hosted"]}}),
+            (sbomaudit_result, {"runner": {"kind": {"name": "hosted"}}}),
+            (vulnscan_result, {"status": ["success"]}),
+            (vulnscan_result, {"status": {"ok": True}}),
+            (sbomaudit_result, {"license_flags": [["copyleft"]]}),
+        ]
+        for base, extra in mutations:
+            payload = clone(base)
+            payload.update(extra)
+            result = validate_cra_result(payload)
+            assert result is not None
+
+        expected = "preloop.cra.sbomaudit/v1"
+        malformed = validate_cra_result(
+            {"schema": ["preloop.cra.sbomaudit/v1"], "error": []},
+            expected_schema=expected,
+        )
+        assert malformed.invalid
+
+        nested = clone(vulnscan_result)
+        nested["findings"] = [
+            {
+                **_kev_finding(),
+                "severity": ["critical"],
+                "match_kind": {"kind": "database"},
+                "sources": [["osv_purl"]],
+            }
+        ]
+        nested["counts_by_severity"] = {
+            "critical": 1,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "unknown": 0,
+        }
+        result = validate_cra_result(nested)
+        assert result.invalid
+
+        cra_error = clone(sbomaudit_result)
+        cra_error["error"] = []
+        result = validate_cra_result(cra_error)
+        assert not result.skipped
+
+
+class TestResultClaimsAuthorityContext:
+    def test_non_cra_decision_does_not_claim_authority(self) -> None:
+        assert not result_claims_authority(
+            {"decision": {"outcome": "accepted"}, "status": "success"}
+        )
+
+    def test_non_cra_error_list_does_not_claim_authority(self) -> None:
+        assert not result_claims_authority(
+            {"error": [], "decision": {"outcome": "accepted"}}
+        )
+
+    def test_expected_cra_context_may_claim(
+        self, duediligence_result: dict[str, Any]
+    ) -> None:
+        prompt = (
+            "Required shape (preloop.cra.duediligence/v1): "
+            '{ "schema": "preloop.cra.duediligence/v1" }'
+        )
+        assert result_claims_authority(duediligence_result, prompt=prompt)
+
+
+class TestGateWaiverRecompute:
+    def test_one_waiver_does_not_cover_second_kev(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        waiver = _waiver("CVE-2024-0001")
+        payload = _release_with_kevs(
+            releaseaudit_result,
+            [_kev_finding("CVE-2024-0001"), _kev_finding("CVE-2024-0002")],
+            [waiver],
+            passed=True,
+            unwaived=[],
+        )
+        result = validate_cra_result(payload, delivered_waivers=[waiver])
+        assert not result.ok
+        assert any("unwaived" in item for item in result.failures)
+
+    def test_non_object_applied_entry_is_reported(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        waiver = _waiver()
+        payload = _release_with_kevs(
+            releaseaudit_result,
+            [_kev_finding()],
+            ["not-an-object", waiver],
+            passed=True,
+        )
+        result = validate_cra_result(payload, delivered_waivers=[waiver])
+        assert not result.ok
+        assert any("not an object" in item for item in result.failures)
+
+    def test_ghsa_alias_matches_cve_waiver(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        waiver = _waiver("CVE-2024-0001")
+        payload = _release_with_kevs(
+            releaseaudit_result,
+            [_kev_finding("GHSA-xxxx-yyyy-zzzz", aliases=["CVE-2024-0001"])],
+            [waiver],
+            passed=True,
+            unwaived=[],
+        )
+        result = validate_cra_result(payload, delivered_waivers=[waiver])
+        assert result.ok, result.failures
+
+    def test_changed_delivered_waiver_is_rejected(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        delivered = _waiver(reason="Original approved reason.")
+        payload = _release_with_kevs(
+            releaseaudit_result,
+            [_kev_finding()],
+            [_waiver(reason="Agent altered the reason.")],
+            passed=True,
+        )
+        result = validate_cra_result(payload, delivered_waivers=[delivered])
+        assert not result.ok
+        assert any("delivered waiver contents" in item for item in result.failures)
+
+    def test_unrelated_delete_file_approval_cannot_waive(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        waiver = _waiver(approval_id="appr-delete")
+        payload = _release_with_kevs(
+            releaseaudit_result, [_kev_finding()], [waiver], passed=True
+        )
+        result = validate_cra_result(
+            payload,
+            platform_approvals=[
+                PlatformApproval(
+                    id="appr-delete",
+                    status="approved",
+                    tool_name="delete_file",
+                    operation="delete /workspace/secret.txt",
+                    tool_args={"path": "/workspace/secret.txt"},
+                )
+            ],
+        )
+        assert not result.ok
+        assert any("request_approval" in item for item in result.failures)
+
+    def test_request_approval_for_different_finding_cannot_waive(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        waiver = _waiver(approval_id="appr-1")
+        payload = _release_with_kevs(
+            releaseaudit_result, [_kev_finding()], [waiver], passed=True
+        )
+        result = validate_cra_result(
+            payload,
+            platform_approvals=[
+                PlatformApproval(
+                    id="appr-1",
+                    status="approved",
+                    tool_name="request_approval",
+                    operation="Waive CVE-2024-9999 in the shipped image",
+                    tool_args={
+                        "operation": "Waive CVE-2024-9999 in the shipped image",
+                        "context": "Unrelated advisory CVE-2024-9999",
+                        "reasoning": "Different finding",
+                    },
+                )
+            ],
+        )
+        assert not result.ok
+
+    def test_scoped_request_approval_may_waive(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        waiver = _waiver(approval_id="appr-1")
+        payload = _release_with_kevs(
+            releaseaudit_result,
+            [_kev_finding()],
+            [waiver],
+            passed=True,
+            unwaived=[],
+        )
+        result = validate_cra_result(
+            payload,
+            platform_approvals=[
+                PlatformApproval(
+                    id="appr-1",
+                    status="approved",
+                    tool_name="request_approval",
+                    operation="Waive CVE-2024-0001 in the shipped image",
+                    tool_args={
+                        "operation": "Waive CVE-2024-0001 in the shipped image",
+                        "context": "Release gate for CVE-2024-0001",
+                        "reasoning": "Not reachable in the compiled image",
+                    },
+                )
+            ],
+        )
+        assert result.ok, result.failures
+
+    def test_partial_coverage_is_rejected(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        first = _waiver("CVE-2024-0001")
+        payload = _release_with_kevs(
+            releaseaudit_result,
+            [_kev_finding("CVE-2024-0001"), _kev_finding("CVE-2024-0002")],
+            [first],
+            passed=True,
+            unwaived=["CVE-2024-0002"],
+        )
+        result = validate_cra_result(payload, delivered_waivers=[first])
+        assert not result.ok
+        joined = " ".join(result.failures)
+        assert "CVE-2024-0002" in joined or "unwaived" in joined

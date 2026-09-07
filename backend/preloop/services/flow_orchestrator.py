@@ -3046,7 +3046,7 @@ class FlowExecutionOrchestrator:
 
         execution_id = getattr(self.execution_log, "id", None)
         approvals, authority = resolve_persist_authority(
-            artifact, self.db, execution_id
+            artifact, self.db, execution_id, prompt=self._cra_prompt_text()
         )
         decision = apply_cra_persist_boundary(
             artifact,
