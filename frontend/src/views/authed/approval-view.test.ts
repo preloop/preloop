@@ -1290,6 +1290,17 @@ describe('ApprovalView', () => {
       expect(element.shadowRoot?.querySelector('.decision-bar')).to.not.exist;
     });
 
+    it('ignores the decision keys on a question', async () => {
+      // Same registry rule as the hidden decision bar: a question is
+      // answered in its panel, so there is no Approve to reach for.
+      await renderQuestion();
+
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
+      await aTimeout(0);
+      expect(decisionCall('approve'), 'a key approved a question').to.be
+        .undefined;
+    });
+
     it('submits selected_option when an option is clicked', async () => {
       const { element, panel } = await renderQuestion();
 

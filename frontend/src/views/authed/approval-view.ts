@@ -28,6 +28,7 @@ import {
   millisUntilExpiry,
   normalizeApprovalRequest,
 } from '../../utils/approvals';
+import { isDecidableRequest } from '../../actions/approval-actions';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import { formatRelativeTime } from '../../utils/date';
 import {
@@ -548,8 +549,22 @@ export class ApprovalView extends AuthedElement {
     );
   }
 
+  /**
+   * Whether Approve and Deny are on offer at all: pending, unexpired and not
+   * a question. One rule, from the shared registry, used by the decision bar
+   * and by the keyboard shortcuts that stand in for it.
+   */
+  private get canDecide(): boolean {
+    return (
+      !!this.approvalRequest &&
+      isDecidableRequest(this.approvalRequest, this.nowMs)
+    );
+  }
+
   private handleKeyDown = (event: KeyboardEvent) => {
-    if (!this.isLive || this.isQuestion || this.submitting) return;
+    // The keys reach for the same actions the decision bar shows, so they
+    // ask the registry the same question (src/actions/approval-actions.ts).
+    if (!this.canDecide || this.submitting) return;
     // A confirmation is a question in its own right: answer it with the mouse
     // or the dialog's own keys, not with the page shortcuts underneath it.
     if (this.confirming) return;
@@ -1266,7 +1281,7 @@ export class ApprovalView extends AuthedElement {
 
       ${this.decisionTaken ? this.renderPostDecision() : ''}
       ${
-        isPending && !isQuestion
+        isDecidableRequest(request, this.nowMs)
           ? this.renderDecisionBar(request, countdown, expiringSoon)
           : ''
       }
