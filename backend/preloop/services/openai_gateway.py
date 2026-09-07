@@ -6399,7 +6399,11 @@ class OpenAIGatewayService:
         return error
 
     def _openai_stream_error_event(
-        self, exc: Exception, error: ModelGatewayAPIError | None = None
+        self,
+        exc: Exception,
+        error: ModelGatewayAPIError | None = None,
+        *,
+        ai_model: Optional[AIModel] = None,
     ) -> str:
         """Render a mid-stream failure as an OpenAI-style SSE error event.
 
@@ -6408,14 +6412,21 @@ class OpenAIGatewayService:
             error: Error already classified by ``_stream_error``; pass it so
                 the admin alert in ``_normalize_upstream_error`` fires once
                 per failure instead of twice (#210).
+            ai_model: Resolved upstream model for attribution when classifying here.
         """
         gateway_error = (
-            error if error is not None else self._stream_error("openai", exc)
+            error
+            if error is not None
+            else self._stream_error("openai", exc, ai_model=ai_model)
         )
         return self._sse_event(gateway_error.to_payload())
 
     def _responses_stream_error_event(
-        self, exc: Exception, error: ModelGatewayAPIError | None = None
+        self,
+        exc: Exception,
+        error: ModelGatewayAPIError | None = None,
+        *,
+        ai_model: Optional[AIModel] = None,
     ) -> str:
         """Render a mid-stream failure as a Responses-API SSE error event.
 
@@ -6424,9 +6435,12 @@ class OpenAIGatewayService:
             error: Error already classified by ``_stream_error``; pass it so
                 the admin alert in ``_normalize_upstream_error`` fires once
                 per failure instead of twice (#210).
+            ai_model: Resolved upstream model for attribution when classifying here.
         """
         gateway_error = (
-            error if error is not None else self._stream_error("openai", exc)
+            error
+            if error is not None
+            else self._stream_error("openai", exc, ai_model=ai_model)
         )
         return self._sse_event(
             {
@@ -6438,7 +6452,11 @@ class OpenAIGatewayService:
         )
 
     def _anthropic_stream_error_event(
-        self, exc: Exception, error: ModelGatewayAPIError | None = None
+        self,
+        exc: Exception,
+        error: ModelGatewayAPIError | None = None,
+        *,
+        ai_model: Optional[AIModel] = None,
     ) -> str:
         """
         Render a mid-stream failure as an Anthropic-style SSE error event.
@@ -6448,9 +6466,12 @@ class OpenAIGatewayService:
             error: Error already classified by ``_stream_error``; pass it so
                 the admin alert in ``_normalize_upstream_error`` fires once
                 per failure instead of twice.
+            ai_model: Resolved upstream model for attribution when classifying here.
         """
         gateway_error = (
-            error if error is not None else self._stream_error("anthropic", exc)
+            error
+            if error is not None
+            else self._stream_error("anthropic", exc, ai_model=ai_model)
         )
         return self._anthropic_sse_event("error", gateway_error.to_payload())
 
@@ -6983,16 +7004,18 @@ class OpenAIGatewayService:
             classified.error_class == ERROR_CLASS_UPSTREAM_DISCONNECT
             or (streaming and classified.error_class == ERROR_CLASS_NETWORK)
         )
-        if is_disconnect:
+        if is_disconnect and classified is not None:
             # Disconnects remain visible to clients and accounting, but an
-            # individual transport interruption is not an admin page.
+            # individual transport interruption is not an admin page. Preserve
+            # the original class here; _stream_error maps network failures to
+            # upstream_disconnect in the client-facing SSE error.
             logger.warning(
                 "Gateway upstream disconnect: protocol=%s provider=%s model=%s "
                 "error_class=%s",
                 provider,
                 getattr(ai_model, "provider_name", None),
                 getattr(ai_model, "model_identifier", None),
-                ERROR_CLASS_UPSTREAM_DISCONNECT,
+                classified.error_class,
             )
         if status_code >= 500 and not is_disconnect:
             try:

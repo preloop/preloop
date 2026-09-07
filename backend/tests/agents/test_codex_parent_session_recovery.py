@@ -131,7 +131,9 @@ def _run_generated_recovery(
         patch.object(
             agent,
             "_prepare_git_post_execution_commands",
-            return_value=f'echo published >> "{published}"',
+            # Expand after script path rewriting so Linux /tmp fixtures are
+            # not substituted a second time inside the publication path.
+            return_value='echo published >> "$TEST_ROOT/published"',
         ),
     ):
         blocks = agent._build_cli_session_blocks(_context())
@@ -140,6 +142,7 @@ def _run_generated_recovery(
             script = agent._build_codex_script(_context())
     invocation = script.split('echo "PRELOOP_AGENT_EXEC_START"', 1)[1]
     invocation = invocation.replace("/tmp/", str(tmp_path) + "/")
+    invocation = invocation.replace("/workspace/", str(tmp_path) + "/")
     invocation = invocation.replace("sleep $((2 *", "sleep $((0 *")
     fake = tmp_path / "codex"
     fake.write_text(

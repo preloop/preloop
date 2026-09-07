@@ -57,7 +57,9 @@ def _run_generated(
         patch.object(
             agent,
             "_prepare_git_post_execution_commands",
-            return_value=f'echo published >> "{published}"',
+            # Expand after script path rewriting so Linux /tmp fixtures are
+            # not substituted a second time inside the publication path.
+            return_value='echo published >> "$TEST_ROOT/published"',
         ),
     ):
         if harness in ("codex", "opencode"):

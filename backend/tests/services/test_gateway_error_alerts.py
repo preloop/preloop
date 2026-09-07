@@ -389,3 +389,28 @@ def test_network_error_remapped_to_stream_disconnect_does_not_email() -> None:
         error = service._stream_error("openai", ConnectionError("connection reset"))
     assert error.error_class == "upstream_disconnect"
     notify.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("renderer", "protocol"),
+    [
+        ("_openai_stream_error_event", "openai"),
+        ("_responses_stream_error_event", "openai"),
+        ("_anthropic_stream_error_event", "anthropic"),
+    ],
+)
+def test_direct_stream_error_renderer_preserves_model_and_original_network_class(
+    renderer: str, protocol: str
+) -> None:
+    service = _service()
+    model = SimpleNamespace(provider_name="deepseek", model_identifier="test-model")
+    with (
+        patch("preloop.sync.tasks.notify_admins") as notify,
+        patch("preloop.services.openai_gateway.logger.warning") as warning,
+    ):
+        frame = getattr(service, renderer)(
+            ConnectionError("connection reset"), ai_model=model
+        )
+    assert "upstream_disconnect" in frame
+    assert warning.call_args.args[1:] == (protocol, "deepseek", "test-model", "network")
+    notify.assert_not_called()
