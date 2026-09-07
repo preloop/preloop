@@ -1,10 +1,11 @@
-import { expect, fixture, html, waitUntil } from '@open-wc/testing';
+import { expect, fixture, html, nextFrame, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import './api-keys-view.ts';
 import type { ApiKeysView } from './api-keys-view';
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
 import { resetConfirmDialogForTests } from '../../../components/confirm-dialog';
+import { bulkActionButton, bulkCountText } from '../../../utils/test-bulk-bar';
 
 describe('ApiKeysView', () => {
   let fetchStub: sinon.SinonStub;
@@ -424,9 +425,10 @@ describe('ApiKeysView', () => {
     );
     await element.updateComplete;
 
-    // Nothing selected, nothing rendered: not even the wrapper, which would
-    // otherwise cost the table 8px of empty margin.
-    expect(element.shadowRoot!.querySelector('.bulk-bar-slot')).to.equal(null);
+    // Nothing selected: the bar is over the table's header row from the
+    // first paint, hidden, so ticking a box costs the table no height.
+    const idleBar = element.shadowRoot!.querySelector('list-bulk-bar')!;
+    expect(getComputedStyle(idleBar).visibility).to.equal('hidden');
 
     // Pick the first row, then shift-extend to the third.
     element.selection.toggle('key-a');
@@ -438,20 +440,14 @@ describe('ApiKeysView', () => {
       'key-b',
       'key-c',
     ]);
-    expect(
-      bar.shadowRoot!.querySelector('[data-testid="bulk-count"]')!.textContent
-    ).to.contain('3 selected');
+    expect(bulkCountText(bar)).to.contain('3 selected');
     expect(
       element
         .shadowRoot!.querySelector('tr[data-selection-id="key-b"]')!
         .getAttribute('aria-selected')
     ).to.equal('true');
 
-    const revokeButton = bar.shadowRoot!.querySelector<HTMLElement>(
-      'sl-button[data-action="revoke"]'
-    )!;
-    await (revokeButton as unknown as { updateComplete: Promise<unknown> })
-      .updateComplete;
+    const revokeButton = (await bulkActionButton(bar, 'revoke'))!;
     revokeButton.click();
 
     await waitUntil(
@@ -489,6 +485,51 @@ describe('ApiKeysView', () => {
       '/api/v1/auth/api-keys/key-c',
     ]);
     resetConfirmDialogForTests();
+  });
+
+  it('takes over the table header instead of pushing the rows down', async () => {
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'API keys view did not finish loading'
+    );
+    await element.updateComplete;
+
+    // This page has no list-toolbar, so the bar takes the header row: the
+    // fallback path. The body must not move an inch either way.
+    expect(element.shadowRoot!.querySelector('list-toolbar')).to.equal(null);
+    const bodyTop = () =>
+      element.shadowRoot!.querySelector('tbody')!.getBoundingClientRect().top;
+    const before = bodyTop();
+
+    element.selection.toggle('key-1');
+    await element.updateComplete;
+    await nextFrame();
+
+    const bar = element.shadowRoot!.querySelector('list-bulk-bar')!;
+    expect(bulkCountText(bar)).to.contain('1 selected');
+    expect(getComputedStyle(bar).visibility).to.equal('visible');
+    const headerCell = element.shadowRoot!.querySelector(
+      'thead th:last-child'
+    )!;
+    expect(
+      getComputedStyle(headerCell).visibility,
+      'the column names stay behind the bar'
+    ).to.equal('hidden');
+    expect(bodyTop(), 'selecting pushed the key rows down').to.equal(before);
+
+    // Escape gives the header back, at the same place.
+    element.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+    );
+    await element.updateComplete;
+    await nextFrame();
+    expect(element.selection.count).to.equal(0);
+    expect(getComputedStyle(bar).visibility).to.equal('hidden');
+    expect(getComputedStyle(headerCell).visibility).to.equal('visible');
+    expect(bodyTop(), 'clearing moved the key rows').to.equal(before);
   });
 
   it('renders Agent badge when managed_agent_id is present', async () => {

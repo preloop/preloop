@@ -650,19 +650,34 @@ export class ApiKeysView extends LitElement {
     ></list-select-checkbox>`;
   }
 
+  /**
+   * The bulk bar, over the table's own header row.
+   *
+   * This page has no filter bar to hand over, so it takes the fallback the
+   * mail clients use: the header row is where the bar goes. The bar is laid
+   * out on top of that row (`position: absolute` inside the `thead`), never
+   * inserted into the table, so the row keeps its exact height and no key
+   * moves under the pointer that just picked it. The column labels and the
+   * select-all box go `visibility: hidden` underneath, which keeps their
+   * geometry and takes them out of the tab order while they are covered.
+   */
   private renderBulkBar() {
-    // Nothing at all at zero selected, wrapper included: an empty slot with a
-    // margin would push every collection down by 8px it never had before.
-    if (this.selection.count === 0) return nothing;
-    return html`<div class="bulk-bar-slot">
+    return html`<div
+      class="head-bulk-bar"
+      ?data-hidden=${this.selection.count === 0}
+      ?inert=${this.selection.count === 0}
+    >
       <list-bulk-bar
+        docked
         label="API key bulk actions"
         .count=${this.selection.count}
+        .total=${this.selection.order.length}
         .actions=${this.bulkActions}
         .running=${this.selection.running}
         .progressDone=${this.selection.progressDone}
         .progressTotal=${this.selection.progressTotal}
         @bulk-action=${() => void this.handleBulkRevoke()}
+        @selection-select-all=${() => this.selection.toggleAll(true)}
         @selection-clear=${() => this.selection.clear()}
       ></list-bulk-bar>
     </div>`;
@@ -709,7 +724,6 @@ export class ApiKeysView extends LitElement {
       const shownLabel = `Showing ${this.apiKeys.length} keys, including ${hiddenCount} revoked or expired`;
 
       return html`
-        ${this.renderBulkBar()}
         <sl-card class="table-card">
           <table
             class="styled-table"
@@ -717,9 +731,11 @@ export class ApiKeysView extends LitElement {
             aria-multiselectable="true"
             aria-label="API keys"
           >
-            <thead>
+            <thead class=${this.selection.count > 0 ? 'selecting' : ''}>
               <tr>
-                <th class="select-cell">${this.renderSelectAll()}</th>
+                <th class="select-cell">
+                  ${this.renderSelectAll()} ${this.renderBulkBar()}
+                </th>
                 <th>Name</th>
                 <th>Status</th>
                 <th>Created</th>
@@ -1023,6 +1039,35 @@ export class ApiKeysView extends LitElement {
       table {
         width: 100%;
         border-collapse: collapse;
+      }
+      /* The bulk bar's containing block: the header row, so the bar covers
+         exactly that row and the table below it cannot move. */
+      thead {
+        position: relative;
+      }
+      .head-bulk-bar {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        padding: 0 var(--sl-spacing-medium);
+        background: var(--sl-panel-background-color);
+        /* Visible inside a header the selection has hidden. */
+        visibility: visible;
+        transition: opacity 120ms ease-out;
+      }
+      .head-bulk-bar[data-hidden] {
+        visibility: hidden;
+        opacity: 0;
+        pointer-events: none;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .head-bulk-bar {
+          transition: none;
+        }
+      }
+      thead.selecting th {
+        visibility: hidden;
       }
       th,
       td {

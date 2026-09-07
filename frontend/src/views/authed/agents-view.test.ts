@@ -1,4 +1,4 @@
-import { expect, fixture, html, waitUntil } from '@open-wc/testing';
+import { expect, fixture, html, nextFrame, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import './agents-view.ts';
@@ -6,6 +6,7 @@ import type { AgentListRow, AgentsView } from './agents-view';
 import { sortAgentListRows } from './agents-view';
 import { loadShoelaceTokens } from '../../utils/test-shoelace-theme';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
+import { bulkActionButton, bulkCountText } from '../../utils/test-bulk-bar';
 
 function makeAgent(
   id: string,
@@ -1075,10 +1076,11 @@ describe('AgentsView', () => {
     const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
     await waitForAgents(el);
 
-    expect(
-      el.shadowRoot!.querySelector('.bulk-bar-slot'),
-      'hidden at zero, wrapper included'
-    ).to.equal(null);
+    // The bar is in the toolbar's row from the first paint, hidden: it is
+    // the row's other occupant, not something inserted on the first click.
+    const idleBar = el.shadowRoot!.querySelector('list-bulk-bar')!;
+    expect(idleBar, 'the bar shares the toolbar row').to.exist;
+    expect(getComputedStyle(idleBar).visibility).to.equal('hidden');
 
     // x on the focused row, then shift+X three rows down: two keys, three agents.
     const rowLink = (id: string) =>
@@ -1115,22 +1117,15 @@ describe('AgentsView', () => {
         .shadowRoot!.querySelector(`tr[data-selection-id="${order[1]}"]`)!
         .getAttribute('aria-selected')
     ).to.equal('true');
-    expect(
-      bar.shadowRoot!.querySelector('[data-testid="bulk-count"]')!.textContent
-    ).to.contain('3 selected');
+    expect(bulkCountText(bar)).to.contain('3 selected');
+    expect(getComputedStyle(bar).visibility).to.equal('visible');
 
     // Decommission stays a destructive action here too (DESIGN.md).
-    const decommission = bar.shadowRoot!.querySelector<HTMLElement>(
-      'sl-button[data-action="decommission"]'
-    )!;
+    const decommission = (await bulkActionButton(bar, 'decommission'))!;
     expect(decommission.getAttribute('variant')).to.equal('danger');
     expect(decommission.hasAttribute('outline')).to.equal(true);
 
-    const pause = bar.shadowRoot!.querySelector<HTMLElement>(
-      'sl-button[data-action="suspend"]'
-    )!;
-    await (pause as unknown as { updateComplete: Promise<unknown> })
-      .updateComplete;
+    const pause = (await bulkActionButton(bar, 'suspend'))!;
     pause.click();
 
     await waitUntil(
@@ -1184,6 +1179,145 @@ describe('AgentsView', () => {
     resetConfirmDialogForTests();
   });
 
+  it('never moves the table when a selection comes and goes', async () => {
+    agentItems = [
+      makeAgent('agent-1', 'Alpha runner', 'claude_code'),
+      makeAgent('agent-2', 'Beta runner', 'claude_code'),
+      makeAgent('agent-3', 'Gamma runner', 'claude_code'),
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    // What the founder reported: the table was pushed down the moment a row
+    // was picked, so the row moved out from under the pointer that picked it.
+    const tableTop = () =>
+      el
+        .shadowRoot!.querySelector('table.agents-table')!
+        .getBoundingClientRect().top;
+    const settle = async () => {
+      await el.updateComplete;
+      await nextFrame();
+    };
+    const before = tableTop();
+
+    el.selection.toggle('agent-1');
+    await settle();
+    expect(tableTop(), 'one row selected').to.equal(before);
+
+    el.selection.toggleAll(true);
+    await settle();
+    expect(tableTop(), 'every row selected').to.equal(before);
+
+    el.selection.clear();
+    await settle();
+    expect(tableTop(), 'selection cleared').to.equal(before);
+  });
+
+  it('never moves the cards either: they share the toolbar swap', async () => {
+    localStorage.setItem('preloop.agents.view_mode', 'cards');
+    agentItems = [
+      makeAgent('agent-1', 'Alpha runner', 'claude_code'),
+      makeAgent('agent-2', 'Beta runner', 'claude_code'),
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const cardsTop = () =>
+      el.shadowRoot!.querySelector('.cards')!.getBoundingClientRect().top;
+    const before = cardsTop();
+
+    el.selection.toggle('agent-1');
+    await el.updateComplete;
+    await nextFrame();
+    expect(cardsTop(), 'one card selected').to.equal(before);
+
+    el.selection.clear();
+    await el.updateComplete;
+    await nextFrame();
+    expect(cardsTop(), 'selection cleared').to.equal(before);
+  });
+
+  it('gives the search text and the filters back when the selection clears', async () => {
+    agentItems = [
+      makeAgent('agent-1', 'Alpha runner', 'claude_code'),
+      makeAgent('agent-2', 'Beta runner', 'claude_code'),
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const toolbar = el.shadowRoot!.querySelector('list-toolbar')!;
+    const search = toolbar.shadowRoot!.querySelector<
+      HTMLElement & { value: string }
+    >('sl-input.search-input')!;
+    search.value = 'alpha';
+    search.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+    await el.updateComplete;
+    const lastSeen = toolbar.querySelector<HTMLElement & { value: string }>(
+      'sl-select'
+    )!;
+    lastSeen.value = 'last_24_hours';
+    lastSeen.dispatchEvent(new CustomEvent('sl-change', { bubbles: true }));
+    await el.updateComplete;
+    await nextFrame();
+
+    el.selection.toggle('agent-1');
+    await el.updateComplete;
+    await nextFrame();
+    expect(toolbar.hasAttribute('selecting')).to.equal(true);
+    expect(getComputedStyle(search).visibility).to.equal('hidden');
+
+    // Escape is the way out, and the toolbar comes back exactly as it was:
+    // the filters were hidden, not unmounted.
+    el.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      })
+    );
+    await el.updateComplete;
+    await nextFrame();
+
+    expect(el.selection.count).to.equal(0);
+    expect(toolbar.hasAttribute('selecting')).to.equal(false);
+    expect(getComputedStyle(search).visibility).to.equal('visible');
+    expect(search.value, 'search text survived').to.equal('alpha');
+    expect(lastSeen.value, 'the filter survived').to.equal('last_24_hours');
+  });
+
+  it('offers select all and counts out loud from the bar it docks in', async () => {
+    agentItems = [
+      makeAgent('agent-1', 'Alpha runner', 'claude_code'),
+      makeAgent('agent-2', 'Beta runner', 'claude_code'),
+      makeAgent('agent-3', 'Gamma runner', 'claude_code'),
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    el.selection.toggle('agent-1');
+    await el.updateComplete;
+    await nextFrame();
+
+    const bar = el.shadowRoot!.querySelector('list-bulk-bar')!;
+    const toolbar = bar.shadowRoot!.querySelector('[role="toolbar"]')!;
+    expect(toolbar.getAttribute('aria-label')).to.equal('Agent bulk actions');
+    const live = bar.shadowRoot!.querySelector('[aria-live="polite"]')!;
+    expect(live.textContent).to.contain('1 selected');
+
+    const selectAll = bar.shadowRoot!.querySelector<HTMLElement>(
+      'sl-button[data-action="select-all"]'
+    )!;
+    expect(selectAll.textContent!.trim()).to.equal('Select all 3');
+    selectAll.click();
+    await el.updateComplete;
+    expect(el.selection.count).to.equal(3);
+  });
+
   it('leaves no bulk bar over the canvas after switching views', async () => {
     agentItems = [
       makeAgent('agent-1', 'Alpha runner', 'claude_code'),
@@ -1198,9 +1332,7 @@ describe('AgentsView', () => {
     await el.updateComplete;
 
     expect(
-      el
-        .shadowRoot!.querySelector('list-bulk-bar')!
-        .shadowRoot!.querySelector('[data-testid="bulk-count"]')!.textContent
+      bulkCountText(el.shadowRoot!.querySelector('list-bulk-bar')!)
     ).to.contain('2 selected');
 
     const toolbar = el.shadowRoot!.querySelector('list-toolbar')!;
@@ -1211,15 +1343,21 @@ describe('AgentsView', () => {
     ).find((button) => button.getAttribute('data-view') === 'canvas')!;
     canvasButton.click();
     await el.updateComplete;
+    // The toolbar and the swap inside it update after their host does.
+    await nextFrame();
 
     // One pass, not two: the canvas has no checkboxes, so the bar has to be
     // gone in the same frame that painted the canvas.
     expect(el.selection.count).to.equal(0);
     expect(el.shadowRoot!.querySelector('table.agents-table')).to.not.exist;
+    const bar = el.shadowRoot!.querySelector('list-bulk-bar')!;
     expect(
-      el.shadowRoot!.querySelector('.bulk-bar-slot'),
+      getComputedStyle(bar).visibility,
       'a dead bulk bar is still on screen'
-    ).to.equal(null);
+    ).to.equal('hidden');
+    expect(
+      el.shadowRoot!.querySelector('list-toolbar')!.hasAttribute('selecting')
+    ).to.equal(false);
   });
 
   it('paints one card per selectable row, none for a deduplicated agent', async () => {

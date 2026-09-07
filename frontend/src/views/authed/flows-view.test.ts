@@ -1,4 +1,4 @@
-import { html, fixture, expect, waitUntil } from '@open-wc/testing';
+import { html, fixture, expect, nextFrame, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import '../../components/view-header.ts';
@@ -15,6 +15,7 @@ import {
 import { invalidateApiCaches } from '../../api';
 import { loadShoelaceTokens } from '../../utils/test-shoelace-theme';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
+import { bulkActionButton, bulkCountText } from '../../utils/test-bulk-bar';
 
 describe('FlowsView', () => {
   let fetchStub: sinon.SinonStub;
@@ -102,8 +103,10 @@ describe('FlowsView', () => {
     );
     await element.updateComplete;
 
-    // Nothing selected, nothing rendered, wrapper included.
-    expect(element.shadowRoot!.querySelector('.bulk-bar-slot')).to.equal(null);
+    // Nothing selected: the bar is in the toolbar's row from the first
+    // paint, hidden, so ticking a box swaps rather than inserts.
+    const idleBar = element.shadowRoot!.querySelector('list-bulk-bar')!;
+    expect(getComputedStyle(idleBar).visibility).to.equal('hidden');
 
     // x on the focused row, then shift+X to the third: two keys, three rows.
     const rowLink = (id: string) =>
@@ -136,15 +139,9 @@ describe('FlowsView', () => {
       'flow-3',
     ]);
     const bar = element.shadowRoot!.querySelector('list-bulk-bar')!;
-    expect(
-      bar.shadowRoot!.querySelector('[data-testid="bulk-count"]')!.textContent
-    ).to.contain('3 selected');
+    expect(bulkCountText(bar)).to.contain('3 selected');
 
-    const pause = bar.shadowRoot!.querySelector<HTMLElement>(
-      'sl-button[data-action="pause"]'
-    )!;
-    await (pause as unknown as { updateComplete: Promise<unknown> })
-      .updateComplete;
+    const pause = (await bulkActionButton(bar, 'pause'))!;
     pause.click();
 
     const patches = () =>
@@ -197,6 +194,54 @@ describe('FlowsView', () => {
     resetConfirmDialogForTests();
   });
 
+  it('never moves the flows table when a selection comes and goes', async () => {
+    const mockFlows = [
+      { id: 'flow-1', name: 'Nightly sweep', is_enabled: true },
+      { id: 'flow-2', name: 'PR reviewer', is_enabled: true },
+      { id: 'flow-3', name: 'Release notes', is_enabled: true },
+    ];
+    fetchStub = createFetchStub(mockFlows, []);
+    const element = (await fixture(
+      html`<flows-view></flows-view>`
+    )) as FlowsView;
+    await waitUntil(
+      () => (element as any).flows?.length === 3,
+      'Flows did not load'
+    );
+    await element.updateComplete;
+
+    const tableTop = () =>
+      element
+        .shadowRoot!.querySelector('table.flows-table')!
+        .getBoundingClientRect().top;
+    const settle = async () => {
+      await element.updateComplete;
+      await nextFrame();
+    };
+    const before = tableTop();
+
+    element.selection.toggle('flow-1');
+    await settle();
+    expect(tableTop(), 'one row selected').to.equal(before);
+
+    element.selection.toggleAll(true);
+    await settle();
+    expect(tableTop(), 'every row selected').to.equal(before);
+
+    element.selection.clear();
+    await settle();
+    expect(tableTop(), 'selection cleared').to.equal(before);
+
+    // And the search field is back, with what was typed in it.
+    const toolbar = element.shadowRoot!.querySelector('list-toolbar')!;
+    expect(toolbar.hasAttribute('selecting')).to.equal(false);
+    expect(
+      getComputedStyle(
+        toolbar.shadowRoot!.querySelector('sl-input.search-input')!
+      ).visibility
+    ).to.equal('visible');
+  });
+
   it('names the flows it is about to delete and clears with Escape', async () => {
     const mockFlows = [
       { id: 'flow-1', name: 'Nightly sweep', is_enabled: true },
@@ -215,14 +260,10 @@ describe('FlowsView', () => {
     element.selection.toggleAll(true);
     await element.updateComplete;
     const bar = element.shadowRoot!.querySelector('list-bulk-bar')!;
-    const remove = bar.shadowRoot!.querySelector<HTMLElement>(
-      'sl-button[data-action="delete"]'
-    )!;
+    const remove = (await bulkActionButton(bar, 'delete'))!;
     // DESIGN.md: destructive is danger outline, away from the everyday ones.
     expect(remove.getAttribute('variant')).to.equal('danger');
     expect(remove.hasAttribute('outline')).to.equal(true);
-    await (remove as unknown as { updateComplete: Promise<unknown> })
-      .updateComplete;
     remove.click();
 
     await waitUntil(

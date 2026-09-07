@@ -33,6 +33,7 @@ import {
   type BulkResult,
 } from '../../components/list-selection';
 import '../../components/list-selection';
+import '../../components/list-bar-swap';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import '../../components/approval-rule-context-block';
 import '../../components/attribution-line';
@@ -1365,27 +1366,34 @@ export class ApprovalsView extends AuthedElement {
     indexOffset: number
   ) {
     if (requests.length === 0) return '';
+    const header = html`
+      <div class="group-header">
+        <h2>${title}</h2>
+        <sl-badge pill class="chip" variant=${waiting ? 'warning' : 'neutral'}>
+          ${requests.length}
+        </sl-badge>
+        ${
+          waiting
+            ? html`<span class="key-legend"
+                >J and K move · A approve · D deny · X select · Enter
+                opens</span
+              >`
+            : ''
+        }
+      </div>
+    `;
     return html`
       <div class="approval-group">
-        <div class="group-header">
-          <h2>${title}</h2>
-          <sl-badge
-            pill
-            class="chip"
-            variant=${waiting ? 'warning' : 'neutral'}
-          >
-            ${requests.length}
-          </sl-badge>
-          ${
-            waiting
-              ? html`<span class="key-legend"
-                  >J and K move · A approve · D deny · X select · Enter
-                  opens</span
-                >`
-              : ''
-          }
-        </div>
-        ${waiting ? this.renderBulkBar() : ''}
+        ${
+          // The waiting group has no filter bar of its own, so its heading is
+          // the row the bulk bar takes over: same height, and the rows under
+          // it never move when the operator picks one.
+          waiting
+            ? html`<list-bar-swap ?selecting=${this.selection.count > 0}>
+                ${header} ${this.renderBulkBar()}
+              </list-bar-swap>`
+            : header
+        }
         <div
           class="approval-list"
           role="grid"
@@ -1413,18 +1421,22 @@ export class ApprovalsView extends AuthedElement {
   }
 
   /**
-   * The shared bulk bar, on one hairline between the group heading and its
-   * rows. It renders nothing until something is selected, so a page with no
-   * selection looks exactly as it did before.
+   * The shared bulk bar, docked in the "Waiting for you" heading rather than
+   * inserted under it: the heading is this page's toolbar row, and taking it
+   * over is what keeps the request rows still when a box is ticked.
    */
   private renderBulkBar() {
     return html`
       <list-bulk-bar
+        slot="bulk"
+        docked
         label="Approval bulk actions"
         .count=${this.selection.count}
+        .total=${this.selection.order.length}
         .actions=${this.bulkActions}
         .running=${this.selection.running}
         @bulk-action=${this.handleBulkAction}
+        @selection-select-all=${() => this.selection.toggleAll(true)}
         @selection-clear=${() => this.selection.clear()}
       ></list-bulk-bar>
     `;

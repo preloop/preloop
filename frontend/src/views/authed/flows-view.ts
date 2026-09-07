@@ -1318,23 +1318,26 @@ export class FlowsView extends LitElement {
     ></list-select-checkbox>`;
   }
 
+  /**
+   * The bulk bar, docked in the toolbar's row: always rendered, visible only
+   * while something is selected, so picking a flow never moves the table.
+   */
   private renderBulkBar() {
-    // Nothing at all at zero selected, wrapper included: an empty slot with a
-    // margin would push every collection down by 8px it never had before.
-    if (this.selection.count === 0) return nothing;
-    return html`<div class="bulk-bar-slot">
-      <list-bulk-bar
-        label="Flow bulk actions"
-        .count=${this.selection.count}
-        .actions=${this.bulkActions}
-        .running=${this.selection.running}
-        .progressDone=${this.selection.progressDone}
-        .progressTotal=${this.selection.progressTotal}
-        @bulk-action=${(event: CustomEvent) =>
-          void this.handleBulkAction(event.detail.id)}
-        @selection-clear=${() => this.selection.clear()}
-      ></list-bulk-bar>
-    </div>`;
+    return html`<list-bulk-bar
+      slot="bulk"
+      docked
+      label="Flow bulk actions"
+      .count=${this.selection.count}
+      .total=${this.selection.order.length}
+      .actions=${this.bulkActions}
+      .running=${this.selection.running}
+      .progressDone=${this.selection.progressDone}
+      .progressTotal=${this.selection.progressTotal}
+      @bulk-action=${(event: CustomEvent) =>
+        void this.handleBulkAction(event.detail.id)}
+      @selection-select-all=${() => this.selection.toggleAll(true)}
+      @selection-clear=${() => this.selection.clear()}
+    ></list-bulk-bar>`;
   }
 
   private async handleBulkAction(actionId: string): Promise<void> {
@@ -1477,7 +1480,7 @@ export class FlowsView extends LitElement {
               ? this.renderLoadError()
               : this.flows.length > 0
                 ? html`
-                    ${this.renderToolbar()} ${this.renderBulkBar()}
+                    ${this.renderToolbar()}
                     ${
                       this.effectiveView === 'list'
                         ? this.renderListView()
@@ -1586,6 +1589,7 @@ export class FlowsView extends LitElement {
         toggleLabel="Flows view"
         .view=${this.currentView}
         .views=${['list', 'cards']}
+        ?selecting=${this.selection.count > 0}
         @search-change=${this.handleSearchChange}
         @view-change=${this.handleViewChange}
       >
@@ -1661,6 +1665,7 @@ export class FlowsView extends LitElement {
           }}
         ></time-range-select>
         <span slot="count">${this.resultsLabel}</span>
+        ${this.renderBulkBar()}
       </list-toolbar>
     `;
   }

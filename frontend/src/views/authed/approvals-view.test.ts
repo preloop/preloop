@@ -1,10 +1,11 @@
-import { html, fixture, expect, waitUntil } from '@open-wc/testing';
+import { html, fixture, expect, nextFrame, waitUntil } from '@open-wc/testing';
 import { Router } from '@vaadin/router';
 import sinon from 'sinon';
 
 import '../../components/view-header.ts';
 import './approvals-view';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
+import { bulkActionButton, bulkCountText } from '../../utils/test-bulk-bar';
 import type { ApprovalsView } from './approvals-view';
 
 describe('ApprovalsView', () => {
@@ -821,10 +822,9 @@ describe('ApprovalsView', () => {
       return element.shadowRoot?.querySelector('list-bulk-bar') as HTMLElement;
     }
 
-    function barButton(element: ApprovalsView, action: string) {
-      return bulkBar(element)?.shadowRoot?.querySelector(
-        `sl-button[data-action="${action}"]`
-      ) as HTMLElement;
+    async function pressBarButton(element: ApprovalsView, action: string) {
+      const button = await bulkActionButton(bulkBar(element), action);
+      button!.click();
     }
 
     async function select(element: ApprovalsView, ids: string[]) {
@@ -832,6 +832,7 @@ describe('ApprovalsView', () => {
         (element as any).selection.toggle(id);
       }
       await element.updateComplete;
+      await nextFrame();
     }
 
     function batchCall() {
@@ -878,15 +879,47 @@ describe('ApprovalsView', () => {
         baseRequest({ id: 'ar-2', expires_at: inMinutes(20) }),
       ]);
 
-      expect(bulkBar(element)?.shadowRoot?.querySelector('.bulk-bar')).to.not
-        .exist;
+      const bar = bulkBar(element);
+      expect(
+        getComputedStyle(bar).visibility,
+        'the bar holds the heading row without showing at zero selected'
+      ).to.equal('hidden');
+      expect(
+        element.shadowRoot?.querySelector('.group-header h2')?.textContent
+      ).to.contain('Waiting for you');
 
       await select(element, ['ar-1', 'ar-2']);
+      expect(bulkCountText(bar)).to.equal('2 selected');
+      expect(getComputedStyle(bar).visibility).to.equal('visible');
       expect(
-        bulkBar(element)
-          ?.shadowRoot?.querySelector('[data-testid="bulk-count"]')
-          ?.textContent?.trim()
-      ).to.equal('2 selected');
+        bar.shadowRoot?.querySelector('.bulk-bar')?.getAttribute('role')
+      ).to.equal('toolbar');
+    });
+
+    it('never moves the requests when a selection comes and goes', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+        baseRequest({ id: 'ar-2', expires_at: inMinutes(20) }),
+      ]);
+      const listTop = () =>
+        element
+          .shadowRoot!.querySelector('.approval-list')!
+          .getBoundingClientRect().top;
+
+      const before = listTop();
+      await select(element, ['ar-1']);
+      expect(listTop(), 'first pick pushed the rows down').to.equal(before);
+
+      await select(element, ['ar-2']);
+      expect(listTop(), 'the second pick moved the rows').to.equal(before);
+
+      (element as any).selection.clear();
+      await element.updateComplete;
+      await nextFrame();
+      expect(listTop(), 'clearing moved the rows back up').to.equal(before);
+      expect(
+        element.shadowRoot?.querySelector('.group-header h2')?.textContent
+      ).to.contain('Waiting for you');
     });
 
     it('approves the selection with one call after naming the requests', async () => {
@@ -904,7 +937,7 @@ describe('ApprovalsView', () => {
       ]);
 
       await select(element, ['ar-1', 'ar-2']);
-      barButton(element, 'approve').click();
+      await pressBarButton(element, 'approve');
 
       await waitUntil(() => !!confirmDialogElement(), 'no confirm dialog');
       const dialog = confirmDialogElement()!.shadowRoot!;
@@ -945,7 +978,7 @@ describe('ApprovalsView', () => {
       ]);
 
       await select(element, ['ar-1']);
-      barButton(element, 'deny').click();
+      await pressBarButton(element, 'deny');
 
       await waitUntil(() => !!confirmDialogElement(), 'no confirm dialog');
       expect(
@@ -970,7 +1003,7 @@ describe('ApprovalsView', () => {
       };
 
       await select(element, ['ar-1', 'ar-2']);
-      barButton(element, 'approve').click();
+      await pressBarButton(element, 'approve');
       await agree();
       await waitUntil(() => !!batchCall(), 'no batch call');
       await waitUntil(
@@ -999,7 +1032,7 @@ describe('ApprovalsView', () => {
       };
 
       await select(element, ['ar-1']);
-      barButton(element, 'approve').click();
+      await pressBarButton(element, 'approve');
       await agree();
       await waitUntil(() => !!batchCall(), 'no batch call');
       await waitUntil(() => {
