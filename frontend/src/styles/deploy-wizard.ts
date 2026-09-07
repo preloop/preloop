@@ -219,12 +219,6 @@ export const deployWizardStyles = css`
     padding: 0;
   }
 
-  .wizard-field-note {
-    color: var(--console-meta-color);
-    font-size: var(--console-text-meta);
-    margin: calc(-1 * var(--sl-spacing-x-small)) 0 0;
-  }
-
   /* A review block is rows under a rule, not a filled box. */
   .wizard-summary {
     display: flex;
