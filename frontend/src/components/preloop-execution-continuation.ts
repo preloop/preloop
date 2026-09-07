@@ -105,6 +105,15 @@ export class PreloopExecutionContinuation extends LitElement {
       : null;
   }
 
+  private checkpointExpiryText(): string {
+    const raw = this.preview?.native_resume_expires_at;
+    if (!raw) return '';
+    const date = new Date(raw);
+    return Number.isNaN(date.getTime())
+      ? ''
+      : ` until ${date.toLocaleString()}`;
+  }
+
   private async loadPreview() {
     if (!this.execution || this.loading || this.saving) return;
     const executionId = this.execution.id;
@@ -252,7 +261,15 @@ export class PreloopExecutionContinuation extends LitElement {
                 ${!preview.artifact_upload_enabled ? html`<sl-alert open>Saved execution state uploads must be enabled by your deployment administrator before follow-up can start.</sl-alert>` : nothing}
                 ${!preview.feedback_readable ? html`<sl-alert open variant="warning">Review and CI access must be available before follow-up can start. ${preview.feedback_blocked_reason || ''}</sl-alert>` : nothing}
                 ${preview.warnings.map((warning) => html`<sl-alert open variant="warning">${warning}</sl-alert>`)}
-                ${mode === 'native_resume' ? html`<p>The next repair will continue the previous agent conversation using its saved checkpoint.</p>` : nothing}
+                ${
+                  mode === 'native_resume'
+                    ? html`<p>
+                        The next repair will continue the previous agent
+                        conversation using its saved
+                        checkpoint${this.checkpointExpiryText()}.
+                      </p>`
+                    : nothing
+                }
                 ${
                   mode === 'published_branch_handoff'
                     ? html` <p>

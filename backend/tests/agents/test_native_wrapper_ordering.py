@@ -144,3 +144,54 @@ def test_approved_image_skips_install_and_checks_pinned_harness(
     assert script.index("environment_harness_version_mismatch") < script.index(
         "python3 /tmp/preloop-native-session.py restore"
     )
+
+
+@pytest.mark.parametrize(
+    "harness,session_id,resume_flag",
+    [
+        (
+            "codex",
+            "0f0e1d2c-3b4a-4568-8778-aabbccddeeff",
+            "resume $PRELOOP_CLI_SESSION_ID",
+        ),
+        ("opencode", "ses_ab12cd34", "--session $PRELOOP_CLI_SESSION_ID"),
+    ],
+)
+def test_native_resume_argv_is_explicit_and_never_latest_session(
+    harness: str, session_id: str, resume_flag: str
+) -> None:
+    """Native resume argv names one explicit session, never a newest selector."""
+    agent = CodexAgent({}) if harness == "codex" else OpenCodeAgent({})
+    model_key = "codex_model" if harness == "codex" else "opencode_model"
+    context = {
+        "prompt": "repair",
+        model_key: "fixture",
+        "execution_id": "exec",
+        "flow_name": "fixture",
+        "trigger_event_data": {
+            "_session_thread_id": "thread",
+            "_resume": {
+                "thread_id": "thread",
+                "cli_session": {"agent_type": harness, "session_id": session_id},
+            },
+        },
+    }
+    resumed = getattr(agent, f"_build_{harness}_script")(context)
+    assert resumed.count(resume_flag) == 1
+    assert f"PRELOOP_CLI_SESSION_ID='{session_id}'" in resumed
+    for selector in ("--continue", "--last", "resume --last"):
+        assert selector not in resumed
+    cold_context = {
+        "prompt": "repair",
+        model_key: "fixture",
+        "execution_id": "exec",
+        "flow_name": "fixture",
+        "trigger_event_data": {},
+    }
+    cold = getattr(agent, f"_build_{harness}_script")(cold_context)
+    # A cold start carries no explicit session id and the resume block stays
+    # inert: the flag is only emitted once a real restore marked the env var.
+    assert "PRELOOP_CLI_SESSION_ID=''" in cold
+    assert session_id not in cold
+    for selector in ("--continue", "--last", "resume --last"):
+        assert selector not in cold

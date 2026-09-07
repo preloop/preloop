@@ -123,6 +123,15 @@ def _load_source(account_id: UUID, execution_id: UUID) -> dict[str, Any]:
                 and artifact.expires_at.replace(tzinfo=UTC) > now
             )
 
+        def artifact_expiry(artifact: Any) -> datetime | None:
+            """Persisted expiry for one artifact, normalized to aware UTC."""
+            expires_at = getattr(artifact, "expires_at", None)
+            if not isinstance(expires_at, datetime):
+                return None
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=UTC)
+            return expires_at
+
         bindings = crud_flow_feedback.find(
             db,
             account_id=account_id,
@@ -131,6 +140,25 @@ def _load_source(account_id: UUID, execution_id: UUID) -> dict[str, Any]:
             pr_number=number,
         )
         existing = next((row for row in bindings if row.flow_id == flow.id), None)
+        native_resume_available = bool(
+            valid_session_id(cli.get("agent_type", ""), cli.get("session_id", ""))
+            and available(workspace)
+            and native is not None
+            and available(native)
+            and native.kind == "native_session"
+            and str(reference.get("execution_id")) == str(execution_id)
+            and reference.get("manifest_sha256")
+            == artifact_reference(native).manifest_sha256
+        )
+        workspace_expires_at = artifact_expiry(workspace)
+        native_expires_at = artifact_expiry(native)
+        native_resume_expires_at = (
+            min(workspace_expires_at, native_expires_at)
+            if native_resume_available
+            and workspace_expires_at is not None
+            and native_expires_at is not None
+            else None
+        )
         return {
             "execution_id": execution_id,
             "flow_id": flow.id,
@@ -141,15 +169,8 @@ def _load_source(account_id: UUID, execution_id: UUID) -> dict[str, Any]:
             "number": number,
             "feedback_enabled": bool(flow.is_enabled and feedback_policy(flow)),
             "policy": deepcopy(feedback_policy(flow) or {}),
-            "native_resume_available": bool(
-                valid_session_id(cli.get("agent_type", ""), cli.get("session_id", ""))
-                and available(workspace)
-                and available(native)
-                and native.kind == "native_session"
-                and str(reference.get("execution_id")) == str(execution_id)
-                and reference.get("manifest_sha256")
-                == artifact_reference(native).manifest_sha256
-            ),
+            "native_resume_available": native_resume_available,
+            "native_resume_expires_at": native_resume_expires_at,
             "existing_thread_id": existing.id if existing else None,
             "existing_thread_state": existing.state if existing else None,
             # Never project tracker credentials into the API response.
@@ -327,6 +348,7 @@ def preview_continuation(account_id: UUID, execution_id: UUID) -> ContinuationPr
             )
         },
         head_sha=publication["head_sha"],
+        native_resume_expires_at=source.get("native_resume_expires_at"),
         feedback_readable=publication.get("feedback_readable", False),
         feedback_blocked_reason=publication.get("feedback_blocked_reason"),
         artifact_upload_enabled=settings.flow_artifact_direct_upload,

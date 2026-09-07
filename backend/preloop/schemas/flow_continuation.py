@@ -1,5 +1,6 @@
 """Explicit adoption contract for one previously published implementation."""
 
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -19,6 +20,13 @@ class ContinuationPreview(BaseModel):
     feedback_readable: bool = False
     feedback_blocked_reason: str | None = None
     native_resume_available: bool
+    # When native resume is offered, the checkpoint window actually ends at
+    # the earlier of the workspace snapshot and native session artifact
+    # expiries. Surfacing it keeps the advertised recovery window aligned
+    # with stored state (e.g. a 7-day feedback policy must not imply a
+    # native conversation can still be resumed once the 24h checkpoint
+    # artifacts are gone). None when native resume is unavailable.
+    native_resume_expires_at: datetime | None = None
     existing_thread_id: UUID | None = None
     existing_thread_state: str | None = None
     allowed_recovery_modes: list[RecoveryMode]

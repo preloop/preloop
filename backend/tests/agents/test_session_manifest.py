@@ -240,7 +240,9 @@ def test_current_opencode_sqlite_scopes_events_and_excludes_credentials(
         "session_id": "a",
         "thread_id": "thread-a",
     }
-    archive = pack_session(files, **identity, expires_at=NOW + timedelta(days=1))
+    archive = pack_session(
+        files, **identity, expires_at=NOW + timedelta(days=1), now=NOW
+    )
     assert unpack_session(archive, **identity, now=NOW) == files
     # A manifest alone cannot authorize foreign table rows added to a selected DB.
     dirty = tmp_path / "dirty.db"
@@ -251,6 +253,7 @@ def test_current_opencode_sqlite_scopes_events_and_excludes_credentials(
         {"opencode.db": dirty.read_bytes()},
         **identity,
         expires_at=NOW + timedelta(days=1),
+        now=NOW,
     )
     with pytest.raises(SessionRestoreError, match="unrelated database"):
         unpack_session(archive, **identity, now=NOW)

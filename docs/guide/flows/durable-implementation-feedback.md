@@ -243,6 +243,15 @@ limited to repository requirement discovery permits adoption and bounded repairs
 with a warning that readiness remains unverified. Other gate blockers
 remain visible in `feedback_blocked_reason` and the warnings.
 
+The preview reports `native_resume_expires_at` whenever native resume is
+offered: the effective deadline of the saved conversation is the earlier of
+the workspace snapshot and native session artifact expiries (defaults are
+24 hours for workspace snapshots and 168 hours for native session
+artifacts). Feedback policies may run longer than stored checkpoints, so the
+preview never implies a native conversation can be resumed past that
+checkpoint deadline; once either artifact expires, only a fresh
+`published_branch_handoff` is offered.
+
 Submit the returned head using
 `POST /api/v1/flows/executions/{execution_id}/continuation`:
 

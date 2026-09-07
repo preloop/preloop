@@ -3027,6 +3027,7 @@ export interface FlowContinuationPreview {
   feedback_blocked_reason: string | null;
   artifact_upload_enabled: boolean;
   native_resume_available: boolean;
+  native_resume_expires_at?: string | null;
   existing_thread_id: string | null;
   existing_thread_state?: string | null;
   allowed_recovery_modes: ContinuationRecoveryMode[];
