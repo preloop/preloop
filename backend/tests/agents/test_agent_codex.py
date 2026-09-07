@@ -276,6 +276,8 @@ class TestCodexAuthConfig:
             "[mcp_servers.preloop]"
         )
         assert 'wire_api = "chat"' in auth_block
+        assert "request_max_retries = 4" in auth_block
+        assert "stream_max_retries = 5" in auth_block
 
     def test_preloop_gateway_provider_uses_responses_wire_api(self):
         """The Preloop gateway receives Codex Responses API requests."""
@@ -296,6 +298,17 @@ class TestCodexAuthConfig:
         assert "DEEPSEEK_API_KEY" in auth_block
         assert 'base_url = "https://api.deepseek.com/v1"' in auth_block
         assert 'wire_api = "chat"' in auth_block
+        assert "request_max_retries = 4" in auth_block
+        assert "stream_max_retries = 5" in auth_block
+
+    def test_openai_keeps_builtin_retry_defaults(self):
+        """Native OpenAI must not emit a partial [model_providers.openai]."""
+        agent = CodexAgent({})
+        auth_block = agent._build_codex_auth_config("gpt-5.4", "openai", "")
+        assert "[model_providers.openai]" not in auth_block
+        assert "request_max_retries" not in auth_block
+        assert "stream_max_retries" not in auth_block
+        assert "stream_idle_timeout_ms" not in auth_block
 
     def test_custom_provider_no_endpoint(self):
         """Custom provider without endpoint omits base_url."""
@@ -475,9 +488,48 @@ class TestCodexCliSession:
 
     def test_capture_block_extracts_rollout_uuid(self):
         script = CodexAgent({})._build_codex_script(self._context())
-        assert 'find "$CODEX_HOME/sessions"' in script
+        assert "capture_codex_session_id" in script
+        assert 'payload.get("forked_from_id")' in script
+        assert "expected exactly one Codex root session" in script
         assert "rollout-*.jsonl" in script
         assert "/tmp/preloop-cli-session-id" not in script
+        assert 'find "$CODEX_HOME/sessions"' not in script
+        assert "sort | tail -n 1" not in script
+        assert "except Exception:" in script
+        assert "<<'PRELOOP_CODEX_CAPTURE_PY' || true" in script
+
+    def test_stream_recovery_resumes_captured_parent_before_publication(self):
+        script = CodexAgent({})._build_codex_script(self._context())
+        exec_at = script.index('echo "PRELOOP_AGENT_EXEC_START"')
+        tail = script[exec_at:]
+        assert tail.index("capture_codex_session_id") < tail.index(
+            "# Recover only this captured conversation"
+        )
+        assert tail.index("# Recover only this captured conversation") < tail.index(
+            "_pl_pack_cli_session"
+        )
+        assert 'codex exec resume "$_pl_recovery_sid"' in script
+        assert "codex exec resume --last" not in script
+        assert "timeout -k 5 600" in script
+        assert "130|137|143" in script
+
+    def test_checkpoint_thread_keeps_fail_closed_parent_capture(self):
+        script = CodexAgent({})._build_codex_script(
+            self._context(
+                trigger_event_data={
+                    "_session_thread_id": "thread-1",
+                    "_resume": {
+                        "cli_session": {
+                            "agent_type": "codex",
+                            "session_id": "0f0e1d2c-3b4a-4568-8778-aabbccddeeff",
+                        }
+                    },
+                }
+            )
+        )
+        assert "capture_codex_session_id" in script
+        assert "<<'PRELOOP_CODEX_CAPTURE_PY' || true" in script
+        assert "python3 /tmp/preloop-native-session.py capture" not in script
 
     def test_confirmation_nudge_never_restores(self):
         script = CodexAgent({})._build_codex_script(

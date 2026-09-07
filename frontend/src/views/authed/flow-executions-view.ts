@@ -51,6 +51,7 @@ import '../../components/list-toolbar.ts';
 import '../../components/time-range-select.ts';
 import '../../components/token-figures.ts';
 import type { ResourceAction } from '../../components/resource-actions';
+import { actionsFor } from '../../actions';
 
 interface FlowExecution {
   id: string;
@@ -867,44 +868,21 @@ export class FlowExecutionsView extends AuthedElement {
     window.location.href = this.executionUrl(execution);
   }
 
-  /** Row menu: open, open the conversation, and the two run controls. */
+  /**
+   * What this run offers, from the one registry the execution page reads
+   * (`src/actions/flow-execution-actions.ts`). Open session used to be on
+   * every row, including runs that never opened one, which lands on a search
+   * with no results.
+   */
   private getRowActions(execution: FlowExecution): ResourceAction[] {
-    const url = this.executionUrl(execution);
-    const actions: ResourceAction[] = [
-      { id: 'open', label: 'Open', icon: 'box-arrow-up-right', href: url },
-      {
-        id: 'open-session',
-        label: 'Open session',
-        icon: 'chat-left-text',
-        href: `${url}?tab=transcript`,
-      },
-    ];
-    if (RUNNING_STATUSES.has(execution.status)) {
-      actions.push({
-        id: 'cancel',
-        label: 'Cancel run',
-        icon: 'x-circle',
-        variant: 'danger',
-        separated: true,
-        onClick: () => void this.cancelExecution(execution),
-      });
-    } else if (this.canRetry(execution)) {
-      actions.push({
-        id: 'retry',
-        label: 'Retry run',
-        icon: 'arrow-repeat',
-        separated: true,
-        onClick: () => void this.retryExecution(execution),
-      });
-    }
-    return actions;
-  }
-
-  /** Statuses the retry endpoint accepts (mirrors the execution page). */
-  private canRetry(execution: FlowExecution): boolean {
-    return ['FAILED', 'STOPPED', 'TIMEOUT', 'CANCELLED'].includes(
-      execution.status
-    );
+    return actionsFor('flow-execution', execution, {
+      includeOpen: true,
+      // From the list, the run's own transcript is the conversation, one page
+      // closer than the sessions list.
+      sessionHref: () => `${this.executionUrl(execution)}?tab=transcript`,
+      onCancel: () => void this.cancelExecution(execution),
+      onRetry: () => void this.retryExecution(execution),
+    });
   }
 
   /**

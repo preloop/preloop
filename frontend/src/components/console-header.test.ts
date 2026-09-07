@@ -15,6 +15,7 @@ import {
 import './console-header.ts';
 import type { ConsoleHeader } from './console-header.ts';
 import { publishAttentionSummary } from '../utils/attention-summary';
+import { loadShoelaceTokens } from '../utils/test-shoelace-theme';
 import { Router } from '@vaadin/router';
 
 const USER = {
@@ -115,6 +116,88 @@ describe('console-header user menu trigger', () => {
  * the empty state names what is empty and repeats the attention counts the
  * Overview or the Attention page published.
  */
+describe('console-header notification button', () => {
+  let restoreFetch: () => void;
+  let el: ConsoleHeader;
+
+  beforeEach(async () => {
+    await loadShoelaceTokens();
+    localStorage.setItem('accessToken', 'test-token');
+    restoreFetch = stubFetch();
+    el = await fixture<ConsoleHeader>(html`<console-header></console-header>`);
+    await el.updateComplete;
+  });
+
+  afterEach(() => {
+    restoreFetch();
+    localStorage.removeItem('accessToken');
+  });
+
+  it('sits at the optical size of the header icons around it', async () => {
+    const bell = el.shadowRoot!.querySelector<HTMLElement>(
+      '.notification-button sl-icon-button'
+    )!;
+    expect(bell.getAttribute('name'), 'the plain bell glyph').to.equal('bell');
+    // 1.375rem. The size is set on the button, not baked into a special
+    // icon, and it is below the 1.5rem nav toggle because a bell's ink fills
+    // its box where a hamburger's does not. At 1.8rem the glyph was 28.8px
+    // in a 45px box, taller than the 32px avatar beside it.
+    const fontSize = parseFloat(getComputedStyle(bell).fontSize);
+    expect(fontSize, 'bell glyph size').to.equal(22);
+    const box = bell.getBoundingClientRect();
+    expect(box.height, 'bell button height').to.be.at.most(40);
+    expect(
+      box.height,
+      'bell button is still a comfortable target'
+    ).to.be.at.least(32);
+
+    const avatar = el
+      .shadowRoot!.querySelector('button.user-menu-trigger')!
+      .getBoundingClientRect();
+    expect(
+      box.height,
+      'bell is no louder than the avatar beside it'
+    ).to.be.at.most(avatar.height + 8);
+  });
+
+  it('keeps the badge on the corner of the smaller button', async () => {
+    // A pending approval is what puts a count on the bell.
+    restoreFetch();
+    restoreFetch = stubFetch(() => [
+      {
+        id: 'ar-1',
+        tool_name: 'write_file',
+        tool_args: {},
+        status: 'pending',
+        requested_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 600_000).toISOString(),
+        execution_id: 'exec-1',
+      },
+    ]);
+    el = await fixture<ConsoleHeader>(html`<console-header></console-header>`);
+    await el.updateComplete;
+    await waitUntil(
+      () => !!el.shadowRoot?.querySelector('.notification-badge'),
+      'badge never appeared'
+    );
+
+    const wrapper = el
+      .shadowRoot!.querySelector('.notification-button')!
+      .getBoundingClientRect();
+    const badge = el
+      .shadowRoot!.querySelector('.notification-badge')!
+      .getBoundingClientRect();
+    // Anchored to the button's own top-right corner, so the smaller button
+    // did not leave it floating in the header.
+    expect(
+      Math.abs(badge.right - (wrapper.right + 4)),
+      'badge x'
+    ).to.be.at.most(1);
+    expect(Math.abs(badge.top - (wrapper.top - 4)), 'badge y').to.be.at.most(1);
+    expect(badge.width, 'badge is drawn').to.be.greaterThan(0);
+  });
+});
+
 describe('console-header bell empty state', () => {
   let restoreFetch: () => void;
 

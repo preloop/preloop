@@ -1115,6 +1115,34 @@ describe('PreloopSessionObserver', () => {
       expect(text).to.include('Refresh');
     });
 
+    it('still offers End session on a quiet session that has not ended', async () => {
+      // Registry rule (src/actions/runtime-session-actions.ts): only 'ended'
+      // closes a session. An idle one has stopped streaming, so Follow goes
+      // away, but there is still a session to end.
+      const idleSession = {
+        ...session,
+        id: 'runtime-session-idle',
+        is_active_now: false,
+        activity_status: 'idle',
+      };
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[idleSession]}
+          .features=${{ endSession: true }}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+
+      const text = toolbarText(el);
+      expect(text).to.not.include('Following live');
+      expect(text).to.include('End session');
+    });
+
     it('asks for confirmation in the console dialog, not window.confirm', async () => {
       const confirmStub = sinon.stub(window, 'confirm').returns(false);
       try {

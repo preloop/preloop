@@ -13,10 +13,12 @@ from preloop.models.crud import (
     crud_api_usage,
     crud_runtime_session_activity,
 )
-from preloop.models.models.ai_model import AIModel
-from preloop.models.models.api_usage import ApiUsage
+from preloop.models import models
 from preloop.schemas.gateway_usage import GatewayToolUsageByAgent, GatewayUsageByTool
 from preloop.services.model_pricing import estimate_ai_model_usage_cost
+
+
+AIModel = models.AIModel
 
 
 def _coerce_int(value: Any) -> int:
@@ -50,7 +52,7 @@ def _normalize_tool_name(name: str) -> str:
     return name
 
 
-def _tools_meta(row: ApiUsage) -> Optional[list[dict[str, Any]]]:
+def _tools_meta(row: Any) -> Optional[list[dict[str, Any]]]:
     meta = row.meta_data
     if not isinstance(meta, dict):
         return None
@@ -61,7 +63,7 @@ def _tools_meta(row: ApiUsage) -> Optional[list[dict[str, Any]]]:
 
 
 def _per_prompt_token_price(
-    row: ApiUsage,
+    row: Any,
     model: Optional[AIModel],
     pricing_override: Optional[dict[str, Any]] = None,
 ) -> tuple[float, bool]:
@@ -246,7 +248,7 @@ class ToolUsageStatsService:
         start: datetime,
         end: datetime,
     ) -> dict[str, _SchemaCostAggregate]:
-        rows = crud_api_usage.list_gateway_rows_in_window(
+        rows = crud_api_usage.list_gateway_tool_usage_in_window(
             self.db,
             account_id=account_id,
             start=start,

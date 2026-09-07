@@ -436,6 +436,108 @@ describe('AgentDetailView', () => {
     localStorage.clear();
   });
 
+  it('coalesces live refreshes while agent data is still loading', async () => {
+    const element = document.createElement(
+      'agent-detail-view'
+    ) as AgentDetailView;
+    let release!: () => void;
+    const read = sinon.stub(element as any, 'performLoadData').callsFake(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        })
+    );
+    const initial = element['loadData']();
+    const live = element['loadData'](true);
+    const anotherLive = element['loadData'](true);
+    expect(read.calledOnce).to.equal(true);
+    release();
+    await Promise.all([initial, live, anotherLive]);
+    const next = element['loadData'](true);
+    expect(read.calledTwice).to.equal(true);
+    release();
+    await next;
+    read.restore();
+  });
+
+  it('delivers one trailing live refresh after a slow read completes', async () => {
+    const element = document.createElement(
+      'agent-detail-view'
+    ) as AgentDetailView;
+    const connected = sinon.stub(element, 'isConnected').get(() => true);
+    let release!: () => void;
+    const read = sinon.stub(element as any, 'performLoadData').callsFake(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        })
+    );
+    const initial = element['loadData']();
+    const refreshes = [element['loadData'](true), element['loadData'](true)];
+    expect(read.calledOnce).to.equal(true);
+    release();
+    await Promise.all([initial, ...refreshes]);
+    expect(read.calledTwice).to.equal(true);
+    release();
+    await element['loadInFlight'];
+    expect(read.calledTwice).to.equal(true);
+    connected.restore();
+    read.restore();
+  });
+
+  it('prioritizes an explicit reload over queued live updates', async () => {
+    const element = document.createElement(
+      'agent-detail-view'
+    ) as AgentDetailView;
+    const connected = sinon.stub(element, 'isConnected').get(() => true);
+    let release!: () => void;
+    const read = sinon.stub(element as any, 'performLoadData').callsFake(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        })
+    );
+    const initial = element['loadData']();
+    const live = element['loadData'](true);
+    const explicit = element['loadData']();
+    release();
+    await Promise.all([initial, live]);
+    expect(read.calledTwice).to.equal(true);
+    expect(read.secondCall.args).to.deep.equal([false]);
+    release();
+    await explicit;
+    expect(read.calledTwice).to.equal(true);
+    connected.restore();
+    read.restore();
+  });
+
+  it('renders without fetching unused runtime session detail', async () => {
+    fetchStub.callsFake(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (/\/api\/v1\/runtime-sessions\/[^/?]+$/.test(url)) {
+          return new Response(JSON.stringify({ detail: 'Unavailable' }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return defaultFetch(input, init);
+      }
+    );
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+    await waitUntil(() => !(element as any).loading);
+    expect(element.shadowRoot?.querySelector('view-header')).to.exist;
+    expect((element as any).error).to.equal(null);
+    const detailRequests = fetchStub
+      .getCalls()
+      .filter((call) =>
+        /\/api\/v1\/runtime-sessions\/[^/?]+$/.test(String(call.args[0]))
+      );
+    expect(detailRequests).to.have.length(0);
+  });
+
   it('renders live validation and scoped governance', async () => {
     const element = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
@@ -566,6 +668,26 @@ describe('AgentDetailView', () => {
       true
     );
     expect(remove.separated, 'Remove is set apart').to.equal(true);
+  });
+
+  // The page kept its own action array and quietly lost Decommission, which
+  // the list row has always offered for the same agent.
+  it('offers the same lifecycle moves the agents list offers', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    const ids = ((element as any).agentActions as Array<{ id: string }>).map(
+      (action) => action.id
+    );
+    expect(ids).to.contain('decommission');
+    expect(ids).to.contain('pause');
+    expect(ids).to.not.contain('resume');
   });
 
   // Wave 4: tags are labels, not states, so they lost the pill and took a

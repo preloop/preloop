@@ -27,6 +27,9 @@ import {
   parseUTCDate,
 } from '../../utils/date';
 import { RUNNING_STATUSES, executionDurationText } from '../../utils/execution';
+import { actionsFor } from '../../actions';
+import { canRetryExecution } from '../../actions/flow-execution-actions';
+import '../../components/resource-actions.ts';
 import {
   executionSubjectCss,
   isSubjectFallback,
@@ -660,16 +663,7 @@ export class FlowExecutionView extends LitElement {
       }
       /* The two navigations are buttons on a desktop and menu items on a
          phone, where the header only has room for the primary action. */
-      .header-actions sl-menu-item.narrow-action {
-        display: none;
-      }
       @media (max-width: 700px) {
-        .header-actions .secondary-action {
-          display: none;
-        }
-        .header-actions sl-menu-item.narrow-action {
-          display: block;
-        }
         .summary-strip {
           gap: 8px 20px;
         }
@@ -2746,69 +2740,29 @@ ${execution.resolved_input_prompt}</pre>
     `;
   }
 
-  private renderHeaderActions(execution: FlowExecution, running: boolean) {
+  /**
+   * The run's actions, from the one registry the executions list reads
+   * (`src/actions/flow-execution-actions.ts`). The page used to spell out its
+   * own Cancel and Retry with its own copy of the retry predicate, and its
+   * own labels ("Retry" against the list's "Retry run").
+   *
+   * `resource-actions` folds what does not fit into its own overflow menu, so
+   * the phone-only duplicates of View flow and Open session are gone; the
+   * kebab beside it carries the two copy commands, which are about the page
+   * rather than about the run.
+   */
+  private renderHeaderActions(execution: FlowExecution) {
     const sessionReference = execution.agent_session_reference;
     return html`
       <div slot="main-column" class="header-actions">
-        ${
-          running
-            ? html`
-                <sl-button
-                  size="small"
-                  variant="danger"
-                  outline
-                  @click=${this.stopExecution}
-                >
-                  <sl-icon slot="prefix" name="x-circle"></sl-icon> Cancel
-                </sl-button>
-              `
-            : ''
-        }
-        ${
-          this.canRetry()
-            ? html`
-                <sl-button
-                  size="small"
-                  variant="default"
-                  ?loading=${this.isRetrying}
-                  @click=${this.retryExecution}
-                >
-                  <sl-icon slot="prefix" name="arrow-repeat"></sl-icon> Retry
-                </sl-button>
-              `
-            : ''
-        }
-        ${
-          sessionReference
-            ? html`
-                <sl-button
-                  class="secondary-action"
-                  size="small"
-                  variant="default"
-                  href="/console/runtime-sessions?query=${encodeURIComponent(
-                    execution.id
-                  )}"
-                >
-                  <sl-icon slot="prefix" name="chat-left-text"></sl-icon> Open
-                  session
-                </sl-button>
-              `
-            : ''
-        }
-        ${
-          this.flow
-            ? html`
-                <sl-button
-                  class="secondary-action"
-                  size="small"
-                  variant="default"
-                  href="/console/flows/${this.flow.id}"
-                >
-                  <sl-icon slot="prefix" name="diagram-3"></sl-icon> View flow
-                </sl-button>
-              `
-            : ''
-        }
+        <resource-actions
+          .actions=${actionsFor('flow-execution', execution, {
+            includeViewFlow: true,
+            busy: this.isRetrying,
+            onCancel: () => void this.stopExecution(),
+            onRetry: () => void this.retryExecution(),
+          })}
+        ></resource-actions>
         <sl-dropdown hoist>
           <sl-icon-button
             slot="trigger"
@@ -2816,35 +2770,6 @@ ${execution.resolved_input_prompt}</pre>
             label="More actions"
           ></sl-icon-button>
           <sl-menu>
-            ${
-              // On a phone the header has room for the primary action only,
-              // so the two navigations move into the menu rather than
-              // stacking a column of buttons next to the title.
-              sessionReference
-                ? html`<sl-menu-item
-                    class="narrow-action"
-                    @click=${() =>
-                      Router.go(
-                        `/console/runtime-sessions?query=${encodeURIComponent(
-                          execution.id
-                        )}`
-                      )}
-                  >
-                    Open session
-                  </sl-menu-item>`
-                : ''
-            }
-            ${
-              this.flow
-                ? html`<sl-menu-item
-                    class="narrow-action"
-                    @click=${() =>
-                      this.flow && Router.go(`/console/flows/${this.flow.id}`)}
-                  >
-                    View flow
-                  </sl-menu-item>`
-                : ''
-            }
             <sl-menu-item
               @click=${() =>
                 this.copyToClipboard(execution.id, 'Execution id copied')}
@@ -2965,7 +2890,7 @@ ${execution.resolved_input_prompt}</pre>
               </div>`
             : ''
         }
-        ${this.renderHeaderActions(execution, running)}
+        ${this.renderHeaderActions(execution)}
       </view-header>
       <div class="column-layout wide">
         <div class="main-column">
@@ -3221,10 +3146,10 @@ ${log.payload.content}</pre>
     }
   }
 
+  /** The retry predicate lives with the actions; this is the page's view of it. */
   canRetry(): boolean {
     if (!this.execution) return false;
-    const retryableStatuses = ['FAILED', 'STOPPED', 'TIMEOUT', 'CANCELLED'];
-    return retryableStatuses.includes(this.execution.status);
+    return canRetryExecution(this.execution);
   }
 
   async retryExecution() {

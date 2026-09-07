@@ -50,6 +50,22 @@ The `Preloop Console` application is structured around a component-based archite
 *   **`vite.config.ts`**: Configuration for the Vite build tool.
 *   **`package.json`**: Defines project metadata, dependencies, and scripts for development, building, and testing.
 
+### Route loading and refreshes
+
+`lit-app.ts` keeps public pages available for prerendered content and loads
+console components through `console-route-loaders.ts` only when their routes
+match. `withLazyRoutes` preserves route guards and waits for custom-element
+registration before the router renders the view. New console routes should add
+their dynamic import to this registry instead of adding an eager view import.
+
+Overview keeps its initial refresh guard through the deferred data wave while
+rendering the first results as before. Realtime refreshes retain at most one
+pending follow-up per resource, and background refreshes skip runs while other
+refreshes are active.
+Agent detail likewise serializes reads and coalesces live events into one
+follow-up. The session observer owns session interaction loading; the parent
+uses the session list already returned by the agent endpoint.
+
 ### Tracker Detail Page (`src/views/authed/tracker-detail-view.ts`)
 
 The Tracker Detail page is the entry point for issue analytics. Clicking a tracker card in the Trackers list navigates to `/console/trackers/:trackerId`, which shows:

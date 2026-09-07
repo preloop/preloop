@@ -184,8 +184,17 @@ export class ConsoleHeader extends LitElement {
       align-items: center;
       gap: 0.5rem;
     }
+    /* The bell is the only icon button in this row, and at 1.8rem it drew a
+       28.8px glyph in a 45px box: larger than the 24px nav toggle beside it
+       and taller than the 32px avatar, so it read as the loudest thing in a
+       header that is mostly quiet. A bell is a tall glyph (its ink fills the
+       Bootstrap Icons box, unlike the hamburger's three short rules), so
+       optical parity is a smaller size than the nav toggle's, not the same
+       one: 1.375rem is 22px of glyph in a 38px box. The size lives here
+       rather than in a one-off icon, so the glyph stays the plain bell
+       every product uses for notifications. */
     .user-menu sl-icon-button {
-      font-size: 1.8rem;
+      font-size: 1.375rem;
     }
     .theme-switcher-container {
       padding: 0.5rem 1rem;

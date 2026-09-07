@@ -1,6 +1,7 @@
 """Bounded gateway retries for transient 502 / mid-stream disconnect."""
 
 from types import SimpleNamespace
+from typing import Any, Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -342,3 +343,77 @@ def test_retry_after_cap_is_configurable(monkeypatch):
     )
     with patch("preloop.services.openai_gateway.random.uniform", return_value=0.0):
         assert _upstream_retry_delay_seconds(0, retry_after_seconds=600) == 2.0
+
+
+@pytest.mark.parametrize("fail_on_iter", [False, True])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_prefetch_failure_closes_stream_before_retry(
+    fail_on_iter: bool, wrapped: bool
+) -> None:
+    service, ai_model, backend = _service_and_model()
+    closed = []
+
+    class FailedStream:
+        def __iter__(self) -> Iterator[Any]:
+            if fail_on_iter:
+                raise _MidStreamFallbackError(_FOUNDER_502)
+            return self
+
+        def __next__(self) -> Any:
+            raise _MidStreamFallbackError(_FOUNDER_502)
+
+        def close(self) -> None:
+            closed.append(True)
+
+    failed = FailedStream()
+    if wrapped:
+
+        class Wrapper:
+            completion_stream = failed
+
+            def __iter__(self) -> Iterator[Any]:
+                return iter(self.completion_stream)
+
+        failed = Wrapper()
+
+    def completion(**kwargs: Any) -> Any:
+        if backend.completion.call_count == 1:
+            return failed
+        assert closed == [True], "failed connection must close before the retry"
+        return iter([{"delta": "ok"}])
+
+    backend.completion.side_effect = completion
+    with patch("preloop.services.openai_gateway._sleep_before_upstream_retry"):
+        stream = _open_stream(service, ai_model)
+    assert list(stream) == [{"delta": "ok"}]
+    assert backend.completion.call_count == 2
+
+
+def test_cleanup_failure_preserves_original_upstream_error() -> None:
+    service, ai_model, backend = _service_and_model()
+    stream = MagicMock()
+    stream.__iter__.side_effect = _UnsupportedParamsError()
+    stream.close.side_effect = RuntimeError("cleanup failed")
+    backend.completion.return_value = stream
+    with pytest.raises(ModelGatewayAPIError) as exc_info:
+        _open_stream(service, ai_model)
+    assert exc_info.value.status_code == 400
+    stream.close.assert_called_once()
+    assert backend.completion.call_count == 1
+
+
+def test_disconnect_after_prefetched_chunk_never_retries() -> None:
+    service, ai_model, backend = _service_and_model()
+
+    def partial_stream() -> Iterator[dict[str, Any]]:
+        yield {"delta": "already generated"}
+        raise _MidStreamFallbackError(_FOUNDER_502, is_pre_first_chunk=False)
+
+    backend.completion.return_value = partial_stream()
+    with patch("preloop.services.openai_gateway._sleep_before_upstream_retry") as sleep:
+        stream = _open_stream(service, ai_model)
+        assert next(stream) == {"delta": "already generated"}
+        with pytest.raises(_MidStreamFallbackError):
+            next(stream)
+    assert backend.completion.call_count == 1
+    sleep.assert_not_called()

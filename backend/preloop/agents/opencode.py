@@ -27,6 +27,12 @@ from .cli_session import (
     build_session_restore_shell,
     resume_cli_session,
 )
+from .stream_recovery import (
+    ATTEMPT_LOG_PATH,
+    RECOVERY_PROMPT_PATH,
+    build_stream_recovery_baseline_block,
+    build_stream_recovery_block,
+)
 from .container import ContainerAgentExecutor
 from .images import default_agent_image
 from .kubernetes import detect_kubernetes_environment
@@ -532,6 +538,31 @@ fi
             )
 
         # Create the full script
+        turn_status_check = f"""if [ "$OPENCODE_EXIT_CODE" -eq 1 ] && [ "$(cat /tmp/preloop-opencode-turn-status 2>/dev/null)" = "success" ]; then
+    OPENCODE_EXIT_CODE=0
+elif [ "$OPENCODE_EXIT_CODE" -eq 0 ] && [ "$(cat /tmp/preloop-opencode-turn-status 2>/dev/null)" != "success" ]; then
+    echo "stream disconnected before completion" | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
+    OPENCODE_EXIT_CODE=1
+fi
+"""
+        stream_recovery_block = build_stream_recovery_block(
+            agent_label="opencode",
+            exit_code_var="OPENCODE_EXIT_CODE",
+            session_id_expr='"${_pl_sid:-}"',
+            resume_probe="opencode run --help 2>&1 | grep -q -- '--session'",
+            resume_command=(
+                '$PRELOOP_RECOVERY_TIMEOUT opencode run --session "$_pl_recovery_sid" '
+                f"--format json --print-logs --log-level WARN --model {opencode_model_arg} "
+                f'-- "$(cat {RECOVERY_PROMPT_PATH})" 2>&1 '
+                "| node /tmp/opencode-json-log-filter.js "
+                f'| tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"\n'
+                '    _pl_recovery_codes=("${PIPESTATUS[@]}")\n'
+                "    OPENCODE_EXIT_CODE=${_pl_recovery_codes[0]:-1}\n"
+                '    if [ "$OPENCODE_EXIT_CODE" -eq 0 ] && [ "${_pl_recovery_codes[1]:-0}" -ne 0 ]; then\n'
+                "        OPENCODE_EXIT_CODE=${_pl_recovery_codes[1]}\n"
+                "    fi\n" + turn_status_check
+            ),
+        )
         script = f"""
 set -e
 
@@ -604,6 +635,8 @@ const SENTINEL = "FLOW_EXECUTION_SUCCESS";
 // The orchestrator persists this id on the execution (PRELOOP_AGENT_SESSION
 // marker) so a later PR-comment resume can re-enter the same session.
 const SESSION_FILE = "/tmp/preloop-cli-session-id";
+const TURN_STATUS_FILE = "/tmp/preloop-opencode-turn-status";
+fs.writeFileSync(TURN_STATUS_FILE, "incomplete");
 let sessionSaved = false;
 
 function eventName(event) {{
@@ -623,6 +656,11 @@ function parentSessionId(event) {{
     return null;
   }}
   const name = eventName(event);
+  // Pinned CLI run --format json emits these parent-only envelopes.
+  if (["step_start", "step_finish", "text", "reasoning", "tool_use", "error"].includes(name)
+      && isSessionId(event.sessionID)) {{
+    return event.sessionID;
+  }}
   if (name !== "session.idle" && name !== "session.created") {{
     return null;
   }}
@@ -650,7 +688,8 @@ function collectTextValues(value, name, output) {{
     const text = value[key];
     if (
       typeof text === "string" &&
-      (name.includes("message") ||
+      (name.includes("error") ||
+        name.includes("message") ||
         name.includes("part") ||
         name.includes("text") ||
         valueType === "text" ||
@@ -691,6 +730,15 @@ rl.on("line", (line) => {{
     }}
   }}
 
+  if (eventName(event) === "error") {{
+    // OpenCode can emit a terminal error event and still exit zero.
+    process.exitCode = 1;
+    fs.writeFileSync(TURN_STATUS_FILE, "error");
+  }} else if (eventName(event) === "step_finish" && event.part?.reason === "stop") {{
+    // A later successful terminal step supersedes an earlier recovered error.
+    process.exitCode = 0;
+    fs.writeFileSync(TURN_STATUS_FILE, "success");
+  }}
   const seen = new Set();
   const values = [];
   collectTextValues(event, eventName(event), values);
@@ -727,6 +775,7 @@ echo '{prompt_b64}' | base64 -d > /tmp/prompt.txt
 # Signal to the orchestrator that the agent is about to start.
 # Sentinel detection is suppressed until this marker is seen in logs.
 echo "PRELOOP_AGENT_EXEC_START"
+{build_stream_recovery_baseline_block()}
 
 # Run OpenCode with the prompt.
 # opencode run accepts messages as positional args and runs non-interactively.
@@ -741,14 +790,17 @@ echo "PRELOOP_AGENT_EXEC_START"
 # through verbatim, so stderr text reaches the execution log in order.
 set +e
 : > "{AGENT_OUTPUT_LOG_PATH}"
-opencode run $OPENCODE_RESUME_ARGS --format json --print-logs --log-level WARN --model {opencode_model_arg} -- "$(cat /tmp/prompt.txt)" 2>&1 | node /tmp/opencode-json-log-filter.js | tee -a "{AGENT_OUTPUT_LOG_PATH}"
+: > "{ATTEMPT_LOG_PATH}"
+opencode run $OPENCODE_RESUME_ARGS --format json --print-logs --log-level WARN --model {opencode_model_arg} -- "$(cat /tmp/prompt.txt)" 2>&1 | node /tmp/opencode-json-log-filter.js | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
 PIPE_CODES=("${{PIPESTATUS[@]}}")
 OPENCODE_EXIT_CODE=${{PIPE_CODES[0]}}
 FILTER_EXIT_CODE=${{PIPE_CODES[1]:-0}}
 set -e
 if [ "$FILTER_EXIT_CODE" -ne "0" ]; then
     echo "OpenCode JSON log filter exited with code: $FILTER_EXIT_CODE"
+    if [ "$OPENCODE_EXIT_CODE" -eq 0 ]; then OPENCODE_EXIT_CODE=$FILTER_EXIT_CODE; fi
 fi
+{turn_status_check}
 if [ "$OPENCODE_EXIT_CODE" -ne "0" ]; then
     echo "OpenCode command failed; see CLI output above."
 fi
@@ -756,7 +808,7 @@ fi
 # Report this run's CLI session id so the orchestrator persists it for a
 # later PR-comment resume.
 {session_blocks["marker"]}
-
+{stream_recovery_block}
 echo ""
 echo "=================================================="
 echo "OpenCode CLI exited with code: $OPENCODE_EXIT_CODE"

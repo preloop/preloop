@@ -242,6 +242,60 @@ describe('FlowsView', () => {
     ).to.equal('visible');
   });
 
+  it('keeps Edit off the bulk bar so it cannot pause the selection', async () => {
+    const mockFlows = [
+      { id: 'flow-1', name: 'Nightly sweep', is_enabled: true },
+      { id: 'flow-2', name: 'PR reviewer', is_enabled: true },
+    ];
+    fetchStub = createFetchStub(mockFlows, []);
+    const element = (await fixture(
+      html`<flows-view></flows-view>`
+    )) as FlowsView;
+    await waitUntil(
+      () => (element as any).flows?.length === 2,
+      'Flows did not load'
+    );
+    await element.updateComplete;
+
+    const rowLink = (id: string) =>
+      element.shadowRoot!.querySelector<HTMLElement>(
+        `tr[data-selection-id="${id}"] a.row-link`
+      )!;
+    rowLink('flow-1').dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'x',
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      })
+    );
+    await element.updateComplete;
+    rowLink('flow-2').dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'X',
+        shiftKey: true,
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      })
+    );
+    await element.updateComplete;
+
+    const ids = ((element as any).bulkActions as Array<{ id: string }>).map(
+      (action) => action.id
+    );
+    expect(ids).to.deep.equal(['pause', 'delete']);
+    expect(
+      ids,
+      'Edit is a per-row link and has no bulk handler'
+    ).to.not.contain('edit');
+
+    const bar = element.shadowRoot!.querySelector('list-bulk-bar')!;
+    expect(bar.shadowRoot!.querySelector('[data-action="edit"]')).to.equal(
+      null
+    );
+  });
+
   it('names the flows it is about to delete and clears with Escape', async () => {
     const mockFlows = [
       { id: 'flow-1', name: 'Nightly sweep', is_enabled: true },
@@ -907,9 +961,15 @@ describe('FlowsView', () => {
       const figures = cells[tokenIndex].querySelector('token-figures')!;
       await (figures as unknown as { updateComplete: Promise<unknown> })
         .updateComplete;
-      const text = (figures.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
-      expect(text).to.contain('12.4K in');
-      expect(text).to.contain('3.1K out');
+      // One total in the list; the breakdown is a hover away and on the
+      // flow's own page.
+      const text = (figures.shadowRoot?.textContent || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      expect(text).to.equal('15.5K');
+      expect(
+        figures.shadowRoot?.querySelector('.figures')?.getAttribute('title')
+      ).to.contain('12,400 input tokens');
     });
 
     it('states no tokens beside a flow with no run in the range', async () => {
@@ -1203,6 +1263,39 @@ describe('FlowsView', () => {
       expect(
         sortFlowListRows(rows, 'flow', 'asc').map((row) => row.name)
       ).to.deep.equal(['Alpha', 'Beta', 'Gamma']);
+    });
+
+    it('sorts tokens by the total the cell states', () => {
+      // The list cell shows one total, and the column sorts by it — including
+      // the in+out fallback when the payload has directions and no total.
+      const rows = [
+        makeRow({
+          id: 'b',
+          name: 'Beta',
+          tokenUsage: { total_tokens: 15500, input_tokens: 12400 } as any,
+        }),
+        makeRow({
+          id: 'c',
+          name: 'Gamma',
+          tokenUsage: { total_tokens: 900000, input_tokens: 100 } as any,
+        }),
+        makeRow({
+          id: 'd',
+          name: 'Delta',
+          tokenUsage: {
+            input_tokens: 400,
+            output_tokens: 100,
+            total_tokens: 0,
+          } as any,
+        }),
+        makeRow({ id: 'a', name: 'Alpha', tokenUsage: null }),
+      ];
+      expect(
+        sortFlowListRows(rows, 'tokens', 'desc').map((row) => row.name)
+      ).to.deep.equal(['Gamma', 'Beta', 'Delta', 'Alpha']);
+      expect(
+        sortFlowListRows(rows, 'tokens', 'asc').map((row) => row.name)
+      ).to.deep.equal(['Alpha', 'Delta', 'Beta', 'Gamma']);
     });
 
     it('matches the search against everything the row shows', () => {

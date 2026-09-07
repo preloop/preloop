@@ -922,6 +922,26 @@ describe('ApprovalsView', () => {
       ).to.contain('Waiting for you');
     });
 
+    it('offers only what every selected request still offers', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(2) }),
+        baseRequest({ id: 'ar-2', expires_at: inMinutes(30) }),
+      ]);
+
+      await select(element, ['ar-1', 'ar-2']);
+      const ids = () =>
+        ((element as any).bulkActions as Array<{ id: string }>).map(
+          (action) => action.id
+        );
+      expect(ids()).to.deep.equal(['approve', 'deny']);
+
+      // ar-1 has run out of time. The bar is the intersection of what the
+      // selected rows offer (src/actions/approval-actions.ts), so it empties
+      // rather than offering a decision one of them can no longer take.
+      (element as any).nowMs = Date.now() + 5 * 60_000;
+      expect(ids()).to.deep.equal([]);
+    });
+
     it('approves the selection with one call after naming the requests', async () => {
       const element = await renderList([
         baseRequest({

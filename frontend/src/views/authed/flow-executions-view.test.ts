@@ -1,4 +1,4 @@
-import { html, fixture, expect } from '@open-wc/testing';
+import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import '../../components/view-header.ts';
 import './flow-executions-view';
@@ -23,6 +23,7 @@ const EXECUTIONS = [
     start_time: '2026-03-09T10:00:00Z',
     end_time: '2026-03-09T10:05:00Z',
     tool_calls_count: 3,
+    agent_session_reference: 'session-aaaaaaaa-1',
   },
   {
     id: 'exec-bbbbbbbb-2',
@@ -695,6 +696,11 @@ describe('FlowExecutionsView', () => {
         },
       ]);
 
+      await waitUntil(
+        () => Boolean(el.shadowRoot?.querySelector('tbody token-figures')),
+        'Expected the executions response to render its token figures'
+      );
+
       const cells = Array.from(
         el.shadowRoot?.querySelectorAll('tbody tr td') || []
       );
@@ -769,6 +775,19 @@ describe('FlowExecutionsView', () => {
       expect(menus[0].actions[1].href).to.contain('?tab=transcript');
       const running = menus[1].actions.map((action) => action.id);
       expect(running).to.contain('cancel');
+    });
+
+    // The running row carries no session reference, and a link to a session
+    // that does not exist lands on a search with no results.
+    it('offers no session link for a run that never opened one', async () => {
+      const el = await renderRows(EXECUTIONS);
+      const menus = Array.from(
+        el.shadowRoot?.querySelectorAll('tbody resource-actions') || []
+      ) as Array<HTMLElement & { actions: Array<{ id: string }> }>;
+
+      expect(menus[1].actions.map((action) => action.id)).to.not.contain(
+        'open-session'
+      );
     });
 
     it('offers retry on a failed run', async () => {

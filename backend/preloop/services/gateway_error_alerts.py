@@ -15,7 +15,7 @@ Design notes:
   workers the effective rate is ``N x workers`` per key/window; that is
   documented rather than papered over with shared state.
 - **Reserve before notifying.** The window is reserved atomically and the
-  notifier runs afterwards, outside the lock. A failing notifier therefore
+  notifier is queued afterwards, outside the lock. A failing notifier therefore
   consumes its window instead of re-arming the alert for the next request.
 - **Never raises.** Alert bookkeeping is best-effort: any unexpected error
   falls back to the old behavior (send now) so a bug in the throttle cannot
@@ -24,11 +24,13 @@ Design notes:
 
 from __future__ import annotations
 
+import atexit
 import logging
 import math
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Optional, Tuple
 
@@ -143,3 +145,37 @@ def reset_alert_state_for_tests() -> None:
     """Clear the in-process quiet windows (test isolation only)."""
     with _lock:
         _state.clear()
+
+
+# Notifications perform network I/O; keep them off request/stream threads.
+# Bound both queued and running work so a slow notifier cannot grow memory.
+_ALERT_PENDING = threading.BoundedSemaphore(32)
+_ALERT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gateway-alert")
+atexit.register(_ALERT_EXECUTOR.shutdown, wait=False, cancel_futures=True)
+
+
+def enqueue_gateway_5xx_alert(*, subject: str, message: str) -> None:
+    """Schedule best-effort delivery without delaying the gateway response.
+
+    The caller must reserve its quiet window first. A full queue or a failed
+    delivery consumes that window; alert failures must not cause retry storms.
+    """
+    if not _ALERT_PENDING.acquire(blocking=False):
+        logger.warning("Gateway alert queue is full; dropping notification")
+        return
+
+    def _deliver() -> None:
+        try:
+            from preloop.sync.tasks import notify_admins
+
+            notify_admins(subject=subject, message=message)
+        except Exception:
+            logger.warning("Gateway admin notification failed", exc_info=True)
+        finally:
+            _ALERT_PENDING.release()
+
+    try:
+        _ALERT_EXECUTOR.submit(_deliver)
+    except Exception:
+        _ALERT_PENDING.release()
+        logger.warning("Could not schedule gateway admin notification", exc_info=True)

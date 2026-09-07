@@ -26,9 +26,16 @@ import '../../components/resource-actions.ts';
 import '../../components/list-selection.ts';
 import '../../components/talk-button.ts';
 import '../../components/confirm-dialog.ts';
-import '../../components/token-figures.ts';
+import { totalTokensOf } from '../../components/token-figures';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
+import { actionsFor, intersectActions } from '../../actions';
+import {
+  AGENT_LIFECYCLE_ACTION_IDS,
+  type AgentLifecycleMove,
+  AGENT_LIFECYCLE_WORDING,
+  agentLifecycleReason,
+} from '../../actions/agent-actions';
 import {
   ListSelectionController,
   confirmBulkAction,
@@ -144,47 +151,11 @@ const VIEW_MODE_KEY = 'preloop.agents.view_mode';
  */
 const RELATIVE_TIME_DAYS = 90;
 
-/** The lifecycle moves the list offers, one at a time or over a selection. */
-export type AgentLifecycleAction = 'suspend' | 'resume' | 'decommission';
-
 /**
- * One wording per lifecycle move, so a confirmation on the row and the same
- * confirmation over seven rows say the same thing about consequences.
+ * The lifecycle moves the list offers, one at a time or over a selection.
+ * Re-exported from the action registry, which is where they are declared.
  */
-const AGENT_LIFECYCLE_WORDING: Record<
-  AgentLifecycleAction,
-  {
-    title: string;
-    verb: string;
-    verbPast: string;
-    detail: string;
-    reason: string;
-  }
-> = {
-  suspend: {
-    title: 'Pause',
-    verb: 'pause',
-    verbPast: 'paused',
-    detail:
-      'Requests are blocked while paused. Resume restores the agent without re-onboarding it.',
-    reason: 'Manually paused from managed agents view',
-  },
-  resume: {
-    title: 'Resume',
-    verb: 'resume',
-    verbPast: 'resumed',
-    detail: 'The existing credentials start working again immediately.',
-    reason: 'Manually resumed from managed agents view',
-  },
-  decommission: {
-    title: 'Decommission',
-    verb: 'decommission',
-    verbPast: 'decommissioned',
-    detail:
-      "Decommissioning revokes the agent's runtime credentials. The agent and its history stay in the list, and resuming it restores its own unexpired keys.",
-    reason: 'Manually decommissioned from managed agents view',
-  },
-};
+export type AgentLifecycleAction = AgentLifecycleMove;
 
 export type AgentListSortKey =
   | 'agent'
@@ -229,9 +200,9 @@ export interface AgentListRow {
   source: any;
 }
 
-/** Total tokens for sorting; an unmeasured row sorts as zero, not as noise. */
+/** Total tokens for sorting; matches the figure the cell states. */
 function tokenTotal(usage: GatewayTokenUsage | null): number {
-  return Number(usage?.total_tokens || 0);
+  return totalTokensOf(usage);
 }
 
 function timestampValue(value: string | null): number {
@@ -507,23 +478,21 @@ export class AgentsView extends LitElement {
            stretch into two half-screen banners. */
         grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
         gap: var(--sl-spacing-large);
-        /* Same side inset as the header band above it. */
-        padding: 1rem var(--console-page-padding-x) 0;
+        /* No side inset of its own: the header band above it has none
+           either, because outside the canvas the shell pays it. */
+        padding: 1rem 0 0;
       }
       /* --- List view --- */
-      /* The canvas is full bleed, so this page pays its own side inset with
-         .console-page (styles/console-styles.css, "The page box"). Extra
-         block padding is all these wrappers add. */
+      /* Side insets are the shell's (styles/console-styles.css, "The page
+         box"), so these wrappers add block padding and nothing else. Only
+         the canvas is full bleed, and only there does the header band add
+         .console-page for itself: carrying it in every mode paid the inset
+         twice and left the list 64px narrower than Flows. */
       .list-bounds {
         padding-block: 0 2rem;
       }
       .content-bounds {
         padding-block: 1rem 0;
-      }
-      @media (max-width: 768px) {
-        .cards {
-          padding-inline: var(--console-page-padding-x-compact);
-        }
       }
       /* The table sizes itself from the colgroup, not from its content: an
          agent named after a container hash used to push the kebab column past
@@ -533,17 +502,18 @@ export class AgentsView extends LitElement {
         width: 100%;
         /* Below this the columns cannot hold their content, so the card
            scrolls sideways instead of hiding anything. The number is derived,
-           not guessed: the pixel columns sum to 800px (select 40, status 150,
-           requests 110, tokens 190, spend 110, last seen 128, actions 72) and
+           not guessed: the pixel columns sum to 720px (select 40, status 150,
+           requests 110, tokens 110, spend 110, last seen 128, actions 72) and
            owner + model take 24%, so the auto Agent column gets
-           0.76 x width - 800. At 1340px that is 218px: 32px of cell padding
+           0.76 x width - 720. At 1260px that is 238px: 32px of cell padding
            and the 180px .agent-identity (20px icon, 12px gap, ~150px of
-           name). The old 1096px left Agent with nothing: a
-           fixed-layout auto column collapses to zero once the others overrun
-           the table, which is how the name column vanished (and "Agent"
-           became "AGE") at zoomed or laptop widths. The list falls back to
-           cards under 640px. */
-        min-width: 1340px;
+           name), with room to spare. The old 1096px left Agent with nothing:
+           a fixed-layout auto column collapses to zero once the others
+           overrun the table, which is how the name column vanished (and
+           "Agent" became "AGE") at zoomed or laptop widths. 1340px was the
+           same arithmetic while tokens still spent 190px on a breakdown.
+           The list falls back to cards under 640px. */
+        min-width: 1260px;
       }
       .table-scroll {
         overflow-x: auto;
@@ -612,10 +582,12 @@ export class AgentsView extends LitElement {
       .col-requests {
         width: 110px;
       }
-      /* Tokens read before cost, so the pair sits together and the wider of
-         the two gets the room. */
+      /* Tokens read before cost, so the pair sits together. The column
+         holds one compact total ("12.4M"), not the in/out/cache breakdown
+         that used to be clipped mid-word here, so it needs no more room
+         than the requests count beside it. */
       .col-tokens {
-        width: 190px;
+        width: 110px;
       }
       .col-spend {
         width: 110px;
@@ -1320,6 +1292,19 @@ export class AgentsView extends LitElement {
       return 'cards';
     }
     return this.currentView;
+  }
+
+  /**
+   * The page box, but only where the shell is not already drawing it.
+   *
+   * The canvas asks the shell for the whole window (`request-full-bleed`),
+   * which turns off the shell's centred column and its side padding, so on
+   * canvas this page reproduces the box itself. In list and cards the shell
+   * pays, and adding .console-page here inset the header a second 2rem and
+   * capped the page 64px short of Flows.
+   */
+  private get pageBoxClass(): string {
+    return this.effectiveView === 'canvas' ? 'console-page' : '';
   }
 
   disconnectedCallback(): void {
@@ -2716,7 +2701,7 @@ export class AgentsView extends LitElement {
     if (!confirmed) return;
     await this.updateAgent(agent, {
       lifecycle_action: lifecycleAction,
-      reason: wording.reason,
+      reason: agentLifecycleReason(lifecycleAction, 'managed agents view'),
     });
   }
 
@@ -2986,18 +2971,34 @@ export class AgentsView extends LitElement {
     this.navigateToCardTarget(url);
   }
 
-  /** Pause, resume and decommission, the same ids the row kebab uses. */
+  /**
+   * What the whole selection can be asked to do.
+   *
+   * The bar used to offer Resume, Pause and Decommission whatever was
+   * selected, so it offered Resume for running agents and Decommission for
+   * agents already decommissioned. It now asks the registry for each selected
+   * agent and keeps what all of them offer, which is the rule the row kebab
+   * has always followed; the bar carries the lifecycle moves only, since
+   * Rename and Remove have no bulk handler behind them.
+   */
   private get bulkActions(): BulkAction[] {
-    return [
-      { id: 'resume', label: 'Resume', icon: 'play-fill', variant: 'success' },
-      { id: 'suspend', label: 'Pause', icon: 'pause-fill', variant: 'warning' },
-      {
-        id: 'decommission',
-        label: 'Decommission',
-        icon: 'box-arrow-right',
-        variant: 'danger',
-      },
-    ];
+    const sets = this.selection.selectedItems.map((row) =>
+      actionsFor('agent', row.source, { onLifecycle: () => {} })
+    );
+    return intersectActions(sets)
+      .filter((action) => action.id in AGENT_LIFECYCLE_ACTION_IDS)
+      .map((action) => ({
+        // The bar posts the lifecycle move, which is `suspend` where the
+        // kebab says Pause.
+        id: AGENT_LIFECYCLE_ACTION_IDS[action.id],
+        label: action.label,
+        icon: action.icon,
+        // Pause reads neutral beside Talk on the agent page; in a bar of two
+        // buttons over a selection it is the amber one.
+        variant: (action.variant === 'default'
+          ? 'warning'
+          : action.variant) as BulkAction['variant'],
+      }));
   }
 
   /**
@@ -3060,13 +3061,18 @@ export class AgentsView extends LitElement {
       (item) =>
         updateAccountAgent(item.id, {
           lifecycle_action: action,
-          reason: wording.reason,
+          reason: agentLifecycleReason(action, 'managed agents view'),
         }),
       { verb: wording.verb, verbPast: wording.verbPast, noun: 'agent' }
     );
     await this.loadAgents();
   }
 
+  /**
+   * What this agent offers, from the one registry both this list and the
+   * agent page read (`src/actions/agent-actions.ts`). The canvas mixes flow
+   * nodes into the same grid; those carry no actions here.
+   */
   private getCardActions(
     item: any,
     options: { includeTalk?: boolean } = {}
@@ -3078,112 +3084,27 @@ export class AgentsView extends LitElement {
     }
 
     const agent = item as ManagedAgentSummary;
-    const actions: ResourceAction[] = [];
-
-    // The table has no room for a Talk button per row, so the kebab carries it
-    // there. Cards and canvas nodes show the button itself and would otherwise
-    // offer the same action twice.
-    if (options.includeTalk && getAgentControlState(agent).visible) {
-      const control = getAgentControlState(agent);
-      actions.push({
-        id: 'talk',
-        label: 'Talk',
-        icon: 'chat-dots',
-        disabled: !control.enabled,
-        // Runs inside the menu item's click handler, so the window still opens
-        // on the user gesture.
-        onClick: () => {
-          openTalkWindow(agent, undefined, { sourceContext: 'agents-list' });
-        },
-      });
-    }
-
-    actions.push(
-      {
-        id: 'rename',
-        label: 'Rename',
-        icon: 'pencil',
-        loading: this.actionAgentId === agent.id,
-        onClick: () => this.promptRenameAgent(agent),
+    return actionsFor('agent', agent, {
+      busy: this.actionAgentId === agent.id,
+      canChangeOwner:
+        this.featureFlags.user_management && this.availableUsers.length > 0,
+      // The table has no room for a Talk button per row, so the kebab carries
+      // it there. Cards and canvas nodes show the button itself and would
+      // otherwise offer the same action twice.
+      onTalk: options.includeTalk
+        ? (target) =>
+            openTalkWindow(target, undefined, { sourceContext: 'agents-list' })
+        : undefined,
+      onRename: (target) => this.promptRenameAgent(target),
+      onEditTags: (target) => this.promptEditAgentTags(target),
+      onChangeOwner: (target) => this.promptChangeAgentOwner(target),
+      onLifecycle: (target, move) => {
+        void this.updateAgentLifecycle(target, move);
       },
-      {
-        id: 'edit-tags',
-        label: 'Edit tags',
-        icon: 'tags',
-        loading: this.actionAgentId === agent.id,
-        onClick: () => this.promptEditAgentTags(agent),
-      }
-    );
-
-    if (this.featureFlags.user_management && this.availableUsers.length > 0) {
-      actions.push({
-        id: 'change-owner',
-        label: 'Change owner',
-        icon: 'person-gear',
-        loading: this.actionAgentId === agent.id,
-        onClick: () => this.promptChangeAgentOwner(agent),
-      });
-    }
-
-    const isSuspendedOrDecommissioned =
-      agent.lifecycle_state === 'suspended' ||
-      agent.lifecycle_state === 'decommissioned';
-    // Play/pause toggle in warning (amber) tones; danger red is reserved for
-    // the destructive Remove action below.
-    actions.push(
-      isSuspendedOrDecommissioned
-        ? {
-            id: 'resume',
-            label: 'Resume',
-            icon: 'play-fill',
-            variant: 'success',
-            loading: this.actionAgentId === agent.id,
-            onClick: () => {
-              void this.updateAgentLifecycle(agent, 'resume');
-            },
-          }
-        : {
-            id: 'pause',
-            label: 'Pause',
-            icon: 'pause-fill',
-            variant: 'warning',
-            loading: this.actionAgentId === agent.id,
-            onClick: () => {
-              void this.updateAgentLifecycle(agent, 'suspend');
-            },
-          }
-    );
-
-    // Decommission is the reversible offboard: credentials are revoked but
-    // the agent and its history stay. Remove deletes the record, so the two
-    // are not the same action and both belong in the menu.
-    if (agent.lifecycle_state !== 'decommissioned') {
-      actions.push({
-        id: 'decommission',
-        label: 'Decommission',
-        icon: 'box-arrow-right',
-        variant: 'danger',
-        outline: true,
-        separated: true,
-        loading: this.actionAgentId === agent.id,
-        onClick: () => {
-          void this.updateAgentLifecycle(agent, 'decommission');
-        },
-      });
-    }
-
-    actions.push({
-      id: 'remove',
-      label: 'Remove',
-      icon: 'trash',
-      variant: 'danger',
-      loading: this.actionAgentId === agent.id,
-      onClick: () => {
-        void this.removeAgent(agent);
+      onRemove: (target) => {
+        void this.removeAgent(target);
       },
     });
-
-    return actions;
   }
 
   /**
@@ -3550,8 +3471,10 @@ export class AgentsView extends LitElement {
           }
         </td>
         <td class="numeric">${(row.requests || 0).toLocaleString()}</td>
+        <!-- The list states the total; in, out and the cache split are in
+             the tooltip and on the agent's own page. -->
         <td class="numeric">
-          <token-figures .usage=${row.tokenUsage}></token-figures>
+          <token-figures total-only .usage=${row.tokenUsage}></token-figures>
         </td>
         <td class="numeric">${this.formatMoney(row.spend)}</td>
         <td
@@ -3628,7 +3551,7 @@ export class AgentsView extends LitElement {
 
     if (rows.length === 0) {
       return html`
-        <div class="list-bounds console-page">
+        <div class="list-bounds">
           <div class="empty-state">
             ${
               this.loading
@@ -3641,7 +3564,7 @@ export class AgentsView extends LitElement {
     }
 
     return html`
-      <div class="list-bounds console-page">
+      <div class="list-bounds">
         <sl-card class="table-card">
           <div class="table-scroll">
             <table
@@ -3682,7 +3605,7 @@ export class AgentsView extends LitElement {
                     'tokens',
                     'Tokens',
                     true,
-                    'Tokens, input and output'
+                    'Total tokens, input plus output'
                   )}
                   ${this.renderSortableHeader(
                     'spend',
@@ -4627,7 +4550,6 @@ export class AgentsView extends LitElement {
             ? html`
                 <preloop-deploy-wizard
                   initial-path="govern"
-                  hide-step-title
                   .aiModels=${this.aiModels}
                   .computeFeatureEnabled=${this.computeFeatureEnabled}
                   .isEnterprise=${this.isEnterprise}
@@ -4706,7 +4628,7 @@ export class AgentsView extends LitElement {
           ></preloop-agent-deployer>
         </sl-dialog>
 
-        <div class="content-bounds console-page">
+        <div class="content-bounds ${this.pageBoxClass}">
           <view-header
             headerText="Agents"
             description="Agents connected to Preloop: their gateway credentials, MCP access, and live status. Onboard agents you already run with the CLI, or deploy new ones."

@@ -206,6 +206,37 @@ describe('AgentsView', () => {
     );
   });
 
+  it('fits a large token figure inside the tokens column', async () => {
+    await loadShoelaceTokens();
+    agentItems = [
+      {
+        ...makeAgent('agent-1', 'Claude Code Workspace', 'claude_code'),
+        token_usage: {
+          input_tokens: 780000000,
+          output_tokens: 207654321,
+          total_tokens: 987654321,
+          cache_read_tokens: 500000000,
+          uncached_input_tokens: 280000000,
+          cache_hit_ratio: 0.64,
+        },
+      },
+    ];
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const cell = el.shadowRoot!.querySelector('tbody td.numeric + td.numeric')!;
+    const figures = cell.querySelector('token-figures')!;
+    await (figures as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    expect((figures.shadowRoot?.textContent || '').trim()).to.equal('987.7M');
+    // The breakdown used to overrun this column and lose the end of the
+    // cache segment to the cell's own ellipsis. One total fits.
+    expect(
+      figures.getBoundingClientRect().right,
+      'token figure ends inside its cell'
+    ).to.be.at.most(cell.getBoundingClientRect().right + 1);
+  });
+
   it('puts the select-all box on the same x as the row boxes', async () => {
     await loadShoelaceTokens();
     const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
@@ -319,16 +350,30 @@ describe('AgentsView', () => {
     expect(cardLink?.getAttribute('href')).to.equal('/console/agents/agent-1');
   });
 
-  it('pays the page box with .console-page on the full-bleed canvas', async () => {
-    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
-    await waitForAgents(el);
-
+  it('pays the page box with .console-page only on the full-bleed canvas', async () => {
+    // List and cards are ordinary shell pages: the shell centres the column
+    // and pays the side inset, so paying it here too moved the header 2rem
+    // in from the Flows header and made the list 64px narrower.
+    const list = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(list);
     expect(
-      el.shadowRoot?.querySelector('.content-bounds.console-page'),
-      'header band'
+      list.shadowRoot?.querySelector('.content-bounds.console-page'),
+      'header band on the list'
+    ).to.not.exist;
+    expect(
+      list.shadowRoot?.querySelector('.list-bounds.console-page'),
+      'list card'
+    ).to.not.exist;
+
+    // The canvas asks the shell for the whole window, so there it draws the
+    // box itself.
+    localStorage.setItem('preloop.agents.view_mode', 'canvas');
+    const canvas = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await canvas.updateComplete;
+    expect(
+      canvas.shadowRoot?.querySelector('.content-bounds.console-page'),
+      'header band on the canvas'
     ).to.exist;
-    expect(el.shadowRoot?.querySelector('.list-bounds.console-page'), 'list').to
-      .exist;
   });
 
   it('gives every column a sortable header with aria-sort', async () => {
@@ -359,9 +404,11 @@ describe('AgentsView', () => {
     const spendButton = headers[7].querySelector('.sort-button');
     expect(spendButton?.getAttribute('aria-label')).to.equal('Estimated spend');
     expect(spendButton?.getAttribute('title')).to.equal('Estimated spend');
+    // The cell states one total, so the header names that rather than the
+    // split it no longer shows.
     const tokensButton = headers[6].querySelector('.sort-button');
     expect(tokensButton?.getAttribute('aria-label')).to.equal(
-      'Tokens, input and output'
+      'Total tokens, input plus output'
     );
 
     const lastSeen = headers[8];
@@ -410,7 +457,7 @@ describe('AgentsView', () => {
     expect(numeric?.[0].textContent?.trim()).to.equal((1234).toLocaleString());
   });
 
-  it('states tokens before cost, split in and out with the cache rate', async () => {
+  it('states the token total before cost, with the split in the tooltip', async () => {
     agentItems = [
       {
         ...makeAgent('agent-1', 'Claude Code Workspace', 'claude_code'),
@@ -447,12 +494,18 @@ describe('AgentsView', () => {
     const figures = cells[tokenIndex].querySelector('token-figures')!;
     await (figures as unknown as { updateComplete: Promise<unknown> })
       .updateComplete;
-    const text = (figures.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
-    expect(text).to.contain('12.4K in');
-    expect(text).to.contain('3.1K out');
-    expect(text).to.contain('cache 68% hit');
+    // The default list states one number. The in/out/cache breakdown needed
+    // more width than the column has and was clipped mid-word, so it lives
+    // in the tooltip and on the agent's own page.
+    const text = (figures.shadowRoot?.textContent || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    expect(text).to.equal('15.5K');
+    expect(text).to.not.contain('in');
+    expect(text).to.not.contain('cache');
     const exact = figures.shadowRoot?.querySelector('.figures');
     expect(exact?.getAttribute('title')).to.contain('12,400 input tokens');
+    expect(exact?.getAttribute('title')).to.contain('15,500 total');
   });
 
   it('states lifetime tokens on a flow row, beside its lifetime spend', async () => {
@@ -498,10 +551,13 @@ describe('AgentsView', () => {
     const figures = row?.querySelector('token-figures')!;
     await (figures as unknown as { updateComplete: Promise<unknown> })
       .updateComplete;
-    const text = (figures.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
-    expect(text).to.contain('9K in');
-    expect(text).to.contain('1.2K out');
-    expect(text).to.contain('cache 67% hit');
+    const text = (figures.shadowRoot?.textContent || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    expect(text).to.equal('10.2K');
+    expect(
+      figures.shadowRoot?.querySelector('.figures')?.getAttribute('title')
+    ).to.contain('9,000 input tokens');
   });
 
   it('shows a relative last seen with the absolute time on hover', async () => {
@@ -1453,6 +1509,41 @@ describe('sortAgentListRows', () => {
   it('sorts numeric columns by value, not by their formatted text', () => {
     expect(ids('requests', 'desc')).to.deep.equal(['c', 'b', 'a']);
     expect(ids('spend', 'desc')).to.deep.equal(['a', 'c', 'b']);
+  });
+
+  it('sorts tokens by the total the cell states', () => {
+    // The cell shows the total and nothing else, so the column sorts by the
+    // total: a row whose header says 900K outranks one that says 15.5K,
+    // whatever the in/out split behind them. When the payload has directions
+    // and no total, the cell adds them up, and so does the sort.
+    const tokenRows = [
+      makeRow({
+        id: 'small',
+        name: 'Small',
+        tokenUsage: { total_tokens: 15500, input_tokens: 12400 },
+      }),
+      makeRow({
+        id: 'large',
+        name: 'Large',
+        tokenUsage: { total_tokens: 900000, input_tokens: 100 },
+      }),
+      makeRow({
+        id: 'split',
+        name: 'Split',
+        tokenUsage: {
+          input_tokens: 400,
+          output_tokens: 100,
+          total_tokens: 0,
+        } as AgentListRow['tokenUsage'],
+      }),
+      makeRow({ id: 'none', name: 'None', tokenUsage: null }),
+    ];
+    expect(
+      sortAgentListRows(tokenRows, 'tokens', 'desc').map((row) => row.id)
+    ).to.deep.equal(['large', 'small', 'split', 'none']);
+    expect(
+      sortAgentListRows(tokenRows, 'tokens', 'asc').map((row) => row.id)
+    ).to.deep.equal(['none', 'split', 'small', 'large']);
   });
 
   it('sorts last seen newest first and keeps never-seen agents last', () => {

@@ -1,7 +1,9 @@
 import { LitElement, html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { router } from '../router';
-import { Router } from '@vaadin/router';
+import { Router, type Route } from '@vaadin/router';
+import { withLazyRoutes } from '../lazy-routes';
+import { consoleRouteLoaders } from './console-route-loaders';
 import { getBrandConfig, isSaaS } from '../brand-config';
 import {
   pagesFromRuntimeConfig,
@@ -22,46 +24,6 @@ import '../views/public/pricing-view';
 import '../views/public/welcome-view';
 import '../views/public/not-found-view';
 import '../views/public/static-view';
-import '../views/authed/console-shell';
-import '../views/authed/oauth-consent-view';
-import '../views/authed/dashboard-control-plane-view';
-import '../views/authed/trackers-view';
-import '../views/authed/tracker-detail-view';
-import '../views/authed/tracker-issue-view';
-import '../views/authed/tools-view';
-import '../views/authed/issues-view';
-import '../views/authed/issues-compliance-view';
-import '../views/authed/issues-dependencies-view';
-import '../views/authed/issues/duplicates-view';
-import '../views/authed/issues/assignments-view';
-import '../views/authed/api-usage-view';
-import '../views/authed/cost-view';
-import '../views/authed/settings/api-keys-view';
-import '../views/authed/settings/api-key-view';
-import '../views/authed/settings/ai-models-view';
-import '../views/authed/settings/ai-model-detail-view';
-import '../views/authed/settings/profile-view';
-import '../views/authed/settings/security-view';
-import '../views/authed/settings/appearance-view';
-import '../views/authed/settings/account-view';
-import '../views/authed/settings/user-management-view';
-import '../views/authed/settings/team-management-view';
-import '../views/authed/settings/invitation-management-view';
-import '../views/authed/notification-preferences-view';
-import '../views/authed/flows-view';
-import '../views/authed/runners-view';
-import '../views/authed/flow-view';
-import '../views/authed/flow-executions-view';
-import '../views/authed/flow-execution-view';
-import '../views/authed/runtime-sessions-view';
-import '../views/authed/approval-view';
-import '../views/authed/approvals-view';
-import '../views/authed/policies-view';
-import '../views/authed/audit-view';
-import '../views/authed/agents-view';
-import '../views/authed/agent-detail-view';
-import '../views/authed/agent-talk-view';
-import '../views/authed/attention-view';
 import './app-header';
 import './app-footer';
 import './update-banner';
@@ -115,14 +77,14 @@ export class LitApp extends LitElement {
     // Note: Page view tracking is handled in main.ts to avoid duplication
     // and ensure all navigation methods are tracked
 
-    router.setRoutes([
+    const routes: Route[] = [
       {
         path: '/',
         action: (context, commands) => {
           // Check if landing-view already exists in the outlet (from SSR moved in firstUpdated)
           const routerOutlet = this.renderRoot.querySelector('main');
           const existingLandingView =
-            routerOutlet?.querySelector('landing-view');
+            routerOutlet?.querySelector<HTMLElement>('landing-view');
 
           if (existingLandingView) {
             // Reuse existing SSR landing-view - it will load its own content
@@ -362,7 +324,10 @@ export class LitApp extends LitElement {
             children: [
               { path: '', component: 'issues-view' },
               { path: 'compliance', component: 'issues-compliance-view' },
-              { path: 'dependencies', component: 'issues-dependencies-view' },
+              {
+                path: 'dependencies',
+                component: 'issues-dependencies-view',
+              },
               { path: 'duplicates', component: 'duplicates-view' },
               { path: 'assignments', component: 'assignments-view' },
             ],
@@ -446,16 +411,19 @@ export class LitApp extends LitElement {
       // Must stay last: Vaadin Router matches in order, so a catch-all above
       // any real route would swallow it.
       { path: '(.*)', component: 'not-found-view' },
-    ]);
+    ];
+    void router.setRoutes(withLazyRoutes(routes, consoleRouteLoaders));
   }
 
   /**
    * Reuse SSR-slotted static markup on the first load of this exact path.
    * Client-side navigations always build a fresh <static-view>.
    */
-  private reuseSsrStaticWrapper(path: string): Element | undefined {
+  private reuseSsrStaticWrapper(path: string): HTMLElement | undefined {
     const outlet = this.renderRoot.querySelector('main');
-    const existingWrapper = outlet?.querySelector('static-view-wrapper');
+    const existingWrapper = outlet?.querySelector<HTMLElement>(
+      'static-view-wrapper'
+    );
     const ssrRoute = this.getAttribute('data-ssr-route');
     if (existingWrapper && ssrRoute === path && !this.hasNavigated) {
       this.hasNavigated = true;

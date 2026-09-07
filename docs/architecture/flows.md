@@ -28,6 +28,14 @@ Flow `prompt_template` strings are resolved before the agent starts. Besides `{{
 *   `{{execution.resume_from}}` — prior execution id when this run was started from a human comment on a PR this flow opened. Empty otherwise.
 *   `{{execution.ci_failure}}` — when this run was started because GitHub CI failed on a PR this flow opened: provider, job name, and check URL. Empty otherwise.
 
+## Model stream recovery
+
+Hosted Docker/Kubernetes agent scripts and supported private Docker launches keep provider retries separate from session recovery. Codex uses four request retries and five stream retries (explicit for the gateway provider, matching its native defaults); OpenCode 1.18.29 already retries a model request up to five times; Gemini enables transport retries with four total chat-model attempts. After a transient CLI failure, the container can resume the captured parent conversation twice, with two- and four-second backoffs and a 600-second timeout per resume (forced termination after another five seconds). The execution's overall timeout still applies. These retry layers can multiply upstream attempts; they are bounded and do not guarantee recovery from a sustained outage.
+
+Recovery requires an explicit captured session identifier. It does not start another conversation if capture fails, and it skips cancellation, terminal authorization/quota failures, and a terminal completion report written during this invocation. A content/stat fingerprint captured before the CLI starts preserves old result.json evidence from restored workspaces without mistaking it for completion of the new turn. The continuation prompt preserves conversation/tool results and asks the agent to inspect uncertain external actions before writing again. Initialization and the container's publication block execute once; model-controlled effects are not guaranteed exactly once. `PRELOOP_STREAM_RECOVERY`, `PRELOOP_STREAM_RECOVERY_RESULT`, and `PRELOOP_STREAM_RECOVERY_UNAVAILABLE` remain visible in agent logs. OpenCode/Gemini terminal JSON errors override a misleading zero CLI exit; truncated output without a terminal completion cannot count as success.
+
+The separate private native-host execution profile supports only Cursor and retains its existing no-resume contract; OpenCode, Codex, and Gemini are not accepted on that path. Gemini is not currently a supported private Docker runner harness.
+
 ## PR-comment resume
 
 `create_pull_request` (and GitLab merge-request creation) records the opened HTML URL and source branch on `flow_execution.result` (`flow_pr_binding`). When a flow listens to both issue events (`issue_labeled` or `issue_opened`) and `comment_created`, a later human comment on that PR starts a new execution of the same flow with `_resume` in the trigger payload. The container clones and pushes the existing PR branch. Unmatched comments do not start a run. Native CLI `--resume` is a separate follow-up.
