@@ -117,7 +117,10 @@ from preloop.services.upstream_errors import (
     classify_upstream_error,
     is_retryable_upstream_failure,
 )
-from preloop.services.gateway_error_alerts import reserve_gateway_5xx_alert
+from preloop.services.gateway_error_alerts import (
+    enqueue_gateway_5xx_alert,
+    reserve_gateway_5xx_alert,
+)
 from preloop.services.model_price_catalog import schedule_price_lookup
 from preloop.services.unpriced_model_alert import (
     notify_unpriced_model,
@@ -1966,7 +1969,7 @@ class OpenAIGatewayService:
                     {"type": "message_stop"},
                 )
             except Exception as exc:
-                gateway_error = self._stream_error("anthropic", exc)
+                gateway_error = self._stream_error("anthropic", exc, ai_model=model)
                 if not recorded:
                     self._record_gateway_request(
                         endpoint="/anthropic/v1/messages",
@@ -2267,7 +2270,7 @@ class OpenAIGatewayService:
                 )
                 yield self._sse_done()
             except Exception as exc:
-                gateway_error = self._stream_error("openai", exc)
+                gateway_error = self._stream_error("openai", exc, ai_model=model)
                 if not recorded:
                     self._record_gateway_request(
                         endpoint="/openai/v1/chat/completions",
@@ -2847,7 +2850,7 @@ class OpenAIGatewayService:
                 )
                 yield self._sse_done()
             except Exception as exc:
-                gateway_error = self._stream_error("openai", exc)
+                gateway_error = self._stream_error("openai", exc, ai_model=model)
                 if not recorded:
                     self._record_gateway_request(
                         endpoint="/openai/v1/responses",
@@ -4332,7 +4335,7 @@ class OpenAIGatewayService:
                 )
                 yield "data: [DONE]\n\n"
             except Exception as exc:
-                gateway_error = self._stream_error("openai", exc)
+                gateway_error = self._stream_error("openai", exc, ai_model=ai_model)
                 if not recorded:
                     self._record_gateway_request(
                         endpoint="/openai/v1/responses",
@@ -4580,7 +4583,7 @@ class OpenAIGatewayService:
                 )
                 yield self._sse_done()
             except Exception as exc:
-                gateway_error = self._stream_error("openai", exc)
+                gateway_error = self._stream_error("openai", exc, ai_model=ai_model)
                 if not recorded:
                     self._record_gateway_request(
                         endpoint="/openai/v1/chat/completions",
@@ -5262,7 +5265,7 @@ class OpenAIGatewayService:
                     accumulated_output_text=accumulated_text,
                 )
             except Exception as exc:
-                gateway_error = self._stream_error("anthropic", exc)
+                gateway_error = self._stream_error("anthropic", exc, ai_model=ai_model)
                 if not recorded:
                     self._record_gateway_request(
                         endpoint="/anthropic/v1/messages",
@@ -5835,7 +5838,7 @@ class OpenAIGatewayService:
                     accumulated_output_text=accumulated_text,
                 )
             except Exception as exc:
-                gateway_error = self._stream_error("openai", exc)
+                gateway_error = self._stream_error("openai", exc, ai_model=ai_model)
                 if not recorded:
                     self._record_gateway_request(
                         endpoint="/openai/v1/responses",
@@ -6071,6 +6074,8 @@ class OpenAIGatewayService:
         self,
         provider: GatewayProvider,
         operation: Callable[[], Any],
+        *,
+        ai_model: Optional[AIModel] = None,
     ) -> Any:
         """Run ``operation`` with bounded retries for transient upstream faults.
 
@@ -6083,6 +6088,7 @@ class OpenAIGatewayService:
         Args:
             provider: Gateway provider used to shape the final error.
             operation: Zero-arg callable to invoke.
+            ai_model: Resolved upstream model for alert attribution.
 
         Returns:
             The value returned by ``operation``.
@@ -6128,7 +6134,9 @@ class OpenAIGatewayService:
         self._capture_rate_limit_headers(headers_from_exception(last_exc))
         if isinstance(last_exc, ModelGatewayAPIError):
             raise last_exc
-        raise self._normalize_upstream_error(provider, last_exc) from last_exc
+        raise self._normalize_upstream_error(
+            provider, last_exc, ai_model=ai_model
+        ) from last_exc
 
     def _call_litellm(
         self,
@@ -6164,7 +6172,9 @@ class OpenAIGatewayService:
             return self.upstream_backend.completion(**kwargs)
 
         if retry_transient:
-            response = self._run_with_upstream_retries(provider, _invoke)
+            response = self._run_with_upstream_retries(
+                provider, _invoke, ai_model=ai_model
+            )
         else:
             response = _invoke()
         if not stream:
@@ -6218,7 +6228,7 @@ class OpenAIGatewayService:
                 provider=provider,
             )
 
-        return self._run_with_upstream_retries(provider, _attempt)
+        return self._run_with_upstream_retries(provider, _attempt, ai_model=ai_model)
 
     def _prefetch_upstream_stream(
         self, upstream_stream: Any, *, provider: GatewayProvider
@@ -6244,14 +6254,13 @@ class OpenAIGatewayService:
         Raises:
             ModelGatewayAPIError: When the first chunk cannot be obtained.
         """
-        iterator = iter(upstream_stream)
         try:
+            iterator = iter(upstream_stream)
             first_chunk = next(iterator)
         except StopIteration:
             return _PrefetchedUpstreamStream(iter(()), raw=upstream_stream)
-        except ModelGatewayAPIError:
-            raise
         except Exception as exc:
+            self._close_failed_upstream_stream(upstream_stream)
             # Leave the exception raw so ``_open_upstream_stream`` can retry
             # MidStreamFallbackError / 502 without admin-alerting each
             # attempt. The retry wrapper maps the final failure.
@@ -6260,6 +6269,22 @@ class OpenAIGatewayService:
         return _PrefetchedUpstreamStream(
             chain([first_chunk], iterator), raw=upstream_stream
         )
+
+    @staticmethod
+    def _close_failed_upstream_stream(upstream_stream: Any) -> None:
+        """Release a failed first-read stream before retrying its request."""
+        # LiteLLM's synchronous wrapper exposes only aclose(), but its
+        # completion_stream owns the synchronous HTTP response/iterator.
+        resource = upstream_stream
+        closer = getattr(resource, "close", None)
+        if not callable(closer):
+            resource = getattr(upstream_stream, "completion_stream", None)
+            closer = getattr(resource, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                logger.debug("Failed upstream stream cleanup failed", exc_info=True)
 
     @staticmethod
     def _provider_cost_fields(upstream_stream: Any) -> Dict[str, Any]:
@@ -6320,7 +6345,11 @@ class OpenAIGatewayService:
         return recovered
 
     def _stream_error(
-        self, provider: GatewayProvider, exc: Exception
+        self,
+        provider: GatewayProvider,
+        exc: Exception,
+        *,
+        ai_model: Optional[AIModel] = None,
     ) -> ModelGatewayAPIError:
         """Coerce a mid-stream exception into a gateway error for SSE emission.
 
@@ -6332,7 +6361,9 @@ class OpenAIGatewayService:
             error = exc
         else:
             self._capture_rate_limit_headers(headers_from_exception(exc))
-            error = self._normalize_upstream_error(provider, exc)
+            error = self._normalize_upstream_error(
+                provider, exc, ai_model=ai_model, streaming=True
+            )
         if error.error_class in (
             ERROR_CLASS_NETWORK,
             ERROR_CLASS_UPSTREAM_DISCONNECT,
@@ -6864,7 +6895,11 @@ class OpenAIGatewayService:
 
     @staticmethod
     def _normalize_upstream_error(
-        provider: GatewayProvider, exc: Exception
+        provider: GatewayProvider,
+        exc: Exception,
+        *,
+        ai_model: Optional[AIModel] = None,
+        streaming: bool = False,
     ) -> ModelGatewayAPIError:
         """Map an upstream exception to a classified ModelGatewayAPIError.
 
@@ -6944,10 +6979,23 @@ class OpenAIGatewayService:
             if status_code >= 500 and status_is_inferred:
                 message = f"Gateway upstream error: {message}"
 
-        if status_code >= 500:
+        is_disconnect = classified is not None and (
+            classified.error_class == ERROR_CLASS_UPSTREAM_DISCONNECT
+            or (streaming and classified.error_class == ERROR_CLASS_NETWORK)
+        )
+        if is_disconnect:
+            # Disconnects remain visible to clients and accounting, but an
+            # individual transport interruption is not an admin page.
+            logger.warning(
+                "Gateway upstream disconnect: protocol=%s provider=%s model=%s "
+                "error_class=%s",
+                provider,
+                getattr(ai_model, "provider_name", None),
+                getattr(ai_model, "model_identifier", None),
+                ERROR_CLASS_UPSTREAM_DISCONNECT,
+            )
+        if status_code >= 500 and not is_disconnect:
             try:
-                from preloop.sync.tasks import notify_admins
-
                 from preloop.utils.secret_scrubbing import scrub_secrets
 
                 # One admin alert per (provider, status) per quiet window, so
@@ -6960,8 +7008,11 @@ class OpenAIGatewayService:
                 if send_alert:
                     scrubbed_trace = (scrub_secrets(str(exc)) or "")[:400]
                     alert_body = (
-                        "The AI Gateway experienced an upstream or timeout failure.\n\n"
-                        f"Provider: {provider}\nStatus: {status_code}\n"
+                        "The AI Gateway experienced an upstream failure.\n\n"
+                        f"Gateway protocol: {provider}\n"
+                        f"Upstream provider: {getattr(ai_model, 'provider_name', None) or 'unknown'}\n"
+                        f"Upstream model: {getattr(ai_model, 'model_identifier', None) or 'unknown'}\n"
+                        f"Status: {status_code}\n"
                         f"Message: {message}\nType: {error_type}\nCode: {code}\n"
                         f"Class: {classified.error_class if classified else None}\n\n"
                         f"Trace:\n{scrubbed_trace}"
@@ -6972,9 +7023,9 @@ class OpenAIGatewayService:
                             f"\n\nSuppressed {suppressed_alerts} similar {noun} "
                             "since the previous notification."
                         )
-                    notify_admins(
+                    enqueue_gateway_5xx_alert(
                         subject=f"[Preloop Alert] AI Gateway HTTP {status_code} Error ({provider})",
-                        message=alert_body,
+                        message=scrub_secrets(alert_body) or "",
                     )
             except Exception:
                 # Admin alert is best-effort; never block error mapping. Logged

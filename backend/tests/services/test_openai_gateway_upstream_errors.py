@@ -621,3 +621,17 @@ class TestMidStreamErrorLogHygiene:
             with _captured_gateway_warnings(caplog):
                 list(service.stream_response({"model": "hyg-resp", "input": "Hello"}))
         self._assert_no_leak(caplog)
+
+
+@pytest.fixture(autouse=True)
+def _deliver_alerts_inline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep payload/throttle assertions deterministic; delivery has separate tests."""
+
+    def _deliver(**kwargs: str) -> None:
+        from preloop.sync.tasks import notify_admins
+
+        notify_admins(**kwargs)
+
+    monkeypatch.setattr(
+        "preloop.services.openai_gateway.enqueue_gateway_5xx_alert", _deliver
+    )

@@ -128,6 +128,8 @@ _TRANSIENT_NETWORK_RE = re.compile(
     r"|upstream_disconnect"
     r"|disconnected mid-stream"
     r"|midstreamfallbackerror"
+    r"|incomplete chunked read"
+    r"|peer closed connection without sending complete message body"
     r"|json error injected into sse stream)\b",
     re.IGNORECASE,
 )

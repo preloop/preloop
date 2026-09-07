@@ -12,6 +12,13 @@ from aiodocker.exceptions import DockerError
 from preloop.services.mcp_config_service import MCPConfigService
 from preloop.services.model_runtime_resolver import gateway_url_for_api
 
+from .completion_nudge import AGENT_OUTPUT_LOG_PATH
+from .stream_recovery import (
+    ATTEMPT_LOG_PATH,
+    RECOVERY_PROMPT_PATH,
+    build_stream_recovery_baseline_block,
+    build_stream_recovery_block,
+)
 from .container import ContainerAgentExecutor
 from .images import default_agent_image
 from .kubernetes import detect_kubernetes_environment
@@ -369,19 +376,38 @@ fi
         # loop detection (see _build_gateway_helper_settings).  Base64-encoded
         # for safe shell embedding.  Written BEFORE `gemini mcp add`, which
         # merges the MCP server into the same user settings file.
-        gateway_settings_block = ""
+        cli_settings = {"general": {"retryFetchErrors": True, "maxAttempts": 4}}
         if execution_context.get("model_gateway_enabled"):
-            settings_json = json.dumps(
-                self._build_gateway_helper_settings(model), indent=2
-            )
-            settings_b64 = base64.b64encode(settings_json.encode()).decode()
-            gateway_settings_block = f"""
-# Pin gemini-cli internal helper models (loop detection, next-speaker check,
-# web-fetch fallback, summarizers, compression) to the flow's gateway model.
-# Stock gemini-cli calls hardcoded Google models for these, which the Preloop
-# gateway does not serve (404 -> silent helper degradation, issue #212).
+            cli_settings.update(self._build_gateway_helper_settings(model))
+        settings_b64 = base64.b64encode(
+            json.dumps(cli_settings, indent=2).encode()
+        ).decode()
+        gateway_settings_block = f"""
+# Enable bounded transport retries; gateway helper aliases retain the flow model.
 echo '{settings_b64}' | base64 -d > "$HOME/.gemini/settings.json"
 """
+
+        stream_recovery_block = build_stream_recovery_block(
+            agent_label="gemini",
+            exit_code_var="GEMINI_EXIT_CODE",
+            session_id_expr='"${_pl_gemini_sid:-}"',
+            resume_probe="gemini --help 2>&1 | grep -q -- '--resume'",
+            resume_command=(
+                '$PRELOOP_RECOVERY_TIMEOUT gemini --resume "$_pl_recovery_sid" '
+                f'--output-format stream-json --yolo -m "{model}" '
+                f'--prompt "$(cat {RECOVERY_PROMPT_PATH})" 2>&1 '
+                "| node /tmp/gemini-json-log-filter.js "
+                f'| tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"\n'
+                '    _pl_recovery_codes=("${PIPESTATUS[@]}")\n'
+                "    GEMINI_EXIT_CODE=${_pl_recovery_codes[0]:-1}\n"
+                '    if [ "$GEMINI_EXIT_CODE" -eq 0 ] && [ "${_pl_recovery_codes[1]:-0}" -ne 0 ]; then\n'
+                "        GEMINI_EXIT_CODE=${_pl_recovery_codes[1]}\n"
+                "    fi\n"
+                '    if [ "${_pl_recovery_codes[0]:-1}" -eq 0 ] && [ "$(cat /tmp/preloop-gemini-turn-status 2>/dev/null)" = "incomplete" ]; then\n'
+                f'        echo "stream disconnected before completion" | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"\n'
+                "    fi"
+            ),
+        )
 
         mcp_add_block = """
 # Register the Preloop MCP server via `gemini mcp add`.
@@ -461,13 +487,82 @@ echo '{prompt_b64}' | base64 -d > /tmp/prompt.txt
 # Signal to the orchestrator that the agent is about to start.
 # Sentinel detection is suppressed until this marker is seen in logs.
 echo "PRELOOP_AGENT_EXEC_START"
+{build_stream_recovery_baseline_block()}
+
+# Preserve the native session id and render structured assistant/error events.
+cat > /tmp/gemini-json-log-filter.js <<'JS'
+const readline = require("node:readline");
+const fs = require("node:fs");
+const sessionFile = "/tmp/preloop-gemini-session-id";
+let text = "";
+let terminal = false;
+const turnStatusFile = "/tmp/preloop-gemini-turn-status";
+fs.writeFileSync(turnStatusFile, "incomplete");
+function flush() {{
+  if (text) {{ console.log(text); text = ""; }}
+}}
+const rl = readline.createInterface({{ input: process.stdin }});
+rl.on("line", (line) => {{
+  let event;
+  try {{ event = JSON.parse(line); }} catch {{ flush(); console.log(line); return; }}
+  if (event.type === "init" && /^[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}$/i.test(event.session_id || "")) {{
+    fs.writeFileSync(sessionFile, event.session_id + "\\n");
+  }}
+  if (event.type === "message" && event.role === "assistant" && typeof event.content === "string") {{
+    text += event.content;
+    let newline;
+    while ((newline = text.indexOf("\\n")) !== -1) {{
+      console.log(text.slice(0, newline));
+      text = text.slice(newline + 1);
+    }}
+  }}
+  if (event.type === "error") {{
+    flush();
+    console.log(event.message || JSON.stringify(event.error || event));
+    if (event.severity !== "warning") {{
+      fs.writeFileSync(turnStatusFile, "error");
+      process.exitCode = 1;
+    }}
+  }}
+  if (event.type === "result") {{
+    terminal = true;
+    flush();
+    if (event.error) console.log(JSON.stringify(event.error));
+    process.exitCode = event.status === "success" ? 0 : 1;
+    fs.writeFileSync(turnStatusFile, event.status === "success" ? "success" : "error");
+  }}
+}});
+rl.on("close", () => {{
+  flush();
+  if (!terminal) {{
+    process.exitCode = 1;
+  }}
+}});
+JS
 
 # Run Gemini CLI with the prompt
 # --yolo: Skip confirmation prompts for tool usage
 # -m: Specify the model
 # --prompt: Pass the prompt (read from file)
-gemini --yolo -m "{model}" --prompt "$(cat /tmp/prompt.txt)"
-GEMINI_EXIT_CODE=$?
+set +e
+: > "{AGENT_OUTPUT_LOG_PATH}"
+: > "{ATTEMPT_LOG_PATH}"
+rm -f /tmp/preloop-gemini-session-id
+gemini --output-format stream-json --yolo -m "{model}" --prompt "$(cat /tmp/prompt.txt)" 2>&1 | node /tmp/gemini-json-log-filter.js | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
+GEMINI_PIPE_CODES=("${{PIPESTATUS[@]}}")
+GEMINI_EXIT_CODE=${{GEMINI_PIPE_CODES[0]:-1}}
+if [ "$GEMINI_EXIT_CODE" -eq 0 ] && [ "${{GEMINI_PIPE_CODES[1]:-0}}" -ne 0 ]; then
+    GEMINI_EXIT_CODE=${{GEMINI_PIPE_CODES[1]}}
+fi
+set -e
+if [ "${{GEMINI_PIPE_CODES[0]:-1}}" -eq 0 ] && [ "$(cat /tmp/preloop-gemini-turn-status 2>/dev/null)" = "incomplete" ]; then
+    echo "stream disconnected before completion" | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
+fi
+_pl_gemini_sid=""
+if [ -s /tmp/preloop-gemini-session-id ]; then
+    _pl_gemini_sid=$(head -n 1 /tmp/preloop-gemini-session-id | tr -d '[:space:]')
+fi
+{stream_recovery_block}
 
 echo ""
 echo "=================================================="

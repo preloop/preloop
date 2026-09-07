@@ -25,6 +25,12 @@ from .completion_nudge import (
     completion_nudge_enabled,
     completion_nudge_timeout_seconds,
 )
+from .stream_recovery import (
+    ATTEMPT_LOG_PATH,
+    RECOVERY_PROMPT_PATH,
+    build_stream_recovery_baseline_block,
+    build_stream_recovery_block,
+)
 from .container import ContainerAgentExecutor
 from .images import default_agent_image
 from .kubernetes import detect_kubernetes_environment
@@ -275,9 +281,9 @@ class CodexAgent(ContainerAgentExecutor):
         """Shell blocks for native CLI session persistence (Codex flavor).
 
         See OpenCodeAgent._build_cli_session_blocks for the shared design.
-        Codex differences: the session id comes from the newest rollout file
-        under ``$CODEX_HOME/sessions`` (its filename embeds the session
-        uuid), and the resume flag is the ``codex exec resume`` subcommand.
+        Codex differences: the session id is the verified root execution
+        under ``$CODEX_HOME/sessions`` (``capture_codex_session_id``), never
+        a newer child rollout, and the resume flag is ``codex exec resume``.
         """
         blocks: Dict[str, str] = {
             "decode": "",
@@ -293,16 +299,30 @@ class CodexAgent(ContainerAgentExecutor):
                 '    _pl_codex_sid="${PRELOOP_CLI_SESSION_ID:-}"\n'
                 "fi\n"
             )
+        import inspect
+
+        from .session_manifest import capture_codex_session_id
+
+        capture_source = inspect.getsource(capture_codex_session_id)
         blocks["capture"] = f"""
-# Extract this run's session id from the newest rollout file so the
-# orchestrator can persist it for a later PR-comment resume.
+# Capture one explicit parent CLI conversation, never a newer child rollout.
 _pl_codex_sid=""
-{restore_guard}if [ -z "$_pl_codex_sid" ] && [ -d "$CODEX_HOME/sessions" ]; then
-    _pl_rollout=$(find "$CODEX_HOME/sessions" -type f -name 'rollout-*.jsonl' 2>/dev/null | sort | tail -n 1)
-    if [ -n "$_pl_rollout" ]; then
-        _pl_codex_sid=$(printf '%s\\n' "$_pl_rollout" | grep -oE '[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}' | tail -n 1)
-    fi
-fi
+{restore_guard}_pl_codex_sid=$(python3 - "$CODEX_HOME/sessions" "$_pl_codex_sid" <<'PRELOOP_CODEX_CAPTURE_PY' || true
+import json
+import re
+import sys
+from pathlib import Path
+class SessionRestoreError(ValueError):
+    pass
+{capture_source}
+try:
+    sid = capture_codex_session_id(Path(sys.argv[1]), sys.argv[2] or None)
+    if re.fullmatch(r"[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}", sid):
+        print(sid)
+except Exception:
+    pass
+PRELOOP_CODEX_CAPTURE_PY
+)
 if [ -n "$_pl_codex_sid" ]; then
     echo "{AGENT_SESSION_MARKER} codex $_pl_codex_sid"
 fi
@@ -342,7 +362,11 @@ fi
             execution_context, "codex", '"$CODEX_HOME/sessions"', '"$_pl_codex_sid"'
         )
         if native:
+            # Keep the fail-closed parent selector. Native checkpoint
+            # capture raises on ambiguity and would abort the script.
+            capture = blocks["capture"]
             blocks.update(native)
+            blocks["capture"] = capture
         return blocks
 
     def _build_codex_script(self, execution_context: Dict[str, Any]) -> str:
@@ -490,6 +514,20 @@ fi
         session_blocks = self._build_cli_session_blocks(execution_context)
 
         # Create the full script
+        stream_recovery_block = build_stream_recovery_block(
+            agent_label="codex",
+            exit_code_var="CODEX_EXIT_CODE",
+            session_id_expr='"${_pl_codex_sid:-}"',
+            resume_probe="codex exec --help 2>&1 | grep -qw resume",
+            resume_command=(
+                '$PRELOOP_RECOVERY_TIMEOUT codex exec resume "$_pl_recovery_sid" '
+                f'--skip-git-repo-check --model "{model}" --yolo '
+                f'"$(cat {RECOVERY_PROMPT_PATH})" 2>&1 '
+                f'| tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"\n'
+                '    _pl_recovery_codes=("${PIPESTATUS[@]}")\n'
+                "    CODEX_EXIT_CODE=${_pl_recovery_codes[0]:-1}"
+            ),
+        )
         script = f"""
 set -e
 
@@ -570,6 +608,7 @@ echo "=========================="
 # Signal to the orchestrator that the agent is about to start.
 # Sentinel detection is suppressed until this marker is seen in logs.
 echo "PRELOOP_AGENT_EXEC_START"
+{build_stream_recovery_baseline_block()}
 
 # Run codex in non-interactive mode with the prompt.
 # The output is tee'd so the in-place completion nudge can check for the
@@ -577,11 +616,13 @@ echo "PRELOOP_AGENT_EXEC_START"
 # PIPESTATUS[1] is codex's own exit code (echo | codex | tee).
 set +e
 : > "{AGENT_OUTPUT_LOG_PATH}"
-echo "{escaped_prompt}" | codex exec $CODEX_RESUME_ARGS --skip-git-repo-check --model "{model}" --yolo 2>&1 | tee -a "{AGENT_OUTPUT_LOG_PATH}"
+: > "{ATTEMPT_LOG_PATH}"
+echo "{escaped_prompt}" | codex exec $CODEX_RESUME_ARGS --skip-git-repo-check --model "{model}" --yolo 2>&1 | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
 CODEX_PIPE_CODES=("${{PIPESTATUS[@]}}")
 CODEX_EXIT_CODE=${{CODEX_PIPE_CODES[1]:-0}}
 set -e
 {session_blocks["capture"]}
+{stream_recovery_block}
 if [ {native_resume_guard} -eq 1 ] && [ "$CODEX_EXIT_CODE" -ne 0 ]; then
     echo 'PRELOOP_NATIVE_RESUME {{"mode":"resume_failed","reason":"native_cli_exit"}}'
     {session_blocks["pack"]}
@@ -727,6 +768,9 @@ name = "{model_provider.title()}"
 {base_url_line}
 env_key = "{env_key}"
 wire_api = "{wire_api}"
+request_max_retries = 4
+stream_max_retries = 5
+stream_idle_timeout_ms = 600000
 
 [mcp_servers.preloop]
 url = "$PRELOOP_MCP_URL"
@@ -734,7 +778,9 @@ bearer_token_env_var = "PRELOOP_API_TOKEN"
 tool_timeout_sec = $MCP_TOOL_TIMEOUT_SEC
 EOF"""
         else:
-            # Standard OpenAI config
+            # Built-in OpenAI already retries 4/5. Do not emit
+            # [model_providers.openai]: merge is insert-only for that id
+            # and a partial block still omits required provider fields.
             auth_block = f"""# Create auth.json with OpenAI API key
 cat > ~/.codex/auth.json << EOF
 {{

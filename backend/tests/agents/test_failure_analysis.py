@@ -395,3 +395,12 @@ class TestOpenRouterMidStreamDisconnect:
         logs = "ERROR: zai does not support parameters: ['parallel_tool_calls']"
         analysis = analyze_agent_failure(logs)
         assert analysis.transient is False
+
+
+def test_raw_incomplete_chunked_read_is_transient() -> None:
+    """A CLI may log the raw provider error without gateway class/status fields."""
+    analysis = analyze_agent_failure(
+        "APIConnectionError: DeepseekException - peer closed connection without "
+        "sending complete message body (incomplete chunked read)"
+    )
+    assert analysis.transient is True
