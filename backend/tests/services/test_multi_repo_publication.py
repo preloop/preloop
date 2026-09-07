@@ -147,6 +147,14 @@ def _policy(
     )
 
 
+def _saved_flow() -> SimpleNamespace:
+    """Explicit default saved policy for finish tests that do not use a Session."""
+    return SimpleNamespace(
+        account_id="account",
+        git_clone_config={"publication_mode": "isolated"},
+    )
+
+
 def test_cross_repo_authorization_rejects_outsider() -> None:
     target = _target(OUTSIDER, "outsider")
     with pytest.raises(PublicationError, match="outside the authorized"):
@@ -293,6 +301,7 @@ async def test_successful_receipt_aggregation_and_idempotent_retry(
             agent_result={"result": {"verdict": "pass"}},
             archive=archive,
             verify=verify,
+            flow=_saved_flow(),
         )
         assert first["complete"] is True
         assert len(first["repositories"]) == 3
@@ -311,6 +320,7 @@ async def test_successful_receipt_aggregation_and_idempotent_retry(
             agent_result={"result": {"verdict": "pass"}},
             archive=archive,
             verify=verify,
+            flow=_saved_flow(),
         )
     assert second["complete"] is True
     assert second["repositories"][0]["url"] == first["repositories"][0]["url"]
@@ -399,6 +409,7 @@ async def test_partial_failure_then_retry_recovers_remaining(
                 agent_result={"result": {}},
                 archive=archive,
                 verify=verify,
+                flow=_saved_flow(),
             )
         assert first.value.receipt["status"] == "partial"
         recovered = await finish_multi_repo_isolated_publication(
@@ -407,6 +418,7 @@ async def test_partial_failure_then_retry_recovers_remaining(
             agent_result={"result": {}},
             archive=archive,
             verify=verify,
+            flow=_saved_flow(),
         )
     assert recovered["complete"] is True
     assert attempts[APP] == 2
@@ -1085,6 +1097,7 @@ async def test_prepare_partial_publish_resume_does_not_duplicate_prs(
                 agent_result={"result": {}},
                 archive=archive,
                 verify=verify,
+                flow=_saved_flow(),
             )
     receipt = first.value.receipt
     assert receipt["complete"] is False
@@ -1176,6 +1189,7 @@ async def test_prepare_partial_publish_resume_does_not_duplicate_prs(
             agent_result={"result": {}},
             archive=archive,
             verify=verify_resume,
+            flow=_saved_flow(),
         )
     assert recovered["complete"] is True
     assert created_prs == [FIRMWARE, APP, COMPLIANCE]

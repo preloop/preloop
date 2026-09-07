@@ -20,6 +20,7 @@ from preloop.services.product_provenance import (
     RuntimeProvenanceFacts,
     UnauthorizedProductMappingError,
     authorize_publication_decision,
+    enforce_saved_publication_approval,
     extract_product_provenance_payload,
     publication_approval_allows,
     publication_approval_required,
@@ -302,6 +303,24 @@ def test_unpaired_repository_and_commit_sets_cannot_authorize() -> None:
         )
 
 
+@pytest.mark.parametrize("reason", ["", " ", "\t"])
+def test_empty_or_whitespace_auto_approved_reason_is_not_human(reason: str) -> None:
+    with pytest.raises(ProductProvenanceError, match="human platform approval"):
+        authorize_publication_decision(
+            [_approval(_candidate(FIRMWARE, SHA_A), auto_approved_reason=reason)],
+            required=True,
+            candidates=[_candidate(FIRMWARE, SHA_A)],
+        )
+
+
+def test_human_approved_candidate_authorizes() -> None:
+    authorize_publication_decision(
+        [_approval(_candidate(FIRMWARE, SHA_A))],
+        required=True,
+        candidates=[_candidate(FIRMWARE, SHA_A)],
+    )
+
+
 def test_approval_covers_remaining_partial_resume_candidates() -> None:
     authorize_publication_decision(
         [_approval(_candidate(FIRMWARE, SHA_A), _candidate(APP, SHA_B))],
@@ -358,6 +377,79 @@ def test_payload_extract_reads_nested_product_provenance() -> None:
     )
     assert mapping is not None
     assert mapping["product"]["name"] == "example-product"
+
+
+def test_missing_saved_execution_denies_publication_approval(
+    db_session: object,
+) -> None:
+    from uuid import uuid4
+
+    with pytest.raises(ProductProvenanceError, match="human platform approval"):
+        enforce_saved_publication_approval(
+            db_session,
+            account_id=str(uuid4()),
+            execution_id=str(uuid4()),
+            candidates=[_candidate(FIRMWARE, SHA_A)],
+        )
+
+
+def test_session_double_without_saved_flow_denies() -> None:
+    from unittest.mock import MagicMock
+    from uuid import uuid4
+
+    with pytest.raises(ProductProvenanceError, match="human platform approval"):
+        enforce_saved_publication_approval(
+            MagicMock(),
+            account_id=str(uuid4()),
+            execution_id=str(uuid4()),
+            candidates=[_candidate(FIRMWARE, SHA_A)],
+        )
+
+
+def test_unreadable_saved_policy_denies_publication_approval() -> None:
+    from types import SimpleNamespace
+
+    with pytest.raises(ProductProvenanceError, match="human platform approval"):
+        enforce_saved_publication_approval(
+            object(),
+            flow=SimpleNamespace(git_clone_config="not-a-mapping"),
+            account_id="11111111-1111-4111-8111-111111111111",
+            execution_id="11111111-1111-4111-8111-111111111111",
+            candidates=[_candidate(FIRMWARE, SHA_A)],
+        )
+
+
+def test_saved_default_flow_does_not_require_publication_approval(
+    db_session: object, test_user: object
+) -> None:
+    from preloop.models.crud import crud_flow, crud_flow_execution
+    from preloop.models.schemas.flow import FlowCreate
+    from preloop.models.schemas.flow_execution import FlowExecutionCreate
+
+    flow = crud_flow.create(
+        db_session,
+        account_id=test_user.account_id,
+        flow_in=FlowCreate(
+            name="Default publication flow",
+            account_id=test_user.account_id,
+            agent_type="codex",
+            agent_config={},
+            prompt_template="implement",
+            trigger_event_source="github",
+            trigger_event_types=["issue_updated"],
+            timeout_seconds=600,
+            git_clone_config={"publication_mode": "isolated"},
+        ),
+    )
+    execution = crud_flow_execution.create(
+        db_session, obj_in=FlowExecutionCreate(flow_id=flow.id, status="RUNNING")
+    )
+    enforce_saved_publication_approval(
+        db_session,
+        account_id=str(test_user.account_id),
+        execution_id=str(execution.id),
+        candidates=[_candidate(FIRMWARE, SHA_A)],
+    )
 
 
 def test_workspace_seed_round_trip_digest() -> None:

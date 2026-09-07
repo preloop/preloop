@@ -311,6 +311,7 @@ async def publish_one_isolated_target(
     agent_result: Mapping[str, Any],
     verification: Any,
     client: httpx.AsyncClient,
+    flow: Any = None,
 ) -> dict[str, Any]:
     """Verify and publish one authorized repository using existing machinery."""
     account_id = str(policy.account_id)
@@ -351,6 +352,7 @@ async def publish_one_isolated_target(
         )
     require_human_publication_approval(
         db,
+        flow=flow,
         account_id=str(account_id),
         execution_id=str(policy.execution_id),
         candidates=[binding],
@@ -397,6 +399,7 @@ async def finish_multi_repo_isolated_publication(
     agent_result: dict[str, Any],
     archive: bytes | None,
     verify: Callable[[Any, bytes], Awaitable[Any]],
+    flow: Any = None,
 ) -> dict[str, Any]:
     """Publish every authorized repo. Stop marking complete on the first gap.
 
@@ -419,6 +422,7 @@ async def finish_multi_repo_isolated_publication(
                 agent_result=agent_result,
                 verification=getattr(hosted, "verification", hosted),
                 client=client,
+                flow=flow,
             )
         return result
 
@@ -453,6 +457,7 @@ async def finish_multi_repo_isolated_publication(
                 )
             require_human_publication_approval(
                 db,
+                flow=flow,
                 account_id=str(policy.account_id),
                 execution_id=str(policy.execution_id),
                 candidates=candidates,
@@ -472,6 +477,7 @@ async def finish_multi_repo_isolated_publication(
                     agent_result=agent_result,
                     verification=verification,
                     client=client,
+                    flow=flow,
                 )
                 receipts.append(published_receipt(target, result))
             except PublicationError as exc:

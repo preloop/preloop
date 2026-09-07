@@ -23,8 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commits and partial remotes are not success. Optional
   `git_clone_config.publication_approval` binds a human platform approval
   to each frozen candidate `(repository, branch, base, head_sha)` before
-  any writer lease is minted. Default flows without that opt-in are
-  unchanged. Guide: `docs/guide/flows/product-evidence.md`.
+  any writer lease is minted. A missing saved execution or flow, or an
+  unreadable clone config, refuses the lease instead of treating absence
+  as opt-out. Human decisions have `auto_approved_reason is None`. Default
+  flows without that opt-in are unchanged. Guide:
+  `docs/guide/flows/product-evidence.md`.
 
 
 - **Per-flow label-based model routing**: a flow can store optional ordered

@@ -506,6 +506,8 @@ async def finish_isolated_publication(
     archive: bytes | None,
     verification: Any,
     verify: Any = None,
+    *,
+    flow: Any = None,
 ) -> dict[str, Any]:
     """Publish only after a trusted verifier returns an exact artifact binding."""
     # #428 adapter supplies this *control-plane* value; agent result.json must
@@ -523,6 +525,7 @@ async def finish_isolated_publication(
             agent_result=agent_result,
             archive=archive,
             verify=verify,
+            flow=flow,
         )
 
     bundle = read_publication_bundle(archive or b"")
@@ -555,6 +558,7 @@ async def finish_isolated_publication(
         )
     require_human_publication_approval(
         db,
+        flow=flow,
         account_id=str(policy.account_id),
         execution_id=str(policy.execution_id),
         candidates=[binding],

@@ -142,8 +142,10 @@ base branch, and the frozen head SHA that will be pushed. An approval
 bound only to the original source base does not authorize a later
 candidate head. Unpaired repository and commit lists, swapped
 repo-to-SHA pairings, expired rows, declined rows, and AI-decided rows
-do not authorize. Default flows omit this field and keep existing
-publication behaviour.
+do not authorize. A human decision has no `auto_approved_reason`; an
+empty or whitespace reason is not human. If the saved execution, flow,
+or clone config cannot be read, the writer lease is refused. Default
+flows omit this field and keep existing publication behaviour.
 
 Per-repo receipts include the remote URL, PR URL, number, branch, base,
 records, and head SHA. `trusted_publication.complete` is true only when

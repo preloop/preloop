@@ -715,8 +715,10 @@ def authorize_publication_decision(
     Bindings are (repository, branch, base, head_sha). Separate repository
     and commit sets are not authority: they would allow swapping pairings.
     Unknown, missing, expired, declined, AI-decided, or unrelated rows deny
-    when ``required`` is true. They never authorize. ``repository_urls`` /
-    ``commits`` are rejected leftovers; they cannot authorize a write.
+    when ``required`` is true. They never authorize. A human decision has
+    ``auto_approved_reason is None``; an empty or whitespace reason is not
+    human. ``repository_urls`` / ``commits`` are rejected leftovers; they
+    cannot authorize a write.
     """
     if not required:
         return
@@ -740,9 +742,9 @@ def authorize_publication_decision(
     for record in records:
         if str(getattr(record, "status", "") or "") != "approved":
             continue
-        if getattr(record, "decided_by_ai", False) or getattr(
-            record, "auto_approved_reason", None
-        ):
+        if getattr(record, "decided_by_ai", False):
+            continue
+        if getattr(record, "auto_approved_reason", None) is not None:
             continue
         expires = getattr(record, "expires_at", None)
         if expires is not None:
@@ -767,6 +769,55 @@ def authorize_publication_decision(
     )
 
 
+def _saved_publication_config(flow: Any) -> Mapping[str, Any]:
+    """Readable ``git_clone_config`` from a saved flow or explicit snapshot.
+
+    ``None`` is the default opt-out. Any other unreadable value is not a
+    policy and must not authorize a writer lease.
+    """
+    raw = getattr(flow, "git_clone_config", None)
+    if raw is None:
+        return {}
+    if isinstance(raw, Mapping):
+        return raw
+    dumped = getattr(raw, "model_dump", None)
+    if callable(dumped):
+        value = dumped()
+        if isinstance(value, Mapping):
+            return value
+    raise ProductProvenanceError(
+        "Publication requires a human platform approval bound to these "
+        "repositories, branches, bases, heads, and action"
+    )
+
+
+def _load_saved_publication_flow(db: Any, *, account_id: str, execution_id: str) -> Any:
+    """Load the persisted flow for an execution, or refuse the write."""
+    from sqlalchemy.orm import Session
+
+    from preloop.models import models
+    from preloop.models.crud import crud_flow, crud_flow_execution
+
+    if not isinstance(db, Session):
+        raise ProductProvenanceError(
+            "Publication requires a human platform approval bound to these "
+            "repositories, branches, bases, heads, and action"
+        )
+    execution = crud_flow_execution.get(db, id=execution_id, account_id=str(account_id))
+    if not isinstance(execution, models.FlowExecution):
+        raise ProductProvenanceError(
+            "Publication requires a human platform approval bound to these "
+            "repositories, branches, bases, heads, and action"
+        )
+    flow = crud_flow.get(db, id=str(execution.flow_id), account_id=str(account_id))
+    if not isinstance(flow, models.Flow):
+        raise ProductProvenanceError(
+            "Publication requires a human platform approval bound to these "
+            "repositories, branches, bases, heads, and action"
+        )
+    return flow
+
+
 def enforce_saved_publication_approval(
     db: Any,
     *,
@@ -778,37 +829,30 @@ def enforce_saved_publication_approval(
 ) -> None:
     """Apply saved ``git_clone_config.publication_approval`` before a write lease.
 
-    Default flows without the opt-in are unchanged. When required, a missing
-    flow or unpaired/expired/denied/AI approval refuses the write.
+    A real database session always loads the saved execution and flow.
+    Missing rows or an unreadable config refuse the write. Callers without
+    persistence may pass an explicit flow snapshot of that saved policy.
+    Default flows without the opt-in stay unchanged. When required,
+    unpaired/expired/denied/AI approvals refuse the write.
     """
     from sqlalchemy.orm import Session
 
-    from preloop.models.crud import (
-        crud_approval_request,
-        crud_flow,
-        crud_flow_execution,
-    )
+    from preloop.models.crud import crud_approval_request
 
-    if flow is None and isinstance(db, Session):
-        execution = crud_flow_execution.get(
-            db, id=execution_id, account_id=str(account_id)
+    saved = flow
+    if isinstance(db, Session):
+        saved = _load_saved_publication_flow(
+            db, account_id=str(account_id), execution_id=str(execution_id)
         )
-        if execution is not None:
-            flow = crud_flow.get(
-                db, id=str(execution.flow_id), account_id=str(account_id)
-            )
-    config: Mapping[str, Any] | None = None
-    if flow is not None:
-        raw = getattr(flow, "git_clone_config", None)
-        if isinstance(raw, dict):
-            config = raw
-        elif raw is not None and hasattr(raw, "model_dump"):
-            dumped = raw.model_dump()
-            if isinstance(dumped, dict):
-                config = dumped
+    elif saved is None:
+        raise ProductProvenanceError(
+            "Publication requires a human platform approval bound to these "
+            "repositories, branches, bases, heads, and action"
+        )
+    config = _saved_publication_config(saved)
     if not publication_approval_required(config):
         return
-    if not isinstance(db, Session) or flow is None:
+    if not isinstance(db, Session):
         raise ProductProvenanceError(
             "Publication requires a human platform approval bound to these "
             "repositories, branches, bases, heads, and action"
@@ -816,7 +860,7 @@ def enforce_saved_publication_approval(
     records = crud_approval_request.get_multi_by_execution(
         db,
         execution_id=str(execution_id),
-        account_id=str(getattr(flow, "account_id", account_id)),
+        account_id=str(getattr(saved, "account_id", account_id)),
     )
     authorize_publication_decision(
         records,

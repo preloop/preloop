@@ -369,6 +369,28 @@ async def test_private_expired_and_ai_approvals_never_mint(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["", " "])
+async def test_private_empty_or_whitespace_auto_approved_reason_never_mints(
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str,
+) -> None:
+    case = _private_case(db_session, test_user, monkeypatch, publication_approval=True)
+    _store_approval(
+        db_session,
+        test_user,
+        case.execution.id,
+        [_candidate(case.policy.repository_url, MANIFEST["head_sha"])],
+        auto_approved_reason=reason,
+    )
+    verified = await _verified(case)
+    with pytest.raises(PublicationError, match="human platform approval"):
+        await case.controller.handle(verified)
+    case.broker.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_private_matching_candidate_approval_mints_write_lease(
     db_session: Session, test_user: models.User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -719,6 +741,176 @@ async def test_hosted_partial_resume_requires_remaining_candidate(
         APP,
         datetime.now(timezone.utc) + timedelta(minutes=10),
     )
+
+    async def fake_publish(**kwargs: Any) -> dict[str, Any]:
+        lease = await kwargs["acquire_lease"]()
+        assert lease.token == "write"
+        return {
+            "url": "https://github.com/example/companion-app/pull/2",
+            "number": 2,
+            "branch": BRANCH,
+            "provider": "github",
+            "head_sha": app_head,
+            "metadata_warnings": [],
+        }
+
+    publish.side_effect = fake_publish
+    with (
+        patch(
+            "preloop.services.multi_repo_publication.crud_tracker.get_by_id_and_account",
+            return_value=SimpleNamespace(id="tracker"),
+        ),
+        patch(
+            "preloop.services.isolated_publication.crud_tracker.get_by_id_and_account",
+            return_value=SimpleNamespace(id="tracker"),
+        ),
+        patch(
+            "preloop.services.multi_repo_publication.mint_repository_lease",
+            new=mint,
+        ),
+        patch(
+            "preloop.services.isolated_publication.mint_repository_lease",
+            new=mint,
+        ),
+        patch(
+            "preloop.services.multi_repo_publication.publish_verified_bundle",
+            new=publish,
+        ),
+        patch(
+            "preloop.services.isolated_publication.publish_verified_bundle",
+            new=publish,
+        ),
+        patch(
+            "preloop.services.multi_repo_publication.revoke_repository_lease",
+            new=AsyncMock(),
+        ),
+        patch(
+            "preloop.services.isolated_publication.revoke_repository_lease",
+            new=AsyncMock(),
+        ),
+    ):
+        result = await finish_multi_repo_isolated_publication(
+            db=db_session,
+            policy=policy,
+            agent_result={"result": {"status": "success"}},
+            archive=archive,
+            verify=verify,
+        )
+    assert result["head_sha"] == app_head
+    mint.assert_awaited()
+    publish.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hosted_missing_saved_authority_never_mints_or_pushes(
+    tmp_path: Any, db_session: Session
+) -> None:
+    _, fw_head, fw_bundle = _init_repo(tmp_path, "firmware", "fw")
+    _, app_head, app_bundle = _init_repo(tmp_path, "app", "app")
+    targets = (
+        IsolatedPublicationTarget(
+            tracker_id="tracker",
+            repository_url=FIRMWARE,
+            clone_path="firmware",
+            role="code",
+            branch=BRANCH,
+            base="main",
+            expected_remote_sha=None,
+            base_sha="e" * 40,
+        ),
+        IsolatedPublicationTarget(
+            tracker_id="tracker",
+            repository_url=APP,
+            clone_path="companion-app",
+            role="code",
+            branch=BRANCH,
+            base="release",
+            expected_remote_sha=None,
+            base_sha="d" * 40,
+        ),
+    )
+    policy = _hosted_policy(
+        account_id=str(uuid4()),
+        execution_id=str(uuid4()),
+        targets=targets,
+    )
+    archive = _archive({"firmware": fw_bundle, "companion-app": app_bundle})
+    mint = AsyncMock()
+    publish = AsyncMock()
+
+    async def verify(target_policy: Any, bundle: bytes) -> SimpleNamespace:
+        digest = hashlib.sha256(bundle).hexdigest()
+        head = {
+            hashlib.sha256(fw_bundle).hexdigest(): fw_head,
+            hashlib.sha256(app_bundle).hexdigest(): app_head,
+        }[digest]
+        return SimpleNamespace(
+            verification=VerifiedPublication(str(policy.execution_id), head, digest)
+        )
+
+    with (
+        patch(
+            "preloop.services.multi_repo_publication.crud_tracker.get_by_id_and_account",
+            return_value=SimpleNamespace(id="tracker"),
+        ),
+        patch(
+            "preloop.services.multi_repo_publication.mint_repository_lease",
+            new=mint,
+        ),
+        patch(
+            "preloop.services.multi_repo_publication.publish_verified_bundle",
+            new=publish,
+        ),
+    ):
+        with pytest.raises(IncompleteMultiRepoPublicationError) as raised:
+            await finish_multi_repo_isolated_publication(
+                db=db_session,
+                policy=policy,
+                agent_result={"result": {"status": "success"}},
+                archive=archive,
+                verify=verify,
+            )
+    mint.assert_not_awaited()
+    publish.assert_not_awaited()
+    assert "human platform approval" in str(raised.value.receipt)
+
+
+@pytest.mark.asyncio
+async def test_hosted_default_saved_flow_mints_without_approval(
+    tmp_path: Any, db_session: Session, test_user: models.User
+) -> None:
+    _, app_head, app_bundle = _init_repo(tmp_path, "app", "app")
+    _, execution = _hosted_flow(db_session, test_user, approval=False)
+    remaining = IsolatedPublicationTarget(
+        tracker_id="tracker",
+        repository_url=APP,
+        clone_path="companion-app",
+        role="code",
+        branch=BRANCH,
+        base="release",
+        expected_remote_sha=None,
+        base_sha="d" * 40,
+    )
+    policy = _hosted_policy(
+        account_id=str(test_user.account_id),
+        execution_id=str(execution.id),
+        targets=(remaining,),
+    )
+    archive = _single_bundle_archive(app_bundle)
+    mint = AsyncMock(
+        return_value=PublicationLease(
+            "write",
+            APP,
+            datetime.now(timezone.utc) + timedelta(minutes=10),
+        )
+    )
+    publish = AsyncMock()
+
+    async def verify(target_policy: Any, bundle: bytes) -> SimpleNamespace:
+        digest = hashlib.sha256(bundle).hexdigest()
+        return SimpleNamespace(
+            verification=VerifiedPublication(str(execution.id), app_head, digest)
+        )
 
     async def fake_publish(**kwargs: Any) -> dict[str, Any]:
         lease = await kwargs["acquire_lease"]()
