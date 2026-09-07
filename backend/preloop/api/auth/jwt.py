@@ -228,6 +228,8 @@ def _authenticate_with_api_key(
     api_key.last_used_at = datetime.now(UTC)
     session.add(api_key)
     session.commit()
+    # Principal context for later authorization. JWT sessions have no key.
+    user._auth_api_key = api_key
     return user
 
 

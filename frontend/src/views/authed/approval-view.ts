@@ -959,6 +959,67 @@ export class ApprovalView extends AuthedElement {
       .replace(/\\t/g, '\t');
   }
 
+  /** Frozen isolated-publication destinations persisted on the approval. */
+  private publicationDestinations(
+    args: Record<string, any> | undefined
+  ): Array<{
+    repository_url: string;
+    branch: string;
+    base: string;
+    head_sha: string;
+  }> {
+    const rows = args?.candidates ?? args?.targets ?? args?.bindings;
+    if (!Array.isArray(rows)) return [];
+    const destinations: Array<{
+      repository_url: string;
+      branch: string;
+      base: string;
+      head_sha: string;
+    }> = [];
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') continue;
+      const repository_url = String(
+        row.repository_url || row.remote || ''
+      ).trim();
+      const branch = String(row.branch || '').trim();
+      const base = String(row.base || '').trim();
+      const head_sha = String(
+        row.head_sha || row.sha || row.commit || ''
+      ).trim();
+      if (repository_url && branch && base && head_sha) {
+        destinations.push({ repository_url, branch, base, head_sha });
+      }
+    }
+    return destinations;
+  }
+
+  private renderPublicationDestinations(request: ApprovalRequest) {
+    const destinations = this.publicationDestinations(
+      withoutApprovalMetadata(request.tool_args)
+    );
+    if (!destinations.length) return '';
+    return html`
+      <div class="content-section">
+        <h2>Publication destinations</h2>
+        <ul class="timeline">
+          ${destinations.map(
+            (destination) => html`
+              <li>
+                <div class="timeline-body">
+                  <p class="timeline-detail">${destination.repository_url}</p>
+                  <p class="timeline-meta">
+                    ${destination.branch} · base ${destination.base} ·
+                    ${destination.head_sha}
+                  </p>
+                </div>
+              </li>
+            `
+          )}
+        </ul>
+      </div>
+    `;
+  }
+
   private timelineIcon(event: ApprovalTimelineEntry): string {
     switch (event.event_type) {
       case 'approval_requested':
@@ -1116,6 +1177,7 @@ export class ApprovalView extends AuthedElement {
             : ''
         }
         ${this.renderFactStrip(request, source, isPending, countdown)}
+        ${this.renderPublicationDestinations(request)}
 
         <div class="content-section">
           <h2>${this.argsHeading(request)}</h2>

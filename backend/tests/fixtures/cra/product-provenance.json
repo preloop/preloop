@@ -1,0 +1,32 @@
+{
+  "schema": "preloop.cra.product_provenance/v1",
+  "product": { "name": "example-product" },
+  "release": { "identifier": "1.4.2", "channel": "supported" },
+  "build": { "id": "build-14" },
+  "sbom": {
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "path": "sbom/image.spdx.json"
+  },
+  "repositories": [
+    {
+      "remote": "https://github.com/example/firmware.git",
+      "sha": "1111111111111111111111111111111111111111",
+      "clone_path": "firmware",
+      "role": "code"
+    },
+    {
+      "remote": "https://github.com/example/companion-app.git",
+      "sha": "2222222222222222222222222222222222222222",
+      "clone_path": "companion-app",
+      "role": "code"
+    },
+    {
+      "remote": "https://github.com/example/product-compliance.git",
+      "sha": "3333333333333333333333333333333333333333",
+      "clone_path": "compliance",
+      "role": "compliance"
+    }
+  ],
+  "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice.",
+  "note": "synthetic fixture"
+}

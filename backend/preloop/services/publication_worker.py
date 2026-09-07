@@ -36,17 +36,35 @@ MAX_RESULT_BYTES = 256 * 1024
 MAX_REQUEST_BYTES = 512 * 1024
 
 
+_NESTED_BUNDLE = re.compile(r"^repos/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/branch\.bundle$")
+
+
 def read_regular_file(directory: Path, name: str, limit: int) -> bytes:
     """Open only a fixed regular file without following links or accepting aliases."""
-    if name not in {"branch.bundle", "result.json"}:
+    if name in {"branch.bundle", "result.json"}:
+        parts = [name]
+    elif _NESTED_BUNDLE.fullmatch(name):
+        parts = name.split("/")
+    else:
         raise PublicationError("Unsupported publication input name")
     directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    opened_dirs = [directory_fd]
     try:
+        dir_fd = directory_fd
+        for part in parts[:-1]:
+            next_fd = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd
+            )
+            opened_dirs.append(next_fd)
+            dir_fd = next_fd
         fd = os.open(
-            name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd
+            parts[-1],
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=dir_fd,
         )
     finally:
-        os.close(directory_fd)
+        for handle in reversed(opened_dirs):
+            os.close(handle)
     with os.fdopen(fd, "rb") as stream:
         observed = os.fstat(stream.fileno())
         if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
@@ -113,12 +131,17 @@ def inspect_bundle(bundle: bytes, base_sha: str) -> dict[str, Any]:
 
 
 def freeze_publication(
-    source: Path, destination: Path, base_sha: str
+    source: Path, destination: Path, base_sha: str, clone_path: str | None = None
 ) -> dict[str, Any]:
     """Copy fixed inputs to a distinct controller-owned volume and inspect bytes."""
     if source.resolve() == destination.resolve():
         raise PublicationError("Frozen publication input must have independent storage")
-    bundle = read_regular_file(source, "branch.bundle", MAX_BUNDLE_BYTES)
+    bundle_name = "branch.bundle"
+    if clone_path:
+        from preloop.services.product_provenance import clone_path_slug
+
+        bundle_name = f"repos/{clone_path_slug(clone_path)}/branch.bundle"
+    bundle = read_regular_file(source, bundle_name, MAX_BUNDLE_BYTES)
     manifest = inspect_bundle(bundle, base_sha)
     try:
         result = read_regular_file(source, "result.json", MAX_RESULT_BYTES)
@@ -184,8 +207,12 @@ def main() -> None:
             raise PublicationError("Helper request exceeds limit")
         request = json.loads(raw)
         if sys.argv[1:] == ["freeze"]:
+            clone_path = request.get("clone_path")
             result = freeze_publication(
-                Path("/source"), Path("/input"), request["base_sha"]
+                Path("/source"),
+                Path("/input"),
+                request["base_sha"],
+                clone_path=clone_path if isinstance(clone_path, str) else None,
             )
         elif sys.argv[1:] == ["publish"]:
             result = asyncio.run(publish_frozen(Path("/input"), request))

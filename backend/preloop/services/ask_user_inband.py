@@ -35,7 +35,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, List, Optional
+from typing import Any, List, Mapping, Optional
 
 from preloop.models.crud import (
     crud_agent_control_command,
@@ -80,6 +80,32 @@ def approval_mobile_deep_link(request_id: Any) -> str:
     return f"preloop://approve/{request_id}"
 
 
+def _publication_destination_lines(arguments: Mapping[str, Any]) -> List[str]:
+    """Human-readable frozen destinations from persisted approval arguments."""
+    raw: Any = None
+    for key in ("candidates", "targets", "bindings"):
+        value = arguments.get(key)
+        if isinstance(value, list) and value:
+            raw = value
+            break
+    if not isinstance(raw, list):
+        return []
+    lines: List[str] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        url = str(item.get("repository_url") or item.get("remote") or "").strip()
+        branch = str(item.get("branch") or "").strip()
+        base = str(item.get("base") or "").strip()
+        head = str(
+            item.get("head_sha") or item.get("sha") or item.get("commit") or ""
+        ).strip()
+        if not (url and branch and base and head):
+            continue
+        lines.append(f"    {url} {branch} (base {base}) {head}")
+    return lines
+
+
 def format_question_notice(
     *,
     tool_name: str,
@@ -119,6 +145,10 @@ def format_question_notice(
         context_text = str(arguments.get("context") or "").strip()
         if context_text:
             lines.append(f"  Context: {context_text}")
+        destinations = _publication_destination_lines(arguments)
+        if destinations:
+            lines.append("  Publication destinations:")
+            lines.extend(destinations)
     lines.append(f"  Answer here: {console_url}")
     lines.append(f"  On mobile: {mobile_link}")
     lines.append(

@@ -37,12 +37,37 @@ def test_controller_annotations_do_not_break_bind(
     api["verification"] = {"status": "passed", "source": "sandbox_log"}
     api["provenance"] = {"controller": True}
     api["dossier"] = {"id": "dossier-1"}
+    api["product_provenance"] = {
+        "schema": "preloop.cra.product_provenance/v1",
+        "mapping_status": "verified",
+    }
+    api["dossier_manifest"] = {"schema": "preloop.cra.dossier_manifest/v1"}
     api["container_termination"] = {"exit_code": 0}
     results_bind_content(api, clone(sbomaudit_result))
     archive = make_evidence_archive(sbomaudit_result)
     packed = _accept(archive, api)
     assert packed is not None
     assert packed["schema"] == sbomaudit_result["schema"]
+
+
+def test_actual_controller_annotations_do_not_hide_decision_change(
+    duediligence_result: dict[str, Any],
+) -> None:
+    api = clone(duediligence_result)
+    api["product_provenance"] = {
+        "schema": "preloop.cra.product_provenance/v1",
+        "mapping_status": "verified",
+    }
+    api["dossier_manifest"] = {"digest": "abc"}
+    results_bind_content(api, clone(duediligence_result))
+    packed = clone(duediligence_result)
+    packed["decision"] = dict(packed["decision"])
+    packed["decision"]["outcome"] = "rejected"
+    with pytest.raises(EvidencePackError, match="content does not match"):
+        results_bind_content(api, packed)
+    archive = make_evidence_archive(packed)
+    with pytest.raises(EvidencePackError, match="content does not match"):
+        _accept(archive, api)
 
 
 def test_unknown_agent_field_is_bound(sbomaudit_result: dict[str, Any]) -> None:
