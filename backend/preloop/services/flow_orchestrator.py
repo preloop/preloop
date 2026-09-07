@@ -5369,6 +5369,11 @@ class FlowExecutionOrchestrator:
             raw_result=raw_result,
         )
         result["dossier_manifest"] = dossier
+        if publication:
+            # Strip already dropped any agent-authored receipt. Reattach only
+            # the controller-passed record so hosted persist/resume still sees
+            # the complete trusted receipt, not the redacted dossier copy.
+            result["trusted_publication"] = publication
         agent_result["result"] = result
 
     async def _finish_isolated_publication(self, agent_result: Dict[str, Any]) -> None:

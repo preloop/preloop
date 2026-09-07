@@ -30,6 +30,7 @@ from preloop.services.multi_repo_publication import (
     repository_role,
 )
 from preloop.services.product_provenance import (
+    default_clone_path,
     is_git_sha,
     normalize_repository_url,
     require_human_publication_approval,
@@ -123,11 +124,7 @@ def resume_topology_matches(
     current_ids = {
         (
             normalize_repository_url(str(row["repository_url"])),
-            clone_path_slug(
-                str(row.get("clone_path") or f"workspace-{index + 1}")
-                if index
-                else str(row.get("clone_path") or "workspace")
-            ),
+            clone_path_slug(str(row.get("clone_path") or default_clone_path(index))),
         )
         for index, row in enumerate(repositories)
         if row.get("repository_url")
@@ -214,10 +211,7 @@ async def _bind_isolated_repository(
             )
         if isinstance(prior_binding.get("branch"), str) and prior_binding["branch"]:
             repo_branch = str(prior_binding["branch"])
-    clone_path = str(
-        repository.get("clone_path")
-        or ("workspace" if index == 0 else f"workspace-{index + 1}")
-    )
+    clone_path = str(repository.get("clone_path") or default_clone_path(index))
     role = repository_role(clone_path, payload)
     read_lease = await mint_repository_lease(
         tracker, repository_url, write=False, client=client

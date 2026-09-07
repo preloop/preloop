@@ -201,7 +201,12 @@ is refused.
 
 Per-repo receipts include the remote URL, PR URL, number, branch, base,
 records, and head SHA. `trusted_publication.complete` is true only when
-every authorized repository published.
+every authorized repository published. Hosted isolated success and
+partial receipts persist as the top-level `trusted_publication` record
+on the execution result so resume can rebind; agent-authored copies are
+stripped and are not authority. When `clone_path` is omitted, the first
+repository is `workspace` and later repositories are `workspace-2`,
+`workspace-3`, matching isolated bind and resume.
 
 ## Dossier manifest
 

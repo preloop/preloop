@@ -23,6 +23,7 @@ from preloop.services.product_provenance import (
     confers_publication_authority,
     enforce_saved_publication_approval,
     extract_product_provenance_payload,
+    facts_from_git_clone_config,
     publication_approval_allows,
     publication_approval_required,
     publication_approval_tool_scope,
@@ -90,6 +91,34 @@ def _facts(**overrides: object) -> RuntimeProvenanceFacts:
 def test_legacy_absent_mapping_is_none() -> None:
     assert validate_product_provenance(None, _facts()) is None
     assert extract_product_provenance_payload({"payload": {}}) is None
+
+
+def test_omitted_clone_path_uses_canonical_workspace_layout() -> None:
+    remotes, paths, shas = facts_from_git_clone_config(
+        {
+            "repositories": [
+                {"repository_url": FIRMWARE},
+                {"repository_url": APP},
+                {"repository_url": COMPLIANCE, "clone_path": "compliance"},
+            ]
+        }
+    )
+    assert remotes == (FIRMWARE, APP, COMPLIANCE)
+    assert paths == ("workspace", "workspace-2", "compliance")
+    assert shas == {}
+    mapping = _mapping()
+    mapping["repositories"][0]["clone_path"] = "workspace"
+    mapping["repositories"][1]["clone_path"] = "workspace-2"
+    record = validate_product_provenance(
+        mapping,
+        _facts(clone_paths=paths),
+    )
+    assert record is not None
+    assert [repo.clone_path for repo in record.repositories] == [
+        "workspace",
+        "workspace-2",
+        "compliance",
+    ]
 
 
 def test_two_code_repos_and_compliance_verify() -> None:

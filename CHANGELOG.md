@@ -262,6 +262,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Hosted isolated publication keeps the controller `trusted_publication`
+  receipt on the persisted result**: `_attach_product_evidence_records`
+  still strips any agent-authored copy, then reattaches only the
+  controller-passed receipt so resume can rebind. Omitted repository
+  `clone_path` now defaults to `workspace`, then `workspace-2`, matching
+  isolated bind/resume. Guide: `docs/guide/flows/product-evidence.md`.
+
 - **Maintenance checkout uses frozen publication records**: `HEAD.txt` in an
   evidence archive is not release or build provenance. Recheck matches the
   candidate SHA against controller-verified `product_provenance` repositories
