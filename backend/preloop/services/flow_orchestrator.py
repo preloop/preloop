@@ -5194,10 +5194,20 @@ class FlowExecutionOrchestrator:
         clone_shas: dict[str, str] = {}
         requested_pins: dict[str, str] = {}
         archive = getattr(self, "_evidence_archive", None)
-        if not isinstance(archive, (bytes, bytearray, memoryview)) or not bytes(
-            archive
-        ):
-            archive = self._load_evidence_archive_bytes()
+        checkout = None
+        if policy is None:
+            from preloop.services.security_maintenance_refs import (
+                checkout_observation_policy,
+            )
+
+            checkout = checkout_observation_policy(
+                flow, execution=getattr(self, "execution_log", None)
+            )
+        if policy is not None or checkout is not None:
+            if not isinstance(archive, (bytes, bytearray, memoryview)) or not bytes(
+                archive
+            ):
+                archive = self._load_evidence_archive_bytes()
         if policy is not None:
             from preloop.services.multi_repo_publication import observed_checkout_shas
 
@@ -5214,31 +5224,21 @@ class FlowExecutionOrchestrator:
                     }
                     for target in policy_targets(policy)
                 ]
-        else:
+        elif checkout is not None:
             from preloop.services.multi_repo_publication import (
                 observed_checkout_shas,
                 policy_targets as checkout_targets,
             )
-            from preloop.services.security_maintenance_refs import (
-                checkout_observation_policy,
-            )
+            from preloop.services.trusted_publisher import PublicationError
 
-            checkout = checkout_observation_policy(
-                flow, execution=getattr(self, "execution_log", None)
-            )
-            if checkout is not None:
-                if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(
-                    archive
-                ):
-                    from preloop.services.trusted_publisher import PublicationError
-
-                    try:
-                        clone_shas = observed_checkout_shas(checkout, bytes(archive))
-                    except PublicationError:
-                        clone_shas = {}
-                for target in checkout_targets(checkout):
-                    if target.base_sha:
-                        requested_pins[target.repository_url] = target.base_sha
+            if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
+                try:
+                    clone_shas = observed_checkout_shas(checkout, bytes(archive))
+                except PublicationError:
+                    clone_shas = {}
+            for target in checkout_targets(checkout):
+                if target.base_sha:
+                    requested_pins[target.repository_url] = target.base_sha
         remotes, paths, _configured = facts_from_git_clone_config(
             git_config, clone_shas=clone_shas
         )

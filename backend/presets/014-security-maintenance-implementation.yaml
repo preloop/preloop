@@ -34,7 +34,9 @@ prompt_template: |
      platform approval record bound to this item.
   3. Do not claim the advisory is resolved. Recheck evidence is a
      separate audit execution.
-  4. Write /workspace/result.json last, with status, summary, tests, and
+  4. Write /workspace/result.json last. This file is how the flow learns
+     what happened. It must be valid JSON, a single top-level object
+     with "status": "success" | "failure", plus summary, tests, and
      commits. result.json is not a test receipt and not an approval.
 
   After you exit, the flow verifies the exact commit and publishes only

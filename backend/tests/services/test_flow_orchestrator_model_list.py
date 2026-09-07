@@ -7,6 +7,7 @@ generated agent config advertises models the flow principal cannot use and the
 gateway rejects them with a 400 mid-session.
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -95,11 +96,18 @@ class TestAuthorizedGatewayModelList:
             {"alias": "openai/gpt-5", "display_name": "GPT 5"}
         ]
 
-    async def test_resolution_failure_is_logged_at_warning(self, orchestrator, caplog):
+    async def test_resolution_failure_is_logged_at_warning(
+        self, orchestrator, caplog, monkeypatch
+    ):
         """A silent degradation to primary-only must be visible in prod logs."""
 
         def list_models(db, account_id, auth_context=None):
             raise RuntimeError("inventory unavailable")
+
+        # configure_logging() sets propagate=False on the "preloop" logger, so
+        # records never reach caplog's root handler. Restore propagation for
+        # this assertion only (same pattern as test_log_cli_activity).
+        monkeypatch.setattr(logging.getLogger("preloop"), "propagate", True)
 
         with caplog.at_level("WARNING", logger="preloop.services.flow_orchestrator"):
             context, _, _ = await _prepare(orchestrator, list_models=list_models)
