@@ -6,6 +6,7 @@ import '@shoelace-style/shoelace/dist/components/button-group/button-group.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 
+import './list-bar-swap';
 import type { ListViewMode } from '../utils/view-mode';
 
 const VIEW_OPTIONS: Array<{
@@ -24,6 +25,14 @@ const VIEW_OPTIONS: Array<{
  * the Flows filter bar pixel-for-pixel so collection pages feel like the
  * same product. Pages pass `views` to choose which buttons appear. The
  * default is list and cards; Agents adds canvas in the same group.
+ *
+ * **The toolbar is also where a selection lives.** A page with multi-select
+ * puts its `list-bulk-bar` in the `bulk` slot and sets `selecting` while
+ * something is picked: the bar takes this row over instead of being inserted
+ * above the table, which is what used to push the whole collection down at
+ * the moment the operator ticked a box. Search text and filters are not
+ * unmounted, only hidden, so clearing the selection gives them back exactly
+ * as they were. See `list-bar-swap` for how the height is held.
  *
  * @fires search-change - `{ detail: { value } }` when the search input changes
  * @fires view-change - `{ detail: { value } }` when a view button is pressed
@@ -48,6 +57,12 @@ export class ListToolbar extends LitElement {
   @property({ type: String }) view: ListViewMode = 'list';
   @property({ type: Array }) views: ListViewMode[] = ['list', 'cards'];
   @property({ type: String }) toggleLabel = 'View';
+  /**
+   * True while the page has a selection: the bulk bar in the `bulk` slot
+   * takes this row, and search, filters and the switcher step aside without
+   * giving up their height.
+   */
+  @property({ type: Boolean, reflect: true }) selecting = false;
 
   static styles = css`
     :host {
@@ -184,6 +199,15 @@ export class ListToolbar extends LitElement {
   }
 
   render() {
+    return html`
+      <list-bar-swap ?selecting=${this.selecting}>
+        ${this.renderToolbarRow()}
+        <slot name="bulk" slot="bulk"></slot>
+      </list-bar-swap>
+    `;
+  }
+
+  private renderToolbarRow() {
     return html`
       <div class="list-toolbar">
         <form

@@ -175,6 +175,23 @@ describe('list-select-checkbox', () => {
 });
 
 describe('list-bulk-bar', () => {
+  /**
+   * Action buttons are rendered by `resource-actions`, the same renderer the
+   * row kebab uses, so they live one shadow root deeper than the bar's own
+   * Clear and Select all.
+   */
+  async function actionButton(
+    element: ListBulkBar,
+    id: string
+  ): Promise<HTMLElement | null> {
+    const actions = element.shadowRoot!.querySelector('resource-actions')!;
+    await (actions as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    return actions.shadowRoot!.querySelector<HTMLElement>(
+      `sl-button[data-action="${id}"]`
+    );
+  }
+
   it('stays hidden while nothing is selected', async () => {
     const element = await fixture<ListBulkBar>(html`
       <list-bulk-bar
@@ -183,6 +200,21 @@ describe('list-bulk-bar', () => {
       ></list-bulk-bar>
     `);
     expect(element.shadowRoot!.querySelector('.bulk-bar')).to.equal(null);
+  });
+
+  it('keeps its layout at zero selected once it is docked in a row', async () => {
+    // Docked, the bar shares a row with the toolbar it replaces. Rendering
+    // nothing here would hand that row's height back and reintroduce the jump
+    // the swap exists to remove.
+    const element = await fixture<ListBulkBar>(html`
+      <list-bulk-bar
+        docked
+        .count=${0}
+        .actions=${[{ id: 'pause', label: 'Pause' }]}
+      ></list-bulk-bar>
+    `);
+    expect(element.shadowRoot!.querySelector('.bulk-bar')).to.exist;
+    expect(element.getBoundingClientRect().height).to.be.greaterThan(0);
   });
 
   it('counts the selection and offers the actions once something is picked', async () => {
@@ -204,13 +236,34 @@ describe('list-bulk-bar', () => {
         .textContent
     ).to.contain('3 selected');
 
-    const destructive = element.shadowRoot!.querySelector(
-      'sl-button[data-action="remove"]'
-    )!;
+    const destructive = (await actionButton(element, 'remove'))!;
     // DESIGN.md: destructive is danger outline, pushed away from the rest.
     expect(destructive.getAttribute('variant')).to.equal('danger');
     expect(destructive.hasAttribute('outline')).to.equal(true);
-    expect(destructive.classList.contains('destructive')).to.equal(true);
+    expect(destructive.classList.contains('separated')).to.equal(true);
+  });
+
+  it('offers select all while rows are left, and hides it once they are not', async () => {
+    const element = await fixture<ListBulkBar>(html`
+      <list-bulk-bar
+        .count=${3}
+        .total=${30}
+        .actions=${[{ id: 'pause', label: 'Pause' }]}
+      ></list-bulk-bar>
+    `);
+    const selectAll = element.shadowRoot!.querySelector<HTMLElement>(
+      'sl-button[data-action="select-all"]'
+    )!;
+    expect(selectAll.textContent!.trim()).to.equal('Select all 30');
+
+    setTimeout(() => selectAll.click());
+    await oneEvent(element, 'selection-select-all');
+
+    element.count = 30;
+    await element.updateComplete;
+    expect(
+      element.shadowRoot!.querySelector('sl-button[data-action="select-all"]')
+    ).to.equal(null);
   });
 
   it('emits the action id and a clear request', async () => {
@@ -220,9 +273,7 @@ describe('list-bulk-bar', () => {
         .actions=${[{ id: 'pause', label: 'Pause' }]}
       ></list-bulk-bar>
     `);
-    const pause = element.shadowRoot!.querySelector<HTMLElement>(
-      'sl-button[data-action="pause"]'
-    )!;
+    const pause = (await actionButton(element, 'pause'))!;
     setTimeout(() => pause.click());
     const action = await oneEvent(element, 'bulk-action');
     expect(action.detail).to.eql({ id: 'pause' });
@@ -252,17 +303,13 @@ describe('list-bulk-bar', () => {
         .shadowRoot!.querySelector('[data-testid="bulk-progress"]')!
         .textContent!.trim()
     ).to.equal('3 of 7');
-    const running = element.shadowRoot!.querySelector(
-      'sl-button[data-action="pause"]'
-    )!;
-    const other = element.shadowRoot!.querySelector(
-      'sl-button[data-action="resume"]'
-    )!;
+    const running = (await actionButton(element, 'pause'))!;
+    const other = (await actionButton(element, 'resume'))!;
     expect(running.hasAttribute('loading')).to.equal(true);
     expect(other.hasAttribute('disabled')).to.equal(true);
   });
 
-  it('announces the run from one live region, not two', async () => {
+  it('announces the count and the run from one live region, not two', async () => {
     const element = await fixture<ListBulkBar>(html`
       <list-bulk-bar
         .count=${7}
@@ -272,20 +319,16 @@ describe('list-bulk-bar', () => {
         .actions=${[{ id: 'pause', label: 'Pause' }]}
       ></list-bulk-bar>
     `);
-    // The count changes because the operator just ticked a box; only the
-    // progress, which changes on its own, is announced.
-    const count = element.shadowRoot!.querySelector(
-      '[data-testid="bulk-count"]'
-    )!;
-    expect(count.hasAttribute('aria-live')).to.equal(false);
-    const progress = element.shadowRoot!.querySelector(
-      '[data-testid="bulk-progress"]'
-    )!;
-    expect(progress.getAttribute('role')).to.equal('status');
-    expect(progress.getAttribute('aria-live')).to.equal('polite');
-    expect(element.shadowRoot!.querySelectorAll('[aria-live]').length).to.equal(
-      1
-    );
+    // The toolbar the bar replaced is gone from the screen while it is up, so
+    // the count is the only thing that says what is picked: it is announced.
+    // The progress shares that one region rather than opening a second that
+    // would talk over it on every tick.
+    const live = element.shadowRoot!.querySelectorAll('[aria-live]');
+    expect(live.length).to.equal(1);
+    expect(live[0].getAttribute('role')).to.equal('status');
+    expect(live[0].getAttribute('aria-live')).to.equal('polite');
+    expect(live[0].querySelector('[data-testid="bulk-count"]')).to.exist;
+    expect(live[0].querySelector('[data-testid="bulk-progress"]')).to.exist;
   });
 });
 

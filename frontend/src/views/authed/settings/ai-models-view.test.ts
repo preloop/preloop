@@ -10,6 +10,7 @@ import {
 } from './ai-models-view';
 import type { AIModel } from '../../../types';
 import { resetConfirmDialogForTests } from '../../../components/confirm-dialog';
+import { bulkActionButton, bulkCountText } from '../../../utils/test-bulk-bar';
 
 describe('AIModelsView', () => {
   let fetchStub: sinon.SinonStub;
@@ -382,15 +383,9 @@ describe('AIModelsView', () => {
     await element.updateComplete;
 
     const bar = element.shadowRoot!.querySelector('list-bulk-bar')!;
-    expect(
-      bar.shadowRoot!.querySelector('[data-testid="bulk-count"]')!.textContent
-    ).to.contain('2 selected');
+    expect(bulkCountText(bar)).to.contain('2 selected');
 
-    const deleteButton = bar.shadowRoot!.querySelector<HTMLElement>(
-      'sl-button[data-action="delete"]'
-    )!;
-    await (deleteButton as unknown as { updateComplete: Promise<unknown> })
-      .updateComplete;
+    const deleteButton = (await bulkActionButton(bar, 'delete'))!;
     deleteButton.click();
 
     await waitUntil(
