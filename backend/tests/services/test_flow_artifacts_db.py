@@ -162,7 +162,7 @@ def _evidence_body(payload: bytes = b"findings", result: bytes | None = None) ->
 
 
 def _apply_private_runner_completion(
-    db_session, execution, scope, message: dict
+    db_session, execution, scope, message: dict, *, pending_job: dict | None = None
 ) -> str:
     """Drive the same finalize + persist path the WebSocket complete handler uses."""
     from preloop.services.host_exec import (
@@ -170,7 +170,7 @@ def _apply_private_runner_completion(
         finalize_runner_completion,
     )
 
-    pending = {"launch_version": 1, "agent_type": "codex"}
+    pending = pending_job or {"launch_version": 1, "agent_type": "codex"}
     status, error, result = finalize_runner_completion(message, pending_job=pending)
     apply_runner_completion_to_execution(
         db_session,
@@ -180,6 +180,7 @@ def _apply_private_runner_completion(
         error=error,
         result=result,
         message=message,
+        pending_job=pending,
     )
     db_session.commit()
     return status
@@ -644,3 +645,217 @@ def test_live_inspect_refreshes_latest_before_finalization(db_session, scope) ->
         db_session, account_id=scope["account_id"], execution=execution
     )
     assert inspected["artifact_id"] == str(second.artifact_id)
+
+
+DIRECT_EVIDENCE_LEASE = {
+    "launch_version": 1,
+    "agent_type": "codex",
+    "evidence_direct_upload": True,
+}
+
+
+@pytest.mark.parametrize(
+    "complete",
+    [
+        pytest.param(
+            {
+                "status": "FAILED",
+                "launch_version": 1,
+                "completion_protocol": "docker_v1",
+                "exit_code": 1,
+                "evidence_upload": "failed",
+            },
+            id="missing-result",
+        ),
+        pytest.param(
+            {
+                "status": "FAILED",
+                "launch_version": 1,
+                "completion_protocol": "docker_v1",
+                "exit_code": 1,
+                "result": "not-an-object",
+                "evidence_upload": "failed",
+            },
+            id="malformed-result",
+        ),
+        pytest.param(
+            {
+                "status": "FAILED",
+                "launch_version": 1,
+                "completion_protocol": "docker_v1",
+                "exit_code": 1,
+                "result": {"status": "success", "pad": "x" * (256 * 1024)},
+                "evidence_upload": "failed",
+            },
+            id="oversize-result",
+        ),
+        pytest.param(
+            {
+                "status": "FAILED",
+                "launch_version": 1,
+                "completion_protocol": "docker_v1",
+                "exit_code": 1,
+            },
+            id="missing-upload-on-direct-lease",
+        ),
+        pytest.param(
+            {
+                "status": "FAILED",
+                "launch_version": 1,
+                "completion_protocol": "docker_v1",
+                "exit_code": 1,
+                "result": {"status": "failure", "evidence_upload": "uploaded"},
+            },
+            id="forged-result-upload-without-final-metadata",
+        ),
+    ],
+)
+def test_final_upload_failure_without_valid_result_rejects_trap(
+    db_session, scope, complete
+) -> None:
+    from preloop.services.flow_artifacts import (
+        EvidenceUnavailableError,
+        inspect_evidence,
+        load_evidence,
+        public_evidence_status,
+    )
+
+    trap = put_artifact(
+        db_session, **scope, kind="evidence", archive=_evidence_body(b"trap")
+    )
+    execution = db_session.get(models.FlowExecution, scope["execution_id"])
+    reported = _apply_private_runner_completion(
+        db_session,
+        execution,
+        scope,
+        complete,
+        pending_job=DIRECT_EVIDENCE_LEASE,
+    )
+    assert reported == "FAILED"
+    db_session.refresh(execution)
+    assert execution.evidence_receipt["status"] == "failed"
+    assert public_evidence_status(execution)["status"] == "failed"
+    inspected = inspect_evidence(
+        db_session, account_id=scope["account_id"], execution=execution
+    )
+    assert inspected["status"] == "failed"
+    with pytest.raises(EvidenceUnavailableError) as failed:
+        load_evidence(db_session, account_id=scope["account_id"], execution=execution)
+    assert failed.value.code == "failed"
+    latest = crud.latest(db_session, **scope, kind="evidence")
+    assert latest is not None and latest.id == trap.artifact_id
+
+
+@pytest.mark.parametrize(
+    "forged",
+    [["uploaded"], {"status": "uploaded"}, 1, True],
+)
+def test_non_string_evidence_upload_metadata_is_failed(
+    db_session, scope, forged
+) -> None:
+    from preloop.services.flow_artifacts import inspect_evidence
+
+    put_artifact(db_session, **scope, kind="evidence", archive=_evidence_body(b"trap"))
+    execution = db_session.get(models.FlowExecution, scope["execution_id"])
+    message = {
+        "status": "FAILED",
+        "launch_version": 1,
+        "completion_protocol": "docker_v1",
+        "exit_code": 1,
+        "result": {"status": "failure"},
+        "evidence_upload": forged,
+    }
+    reported = _apply_private_runner_completion(
+        db_session, execution, scope, message, pending_job=DIRECT_EVIDENCE_LEASE
+    )
+    assert reported == "FAILED"
+    db_session.refresh(execution)
+    assert execution.evidence_receipt["status"] == "failed"
+    inspected = inspect_evidence(
+        db_session, account_id=scope["account_id"], execution=execution
+    )
+    assert inspected["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_failed_receipt_does_not_extract_stale_trap_result(
+    db_session, scope, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from preloop.config import settings
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    monkeypatch.setattr(settings, "flow_artifact_direct_upload", True)
+    put_artifact(
+        db_session,
+        **scope,
+        kind="evidence",
+        archive=_evidence_body(b"trap", result=b'{"verdict":"pass"}'),
+    )
+    execution = db_session.get(models.FlowExecution, scope["execution_id"])
+    flow = db_session.get(models.Flow, scope["flow_id"])
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.db = db_session
+    orchestrator.execution_log = execution
+    orchestrator.flow = flow
+    orchestrator.execution_logger = Mock()
+    orchestrator._evidence_archive = None
+    orchestrator._evidence_receipt = None
+    orchestrator._evidence_artifact_id = None
+    orchestrator._workspace_snapshot = None
+    executor = SimpleNamespace(
+        evidence_transport_error=None,
+        get_evidence_archive=None,
+        get_result_artifact=None,
+        get_workspace_snapshot=None,
+    )
+    first = await orchestrator._capture_result_artifact(executor, "job")
+    assert first is not None and first["verdict"] == "pass"
+    _apply_private_runner_completion(
+        db_session,
+        execution,
+        scope,
+        {
+            "status": "FAILED",
+            "launch_version": 1,
+            "completion_protocol": "docker_v1",
+            "exit_code": 1,
+            "evidence_upload": "failed",
+        },
+        pending_job=DIRECT_EVIDENCE_LEASE,
+    )
+    db_session.refresh(execution)
+    orchestrator.execution_log = execution
+    revived = await orchestrator._capture_result_artifact(executor, "job")
+    assert revived is None
+    assert orchestrator._evidence_receipt["status"] == "failed"
+
+
+def test_controller_retention_put_after_failed_run(db_session, scope) -> None:
+    execution = db_session.get(models.FlowExecution, scope["execution_id"])
+    execution.status = "FAILED"
+    db_session.commit()
+    with pytest.raises(ValueError, match="artifact_execution_closed"):
+        put_artifact(
+            db_session,
+            **scope,
+            kind="workspace",
+            archive=archive_with("workspace/source"),
+        )
+    retained = put_artifact(
+        db_session,
+        **scope,
+        kind="workspace",
+        archive=archive_with("workspace/source"),
+        require_execution_open=False,
+    )
+    row = crud.get(
+        db_session,
+        artifact_id=retained.artifact_id,
+        account_id=scope["account_id"],
+        flow_id=scope["flow_id"],
+        thread_id=scope["thread_id"],
+    )
+    assert row is not None and row.kind == "workspace"

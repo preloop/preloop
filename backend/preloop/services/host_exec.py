@@ -317,39 +317,35 @@ def apply_runner_completion_to_execution(
     error: str | None,
     result: dict[str, Any] | None,
     message: Mapping[str, Any],
+    pending_job: Mapping[str, Any] | None = None,
 ) -> None:
     """Persist terminal status, sanitized result, and trusted evidence outcome.
 
     WebSocket complete and tests share this path. Agent JSON cannot author
     ``evidence_upload``; only the top-level completion field is bound.
     """
-    from datetime import datetime, timezone
-
     from preloop.models.crud import crud_flow_execution
     from preloop.services.flow_artifacts import (
         bind_terminal_evidence,
+        job_requires_evidence_upload,
         sanitize_captured_result,
         trusted_evidence_upload,
     )
 
-    execution.status = status
-    if status in {"SUCCEEDED", "FAILED", "STOPPED"}:
-        crud_flow_execution.confirm_stop(db, execution_id=execution.id, commit=False)
-    execution.end_time = datetime.now(timezone.utc)
-    if error:
-        execution.error_message = error
-    if result is not None:
-        cleaned = sanitize_captured_result(result) or {}
-        protected = {
-            key: value
-            for key, value in (execution.result or {}).items()
-            if key in {"trusted_publication", "_private_publication"}
-        }
-        execution.result = {**cleaned, **protected}
+    cleaned = sanitize_captured_result(result) if result is not None else None
+    crud_flow_execution.apply_runner_completion(
+        db,
+        db_obj=execution,
+        status=status,
+        error=error,
+        result=cleaned,
+    )
+    upload = trusted_evidence_upload(message)
+    if upload is None and job_requires_evidence_upload(pending_job):
+        upload = "failed"
     bind_terminal_evidence(
         db,
         account_id=account_id,
         execution=execution,
-        evidence_upload=trusted_evidence_upload(message),
+        evidence_upload=upload,
     )
-    db.add(execution)

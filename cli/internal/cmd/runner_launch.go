@@ -41,6 +41,7 @@ export PRELOOP_EVIDENCE_UPLOAD
 python3 - <<'PRELOOP_RESULT_EXPORT'
 import base64, json, os, pathlib, stat
 path = pathlib.Path('/workspace/result.json')
+result = None
 try:
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_size > 262144:
@@ -49,15 +50,20 @@ try:
         data = stream.read(262145)
     if len(data) > 262144:
         raise ValueError('oversize result')
-    result = json.loads(data)
-    if not isinstance(result, dict) or not result:
+    parsed = json.loads(data)
+    if not isinstance(parsed, dict) or not parsed:
         raise ValueError('result must be a nonempty object')
-    envelope = {'exit_code': int(os.environ['PRELOOP_HARNESS_EXIT']), 'result': result}
-    upload = os.environ.get('PRELOOP_EVIDENCE_UPLOAD') or ''
-    if upload in {'uploaded', 'failed', 'absent'}:
-        envelope['evidence_upload'] = upload
-    print('PRELOOP_RUNNER_RESULT_V1 ' + base64.b64encode(json.dumps(envelope).encode()).decode())
+    result = parsed
 except (OSError, ValueError, UnicodeError):
+    result = None
+envelope = {'exit_code': int(os.environ['PRELOOP_HARNESS_EXIT'])}
+if result is not None:
+    envelope['result'] = result
+upload = os.environ.get('PRELOOP_EVIDENCE_UPLOAD') or ''
+if upload in {'uploaded', 'failed', 'absent'}:
+    envelope['evidence_upload'] = upload
+print('PRELOOP_RUNNER_RESULT_V1 ' + base64.b64encode(json.dumps(envelope).encode()).decode())
+if result is None:
     print('Private runner: no valid structured result produced')
     raise SystemExit(1)
 PRELOOP_RESULT_EXPORT
@@ -122,7 +128,7 @@ func parseRunnerStructuredResult(lines []string) (map[string]any, []string, stri
 	logs := make([]string, 0, len(lines))
 	var result map[string]any
 	var exitCode *int
-	evidenceUpload := ""
+	lastUpload := ""
 	count := 0
 	for _, line := range lines {
 		if !strings.HasPrefix(line, runnerResultPrefix) {
@@ -143,7 +149,12 @@ func parseRunnerStructuredResult(lines []string) (map[string]any, []string, stri
 			Result         json.RawMessage `json:"result"`
 			EvidenceUpload string          `json:"evidence_upload"`
 		}
-		if json.Unmarshal(data, &envelope) != nil || envelope.ExitCode == nil || len(envelope.Result) > runnerResultLimit {
+		if json.Unmarshal(data, &envelope) != nil {
+			continue
+		}
+		// Bootstrap prints last. Take its upload even when result.json is unusable.
+		lastUpload = canonicalEvidenceUpload(envelope.EvidenceUpload)
+		if envelope.ExitCode == nil || len(envelope.Result) > runnerResultLimit {
 			continue
 		}
 		var decoded map[string]any
@@ -155,22 +166,23 @@ func parseRunnerStructuredResult(lines []string) (map[string]any, []string, stri
 			continue
 		}
 		result, exitCode = decoded, envelope.ExitCode
-		evidenceUpload = canonicalEvidenceUpload(envelope.EvidenceUpload)
 	}
-	// Multiple envelopes are ambiguous, so none is accepted as authoritative.
+	// Multiple envelopes are ambiguous for the agent result. Upload status
+	// still comes from the last decoded envelope so a sandbox forgery cannot
+	// replace the bootstrap outcome.
 	if count != 1 || result == nil || exitCode == nil {
-		return nil, logs, "", fmt.Errorf("agent exited without a valid structured completion result")
+		return nil, logs, lastUpload, fmt.Errorf("agent exited without a valid structured completion result")
 	}
 	// Retain valid diagnostic reports even when they cannot confirm success.
 	// The caller separately preserves the actual process exit and halt status.
 	if *exitCode != 0 {
-		return result, logs, evidenceUpload, fmt.Errorf("agent reported nonzero exit %d", *exitCode)
+		return result, logs, lastUpload, fmt.Errorf("agent reported nonzero exit %d", *exitCode)
 	}
 	switch runnerResultConfirmation(result) {
 	case "success", "failure":
-		return result, logs, evidenceUpload, nil
+		return result, logs, lastUpload, nil
 	default:
-		return result, logs, evidenceUpload, fmt.Errorf("agent exited without a recognized completion verdict")
+		return result, logs, lastUpload, fmt.Errorf("agent exited without a recognized completion verdict")
 	}
 }
 

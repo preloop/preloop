@@ -536,6 +536,7 @@ async def runner_ws(
                         error=completion_error,
                         result=result,
                         message=raw,
+                        pending_job=runner.pending_job,
                     )
                     crud_api_key.deactivate_runtime_keys_for_flow_execution(
                         db,
