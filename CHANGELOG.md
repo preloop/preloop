@@ -26,7 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any writer lease is minted. A missing saved execution or flow, or an
   unreadable clone config, refuses the lease instead of treating absence
   as opt-out. Human decisions have `auto_approved_reason is None`. Default
-  flows without that opt-in are unchanged. Guide:
+  flows without that opt-in are unchanged. Isolated publication approval is
+  requested through the builtin `request_approval` tool's optional
+  `publication_candidates` (exact `repository_url`, `branch`, `base`,
+  `head_sha` tuples). Context text is not authority. Ordinary callers that
+  omit the parameter are unchanged. Guide:
   `docs/guide/flows/product-evidence.md`.
 
 

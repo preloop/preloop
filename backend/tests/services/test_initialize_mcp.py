@@ -294,3 +294,84 @@ class TestRegisteredToolBehaviour:
         ):
             result = await fn(operation="deploy", context="prod", reasoning="needed")
         assert result == "Error: No user context available"
+
+    async def test_request_approval_schema_matches_catalog(self, mcp_server):
+        import inspect
+
+        from preloop.tools.builtin_defs import REQUEST_APPROVAL_TOOL
+
+        tool = await mcp_server.get_tool("request_approval")
+        catalog = REQUEST_APPROVAL_TOOL["schema"]
+        runtime = {
+            name for name in inspect.signature(tool.fn).parameters if name != "ctx"
+        }
+        assert runtime == set(catalog["properties"])
+        assert catalog["required"] == ["operation", "context", "reasoning"]
+        assert "publication_candidates" not in catalog["required"]
+        items = catalog["properties"]["publication_candidates"]["items"]
+        assert items["required"] == ["repository_url", "branch", "base", "head_sha"]
+        assert tool.description == REQUEST_APPROVAL_TOOL["description"]
+
+    async def test_invalid_publication_candidates_do_not_call_require_approval(
+        self, mcp_server
+    ):
+        fn = await self._fn(mcp_server, "request_approval")
+        user_context = MagicMock()
+        user_context.account_id = str(uuid4())
+        user_context.username = "tester"
+        with (
+            patch(
+                "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+                return_value=user_context,
+            ),
+            patch(
+                "preloop.services.initialize_mcp.require_approval",
+                new=AsyncMock(side_effect=AssertionError("must not create a row")),
+            ),
+        ):
+            result = await fn(
+                operation="publish",
+                context="prod",
+                reasoning="needed",
+                publication_candidates=[
+                    {
+                        "repository_url": "https://github.com/example/firmware.git",
+                        "branch": "preloop/change",
+                        "base": "main",
+                        "head_sha": "not-a-sha",
+                    }
+                ],
+            )
+        assert result.startswith("Error: publication_candidates")
+
+    async def test_async_pending_payload_passes_through_untouched(self, mcp_server):
+        fn = await self._fn(mcp_server, "request_approval")
+        workflow = MagicMock()
+        workflow.id = uuid4()
+        pending = (
+            '{"status": "pending_approval", "request_id": "abc", '
+            '"approval_console_url": "https://p.example/console/approval/abc"}'
+        )
+        user_context = MagicMock()
+        user_context.account_id = str(uuid4())
+        user_context.username = "tester"
+        with (
+            patch(
+                "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+                return_value=user_context,
+            ),
+            patch(
+                "preloop.models.db.session.get_db_session",
+                return_value=iter([MagicMock()]),
+            ),
+            patch(
+                "preloop.models.crud.crud_approval_workflow.get_default",
+                return_value=workflow,
+            ),
+            patch(
+                "preloop.services.initialize_mcp.require_approval",
+                new=AsyncMock(return_value=(False, pending)),
+            ),
+        ):
+            result = await fn(operation="deploy", context="prod", reasoning="needed")
+        assert result == pending
