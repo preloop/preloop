@@ -531,10 +531,19 @@ export class AgentsView extends LitElement {
       .agents-table {
         table-layout: fixed;
         width: 100%;
-        /* Below this the eight columns cannot hold their content, so the card
-           scrolls sideways instead of hiding the actions. Agent keeps at least
-           180px at this width; the list falls back to cards under 640px. */
-        min-width: 1096px;
+        /* Below this the columns cannot hold their content, so the card
+           scrolls sideways instead of hiding anything. The number is derived,
+           not guessed: the pixel columns sum to 800px (select 40, status 150,
+           requests 110, tokens 190, spend 110, last seen 128, actions 72) and
+           owner + model take 24%, so the auto Agent column gets
+           0.76 x width - 800. At 1340px that is 218px: 32px of cell padding
+           and the 180px .agent-identity (20px icon, 12px gap, ~150px of
+           name). The old 1096px left Agent with nothing: a
+           fixed-layout auto column collapses to zero once the others overrun
+           the table, which is how the name column vanished (and "Agent"
+           became "AGE") at zoomed or laptop widths. The list falls back to
+           cards under 640px. */
+        min-width: 1340px;
       }
       .table-scroll {
         overflow-x: auto;
@@ -591,11 +600,14 @@ export class AgentsView extends LitElement {
       .col-status {
         width: 150px;
       }
+      /* Owner and model are the two other text columns. Their percentages
+         and the table min-width above are one budget: raise these and the
+         Agent column shrinks first, because it is the only auto column. */
       .col-owner {
-        width: 13%;
+        width: 9%;
       }
       .col-model {
-        width: 18%;
+        width: 15%;
       }
       .col-requests {
         width: 110px;
@@ -835,13 +847,14 @@ export class AgentsView extends LitElement {
         right: -8px;
         z-index: 2;
       }
-      /* Opposite corner from the kebab: the two controls a card carries never
-         sit on top of each other. */
+      /* The checkbox is the first thing in the title row, beside the icon,
+         the way flow cards do it. It used to float over the card's top-left
+         corner, where it landed on the agent icon. 6px of top margin centres
+         a 16px box on the 24px icon (which itself sits 2px down). */
       .card-select {
-        position: absolute;
-        top: -4px;
-        left: -4px;
-        z-index: 2;
+        flex-shrink: 0;
+        margin-top: 6px;
+        display: inline-flex;
       }
       .identity-stack {
         min-width: 0;
@@ -3737,25 +3750,6 @@ export class AgentsView extends LitElement {
       >
         <div class="card-stack">
           ${
-            isFlow
-              ? nothing
-              : html`
-                  <div
-                    class="card-select"
-                    @click=${(event: Event) => event.stopPropagation()}
-                    @keydown=${(event: Event) => event.stopPropagation()}
-                  >
-                    <list-select-checkbox
-                      item-id=${itemId}
-                      label=${`Select ${displayName}`}
-                      ?checked=${this.selection.isSelected(itemId)}
-                      ?disabled=${this.selection.busy}
-                      @selection-toggle=${this.selection.handleToggleEvent}
-                    ></list-select-checkbox>
-                  </div>
-                `
-          }
-          ${
             actions.length
               ? html`
                   <div
@@ -3773,6 +3767,25 @@ export class AgentsView extends LitElement {
           }
           <div class="title-row">
             <div style="display: flex; gap: 12px; align-items: flex-start;">
+              ${
+                isFlow
+                  ? nothing
+                  : html`
+                      <div
+                        class="card-select"
+                        @click=${(event: Event) => event.stopPropagation()}
+                        @keydown=${(event: Event) => event.stopPropagation()}
+                      >
+                        <list-select-checkbox
+                          item-id=${itemId}
+                          label=${`Select ${displayName}`}
+                          ?checked=${this.selection.isSelected(itemId)}
+                          ?disabled=${this.selection.busy}
+                          @selection-toggle=${this.selection.handleToggleEvent}
+                        ></list-select-checkbox>
+                      </div>
+                    `
+              }
               ${
                 isFlow
                   ? html`<img
