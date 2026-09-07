@@ -174,6 +174,79 @@ describe('AgentsView', () => {
     localStorage.clear();
   });
 
+  it('keeps the Agent column readable at the table minimum width', async () => {
+    await loadShoelaceTokens();
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    // The test page is narrower than the table, so the table sits at its
+    // min-width: the one width where a fixed-layout auto column is starved
+    // first. Agent is that column. It used to compute to 0px here, which is
+    // how the name column vanished at zoomed and laptop widths in prod.
+    const table = el.shadowRoot!.querySelector('table.agents-table')!;
+    const agentHeader = table.querySelectorAll('thead th')[1];
+    expect(agentHeader.textContent).to.contain('Agent');
+    // 32px of padding plus the 180px .agent-identity block.
+    expect(
+      agentHeader.getBoundingClientRect().width,
+      'Agent column width at min-width'
+    ).to.be.at.least(212);
+
+    const cell = table
+      .querySelector('tbody .agent-cell')!
+      .getBoundingClientRect();
+    const text = table
+      .querySelector('tbody .agent-cell .agent-identity-text')!
+      .getBoundingClientRect();
+    expect(text.width, 'room for a name beside the icon').to.be.at.least(100);
+    expect(text.left, 'name starts inside its cell').to.be.at.least(cell.left);
+    expect(text.right, 'name ends inside its cell').to.be.at.most(
+      cell.right + 1
+    );
+  });
+
+  it('puts the select-all box on the same x as the row boxes', async () => {
+    await loadShoelaceTokens();
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const table = el.shadowRoot!.querySelector('table.agents-table')!;
+    const head = table.querySelector(
+      'thead th.select-cell list-select-checkbox'
+    )!;
+    const row = table.querySelector(
+      'tbody td.select-cell list-select-checkbox'
+    )!;
+    expect(Math.round(head.getBoundingClientRect().left)).to.equal(
+      Math.round(row.getBoundingClientRect().left)
+    );
+
+    // The cell must never paint the view's ellipsis beside the box.
+    const td = table.querySelector('tbody td.select-cell')!;
+    expect(getComputedStyle(td).overflow).to.equal('visible');
+    expect(getComputedStyle(td).textOverflow).to.equal('clip');
+  });
+
+  it('puts the card checkbox beside the icon, not over it', async () => {
+    await loadShoelaceTokens();
+    localStorage.setItem('preloop.agents.view_mode', 'cards');
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const card = el.shadowRoot!.querySelector('sl-card.agent-card')!;
+    const select = card.querySelector('.title-row .card-select')!;
+    expect(select, 'checkbox lives in the title row').to.exist;
+    expect(getComputedStyle(select).position).to.equal('static');
+    const icon = select.nextElementSibling!;
+    expect(icon, 'icon follows the checkbox').to.exist;
+    const s = select.getBoundingClientRect();
+    const i = icon.getBoundingClientRect();
+    expect(s.width, 'checkbox renders at a size').to.be.greaterThan(0);
+    expect(s.right, 'checkbox ends before the icon starts').to.be.at.most(
+      i.left + 0.5
+    );
+  });
+
   it('renders enrolled agents in the list and links to agent detail', async () => {
     const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
 

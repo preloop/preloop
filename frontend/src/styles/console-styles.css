@@ -405,8 +405,18 @@ sl-badge.tag-chip sl-icon {
 .styled-table th.select-cell,
 .styled-table td.select-cell {
     width: 40px;
-    padding-right: var(--sl-spacing-x-small);
+    /* One explicit padding on the header cell and the row cells, so the
+       select-all box sits on the same x as the row boxes. The views zero
+       their th padding and let .sort-button carry it, but this th has no
+       sort button, so without this it hugged the card edge 16px left of
+       the rows. Overflow stays visible: the views' ellipsis rule on cells
+       otherwise paints ".." beside the box when the checkbox plus
+       template whitespace runs past 40px. */
+    padding: var(--sl-spacing-small) var(--sl-spacing-x-small)
+        var(--sl-spacing-small) var(--sl-spacing-medium);
     text-align: left;
+    overflow: visible;
+    text-overflow: clip;
 }
 
 /* Selection is a state, not a box: a primary tint the neutral hover tint

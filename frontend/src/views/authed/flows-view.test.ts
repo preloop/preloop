@@ -1039,6 +1039,32 @@ describe('FlowsView', () => {
         'the kebab is not cut off the right edge of its cell'
       ).to.be.at.most(cellBox.right);
     });
+
+    it('never paints an ellipsis beside the select box', async () => {
+      await loadShoelaceTokens();
+      const element = await renderFlows();
+      const root = element.shadowRoot!;
+      // The view's cell rule clips with an ellipsis; the shared select-cell
+      // rule must win, or the checkbox plus template whitespace overruns the
+      // 40px cell and the row shows a ".." beside the box.
+      const cell = root.querySelector<HTMLElement>(
+        'table.flows-table tbody td.select-cell'
+      )!;
+      expect(cell, 'the select cell renders').to.exist;
+      expect(getComputedStyle(cell).overflow).to.equal('visible');
+      expect(getComputedStyle(cell).textOverflow).to.equal('clip');
+
+      // Header and row boxes on one x, though the view zeroes th padding.
+      const head = root.querySelector(
+        'table.flows-table thead th.select-cell list-select-checkbox'
+      )!;
+      const row = root.querySelector(
+        'table.flows-table tbody td.select-cell list-select-checkbox'
+      )!;
+      expect(Math.round(head.getBoundingClientRect().left)).to.equal(
+        Math.round(row.getBoundingClientRect().left)
+      );
+    });
   });
 
   describe('helpers', () => {
