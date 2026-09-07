@@ -26,7 +26,7 @@ import '../../components/resource-actions.ts';
 import '../../components/list-selection.ts';
 import '../../components/talk-button.ts';
 import '../../components/confirm-dialog.ts';
-import '../../components/token-figures.ts';
+import { totalTokensOf } from '../../components/token-figures';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
 import {
@@ -229,9 +229,9 @@ export interface AgentListRow {
   source: any;
 }
 
-/** Total tokens for sorting; an unmeasured row sorts as zero, not as noise. */
+/** Total tokens for sorting; matches the figure the cell states. */
 function tokenTotal(usage: GatewayTokenUsage | null): number {
-  return Number(usage?.total_tokens || 0);
+  return totalTokensOf(usage);
 }
 
 function timestampValue(value: string | null): number {
@@ -507,23 +507,21 @@ export class AgentsView extends LitElement {
            stretch into two half-screen banners. */
         grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
         gap: var(--sl-spacing-large);
-        /* Same side inset as the header band above it. */
-        padding: 1rem var(--console-page-padding-x) 0;
+        /* No side inset of its own: the header band above it has none
+           either, because outside the canvas the shell pays it. */
+        padding: 1rem 0 0;
       }
       /* --- List view --- */
-      /* The canvas is full bleed, so this page pays its own side inset with
-         .console-page (styles/console-styles.css, "The page box"). Extra
-         block padding is all these wrappers add. */
+      /* Side insets are the shell's (styles/console-styles.css, "The page
+         box"), so these wrappers add block padding and nothing else. Only
+         the canvas is full bleed, and only there does the header band add
+         .console-page for itself: carrying it in every mode paid the inset
+         twice and left the list 64px narrower than Flows. */
       .list-bounds {
         padding-block: 0 2rem;
       }
       .content-bounds {
         padding-block: 1rem 0;
-      }
-      @media (max-width: 768px) {
-        .cards {
-          padding-inline: var(--console-page-padding-x-compact);
-        }
       }
       /* The table sizes itself from the colgroup, not from its content: an
          agent named after a container hash used to push the kebab column past
@@ -533,17 +531,18 @@ export class AgentsView extends LitElement {
         width: 100%;
         /* Below this the columns cannot hold their content, so the card
            scrolls sideways instead of hiding anything. The number is derived,
-           not guessed: the pixel columns sum to 800px (select 40, status 150,
-           requests 110, tokens 190, spend 110, last seen 128, actions 72) and
+           not guessed: the pixel columns sum to 720px (select 40, status 150,
+           requests 110, tokens 110, spend 110, last seen 128, actions 72) and
            owner + model take 24%, so the auto Agent column gets
-           0.76 x width - 800. At 1340px that is 218px: 32px of cell padding
+           0.76 x width - 720. At 1260px that is 238px: 32px of cell padding
            and the 180px .agent-identity (20px icon, 12px gap, ~150px of
-           name). The old 1096px left Agent with nothing: a
-           fixed-layout auto column collapses to zero once the others overrun
-           the table, which is how the name column vanished (and "Agent"
-           became "AGE") at zoomed or laptop widths. The list falls back to
-           cards under 640px. */
-        min-width: 1340px;
+           name), with room to spare. The old 1096px left Agent with nothing:
+           a fixed-layout auto column collapses to zero once the others
+           overrun the table, which is how the name column vanished (and
+           "Agent" became "AGE") at zoomed or laptop widths. 1340px was the
+           same arithmetic while tokens still spent 190px on a breakdown.
+           The list falls back to cards under 640px. */
+        min-width: 1260px;
       }
       .table-scroll {
         overflow-x: auto;
@@ -612,10 +611,12 @@ export class AgentsView extends LitElement {
       .col-requests {
         width: 110px;
       }
-      /* Tokens read before cost, so the pair sits together and the wider of
-         the two gets the room. */
+      /* Tokens read before cost, so the pair sits together. The column
+         holds one compact total ("12.4M"), not the in/out/cache breakdown
+         that used to be clipped mid-word here, so it needs no more room
+         than the requests count beside it. */
       .col-tokens {
-        width: 190px;
+        width: 110px;
       }
       .col-spend {
         width: 110px;
@@ -1320,6 +1321,19 @@ export class AgentsView extends LitElement {
       return 'cards';
     }
     return this.currentView;
+  }
+
+  /**
+   * The page box, but only where the shell is not already drawing it.
+   *
+   * The canvas asks the shell for the whole window (`request-full-bleed`),
+   * which turns off the shell's centred column and its side padding, so on
+   * canvas this page reproduces the box itself. In list and cards the shell
+   * pays, and adding .console-page here inset the header a second 2rem and
+   * capped the page 64px short of Flows.
+   */
+  private get pageBoxClass(): string {
+    return this.effectiveView === 'canvas' ? 'console-page' : '';
   }
 
   disconnectedCallback(): void {
@@ -3543,8 +3557,10 @@ export class AgentsView extends LitElement {
           }
         </td>
         <td class="numeric">${(row.requests || 0).toLocaleString()}</td>
+        <!-- The list states the total; in, out and the cache split are in
+             the tooltip and on the agent's own page. -->
         <td class="numeric">
-          <token-figures .usage=${row.tokenUsage}></token-figures>
+          <token-figures total-only .usage=${row.tokenUsage}></token-figures>
         </td>
         <td class="numeric">${this.formatMoney(row.spend)}</td>
         <td
@@ -3621,7 +3637,7 @@ export class AgentsView extends LitElement {
 
     if (rows.length === 0) {
       return html`
-        <div class="list-bounds console-page">
+        <div class="list-bounds">
           <div class="empty-state">
             ${
               this.loading
@@ -3634,7 +3650,7 @@ export class AgentsView extends LitElement {
     }
 
     return html`
-      <div class="list-bounds console-page">
+      <div class="list-bounds">
         <sl-card class="table-card">
           <div class="table-scroll">
             <table
@@ -3675,7 +3691,7 @@ export class AgentsView extends LitElement {
                     'tokens',
                     'Tokens',
                     true,
-                    'Tokens, input and output'
+                    'Total tokens, input plus output'
                   )}
                   ${this.renderSortableHeader(
                     'spend',
@@ -4699,7 +4715,7 @@ export class AgentsView extends LitElement {
           ></preloop-agent-deployer>
         </sl-dialog>
 
-        <div class="content-bounds console-page">
+        <div class="content-bounds ${this.pageBoxClass}">
           <view-header
             headerText="Agents"
             description="Agents connected to Preloop: their gateway credentials, MCP access, and live status. Onboard agents you already run with the CLI, or deploy new ones."

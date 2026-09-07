@@ -2,6 +2,7 @@ import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import '../../components/view-header.ts';
+import './agents-view';
 import './flows-view';
 import './approvals-view';
 import './settings/account-view';
@@ -25,9 +26,10 @@ import { unifiedWebSocketManager } from '../../services/unified-websocket-manage
  *
  * The list is deliberately mixed: Flows, Approvals and Settings account were
  * already flush with the shell, Audit (`:host { padding: 1.5rem; max-width:
- * 1200px }`) and Users (`:host { padding: 2rem }`) were not. Without a
- * repaired page in here the test passes on a tree where every override is
- * back, which is the only failure it exists to catch.
+ * 1200px }`), Users (`:host { padding: 2rem }`) and Agents (`.console-page`
+ * on the header band in every mode, not just on the full-bleed canvas) were
+ * not. Without a repaired page in here the test passes on a tree where every
+ * override is back, which is the only failure it exists to catch.
  */
 describe('Console page width', () => {
   let fetchStub: sinon.SinonStub;
@@ -35,6 +37,7 @@ describe('Console page width', () => {
   let wsConnectStub: sinon.SinonStub;
 
   const PAGES = [
+    'agents-view',
     'flows-view',
     'approvals-view',
     'account-view',

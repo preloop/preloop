@@ -13,7 +13,7 @@ import '../../components/list-toolbar.ts';
 import '../../components/resource-actions.ts';
 import '../../components/list-selection.ts';
 import '../../components/time-range-select.ts';
-import '../../components/token-figures.ts';
+import { totalTokensOf } from '../../components/token-figures';
 import { router } from '../../router';
 import { Router } from '@vaadin/router';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
@@ -222,10 +222,7 @@ function compareFlowRowsByKey(
     case 'failed':
       return a.failed - b.failed;
     case 'tokens':
-      return (
-        Number(a.tokenUsage?.total_tokens || 0) -
-        Number(b.tokenUsage?.total_tokens || 0)
-      );
+      return totalTokensOf(a.tokenUsage) - totalTokensOf(b.tokenUsage);
     case 'cost':
       return a.cost - b.cost;
     case 'last_run':
@@ -378,9 +375,11 @@ export class FlowsView extends LitElement {
       .col-failed {
         width: 84px;
       }
-      /* Tokens lead the pair, and need room for "12.4K in - 3.1K out". */
+      /* One compact total ("12.4M"), the same width as the cost beside it.
+         The in/out/cache breakdown that used to need 170px here is in the
+         tooltip and on the flow's own page. */
       .col-tokens {
-        width: 170px;
+        width: 96px;
       }
       .col-cost {
         width: 96px;
@@ -1829,7 +1828,7 @@ export class FlowsView extends LitElement {
         <!-- Tokens before cost, over the same window, and silent for the
              same reason the cost is. -->
         <td class="numeric" title=${`Tokens, last ${this.rangeLabel}`}>
-          <token-figures .usage=${row.tokenUsage}></token-figures>
+          <token-figures total-only .usage=${row.tokenUsage}></token-figures>
         </td>
         <!-- Only a server that measured this window can state a spend for
              it. Without stats_since the cost is unknown, and "-" says that;

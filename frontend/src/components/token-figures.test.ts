@@ -14,6 +14,7 @@ import {
   formatTokenCount,
   sumTokenUsage,
   tokenFiguresTitle,
+  totalTokensOf,
 } from './token-figures';
 import type { GatewayTokenUsage } from '../types';
 
@@ -215,5 +216,40 @@ describe('token-figures', () => {
     );
     expect(text(el)).to.contain('12.4K in');
     expect(text(el)).to.not.contain('cache');
+  });
+
+  it('states the total alone in total-only, with the breakdown still in the tooltip', async () => {
+    const el = await fixture<TokenFigures>(
+      html`<token-figures .usage=${USAGE} total-only></token-figures>`
+    );
+    // One figure, no direction words and no cache suffix to clip.
+    expect(text(el)).to.equal('15.5K');
+    expect(text(el)).to.not.contain('in');
+    expect(text(el)).to.not.contain('out');
+    expect(text(el)).to.not.contain('cache');
+
+    const expected = tokenFiguresTitle(USAGE);
+    expect(
+      el.shadowRoot?.querySelector('sl-tooltip')?.getAttribute('content')
+    ).to.equal(expected);
+    expect(
+      el.shadowRoot?.querySelector('.figures')?.getAttribute('title')
+    ).to.equal(expected);
+    expect(expected).to.contain('15,500 total');
+  });
+
+  it('says nothing in total-only for a row with no usage', async () => {
+    const el = await fixture<TokenFigures>(
+      html`<token-figures total-only></token-figures>`
+    );
+    expect(text(el)).to.equal('-');
+  });
+
+  it('adds the directions up where the endpoint reported no total', () => {
+    expect(totalTokensOf({ input_tokens: 400, output_tokens: 100 })).to.equal(
+      500
+    );
+    expect(totalTokensOf(USAGE)).to.equal(15500);
+    expect(totalTokensOf(null)).to.equal(0);
   });
 });
