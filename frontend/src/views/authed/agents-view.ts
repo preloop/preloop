@@ -507,23 +507,21 @@ export class AgentsView extends LitElement {
            stretch into two half-screen banners. */
         grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
         gap: var(--sl-spacing-large);
-        /* Same side inset as the header band above it. */
-        padding: 1rem var(--console-page-padding-x) 0;
+        /* No side inset of its own: the header band above it has none
+           either, because outside the canvas the shell pays it. */
+        padding: 1rem 0 0;
       }
       /* --- List view --- */
-      /* The canvas is full bleed, so this page pays its own side inset with
-         .console-page (styles/console-styles.css, "The page box"). Extra
-         block padding is all these wrappers add. */
+      /* Side insets are the shell's (styles/console-styles.css, "The page
+         box"), so these wrappers add block padding and nothing else. Only
+         the canvas is full bleed, and only there does the header band add
+         .console-page for itself: carrying it in every mode paid the inset
+         twice and left the list 64px narrower than Flows. */
       .list-bounds {
         padding-block: 0 2rem;
       }
       .content-bounds {
         padding-block: 1rem 0;
-      }
-      @media (max-width: 768px) {
-        .cards {
-          padding-inline: var(--console-page-padding-x-compact);
-        }
       }
       /* The table sizes itself from the colgroup, not from its content: an
          agent named after a container hash used to push the kebab column past
@@ -1320,6 +1318,19 @@ export class AgentsView extends LitElement {
       return 'cards';
     }
     return this.currentView;
+  }
+
+  /**
+   * The page box, but only where the shell is not already drawing it.
+   *
+   * The canvas asks the shell for the whole window (`request-full-bleed`),
+   * which turns off the shell's centred column and its side padding, so on
+   * canvas this page reproduces the box itself. In list and cards the shell
+   * pays, and adding .console-page here inset the header a second 2rem and
+   * capped the page 64px short of Flows.
+   */
+  private get pageBoxClass(): string {
+    return this.effectiveView === 'canvas' ? 'console-page' : '';
   }
 
   disconnectedCallback(): void {
@@ -3621,7 +3632,7 @@ export class AgentsView extends LitElement {
 
     if (rows.length === 0) {
       return html`
-        <div class="list-bounds console-page">
+        <div class="list-bounds">
           <div class="empty-state">
             ${
               this.loading
@@ -3634,7 +3645,7 @@ export class AgentsView extends LitElement {
     }
 
     return html`
-      <div class="list-bounds console-page">
+      <div class="list-bounds">
         <sl-card class="table-card">
           <div class="table-scroll">
             <table
@@ -4699,7 +4710,7 @@ export class AgentsView extends LitElement {
           ></preloop-agent-deployer>
         </sl-dialog>
 
-        <div class="content-bounds console-page">
+        <div class="content-bounds ${this.pageBoxClass}">
           <view-header
             headerText="Agents"
             description="Agents connected to Preloop: their gateway credentials, MCP access, and live status. Onboard agents you already run with the CLI, or deploy new ones."

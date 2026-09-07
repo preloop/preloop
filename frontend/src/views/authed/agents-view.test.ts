@@ -318,16 +318,30 @@ describe('AgentsView', () => {
     expect(cardLink?.getAttribute('href')).to.equal('/console/agents/agent-1');
   });
 
-  it('pays the page box with .console-page on the full-bleed canvas', async () => {
-    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
-    await waitForAgents(el);
-
+  it('pays the page box with .console-page only on the full-bleed canvas', async () => {
+    // List and cards are ordinary shell pages: the shell centres the column
+    // and pays the side inset, so paying it here too moved the header 2rem
+    // in from the Flows header and made the list 64px narrower.
+    const list = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(list);
     expect(
-      el.shadowRoot?.querySelector('.content-bounds.console-page'),
-      'header band'
+      list.shadowRoot?.querySelector('.content-bounds.console-page'),
+      'header band on the list'
+    ).to.not.exist;
+    expect(
+      list.shadowRoot?.querySelector('.list-bounds.console-page'),
+      'list card'
+    ).to.not.exist;
+
+    // The canvas asks the shell for the whole window, so there it draws the
+    // box itself.
+    localStorage.setItem('preloop.agents.view_mode', 'canvas');
+    const canvas = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await canvas.updateComplete;
+    expect(
+      canvas.shadowRoot?.querySelector('.content-bounds.console-page'),
+      'header band on the canvas'
     ).to.exist;
-    expect(el.shadowRoot?.querySelector('.list-bounds.console-page'), 'list').to
-      .exist;
   });
 
   it('gives every column a sortable header with aria-sort', async () => {
