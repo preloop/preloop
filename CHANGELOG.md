@@ -193,6 +193,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Ordinary evidence capture ignores non-string transport errors**:
+  `evidence_transport_error` is only a failure when it is a non-empty
+  string. Truthy mock auto-attributes no longer drop a getter-captured
+  pack before it is persisted.
+
 - Prevent database waits in authentication and approval summaries from blocking
   the API event loop; cancellation now waits for shared-session workers to finish.
   Native permission checks release authentication connections before human waits.

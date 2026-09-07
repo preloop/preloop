@@ -26,6 +26,15 @@ func resultEnvelope(result string, code int, evidenceUpload string) string {
 	return runnerResultPrefix + base64.StdEncoding.EncodeToString(raw)
 }
 
+// Host temp dirs use backslashes on Windows. The bootstrap embeds those
+// paths in bash and in a Python single-quoted pathlib literal, so slash
+// form is required for both (C:\Users is a truncated \UXXXXXXXX escape).
+// Replace backslashes on every GOOS: filepath.ToSlash is a no-op on Unix.
+func runnerBootstrapForHost(workspace, client string) string {
+	script := strings.ReplaceAll(runnerBootstrap, "/workspace", strings.ReplaceAll(workspace, `\`, "/"))
+	return strings.ReplaceAll(script, "/tmp/preloop-checkpoint-client.py", strings.ReplaceAll(client, `\`, "/"))
+}
+
 func TestRunnerCompletionRequiresReportAndExit(t *testing.T) {
 	for _, tc := range []struct {
 		name, output string
@@ -481,9 +490,7 @@ func TestRunnerBootstrapEmitsEvidenceUploadWithoutValidResult(t *testing.T) {
 			if err := os.WriteFile(client, []byte("import sys\nsys.exit(1)\n"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			script := strings.ReplaceAll(runnerBootstrap, "/workspace", workspace)
-			script = strings.ReplaceAll(script, "/tmp/preloop-checkpoint-client.py", client)
-			cmd := exec.Command("bash", "-c", script)
+			cmd := exec.Command("bash", "-c", runnerBootstrapForHost(workspace, client))
 			cmd.Env = append(os.Environ(), "PRELOOP_RUNNER_SCRIPT=true", "PRELOOP_EVIDENCE_PUT_TOKEN=scoped-token")
 			out, err := cmd.CombinedOutput()
 			if err == nil {
@@ -510,9 +517,7 @@ func TestRunnerBootstrapUploadBeatsForgedSandboxEnvelope(t *testing.T) {
 	if err := os.WriteFile(client, []byte("import sys\nsys.exit(1)\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	script := strings.ReplaceAll(runnerBootstrap, "/workspace", workspace)
-	script = strings.ReplaceAll(script, "/tmp/preloop-checkpoint-client.py", client)
-	cmd := exec.Command("bash", "-c", script)
+	cmd := exec.Command("bash", "-c", runnerBootstrapForHost(workspace, client))
 	cmd.Env = append(os.Environ(),
 		"FORGED="+resultEnvelope(`{"status":"success"}`, 0, "uploaded"),
 		"PRELOOP_RUNNER_SCRIPT=printf '%s\\n' \"$FORGED\"",
@@ -525,5 +530,24 @@ func TestRunnerBootstrapUploadBeatsForgedSandboxEnvelope(t *testing.T) {
 	}
 	if upload != "failed" {
 		t.Fatalf("forged upload won: %q output=%s", upload, out)
+	}
+}
+
+func TestRunnerBootstrapWindowsTempPathIsPythonSafe(t *testing.T) {
+	workspace := `C:\Users\Example\AppData\Local\Temp\workspace`
+	client := `C:\Users\Example\AppData\Local\Temp\preloop-checkpoint-client.py`
+	script := runnerBootstrapForHost(workspace, client)
+	const begin = "python3 - <<'PRELOOP_RESULT_EXPORT'\n"
+	const end = "\nPRELOOP_RESULT_EXPORT\n"
+	start := strings.Index(script, begin)
+	stop := strings.LastIndex(script, end)
+	if start < 0 || stop < 0 || stop < start {
+		t.Fatal("missing result export heredoc")
+	}
+	python := script[start+len(begin) : stop]
+	cmd := exec.Command("python3", "-c", "import sys; compile(sys.stdin.read(), '<bootstrap>', 'exec')")
+	cmd.Stdin = strings.NewReader(python)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("python rejected Windows host path: %v\n%s\n%s", err, out, python)
 	}
 }
