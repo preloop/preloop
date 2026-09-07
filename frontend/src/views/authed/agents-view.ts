@@ -531,17 +531,18 @@ export class AgentsView extends LitElement {
         width: 100%;
         /* Below this the columns cannot hold their content, so the card
            scrolls sideways instead of hiding anything. The number is derived,
-           not guessed: the pixel columns sum to 800px (select 40, status 150,
-           requests 110, tokens 190, spend 110, last seen 128, actions 72) and
+           not guessed: the pixel columns sum to 720px (select 40, status 150,
+           requests 110, tokens 110, spend 110, last seen 128, actions 72) and
            owner + model take 24%, so the auto Agent column gets
-           0.76 x width - 800. At 1340px that is 218px: 32px of cell padding
+           0.76 x width - 720. At 1260px that is 238px: 32px of cell padding
            and the 180px .agent-identity (20px icon, 12px gap, ~150px of
-           name). The old 1096px left Agent with nothing: a
-           fixed-layout auto column collapses to zero once the others overrun
-           the table, which is how the name column vanished (and "Agent"
-           became "AGE") at zoomed or laptop widths. The list falls back to
-           cards under 640px. */
-        min-width: 1340px;
+           name), with room to spare. The old 1096px left Agent with nothing:
+           a fixed-layout auto column collapses to zero once the others
+           overrun the table, which is how the name column vanished (and
+           "Agent" became "AGE") at zoomed or laptop widths. 1340px was the
+           same arithmetic while tokens still spent 190px on a breakdown.
+           The list falls back to cards under 640px. */
+        min-width: 1260px;
       }
       .table-scroll {
         overflow-x: auto;
@@ -610,10 +611,12 @@ export class AgentsView extends LitElement {
       .col-requests {
         width: 110px;
       }
-      /* Tokens read before cost, so the pair sits together and the wider of
-         the two gets the room. */
+      /* Tokens read before cost, so the pair sits together. The column
+         holds one compact total ("12.4M"), not the in/out/cache breakdown
+         that used to be clipped mid-word here, so it needs no more room
+         than the requests count beside it. */
       .col-tokens {
-        width: 190px;
+        width: 110px;
       }
       .col-spend {
         width: 110px;
@@ -3554,8 +3557,10 @@ export class AgentsView extends LitElement {
           }
         </td>
         <td class="numeric">${(row.requests || 0).toLocaleString()}</td>
+        <!-- The list states the total; in, out and the cache split are in
+             the tooltip and on the agent's own page. -->
         <td class="numeric">
-          <token-figures .usage=${row.tokenUsage}></token-figures>
+          <token-figures total-only .usage=${row.tokenUsage}></token-figures>
         </td>
         <td class="numeric">${this.formatMoney(row.spend)}</td>
         <td
@@ -3686,7 +3691,7 @@ export class AgentsView extends LitElement {
                     'tokens',
                     'Tokens',
                     true,
-                    'Tokens, input and output'
+                    'Total tokens, input plus output'
                   )}
                   ${this.renderSortableHeader(
                     'spend',

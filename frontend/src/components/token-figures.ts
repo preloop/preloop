@@ -91,6 +91,21 @@ export function outputTokensOf(
 }
 
 /**
+ * Every token an aggregate accounts for.
+ *
+ * The endpoints that report a total are believed; the ones that report only
+ * the two directions are added up, so a list column never reads "-" over
+ * traffic that has counts.
+ */
+export function totalTokensOf(
+  usage: GatewayTokenUsage | null | undefined
+): number {
+  const total = Number(usage?.total_tokens || 0);
+  if (total > 0) return total;
+  return inputTokensOf(usage) + outputTokensOf(usage);
+}
+
+/**
  * Add up several aggregates into one.
  *
  * Counts add; a rate does not, so the combined hit rate is recomputed from
@@ -150,7 +165,7 @@ export function tokenFiguresTitle(
   if (!usage) return 'No token usage recorded';
   const input = inputTokensOf(usage);
   const output = outputTokensOf(usage);
-  const total = Number(usage.total_tokens || input + output);
+  const total = totalTokensOf(usage);
   const parts = [
     `${formatExactTokenCount(input)} input tokens`,
     `${formatExactTokenCount(output)} output tokens`,
@@ -179,6 +194,12 @@ export function tokenFiguresTitle(
  * Renders "12.4K in - 3.1K out" with an optional cache segment, either
  * "cache 68% hit" (default) or "8.2K hit - 3.9K miss" when `expanded` is set,
  * which is what the cost tables and the usage card want.
+ *
+ * `total-only` states one number instead, for the default list views: the
+ * three-part breakdown needs more width than a list column has, and on a long
+ * figure the cache suffix was clipped mid-word. The breakdown is still one
+ * hover (or one screen reader stop) away in the tooltip and `title`, and the
+ * detail views keep it on the surface.
  */
 @customElement('token-figures')
 export class TokenFigures extends LitElement {
@@ -193,6 +214,10 @@ export class TokenFigures extends LitElement {
   /** Drop the cache segment entirely, for the narrowest columns. */
   @property({ type: Boolean, attribute: 'hide-cache' })
   hideCache = false;
+
+  /** State the total alone, for a list column too narrow for the breakdown. */
+  @property({ type: Boolean, attribute: 'total-only' })
+  totalOnly = false;
 
   /** What to render when there is no usage at all. */
   @property({ type: String })
@@ -247,6 +272,15 @@ export class TokenFigures extends LitElement {
       >`;
     }
     const description = tokenFiguresTitle(usage);
+    if (this.totalOnly) {
+      return html`<sl-tooltip content=${description} hoist>
+        <span class="figures" title=${description}>
+          <span class="direction"
+            >${formatTokenCount(totalTokensOf(usage))}</span
+          >
+        </span>
+      </sl-tooltip>`;
+    }
     return html`<sl-tooltip content=${description} hoist>
       <span class="figures" title=${description}>
         <span class="direction"

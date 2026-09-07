@@ -378,9 +378,11 @@ export class FlowsView extends LitElement {
       .col-failed {
         width: 84px;
       }
-      /* Tokens lead the pair, and need room for "12.4K in - 3.1K out". */
+      /* One compact total ("12.4M"), the same width as the cost beside it.
+         The in/out/cache breakdown that used to need 170px here is in the
+         tooltip and on the flow's own page. */
       .col-tokens {
-        width: 170px;
+        width: 96px;
       }
       .col-cost {
         width: 96px;
@@ -1829,7 +1831,7 @@ export class FlowsView extends LitElement {
         <!-- Tokens before cost, over the same window, and silent for the
              same reason the cost is. -->
         <td class="numeric" title=${`Tokens, last ${this.rangeLabel}`}>
-          <token-figures .usage=${row.tokenUsage}></token-figures>
+          <token-figures total-only .usage=${row.tokenUsage}></token-figures>
         </td>
         <!-- Only a server that measured this window can state a spend for
              it. Without stats_since the cost is unknown, and "-" says that;
