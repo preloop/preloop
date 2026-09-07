@@ -417,5 +417,14 @@ class TestGeminiGatewayHelperModelSettings:
             "flow_name": "test-flow",
         }
         script = agent._build_gemini_script(context)
-        assert "settings.json" not in script
+        import base64
+        import json
+        import re
+
+        match = re.search(
+            r"echo '([^']+)' \| base64 -d > \"\$HOME/\.gemini/settings.json\"", script
+        )
+        assert match
+        decoded = json.loads(base64.b64decode(match.group(1)))
+        assert decoded == {"general": {"retryFetchErrors": True, "maxAttempts": 4}}
         assert "disableLoopDetection" not in script

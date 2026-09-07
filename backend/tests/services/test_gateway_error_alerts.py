@@ -249,3 +249,168 @@ def test_gateway_4xx_and_429_do_not_notify_or_reserve(monkeypatch):
         )
         assert five_xx.status_code == 502
         mock_notify.assert_called_once()
+
+
+@pytest.fixture(autouse=True)
+def _deliver_alerts_inline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep payload/throttle assertions deterministic; delivery has separate tests."""
+
+    def _deliver(**kwargs: str) -> None:
+        from preloop.sync.tasks import notify_admins
+
+        notify_admins(**kwargs)
+
+    monkeypatch.setattr(
+        "preloop.services.openai_gateway.enqueue_gateway_5xx_alert", _deliver
+    )
+
+
+def test_alert_identifies_protocol_and_actual_upstream() -> None:
+    service = _service()
+    model = SimpleNamespace(provider_name="deepseek", model_identifier="test-model")
+    exc = _FakeHTTPError("provider temporarily unavailable", status_code=503)
+    with patch("preloop.sync.tasks.notify_admins") as notify:
+        error = service._stream_error("openai", exc, ai_model=model)
+    assert error.status_code == 503
+    body = notify.call_args.kwargs["message"]
+    assert "Gateway protocol: openai" in body
+    assert "Upstream provider: deepseek" in body
+    assert "Upstream model: test-model" in body
+    assert "timeout failure" not in body
+
+
+def test_alert_delivery_is_nonblocking_and_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    entered = threading.Event()
+    release = threading.Event()
+    delivered = []
+
+    def _slow_notify(**kwargs: str) -> None:
+        entered.set()
+        assert release.wait(5), "test did not release the notifier"
+        delivered.append(kwargs)
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(gateway_error_alerts, "_ALERT_EXECUTOR", executor)
+    monkeypatch.setattr(
+        gateway_error_alerts, "_ALERT_PENDING", threading.BoundedSemaphore(1)
+    )
+    try:
+        with patch("preloop.sync.tasks.notify_admins", side_effect=_slow_notify):
+            gateway_error_alerts.enqueue_gateway_5xx_alert(
+                subject="first", message="failure"
+            )
+            assert entered.wait(5)
+            # The first call returned while its notifier is still blocked;
+            # a full queue drops the second alert instead of waiting.
+            gateway_error_alerts.enqueue_gateway_5xx_alert(
+                subject="second", message="failure"
+            )
+            assert not delivered
+            release.set()
+            executor.shutdown(wait=True)
+    finally:
+        release.set()
+        executor.shutdown(wait=True)
+    assert [item["subject"] for item in delivered] == ["first"]
+    assert gateway_error_alerts._ALERT_PENDING.acquire(blocking=False)
+
+
+def test_alert_submission_failure_releases_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor = MagicMock()
+    executor.submit.side_effect = RuntimeError("executor shut down")
+    pending = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(gateway_error_alerts, "_ALERT_EXECUTOR", executor)
+    monkeypatch.setattr(gateway_error_alerts, "_ALERT_PENDING", pending)
+    gateway_error_alerts.enqueue_gateway_5xx_alert(subject="failure", message="detail")
+    assert pending.acquire(blocking=False)
+
+
+def test_alert_delivery_failure_releases_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor = MagicMock()
+    pending = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(gateway_error_alerts, "_ALERT_EXECUTOR", executor)
+    monkeypatch.setattr(gateway_error_alerts, "_ALERT_PENDING", pending)
+    gateway_error_alerts.enqueue_gateway_5xx_alert(subject="failure", message="detail")
+    deliver = executor.submit.call_args.args[0]
+    with patch(
+        "preloop.sync.tasks.notify_admins", side_effect=RuntimeError("SMTP down")
+    ):
+        deliver()
+    assert pending.acquire(blocking=False)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_disconnect_is_logged_without_email_or_consuming_alert_window(
+    streaming: bool,
+) -> None:
+    service = _service()
+    model = SimpleNamespace(provider_name="deepseek", model_identifier="test-model")
+
+    class MidStreamFallbackError(Exception):
+        pass
+
+    exc = MidStreamFallbackError(
+        "APIConnectionError: DeepseekException - peer closed connection without "
+        "sending complete message body (incomplete chunked read)"
+    )
+    with (
+        patch("preloop.sync.tasks.notify_admins") as notify,
+        patch("preloop.services.openai_gateway.logger.warning") as warning,
+    ):
+        if streaming:
+            error = service._stream_error("openai", exc, ai_model=model)
+            frame = service._openai_stream_error_event(exc, error)
+            assert "upstream_disconnect" in frame
+        else:
+            error = service._normalize_upstream_error("openai", exc, ai_model=model)
+        notify.assert_not_called()
+    assert error.status_code == 502
+    assert error.error_class == "upstream_disconnect"
+    assert warning.call_args.args[1:] == (
+        "openai",
+        "deepseek",
+        "test-model",
+        "upstream_disconnect",
+    )
+    assert reserve_gateway_5xx_alert("openai", 502) == (True, 0)
+
+
+def test_network_error_remapped_to_stream_disconnect_does_not_email() -> None:
+    service = _service()
+    with patch("preloop.sync.tasks.notify_admins") as notify:
+        error = service._stream_error("openai", ConnectionError("connection reset"))
+    assert error.error_class == "upstream_disconnect"
+    notify.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("renderer", "protocol"),
+    [
+        ("_openai_stream_error_event", "openai"),
+        ("_responses_stream_error_event", "openai"),
+        ("_anthropic_stream_error_event", "anthropic"),
+    ],
+)
+def test_direct_stream_error_renderer_preserves_model_and_original_network_class(
+    renderer: str, protocol: str
+) -> None:
+    service = _service()
+    model = SimpleNamespace(provider_name="deepseek", model_identifier="test-model")
+    with (
+        patch("preloop.sync.tasks.notify_admins") as notify,
+        patch("preloop.services.openai_gateway.logger.warning") as warning,
+    ):
+        frame = getattr(service, renderer)(
+            ConnectionError("connection reset"), ai_model=model
+        )
+    assert "upstream_disconnect" in frame
+    assert warning.call_args.args[1:] == (protocol, "deepseek", "test-model", "network")
+    notify.assert_not_called()
