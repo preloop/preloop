@@ -54,7 +54,6 @@ export default defineConfig({
   ],
   resolve: {
     alias: [
-      { find: 'events', replacement: 'events' },
       // Ensure packages resolve from frontend's node_modules for plugins outside this package
       { find: /^lit($|\/)/, replacement: resolve(__dirname, 'node_modules/lit$1') },
       {
