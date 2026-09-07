@@ -440,6 +440,11 @@ export class DashboardView extends AuthedElement {
 
   private unsubscribeRealtime?: () => void;
   private refreshInFlight = false;
+  private queuedDashboardRefresh: { preserveLoadingState?: boolean } | null =
+    null;
+  private topicRefreshesInFlight = new Set<string>();
+  private pendingTopicRefreshes = new Map<string, () => Promise<void>>();
+  private backgroundRefreshInFlight = false;
   /** When the last full load started, which is what the event gate reads. */
   private lastFetchStartedAt = 0;
   /** One pending timer per topic key, so topics never queue behind each other. */
@@ -1493,6 +1498,8 @@ export class DashboardView extends AuthedElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.pendingTopicRefreshes.clear();
+    this.queuedDashboardRefresh = null;
     this.unsubscribeRealtime?.();
     for (const key of Object.keys(this.refreshTimers)) {
       window.clearTimeout(this.refreshTimers[key]);
@@ -1857,8 +1864,14 @@ export class DashboardView extends AuthedElement {
    * of its floor instead of running again.
    */
   private scheduleTopicRefresh(key: string, run: () => Promise<void>): void {
-    if (Date.now() - this.lastFetchStartedAt < 5000) {
-      // The initial load is still landing; its data is newer than this event.
+    if (
+      this.refreshInFlight ||
+      this.backgroundRefreshInFlight ||
+      this.topicRefreshesInFlight.has(key)
+    ) {
+      // Keep one trailing refresh: an event may describe a change made after
+      // the in-flight read started, but never needs another concurrent read.
+      this.pendingTopicRefreshes.set(key, run);
       return;
     }
     if (this.refreshTimers[key] !== undefined) {
@@ -1867,10 +1880,16 @@ export class DashboardView extends AuthedElement {
     const sinceLast = Date.now() - (this.lastTopicRefresh[key] || 0);
     const delay = Math.max(
       REALTIME_DEBOUNCE_MS,
+      5000 - (Date.now() - this.lastFetchStartedAt),
       REALTIME_TOPIC_INTERVAL_MS - sinceLast
     );
     this.refreshTimers[key] = window.setTimeout(() => {
       delete this.refreshTimers[key];
+      if (this.refreshInFlight || this.backgroundRefreshInFlight) {
+        this.pendingTopicRefreshes.set(key, run);
+        return;
+      }
+      this.topicRefreshesInFlight.add(key);
       this.lastTopicRefresh[key] = Date.now();
       void run()
         .then(() => {
@@ -1882,8 +1901,33 @@ export class DashboardView extends AuthedElement {
             `Failed to refresh ${key} from a realtime event`,
             error
           );
+        })
+        .finally(() => {
+          this.topicRefreshesInFlight.delete(key);
+          this.flushPendingTopicRefreshes();
         });
     }, delay);
+  }
+
+  private flushPendingTopicRefreshes(): void {
+    if (!this.isConnected) {
+      this.pendingTopicRefreshes.clear();
+      this.queuedDashboardRefresh = null;
+      return;
+    }
+    if (
+      this.queuedDashboardRefresh &&
+      !this.refreshInFlight &&
+      !this.backgroundRefreshInFlight &&
+      this.topicRefreshesInFlight.size === 0
+    ) {
+      const options = this.queuedDashboardRefresh;
+      this.queuedDashboardRefresh = null;
+      void this.fetchDashboardData(options);
+    }
+    const pending = [...this.pendingTopicRefreshes];
+    this.pendingTopicRefreshes.clear();
+    for (const [key, run] of pending) this.scheduleTopicRefresh(key, run);
   }
 
   /** What a gateway call can change: the totals, the deltas, the failures. */
@@ -1984,12 +2028,24 @@ export class DashboardView extends AuthedElement {
    * while somebody is looking.
    */
   private async refreshBackgroundInputs(): Promise<void> {
-    const startDateStr = this.getGatewayStartDate();
-    await this.refreshUsageBreakdown(startDateStr);
-    await this.refreshAttentionInputs();
-    await this.refreshAuditExceptions();
-    this.lastUpdatedAt = new Date().toISOString();
-    this.scheduleCacheWrite();
+    if (
+      this.refreshInFlight ||
+      this.backgroundRefreshInFlight ||
+      this.topicRefreshesInFlight.size > 0
+    )
+      return;
+    this.backgroundRefreshInFlight = true;
+    try {
+      const startDateStr = this.getGatewayStartDate();
+      await this.refreshUsageBreakdown(startDateStr);
+      await this.refreshAttentionInputs();
+      await this.refreshAuditExceptions();
+      this.lastUpdatedAt = new Date().toISOString();
+      this.scheduleCacheWrite();
+    } finally {
+      this.backgroundRefreshInFlight = false;
+      this.flushPendingTopicRefreshes();
+    }
   }
 
   /**
@@ -2118,7 +2174,12 @@ export class DashboardView extends AuthedElement {
   private async fetchDashboardData(
     options: { preserveLoadingState?: boolean } = {}
   ) {
-    if (this.refreshInFlight) {
+    if (
+      this.refreshInFlight ||
+      this.backgroundRefreshInFlight ||
+      this.topicRefreshesInFlight.size > 0
+    ) {
+      this.queuedDashboardRefresh = options;
       return;
     }
     this.refreshInFlight = true;
@@ -2251,7 +2312,7 @@ export class DashboardView extends AuthedElement {
       });
       this.scheduleCacheWrite();
 
-      void this.fetchDeferredData(startDateStr, {
+      await this.fetchDeferredData(startDateStr, {
         // A range change reloads what the range changes; the flows, the
         // people and the tool catalogue are the same at any range.
         rangeChangeOnly: options.preserveLoadingState === true,
@@ -2275,6 +2336,7 @@ export class DashboardView extends AuthedElement {
       this.loading = false;
     } finally {
       this.refreshInFlight = false;
+      this.flushPendingTopicRefreshes();
     }
   }
 

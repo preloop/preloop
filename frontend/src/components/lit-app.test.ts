@@ -28,8 +28,15 @@ describe('LitApp routing', () => {
     fetchStub = sinon.stub(window, 'fetch');
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/api/v1/features')) {
+        return new Response(JSON.stringify({ features: {}, permissions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       // Endpoints that expect list payloads
       if (
+        url.includes('/api/v1/approval-requests') ||
         url.includes('/api/v1/tools') ||
         url.includes('/api/v1/trackers') ||
         url.includes('/api/v1/ai-models') ||
@@ -52,6 +59,30 @@ describe('LitApp routing', () => {
     localStorage.clear();
     delete (window as any).BRAND_CONFIG;
     window.history.replaceState({}, '', '/');
+  });
+
+  it('keeps console pages out of the initial public page registration', () => {
+    expect(customElements.get('profile-view')).to.equal(undefined);
+    expect(customElements.get('agent-detail-view')).to.equal(undefined);
+    expect(customElements.get('flow-execution-view')).to.equal(undefined);
+  });
+
+  it('registers a nested console view on navigation and handles OAuth tokens', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/console/settings/profile#access_token=oauth-access&refresh_token=oauth-refresh'
+    );
+    const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
+    await waitUntil(
+      () =>
+        Boolean(el.shadowRoot?.querySelector('console-shell > profile-view')),
+      'Expected the lazy profile route to render',
+      { timeout: 5000 }
+    );
+    expect(customElements.get('profile-view')).to.exist;
+    expect(localStorage.getItem('accessToken')).to.equal('oauth-access');
+    expect(localStorage.getItem('refreshToken')).to.equal('oauth-refresh');
   });
 
   it('redirects the legacy /console/onboarding route to /console/agents', async () => {

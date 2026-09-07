@@ -9,15 +9,17 @@ from sqlalchemy import Float, String, and_, case, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
-from ..models.api_usage import ApiUsage
-from ..models.flow import Flow
-from ..models.flow_execution import FlowExecution
-from ..models.managed_agent import ManagedAgent
-from ..models.runtime_session import RuntimeSession
-from ..models.user import User
+from preloop.models import models
 from ...services.cache_accounting import uncached_input_tokens
 from ...utils.jsonb_sanitize import sanitize_for_jsonb
 from .base import CRUDBase
+
+ApiUsage = models.ApiUsage
+Flow = models.Flow
+FlowExecution = models.FlowExecution
+ManagedAgent = models.ManagedAgent
+RuntimeSession = models.RuntimeSession
+User = models.User
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ def exclude_replay_usage_condition():
     )
 
 
-def cache_covered_condition():
+def cache_covered_condition(usage_model: Any = ApiUsage) -> Any:
     """Return a filter for rows whose provider reported a cache split.
 
     A NULL cache column means "the provider said nothing about caching", which
@@ -61,17 +63,23 @@ def cache_covered_condition():
     ``preloop.services.cache_accounting`` does, instead of folding blind rows
     in as misses.
 
+    Args:
+        usage_model: Usage model or an ORM alias of it.
+
     Returns:
         A SQLAlchemy boolean expression suitable for a FILTER clause.
     """
     return or_(
-        ApiUsage.cache_read_tokens.isnot(None),
-        ApiUsage.cache_creation_tokens.isnot(None),
+        usage_model.cache_read_tokens.isnot(None),
+        usage_model.cache_creation_tokens.isnot(None),
     )
 
 
-def cache_split_columns() -> list:
+def cache_split_columns(usage_model: Any = ApiUsage) -> list:
     """Return the aggregate columns backing the cache half of token figures.
+
+    Args:
+        usage_model: Usage model or an ORM alias of it.
 
     Returns:
         Labelled sums for cache reads, cache writes, and the input tokens of
@@ -79,14 +87,17 @@ def cache_split_columns() -> list:
         from).
     """
     return [
-        func.coalesce(func.sum(ApiUsage.cache_read_tokens), 0).label(
+        func.coalesce(func.sum(usage_model.cache_read_tokens), 0).label(
             "cache_read_tokens"
         ),
-        func.coalesce(func.sum(ApiUsage.cache_creation_tokens), 0).label(
+        func.coalesce(func.sum(usage_model.cache_creation_tokens), 0).label(
             "cache_write_tokens"
         ),
         func.coalesce(
-            func.sum(ApiUsage.prompt_tokens).filter(cache_covered_condition()), 0
+            func.sum(usage_model.prompt_tokens).filter(
+                cache_covered_condition(usage_model)
+            ),
+            0,
         ).label("covered_prompt_tokens"),
     ]
 
@@ -2084,6 +2095,56 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             # optimizer's daily cap) are unaffected.
             query = query.filter(exclude_replay_usage_condition())
         return float(query.scalar() or 0.0)
+
+    def list_gateway_tool_usage_in_window(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        start: datetime,
+        end: datetime,
+        limit: int = 5000,
+    ) -> List[Any]:
+        """Project the fields needed for tool schema costs, newest first.
+
+        Keep the existing half-open window and row limit. Selecting only the
+        tools_meta subtree prevents unrelated request/response metadata from
+        being transferred and decoded for thousands of reporting rows.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            start: Inclusive window start.
+            end: Exclusive window end.
+            limit: Maximum number of rows to return.
+
+        Returns:
+            Lightweight rows containing pricing, principal and tool metadata.
+        """
+        return (
+            db.query(
+                self.model.ai_model_id,
+                self.model.model_alias,
+                self.model.prompt_tokens,
+                self.model.estimated_cost,
+                self.model.cost_source,
+                self.model.runtime_principal_id,
+                self.model.runtime_principal_name,
+                self.model.runtime_principal_type,
+                func.jsonb_build_object(
+                    "tools_meta", self.model.meta_data["tools_meta"]
+                ).label("meta_data"),
+            )
+            .filter(
+                self.model.action_type == "model_gateway",
+                self.model.account_id == account_id,
+                self.model.timestamp >= start,
+                self.model.timestamp < end,
+            )
+            .order_by(self.model.timestamp.desc())
+            .limit(limit)
+            .all()
+        )
 
     def list_gateway_rows_in_window(
         self,
