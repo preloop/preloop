@@ -14028,6 +14028,12 @@ components:
         native_resume_available:
           type: boolean
           title: Native Resume Available
+        native_resume_expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Native Resume Expires At
         existing_thread_id:
           anyOf:
           - type: string

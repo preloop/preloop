@@ -8,6 +8,7 @@ import {
   type FlowContinuationPreview,
   type ContinuationRecoveryMode,
 } from '../api';
+import { formatUTCDateTime } from '../utils/date';
 import { consoleDialogStyles } from '../styles/console-dialog';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -103,6 +104,15 @@ export class PreloopExecutionContinuation extends LitElement {
     return preview.allowed_recovery_modes.includes('published_branch_handoff')
       ? 'published_branch_handoff'
       : null;
+  }
+
+  private checkpointExpiryText(): string {
+    const raw = this.preview?.native_resume_expires_at;
+    if (!raw) return '';
+    const date = new Date(raw);
+    return Number.isNaN(date.getTime())
+      ? ''
+      : ` until ${formatUTCDateTime(raw)}`;
   }
 
   private async loadPreview() {
@@ -252,7 +262,15 @@ export class PreloopExecutionContinuation extends LitElement {
                 ${!preview.artifact_upload_enabled ? html`<sl-alert open>Saved execution state uploads must be enabled by your deployment administrator before follow-up can start.</sl-alert>` : nothing}
                 ${!preview.feedback_readable ? html`<sl-alert open variant="warning">Review and CI access must be available before follow-up can start. ${preview.feedback_blocked_reason || ''}</sl-alert>` : nothing}
                 ${preview.warnings.map((warning) => html`<sl-alert open variant="warning">${warning}</sl-alert>`)}
-                ${mode === 'native_resume' ? html`<p>The next repair will continue the previous agent conversation using its saved checkpoint.</p>` : nothing}
+                ${
+                  mode === 'native_resume'
+                    ? html`<p>
+                        The next repair will continue the previous agent
+                        conversation using its saved
+                        checkpoint${this.checkpointExpiryText()}.
+                      </p>`
+                    : nothing
+                }
                 ${
                   mode === 'published_branch_handoff'
                     ? html` <p>

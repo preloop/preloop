@@ -241,3 +241,65 @@ async def test_gitlab_preflight_rejects_non_get_methods() -> None:
     raw._make_request.assert_awaited_once_with(
         gl.http_get, "/projects/1/merge_requests/474"
     )
+
+
+def test_preview_surfaces_native_checkpoint_expiry() -> None:
+    """Preview advertises the real checkpoint window, not a policy lifetime."""
+    from datetime import UTC, datetime
+
+    expiry = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
+    source = {
+        "execution_id": uuid4(),
+        "flow_id": uuid4(),
+        "pr_url": "https://github.com/example/repo/pull/474",
+        "branch": "fix/474",
+        "provider": "github",
+        "repository_id": "123",
+        "number": "474",
+        "feedback_enabled": True,
+        "policy": {"max_age_hours": 168},
+        "native_resume_available": True,
+        "native_resume_expires_at": expiry,
+        "existing_thread_id": None,
+        "existing_thread_state": None,
+        "tracker_id": uuid4(),
+        "tracker_key": "synthetic-key",
+        "tracker_options": {},
+    }
+    publication = {
+        "open": True,
+        "same_repository": True,
+        "branch": "fix/474",
+        "head_sha": "a" * 40,
+        "pr_url": "https://github.com/example/repo/pull/474",
+        "feedback_readable": True,
+    }
+    with (
+        patch.object(service, "_load_source", return_value=source),
+        patch.object(
+            service, "_bounded_publication", AsyncMock(return_value=publication)
+        ),
+    ):
+        result = service.preview_continuation(uuid4(), uuid4())
+    assert result.native_resume_available is True
+    assert result.native_resume_expires_at == expiry
+    assert result.allowed_recovery_modes == ["native_resume"]
+    # An unavailable native checkpoint advertises neither a mode nor a window.
+    with (
+        patch.object(
+            service,
+            "_load_source",
+            return_value={
+                **source,
+                "native_resume_available": False,
+                "native_resume_expires_at": None,
+            },
+        ),
+        patch.object(
+            service, "_bounded_publication", AsyncMock(return_value=publication)
+        ),
+    ):
+        result = service.preview_continuation(uuid4(), uuid4())
+    assert result.native_resume_available is False
+    assert result.native_resume_expires_at is None
+    assert result.allowed_recovery_modes == ["published_branch_handoff"]
