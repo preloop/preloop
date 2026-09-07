@@ -101,6 +101,7 @@ def upgrade() -> None:
         ),
         sa.Column("event_id", UUID(as_uuid=True), nullable=False),
         sa.Column("event_type", sa.String(64), nullable=False),
+        sa.Column("subject_id", UUID(as_uuid=True), nullable=True),
         sa.Column("occurred_at", sa.DateTime(), nullable=False),
         sa.Column("payload", JSONB(), nullable=False),
         sa.Column("status", sa.String(16), nullable=False, server_default="pending"),

@@ -122,6 +122,12 @@ class WebhookDelivery(Base):
     )
     event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    # The object the event is about (approval request, execution, session),
+    # when it has one. No foreign key: delivery history outlives the row it
+    # describes, and the id is only used for back-references and bookkeeping.
+    subject_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(
