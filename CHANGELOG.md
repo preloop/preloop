@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CRA runtime result.json contracts and fail-closed CI gate**: versioned
+  validation for presets 004–007 at the hosted and private-runner persist
+  boundary, contradiction reconciliation, and `python -m preloop.cra.ci`.
+  Default release policy is a clean pass; `pass_with_findings` is explicit;
+  fail and unknown verdicts cannot be accepted. Evidence archives are
+  size-bounded and checked for gzip/tar integrity plus required
+  `result.json` / `evidence/` membership. Claimed approvals and waivers
+  fail closed when platform authority is unavailable; due-diligence
+  matching requires an exact `request_approval` operation. Webhook URLs
+  are redacted in errors and the webhook POST is not retried. Guide:
+  `docs/guide/flows/security-audit-presets.md`.
+
 - **Per-flow label-based model routing**: a flow can store optional ordered
   rules in `agent_config.model_routing` that map current issue labels
   (`any` / `all`) to an account-owned model and compatible harness. The

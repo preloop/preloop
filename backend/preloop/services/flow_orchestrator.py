@@ -522,6 +522,8 @@ class FlowExecutionOrchestrator:
         # agent's own verification claim in result.json is preserved under
         # verification_reported instead.
         self._verification_evidence: Optional[Dict[str, Any]] = None
+        # CRA persist-boundary decision from the last result.json capture.
+        self._cra_persist_decision: Optional[Any] = None
 
         # Execution metrics tracked during execution
         self.total_tokens: int = 0
@@ -2998,26 +3000,87 @@ class FlowExecutionOrchestrator:
         await self._capture_evidence_archive(agent_executor, session_reference)
         await self._capture_workspace_snapshot(agent_executor, session_reference)
         getter = getattr(agent_executor, "get_result_artifact", None)
-        if not callable(getter):
-            return None
-        try:
-            artifact = await getter(session_reference)
-        except Exception as e:
-            logger.warning(f"Failed to capture result artifact: {e}")
-            return None
-        # Only plain JSON objects are persistable (also guards against mock
-        # executors in tests returning non-dict values).
-        if not isinstance(artifact, dict):
-            return None
-        # Reserved publisher state is control-plane owned, never agent JSON.
-        artifact = dict(artifact)
-        artifact.pop("trusted_publication", None)
-        artifact.pop("_private_publication", None)
-        self.execution_logger.log_milestone(
-            "result_artifact_captured",
-            {"keys": sorted(artifact.keys())[:20]},
+        artifact: Optional[Dict[str, Any]] = None
+        if callable(getter):
+            try:
+                captured = await getter(session_reference)
+            except Exception as e:
+                logger.warning(f"Failed to capture result artifact: {e}")
+                captured = None
+            # Only plain JSON objects are persistable (also guards against mock
+            # executors in tests returning non-dict values).
+            if isinstance(captured, dict):
+                artifact = dict(captured)
+                # Reserved publisher state is control-plane owned, never agent JSON.
+                artifact.pop("trusted_publication", None)
+                artifact.pop("_private_publication", None)
+        if not isinstance(artifact, dict) and getattr(self, "_evidence_archive", None):
+            from preloop.cra.evidence_pack import extract_result_json
+
+            extracted = extract_result_json(self._evidence_archive)
+            if isinstance(extracted, dict):
+                artifact = extracted
+                artifact.pop("trusted_publication", None)
+                artifact.pop("_private_publication", None)
+        return self._persist_cra_result_boundary(artifact)
+
+    def _cra_prompt_text(self) -> Optional[str]:
+        """Configured flow prompt used to detect an expected CRA result schema."""
+        flow = self.flow
+        template = getattr(flow, "prompt_template", None) if flow is not None else None
+        if isinstance(template, str) and template.strip():
+            return template
+        resolved = getattr(self.execution_log, "resolved_input_prompt", None)
+        if isinstance(resolved, str) and resolved.strip():
+            return resolved
+        return None
+
+    def _persist_cra_result_boundary(
+        self, artifact: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Validate CRA result.json at the hosted persist boundary."""
+        from preloop.cra.persist import (
+            apply_cra_persist_boundary,
+            resolve_persist_authority,
         )
-        return artifact
+
+        execution_id = getattr(self.execution_log, "id", None)
+        approvals, authority = resolve_persist_authority(
+            artifact, self.db, execution_id
+        )
+        decision = apply_cra_persist_boundary(
+            artifact,
+            prompt=self._cra_prompt_text(),
+            trigger_payload=self.trigger_event_data,
+            platform_approvals=approvals,
+            authority=authority,
+        )
+        self._cra_persist_decision = decision
+        persisted = decision.artifact
+        if isinstance(persisted, dict):
+            self.execution_logger.log_milestone(
+                "result_artifact_captured",
+                {
+                    "keys": sorted(persisted.keys())[:20],
+                    "cra_invalid": decision.invalid,
+                },
+            )
+        return persisted
+
+    def _apply_cra_fail_closed(
+        self, final_status: str, error_message: Optional[str]
+    ) -> tuple[str, Optional[str]]:
+        """Deny a successful release when CRA persist validation failed closed."""
+        from preloop.cra.persist import cra_fail_closed_error_message
+
+        decision = getattr(self, "_cra_persist_decision", None)
+        if decision is None:
+            return final_status, error_message
+        if decision.invalid:
+            return "FAILED", cra_fail_closed_error_message(decision)
+        if decision.fail_closed_status == "FAILED" and final_status == "SUCCEEDED":
+            return "FAILED", error_message or cra_fail_closed_error_message(decision)
+        return final_status, error_message
 
     async def _capture_evidence_archive(
         self, agent_executor: Any, session_reference: str
@@ -3490,6 +3553,7 @@ class FlowExecutionOrchestrator:
                 if isinstance(result_artifact, dict)
                 else nudge_artifact
             )
+            merged_artifact = self._persist_cra_result_boundary(merged_artifact)
 
         if nudge_outcome == "confirmed_success":
             return result.status.value, result.error_message, merged_artifact
@@ -4174,6 +4238,9 @@ class FlowExecutionOrchestrator:
                             {"artifact_status": result_artifact.get("status")},
                         )
 
+                    final_status, error_message = self._apply_cra_fail_closed(
+                        final_status, error_message
+                    )
                     return {
                         "status": final_status,
                         "output_summary": result.output_summary,
@@ -4258,10 +4325,13 @@ class FlowExecutionOrchestrator:
                                     else None
                                 ),
                             }
+                        cra_status, cra_error = self._apply_cra_fail_closed(
+                            "SUCCEEDED", None
+                        )
                         return {
-                            "status": "SUCCEEDED",
+                            "status": cra_status,
                             "output_summary": self.execution_logger.get_agent_output_summary(),
-                            "error_message": None,
+                            "error_message": cra_error,
                             "actions_taken": self.execution_logger.get_actions_taken(),
                             "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
                             "result": result_artifact,

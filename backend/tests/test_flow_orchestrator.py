@@ -1,5 +1,7 @@
 """Tests for FlowExecutionOrchestrator."""
 
+import json
+from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -2127,11 +2129,18 @@ class TestSuccessConfirmationChannels:
         audit — channel 2 must recognize the verdict vocabulary even though
         the artifact carries no "status" key.
         """
-        artifact = {
-            "schema": "preloop.cra.releaseaudit/v1",
-            "verdict": "fail",
-            "checks": [{"name": "severity gate", "passed": False}],
-        }
+        artifact = json.loads(
+            (
+                Path(__file__).resolve().parent
+                / "fixtures"
+                / "cra"
+                / "result-releaseaudit.json"
+            ).read_text()
+        )
+        artifact["sbom_audit"]["valid"] = False
+        artifact["sbom_audit"]["minimum_elements"]["passed"] = False
+        artifact["sbom_audit"]["verdict"] = "fail"
+        artifact["verdict"] = "fail"
         orchestrator = self._monitor_orchestrator(
             mock_nats_client, event_data, sentinel_seen=False
         )
@@ -2148,11 +2157,15 @@ class TestSuccessConfirmationChannels:
         self, mock_nats_client, event_data
     ):
         """Audit ``verdict: error`` means the audit could not complete."""
-        artifact = {
-            "schema": "preloop.cra.sbomaudit/v1",
-            "verdict": "error",
-            "checks": [{"name": "inputs", "passed": False}],
-        }
+        artifact = json.loads(
+            (
+                Path(__file__).resolve().parent
+                / "fixtures"
+                / "cra"
+                / "result-sbomaudit.json"
+            ).read_text()
+        )
+        artifact["verdict"] = "error"
         orchestrator = self._monitor_orchestrator(
             mock_nats_client, event_data, sentinel_seen=True
         )
@@ -2162,14 +2175,16 @@ class TestSuccessConfirmationChannels:
         )
 
         assert result["status"] == "FAILED"
-        assert "result.json" in result["error_message"]
+        assert "result.json" in (
+            result["error_message"] or ""
+        ) or "CRA result.json" in (result["error_message"] or "")
         assert result["result"] == artifact
 
     @pytest.mark.asyncio
     async def test_unrecognized_verdict_without_sentinel_still_fails(
         self, mock_nats_client, event_data
     ):
-        """Neither channel: an unrecognized verdict is not a confirmation."""
+        """Incomplete known CRA schema fails closed instead of confirming."""
         artifact = {"schema": "preloop.cra.duediligence/v1", "verdict": "recorded"}
         orchestrator = self._monitor_orchestrator(
             mock_nats_client, event_data, sentinel_seen=False
@@ -2180,7 +2195,8 @@ class TestSuccessConfirmationChannels:
         )
 
         assert result["status"] == "FAILED"
-        assert "FLOW_EXECUTION_SUCCESS" in result["error_message"]
+        assert result["result"]["error"] == "cra_result_invalid"
+        assert "raw" in result["result"]
 
     @pytest.mark.asyncio
     async def test_result_artifact_error_overrides_to_failed(
