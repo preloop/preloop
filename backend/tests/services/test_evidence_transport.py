@@ -457,6 +457,8 @@ def test_sanitize_strips_reserved_publication_keys() -> None:
             "verdict": "fail",
             "trusted_publication": {"url": "https://example.com/forged"},
             "_private_publication": {"phase": "complete"},
+            "product_provenance": {"mapping_status": "verified"},
+            "dossier_manifest": {"schema": "forged"},
         }
     )
     assert cleaned == {"verdict": "fail"}

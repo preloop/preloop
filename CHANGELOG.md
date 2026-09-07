@@ -214,6 +214,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CRA evidence binding recognizes controller `product_provenance` and
+  `dossier_manifest` annotations**: packed agent JSON is still compared in
+  full. Those controller records (and the older `provenance`/`dossier`
+  spellings) do not fail a matching pack; a changed decision, waiver, or
+  gate still does.
+
 - **Invalid CRA completion keeps the original runner failure**: when a
   private runner already reported `FAILED` or `STOPPED`, persist-time
   contract diagnostics are appended instead of replacing that reason.

@@ -959,6 +959,11 @@ def test_controller_annotations_allowed_when_agent_json_matches(
     api["verification"] = {"status": "passed", "source": "sandbox_log"}
     api["dossier"] = {"id": "dossier-1"}
     api["provenance"] = {"controller": True}
+    api["product_provenance"] = {
+        "schema": "preloop.cra.product_provenance/v1",
+        "mapping_status": "verified",
+    }
+    api["dossier_manifest"] = {"schema": "preloop.cra.dossier_manifest/v1"}
 
     def opener(request: object, timeout: int = 0) -> _FakeResponse:
         url = _request_url(request)
@@ -976,6 +981,63 @@ def test_controller_annotations_allowed_when_agent_json_matches(
         api_result=api,
     )
     assert dest.read_bytes() == archive
+
+
+def test_persist_then_ci_download_accepts_product_provenance_annotations(
+    tmp_path: Path, releaseaudit_result: dict[str, Any]
+) -> None:
+    from preloop.cra.persist import apply_cra_persist_boundary
+
+    persisted = apply_cra_persist_boundary(clone(releaseaudit_result))
+    assert not persisted.invalid
+    assert isinstance(persisted.artifact, dict)
+    archive = _make_evidence_archive(persisted.artifact)
+    api = clone(persisted.artifact)
+    api["product_provenance"] = {
+        "schema": "preloop.cra.product_provenance/v1",
+        "mapping_status": "verified",
+    }
+    api["dossier_manifest"] = {"schema": "preloop.cra.dossier_manifest/v1"}
+
+    def opener(request: object, timeout: int = 0) -> _FakeResponse:
+        url = _request_url(request)
+        if url.endswith("/evidence-status"):
+            raise _http_error(url, 404)
+        return _FakeResponse(archive, headers={"content-type": "application/gzip"})
+
+    dest = fetch_evidence(
+        "https://preloop.example.com",
+        "token",
+        "exec-1",
+        tmp_path / "evidence.tar.gz",
+        opener=opener,
+        max_retries=1,
+        api_result=api,
+    )
+    assert dest.read_bytes() == archive
+
+    mutated = clone(persisted.artifact)
+    mutated["vuln_scan"] = dict(mutated["vuln_scan"])
+    mutated["vuln_scan"]["gate"] = dict(mutated["vuln_scan"]["gate"])
+    mutated["vuln_scan"]["gate"]["passed"] = False
+    bad_archive = _make_evidence_archive(mutated)
+
+    def bad_opener(request: object, timeout: int = 0) -> _FakeResponse:
+        url = _request_url(request)
+        if url.endswith("/evidence-status"):
+            raise _http_error(url, 404)
+        return _FakeResponse(bad_archive, headers={"content-type": "application/gzip"})
+
+    with pytest.raises(CraCIError, match="content|inconsistent|rejected"):
+        fetch_evidence(
+            "https://preloop.example.com",
+            "token",
+            "exec-1",
+            tmp_path / "evidence-bad.tar.gz",
+            opener=bad_opener,
+            max_retries=1,
+            api_result=api,
+        )
 
 
 def test_agent_evidence_annotation_is_not_controller_digest(

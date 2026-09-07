@@ -29,6 +29,9 @@ AVAILABLE_STATUS = "available"
 _RESULT_NAMES = frozenset({"result.json", "workspace/result.json"})
 # Known controller-added keys. Packed agent JSON is compared in full after
 # these are removed from both sides. Unknown agent fields stay bound.
+# Provenance writes product_provenance / dossier_manifest (not provenance /
+# dossier). Keep both spellings so a renamed annotation cannot silently
+# become agent content.
 _CONTROLLER_RESULT_KEYS = frozenset(
     {
         "trusted_publication",
@@ -39,6 +42,8 @@ _CONTROLLER_RESULT_KEYS = frozenset(
         "container_termination",
         "provenance",
         "dossier",
+        "product_provenance",
+        "dossier_manifest",
     }
 )
 _VALIDATE_MESSAGES = {
