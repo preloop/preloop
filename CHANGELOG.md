@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Durable evidence transport**: hosted containers and private Docker
+  runners can upload CRA evidence packs through the existing encrypted
+  artifact API (`kind=evidence`) instead of the Kubernetes log channel.
+  Retrieval verifies digest and account/execution binding and reports
+  missing, expired and failed distinctly. Retention is configurable
+  (`FLOW_EVIDENCE_RETENTION_HOURS`) and is not a legal hold. Guide:
+  `docs/guide/flows/evidence-storage.md`. Status polls use the persisted
+  receipt only (`kind=evidence`); download headers carry the verified
+  digest. Tracking: issues #268, #386. Private Docker completions carry the
+  trusted bootstrap `evidence_upload` outcome (`uploaded` / `failed` /
+  `absent`) outside agent JSON so a failed final PUT cannot leave a stale
+  trap artifact marked available. The upload outcome is emitted even when
+  `result.json` is missing or invalid. WebSocket complete snapshots the
+  leased job before publication close and lease clear so a direct-upload
+  flag is not lost when `pending_job` is committed to null.
+
 - **Per-flow label-based model routing**: a flow can store optional ordered
   rules in `agent_config.model_routing` that map current issue labels
   (`any` / `all`) to an account-owned model and compatible harness. The
@@ -155,6 +171,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adds a page by dropping a markdown file.
 
 ### Fixed
+
+- **Ordinary evidence capture ignores non-string transport errors**:
+  `evidence_transport_error` is only a failure when it is a non-empty
+  string. Truthy mock auto-attributes no longer drop a getter-captured
+  pack before it is persisted.
+
+- **Checkpoint restore keeps its own response cap**: the shared artifact
+  client reads workspace archives up to `PRELOOP_CHECKPOINT_MAX_BYTES`
+  even when `PRELOOP_EVIDENCE_MAX_BYTES` is also set. Evidence PUTs stay
+  on the evidence cap.
+
+- **Hosted Docker direct upload stores once**: the EXIT-trap PUT is the
+  durable write. After exit the control plane binds that artifact from
+  `PRELOOP_EVIDENCE` log lines and does not copy leftover workspace files
+  into a second store.
 
 - Prevent database waits in authentication and approval summaries from blocking
   the API event loop; cancellation now waits for shared-session workers to finish.

@@ -218,6 +218,7 @@ type leasedJobOutcome struct {
 	status                  string
 	errMsg                  string
 	lines                   []string
+	evidenceUpload          string
 }
 
 func nextRunnerBackoff(current time.Duration) time.Duration {
@@ -284,6 +285,9 @@ func writeJobOutcome(conn *websocket.Conn, outcome leasedJobOutcome) error {
 	} else {
 		message["launch_version"] = runnerLaunchVersion
 		message["completion_protocol"] = "docker_v1"
+	}
+	if outcome.evidenceUpload != "" {
+		message["evidence_upload"] = outcome.evidenceUpload
 	}
 	return conn.WriteJSON(message)
 }
@@ -818,8 +822,8 @@ func waitDockerJob(cmd *exec.Cmd, executionID string, buf interface{ String() st
 	if streaming {
 		buffer.finish()
 	}
-	result, lines, resultErr := runnerStructuredResult(splitNonEmptyLines(buf.String()))
-	outcome := leasedJobOutcome{executionID: executionID, status: "SUCCEEDED", lines: lines, result: result}
+	result, lines, evidenceUpload, resultErr := parseRunnerStructuredResult(splitNonEmptyLines(buf.String()))
+	outcome := leasedJobOutcome{executionID: executionID, status: "SUCCEEDED", lines: lines, result: result, evidenceUpload: evidenceUpload}
 	if streaming {
 		outcome.logBuffer = buffer
 		outcome.lines = nil

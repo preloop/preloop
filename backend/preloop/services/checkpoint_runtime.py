@@ -82,21 +82,89 @@ def checkpoint_context(db: Session, context: dict[str, Any]) -> dict[str, str]:
     return env
 
 
+def evidence_transport_env(context: dict[str, Any]) -> dict[str, str]:
+    """Mint an execution-bound evidence PUT capability for hosted and private runners.
+
+    Workspace checkpoints stay off private runners. Evidence packs are retrieved
+    through the account API, so private jobs upload them with the same scoped
+    artifact capability used by hosted containers.
+    """
+    if not settings.flow_artifact_direct_upload:
+        return {}
+    from preloop.api.endpoints.flow_artifacts import mint_artifact_capability
+
+    trigger = context.get("trigger_event_data") or {}
+    thread_id = artifact_thread_id(trigger, context["execution_id"])
+    execution_id = str(context["execution_id"])
+    token = mint_artifact_capability(
+        account_id=UUID(str(context["account_id"])),
+        flow_id=UUID(str(context["flow_id"])),
+        thread_id=thread_id,
+        execution_id=UUID(execution_id),
+        kind="evidence",
+        operation="put",
+    )
+    return {
+        "PRELOOP_EVIDENCE_URL": (
+            settings.preloop_url.rstrip("/")
+            + "/api/v1/flows/executions/"
+            + execution_id
+            + "/artifacts"
+        ),
+        "PRELOOP_EVIDENCE_PUT_TOKEN": token,
+        "PRELOOP_EVIDENCE_MAX_BYTES": str(settings.flow_evidence_max_bytes),
+        "PRELOOP_EVIDENCE_EXPANDED_MAX_BYTES": str(
+            settings.flow_artifact_expanded_max_bytes
+        ),
+    }
+
+
+def _artifact_client_install() -> str:
+    """Install the stdlib artifact client at a fixed path (idempotent)."""
+    source = Path(__file__).parents[1] / "agents" / "checkpoint_client.py"
+    encoded = base64.b64encode(source.read_bytes()).decode()
+    return f"""umask 077
+if [ ! -f /tmp/preloop-checkpoint-client.py ]; then
+printf '%s' '{encoded}' | base64 -d > /tmp/preloop-checkpoint-client.py
+fi
+"""
+
+
 def checkpoint_shell(context: dict[str, Any]) -> str:
     """Install a stdlib client and checkpoint loop before the agent begins."""
     if not context.get("checkpoint_env"):
         return ""
-    source = Path(__file__).parents[1] / "agents" / "checkpoint_client.py"
-    encoded = base64.b64encode(source.read_bytes()).decode()
-    return f"""umask 077
-printf '%s' '{encoded}' | base64 -d > /tmp/preloop-checkpoint-client.py
-if [ -n "${{PRELOOP_CHECKPOINT_GET_TOKEN:-}}" ]; then
+    return (
+        _artifact_client_install()
+        + """
+if [ -n "${PRELOOP_CHECKPOINT_GET_TOKEN:-}" ]; then
     python3 /tmp/preloop-checkpoint-client.py restore || exit 1
 fi
-_preloop_checkpoint() {{ python3 /tmp/preloop-checkpoint-client.py capture; }}
-_preloop_start_checkpoint_loop() {{
+_preloop_checkpoint() { python3 /tmp/preloop-checkpoint-client.py capture; }
+_preloop_upload_evidence() {
+    if [ -n "${PRELOOP_EVIDENCE_PUT_TOKEN:-}" ]; then
+        python3 /tmp/preloop-checkpoint-client.py evidence || true
+    fi
+}
+_preloop_start_checkpoint_loop() {
     (while sleep "$PRELOOP_CHECKPOINT_INTERVAL"; do _preloop_checkpoint || true; done) &
     _preloop_checkpoint_pid=$!
-}}
-trap 'kill "${{_preloop_checkpoint_pid:-}}" 2>/dev/null || true; _preloop_checkpoint || true' EXIT
+}
+trap 'kill "${_preloop_checkpoint_pid:-}" 2>/dev/null || true; _preloop_checkpoint || true; _preloop_upload_evidence' EXIT
 """
+    )
+
+
+def evidence_shell(context: dict[str, Any]) -> str:
+    """Install evidence upload for runs that do not start the checkpoint loop."""
+    if not (context.get("evidence_env") or {}).get("PRELOOP_EVIDENCE_PUT_TOKEN"):
+        return ""
+    if context.get("checkpoint_env"):
+        return ""
+    return (
+        _artifact_client_install()
+        + """
+_preloop_upload_evidence() { python3 /tmp/preloop-checkpoint-client.py evidence || true; }
+trap '_preloop_upload_evidence' EXIT
+"""
+    )

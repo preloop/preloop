@@ -110,3 +110,21 @@ def test_artifact_store_serializes_writers_and_rechecks_quota(
         with pytest.raises(ValueError, match="artifact_quota_exceeded"):
             flow_artifact.store(contender, values=artifact_values, quota_bytes=10)
         contender.rollback()
+
+
+def test_lock_refreshes_stale_running_identity_after_concurrent_close(
+    db_engine: Engine, artifact_values: dict[str, Any]
+) -> None:
+    from preloop.models.crud import crud_flow_execution
+
+    execution_id = artifact_values["execution_id"]
+    with Session(db_engine) as loader, Session(db_engine) as closer:
+        loaded = loader.get(models.FlowExecution, execution_id)
+        assert loaded is not None and loaded.status == "RUNNING"
+        closing = closer.get(models.FlowExecution, execution_id)
+        assert closing is not None
+        closing.status = "FAILED"
+        closer.commit()
+        with pytest.raises(ValueError, match="artifact_execution_closed"):
+            crud_flow_execution.lock_for_artifact_put(loader, execution_id=execution_id)
+        assert loaded.status == "FAILED"

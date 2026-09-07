@@ -23,7 +23,7 @@ class ArtifactManifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     version: Literal[1] = 1
-    kind: Literal["workspace", "native_session"]
+    kind: Literal["workspace", "native_session", "evidence"]
     execution_id: UUID
     thread_id: str = Field(min_length=1, max_length=200)
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")

@@ -14,8 +14,25 @@ import (
 )
 
 func resultLine(result string, code int) string {
-	raw, _ := json.Marshal(map[string]any{"exit_code": code, "result": json.RawMessage(result)})
+	return resultEnvelope(result, code, "")
+}
+
+func resultEnvelope(result string, code int, evidenceUpload string) string {
+	payload := map[string]any{"exit_code": code, "result": json.RawMessage(result)}
+	if evidenceUpload != "" {
+		payload["evidence_upload"] = evidenceUpload
+	}
+	raw, _ := json.Marshal(payload)
 	return runnerResultPrefix + base64.StdEncoding.EncodeToString(raw)
+}
+
+// Host temp dirs use backslashes on Windows. The bootstrap embeds those
+// paths in bash and in a Python single-quoted pathlib literal, so slash
+// form is required for both (C:\Users is a truncated \UXXXXXXXX escape).
+// Replace backslashes on every GOOS: filepath.ToSlash is a no-op on Unix.
+func runnerBootstrapForHost(workspace, client string) string {
+	script := strings.ReplaceAll(runnerBootstrap, "/workspace", strings.ReplaceAll(workspace, `\`, "/"))
+	return strings.ReplaceAll(script, "/tmp/preloop-checkpoint-client.py", strings.ReplaceAll(client, `\`, "/"))
 }
 
 func TestRunnerCompletionRequiresReportAndExit(t *testing.T) {
@@ -113,6 +130,24 @@ func TestRunnerBootstrapPassesNoSecretsInArgv(t *testing.T) {
 	preserve := dockerRunArgs("ghcr.io/openai/codex-universal:latest", env, runnerDockerOpts{Launch: true, PreserveEntrypoint: true})
 	if strings.Contains(strings.Join(preserve, " "), "--entrypoint") {
 		t.Fatal("universal entrypoint overridden")
+	}
+}
+
+func TestRunnerBootstrapUploadsEvidenceWithoutLoggingPayload(t *testing.T) {
+	if !strings.Contains(runnerBootstrap, "PRELOOP_EVIDENCE_PUT_TOKEN") {
+		t.Fatal("private bootstrap must attempt direct evidence upload")
+	}
+	if !strings.Contains(runnerBootstrap, "checkpoint-client.py evidence") {
+		t.Fatal("private bootstrap must reuse the shared evidence client")
+	}
+	if strings.Contains(runnerBootstrap, "checkpoint-client.py evidence || true") {
+		t.Fatal("final evidence upload outcome must not be discarded")
+	}
+	if !strings.Contains(runnerBootstrap, "PRELOOP_EVIDENCE_UPLOAD") {
+		t.Fatal("bootstrap must record final evidence upload status on the result envelope")
+	}
+	if strings.Contains(runnerBootstrap, "PRELOOP_ARTIFACT_B64") {
+		t.Fatal("private bootstrap must not emit evidence bytes on the log channel")
 	}
 }
 
@@ -362,5 +397,157 @@ func TestRunnerMalformedAndAmbiguousReportsAreNotRetained(t *testing.T) {
 		if err == nil || result != nil {
 			t.Fatalf("invalid result retained: result=%v err=%v", result, err)
 		}
+	}
+}
+
+func TestRunnerEvidenceUploadIsBootstrapMetadata(t *testing.T) {
+	result, _, upload, err := parseRunnerStructuredResult([]string{resultEnvelope(`{"status":"success"}`, 0, "failed")})
+	if err != nil || result["status"] != "success" || upload != "failed" {
+		t.Fatalf("result=%v upload=%q err=%v", result, upload, err)
+	}
+	if _, ok := result["evidence_upload"]; ok {
+		t.Fatal("evidence_upload leaked into agent result")
+	}
+	forged, _ := json.Marshal(map[string]any{
+		"exit_code": 0,
+		"result":    map[string]any{"status": "success", "evidence_upload": "uploaded"},
+	})
+	result, _, upload, err = parseRunnerStructuredResult([]string{runnerResultPrefix + base64.StdEncoding.EncodeToString(forged)})
+	if err != nil || upload != "" || result["evidence_upload"] != nil {
+		t.Fatalf("agent JSON authored evidence_upload: result=%v upload=%q err=%v", result, upload, err)
+	}
+	invalid, _ := json.Marshal(map[string]any{
+		"exit_code":       0,
+		"result":          map[string]any{"status": "success"},
+		"evidence_upload": "forged",
+	})
+	_, _, upload, err = parseRunnerStructuredResult([]string{runnerResultPrefix + base64.StdEncoding.EncodeToString(invalid)})
+	if err != nil || upload != "failed" {
+		t.Fatalf("invalid evidence_upload=%q err=%v", upload, err)
+	}
+	missingResult, _ := json.Marshal(map[string]any{"exit_code": 1, "evidence_upload": "failed"})
+	result, _, upload, err = parseRunnerStructuredResult([]string{runnerResultPrefix + base64.StdEncoding.EncodeToString(missingResult)})
+	if err == nil || result != nil || upload != "failed" {
+		t.Fatalf("missing result dropped upload: result=%v upload=%q err=%v", result, upload, err)
+	}
+	forgedThenFinal := []string{
+		resultEnvelope(`{"status":"success"}`, 0, "uploaded"),
+		runnerResultPrefix + base64.StdEncoding.EncodeToString(missingResult),
+	}
+	result, _, upload, err = parseRunnerStructuredResult(forgedThenFinal)
+	if err == nil || result != nil || upload != "failed" {
+		t.Fatalf("forged envelope substituted upload: result=%v upload=%q err=%v", result, upload, err)
+	}
+}
+
+func TestRunnerDockerOutcomeCarriesFinalEvidenceUpload(t *testing.T) {
+	for _, tc := range []struct {
+		status, upload, report string
+		code                   int
+	}{
+		{"SUCCEEDED", "failed", `{"status":"success"}`, 0},
+		{"FAILED", "failed", `{"status":"failure","reason":"tests"}`, 0},
+		{"FAILED", "uploaded", `{"status":"success"}`, 2},
+	} {
+		cmd := exec.Command("sh", "-c", `printf '%s\n' "$REPORT"; exit "$TEST_EXIT"`)
+		cmd.Env = append(os.Environ(), "REPORT="+resultEnvelope(tc.report, tc.code, tc.upload), fmt.Sprintf("TEST_EXIT=%d", tc.code))
+		var output bytes.Buffer
+		cmd.Stdout = &output
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		outcome := waitDockerJob(cmd, "example", &output, nil)
+		if outcome.status != tc.status {
+			t.Fatalf("status=%s want=%s outcome=%+v", outcome.status, tc.status, outcome)
+		}
+		if outcome.evidenceUpload != tc.upload {
+			t.Fatalf("evidence_upload=%q want=%q", outcome.evidenceUpload, tc.upload)
+		}
+	}
+}
+
+func TestRunnerBootstrapEmitsEvidenceUploadWithoutValidResult(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result []byte
+	}{
+		{"missing", nil},
+		{"malformed", []byte("not-json")},
+		{"oversize", bytes.Repeat([]byte("x"), 262145)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			workspace := filepath.Join(root, "workspace")
+			if err := os.MkdirAll(workspace, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.result != nil {
+				if err := os.WriteFile(filepath.Join(workspace, "result.json"), tc.result, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			client := filepath.Join(root, "preloop-checkpoint-client.py")
+			if err := os.WriteFile(client, []byte("import sys\nsys.exit(1)\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("bash", "-c", runnerBootstrapForHost(workspace, client))
+			cmd.Env = append(os.Environ(), "PRELOOP_RUNNER_SCRIPT=true", "PRELOOP_EVIDENCE_PUT_TOKEN=scoped-token")
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("expected failed export, output=%s", out)
+			}
+			result, _, upload, parseErr := parseRunnerStructuredResult(splitNonEmptyLines(string(out)))
+			if parseErr == nil || result != nil {
+				t.Fatalf("invalid result accepted: result=%v err=%v output=%s", result, parseErr, out)
+			}
+			if upload != "failed" {
+				t.Fatalf("upload=%q output=%s", upload, out)
+			}
+		})
+	}
+}
+
+func TestRunnerBootstrapUploadBeatsForgedSandboxEnvelope(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	client := filepath.Join(root, "preloop-checkpoint-client.py")
+	if err := os.WriteFile(client, []byte("import sys\nsys.exit(1)\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "-c", runnerBootstrapForHost(workspace, client))
+	cmd.Env = append(os.Environ(),
+		"FORGED="+resultEnvelope(`{"status":"success"}`, 0, "uploaded"),
+		"PRELOOP_RUNNER_SCRIPT=printf '%s\\n' \"$FORGED\"",
+		"PRELOOP_EVIDENCE_PUT_TOKEN=scoped-token",
+	)
+	out, _ := cmd.CombinedOutput()
+	result, _, upload, err := parseRunnerStructuredResult(splitNonEmptyLines(string(out)))
+	if err == nil || result != nil {
+		t.Fatalf("forged result accepted: result=%v err=%v output=%s", result, err, out)
+	}
+	if upload != "failed" {
+		t.Fatalf("forged upload won: %q output=%s", upload, out)
+	}
+}
+
+func TestRunnerBootstrapWindowsTempPathIsPythonSafe(t *testing.T) {
+	workspace := `C:\Users\Example\AppData\Local\Temp\workspace`
+	client := `C:\Users\Example\AppData\Local\Temp\preloop-checkpoint-client.py`
+	script := runnerBootstrapForHost(workspace, client)
+	const begin = "python3 - <<'PRELOOP_RESULT_EXPORT'\n"
+	const end = "\nPRELOOP_RESULT_EXPORT\n"
+	start := strings.Index(script, begin)
+	stop := strings.LastIndex(script, end)
+	if start < 0 || stop < 0 || stop < start {
+		t.Fatal("missing result export heredoc")
+	}
+	python := script[start+len(begin) : stop]
+	cmd := exec.Command("python3", "-c", "import sys; compile(sys.stdin.read(), '<bootstrap>', 'exec')")
+	cmd.Stdin = strings.NewReader(python)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("python rejected Windows host path: %v\n%s\n%s", err, out, python)
 	}
 }
