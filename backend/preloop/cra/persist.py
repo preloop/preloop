@@ -282,6 +282,36 @@ def cra_fail_closed_error_message(decision: CraPersistDecision) -> str:
     return f"{prefix}: {detail}"
 
 
+def cra_fail_closed_completion_error(
+    decision: CraPersistDecision, original: Optional[str] = None
+) -> str:
+    """Keep a prior runner failure next to CRA contract diagnostics.
+
+    Original text is scrubbed the same way execution logs are, so preserving
+    it cannot store a credential the invalid-CRA path previously discarded.
+    """
+    from preloop.utils.secret_scrubbing import scrub_secrets
+
+    contract = cra_fail_closed_error_message(decision)
+    prior = (scrub_secrets(original) or "").strip() if original else ""
+    if prior and prior != contract:
+        return f"{prior}; {contract}"
+    return contract
+
+
+def apply_cra_fail_closed_completion(
+    status: str,
+    error: Optional[str],
+    decision: CraPersistDecision,
+) -> tuple[str, Optional[str]]:
+    """Fail the execution when persist validation must deny a release."""
+    if decision.invalid:
+        return "FAILED", cra_fail_closed_completion_error(decision, error)
+    if decision.fail_closed_status == "FAILED" and status == "SUCCEEDED":
+        return "FAILED", error or cra_fail_closed_error_message(decision)
+    return status, error
+
+
 def normalize_execution_id(value: Any) -> Optional[str]:
     """Return a string execution id when ``value`` is a UUID or str."""
     if isinstance(value, UUID):

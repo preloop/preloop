@@ -46,8 +46,8 @@ from preloop.services.host_exec import (
     normalize_host_exec_advertisements,
 )
 from preloop.cra.persist import (
+    apply_cra_fail_closed_completion,
     apply_cra_persist_boundary,
-    cra_fail_closed_error_message,
     resolve_persist_authority,
 )
 from preloop.utils.permissions import require_permission
@@ -540,14 +540,9 @@ async def runner_ws(
                     authority=authority,
                 )
                 result = decision.artifact
-                if decision.fail_closed_status == "FAILED" and status == "SUCCEEDED":
-                    status = "FAILED"
-                    completion_error = (
-                        completion_error or cra_fail_closed_error_message(decision)
-                    )
-                elif decision.invalid:
-                    status = "FAILED"
-                    completion_error = cra_fail_closed_error_message(decision)
+                status, completion_error = apply_cra_fail_closed_completion(
+                    status, completion_error, decision
+                )
                 if isolated:
                     if status == "SUCCEEDED":
                         try:

@@ -9,7 +9,10 @@ import pytest
 
 from preloop.cra.persist import (
     CraAuthorityUnavailableError,
+    apply_cra_fail_closed_completion,
     apply_cra_persist_boundary,
+    cra_fail_closed_completion_error,
+    cra_fail_closed_error_message,
     delivered_waivers_from_trigger,
     load_platform_approvals,
     resolve_persist_authority,
@@ -356,3 +359,40 @@ def test_trigger_gate_override_is_authoritative(
         payload, trigger_payload={"gate": {"fail_on_cvss_gte": 7.0}}
     )
     assert override.invalid
+
+
+_GITHUB_PAT = "github_pat_11ABCDEFG0aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+
+
+@pytest.mark.parametrize("status", ["FAILED", "STOPPED"])
+def test_invalid_cra_keeps_original_failure_and_contract_diagnostics(
+    vulnscan_result: dict[str, Any], status: str
+) -> None:
+    payload = clone(vulnscan_result)
+    del payload["gate"]
+    decision = apply_cra_persist_boundary(payload)
+    assert decision.invalid
+    original = (
+        f"container OOM while cloning https://{_GITHUB_PAT}@github.com/acme/app.git"
+    )
+    failed_status, error = apply_cra_fail_closed_completion(status, original, decision)
+    assert failed_status == "FAILED"
+    assert error is not None
+    assert "container OOM" in error
+    assert "failed contract validation" in error
+    assert _GITHUB_PAT not in error
+    assert "[REDACTED]" in error
+    contract = cra_fail_closed_error_message(decision)
+    assert error == cra_fail_closed_completion_error(decision, original)
+    assert contract in error
+
+
+def test_invalid_cra_without_original_error_is_contract_only(
+    vulnscan_result: dict[str, Any],
+) -> None:
+    payload = clone(vulnscan_result)
+    del payload["gate"]
+    decision = apply_cra_persist_boundary(payload)
+    status, error = apply_cra_fail_closed_completion("SUCCEEDED", None, decision)
+    assert status == "FAILED"
+    assert error == cra_fail_closed_error_message(decision)

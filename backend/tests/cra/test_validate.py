@@ -229,6 +229,30 @@ class TestPartialCoverage:
         required = validate_cra_result(payload, require_coverage=True)
         assert not required.ok
 
+    def test_enumerated_extra_pct_keys_still_range_checked(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        payload = clone(releaseaudit_result)
+        payload["sbom_audit"]["coverage"]["pct_with_license_concluded"] = 101
+        result = validate_cra_result(payload)
+        assert not result.ok
+        assert any(
+            "pct_with_license_concluded" in item and "between 0 and 100" in item
+            for item in result.failures
+        )
+
+    def test_enumerated_pct_keys_still_type_checked(
+        self, sbomaudit_result: dict[str, Any]
+    ) -> None:
+        payload = clone(sbomaudit_result)
+        payload["coverage"]["pct_with_version"] = "full"
+        result = validate_cra_result(payload)
+        assert not result.ok
+        assert any(
+            "pct_with_version" in item and "must be a number" in item
+            for item in result.failures
+        )
+
 
 class TestWaivedFindings:
     def test_agent_asserted_waiver_does_not_pass_gate(

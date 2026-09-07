@@ -406,7 +406,7 @@ def _check_coverage(
     for key in ("pct_with_version", "pct_with_license", "pct_with_identifier") + tuple(
         extra_keys
     ):
-        if key not in coverage or key.startswith("pct_") is False:
+        if key not in coverage:
             continue
         pct = coverage.get(key)
         if not _is_number(pct):

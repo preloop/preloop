@@ -193,6 +193,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Invalid CRA completion keeps the original runner failure**: when a
+  private runner already reported `FAILED` or `STOPPED`, persist-time
+  contract diagnostics are appended instead of replacing that reason.
+  Known credential formats are scrubbed first.
+
+- **Duplicate evidence-identity helpers after a stacked merge** are
+  removed. Artifact cache identity, execution refresh, and terminal
+  receipts keep a single canonical implementation.
+
 - **Ordinary evidence capture ignores non-string transport errors**:
   `evidence_transport_error` is only a failure when it is a non-empty
   string. Truthy mock auto-attributes no longer drop a getter-captured

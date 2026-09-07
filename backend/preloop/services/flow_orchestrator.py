@@ -3088,54 +3088,12 @@ class FlowExecutionOrchestrator:
         self, final_status: str, error_message: Optional[str]
     ) -> tuple[str, Optional[str]]:
         """Deny a successful release when CRA persist validation failed closed."""
-        from preloop.cra.persist import cra_fail_closed_error_message
+        from preloop.cra.persist import apply_cra_fail_closed_completion
 
         decision = getattr(self, "_cra_persist_decision", None)
         if decision is None:
             return final_status, error_message
-        if decision.invalid:
-            return "FAILED", cra_fail_closed_error_message(decision)
-        if decision.fail_closed_status == "FAILED" and final_status == "SUCCEEDED":
-            return "FAILED", error_message or cra_fail_closed_error_message(decision)
-        return final_status, error_message
-
-    def _sync_evidence_artifact_identity(
-        self, artifact_id: Any, archive: bytes | None = None
-    ) -> None:
-        """Drop cached pack bytes when the bound artifact identity changes."""
-        new_id = str(artifact_id) if artifact_id is not None else None
-        current = getattr(self, "_evidence_artifact_id", None)
-        if new_id != current:
-            self._evidence_archive = None
-            self._evidence_artifact_id = new_id
-        if archive is not None:
-            self._evidence_archive = archive
-
-    def _refresh_execution_for_evidence(self) -> Any:
-        """Reload receipt/status committed by the runner completion handler."""
-        execution = self.execution_log
-        if execution is None:
-            return None
-        db = getattr(self, "db", None)
-        refresh = getattr(db, "refresh", None)
-        if callable(refresh):
-            try:
-                refresh(execution)
-            except Exception:
-                pass
-        return execution
-
-    def _terminal_bound_evidence_receipt(self) -> dict[str, Any] | None:
-        """Trusted receipt written at completion; not agent JSON."""
-        from preloop.services.flow_artifacts import execution_is_terminal
-
-        execution = self._refresh_execution_for_evidence()
-        if execution is None or not execution_is_terminal(execution):
-            return None
-        stored = getattr(execution, "evidence_receipt", None)
-        if isinstance(stored, dict) and stored.get("status"):
-            return stored
-        return None
+        return apply_cra_fail_closed_completion(final_status, error_message, decision)
 
     def _sync_evidence_artifact_identity(
         self, artifact_id: Any, archive: bytes | None = None
