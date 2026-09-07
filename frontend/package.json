@@ -61,7 +61,6 @@
     "@vaadin/login": "^24.3.0",
     "@vaadin/password-field": "^24.8.0",
     "@vaadin/progress-bar": "^24.8.0",
-    "@vaadin/router": "^2.0.1",
     "@vaadin/scroller": "^24.8.0",
     "@vaadin/select": "^24.8.0",
     "@vaadin/side-nav": "^24.8.0",

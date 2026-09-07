@@ -1,0 +1,595 @@
+import { expect, waitUntil, oneEvent } from '@open-wc/testing';
+import sinon from 'sinon';
+import {
+  Router,
+  LOCATION_CHANGED,
+  LEGACY_LOCATION_CHANGED,
+  flattenRoutes,
+  normalizePath,
+  type RouterLocation,
+} from './index';
+
+/** Custom elements cannot be undefined, so every fixture gets a fresh tag. */
+let tagSeq = 0;
+function defineTag(prefix: string): string {
+  const name = `${prefix}-${++tagSeq}`;
+  customElements.define(name, class extends HTMLElement {});
+  return name;
+}
+
+describe('router', () => {
+  let outlet: HTMLElement;
+  let router: Router;
+  const startUrl = window.location.pathname + window.location.search;
+
+  beforeEach(() => {
+    outlet = document.createElement('div');
+    document.body.append(outlet);
+    router = new Router(outlet);
+  });
+
+  afterEach(() => {
+    router.unsubscribe();
+    outlet.remove();
+    window.history.replaceState(null, '', startUrl);
+  });
+
+  describe('path compilation', () => {
+    it('normalizes leading, trailing and doubled slashes', () => {
+      expect(normalizePath('console/agents')).to.equal('/console/agents');
+      expect(normalizePath('/console/agents/')).to.equal('/console/agents');
+      expect(normalizePath('//console//agents')).to.equal('/console/agents');
+      expect(normalizePath('')).to.equal('/');
+      expect(normalizePath('/')).to.equal('/');
+    });
+
+    it('treats a child path as relative even when it starts with a slash', () => {
+      // The console's own table mixes both spellings inside /console.
+      const flat = flattenRoutes([
+        {
+          path: '/console',
+          component: 'x-shell',
+          children: [
+            { path: 'cost', component: 'x-cost' },
+            { path: '/agents', component: 'x-agents' },
+          ],
+        },
+      ]);
+      const paths = flat.map((entry) => entry.pattern.source);
+      expect(paths).to.include('^\\/console\\/cost$');
+      expect(paths).to.include('^\\/console\\/agents$');
+    });
+
+    it('emits children before their parent so /console is the index child', () => {
+      const flat = flattenRoutes([
+        {
+          path: '/console',
+          component: 'x-shell',
+          children: [{ path: '', component: 'x-overview' }],
+        },
+      ]);
+      expect(flat[0].chain.at(-1)?.component).to.equal('x-overview');
+      expect(flat[1].chain.at(-1)?.component).to.equal('x-shell');
+    });
+  });
+
+  describe('matching', () => {
+    it('renders the matched component into the outlet', async () => {
+      const tag = defineTag('rt-plain');
+      await router.setRoutes([{ path: '/plain', component: tag }], true);
+      await router.render('/plain');
+      expect(outlet.querySelector(tag)).to.exist;
+    });
+
+    it('captures and decodes :params, and exposes search', async () => {
+      const tag = defineTag('rt-params');
+      let seen: RouterLocation | undefined;
+      await router.setRoutes(
+        [
+          {
+            path: '/things/:id/parts/:partId',
+            action: (context) => {
+              seen = context;
+            },
+            component: tag,
+          },
+        ],
+        true
+      );
+      await router.render('/things/a%20b/parts/7?q=x');
+      expect(seen?.params).to.deep.equal({ id: 'a b', partId: '7' });
+      expect(seen?.search).to.equal('?q=x');
+      expect(seen?.searchParams.get('q')).to.equal('x');
+    });
+
+    it('matches routes in declaration order so (.*) stays a fallback', async () => {
+      const real = defineTag('rt-real');
+      const missing = defineTag('rt-missing');
+      await router.setRoutes(
+        [
+          { path: '/real', component: real },
+          { path: '(.*)', component: missing },
+        ],
+        true
+      );
+      await router.render('/real');
+      expect(outlet.querySelector(real)).to.exist;
+      await router.render('/nothing/here');
+      expect(outlet.querySelector(missing)).to.exist;
+    });
+
+    it('sets location on the rendered element', async () => {
+      const tag = defineTag('rt-loc');
+      await router.setRoutes([{ path: '/loc/:id', component: tag }], true);
+      await router.render('/loc/9');
+      const element = outlet.querySelector(tag) as HTMLElement & {
+        location?: RouterLocation;
+      };
+      expect(element.location?.params.id).to.equal('9');
+      expect(element.location?.pathname).to.equal('/loc/9');
+    });
+  });
+
+  describe('actions and commands', () => {
+    it('renders the element an action returns', async () => {
+      const tag = defineTag('rt-action');
+      await router.setRoutes(
+        [
+          {
+            path: '/action',
+            action: (_context, commands) => {
+              const element = commands.component(tag) as HTMLElement & {
+                src?: string;
+              };
+              element.src = '/content/x.md';
+              return element;
+            },
+          },
+        ],
+        true
+      );
+      await router.render('/action');
+      const element = outlet.querySelector(tag) as HTMLElement & {
+        src?: string;
+      };
+      expect(element.src).to.equal('/content/x.md');
+    });
+
+    it('follows commands.redirect from an action', async () => {
+      const target = defineTag('rt-redirect-target');
+      await router.setRoutes(
+        [
+          {
+            path: '/from',
+            action: (_context, commands) => commands.redirect('/to'),
+          },
+          { path: '/to', component: target },
+        ],
+        true
+      );
+      await router.render('/from');
+      expect(outlet.querySelector(target)).to.exist;
+    });
+
+    it('follows a declarative redirect', async () => {
+      const target = defineTag('rt-decl-target');
+      await router.setRoutes(
+        [
+          { path: '/settings', redirect: '/settings/profile' },
+          { path: '/settings/profile', component: target },
+        ],
+        true
+      );
+      await router.render('/settings');
+      expect(outlet.querySelector(target)).to.exist;
+    });
+
+    it('leaves no history stop on a redirect, so Back does not bounce', async () => {
+      const target = defineTag('rt-history-target');
+      await router.setRoutes(
+        [
+          { path: '/hop', redirect: '/hop/landed' },
+          { path: '/hop/landed', component: target },
+        ],
+        true
+      );
+      const before = window.history.length;
+      await router.render('/hop', { history: 'push' });
+      expect(window.location.pathname).to.equal('/hop/landed');
+      expect(window.history.length).to.equal(before);
+    });
+  });
+
+  describe('guards', () => {
+    it('runs onBeforeEnter before the element is connected', async () => {
+      const tag = `rt-guard-${++tagSeq}`;
+      let connectedWhenGuarded: boolean | undefined;
+      customElements.define(
+        tag,
+        class extends HTMLElement {
+          onBeforeEnter(location: RouterLocation) {
+            connectedWhenGuarded = this.isConnected;
+            this.setAttribute('data-id', location.params.id);
+          }
+        }
+      );
+      await router.setRoutes([{ path: '/guard/:id', component: tag }], true);
+      await router.render('/guard/42');
+      expect(connectedWhenGuarded).to.equal(false);
+      expect(outlet.querySelector(tag)?.getAttribute('data-id')).to.equal('42');
+    });
+
+    it('honours a redirect from onBeforeEnter', async () => {
+      const tag = `rt-guard-redirect-${++tagSeq}`;
+      const target = defineTag('rt-guard-login');
+      customElements.define(
+        tag,
+        class extends HTMLElement {
+          onBeforeEnter(
+            _location: RouterLocation,
+            commands: { redirect(path: string): unknown }
+          ) {
+            return commands.redirect('/guard-login');
+          }
+        }
+      );
+      await router.setRoutes(
+        [
+          { path: '/guarded', component: tag },
+          { path: '/guard-login', component: target },
+        ],
+        true
+      );
+      await router.render('/guarded');
+      expect(outlet.querySelector(target)).to.exist;
+      expect(outlet.querySelector(tag)).to.equal(null);
+    });
+
+    it('runs onBeforeLeave and lets it cancel the navigation', async () => {
+      const leaving = `rt-leave-${++tagSeq}`;
+      const next = defineTag('rt-leave-next');
+      let allow = false;
+      customElements.define(
+        leaving,
+        class extends HTMLElement {
+          onBeforeLeave(
+            _location: RouterLocation,
+            commands: { prevent(): unknown }
+          ) {
+            return allow ? undefined : commands.prevent();
+          }
+        }
+      );
+      await router.setRoutes(
+        [
+          { path: '/stay', component: leaving },
+          { path: '/leave', component: next },
+        ],
+        true
+      );
+      await router.render('/stay');
+      await router.render('/leave');
+      expect(outlet.querySelector(leaving)).to.exist;
+      allow = true;
+      await router.render('/leave');
+      expect(outlet.querySelector(next)).to.exist;
+    });
+
+    it('calls onAfterEnter once the view is in the outlet', async () => {
+      const tag = `rt-after-${++tagSeq}`;
+      let connectedWhenCalled: boolean | undefined;
+      customElements.define(
+        tag,
+        class extends HTMLElement {
+          onAfterEnter() {
+            connectedWhenCalled = this.isConnected;
+          }
+        }
+      );
+      await router.setRoutes([{ path: '/after', component: tag }], true);
+      await router.render('/after');
+      expect(connectedWhenCalled).to.equal(true);
+    });
+  });
+
+  describe('nested outlets', () => {
+    it('renders the child inside the parent element', async () => {
+      const shell = defineTag('rt-shell');
+      const child = defineTag('rt-child');
+      await router.setRoutes(
+        [
+          {
+            path: '/console',
+            component: shell,
+            children: [{ path: 'child', component: child }],
+          },
+        ],
+        true
+      );
+      await router.render('/console/child');
+      expect(outlet.querySelector(`${shell} > ${child}`)).to.exist;
+    });
+
+    it('keeps the shell alive across sibling navigation', async () => {
+      const shell = defineTag('rt-keep-shell');
+      const first = defineTag('rt-keep-a');
+      const second = defineTag('rt-keep-b');
+      await router.setRoutes(
+        [
+          {
+            path: '/console',
+            component: shell,
+            children: [
+              { path: 'a', component: first },
+              { path: 'b', component: second },
+            ],
+          },
+        ],
+        true
+      );
+      await router.render('/console/a');
+      const shellElement = outlet.querySelector(shell);
+      await router.render('/console/b');
+      expect(outlet.querySelector(shell)).to.equal(shellElement);
+      expect(outlet.querySelector(`${shell} > ${second}`)).to.exist;
+      expect(outlet.querySelector(first)).to.equal(null);
+    });
+
+    it('resolves the parent path to its index child', async () => {
+      const shell = defineTag('rt-index-shell');
+      const overview = defineTag('rt-index-overview');
+      await router.setRoutes(
+        [
+          {
+            path: '/console',
+            component: shell,
+            children: [{ path: '', component: overview }],
+          },
+        ],
+        true
+      );
+      await router.render('/console');
+      expect(outlet.querySelector(`${shell} > ${overview}`)).to.exist;
+    });
+
+    it('re-enters the same view with new params without rebuilding it', async () => {
+      const tag = `rt-same-${++tagSeq}`;
+      const seen: string[] = [];
+      customElements.define(
+        tag,
+        class extends HTMLElement {
+          onBeforeEnter(location: RouterLocation) {
+            seen.push(location.params.id);
+          }
+        }
+      );
+      await router.setRoutes([{ path: '/same/:id', component: tag }], true);
+      await router.render('/same/1');
+      const element = outlet.querySelector(tag);
+      await router.render('/same/2');
+      expect(outlet.querySelector(tag)).to.equal(element);
+      expect(seen).to.deep.equal(['1', '2']);
+    });
+  });
+
+  describe('component loading', () => {
+    it('awaits a route load() before creating the element', async () => {
+      const tag = `rt-lazy-${++tagSeq}`;
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const load = sinon.spy(async () => {
+        await pending;
+        customElements.define(tag, class extends HTMLElement {});
+      });
+      await router.setRoutes([{ path: '/lazy', component: tag, load }], true);
+      const navigation = router.render('/lazy');
+      await waitUntil(() => load.called);
+      expect(outlet.querySelector(tag)).to.equal(null);
+      release();
+      await navigation;
+      expect(outlet.querySelector(tag)).to.be.instanceOf(
+        customElements.get(tag)!
+      );
+    });
+
+    it('shows the pending state and then the failure with a retry', async () => {
+      const tag = defineTag('rt-fail');
+      const load = sinon.stub();
+      load.onFirstCall().rejects(new Error('chunk unavailable'));
+      load.onSecondCall().resolves();
+      let retry: (() => void) | undefined;
+      router.setLoadingRenderer({
+        pending: (parent) => {
+          const node = document.createElement('span');
+          node.className = 'pending';
+          parent.replaceChildren(node);
+          return () => node.remove();
+        },
+        failed: (parent, _error, again) => {
+          retry = again;
+          const node = document.createElement('span');
+          node.className = 'failed';
+          parent.replaceChildren(node);
+        },
+      });
+      await router.setRoutes([{ path: '/fail', component: tag, load }], true);
+      await router.render('/fail');
+      expect(outlet.querySelector('.failed')).to.exist;
+      expect(outlet.querySelector(tag)).to.equal(null);
+      retry!();
+      await waitUntil(() => !!outlet.querySelector(tag));
+      expect(load.calledTwice).to.equal(true);
+    });
+
+    it('loads a module once and reuses it on the next visit', async () => {
+      const lazy = defineTag('rt-once');
+      const other = defineTag('rt-once-other');
+      const load = sinon.spy(async () => undefined);
+      await router.setRoutes(
+        [
+          { path: '/once', component: lazy, load },
+          { path: '/other', component: other },
+        ],
+        true
+      );
+      await router.render('/once');
+      await router.render('/other');
+      await router.render('/once');
+      expect(load.calledOnce).to.equal(true);
+    });
+
+    it('does not let a slow chunk overwrite a newer navigation', async () => {
+      const slow = defineTag('rt-slow');
+      const fast = defineTag('rt-fast');
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const load = sinon.spy(() => pending);
+      await router.setRoutes(
+        [
+          { path: '/slow', component: slow, load },
+          { path: '/fast', component: fast },
+        ],
+        true
+      );
+      const stale = router.render('/slow');
+      await waitUntil(() => load.called);
+      await router.render('/fast');
+      release();
+      await stale;
+      expect(outlet.querySelector(fast)).to.exist;
+      expect(outlet.querySelector(slow)).to.equal(null);
+    });
+  });
+
+  describe('anchor interception', () => {
+    /**
+     * Click a link nested in a shadow root and report whether the router
+     * claimed it. A late listener stops the test runner from actually
+     * following whatever the router left alone.
+     */
+    async function clickThroughShadowRoot(href: string, attrs = '') {
+      const host = document.createElement('div');
+      const shadow = host.attachShadow({ mode: 'open' });
+      shadow.innerHTML = `<a href="${href}" ${attrs}><span>go</span></a>`;
+      document.body.append(host);
+      let routed = false;
+      const stopTheBrowser = (event: Event) => {
+        routed = event.defaultPrevented;
+        event.preventDefault();
+      };
+      document.addEventListener('click', stopTheBrowser);
+      shadow.querySelector('span')!.dispatchEvent(
+        new MouseEvent('click', {
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+          button: 0,
+        })
+      );
+      document.removeEventListener('click', stopTheBrowser);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      host.remove();
+      return routed;
+    }
+
+    it('routes an in-app link clicked inside a shadow root', async () => {
+      const tag = defineTag('rt-anchor');
+      await router.setRoutes([{ path: '/anchor', component: tag }], true);
+      expect(await clickThroughShadowRoot('/anchor')).to.equal(true);
+      await waitUntil(() => !!outlet.querySelector(tag));
+      expect(window.location.pathname).to.equal('/anchor');
+    });
+
+    it('leaves external, download, targeted and opted-out links alone', async () => {
+      await router.setRoutes([{ path: '(.*)', component: 'div' }], true);
+      for (const attrs of ['download', 'target="_blank"', 'router-ignore']) {
+        expect(
+          await clickThroughShadowRoot('/elsewhere', attrs),
+          attrs
+        ).to.equal(false);
+      }
+      expect(await clickThroughShadowRoot('https://example.com/x')).to.equal(
+        false
+      );
+    });
+
+    it('leaves a same-page fragment link to the browser', async () => {
+      await router.setRoutes([{ path: '(.*)', component: 'div' }], true);
+      expect(
+        await clickThroughShadowRoot(`${window.location.pathname}#section`)
+      ).to.equal(false);
+    });
+
+    it('scrolls a followed link back to the top of the page', async () => {
+      const tag = defineTag('rt-scroll');
+      const scrollTo = sinon.stub(window, 'scrollTo');
+      try {
+        await router.setRoutes([{ path: '/scrolled', component: tag }], true);
+        await clickThroughShadowRoot('/scrolled');
+        expect(scrollTo.calledWith(0, 0)).to.equal(true);
+      } finally {
+        scrollTo.restore();
+      }
+    });
+  });
+
+  describe('history and events', () => {
+    it('Router.go pushes an entry and popstate resolves it back', async () => {
+      const first = defineTag('rt-go-a');
+      const second = defineTag('rt-go-b');
+      await router.setRoutes(
+        [
+          { path: '/go-a', component: first },
+          { path: '/go-b', component: second },
+        ],
+        true
+      );
+      await router.render('/go-a', { history: 'push' });
+      expect(Router.go('/go-b')).to.equal(true);
+      await waitUntil(() => !!outlet.querySelector(second));
+      expect(window.location.pathname).to.equal('/go-b');
+      window.history.back();
+      await waitUntil(() => !!outlet.querySelector(first), 'back re-renders', {
+        timeout: 2000,
+      });
+      expect(window.location.pathname).to.equal('/go-a');
+    });
+
+    it('fires the location-changed event with the resolved location', async () => {
+      const tag = defineTag('rt-event');
+      await router.setRoutes([{ path: '/evented/:id', component: tag }], true);
+      const fired = oneEvent(window, LOCATION_CHANGED);
+      void router.render('/evented/7');
+      const event = (await fired) as CustomEvent<{ location: RouterLocation }>;
+      expect(event.detail.location.pathname).to.equal('/evented/7');
+      expect(event.detail.location.params.id).to.equal('7');
+    });
+
+    it('still fires the legacy vaadin event name for outside listeners', async () => {
+      const tag = defineTag('rt-legacy-event');
+      await router.setRoutes([{ path: '/legacy', component: tag }], true);
+      const fired = oneEvent(window, LEGACY_LOCATION_CHANGED);
+      void router.render('/legacy');
+      const event = (await fired) as CustomEvent<{ location: RouterLocation }>;
+      expect(event.detail.location.pathname).to.equal('/legacy');
+    });
+
+    it('urlForPath substitutes params and returns an in-app pathname', () => {
+      expect(router.urlForPath('/console/flows/executions')).to.equal(
+        '/console/flows/executions'
+      );
+      expect(
+        router.urlForPath('/console/agents/:agentId', { agentId: 'a 1' })
+      ).to.equal('/console/agents/a%201');
+    });
+
+    it('Router.go reports false when no router is listening', async () => {
+      router.unsubscribe();
+      expect(Router.go('/anywhere')).to.equal(false);
+    });
+  });
+});

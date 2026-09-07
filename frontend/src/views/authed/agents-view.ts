@@ -1,5 +1,5 @@
 import { LitElement, css, html, unsafeCSS, nothing } from 'lit';
-import { Router } from '@vaadin/router';
+import { Router } from '../../router';
 import { styleMap } from 'lit/directives/style-map.js';
 import { customElement, state } from 'lit/decorators.js';
 

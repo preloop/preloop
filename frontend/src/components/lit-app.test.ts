@@ -1,6 +1,6 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
-import { Router } from '@vaadin/router';
+import { Router } from '../router';
 
 import './lit-app';
 

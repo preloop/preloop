@@ -1,7 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
-import { router } from '../router';
-import { Router, type Route } from '@vaadin/router';
+import { router, Router, type Route } from '../router';
 import { withLazyRoutes } from '../lazy-routes';
 import { consoleRouteLoaders } from './console-route-loaders';
 import { getBrandConfig, isSaaS } from '../brand-config';

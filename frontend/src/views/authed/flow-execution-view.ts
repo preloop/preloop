@@ -2,7 +2,7 @@ import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { AnsiUp } from 'ansi_up';
-import { Router } from '@vaadin/router';
+import { Router } from '../../router';
 import DOMPurify from 'dompurify';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 

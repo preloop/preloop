@@ -1,4 +1,4 @@
-import type { Route } from '@vaadin/router';
+import type { Route } from './router';
 
 type ComponentLoaders = Readonly<Record<string, () => Promise<unknown>>>;
 
