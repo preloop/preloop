@@ -3121,9 +3121,9 @@ export class DashboardView extends AuthedElement {
         />
 
         <h2
-          style="font-size: 1.75rem; font-weight: 700; color: var(--sl-color-neutral-900); margin: 0 0 var(--sl-spacing-medium) 0; text-align: center;"
+          style="font-size: var(--console-text-h1); font-weight: 600; letter-spacing: -0.01em; color: var(--sl-color-neutral-900); margin: 0 0 var(--sl-spacing-medium) 0; text-align: center;"
         >
-          Get Started with Preloop
+          Get started with Preloop
         </h2>
 
         <div
