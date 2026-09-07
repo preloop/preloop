@@ -207,6 +207,7 @@ def validate_runner_completion(
 ) -> tuple[str, str | None, dict[str, Any] | None]:
     """Exit zero and an explicit structured verdict are both required for success."""
     from preloop.services.flow_orchestrator import _result_artifact_confirmation
+    from preloop.services.flow_artifacts import sanitize_captured_result
 
     status = str(message.get("status") or "FAILED").upper()
     error = str(message["error"]) if message.get("error") else None
@@ -216,6 +217,8 @@ def validate_runner_completion(
         or len(json.dumps(result).encode()) > MAX_RESULT_BYTES
     ):
         result = None
+    elif result is not None:
+        result = sanitize_captured_result(result)
     if status not in {"SUCCEEDED", "FAILED", "STOPPED"}:
         return "FAILED", "Invalid runner completion status", result
     if status == "SUCCEEDED" and (

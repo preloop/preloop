@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from uuid import UUID
 
 HOST_EXEC_AGENT_TYPE = "cursor"
 HOST_EXEC_COMPLETION_PROTOCOL = "host_exec"
@@ -305,3 +306,46 @@ def finalize_runner_completion(
     if profile:
         return "FAILED", "Invalid durable runner lease protocol", None
     return validate_runner_completion(dict(message), leased_job=dict(pending))
+
+
+def apply_runner_completion_to_execution(
+    db: Any,
+    execution: Any,
+    *,
+    account_id: UUID,
+    status: str,
+    error: str | None,
+    result: dict[str, Any] | None,
+    message: Mapping[str, Any],
+    pending_job: Mapping[str, Any] | None = None,
+) -> None:
+    """Persist terminal status, sanitized result, and trusted evidence outcome.
+
+    WebSocket complete and tests share this path. Agent JSON cannot author
+    ``evidence_upload``; only the top-level completion field is bound.
+    """
+    from preloop.models.crud import crud_flow_execution
+    from preloop.services.flow_artifacts import (
+        bind_terminal_evidence,
+        job_requires_evidence_upload,
+        sanitize_captured_result,
+        trusted_evidence_upload,
+    )
+
+    cleaned = sanitize_captured_result(result) if result is not None else None
+    crud_flow_execution.apply_runner_completion(
+        db,
+        db_obj=execution,
+        status=status,
+        error=error,
+        result=cleaned,
+    )
+    upload = trusted_evidence_upload(message)
+    if upload is None and job_requires_evidence_upload(pending_job):
+        upload = "failed"
+    bind_terminal_evidence(
+        db,
+        account_id=account_id,
+        execution=execution,
+        evidence_upload=upload,
+    )

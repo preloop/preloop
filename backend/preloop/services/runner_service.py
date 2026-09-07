@@ -212,9 +212,16 @@ def persistable_job_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     The live WebSocket push still receives the original payload, including
     ``account_api_token``, for that lease only.
     """
+    from preloop.config import settings
+
     stored = dict(payload)
     for key in _PERSISTED_SECRET_KEYS:
         stored.pop(key, None)
+    if (
+        settings.flow_artifact_direct_upload
+        and stored.get("completion_protocol") != "host_exec"
+    ):
+        stored["evidence_direct_upload"] = True
     return stored
 
 
