@@ -20,8 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   digests and a `kind=evidence` receipt. Hosted and private isolated
   publication can publish the CRA code-repos-plus-compliance-repo topology
   with per-repo receipts; resume keeps branch/base/head history; local
-  commits and partial remotes are not success. Guide:
-  `docs/guide/flows/product-evidence.md`.
+  commits and partial remotes are not success. Optional
+  `git_clone_config.publication_approval` binds a human platform approval
+  to each frozen candidate `(repository, branch, base, head_sha)` before
+  any writer lease is minted. Default flows without that opt-in are
+  unchanged. Guide: `docs/guide/flows/product-evidence.md`.
 
 
 - **Per-flow label-based model routing**: a flow can store optional ordered

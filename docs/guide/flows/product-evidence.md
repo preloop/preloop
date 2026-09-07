@@ -135,16 +135,31 @@ branch/base/expected head/history. Already-published remotes are not
 opened as duplicate pull requests. Adding, removing, or remapping
 constituent repositories on resume is refused.
 
+When `git_clone_config.publication_approval` is `true`, `required`, or
+`require`, a human platform approval must cover every candidate that is
+about to receive a writer lease: repository URL, destination branch,
+base branch, and the frozen head SHA that will be pushed. An approval
+bound only to the original source base does not authorize a later
+candidate head. Unpaired repository and commit lists, swapped
+repo-to-SHA pairings, expired rows, declined rows, and AI-decided rows
+do not authorize. Default flows omit this field and keep existing
+publication behaviour.
+
 Per-repo receipts include the remote URL, PR URL, number, branch, base,
 records, and head SHA. `trusted_publication.complete` is true only when
 every authorized repository published.
 
 ## Dossier manifest
 
-After a run the control plane writes `dossier_manifest`
-(`preloop.cra.dossier_manifest/v1`) onto the execution result. It
-records separate digests for the raw agent result and the annotated
-control-plane result (mapping and publication receipts). Sensitive
-fields are redacted. The dossier does not hash itself. Evidence fields
-come from a `kind=evidence` receipt; missing or unverified evidence is
-reported as not retained.
+The control plane writes `dossier_manifest`
+(`preloop.cra.dossier_manifest/v1`) only when the run has an explicit
+product mapping, isolated publication, a CRA result schema, or a caller
+that supplied product-evidence context. Ordinary flows keep their
+existing result objects and do not load approval or evidence records
+for a dossier.
+
+The dossier records separate digests for the raw agent result and the
+annotated control-plane result (mapping and publication receipts).
+Sensitive fields are redacted. The dossier does not hash itself.
+Evidence fields come from a `kind=evidence` receipt; missing or
+unverified evidence is reported as not retained.

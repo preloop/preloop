@@ -713,6 +713,17 @@ class PrivatePublicationController:
                 policy["issue_number"],
             )
             try:
+                from preloop.services.product_provenance import (
+                    require_human_publication_approval,
+                )
+
+                require_human_publication_approval(
+                    self.db,
+                    flow=_authorized_flow(self.db, policy),
+                    account_id=str(self.account_id),
+                    execution_id=str(execution_id),
+                    candidates=[binding],
+                )
                 async with httpx.AsyncClient() as client:
                     self.writer = await mint_repository_lease(
                         tracker, binding.repository_url, write=True, client=client

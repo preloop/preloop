@@ -29,7 +29,11 @@ from preloop.services.multi_repo_publication import (
     is_multi_repo_policy,
     repository_role,
 )
-from preloop.services.product_provenance import is_git_sha, normalize_repository_url
+from preloop.services.product_provenance import (
+    is_git_sha,
+    normalize_repository_url,
+    require_human_publication_approval,
+)
 from preloop.services.trusted_publisher import (
     PublicationBinding,
     PublicationError,
@@ -549,6 +553,12 @@ async def finish_isolated_publication(
         raise PublicationError(
             "Publication tracker was removed or is no longer authorized"
         )
+    require_human_publication_approval(
+        db,
+        account_id=str(policy.account_id),
+        execution_id=str(policy.execution_id),
+        candidates=[binding],
+    )
     async with httpx.AsyncClient() as client:
         write_lease = None
 

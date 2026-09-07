@@ -20,8 +20,11 @@ from sqlalchemy.orm import Session
 from preloop.config import settings
 from preloop.models.crud import crud_tracker
 from preloop.services.product_provenance import (
+    ProductProvenanceError,
     clone_path_slug,
     normalize_repository_url,
+    publication_candidate,
+    require_human_publication_approval,
 )
 from preloop.services.publication_credentials import (
     mint_repository_lease,
@@ -346,6 +349,12 @@ async def publish_one_isolated_target(
         raise PublicationError(
             "Publication tracker was removed or is no longer authorized"
         )
+    require_human_publication_approval(
+        db,
+        account_id=str(account_id),
+        execution_id=str(policy.execution_id),
+        candidates=[binding],
+    )
     write_lease: PublicationLease | None = None
 
     async def acquire() -> PublicationLease:
@@ -415,18 +424,53 @@ async def finish_multi_repo_isolated_publication(
 
     bundles = read_named_publication_bundles(archive or b"", targets)
     receipts: list[dict[str, Any]] = []
+    pending: list[tuple[IsolatedPublicationTarget, bytes, Any]] = []
+    for target in targets:
+        bundle = bundles[target.slug]
+        try:
+            hosted = await verify(replace(policy, base_sha=target.base_sha), bundle)
+            pending.append((target, bundle, getattr(hosted, "verification", hosted)))
+        except PublicationError as exc:
+            receipts.append(empty_receipt(target, error=str(exc)))
+    if pending:
+        candidates = []
+        try:
+            for target, bundle, verification in pending:
+                head_sha = require_verified_publication(
+                    verification,
+                    execution_id=policy.execution_id,
+                    bundle=bundle,
+                )
+                candidates.append(
+                    publication_candidate(
+                        {
+                            "repository_url": target.repository_url,
+                            "branch": target.branch,
+                            "base": target.base,
+                            "head_sha": head_sha,
+                        }
+                    )
+                )
+            require_human_publication_approval(
+                db,
+                account_id=str(policy.account_id),
+                execution_id=str(policy.execution_id),
+                candidates=candidates,
+            )
+        except (PublicationError, ProductProvenanceError) as exc:
+            for target, _, _ in pending:
+                receipts.append(empty_receipt(target, error=str(exc)))
+            pending = []
     async with httpx.AsyncClient() as client:
-        for target in targets:
-            bundle = bundles[target.slug]
+        for target, bundle, verification in pending:
             try:
-                hosted = await verify(replace(policy, base_sha=target.base_sha), bundle)
                 result = await publish_one_isolated_target(
                     db=db,
                     policy=policy,
                     target=target,
                     bundle=bundle,
                     agent_result=agent_result,
-                    verification=getattr(hosted, "verification", hosted),
+                    verification=verification,
                     client=client,
                 )
                 receipts.append(published_receipt(target, result))

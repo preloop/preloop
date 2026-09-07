@@ -628,27 +628,113 @@ def publication_approval_required(config: Mapping[str, Any] | None) -> bool:
     return value in {True, "required", "require"}
 
 
+@dataclass(frozen=True)
+class PublicationCandidate:
+    """One frozen destination that a writer lease would push.
+
+    ``head_sha`` is the verified candidate, not the original source base.
+    """
+
+    repository_url: str
+    branch: str
+    base: str
+    head_sha: str
+
+    def key(self) -> tuple[str, str, str, str]:
+        """Exact (repo, branch, base, head) tuple used for approval matching."""
+        return (
+            normalize_repository_url(self.repository_url),
+            self.branch.strip(),
+            self.base.strip(),
+            _require_git_sha(self.head_sha),
+        )
+
+
+def publication_candidate(value: Any) -> PublicationCandidate:
+    """Normalize a frozen binding, mapping, or candidate into one tuple."""
+    if isinstance(value, PublicationCandidate):
+        return value
+    if isinstance(value, Mapping):
+        url = value.get("repository_url") or value.get("remote") or ""
+        branch = str(value.get("branch") or "").strip()
+        base = str(value.get("base") or "").strip()
+        head = value.get("head_sha") or value.get("sha") or value.get("commit") or ""
+    else:
+        url = getattr(value, "repository_url", "") or getattr(value, "remote", "")
+        branch = str(getattr(value, "branch", "") or "").strip()
+        base = str(getattr(value, "base", "") or "").strip()
+        head = (
+            getattr(value, "head_sha", None)
+            or getattr(value, "sha", None)
+            or getattr(value, "commit", None)
+            or ""
+        )
+    if not branch or not base:
+        raise ProductProvenanceError(
+            "Publication approval cannot be bound without branch and base"
+        )
+    return PublicationCandidate(
+        repository_url=normalize_repository_url(str(url)),
+        branch=branch,
+        base=base,
+        head_sha=_require_git_sha(head),
+    )
+
+
+def _approved_candidate_keys(args: Mapping[str, Any]) -> set[tuple[str, str, str, str]]:
+    """Exact candidate tuples from one approval. Unpaired repo/SHA lists never match."""
+    raw: Any = None
+    for key in ("candidates", "targets", "bindings"):
+        value = args.get(key)
+        if isinstance(value, list) and value:
+            raw = value
+            break
+    if not isinstance(raw, list):
+        return set()
+    keys: set[tuple[str, str, str, str]] = set()
+    for item in raw:
+        try:
+            keys.add(publication_candidate(item).key())
+        except (ProductProvenanceError, MismatchedProductMappingError, TypeError):
+            return set()
+    return keys
+
+
 def authorize_publication_decision(
     records: Sequence[Any],
     *,
     required: bool,
-    repository_urls: Sequence[str],
-    commits: Sequence[str],
+    candidates: Sequence[Any] = (),
     action: str = "isolated_publication",
     now: datetime | None = None,
+    repository_urls: Sequence[str] | None = None,
+    commits: Sequence[str] | None = None,
 ) -> None:
-    """Refuse publication unless a human approval matches targets/action/commits.
+    """Refuse publication unless a human approval covers each candidate tuple.
 
+    Bindings are (repository, branch, base, head_sha). Separate repository
+    and commit sets are not authority: they would allow swapping pairings.
     Unknown, missing, expired, declined, AI-decided, or unrelated rows deny
-    when ``required`` is true. They never authorize.
+    when ``required`` is true. They never authorize. ``repository_urls`` /
+    ``commits`` are rejected leftovers; they cannot authorize a write.
     """
     if not required:
         return
-    wanted_urls = {normalize_repository_url(url) for url in repository_urls}
-    wanted_commits = {_require_git_sha(sha) for sha in commits}
-    if not wanted_urls or not wanted_commits:
+    if repository_urls is not None or commits is not None:
         raise ProductProvenanceError(
-            "Publication approval cannot be bound without exact repository and commit scope"
+            "Publication approval cannot use unpaired repository and commit sets"
+        )
+    try:
+        wanted = {publication_candidate(item).key() for item in candidates}
+    except (ProductProvenanceError, MismatchedProductMappingError) as exc:
+        raise ProductProvenanceError(
+            "Publication approval cannot be bound without exact "
+            "repository, branch, base, and head scope"
+        ) from exc
+    if not wanted or any(not item[1] or not item[2] for item in wanted):
+        raise ProductProvenanceError(
+            "Publication approval cannot be bound without exact "
+            "repository, branch, base, and head scope"
         )
     moment = now or datetime.now(timezone.utc)
     for record in records:
@@ -672,21 +758,97 @@ def authorize_publication_decision(
         ).strip()
         if named not in {action, "publish", "isolated_publication"}:
             continue
-        raw_repos = args.get("repositories") or args.get("repository_urls") or []
-        raw_commits = args.get("commits") or args.get("head_shas") or []
-        if not isinstance(raw_repos, list) or not isinstance(raw_commits, list):
-            continue
-        try:
-            scoped_urls = {normalize_repository_url(str(item)) for item in raw_repos}
-            scoped_commits = {_require_git_sha(item) for item in raw_commits}
-        except (ProductProvenanceError, MismatchedProductMappingError):
-            continue
-        if scoped_urls == wanted_urls and scoped_commits == wanted_commits:
+        approved = _approved_candidate_keys(args)
+        if wanted <= approved:
             return
     raise ProductProvenanceError(
         "Publication requires a human platform approval bound to these "
-        "repositories, commits, and action"
+        "repositories, branches, bases, heads, and action"
     )
+
+
+def enforce_saved_publication_approval(
+    db: Any,
+    *,
+    flow: Any = None,
+    account_id: str,
+    execution_id: str,
+    candidates: Sequence[Any],
+    action: str = "isolated_publication",
+) -> None:
+    """Apply saved ``git_clone_config.publication_approval`` before a write lease.
+
+    Default flows without the opt-in are unchanged. When required, a missing
+    flow or unpaired/expired/denied/AI approval refuses the write.
+    """
+    from sqlalchemy.orm import Session
+
+    from preloop.models.crud import (
+        crud_approval_request,
+        crud_flow,
+        crud_flow_execution,
+    )
+
+    if flow is None and isinstance(db, Session):
+        execution = crud_flow_execution.get(
+            db, id=execution_id, account_id=str(account_id)
+        )
+        if execution is not None:
+            flow = crud_flow.get(
+                db, id=str(execution.flow_id), account_id=str(account_id)
+            )
+    config: Mapping[str, Any] | None = None
+    if flow is not None:
+        raw = getattr(flow, "git_clone_config", None)
+        if isinstance(raw, dict):
+            config = raw
+        elif raw is not None and hasattr(raw, "model_dump"):
+            dumped = raw.model_dump()
+            if isinstance(dumped, dict):
+                config = dumped
+    if not publication_approval_required(config):
+        return
+    if not isinstance(db, Session) or flow is None:
+        raise ProductProvenanceError(
+            "Publication requires a human platform approval bound to these "
+            "repositories, branches, bases, heads, and action"
+        )
+    records = crud_approval_request.get_multi_by_execution(
+        db,
+        execution_id=str(execution_id),
+        account_id=str(getattr(flow, "account_id", account_id)),
+    )
+    authorize_publication_decision(
+        records,
+        required=True,
+        candidates=candidates,
+        action=action,
+    )
+
+
+def require_human_publication_approval(
+    db: Any,
+    *,
+    flow: Any = None,
+    account_id: str,
+    execution_id: str,
+    candidates: Sequence[Any],
+    action: str = "isolated_publication",
+) -> None:
+    """Same as ``enforce_saved_publication_approval``, as a publication error."""
+    from preloop.services.trusted_publisher import PublicationError
+
+    try:
+        enforce_saved_publication_approval(
+            db,
+            flow=flow,
+            account_id=str(account_id),
+            execution_id=str(execution_id),
+            candidates=candidates,
+            action=action,
+        )
+    except ProductProvenanceError as exc:
+        raise PublicationError(str(exc)) from exc
 
 
 def publication_approval_allows(

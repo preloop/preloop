@@ -16,6 +16,7 @@ from preloop.services.product_provenance import (
     MismatchedProductMappingError,
     PRODUCT_PROVENANCE_SCHEMA,
     ProductProvenanceError,
+    PublicationCandidate,
     RuntimeProvenanceFacts,
     UnauthorizedProductMappingError,
     authorize_publication_decision,
@@ -181,23 +182,25 @@ def test_single_repo_legacy_mapping_may_be_unverified() -> None:
     assert record.repositories[0].sha_status == "declared_unverified"
 
 
-def test_expired_and_unrelated_approvals_do_not_authorize() -> None:
-    from datetime import datetime, timedelta, timezone
+def _candidate(
+    url: str,
+    sha: str,
+    *,
+    branch: str = "preloop/change",
+    base: str = "main",
+) -> dict[str, str]:
+    return {
+        "repository_url": url,
+        "branch": branch,
+        "base": base,
+        "head_sha": sha,
+    }
+
+
+def _approval(*candidates: dict[str, str], **overrides: object) -> object:
     from types import SimpleNamespace
 
-    expired = SimpleNamespace(
-        status="approved",
-        decided_by_ai=False,
-        auto_approved_reason=None,
-        expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
-        tool_name="isolated_publication",
-        tool_args={
-            "action": "isolated_publication",
-            "repositories": [FIRMWARE],
-            "commits": [SHA_A],
-        },
-    )
-    unrelated = SimpleNamespace(
+    body = dict(
         status="approved",
         decided_by_ai=False,
         auto_approved_reason=None,
@@ -205,43 +208,117 @@ def test_expired_and_unrelated_approvals_do_not_authorize() -> None:
         tool_name="isolated_publication",
         tool_args={
             "action": "isolated_publication",
-            "repositories": [APP],
-            "commits": [SHA_B],
+            "candidates": list(candidates),
         },
     )
+    body.update(overrides)
+    return SimpleNamespace(**body)
+
+
+def test_expired_and_unrelated_approvals_do_not_authorize() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    expired = _approval(
+        _candidate(FIRMWARE, SHA_A),
+        expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+    )
+    unrelated = _approval(_candidate(APP, SHA_B))
     with pytest.raises(ProductProvenanceError, match="human platform approval"):
         authorize_publication_decision(
             [expired, unrelated],
             required=True,
-            repository_urls=[FIRMWARE],
-            commits=[SHA_A],
+            candidates=[_candidate(FIRMWARE, SHA_A)],
         )
     assert publication_approval_required({"publication_approval": True}) is True
 
 
 def test_denied_publication_approval_refuses() -> None:
-    from types import SimpleNamespace
+    with pytest.raises(ProductProvenanceError, match="human platform approval"):
+        authorize_publication_decision(
+            [_approval(_candidate(FIRMWARE, SHA_A), status="declined")],
+            required=True,
+            candidates=[_candidate(FIRMWARE, SHA_A)],
+        )
 
+
+def test_source_base_approval_does_not_cover_changed_head() -> None:
+    with pytest.raises(ProductProvenanceError, match="human platform approval"):
+        authorize_publication_decision(
+            [_approval(_candidate(FIRMWARE, SHA_A))],
+            required=True,
+            candidates=[_candidate(FIRMWARE, SHA_B)],
+        )
+
+
+def test_swapped_repo_sha_pairs_do_not_authorize() -> None:
     with pytest.raises(ProductProvenanceError, match="human platform approval"):
         authorize_publication_decision(
             [
-                SimpleNamespace(
-                    status="declined",
-                    decided_by_ai=False,
-                    auto_approved_reason=None,
-                    expires_at=None,
-                    tool_name="isolated_publication",
-                    tool_args={
-                        "action": "isolated_publication",
-                        "repositories": [FIRMWARE],
-                        "commits": [SHA_A],
-                    },
+                _approval(
+                    _candidate(FIRMWARE, SHA_B),
+                    _candidate(APP, SHA_A),
                 )
             ],
             required=True,
-            repository_urls=[FIRMWARE],
-            commits=[SHA_A],
+            candidates=[
+                _candidate(FIRMWARE, SHA_A),
+                _candidate(APP, SHA_B),
+            ],
         )
+
+
+def test_unpaired_repository_and_commit_sets_cannot_authorize() -> None:
+    from types import SimpleNamespace
+
+    unpaired = SimpleNamespace(
+        status="approved",
+        decided_by_ai=False,
+        auto_approved_reason=None,
+        expires_at=None,
+        tool_name="isolated_publication",
+        tool_args={
+            "action": "isolated_publication",
+            "repositories": [FIRMWARE, APP],
+            "commits": [SHA_A, SHA_B],
+        },
+    )
+    with pytest.raises(
+        ProductProvenanceError, match="unpaired|human platform approval"
+    ):
+        authorize_publication_decision(
+            [unpaired],
+            required=True,
+            repository_urls=[FIRMWARE, APP],
+            commits=[SHA_A, SHA_B],
+        )
+    with pytest.raises(ProductProvenanceError, match="human platform approval"):
+        authorize_publication_decision(
+            [unpaired],
+            required=True,
+            candidates=[
+                _candidate(FIRMWARE, SHA_A),
+                _candidate(APP, SHA_B),
+            ],
+        )
+
+
+def test_approval_covers_remaining_partial_resume_candidates() -> None:
+    authorize_publication_decision(
+        [_approval(_candidate(FIRMWARE, SHA_A), _candidate(APP, SHA_B))],
+        required=True,
+        candidates=[_candidate(APP, SHA_B)],
+    )
+    record = PublicationCandidate(
+        repository_url=APP,
+        branch="preloop/change",
+        base="main",
+        head_sha=SHA_B,
+    )
+    authorize_publication_decision(
+        [_approval(_candidate(FIRMWARE, SHA_A), _candidate(APP, SHA_B))],
+        required=True,
+        candidates=[record],
+    )
 
 
 def test_agent_written_approval_id_is_not_authority() -> None:

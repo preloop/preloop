@@ -4854,52 +4854,33 @@ class FlowExecutionOrchestrator:
         except ProductProvenanceError as exc:
             raise PublicationError(str(exc)) from exc
 
-    def _authorize_product_publication(self, provenance: Any) -> None:
-        """Bind a human approval to exact targets/commits when the flow requires it."""
-        from preloop.models.crud import crud_approval_request
-        from preloop.services.multi_repo_publication import policy_targets
+    def _product_evidence_opt_in(
+        self,
+        agent_result: Dict[str, Any] | None = None,
+        *,
+        provenance: Any = None,
+        publication: Dict[str, Any] | None = None,
+    ) -> bool:
+        """Dossier and approval reads only for mapping, CRA, or explicit context."""
+        if provenance is not None or publication:
+            return True
+        if getattr(self, "_isolated_publication_policy", None) is not None:
+            return True
         from preloop.services.product_provenance import (
-            ProductProvenanceError,
-            authorize_publication_decision,
-            publication_approval_required,
+            extract_product_provenance_payload,
         )
-        from preloop.services.trusted_publisher import PublicationError
 
-        flow = getattr(self, "flow", None)
-        if flow is None:
-            return
-        config = (
-            flow.git_clone_config if isinstance(flow.git_clone_config, dict) else {}
-        )
-        if not publication_approval_required(config):
-            return
-        policy = getattr(self, "_isolated_publication_policy", None)
-        targets = policy_targets(policy) if policy is not None else ()
-        urls = [target.repository_url for target in targets]
-        commits = []
-        if provenance is not None:
-            commits = [repo.sha for repo in provenance.repositories]
-        elif targets:
-            commits = [target.base_sha for target in targets if target.base_sha]
-        execution_id = str(
-            getattr(self, "execution_id", None)
-            or getattr(getattr(self, "execution_log", None), "id", "")
-            or ""
-        )
-        records = crud_approval_request.get_multi_by_execution(
-            self.db,
-            execution_id=execution_id,
-            account_id=str(flow.account_id),
-        )
-        try:
-            authorize_publication_decision(
-                records,
-                required=True,
-                repository_urls=urls,
-                commits=commits,
-            )
-        except ProductProvenanceError as exc:
-            raise PublicationError(str(exc)) from exc
+        if extract_product_provenance_payload(
+            getattr(self, "trigger_event_data", None)
+        ):
+            return True
+        raw = agent_result.get("result") if isinstance(agent_result, dict) else None
+        if isinstance(raw, dict) and str(raw.get("schema") or "").startswith(
+            "preloop.cra."
+        ):
+            return True
+        context = getattr(self, "_product_evidence_context", None)
+        return isinstance(context, dict) and bool(context.get("product_evidence"))
 
     def _attach_product_evidence_records(
         self,
@@ -4921,6 +4902,10 @@ class FlowExecutionOrchestrator:
         )
 
         if getattr(self, "flow", None) is None:
+            return
+        if not self._product_evidence_opt_in(
+            agent_result, provenance=provenance, publication=publication
+        ):
             return
         raw_result = strip_control_plane_result(dict(agent_result.get("result") or {}))
         result = dict(raw_result)
@@ -4967,6 +4952,8 @@ class FlowExecutionOrchestrator:
 
     async def _finish_isolated_publication(self, agent_result: Dict[str, Any]) -> None:
         """Run trusted publication after runtime cleanup; failure changes status."""
+        if not self._product_evidence_opt_in(agent_result):
+            return
         reported_result = agent_result.get("result")
         if isinstance(reported_result, dict):
             reported_result = dict(reported_result)
@@ -4983,7 +4970,6 @@ class FlowExecutionOrchestrator:
                 require_observed=getattr(self, "_isolated_publication_policy", None)
                 is not None
             )
-            self._authorize_product_publication(provenance)
         except PublicationError as exc:
             if agent_result.get("status") == "SUCCEEDED":
                 agent_result["status"] = "FAILED"
