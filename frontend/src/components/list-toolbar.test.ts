@@ -2,6 +2,7 @@ import { expect, fixture, html, oneEvent } from '@open-wc/testing';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 
 import './list-toolbar.ts';
+import './list-selection.ts';
 import type { ListToolbar } from './list-toolbar';
 
 describe('list-toolbar', () => {
@@ -154,6 +155,40 @@ describe('list-toolbar', () => {
     const element = await render();
     const count = element.querySelector('[slot="count"]');
     expect(count?.textContent?.trim()).to.equal('2 trackers');
+  });
+
+  it('hands the row to the bulk slot while selecting, at the same height', async () => {
+    const element = await fixture<ListToolbar>(html`
+      <list-toolbar searchPlaceholder="Search agents" style="width: 800px;">
+        <list-bulk-bar
+          slot="bulk"
+          docked
+          .count=${0}
+          .actions=${[{ id: 'pause', label: 'Pause' }]}
+        ></list-bulk-bar>
+      </list-toolbar>
+    `);
+    await element.updateComplete;
+    const height = () => element.getBoundingClientRect().height;
+    const idle = height();
+
+    const bar = element.querySelector<HTMLElement & { count: number }>(
+      'list-bulk-bar'
+    )!;
+    bar.count = 3;
+    element.selecting = true;
+    await element.updateComplete;
+
+    expect(height(), 'the toolbar row keeps its height').to.equal(idle);
+    const search = element.shadowRoot!.querySelector('sl-input.search-input')!;
+    expect(getComputedStyle(search).visibility).to.equal('hidden');
+    expect(getComputedStyle(bar).visibility).to.equal('visible');
+
+    element.selecting = false;
+    bar.count = 0;
+    await element.updateComplete;
+    expect(height(), 'and gets it back on clear').to.equal(idle);
+    expect(getComputedStyle(search).visibility).to.equal('visible');
   });
 
   it('renders canvas in the same switcher when the page asks for it', async () => {

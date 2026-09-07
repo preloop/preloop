@@ -55,6 +55,13 @@ export class ResourceActions extends LitElement {
   /** Render all actions behind the overflow menu, useful inside clickable cards. */
   @property({ type: Boolean, attribute: 'menu-only' }) menuOnly = false;
 
+  /**
+   * Button size, passed straight to Shoelace. Medium is the row and detail
+   * page default; the bulk bar asks for small so a row of actions fits inside
+   * the toolbar it takes over without making that row taller.
+   */
+  @property({ type: String }) size: 'small' | 'medium' | 'large' = 'medium';
+
   /** When false, always show every action instead of collapsing into overflow. */
   @property({ type: Boolean, attribute: 'collapse-overflow' })
   collapseOverflow = true;
@@ -169,6 +176,8 @@ export class ResourceActions extends LitElement {
     const button = html`
       <sl-button
         class=${action.separated ? 'separated' : ''}
+        data-action=${action.id}
+        size=${this.size}
         variant=${action.variant || 'default'}
         ?outline=${action.outline}
         ?disabled=${action.disabled}
@@ -209,6 +218,7 @@ export class ResourceActions extends LitElement {
     return html`
       <sl-menu-item
         class=${classes}
+        data-action=${action.id}
         ?disabled=${action.disabled}
         @click=${() => {
           if (action.href) {
@@ -310,6 +320,7 @@ export class ResourceActions extends LitElement {
                 <sl-dropdown placement="bottom-start">
                   <sl-button
                     slot="trigger"
+                    size=${this.size}
                     variant="default"
                     ?caret=${!this.menuOnly}
                     aria-label="Resource actions"
