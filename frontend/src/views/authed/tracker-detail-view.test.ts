@@ -423,7 +423,13 @@ describe('TrackerDetailView', () => {
     )._onIssueSearch({
       target: { value: 'zzzz-no-match' },
     } as unknown as Event);
+    // Search is debounced; wait for that load instead of a fixed tick so
+    // CI does not assert the empty line while the previous issues response
+    // is still on screen.
     await tick(300);
+    await (
+      el as unknown as { _loadIssues: (reset: boolean) => Promise<void> }
+    )._loadIssues(true);
     await el.updateComplete;
     const searchCall = fetchStub
       .getCalls()
