@@ -91,12 +91,27 @@ interface RoutedElement extends HTMLElement {
   ) => unknown;
 }
 
+/** Where a pending or failed route module gets drawn. */
+export interface LoadingSlot {
+  /** The element whose children the route was about to become. */
+  parent: Element;
+  /**
+   * True when `parent` is the router outlet itself, so there is no shell
+   * around it paying the page padding.
+   */
+  atOutlet: boolean;
+}
+
 /** How the router should render a pending or failed `Route.load()`. */
 export interface LoadingRenderer {
-  /** Show that a chunk is on the way. Returns a teardown function. */
-  pending(parent: Element): () => void;
-  /** Render the failure with a way to try again. */
-  failed(parent: Element, error: unknown, retry: () => void): void;
+  /**
+   * Show that a chunk is on the way. Called as soon as the wait starts;
+   * deciding that a short wait deserves no UI at all is the renderer's job.
+   * Returns a teardown function.
+   */
+  pending(slot: LoadingSlot): () => void;
+  /** Render the failure. A route that never arrived must not read as blank. */
+  failed(slot: LoadingSlot, error: unknown): void;
 }
 
 /** A route path compiled to a matcher, with the chain that produced it. */
@@ -439,7 +454,10 @@ export class Router {
       if (reusable) {
         element = this.#elements[level];
       } else if (!element && route.component) {
-        const chunk = await this.#loadComponent(route, parent, target);
+        const chunk = await this.#loadComponent(route, target, {
+          parent,
+          atOutlet: parent === this.#outlet,
+        });
         if (chunk === 'failed') return { stale: true };
         if (renderId !== this.#renderId) return { stale: true };
         element = document.createElement(route.component) as RoutedElement;
@@ -475,29 +493,31 @@ export class Router {
    */
   async #loadComponent(
     route: Route,
-    parent: Element,
-    target: { pathname: string; search: string; hash: string }
+    target: { pathname: string; search: string; hash: string },
+    slot: LoadingSlot
   ): Promise<'ok' | 'failed'> {
     if (!route.load) return 'ok';
-    const cached = this.#loaded.get(route);
-    const pending = cached ?? route.load();
+    const pending = this.#loaded.get(route) ?? route.load();
     this.#loaded.set(route, pending);
-    const stopPending = this.#loading?.pending(parent);
+    const stopPending = this.#loading?.pending(slot);
     try {
       await pending;
       return 'ok';
     } catch (error) {
-      // A failed chunk is usually a stale index against a redeployed build.
-      // Offer the retry in place; a blank outlet reads as a broken app.
+      // A failed chunk is usually a stale asset hash against a build that has
+      // since been redeployed. Offer the retry in place: a blank outlet reads
+      // as a broken app. The rejected promise must not stay cached, or the
+      // retry would replay the same failure without asking the network.
       this.#loaded.delete(route);
       console.error(
         `Failed to load route module for ${target.pathname}`,
         error
       );
-      if (!this.#loading) return 'failed';
-      this.#loading.failed(parent, error, () => {
-        void this.render(target, { history: 'none' });
-      });
+      // Without a renderer there is nothing to show, so the caller gets the
+      // error instead of a silently empty outlet.
+      if (!this.#loading) throw error;
+      stopPending?.();
+      this.#loading.failed(slot, error);
       return 'failed';
     } finally {
       stopPending?.();

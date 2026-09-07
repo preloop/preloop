@@ -68,8 +68,10 @@ describe('router', () => {
           children: [{ path: '', component: 'x-overview' }],
         },
       ]);
-      expect(flat[0].chain.at(-1)?.component).to.equal('x-overview');
-      expect(flat[1].chain.at(-1)?.component).to.equal('x-shell');
+      const leafOf = (index: number) =>
+        flat[index].chain[flat[index].chain.length - 1].component;
+      expect(leafOf(0)).to.equal('x-overview');
+      expect(leafOf(1)).to.equal('x-shell');
     });
   });
 
@@ -394,21 +396,21 @@ describe('router', () => {
       );
     });
 
-    it('shows the pending state and then the failure with a retry', async () => {
+    it('shows the pending state and then hands the failure to the renderer', async () => {
       const tag = defineTag('rt-fail');
       const load = sinon.stub();
       load.onFirstCall().rejects(new Error('chunk unavailable'));
       load.onSecondCall().resolves();
-      let retry: (() => void) | undefined;
+      const slots: boolean[] = [];
       router.setLoadingRenderer({
-        pending: (parent) => {
+        pending: ({ parent, atOutlet }) => {
+          slots.push(atOutlet);
           const node = document.createElement('span');
           node.className = 'pending';
           parent.replaceChildren(node);
           return () => node.remove();
         },
-        failed: (parent, _error, again) => {
-          retry = again;
+        failed: ({ parent }) => {
           const node = document.createElement('span');
           node.className = 'failed';
           parent.replaceChildren(node);
@@ -416,11 +418,15 @@ describe('router', () => {
       });
       await router.setRoutes([{ path: '/fail', component: tag, load }], true);
       await router.render('/fail');
+      // The outlet says something rather than going blank, and the view that
+      // could not be built is not left half-created.
       expect(outlet.querySelector('.failed')).to.exist;
       expect(outlet.querySelector(tag)).to.equal(null);
-      retry!();
-      await waitUntil(() => !!outlet.querySelector(tag));
+      // The rejection is not cached: coming back to the route asks again.
+      await router.render('/fail');
       expect(load.calledTwice).to.equal(true);
+      expect(outlet.querySelector(tag)).to.exist;
+      expect(slots).to.deep.equal([true, true]);
     });
 
     it('loads a module once and reuses it on the next visit', async () => {

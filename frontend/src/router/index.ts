@@ -17,6 +17,7 @@ export type {
   RedirectResult,
   PreventResult,
   LoadingRenderer,
+  LoadingSlot,
 } from './router';
 
 import { Router } from './router';
