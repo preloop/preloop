@@ -149,8 +149,11 @@ export class ConsoleHeader extends LitElement {
    * A fetch that started before the resolution can still answer with the row
    * as `pending` (the server read it before the decision landed), and
    * applying that answer would resurrect a row the bell has already dropped.
-   * An id is forgotten again as soon as a fetch that started after its
-   * resolution has answered, so this cannot grow with the session.
+   * Ids are forgotten once a fetch that started after the resolution has
+   * answered. That fetch only runs on initial load, focus, visibility, or
+   * websocket reconnect, so a tab that stays focused holds one entry per
+   * resolution until then. The bell list and badge do not wait on this map:
+   * the websocket drops a handled row immediately.
    */
   private resolvedApprovals: Map<string, number> = new Map();
 

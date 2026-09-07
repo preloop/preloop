@@ -675,21 +675,28 @@ describe('console-header approval deadlines', () => {
     localStorage.removeItem('accessToken');
   });
 
-  async function mount(): Promise<void> {
-    el = await fixture<ConsoleHeader>(html`<console-header></console-header>`);
-    // Fetch + json() are native promises. Flush them without advancing
-    // expiry timers (those are at least 1ms).
+  /**
+   * Fetch + json() are native promises, so a single tickAsync(0) can fire
+   * the coalesced refresh timer without the list answer landing. Flush
+   * microtasks without advancing expiry timers (those are at least 1ms).
+   */
+  async function flushApprovalReads(count: number): Promise<void> {
     for (let i = 0; i < 25; i++) {
       await Promise.resolve();
       await clock.tickAsync(0);
       await el.updateComplete;
-      if (approvalReads >= 1) {
+      if (approvalReads >= count) {
         await Promise.resolve();
         await clock.tickAsync(0);
         await el.updateComplete;
-        break;
+        return;
       }
     }
+  }
+
+  async function mount(): Promise<void> {
+    el = await fixture<ConsoleHeader>(html`<console-header></console-header>`);
+    await flushApprovalReads(1);
   }
 
   function names(): string[] {
@@ -811,10 +818,7 @@ describe('console-header approval deadlines', () => {
     window.dispatchEvent(new Event('focus'));
     changeState(ConnectionState.CONNECTED);
     window.dispatchEvent(new Event('focus'));
-    await clock.tickAsync(0);
-    await el.updateComplete;
-    await clock.tickAsync(0);
-    await el.updateComplete;
+    await flushApprovalReads(2);
     expect(names()).to.deep.equal(['new-request']);
     expect(badge()).to.equal('1');
     expect(approvalReads).to.equal(2);
@@ -831,8 +835,7 @@ describe('console-header approval deadlines', () => {
     approvals = [approval('visible-request', 10_000)];
     visibility.get(() => 'visible');
     document.dispatchEvent(new Event('visibilitychange'));
-    await clock.tickAsync(0);
-    await el.updateComplete;
+    await flushApprovalReads(2);
     expect(names()).to.deep.equal(['visible-request']);
     expect(badge()).to.equal('1');
     expect(approvalReads).to.equal(2);
@@ -843,8 +846,7 @@ describe('console-header approval deadlines', () => {
     await mount();
     approvals = [];
     changeState(ConnectionState.CONNECTED);
-    await clock.tickAsync(0);
-    await el.updateComplete;
+    await flushApprovalReads(2);
     expect(names()).to.deep.equal([]);
     expect(badge()).to.equal(undefined);
     expect(approvalReads).to.equal(2);
@@ -862,8 +864,7 @@ describe('console-header approval deadlines', () => {
     await clock.tickAsync(2_000);
     expect(approvalReads).to.equal(1);
     document.body.append(el);
-    await clock.tickAsync(0);
-    await el.updateComplete;
+    await flushApprovalReads(2);
     expect(names()).to.deep.equal([]);
     expect(badge()).to.equal(undefined);
     expect(approvalReads).to.equal(2);
