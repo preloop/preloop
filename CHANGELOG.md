@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CRA runtime result.json contracts and fail-closed CI gate**: versioned
+  validation for presets 004–007 at the hosted and private-runner persist
+  boundary, contradiction reconciliation, and `python -m preloop.cra.ci`.
+  Default release policy is a clean pass; `pass_with_findings` is explicit;
+  fail and unknown verdicts cannot be accepted. Evidence archives use the
+  durable size caps, gzip/tar integrity, digest binding, and content
+  fingerprints so a packed rejected decision cannot bind to an accepted
+  API result when envelope/SBOM fields match. Known controller
+  publication/provenance/dossier/verification annotations are ignored;
+  unknown agent fields are compared. Claimed approvals and waivers fail
+  closed when platform authority is unavailable; due-diligence matching
+  requires an exact human `request_approval` operation (AI-judged and
+  auto-approved rows are rejected). Interactive release-audit waivers
+  bind stored `ask_user` answers (exact finding ids and human reason);
+  ambiguous `request_approval` prose, including `waive_finding`, is
+  not a waiver. KEV/CVSS gate thresholds come
+  from trigger/CI `gate.fail_on_kev` / `gate.fail_on_cvss_gte` (default
+  KEV or CVSS >= 9.0), never from model-authored `gate.policy` text.
+  Webhook URLs are redacted in errors and the webhook POST is
+  not retried. Guide: `docs/guide/flows/security-audit-presets.md`.
+
 - **Durable evidence transport**: hosted containers and private Docker
   runners can upload CRA evidence packs through the existing encrypted
   artifact API (`kind=evidence`) instead of the Kubernetes log channel.
@@ -171,6 +192,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adds a page by dropping a markdown file.
 
 ### Fixed
+
+- **Invalid CRA completion keeps the original runner failure**: when a
+  private runner already reported `FAILED` or `STOPPED`, persist-time
+  contract diagnostics are appended instead of replacing that reason.
+  Known credential formats are scrubbed first.
+
+- **Duplicate evidence-identity helpers after a stacked merge** are
+  removed. Artifact cache identity, execution refresh, and terminal
+  receipts keep a single canonical implementation.
 
 - **Ordinary evidence capture ignores non-string transport errors**:
   `evidence_transport_error` is only a failure when it is a non-empty

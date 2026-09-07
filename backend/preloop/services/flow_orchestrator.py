@@ -524,6 +524,8 @@ class FlowExecutionOrchestrator:
         # agent's own verification claim in result.json is preserved under
         # verification_reported instead.
         self._verification_evidence: Optional[Dict[str, Any]] = None
+        # CRA persist-boundary decision from the last result.json capture.
+        self._cra_persist_decision: Optional[Any] = None
 
         # Execution metrics tracked during execution
         self.total_tokens: int = 0
@@ -3033,13 +3035,65 @@ class FlowExecutionOrchestrator:
             if archive:
                 artifact = extract_result_json(archive)
         sanitized = sanitize_captured_result(artifact)
-        if sanitized is None:
-            return None
-        self.execution_logger.log_milestone(
-            "result_artifact_captured",
-            {"keys": sorted(sanitized.keys())[:20]},
+        return self._persist_cra_result_boundary(sanitized)
+
+    def _cra_prompt_text(self) -> Optional[str]:
+        """Configured flow prompt used to detect an expected CRA result schema."""
+        flow = getattr(self, "flow", None)
+        template = getattr(flow, "prompt_template", None) if flow is not None else None
+        if isinstance(template, str) and template.strip():
+            return template
+        execution_log = getattr(self, "execution_log", None)
+        resolved = getattr(execution_log, "resolved_input_prompt", None)
+        if isinstance(resolved, str) and resolved.strip():
+            return resolved
+        return None
+
+    def _persist_cra_result_boundary(
+        self, artifact: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Validate CRA result.json after capture/sanitize."""
+        from preloop.cra.persist import (
+            apply_cra_persist_boundary,
+            resolve_persist_authority,
         )
-        return sanitized
+
+        execution = getattr(self, "execution_log", None)
+        execution_id = getattr(execution, "id", None)
+        prompt = self._cra_prompt_text()
+        approvals, authority = resolve_persist_authority(
+            artifact, getattr(self, "db", None), execution_id, prompt=prompt
+        )
+        decision = apply_cra_persist_boundary(
+            artifact,
+            prompt=prompt,
+            trigger_payload=getattr(self, "trigger_event_data", None),
+            platform_approvals=approvals,
+            authority=authority,
+        )
+        self._cra_persist_decision = decision
+        persisted = decision.artifact
+        logger = getattr(self, "execution_logger", None)
+        if isinstance(persisted, dict) and logger is not None:
+            logger.log_milestone(
+                "result_artifact_captured",
+                {
+                    "keys": sorted(persisted.keys())[:20],
+                    "cra_invalid": decision.invalid,
+                },
+            )
+        return persisted
+
+    def _apply_cra_fail_closed(
+        self, final_status: str, error_message: Optional[str]
+    ) -> tuple[str, Optional[str]]:
+        """Deny a successful release when CRA persist validation failed closed."""
+        from preloop.cra.persist import apply_cra_fail_closed_completion
+
+        decision = getattr(self, "_cra_persist_decision", None)
+        if decision is None:
+            return final_status, error_message
+        return apply_cra_fail_closed_completion(final_status, error_message, decision)
 
     def _sync_evidence_artifact_identity(
         self, artifact_id: Any, archive: bytes | None = None
@@ -3784,6 +3838,7 @@ class FlowExecutionOrchestrator:
                 if isinstance(result_artifact, dict)
                 else nudge_artifact
             )
+            merged_artifact = self._persist_cra_result_boundary(merged_artifact)
 
         if nudge_outcome == "confirmed_success":
             return result.status.value, result.error_message, merged_artifact
@@ -4468,6 +4523,9 @@ class FlowExecutionOrchestrator:
                             {"artifact_status": result_artifact.get("status")},
                         )
 
+                    final_status, error_message = self._apply_cra_fail_closed(
+                        final_status, error_message
+                    )
                     return {
                         "status": final_status,
                         "output_summary": result.output_summary,
@@ -4552,10 +4610,13 @@ class FlowExecutionOrchestrator:
                                     else None
                                 ),
                             }
+                        cra_status, cra_error = self._apply_cra_fail_closed(
+                            "SUCCEEDED", None
+                        )
                         return {
-                            "status": "SUCCEEDED",
+                            "status": cra_status,
                             "output_summary": self.execution_logger.get_agent_output_summary(),
-                            "error_message": None,
+                            "error_message": cra_error,
                             "actions_taken": self.execution_logger.get_actions_taken(),
                             "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
                             "result": result_artifact,
