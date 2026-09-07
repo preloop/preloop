@@ -1841,11 +1841,15 @@ export class ActivityFeed extends LitElement {
       const { read, exhausted } = await this.fillFrom(since, events, firstPage);
       // A quiet account has little or nothing in the last day and still has a
       // history. Rather than say "Nothing yet" to an account that worked
-      // yesterday, ask again for the newest events whenever they happened,
-      // and only once the window is out of groups: an account whose day is
-      // 150 gateway calls has more of the same behind it, and history with
-      // no lower bound is the expensive read of the two.
-      if (read && exhausted && foldRows(events).length < FEED_INITIAL_ROWS) {
+      // yesterday, ask again for the newest events whenever they happened.
+      // A day that is full of dropped traffic (successful gateway calls) is
+      // the same empty rail with the same history behind it: `exhausted` is
+      // false because the window still has groups, but the feed has no rows,
+      // so the unwindowed read has to run. Skip it only when the window
+      // already produced news — that account's day is the news, and history
+      // with no lower bound is the expensive read of the two.
+      const rows = foldRows(events).length;
+      if (read && rows < FEED_INITIAL_ROWS && (exhausted || rows === 0)) {
         await this.fillFrom(null, events);
       }
       // Rows read here are history by definition: the socket had nothing to

@@ -545,10 +545,11 @@ describe('activity-feed', () => {
       localStorage.removeItem('accessToken');
     });
 
-    it('asks for at most three audit pages, the last two together', async () => {
+    it('asks for at most three audit pages per slice, the last two together', async () => {
       // A busy account whose whole timeline is successful gateway calls: the
       // fill used to walk four pages one after the other for rows that were
-      // never going to be news.
+      // never going to be news. Each slice still stops at three; a window
+      // that produced no rows then asks the unbounded slice the same way.
       localStorage.setItem('accessToken', 'test-token');
       const { restore, urls } = stubFetch([gatewayNoise(AUDIT_PAGE_SIZE)]);
       const el = await fixture<ActivityFeed>(
@@ -559,9 +560,13 @@ describe('activity-feed', () => {
         'the fill finishes'
       );
       const audit = urls.filter((url) => url.includes('/audit-logs/grouped'));
-      expect(audit.length).to.equal(3);
+      expect(audit.length).to.equal(6);
+      expect(audit[0]).to.contain('start_date=');
       expect(audit[1]).to.contain(`skip=${AUDIT_PAGE_SIZE}`);
       expect(audit[2]).to.contain(`skip=${AUDIT_PAGE_SIZE * 2}`);
+      expect(audit[3]).to.not.contain('start_date=');
+      expect(audit[4]).to.contain(`skip=${AUDIT_PAGE_SIZE}`);
+      expect(audit[5]).to.contain(`skip=${AUDIT_PAGE_SIZE * 2}`);
       restore();
       localStorage.removeItem('accessToken');
     });
@@ -697,6 +702,48 @@ describe('activity-feed', () => {
       const audit = urls.filter((url) => url.includes('/audit-logs/grouped'));
       expect(audit[0]).to.contain('start_date=');
       expect(audit[1]).to.not.contain('start_date=');
+      restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('reads history when the last day is full of dropped traffic', async () => {
+      // The window is three full pages of successful gateway calls, which
+      // the feed drops, so `exhausted` is false. Without a zero-row fallback
+      // the card said "Nothing yet" while /console/audit listed real history.
+      localStorage.setItem('accessToken', 'test-token');
+      const old = new Date(Date.now() - 40 * 3600 * 1000).toISOString();
+      const { restore, urls } = stubFetch([
+        gatewayNoise(AUDIT_PAGE_SIZE),
+        gatewayNoise(AUDIT_PAGE_SIZE),
+        gatewayNoise(AUDIT_PAGE_SIZE),
+        [
+          auditGroup(
+            'runtime_session_created',
+            {
+              id: 'old',
+              resource_id: 'sess-old',
+              details: { runtime_principal_name: 'Hermes' },
+              timestamp: old,
+            },
+            'created'
+          ),
+        ],
+      ]);
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(
+        () => rowText(el).length === 1,
+        'history under the noise'
+      );
+      expect(rowText(el)[0]).to.contain('Hermes started a session');
+      expect(listItems(el)[0]).to.equal('earlier');
+      const audit = urls.filter((url) => url.includes('/audit-logs/grouped'));
+      expect(audit.length).to.equal(4);
+      expect(audit[0]).to.contain('start_date=');
+      expect(audit[1]).to.contain('start_date=');
+      expect(audit[2]).to.contain('start_date=');
+      expect(audit[3]).to.not.contain('start_date=');
       restore();
       localStorage.removeItem('accessToken');
     });
@@ -1181,21 +1228,22 @@ describe('activity-feed', () => {
 
     it('gives each tone its own dot', async () => {
       const el = await feed();
+      const now = Date.now();
       el.ingest('flow_executions', {
         execution_id: 'exec-9',
         type: 'status_update',
-        timestamp: NOW,
+        timestamp: new Date(now).toISOString(),
         payload: { status: 'SUCCEEDED', flow_name: 'Nightly sweep' },
       });
       el.ingest('approvals', {
         type: 'approval_created',
         approval_request_id: 'req-2',
         tool_name: 'Bash',
-        timestamp: new Date(Date.now() - 1000).toISOString(),
+        timestamp: new Date(now - 1000).toISOString(),
       });
       el.ingest('gateway_activity', {
         type: 'model_gateway_call',
-        timestamp: new Date(Date.now() - 2000).toISOString(),
+        timestamp: new Date(now - 2000).toISOString(),
         payload: {
           api_usage_id: 'u-9',
           status_code: 502,
@@ -1204,7 +1252,7 @@ describe('activity-feed', () => {
       });
       el.ingest('runtime_sessions', {
         type: 'runtime_session_created',
-        timestamp: new Date(Date.now() - 3000).toISOString(),
+        timestamp: new Date(now - 3000).toISOString(),
         payload: {
           runtime_session_id: 's-9',
           runtime_principal_name: 'Hermes',
