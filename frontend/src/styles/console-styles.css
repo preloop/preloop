@@ -440,13 +440,6 @@ sl-badge.tag-chip sl-icon {
     );
 }
 
-/* The strip sits between the toolbar and the table, hairline to hairline.
-   It is rendered only when something is selected, so this margin never
-   costs an empty list any space. */
-.bulk-bar-slot {
-    margin-bottom: var(--sl-spacing-small);
-}
-
 .actions-container {
     display: flex;
     justify-content: flex-end;
