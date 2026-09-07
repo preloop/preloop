@@ -3659,3 +3659,262 @@ class TestPublicReviewFindings:
         account_ids = crud_security_maintenance.list_reconcile_account_ids(db_session)
         assert test_user.account_id in account_ids
         spy.assert_not_called()
+
+
+def _sm_id(n: int) -> UUID:
+    return UUID(f"00000000-0000-4000-8000-{n:012d}")
+
+
+def _seed_maintenance_item(
+    db_session: Session,
+    test_user: models.User,
+    release: models.SecurityMaintenanceRelease,
+    *,
+    n: int,
+    state: str,
+    advisory: str,
+    approval_request_id: UUID | None = None,
+    execution_id: UUID | None = None,
+) -> models.SecurityMaintenanceItem:
+    return crud_security_maintenance.create_item(
+        db_session,
+        account_id=test_user.account_id,
+        fields={
+            "id": _sm_id(n),
+            "release_id": release.id,
+            "identity_key": item_identity_key(
+                test_user.account_id,
+                release.product_key,
+                release.release_key,
+                advisory,
+                "libexample",
+            ),
+            "product_key": release.product_key,
+            "release_key": release.release_key,
+            "advisory_id": advisory,
+            "component_id": "libexample",
+            "state": state,
+            "scan_fingerprint": "a" * 64,
+            "data": {"dispatch_state": "pending"} if execution_id else {},
+            "approval_request_id": approval_request_id,
+            "implementation_execution_id": execution_id,
+        },
+    )
+
+
+def _seed_pending_request(
+    db_session: Session,
+    test_user: models.User,
+    workflow: models.ApprovalWorkflow,
+    *,
+    item_id: UUID,
+    expires_at: datetime,
+) -> models.ApprovalRequest:
+    tool = crud_security_maintenance.get_or_create_tool_configuration(
+        db_session, account_id=test_user.account_id, tool_name="security_maintenance"
+    )
+    row = models.ApprovalRequest(
+        account_id=test_user.account_id,
+        tool_configuration_id=tool.id,
+        approval_workflow_id=workflow.id,
+        tool_name="security_maintenance",
+        tool_args={"item_id": str(item_id)},
+        status="pending",
+        approval_token=secrets.token_urlsafe(32),
+        expires_at=expires_at,
+    )
+    db_session.add(row)
+    db_session.flush()
+    return row
+
+
+def _defer_dispatch(*_args: object, **_kwargs: object) -> None:
+    raise FlowDispatchError(
+        "00000000-0000-0000-0000-000000000001",
+        "PENDING",
+        RuntimeError("broker_unavailable"),
+    )
+
+
+class TestSweepProgress:
+    @pytest.mark.asyncio
+    async def test_idle_human_queue_does_not_starve_newer_approval(
+        self, db_session, world, test_user
+    ) -> None:
+        from preloop.services.security_maintenance_runtime import (
+            sweep_security_maintenance,
+        )
+
+        service, _project, workflow, *_rest = world
+        created = await _release(world, test_user)
+        release = crud_security_maintenance.get_release(
+            db_session, account_id=test_user.account_id, release_id=created["id"]
+        )
+        future = datetime.now(UTC).replace(tzinfo=None) + timedelta(days=1)
+        past = datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=1)
+        idle_ids = []
+        for n in (1, 2):
+            item_id = _sm_id(n)
+            request = _seed_pending_request(
+                db_session,
+                test_user,
+                workflow,
+                item_id=item_id,
+                expires_at=future,
+            )
+            _seed_maintenance_item(
+                db_session,
+                test_user,
+                release,
+                n=n,
+                state="approval_pending",
+                advisory=f"CVE-2024-00{n:02d}",
+                approval_request_id=request.id,
+            )
+            idle_ids.append((item_id, request.id))
+        expired_id = _sm_id(3)
+        expired_request = _seed_pending_request(
+            db_session,
+            test_user,
+            workflow,
+            item_id=expired_id,
+            expires_at=past,
+        )
+        _seed_maintenance_item(
+            db_session,
+            test_user,
+            release,
+            n=3,
+            state="approval_pending",
+            advisory="CVE-2024-0003",
+            approval_request_id=expired_request.id,
+        )
+        later = _seed_maintenance_item(
+            db_session,
+            test_user,
+            release,
+            n=4,
+            state="tests_passed",
+            advisory="CVE-2024-0004",
+        )
+        other = models.Account(organization_name="other")
+        db_session.add(other)
+        db_session.flush()
+        eligible = crud_security_maintenance.list_reconcile_items(
+            db_session, account_id=test_user.account_id, limit=50
+        )
+        eligible_ids = {row.id for row in eligible}
+        assert later.id in eligible_ids
+        assert expired_id in eligible_ids
+        assert _sm_id(1) not in eligible_ids
+        assert _sm_id(2) not in eligible_ids
+        assert (
+            crud_security_maintenance.list_reconcile_items(
+                db_session, account_id=other.id, limit=50
+            )
+            == []
+        )
+        with (
+            patch("preloop.services.security_maintenance.SWEEP_LIMIT", 2),
+            patch(
+                "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await sweep_security_maintenance(db_session)
+        assert result["accounts"] >= 1
+        db_session.refresh(later)
+        assert later.state == "approval_pending"
+        assert later.approval_request_id is not None
+        for item_id, request_id in idle_ids:
+            item = crud_security_maintenance.get_item(
+                db_session, account_id=test_user.account_id, item_id=item_id
+            )
+            assert item.state == "approval_pending"
+            assert item.approval_request_id == request_id
+        assert (
+            crud_security_maintenance.get_sweep_progress(
+                db_session, account_id=other.id
+            )
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_item_cursor_reaches_later_dispatch_retries(
+        self, db_session, world, test_user
+    ) -> None:
+        from preloop.services.security_maintenance_runtime import (
+            sweep_security_maintenance,
+        )
+
+        _service, _project, _workflow, implementer, *_rest = world
+        created = await _release(world, test_user)
+        release = crud_security_maintenance.get_release(
+            db_session, account_id=test_user.account_id, release_id=created["id"]
+        )
+        executions = []
+        for n in range(1, 6):
+            execution = _execution(db_session, implementer, status="PENDING")
+            executions.append(execution)
+            _seed_maintenance_item(
+                db_session,
+                test_user,
+                release,
+                n=n,
+                state="remediation_pending",
+                advisory=f"CVE-2024-10{n:02d}",
+                execution_id=execution.id,
+            )
+        db_session.flush()
+        seen: list[UUID] = []
+        with patch("preloop.services.security_maintenance.SWEEP_LIMIT", 2):
+            for _step in range(3):
+                with patch(
+                    "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+                    new_callable=AsyncMock,
+                    side_effect=_defer_dispatch,
+                ) as dispatched:
+                    await sweep_security_maintenance(db_session)
+                batch = [call.args[0] for call in dispatched.await_args_list]
+                assert len(batch) <= 2
+                assert len(batch) == len(set(batch))
+                seen.extend(batch)
+        assert set(seen) == {row.id for row in executions}
+
+    @pytest.mark.asyncio
+    async def test_baseline_cursor_reaches_later_failed_dispatches(
+        self, db_session, world, test_user
+    ) -> None:
+        from preloop.services.security_maintenance_runtime import (
+            sweep_security_maintenance,
+        )
+
+        _service, *_rest = world
+        audit_flow = world[4]
+        executions = []
+        for n in range(1, 6):
+            created = await _named_release(world, test_user, f"widget-sweep-{n}")
+            execution = _execution(db_session, audit_flow, status="PENDING")
+            executions.append(execution)
+            _set_baseline_audit(
+                db_session,
+                test_user.account_id,
+                created["id"],
+                execution.id,
+                dispatch_state="pending",
+            )
+        db_session.flush()
+        seen: list[UUID] = []
+        with patch("preloop.services.security_maintenance.SWEEP_LIMIT", 2):
+            for _step in range(3):
+                with patch(
+                    "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+                    new_callable=AsyncMock,
+                    side_effect=_defer_dispatch,
+                ) as dispatched:
+                    await sweep_security_maintenance(db_session)
+                batch = [call.args[0] for call in dispatched.await_args_list]
+                assert len(batch) <= 2
+                assert len(batch) == len(set(batch))
+                seen.extend(batch)
+        assert set(seen) == {row.id for row in executions}

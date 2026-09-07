@@ -162,4 +162,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     }
     pending_item = script.get_revision("20260907_sm_pending_item")
     assert pending_item.down_revision == "20260907_sm_evidence_merge"
-    assert script.get_heads() == ["20260907_sm_pending_item"]
+    sweep_cursor = script.get_revision("20260907_sm_sweep_cursor")
+    assert sweep_cursor.down_revision == "20260907_sm_pending_item"
+    assert script.get_heads() == ["20260907_sm_sweep_cursor"]

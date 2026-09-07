@@ -229,3 +229,22 @@ class SecurityMaintenanceBaseline(Base):
         JSON, nullable=False, default=dict
     )
     data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class SecurityMaintenanceSweep(Base):
+    """Per-tenant rotating keyset for bounded background reconcile."""
+
+    __tablename__ = "security_maintenance_sweep"
+    __table_args__ = (UniqueConstraint("account_id", name="uq_sm_sweep_account"),)
+
+    account_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("account.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    item_after_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), nullable=True
+    )
+    baseline_after_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), nullable=True
+    )

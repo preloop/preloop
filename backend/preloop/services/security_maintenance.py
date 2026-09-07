@@ -86,7 +86,6 @@ TERMINAL = frozenset(
 TOOL_NAME = "security_maintenance"
 AUTHENTICATED_DECISION_CHANNEL = "console"
 SWEEP_LIMIT = 50
-SWEEP_PAGES = 4
 
 
 def _utc_now() -> datetime:
@@ -1092,13 +1091,29 @@ class SecurityMaintenanceService:
         return self._serialize_item(self._require_item(item_id))
 
     async def sweep(self) -> dict[str, Any]:
-        """Bounded background reconcile. Concurrent sweeps of one tenant skip."""
+        """Bounded background reconcile. Concurrent sweeps of one tenant skip.
+
+        One page of items and one page of baselines run per invocation. A
+        durable per-account keyset continues past a stuck prefix on the next
+        sweep and wraps when the cursor walks off the end.
+        """
         lock = crud_security_maintenance.try_sweep_lock(self.db, self.account_id)
         if lock is None:
             return {"acquired": False, "reconciled": 0}
         try:
-            items = crud_security_maintenance.list_reconcile_items(
-                self.db, account_id=self.account_id, limit=SWEEP_LIMIT
+            progress = crud_security_maintenance.get_sweep_progress(
+                self.db, account_id=self.account_id
+            )
+            item_after = progress.item_after_id if progress is not None else None
+            items = self._sweep_page(
+                lambda after_id: crud_security_maintenance.list_reconcile_items(
+                    self.db,
+                    account_id=self.account_id,
+                    now=self._now(),
+                    limit=SWEEP_LIMIT,
+                    after_id=after_id,
+                ),
+                after_id=item_after,
             )
             for item in items:
                 try:
@@ -1107,40 +1122,55 @@ class SecurityMaintenanceService:
                     logger.exception(
                         "Security-maintenance reconcile failed for item %s", item.id
                     )
-            baseline_count = 0
-            after_id: UUID | None = None
-            for _page in range(SWEEP_PAGES):
-                baselines = crud_security_maintenance.list_pending_baseline_releases(
+            baseline_after = (
+                progress.baseline_after_id if progress is not None else None
+            )
+            baselines = self._sweep_page(
+                lambda after_id: crud_security_maintenance.list_pending_baseline_releases(
                     self.db,
                     account_id=self.account_id,
                     now=self._now(),
                     stale_after_seconds=self._dispatch_claim_stale_seconds(),
                     limit=SWEEP_LIMIT,
                     after_id=after_id,
-                )
-                if not baselines:
-                    break
-                for release in baselines:
-                    audit = (release.data or {}).get("baseline_audit")
-                    if not isinstance(audit, dict) or not audit.get("execution_id"):
-                        continue
-                    try:
-                        await self._dispatch_baseline(
-                            release.id, UUID(str(audit["execution_id"]))
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Security-maintenance baseline dispatch failed for "
-                            "release %s",
-                            release.id,
-                        )
-                    baseline_count += 1
-                if len(baselines) < SWEEP_LIMIT:
-                    break
-                after_id = baselines[-1].id
-            return {"acquired": True, "reconciled": len(items) + baseline_count}
+                ),
+                after_id=baseline_after,
+            )
+            for release in baselines:
+                audit = (release.data or {}).get("baseline_audit")
+                if not isinstance(audit, dict) or not audit.get("execution_id"):
+                    continue
+                try:
+                    await self._dispatch_baseline(
+                        release.id, UUID(str(audit["execution_id"]))
+                    )
+                except Exception:
+                    logger.exception(
+                        "Security-maintenance baseline dispatch failed for release %s",
+                        release.id,
+                    )
+            crud_security_maintenance.save_sweep_progress(
+                self.db,
+                account_id=self.account_id,
+                item_after_id=items[-1].id if items else None,
+                baseline_after_id=baselines[-1].id if baselines else None,
+            )
+            self.db.commit()
+            return {"acquired": True, "reconciled": len(items) + len(baselines)}
         finally:
             crud_security_maintenance.release_sweep_lock(self.db, lock)
+
+    def _sweep_page(
+        self,
+        fetch: Callable[[UUID | None], list[Any]],
+        *,
+        after_id: UUID | None,
+    ) -> list[Any]:
+        """Return one bounded page, wrapping to the start when the cursor is past the end."""
+        page = fetch(after_id)
+        if not page and after_id is not None:
+            page = fetch(None)
+        return page
 
     async def finish_execution(self, execution: models.FlowExecution) -> None:
         """Trusted completion hook. Stale or failed runs never advance a baseline."""

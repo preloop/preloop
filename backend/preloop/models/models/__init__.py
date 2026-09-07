@@ -90,6 +90,7 @@ from .security_maintenance import (
     SecurityMaintenanceDecision,
     SecurityMaintenanceItem,
     SecurityMaintenanceRelease,
+    SecurityMaintenanceSweep,
 )
 
 __all__ = [
@@ -100,6 +101,7 @@ __all__ = [
     "SecurityMaintenanceItem",
     "SecurityMaintenanceDecision",
     "SecurityMaintenanceBaseline",
+    "SecurityMaintenanceSweep",
     "Base",
     "Account",
     "AccountHalt",

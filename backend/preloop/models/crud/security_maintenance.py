@@ -114,6 +114,32 @@ def _sql_dispatch_job_is_claimable(
     )
 
 
+def _sql_item_needs_reconcile(moment: datetime) -> ColumnElement[bool]:
+    """Items the sweep can advance; idle waiting-for-human rows are excluded.
+
+    ``approval_pending`` with a still-open, unexpired platform request waits
+    for a human decision. Expiry, missing/unbound requests, ``tests_passed``,
+    and dispatch retries remain eligible.
+    """
+    item = models.SecurityMaintenanceItem
+    approval = models.ApprovalRequest
+    return or_(
+        item.state.in_(("tests_passed", "remediation_pending", "reaudit_pending")),
+        and_(
+            item.state == "approval_pending",
+            or_(
+                item.approval_request_id.is_(None),
+                approval.id.is_(None),
+                approval.status != "pending",
+                and_(
+                    approval.expires_at.is_not(None),
+                    approval.expires_at <= moment,
+                ),
+            ),
+        ),
+    )
+
+
 def _write_dispatch_claim(
     data: dict[str, Any], *, now: datetime, claim_id: UUID
 ) -> dict[str, Any]:
@@ -397,11 +423,22 @@ class CRUDSecurityMaintenance:
             )
         )
 
-    def list_reconcile_account_ids(self, db: Session) -> list[UUID]:
+    def list_reconcile_account_ids(
+        self, db: Session, *, now: datetime | None = None
+    ) -> list[UUID]:
         """Accounts with items or baseline audits that may need dispatch retry."""
+        moment = now or datetime.now(timezone.utc).replace(tzinfo=None)
         item_accounts = (
             select(models.SecurityMaintenanceItem.account_id)
-            .where(models.SecurityMaintenanceItem.state.in_(_RECONCILE_ITEM_STATES))
+            .outerjoin(
+                models.ApprovalRequest,
+                models.ApprovalRequest.id
+                == models.SecurityMaintenanceItem.approval_request_id,
+            )
+            .where(
+                models.SecurityMaintenanceItem.state.in_(_RECONCILE_ITEM_STATES),
+                _sql_item_needs_reconcile(moment),
+            )
             .distinct()
         )
         audit_state = _baseline_audit_json()["dispatch_state"].astext
@@ -475,20 +512,75 @@ class CRUDSecurityMaintenance:
         db.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
 
     def list_reconcile_items(
-        self, db: Session, *, account_id: UUID, limit: int = 50
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        now: datetime | None = None,
+        limit: int = 50,
+        after_id: UUID | None = None,
     ) -> list[models.SecurityMaintenanceItem]:
-        """Items that may need expiry, enqueue retry, or approval follow-up."""
+        """Items that may need expiry, enqueue retry, or approval follow-up.
+
+        Idle ``approval_pending`` rows that still have an unexpired pending
+        platform request are omitted so a blocked human queue cannot starve
+        ``tests_passed`` or dispatch retry. ``after_id`` is a keyset cursor on
+        ``id`` for rotating progress across sweeps.
+        """
+        moment = now or datetime.now(timezone.utc).replace(tzinfo=None)
+        filters = [
+            models.SecurityMaintenanceItem.account_id == account_id,
+            models.SecurityMaintenanceItem.state.in_(_RECONCILE_ITEM_STATES),
+            _sql_item_needs_reconcile(moment),
+        ]
+        if after_id is not None:
+            filters.append(models.SecurityMaintenanceItem.id > after_id)
         return list(
             db.scalars(
                 select(models.SecurityMaintenanceItem)
-                .where(
-                    models.SecurityMaintenanceItem.account_id == account_id,
-                    models.SecurityMaintenanceItem.state.in_(_RECONCILE_ITEM_STATES),
+                .outerjoin(
+                    models.ApprovalRequest,
+                    models.ApprovalRequest.id
+                    == models.SecurityMaintenanceItem.approval_request_id,
                 )
-                .order_by(models.SecurityMaintenanceItem.created_at)
+                .where(*filters)
+                .order_by(models.SecurityMaintenanceItem.id)
                 .limit(limit)
             )
         )
+
+    def get_sweep_progress(
+        self, db: Session, *, account_id: UUID
+    ) -> models.SecurityMaintenanceSweep | None:
+        """Load the rotating sweep cursor for this tenant."""
+        return db.scalar(
+            select(models.SecurityMaintenanceSweep).where(
+                models.SecurityMaintenanceSweep.account_id == account_id
+            )
+        )
+
+    def save_sweep_progress(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        item_after_id: UUID | None,
+        baseline_after_id: UUID | None,
+    ) -> models.SecurityMaintenanceSweep:
+        """Persist the last visited ids so the next sweep continues past them."""
+        row = self.get_sweep_progress(db, account_id=account_id)
+        if row is None:
+            row = models.SecurityMaintenanceSweep(
+                account_id=account_id,
+                item_after_id=item_after_id,
+                baseline_after_id=baseline_after_id,
+            )
+            db.add(row)
+        else:
+            row.item_after_id = item_after_id
+            row.baseline_after_id = baseline_after_id
+        db.flush()
+        return row
 
     def set_accepted_baseline(
         self,

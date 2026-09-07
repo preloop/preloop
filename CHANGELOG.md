@@ -274,6 +274,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   candidate SHA against controller-verified `product_provenance` repositories
   (`sha_status=verified`) and isolated publication receipts.
 
+- **Security-maintenance sweep rotates past a stuck prefix**: idle
+  waiting-for-human `approval_pending` rows no longer occupy the bounded
+  page. A durable per-account keyset continues later dispatch retries and
+  baseline audits on the next sweep, wrapping when the cursor walks off
+  the end. Expiry, claim recovery, and PENDING-only restart are unchanged.
+
 - **CRA evidence binding recognizes controller `product_provenance` and
   `dossier_manifest` annotations**: packed agent JSON is still compared in
   full. Those controller records (and the older `provenance`/`dossier`
