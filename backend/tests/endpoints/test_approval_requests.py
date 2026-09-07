@@ -687,6 +687,7 @@ class TestDecideRequestsBatch:
                 request=mock_http_request,
                 current_user=user,
                 db=session,
+                sync_db=None,
             )
         return response, session
 
@@ -1113,6 +1114,7 @@ class TestDecideRequestsBatchAgainstPostgres:
                 request=http_request,
                 current_user=user,
                 db=session,
+                sync_db=None,
             )
         return response.results[0]
 

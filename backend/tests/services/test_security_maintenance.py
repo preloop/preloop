@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import secrets
 import tarfile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -17,6 +18,8 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -26,6 +29,7 @@ from preloop.models.crud.base import CRUDBase
 from preloop.models.crud.security_maintenance import (
     DEFAULT_DISPATCH_CLAIM_STALE_SECONDS,
     dispatch_job_is_claimable,
+    format_dispatch_claimed_at,
     item_identity_key,
 )
 from preloop.schemas.security_maintenance import (
@@ -3235,3 +3239,423 @@ class TestControllerFrozenCheckoutAuthority:
             )
             is None
         )
+
+
+def _pending_approvals_for_item(
+    db_session: Session, account_id: UUID, item_id: UUID
+) -> list[models.ApprovalRequest]:
+    return list(
+        db_session.scalars(
+            select(models.ApprovalRequest).where(
+                models.ApprovalRequest.account_id == account_id,
+                models.ApprovalRequest.tool_name == "security_maintenance",
+                models.ApprovalRequest.status == "pending",
+                models.ApprovalRequest.tool_args["item_id"].astext == str(item_id),
+            )
+        )
+    )
+
+
+async def _named_release(world, test_user, product_key: str):
+    service, project, workflow, implementer, audit, *_rest = world
+    return await service.create_release(
+        SupportedReleaseCreate(
+            product_key=product_key,
+            release_key="1.2",
+            display_name=f"{product_key} 1.2",
+            project_id=project.id,
+            pinned_build_ref="v1.2.3",
+            sbom_input_ref="sbom/image.spdx.json",
+            audit_flow_id=audit.id,
+            implementation_flow_id=implementer.id,
+            recheck_flow_id=audit.id,
+            approval_workflow_id=workflow.id,
+            approval_owner_user_id=test_user.id,
+        )
+    )
+
+
+def _set_baseline_audit(
+    db_session: Session,
+    account_id: UUID,
+    release_id: UUID | str,
+    execution_id: UUID,
+    **fields: object,
+) -> None:
+    release = crud_security_maintenance.get_release(
+        db_session, account_id=account_id, release_id=UUID(str(release_id))
+    )
+    data = dict(release.data or {})
+    audit = dict(data.get("baseline_audit") or {})
+    audit["execution_id"] = str(execution_id)
+    audit.update(fields)
+    data["baseline_audit"] = audit
+    crud_security_maintenance.update_release(
+        db_session,
+        account_id=account_id,
+        release_id=UUID(str(release_id)),
+        fields={"data": data},
+    )
+
+
+class TestPublicReviewFindings:
+    @pytest.mark.asyncio
+    async def test_pending_approval_is_unique_per_item(
+        self, db_session, world, test_user
+    ) -> None:
+        service, _project, workflow, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            item, _impl = await _impl_to_approval(service, world, db_session, test_user)
+        tool = crud_security_maintenance.get_or_create_tool_configuration(
+            db_session,
+            account_id=test_user.account_id,
+            tool_name="security_maintenance",
+        )
+        duplicate = models.ApprovalRequest(
+            account_id=test_user.account_id,
+            tool_configuration_id=tool.id,
+            approval_workflow_id=workflow.id,
+            tool_name="security_maintenance",
+            tool_args={"item_id": str(item.id)},
+            status="pending",
+            approval_token=secrets.token_urlsafe(32),
+        )
+        with pytest.raises(IntegrityError):
+            with db_session.begin_nested():
+                db_session.add(duplicate)
+                db_session.flush()
+        assert (
+            len(_pending_approvals_for_item(db_session, test_user.account_id, item.id))
+            == 1
+        )
+
+    @pytest.mark.asyncio
+    async def test_open_approval_binds_orphaned_pending_without_sticky_flag(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            item, _impl = await _impl_to_approval(service, world, db_session, test_user)
+            original_id = item.approval_request_id
+            service._write_item(item, approval_request_id=None, state="tests_passed")
+            with patch.object(
+                ApprovalService,
+                "create_approval_request",
+                new_callable=AsyncMock,
+                side_effect=IntegrityError(
+                    "INSERT", {}, Exception("uq_sm_pending_approval_item")
+                ),
+            ):
+                await service._open_approval(item.id)
+            db_session.refresh(item)
+            await service._open_approval(item.id)
+        db_session.refresh(item)
+        assert item.approval_request_id == original_id
+        assert item.state == "approval_pending"
+        assert "approval_opening" not in dict(item.data or {})
+        assert (
+            len(_pending_approvals_for_item(db_session, test_user.account_id, item.id))
+            == 1
+        )
+
+    @pytest.mark.asyncio
+    async def test_batch_decision_advances_maintenance_item(
+        self, db_session, world, test_user
+    ) -> None:
+        from preloop.api.endpoints.approval_requests import decide_requests_batch
+        from preloop.models.schemas.approval_request import ApprovalBatchDecision
+
+        service, *_rest = world
+        await _release(world, test_user)
+        http_request = MagicMock()
+        http_request.base_url = "http://localhost"
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            item, _impl = await _impl_to_approval(service, world, db_session, test_user)
+            foreign_id = uuid4()
+            with patch(
+                "preloop.api.endpoints.approval_requests.ApprovalService",
+                return_value=service._approval_service(),
+            ):
+                response = await decide_requests_batch(
+                    decision=ApprovalBatchDecision(
+                        ids=[foreign_id, item.approval_request_id],
+                        approved=True,
+                        comment="Ship the supported-release patch",
+                    ),
+                    request=http_request,
+                    current_user=test_user,
+                    db=AsyncMock(),
+                    sync_db=db_session,
+                )
+        by_id = {row.id: row for row in response.results}
+        assert by_id[foreign_id].ok is False
+        assert by_id[foreign_id].error == "Approval request not found"
+        assert by_id[item.approval_request_id].ok is True
+        assert by_id[item.approval_request_id].status == "approved"
+        db_session.refresh(item)
+        assert item.state == "awaiting_build"
+
+    @pytest.mark.asyncio
+    async def test_batch_managed_credential_does_not_advance(
+        self, db_session, world, test_user
+    ) -> None:
+        from preloop.api.endpoints.approval_requests import decide_requests_batch
+        from preloop.models.schemas.approval_request import ApprovalBatchDecision
+
+        service, *_rest = world
+        await _release(world, test_user)
+        _key, _token = crud_api_key.create_runtime_key(
+            db_session,
+            name="execution-key",
+            account_id=test_user.account_id,
+            user_id=test_user.id,
+            context_data={"flow_execution_id": str(uuid4())},
+            commit=False,
+        )
+        test_user._auth_api_key = _key
+        http_request = MagicMock()
+        http_request.base_url = "http://localhost"
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            item, _impl = await _impl_to_approval(service, world, db_session, test_user)
+            with patch(
+                "preloop.api.endpoints.approval_requests.ApprovalService",
+                return_value=service._approval_service(),
+            ):
+                response = await decide_requests_batch(
+                    decision=ApprovalBatchDecision(
+                        ids=[item.approval_request_id],
+                        approved=True,
+                        comment="Ship the supported-release patch",
+                    ),
+                    request=http_request,
+                    current_user=test_user,
+                    db=AsyncMock(),
+                    sync_db=db_session,
+                )
+        delattr(test_user, "_auth_api_key")
+        assert response.results[0].ok is False
+        assert response.results[0].error == "managed_credential_cannot_decide"
+        db_session.refresh(item)
+        assert item.state == "approval_pending"
+
+    @pytest.mark.asyncio
+    async def test_reconcile_error_after_commit_is_retryable(
+        self, db_session, world, test_user
+    ) -> None:
+        from preloop.api.endpoints.approval_requests import (
+            _advance_security_maintenance,
+            decide_requests_batch,
+        )
+        from preloop.models.schemas.approval_request import ApprovalBatchDecision
+
+        service, *_rest = world
+        await _release(world, test_user)
+        http_request = MagicMock()
+        http_request.base_url = "http://localhost"
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            item, _impl = await _impl_to_approval(service, world, db_session, test_user)
+            ingested = await service.ingest_scan(
+                _scan(
+                    issue_id=_issue(world).id,
+                    findings=[
+                        ScanFinding(
+                            advisory_id="CVE-2024-0002",
+                            component_id="libexample",
+                        )
+                    ],
+                )
+            )
+            other = crud_security_maintenance.get_item(
+                db_session,
+                account_id=test_user.account_id,
+                item_id=ingested["items"][0]["id"],
+            )
+            impl = crud_security_maintenance.get_execution(
+                db_session,
+                account_id=test_user.account_id,
+                execution_id=other.implementation_execution_id,
+            )
+            impl.status = "SUCCEEDED"
+            impl.result = {
+                "_private_publication": {
+                    "phase": "complete",
+                    "receipt": _receipt(impl.id),
+                },
+                "trusted_publication": _receipt(impl.id),
+                "verification": _verification(),
+            }
+            db_session.flush()
+            await service.finish_execution(impl)
+            db_session.refresh(other)
+
+            row = crud_security_maintenance.get_approval_request(
+                db_session,
+                account_id=test_user.account_id,
+                request_id=item.approval_request_id,
+            )
+            updated = await service._approval_service().approve_request(
+                row.id,
+                "console ship",
+                user_id=test_user.id,
+                channel="console",
+            )
+            with (
+                patch.object(
+                    SecurityMaintenanceService,
+                    "reconcile_platform_approval",
+                    new_callable=AsyncMock,
+                    side_effect=RuntimeError("reconcile_broke"),
+                ),
+                patch(
+                    "preloop.api.endpoints.approval_requests.logger.exception"
+                ) as logged,
+            ):
+                await _advance_security_maintenance(db_session, updated)
+            logged.assert_called()
+            db_session.refresh(item)
+            assert updated.status == "approved"
+            assert item.state == "approval_pending"
+
+            with (
+                patch.object(
+                    SecurityMaintenanceService,
+                    "reconcile_platform_approval",
+                    new_callable=AsyncMock,
+                    side_effect=RuntimeError("reconcile_broke"),
+                ),
+                patch(
+                    "preloop.api.endpoints.approval_requests.ApprovalService",
+                    return_value=service._approval_service(),
+                ),
+            ):
+                batch = await decide_requests_batch(
+                    decision=ApprovalBatchDecision(
+                        ids=[other.approval_request_id],
+                        approved=True,
+                        comment="Ship the supported-release patch",
+                    ),
+                    request=http_request,
+                    current_user=test_user,
+                    db=AsyncMock(),
+                    sync_db=db_session,
+                )
+            assert batch.results[0].ok is True
+            assert batch.results[0].status == "approved"
+            db_session.refresh(other)
+            assert other.state == "approval_pending"
+            advanced_other = await service.reconcile_platform_approval(
+                other.approval_request_id
+            )
+            advanced_item = await service.reconcile_platform_approval(updated.id)
+        assert advanced_other is not None
+        assert advanced_other["state"] == "awaiting_build"
+        assert advanced_item is not None
+        assert advanced_item["state"] == "awaiting_build"
+
+    @pytest.mark.asyncio
+    async def test_sweep_selects_claimable_baselines_with_keyset(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        audit_flow = world[4]
+        now = datetime.now(UTC).replace(tzinfo=None)
+        stale = now - timedelta(seconds=DEFAULT_DISPATCH_CLAIM_STALE_SECONDS + 5)
+        first = await _named_release(world, test_user, "widget-a")
+        second = await _named_release(world, test_user, "widget-b")
+        third = await _named_release(world, test_user, "widget-c")
+        fourth = await _named_release(world, test_user, "widget-d")
+        pending_a = _execution(db_session, audit_flow, status="PENDING")
+        pending_b = _execution(db_session, audit_flow, status="PENDING")
+        running = _execution(db_session, audit_flow, status="RUNNING")
+        fresh = _execution(db_session, audit_flow, status="PENDING")
+        _set_baseline_audit(
+            db_session,
+            test_user.account_id,
+            first["id"],
+            pending_a.id,
+            dispatch_state="pending",
+        )
+        _set_baseline_audit(
+            db_session,
+            test_user.account_id,
+            second["id"],
+            pending_b.id,
+            dispatch_state="dispatching",
+            dispatch_claimed_at=format_dispatch_claimed_at(stale),
+        )
+        _set_baseline_audit(
+            db_session,
+            test_user.account_id,
+            third["id"],
+            running.id,
+            dispatch_state="pending",
+        )
+        _set_baseline_audit(
+            db_session,
+            test_user.account_id,
+            fourth["id"],
+            fresh.id,
+            dispatch_state="dispatching",
+            dispatch_claimed_at=format_dispatch_claimed_at(now),
+        )
+        with patch.object(
+            crud_security_maintenance, "get_execution", wraps=None
+        ) as spy:
+            spy.side_effect = AssertionError("N+1 execution lookup")
+            eligible = crud_security_maintenance.list_pending_baseline_releases(
+                db_session,
+                account_id=test_user.account_id,
+                now=now,
+                limit=50,
+            )
+        eligible_ids = {row.id for row in eligible}
+        assert UUID(first["id"]) in eligible_ids
+        assert UUID(second["id"]) in eligible_ids
+        assert UUID(third["id"]) not in eligible_ids
+        assert UUID(fourth["id"]) not in eligible_ids
+        page = crud_security_maintenance.list_pending_baseline_releases(
+            db_session,
+            account_id=test_user.account_id,
+            now=now,
+            limit=1,
+        )
+        assert len(page) == 1
+        rest = crud_security_maintenance.list_pending_baseline_releases(
+            db_session,
+            account_id=test_user.account_id,
+            now=now,
+            limit=1,
+            after_id=page[0].id,
+        )
+        assert len(rest) == 1
+        assert rest[0].id != page[0].id
+        assert {page[0].id, rest[0].id} == {
+            UUID(first["id"]),
+            UUID(second["id"]),
+        }
+        assert (
+            crud_security_maintenance.list_pending_baseline_releases(
+                db_session, account_id=uuid4(), now=now, limit=50
+            )
+            == []
+        )
+        account_ids = crud_security_maintenance.list_reconcile_account_ids(db_session)
+        assert test_user.account_id in account_ids
+        spy.assert_not_called()

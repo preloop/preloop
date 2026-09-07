@@ -11,6 +11,7 @@ from json import JSONDecodeError, dumps, loads
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from preloop.cra.schemas import SBOM_FORMATS
@@ -85,6 +86,7 @@ TERMINAL = frozenset(
 TOOL_NAME = "security_maintenance"
 AUTHENTICATED_DECISION_CHANNEL = "console"
 SWEEP_LIMIT = 50
+SWEEP_PAGES = 4
 
 
 def _utc_now() -> datetime:
@@ -1105,27 +1107,38 @@ class SecurityMaintenanceService:
                     logger.exception(
                         "Security-maintenance reconcile failed for item %s", item.id
                     )
-            baselines = crud_security_maintenance.list_pending_baseline_releases(
-                self.db,
-                account_id=self.account_id,
-                now=self._now(),
-                stale_after_seconds=self._dispatch_claim_stale_seconds(),
-                limit=SWEEP_LIMIT,
-            )
-            for release in baselines:
-                audit = (release.data or {}).get("baseline_audit")
-                if not isinstance(audit, dict) or not audit.get("execution_id"):
-                    continue
-                try:
-                    await self._dispatch_baseline(
-                        release.id, UUID(str(audit["execution_id"]))
-                    )
-                except Exception:
-                    logger.exception(
-                        "Security-maintenance baseline dispatch failed for release %s",
-                        release.id,
-                    )
-            return {"acquired": True, "reconciled": len(items) + len(baselines)}
+            baseline_count = 0
+            after_id: UUID | None = None
+            for _page in range(SWEEP_PAGES):
+                baselines = crud_security_maintenance.list_pending_baseline_releases(
+                    self.db,
+                    account_id=self.account_id,
+                    now=self._now(),
+                    stale_after_seconds=self._dispatch_claim_stale_seconds(),
+                    limit=SWEEP_LIMIT,
+                    after_id=after_id,
+                )
+                if not baselines:
+                    break
+                for release in baselines:
+                    audit = (release.data or {}).get("baseline_audit")
+                    if not isinstance(audit, dict) or not audit.get("execution_id"):
+                        continue
+                    try:
+                        await self._dispatch_baseline(
+                            release.id, UUID(str(audit["execution_id"]))
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Security-maintenance baseline dispatch failed for "
+                            "release %s",
+                            release.id,
+                        )
+                    baseline_count += 1
+                if len(baselines) < SWEEP_LIMIT:
+                    break
+                after_id = baselines[-1].id
+            return {"acquired": True, "reconciled": len(items) + baseline_count}
         finally:
             crud_security_maintenance.release_sweep_lock(self.db, lock)
 
@@ -1135,7 +1148,6 @@ class SecurityMaintenanceService:
         if not envelope:
             return
         item_id = UUID(str(envelope["item_id"]))
-        queued: tuple[UUID, UUID, str] | None = None
         open_approval = False
         kind = str(envelope.get("kind") or "")
         if kind == "recheck":
@@ -1152,12 +1164,8 @@ class SecurityMaintenanceService:
             item = self._require_item(item_id)
             if kind == "implementation":
                 open_approval = await self._finish_implementation(item, execution)
-            elif kind == "recheck":
-                await self._finish_recheck(item, execution)
         if open_approval:
             await self._open_approval(item_id)
-        if queued is not None:
-            await self._enqueue(*queued)
 
     async def _finish_implementation(
         self,
@@ -1658,20 +1666,9 @@ class SecurityMaintenanceService:
         async with crud_security_maintenance.locked(
             self.db, self.account_id, f"item:{item_id}"
         ):
+            if self._bind_existing_approval_if_present(item_id):
+                return
             item = self._require_item(item_id)
-            if item.state != "tests_passed":
-                return
-            if item.approval_request_id is not None:
-                self._write_item(item, state="approval_pending")
-                return
-            existing = crud_security_maintenance.get_pending_maintenance_approval(
-                self.db, account_id=self.account_id, item_id=item.id
-            )
-            if existing is not None:
-                self._write_item(
-                    item, approval_request_id=existing.id, state="approval_pending"
-                )
-                return
             release = self._require_release(item.release_id)
             workflow = self._validate_release_workflow(
                 release.approval_workflow_id,
@@ -1704,21 +1701,27 @@ class SecurityMaintenanceService:
                     "timeout_seconds": release.escalation_after_seconds,
                 },
             }
-            data = dict(item.data or {})
-            data["approval_opening"] = True
-            self._write_item(item, data=data)
         if workflow is None or tool_id is None:
             return
         service = self._approval_service()
-        created = await service.create_approval_request(
-            account_id=str(self.account_id),
-            tool_configuration_id=tool_id,
-            approval_workflow_id=workflow.id,
-            tool_name=TOOL_NAME,
-            tool_args=tool_args,
-            execution_id=execution_id,
-            timeout_seconds=timeout,
-        )
+        try:
+            created = await service.create_approval_request(
+                account_id=str(self.account_id),
+                tool_configuration_id=tool_id,
+                approval_workflow_id=workflow.id,
+                tool_name=TOOL_NAME,
+                tool_args=tool_args,
+                execution_id=execution_id,
+                timeout_seconds=timeout,
+            )
+        except IntegrityError:
+            self.db.rollback()
+            async with crud_security_maintenance.locked(
+                self.db, self.account_id, f"item:{item_id}"
+            ):
+                if self._bind_existing_approval_if_present(item_id):
+                    return
+            raise
         try:
             await service.send_notifications(created, workflow)
         except Exception as exc:  # noqa: BLE001
@@ -1730,24 +1733,51 @@ class SecurityMaintenanceService:
         async with crud_security_maintenance.locked(
             self.db, self.account_id, f"item:{item_id}"
         ):
-            item = self._require_item(item_id)
-            data = dict(item.data or {})
-            data.pop("approval_opening", None)
-            if item.state == "tests_passed" and item.approval_request_id is None:
-                item = self._write_item(
-                    item,
-                    approval_request_id=created.id,
-                    state="approval_pending",
-                    data=data,
-                )
-                self._append(
-                    item,
-                    kind="approval",
-                    outcome="requested",
-                    approval_request_id=created.id,
-                )
-            else:
-                self._write_item(item, data=data)
+            self._bind_created_approval(item_id, created)
+
+    def _bind_existing_approval_if_present(self, item_id: UUID) -> bool:
+        """Bind a surviving pending request, or skip when this item is past open.
+
+        Caller holds the item lock. Returns True when this caller must not
+        create another ApprovalRequest.
+        """
+        item = self._require_item(item_id)
+        if item.approval_request_id is not None:
+            if item.state == "tests_passed":
+                self._write_item(item, state="approval_pending")
+            return True
+        if item.state != "tests_passed":
+            return True
+        existing = crud_security_maintenance.get_pending_maintenance_approval(
+            self.db, account_id=self.account_id, item_id=item.id
+        )
+        if existing is None:
+            return False
+        self._write_item(
+            item, approval_request_id=existing.id, state="approval_pending"
+        )
+        return True
+
+    def _bind_created_approval(
+        self, item_id: UUID, created: models.ApprovalRequest
+    ) -> None:
+        """Attach a newly created pending request if this item is still unbound."""
+        item = self._require_item(item_id)
+        if item.approval_request_id == created.id:
+            if item.state == "tests_passed":
+                self._write_item(item, state="approval_pending")
+            return
+        if item.state != "tests_passed" or item.approval_request_id is not None:
+            return
+        item = self._write_item(
+            item, approval_request_id=created.id, state="approval_pending"
+        )
+        self._append(
+            item,
+            kind="approval",
+            outcome="requested",
+            approval_request_id=created.id,
+        )
 
     def _pending_dispatch_job(
         self, item: models.SecurityMaintenanceItem

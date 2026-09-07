@@ -9,11 +9,20 @@ from time import monotonic
 from typing import Any, AsyncIterator
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import DateTime, and_, cast, or_, select, text, union
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.sql.elements import ColumnElement
 
 from preloop.models import models
+
+_RECONCILE_ITEM_STATES = (
+    "tests_passed",
+    "approval_pending",
+    "remediation_pending",
+    "reaudit_pending",
+)
 
 
 TERMINAL_EXECUTION_STATUSES = frozenset(
@@ -76,6 +85,33 @@ def dispatch_job_is_claimable(
         return True
     timeout = max(1, int(stale_after_seconds))
     return claimed_at < _naive_utc(now) - timedelta(seconds=timeout)
+
+
+def _baseline_audit_json() -> ColumnElement[Any]:
+    """JSONB path to a release's stored baseline-audit object."""
+    return cast(models.SecurityMaintenanceRelease.data, JSONB)["baseline_audit"]
+
+
+def _sql_dispatch_job_is_claimable(
+    *, now: datetime, stale_after_seconds: int
+) -> ColumnElement[bool]:
+    """SQL equivalent of ``dispatch_job_is_claimable`` for baseline audits."""
+    audit = _baseline_audit_json()
+    state = audit["dispatch_state"].astext
+    claimed_at = audit["dispatch_claimed_at"].astext
+    stale_before = _naive_utc(now) - timedelta(seconds=max(1, int(stale_after_seconds)))
+    return or_(
+        state.is_(None),
+        state == "pending",
+        and_(
+            state == "dispatching",
+            or_(
+                claimed_at.is_(None),
+                claimed_at == "",
+                cast(claimed_at, DateTime) < stale_before,
+            ),
+        ),
+    )
 
 
 def _write_dispatch_claim(
@@ -352,45 +388,29 @@ class CRUDSecurityMaintenance:
         self, db: Session, *, account_id: UUID, item_id: UUID
     ) -> models.ApprovalRequest | None:
         """Find an unbound pending platform request for this work item."""
-        rows = db.scalars(
+        return db.scalar(
             select(models.ApprovalRequest).where(
                 models.ApprovalRequest.account_id == account_id,
                 models.ApprovalRequest.tool_name == "security_maintenance",
                 models.ApprovalRequest.status == "pending",
+                models.ApprovalRequest.tool_args["item_id"].astext == str(item_id),
             )
         )
-        item_key = str(item_id)
-        for row in rows:
-            args = row.tool_args if isinstance(row.tool_args, dict) else {}
-            if str(args.get("item_id") or "") == item_key:
-                return row
-        return None
 
     def list_reconcile_account_ids(self, db: Session) -> list[UUID]:
         """Accounts with items or baseline audits that may need dispatch retry."""
-        account_ids = set(
-            db.scalars(
-                select(models.SecurityMaintenanceItem.account_id)
-                .where(
-                    models.SecurityMaintenanceItem.state.in_(
-                        (
-                            "tests_passed",
-                            "approval_pending",
-                            "remediation_pending",
-                            "reaudit_pending",
-                        )
-                    )
-                )
-                .distinct()
-            )
+        item_accounts = (
+            select(models.SecurityMaintenanceItem.account_id)
+            .where(models.SecurityMaintenanceItem.state.in_(_RECONCILE_ITEM_STATES))
+            .distinct()
         )
-        for row in db.scalars(select(models.SecurityMaintenanceRelease)):
-            audit = (row.data or {}).get("baseline_audit")
-            if not isinstance(audit, dict):
-                continue
-            if audit.get("dispatch_state") in {"pending", "dispatching"}:
-                account_ids.add(row.account_id)
-        return list(account_ids)
+        audit_state = _baseline_audit_json()["dispatch_state"].astext
+        release_accounts = (
+            select(models.SecurityMaintenanceRelease.account_id)
+            .where(audit_state.in_(("pending", "dispatching")))
+            .distinct()
+        )
+        return list(db.scalars(union(item_accounts, release_accounts)))
 
     def list_pending_baseline_releases(
         self,
@@ -400,33 +420,45 @@ class CRUDSecurityMaintenance:
         now: datetime | None = None,
         stale_after_seconds: int = DEFAULT_DISPATCH_CLAIM_STALE_SECONDS,
         limit: int = 50,
+        after_id: UUID | None = None,
     ) -> list[models.SecurityMaintenanceRelease]:
         """Releases whose initial-baseline audit is committed but not dispatched.
 
         Includes abandoned ``dispatching`` claims (expired or legacy rows
         without a timestamp) whose bound execution is still ``PENDING``.
+        Filtering and the execution-status check run in SQL. ``after_id`` is a
+        keyset cursor on ``id`` so later eligible rows are not starved by a
+        stuck prefix.
         """
         moment = now or datetime.now(timezone.utc).replace(tzinfo=None)
-        pending: list[models.SecurityMaintenanceRelease] = []
-        for row in self.list_releases(db, account_id=account_id):
-            audit = (row.data or {}).get("baseline_audit")
-            if not isinstance(audit, dict) or not audit.get("execution_id"):
-                continue
-            if not dispatch_job_is_claimable(
-                audit, now=moment, stale_after_seconds=stale_after_seconds
-            ):
-                continue
-            execution = self.get_execution(
-                db,
-                account_id=account_id,
-                execution_id=UUID(str(audit["execution_id"])),
+        audit = _baseline_audit_json()
+        execution_id_text = audit["execution_id"].astext
+        execution_id = cast(execution_id_text, PGUUID)
+        filters = [
+            models.SecurityMaintenanceRelease.account_id == account_id,
+            models.Flow.account_id == account_id,
+            models.FlowExecution.status == "PENDING",
+            execution_id_text.is_not(None),
+            execution_id_text != "",
+            _sql_dispatch_job_is_claimable(
+                now=moment, stale_after_seconds=stale_after_seconds
+            ),
+        ]
+        if after_id is not None:
+            filters.append(models.SecurityMaintenanceRelease.id > after_id)
+        return list(
+            db.scalars(
+                select(models.SecurityMaintenanceRelease)
+                .join(
+                    models.FlowExecution,
+                    models.FlowExecution.id == execution_id,
+                )
+                .join(models.Flow, models.Flow.id == models.FlowExecution.flow_id)
+                .where(*filters)
+                .order_by(models.SecurityMaintenanceRelease.id)
+                .limit(limit)
             )
-            if execution is None or execution.status != "PENDING":
-                continue
-            pending.append(row)
-            if len(pending) >= limit:
-                break
-        return pending
+        )
 
     def try_sweep_lock(self, db: Session, account_id: UUID) -> int | None:
         """Session-level sweep mutex. Survives commit; caller must unlock."""
@@ -451,14 +483,7 @@ class CRUDSecurityMaintenance:
                 select(models.SecurityMaintenanceItem)
                 .where(
                     models.SecurityMaintenanceItem.account_id == account_id,
-                    models.SecurityMaintenanceItem.state.in_(
-                        (
-                            "tests_passed",
-                            "approval_pending",
-                            "remediation_pending",
-                            "reaudit_pending",
-                        )
-                    ),
+                    models.SecurityMaintenanceItem.state.in_(_RECONCILE_ITEM_STATES),
                 )
                 .order_by(models.SecurityMaintenanceItem.created_at)
                 .limit(limit)

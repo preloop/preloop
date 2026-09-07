@@ -160,4 +160,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
         "20260907_security_maintenance",
         "20260907_evidence_receipt",
     }
-    assert script.get_heads() == ["20260907_sm_evidence_merge"]
+    pending_item = script.get_revision("20260907_sm_pending_item")
+    assert pending_item.down_revision == "20260907_sm_evidence_merge"
+    assert script.get_heads() == ["20260907_sm_pending_item"]

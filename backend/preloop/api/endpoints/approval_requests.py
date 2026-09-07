@@ -55,14 +55,26 @@ def _reject_managed_maintenance_decision(
 
 
 async def _advance_security_maintenance(db: Session, updated: ApprovalRequest) -> None:
-    """Let a console/token ApprovalService decision advance a maintenance item."""
+    """Let a console/token ApprovalService decision advance a maintenance item.
+
+    The ApprovalService write is already committed. A reconcile failure is
+    logged and left retryable (sweep / a later decide) so the caller still
+    receives the committed decision without claiming maintenance advanced.
+    """
     if getattr(updated, "tool_name", None) != "security_maintenance":
         return
     from preloop.services.security_maintenance import SecurityMaintenanceService
 
-    db.expire_all()
-    service = SecurityMaintenanceService(db, account_id=updated.account_id)
-    await service.reconcile_platform_approval(updated.id)
+    try:
+        db.expire_all()
+        service = SecurityMaintenanceService(db, account_id=updated.account_id)
+        await service.reconcile_platform_approval(updated.id)
+    except Exception:
+        logger.exception(
+            "Security-maintenance reconcile failed after committed approval %s; "
+            "retryable",
+            updated.id,
+        )
 
 
 def _managed_execution_credential(current_user: User) -> bool:
@@ -113,7 +125,7 @@ def _require_decide_approvals(
     request: Request,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
-) -> None:
+) -> Session:
     """Enforce ``decide_approvals`` for a handler that holds an async session.
 
     The RBAC check behind ``@require_permission`` runs synchronous CRUD
@@ -125,9 +137,12 @@ def _require_decide_approvals(
     ``Session`` it needs and keeps the blocking pool checkout on FastAPI's
     threadpool rather than on the event loop, which is the liveness risk the
     ratchet in ``tests/api/test_event_loop_pool_wait.py`` exists to bound. The
-    handler keeps its own async session for the decisions.
+    handler keeps its own async session for the decisions and reuses this
+    sync session to reconcile security-maintenance items after a batch
+    decision, matching the single-item endpoints.
     """
-    _ = (request, current_user, db)  # Consumed by @require_permission.
+    _ = (request, current_user)  # Consumed by @require_permission.
+    return db
 
 
 def _record_viewed_event(
@@ -542,7 +557,6 @@ async def decide_request(
     # decide_approvals is enforced by a sync dependency instead of the
     # handler decorator: the RBAC check needs a sync Session and must not run
     # on the event loop. See _require_decide_approvals.
-    dependencies=[Depends(_require_decide_approvals)],
 )
 async def decide_requests_batch(
     decision: ApprovalBatchDecision,
@@ -551,6 +565,7 @@ async def decide_requests_batch(
     # Async session: a sync Session here would grow the event-loop pool-wait
     # surface (see test_async_sync_session_route_count_does_not_grow).
     db: AsyncSession = Depends(_async_db_session),
+    sync_db: Session | None = Depends(_require_decide_approvals),
 ) -> ApprovalBatchResponse:
     """Approve or decline several requests with one decision.
 
@@ -568,6 +583,8 @@ async def decide_requests_batch(
         request: HTTP request
         current_user: Current authenticated user
         db: Async session used for the decisions
+        sync_db: Sync session from the RBAC dependency; used to reconcile
+            security-maintenance items after a successful decision
 
     Returns:
         One result per requested id, in the order they were sent
@@ -676,5 +693,7 @@ async def decide_requests_batch(
         results.append(
             ApprovalBatchItemResult(id=request_id, ok=True, status=updated_status)
         )
+        if isinstance(sync_db, Session):
+            await _advance_security_maintenance(sync_db, updated)
 
     return ApprovalBatchResponse(results=results)
