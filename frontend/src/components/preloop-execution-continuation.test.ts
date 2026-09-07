@@ -144,7 +144,7 @@ describe('Execution PR follow-up adoption', () => {
     preview.native_resume_expires_at = '2026-09-08T12:00:00Z';
     const element = await mount();
     await open(element);
-    expect(element.shadowRoot!.textContent).to.include(
+    expect(element.shadowRoot!.textContent!.replace(/\s+/g, ' ')).to.include(
       'saved checkpoint until'
     );
     expect(element.shadowRoot!.querySelector('[data-continuation-ack]')).to.not
