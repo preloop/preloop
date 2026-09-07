@@ -262,6 +262,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Console list bulk bar no longer shifts the table**: selecting rows
+  swaps the bar into the existing toolbar instead of inserting a strip
+  above the list, and the bar offers "Select all N" for the current page.
+
 - **Hosted isolated publication keeps the controller `trusted_publication`
   receipt on the persisted result**: `_attach_product_evidence_records`
   still strips any agent-authored copy, then reattaches only the
