@@ -1822,10 +1822,10 @@ class ContainerAgentExecutor(AgentExecutor):
                 if pods.items:
                     pod = max(
                         pods.items,
-                        key=lambda item: _termination_timestamp(
-                            item.metadata.creation_timestamp
-                        )
-                        or "",
+                        key=lambda item: (
+                            _termination_timestamp(item.metadata.creation_timestamp)
+                            or ""
+                        ),
                     )
                     for container_status in pod.status.container_statuses or []:
                         if container_status.name != "agent":
@@ -3448,12 +3448,27 @@ class ContainerAgentExecutor(AgentExecutor):
             "publication_mode"
         ) == "isolated":
             credentials = execution_context.get("git_credentials_map") or {}
-            tracker_id = str(
-                repo_config.get("tracker_id")
-                or execution_context.get("trigger_tracker_id")
-                or ""
-            )
-            credential = credentials.get(tracker_id) or {}
+            repo_url = repo_config.get("repository_url")
+            credential = {}
+            if isinstance(repo_url, str) and repo_url:
+                from preloop.services.product_provenance import (
+                    ProductProvenanceError,
+                    normalize_repository_url,
+                )
+
+                try:
+                    credential = (
+                        credentials.get(normalize_repository_url(repo_url)) or {}
+                    )
+                except ProductProvenanceError:
+                    credential = credentials.get(repo_url) or {}
+            if not credential:
+                tracker_id = str(
+                    repo_config.get("tracker_id")
+                    or execution_context.get("trigger_tracker_id")
+                    or ""
+                )
+                credential = credentials.get(tracker_id) or {}
             if credential.get("permission") != "read":
                 raise ValueError(
                     "Isolated agent clone requires a controller-issued read-only credential"
@@ -4140,27 +4155,64 @@ true
                 # No publishing credentials or provider calls enter the agent.
                 # Export complete history; the trusted publisher imports only
                 # objects in a fresh bare repo, never this checkout's config.
-                if len(repositories) != 1:
-                    return "echo 'Isolated publication requires one repository' >&2; exit 1"
-                path = self._resolve_repository_clone_path(repositories[0], 0)
                 checkpoint = (
                     "_preloop_checkpoint || { echo PRELOOP_CHECKPOINT prepublication_failed; exit 1; }\n"
                     if execution_context.get("checkpoint_env")
                     else ""
                 )
-                return (
-                    checkpoint + f"cd {shlex.quote(path)}\n"
-                    f"mkdir -p {EVIDENCE_DIR_PATH}\n"
-                    f"git bundle create {EVIDENCE_DIR_PATH}/branch.bundle HEAD || exit 1\n"
-                    f"git rev-parse HEAD > {EVIDENCE_DIR_PATH}/HEAD.txt || exit 1\n"
+                if len(repositories) == 1:
+                    path = self._resolve_repository_clone_path(repositories[0], 0)
+                    return (
+                        checkpoint + f"cd {shlex.quote(path)}\n"
+                        f"mkdir -p {EVIDENCE_DIR_PATH}\n"
+                        f"git bundle create {EVIDENCE_DIR_PATH}/branch.bundle HEAD || exit 1\n"
+                        f"git rev-parse HEAD > {EVIDENCE_DIR_PATH}/HEAD.txt || exit 1\n"
+                        "if [ -d /preloop-publication-output ]; then\n"
+                        f"  cp {EVIDENCE_DIR_PATH}/branch.bundle /preloop-publication-output/branch.bundle || exit 1\n"
+                        "  if [ -f /workspace/result.json ] && [ $(wc -c < /workspace/result.json) -le 262144 ]; then\n"
+                        "    cp /workspace/result.json /preloop-publication-output/result.json || exit 1\n"
+                        "  fi\n"
+                        "fi\n"
+                        "cd /workspace\n"
+                    )
+                from preloop.services.product_provenance import (
+                    ProductProvenanceError,
+                    clone_path_slug,
+                )
+
+                parts = [checkpoint, f"mkdir -p {EVIDENCE_DIR_PATH}\n"]
+                for idx, repo_config in enumerate(repositories):
+                    path = self._resolve_repository_clone_path(repo_config, idx)
+                    try:
+                        slug = clone_path_slug(
+                            str(repo_config.get("clone_path") or path)
+                        )
+                    except ProductProvenanceError:
+                        return (
+                            "echo 'Isolated publication clone_path is not a safe "
+                            "repository slug' >&2; exit 1"
+                        )
+                    dest = f"{EVIDENCE_DIR_PATH}/repos/{slug}"
+                    parts.append(
+                        f"cd {shlex.quote(path)}\n"
+                        f"mkdir -p {shlex.quote(dest)}\n"
+                        f"git bundle create {shlex.quote(dest)}/branch.bundle HEAD || exit 1\n"
+                        f"git rev-parse HEAD > {shlex.quote(dest)}/HEAD.txt || exit 1\n"
+                        "if [ -d /preloop-publication-output ]; then\n"
+                        f"  mkdir -p /preloop-publication-output/repos/{slug}\n"
+                        f"  cp {shlex.quote(dest)}/branch.bundle "
+                        f"/preloop-publication-output/repos/{slug}/branch.bundle || exit 1\n"
+                        "fi\n"
+                    )
+                parts.append(
                     "if [ -d /preloop-publication-output ]; then\n"
-                    f"  cp {EVIDENCE_DIR_PATH}/branch.bundle /preloop-publication-output/branch.bundle || exit 1\n"
                     "  if [ -f /workspace/result.json ] && [ $(wc -c < /workspace/result.json) -le 262144 ]; then\n"
                     "    cp /workspace/result.json /preloop-publication-output/result.json || exit 1\n"
                     "  fi\n"
                     "fi\n"
                     "cd /workspace\n"
                 )
+                return "".join(parts)
 
             self.logger.info(
                 f"Preparing post-execution git commands: "

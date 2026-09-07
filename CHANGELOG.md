@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Product/release provenance mapping and isolated multi-repo publication**:
+  optional `product_provenance` (`preloop.cra.product_provenance/v1`) names
+  a supported release, build, SBOM digest, and constituent repos+SHAs.
+  Product-mode audits reject duplicate, ambiguous, unauthorized, or
+  mismatched mappings against trusted checkout facts and supplied artifact
+  bytes. Agent-written SHAs are declarations, not build attestation. A
+  deterministic dossier manifest records result/input/artifact digests and
+  platform approval ids only. Hosted isolated publication can publish the
+  CRA code-repos-plus-compliance-repo topology with per-repo receipts;
+  local commits and partial remotes are not success. Guide:
+  `docs/guide/flows/product-evidence.md`.
+
+
 - **Per-flow label-based model routing**: a flow can store optional ordered
   rules in `agent_config.model_routing` that map current issue labels
   (`any` / `all`) to an account-owned model and compatible harness. The
