@@ -116,6 +116,18 @@ func TestRunnerBootstrapPassesNoSecretsInArgv(t *testing.T) {
 	}
 }
 
+func TestRunnerBootstrapUploadsEvidenceWithoutLoggingPayload(t *testing.T) {
+	if !strings.Contains(runnerBootstrap, "PRELOOP_EVIDENCE_PUT_TOKEN") {
+		t.Fatal("private bootstrap must attempt direct evidence upload")
+	}
+	if !strings.Contains(runnerBootstrap, "checkpoint-client.py evidence") {
+		t.Fatal("private bootstrap must reuse the shared evidence client")
+	}
+	if strings.Contains(runnerBootstrap, "PRELOOP_ARTIFACT_B64") {
+		t.Fatal("private bootstrap must not emit evidence bytes on the log channel")
+	}
+}
+
 func TestRunnerLaunchWorkspaceMount(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

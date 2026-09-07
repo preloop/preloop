@@ -14,6 +14,7 @@ from preloop.models.crud import crud_flow, crud_flow_execution, flow_artifact
 from preloop.models.db.session import get_db_session
 from preloop.models.schemas.flow_artifact import ArtifactReference
 from preloop.services.flow_artifacts import (
+    artifact_max_bytes,
     artifact_thread_id,
     get_artifact,
     put_artifact,
@@ -32,7 +33,7 @@ def mint_artifact_capability(
     flow_id: UUID,
     thread_id: str,
     execution_id: UUID,
-    kind: Literal["workspace", "native_session"],
+    kind: Literal["workspace", "native_session", "evidence"],
     operation: Literal["put", "get"],
     reference: ArtifactReference | None = None,
 ) -> str:
@@ -126,7 +127,7 @@ def upload_artifact(
 
     async def read_archive() -> bytes:
         """Consume the ASGI stream on its loop with a strict size bound."""
-        limit = settings.workspace_snapshot_max_bytes
+        limit = artifact_max_bytes(str(claims.get("kind") or "workspace"))
         data = bytearray()
         async for chunk in request.stream():
             if len(data) + len(chunk) > limit:

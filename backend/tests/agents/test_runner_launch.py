@@ -64,6 +64,32 @@ async def test_shared_launch_has_model_mcp_prompt_and_no_script_secrets(
 
 
 @pytest.mark.asyncio
+async def test_private_launch_delivers_evidence_capability_not_workspace():
+    context = {
+        "agent_type": "codex",
+        "agent_config": {},
+        "model_identifier": "example-model",
+        "account_api_token": "mcp-secret",
+        "prompt": "Audit the release",
+        "execution_id": str(uuid4()),
+        "flow_id": str(uuid4()),
+        "evidence_env": {
+            "PRELOOP_EVIDENCE_URL": (
+                "https://example.com/api/v1/flows/executions/x/artifacts"
+            ),
+            "PRELOOP_EVIDENCE_PUT_TOKEN": "evidence-secret",
+            "PRELOOP_EVIDENCE_MAX_BYTES": "33554432",
+            "PRELOOP_EVIDENCE_EXPANDED_MAX_BYTES": "2147483648",
+        },
+    }
+    launch = await build_runner_launch(context)
+    assert launch["env"]["PRELOOP_EVIDENCE_PUT_TOKEN"] == "evidence-secret"
+    assert "PRELOOP_CHECKPOINT_PUT_TOKEN" not in launch["env"]
+    assert "checkpoint-client.py evidence" in launch["script"]
+    assert "evidence-secret" not in launch["script"]
+
+
+@pytest.mark.asyncio
 async def test_unsupported_harness_fails_explicitly():
     with pytest.raises(ValueError, match="only codex and opencode"):
         await build_runner_launch({"agent_type": "unknown"})

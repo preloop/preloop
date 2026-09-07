@@ -439,6 +439,25 @@ class Settings(BaseSettings):
     flow_native_session_retention_hours: int = Field(168, ge=0)
     flow_checkpoint_interval_seconds: int = Field(300, ge=30)
     flow_artifact_direct_upload: bool = False
+    flow_evidence_max_bytes: int = Field(
+        32 * 1024 * 1024,
+        ge=1,
+        description=(
+            "Compressed cap for durable evidence packs (tar.gz of "
+            "/workspace/evidence plus result.json). Applies to the "
+            "authenticated upload path gated by FLOW_ARTIFACT_DIRECT_UPLOAD. "
+            "The Kubernetes log channel remains capped at 2 MiB."
+        ),
+    )
+    flow_evidence_retention_hours: int = Field(
+        720,
+        ge=0,
+        description=(
+            "How long durable evidence artifacts are retained before cleanup "
+            "removes ciphertext, in hours. 0 expires on the next janitor pass. "
+            "This is operational retention, not legal hold or object-lock."
+        ),
+    )
     flow_environment_profiles_file: str = ""
 
     workspace_snapshot_max_bytes: int = Field(
