@@ -5,16 +5,24 @@ harness only. Transport credentials are execution capabilities, never storage
 credentials. Uploads commit only after the complete archive validates.
 """
 
+import errno
 import hashlib
 import io
 import json
 import os
+import stat
 import subprocess
 import tarfile
 import tempfile
 import time
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+WORKSPACE_ROOT = Path("/workspace")
+EVIDENCE_REFERENCE_PATH = Path("/tmp/preloop-evidence-reference.json")
+MAX_EVIDENCE_MEMBERS = 100_000
+RESULT_JSON_MAX_BYTES = 256 * 1024
+_READ_CHUNK = 65536
 
 EXCLUDED = {
     "node_modules",
@@ -145,11 +153,173 @@ def capture(root: Path, *, max_bytes: int) -> bytes:
     return body
 
 
-def request(method: str, token: str, data: bytes | None = None) -> bytes:
+def _posix_member_name(relative: str) -> str:
+    """Reject absolute names, parent traversal, and backslashes before packing."""
+    posix = PurePosixPath(relative)
+    if (
+        posix.is_absolute()
+        or ".." in posix.parts
+        or "\\" in relative
+        or not posix.parts
+    ):
+        raise ValueError("evidence_unsafe_path")
+    return relative
+
+
+def _lstat_regular(path: Path) -> os.stat_result:
+    """Stat a member without following links; only regular files are packable."""
+    st = path.lstat()
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        raise ValueError("evidence_unsafe_member")
+    return st
+
+
+def _read_bounded(path: Path, *, expected: os.stat_result, limit: int) -> bytes:
+    """Read at most ``limit`` bytes from the same inode ``expected`` named.
+
+    ``expected.st_size`` is checked before any read so a huge or sparse file
+    cannot be allocated into memory. The path is opened with ``O_NOFOLLOW``
+    and the fd is ``fstat``ed so a substituted symlink cannot be followed.
+    """
+    if expected.st_size > limit:
+        raise ValueError("evidence_expansion_limit")
+    flags = os.O_RDONLY
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if nofollow:
+        flags |= nofollow
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if getattr(exc, "errno", None) in {errno.ELOOP, errno.EMLINK}:
+            raise ValueError("evidence_unsafe_member") from exc
+        raise ValueError("evidence_busy") from exc
+    try:
+        observed = os.fstat(fd)
+        if stat.S_ISLNK(observed.st_mode) or not stat.S_ISREG(observed.st_mode):
+            raise ValueError("evidence_unsafe_member")
+        if (
+            observed.st_ino != expected.st_ino
+            or observed.st_dev != expected.st_dev
+            or observed.st_size != expected.st_size
+            or observed.st_mtime_ns != expected.st_mtime_ns
+        ):
+            raise ValueError("evidence_busy")
+        data = bytearray()
+        while True:
+            chunk = os.read(fd, _READ_CHUNK)
+            if not chunk:
+                break
+            data.extend(chunk)
+            if len(data) > expected.st_size or len(data) > limit:
+                raise ValueError(
+                    "evidence_expansion_limit" if len(data) > limit else "evidence_busy"
+                )
+        if len(data) != expected.st_size:
+            raise ValueError("evidence_busy")
+        return bytes(data)
+    finally:
+        os.close(fd)
+
+
+def pack_evidence(root: Path, *, max_bytes: int, max_expanded_bytes: int) -> bytes:
+    """Pack /workspace/evidence and result.json with the same member rules as storage.
+
+    Member caps, symlink rejection (including the evidence root), and expanded
+    size are enforced from ``lstat`` before any file body is read.
+    """
+    root = root.resolve()
+    evidence_dir = root / "evidence"
+    result_path = root / "result.json"
+    if evidence_dir.is_symlink() or (
+        evidence_dir.exists() and not evidence_dir.is_dir()
+    ):
+        raise ValueError("evidence_unsafe_member")
+    if result_path.is_symlink() or (result_path.exists() and not result_path.is_file()):
+        raise ValueError("evidence_unsafe_member")
+    if not evidence_dir.is_dir() and not result_path.is_file():
+        raise ValueError("evidence_absent")
+    pending: list[tuple[Path, str, os.stat_result, int, str]] = []
+    expanded = 0
+
+    def _queue(
+        path: Path,
+        relative: str,
+        *,
+        limit: int,
+        oversized: str,
+    ) -> None:
+        nonlocal expanded
+        if len(pending) >= MAX_EVIDENCE_MEMBERS:
+            raise ValueError("evidence_invalid_members")
+        name = _posix_member_name(relative)
+        st = _lstat_regular(path)
+        if st.st_size > limit:
+            raise ValueError(oversized)
+        if expanded + st.st_size > max_expanded_bytes:
+            raise ValueError("evidence_expansion_limit")
+        expanded += st.st_size
+        pending.append((path, name, st, limit, oversized))
+
+    if evidence_dir.is_dir():
+        for directory, subdirs, names in os.walk(evidence_dir, followlinks=False):
+            parent = Path(directory)
+            kept: list[str] = []
+            for name in sorted(subdirs):
+                child = parent / name
+                if child.is_symlink():
+                    raise ValueError("evidence_unsafe_member")
+                if not name.startswith(".") and child.is_dir():
+                    kept.append(name)
+            subdirs[:] = kept
+            for name in sorted(names):
+                path = parent / name
+                try:
+                    relative = path.relative_to(root).as_posix()
+                except ValueError as exc:
+                    raise ValueError("evidence_unsafe_path") from exc
+                _queue(
+                    path,
+                    relative,
+                    limit=max_expanded_bytes,
+                    oversized="evidence_expansion_limit",
+                )
+    if result_path.is_file():
+        _queue(
+            result_path,
+            "result.json",
+            limit=RESULT_JSON_MAX_BYTES,
+            oversized="evidence_result_oversized",
+        )
+    if not pending:
+        raise ValueError("evidence_empty")
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for path, relative, st, limit, oversized in pending:
+            try:
+                data = _read_bounded(path, expected=st, limit=limit)
+            except ValueError as exc:
+                if str(exc) == "evidence_expansion_limit":
+                    raise ValueError(oversized) from exc
+                raise
+            info = tarfile.TarInfo(relative)
+            info.size = len(data)
+            info.mode = st.st_mode & 0o777
+            archive.addfile(info, io.BytesIO(data))
+            if buffer.tell() > max_bytes:
+                raise ValueError("evidence_oversized")
+    body = buffer.getvalue()
+    if not body or len(body) > max_bytes:
+        raise ValueError("evidence_oversized" if body else "evidence_empty")
+    return body
+
+
+def request(
+    method: str, token: str, data: bytes | None = None, *, url: str | None = None
+) -> bytes:
     """Use only the operator-provided endpoint and scoped capability."""
-    url = os.environ["PRELOOP_CHECKPOINT_URL"]
+    target = url or os.environ["PRELOOP_CHECKPOINT_URL"]
     req = urllib.request.Request(
-        url,
+        url=target,
         data=data,
         method=method,
         headers={
@@ -158,7 +328,12 @@ def request(method: str, token: str, data: bytes | None = None) -> bytes:
         },
     )
     with urllib.request.urlopen(req, timeout=120) as response:
-        limit = int(os.environ["PRELOOP_CHECKPOINT_MAX_BYTES"])
+        limit = int(
+            os.environ.get(
+                "PRELOOP_EVIDENCE_MAX_BYTES",
+                os.environ.get("PRELOOP_CHECKPOINT_MAX_BYTES", str(32 * 1024 * 1024)),
+            )
+        )
         body = response.read(limit + 1)
         if len(body) > limit:
             raise ValueError("checkpoint_response_oversized")
@@ -220,12 +395,38 @@ def main() -> None:
             if sys.argv[1] == "restore":
                 restore(
                     request("GET", os.environ["PRELOOP_CHECKPOINT_GET_TOKEN"]),
-                    Path("/workspace"),
+                    WORKSPACE_ROOT,
                 )
                 print("PRELOOP_CHECKPOINT restored", flush=True)
+            elif sys.argv[1] == "evidence":
+                # The marker file is agent-writable. Presence is not proof of
+                # a server commit; always pack and PUT. The control plane
+                # verifies account, execution, kind and digest.
+                body = pack_evidence(
+                    WORKSPACE_ROOT,
+                    max_bytes=int(os.environ["PRELOOP_EVIDENCE_MAX_BYTES"]),
+                    max_expanded_bytes=int(
+                        os.environ.get(
+                            "PRELOOP_EVIDENCE_EXPANDED_MAX_BYTES", str(2 * 1024**3)
+                        )
+                    ),
+                )
+                reference = json.loads(
+                    request(
+                        "PUT",
+                        os.environ["PRELOOP_EVIDENCE_PUT_TOKEN"],
+                        body,
+                        url=os.environ["PRELOOP_EVIDENCE_URL"],
+                    )
+                )
+                EVIDENCE_REFERENCE_PATH.write_text(json.dumps(reference))
+                print(
+                    "PRELOOP_EVIDENCE committed " + reference["artifact_id"],
+                    flush=True,
+                )
             else:
                 body = capture(
-                    Path("/workspace"),
+                    WORKSPACE_ROOT,
                     max_bytes=int(os.environ["PRELOOP_CHECKPOINT_MAX_BYTES"]),
                 )
                 reference = json.loads(
@@ -239,8 +440,13 @@ def main() -> None:
                     flush=True,
                 )
         except Exception as exc:
-            print("PRELOOP_CHECKPOINT failed " + type(exc).__name__, flush=True)
-            raise SystemExit(1) from None
+            label = (
+                "PRELOOP_EVIDENCE failed "
+                if len(sys.argv) > 1 and sys.argv[1] == "evidence"
+                else "PRELOOP_CHECKPOINT failed "
+            )
+            print(label + type(exc).__name__, flush=True)
+            raise SystemExit(2 if str(exc) == "evidence_absent" else 1) from None
 
 
 if __name__ == "__main__":

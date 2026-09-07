@@ -121,6 +121,16 @@ EVIDENCE_DIR_PATH = "/workspace/evidence"
 # inside the kubelet's default 10 MiB container-log rotation limit.
 MAX_EVIDENCE_ARCHIVE_BYTES = 2 * 1024 * 1024
 
+
+def evidence_capture_max_bytes() -> int:
+    """Compressed evidence cap: durable upload budget, else the log-channel cap."""
+    if getattr(settings, "flow_artifact_direct_upload", False):
+        return int(getattr(settings, "flow_evidence_max_bytes", 0) or 0) or (
+            MAX_EVIDENCE_ARCHIVE_BYTES
+        )
+    return MAX_EVIDENCE_ARCHIVE_BYTES
+
+
 # The wrapper opens PRs/MRs itself (post-execution curl). The response is kept
 # under the evidence dir and the resulting URL is echoed on one line so the
 # orchestrator can bind the execution to the PR it opened.
@@ -477,7 +487,7 @@ K8S_TERMINAL_LOG_TAIL_LINES = _WORST_CASE_EMISSION_LINES + 2000
 #   PRELOOP_ARTIFACT_B64 <base64-chunk>          (0..n lines)
 #   PRELOOP_ARTIFACT_END <channel>
 # where <channel> is "result" or "evidence" and <status> is one of
-# present | absent | too_large | error.
+# present | absent | too_large | error | uploaded.
 ARTIFACT_STREAM_LINE_PREFIX = "PRELOOP_ARTIFACT_"
 
 # Environment variable carrying the original (unwrapped) agent script when the
@@ -561,14 +571,44 @@ async def _sleep_before_job_create_retry(seconds: float) -> None:
 # GNU coreutils, busybox and BSD; wrapped or single-line output are both
 # accepted by the parser.
 #
-# Security note: the emission duplicates result/evidence content into the pod
-# log, where it is retained by the kubelet until log rotation and readable by
-# anyone with pod-log access in the agent namespace. Deployments must keep
-# that RBAC scoped as tightly as the account-scoped API/DB column. The
-# object-storage follow-up (tracked on the PR) moves the evidence channel off
-# the log stream entirely.
+# Direct upload (PRELOOP_EVIDENCE_PUT_TOKEN): the wrapper never prints
+# evidence or result.json bytes. Markers report uploaded/absent/error only.
+# The Kubernetes log channel remains the legacy path when the token is unset.
 K8S_ARTIFACT_WRAPPER_SCRIPT = f"""
 _preloop_emit_artifacts() {{
+    if [ -n "${{PRELOOP_EVIDENCE_PUT_TOKEN:-}}" ]; then
+        _pl_ev_rc=1
+        if [ -f /tmp/preloop-checkpoint-client.py ]; then
+            python3 /tmp/preloop-checkpoint-client.py evidence
+            _pl_ev_rc=$?
+            if [ "$_pl_ev_rc" -eq 0 ]; then
+                echo "PRELOOP_ARTIFACT_BEGIN evidence uploaded"
+                echo "PRELOOP_ARTIFACT_END evidence"
+            elif [ "$_pl_ev_rc" -eq 2 ]; then
+                echo "PRELOOP_ARTIFACT_BEGIN evidence absent"
+                echo "PRELOOP_ARTIFACT_END evidence"
+            else
+                echo "PRELOOP_ARTIFACT_BEGIN evidence error"
+                echo "PRELOOP_ARTIFACT_END evidence"
+            fi
+        else
+            echo "PRELOOP_ARTIFACT_BEGIN evidence error"
+            echo "PRELOOP_ARTIFACT_END evidence"
+        fi
+        if [ -f {RESULT_ARTIFACT_PATH} ]; then
+            if [ "$_pl_ev_rc" -eq 0 ]; then
+                echo "PRELOOP_ARTIFACT_BEGIN result uploaded"
+                echo "PRELOOP_ARTIFACT_END result"
+            else
+                echo "PRELOOP_ARTIFACT_BEGIN result error"
+                echo "PRELOOP_ARTIFACT_END result"
+            fi
+        else
+            echo "PRELOOP_ARTIFACT_BEGIN result absent"
+            echo "PRELOOP_ARTIFACT_END result"
+        fi
+        return
+    fi
     if [ -f {RESULT_ARTIFACT_PATH} ]; then
         _pl_size=$(wc -c < {RESULT_ARTIFACT_PATH} | tr -d ' ')
         if [ "$_pl_size" -gt {MAX_RESULT_ARTIFACT_BYTES} ] 2>/dev/null; then
@@ -678,6 +718,8 @@ class ContainerAgentExecutor(AgentExecutor):
         self._environment_containers: list[Any] = []
         self._environment_network: Any = None
         self._direct_checkpoints = False
+        self._direct_evidence = False
+        self.evidence_transport_error: Optional[str] = None
         self.use_kubernetes = use_kubernetes
         self._docker_client: Optional[aiodocker.Docker] = None
         self._containers: Dict[str, Any] = {}  # Track running containers
@@ -827,7 +869,16 @@ class ContainerAgentExecutor(AgentExecutor):
             Container ID or K8s pod name as session reference
         """
         execution_id = execution_context["execution_id"]
-        self._direct_checkpoints = bool(execution_context.get("checkpoint_env"))
+        self._direct_checkpoints = bool(
+            (execution_context.get("checkpoint_env") or {}).get(
+                "PRELOOP_CHECKPOINT_PUT_TOKEN"
+            )
+        )
+        self._direct_evidence = bool(
+            (execution_context.get("evidence_env") or {}).get(
+                "PRELOOP_EVIDENCE_PUT_TOKEN"
+            )
+        )
         if self.environment_profile and not self.use_kubernetes:
             await self._prepare_environment_services(execution_context)
 
@@ -1822,10 +1873,10 @@ class ContainerAgentExecutor(AgentExecutor):
                 if pods.items:
                     pod = max(
                         pods.items,
-                        key=lambda item: _termination_timestamp(
-                            item.metadata.creation_timestamp
-                        )
-                        or "",
+                        key=lambda item: (
+                            _termination_timestamp(item.metadata.creation_timestamp)
+                            or ""
+                        ),
                     )
                     for container_status in pod.status.container_statuses or []:
                         if container_status.name != "agent":
@@ -2125,6 +2176,9 @@ class ContainerAgentExecutor(AgentExecutor):
         status = stream["status"]
         if status == "absent":
             return None
+        if status == "uploaded":
+            # Packed into the durable evidence artifact; orchestrator extracts.
+            return None
         if status == "too_large":
             self.logger.warning(
                 f"Result artifact from Job {job_name} is too large "
@@ -2154,9 +2208,8 @@ class ContainerAgentExecutor(AgentExecutor):
 
         Docker: fetches the directory through the archive API and re-packs it
         as tar.gz. Kubernetes: decodes the base64 emission from the pod log
-        stream (see ``K8S_ARTIFACT_WRAPPER_SCRIPT``). Best-effort: returns
-        ``None`` when there is no evidence directory, when it exceeds
-        ``MAX_EVIDENCE_ARCHIVE_BYTES``, or on fetch errors (all logged).
+        stream (see ``K8S_ARTIFACT_WRAPPER_SCRIPT``) unless direct upload is
+        configured, in which case logs carry no evidence payload.
         """
         if self.use_kubernetes:
             return await self._get_kubernetes_evidence_archive(session_reference)
@@ -2174,11 +2227,19 @@ class ContainerAgentExecutor(AgentExecutor):
         stream = self._extract_artifact_stream(lines, "evidence")
         if stream is None or stream["status"] == "absent":
             return None
+        if stream["status"] == "error":
+            self.evidence_transport_error = "evidence_upload_failed"
+            return None
+        if self._direct_evidence or stream["status"] == "uploaded":
+            # Direct path never decodes log bytes, including injected B64.
+            return None
         if stream["status"] != "present":
             self.logger.warning(
                 f"Evidence archive from Job {job_name} not captured "
                 f"(status={stream['status']}, size={stream['size']})"
             )
+            if stream["status"] == "error":
+                self.evidence_transport_error = "evidence_upload_failed"
             return None
         return bytes(stream["data"])
 
@@ -2203,9 +2264,10 @@ class ContainerAgentExecutor(AgentExecutor):
             )
             return None
 
+        limit = evidence_capture_max_bytes()
         try:
             total_size = sum(m.size for m in tar.getmembers() if m.isfile())
-            if total_size > MAX_EVIDENCE_ARCHIVE_BYTES:
+            if total_size > limit:
                 self.logger.warning(
                     f"Evidence pack from container {session_reference[:12]} "
                     f"is too large uncompressed ({total_size} bytes), "
@@ -2225,7 +2287,7 @@ class ContainerAgentExecutor(AgentExecutor):
             tar.close()
 
         data = buffer.getvalue()
-        if len(data) > MAX_EVIDENCE_ARCHIVE_BYTES:
+        if len(data) > limit:
             self.logger.warning(
                 f"Evidence archive from container {session_reference[:12]} "
                 f"is too large ({len(data)} bytes), not capturing"
@@ -2975,6 +3037,7 @@ class ContainerAgentExecutor(AgentExecutor):
             if execution_context.get(self.GIT_API_TOKENS_CONTEXT_KEY):
                 raise ValueError("Write API tokens cannot enter an isolated agent")
         env.update(execution_context.get("checkpoint_env") or {})
+        env.update(execution_context.get("evidence_env") or {})
         if self.environment_profile:
             from preloop.services.flow_environment import profile_env
 
@@ -2995,11 +3058,14 @@ class ContainerAgentExecutor(AgentExecutor):
             Shell command string to run before agent starts, or empty string if none
         """
         commands = []
-        from preloop.services.checkpoint_runtime import checkpoint_shell
+        from preloop.services.checkpoint_runtime import checkpoint_shell, evidence_shell
 
         checkpoint = checkpoint_shell(execution_context)
         if checkpoint:
             commands.append(checkpoint.rstrip())
+        evidence = evidence_shell(execution_context)
+        if evidence:
+            commands.append(evidence.rstrip())
 
         # Prepare git clone command if enabled
         git_clone_config = execution_context.get("git_clone_config")

@@ -26,9 +26,9 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 from urllib.parse import urljoin, urlparse, urlunparse
 
 from preloop.cra.evidence_pack import (
-    MAX_EVIDENCE_ARCHIVE_BYTES,
     EvidencePackError,
     accept_evidence_archive,
+    evidence_archive_max_bytes,
     same_origin,
 )
 from preloop.cra.schemas import (
@@ -512,7 +512,7 @@ def fetch_evidence_status(
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> Optional[dict[str, Any]]:
-    """GET evidence-status when the evidence worker exposes it; else None."""
+    """GET evidence-status when the control plane exposes it; else None."""
     url = _join_api(api_url, f"/api/v1/flows/executions/{execution_id}/evidence-status")
     status, raw, _headers = request_with_retries(
         "GET",
@@ -577,7 +577,7 @@ def fetch_evidence(
         sleep=sleep,
         monotonic=monotonic,
         accept="application/gzip, application/octet-stream, */*",
-        max_body=MAX_EVIDENCE_ARCHIVE_BYTES,
+        max_body=evidence_archive_max_bytes(),
     )
     if status == 404:
         raise CraCIError("evidence fetch returned HTTP 404")

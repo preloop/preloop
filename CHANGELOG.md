@@ -13,13 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation for presets 004–007 at the hosted and private-runner persist
   boundary, contradiction reconciliation, and `python -m preloop.cra.ci`.
   Default release policy is a clean pass; `pass_with_findings` is explicit;
-  fail and unknown verdicts cannot be accepted. Evidence archives are
-  size-bounded and checked for gzip/tar integrity plus required
-  `result.json` / `evidence/` membership. Claimed approvals and waivers
-  fail closed when platform authority is unavailable; due-diligence
-  matching requires an exact `request_approval` operation. Webhook URLs
-  are redacted in errors and the webhook POST is not retried. Guide:
-  `docs/guide/flows/security-audit-presets.md`.
+  fail and unknown verdicts cannot be accepted. Evidence archives use the
+  durable size caps, gzip/tar integrity, digest binding, and content
+  fingerprints so schema/verdict/status alone cannot swap SBOM or findings.
+  Claimed approvals and waivers fail closed when platform authority is
+  unavailable; due-diligence matching requires an exact `request_approval`
+  operation. Webhook URLs are redacted in errors and the webhook POST is
+  not retried. Guide: `docs/guide/flows/security-audit-presets.md`.
+
+- **Durable evidence transport**: hosted containers and private Docker
+  runners can upload CRA evidence packs through the existing encrypted
+  artifact API (`kind=evidence`) instead of the Kubernetes log channel.
+  Retrieval verifies digest and account/execution binding and reports
+  missing, expired and failed distinctly. Retention is configurable
+  (`FLOW_EVIDENCE_RETENTION_HOURS`) and is not a legal hold. Guide:
+  `docs/guide/flows/evidence-storage.md`. Status polls use the persisted
+  receipt only (`kind=evidence`); download headers carry the verified
+  digest. Tracking: issues #268, #386.
 
 - **Per-flow label-based model routing**: a flow can store optional ordered
   rules in `agent_config.model_routing` that map current issue labels

@@ -24,6 +24,20 @@ rm -f /workspace/result.json || exit 1
 printf '%s\n' "$PRELOOP_RUNNER_SCRIPT" | bash
 PRELOOP_HARNESS_EXIT=$?
 export PRELOOP_HARNESS_EXIT
+PRELOOP_EVIDENCE_UPLOAD=
+if [ -n "${PRELOOP_EVIDENCE_PUT_TOKEN:-}" ]; then
+  if [ -f /tmp/preloop-checkpoint-client.py ]; then
+    python3 /tmp/preloop-checkpoint-client.py evidence
+    case $? in
+      0) PRELOOP_EVIDENCE_UPLOAD=uploaded ;;
+      2) PRELOOP_EVIDENCE_UPLOAD=absent ;;
+      *) PRELOOP_EVIDENCE_UPLOAD=failed ;;
+    esac
+  else
+    PRELOOP_EVIDENCE_UPLOAD=failed
+  fi
+fi
+export PRELOOP_EVIDENCE_UPLOAD
 python3 - <<'PRELOOP_RESULT_EXPORT'
 import base64, json, os, pathlib, stat
 path = pathlib.Path('/workspace/result.json')
@@ -39,6 +53,9 @@ try:
     if not isinstance(result, dict) or not result:
         raise ValueError('result must be a nonempty object')
     envelope = {'exit_code': int(os.environ['PRELOOP_HARNESS_EXIT']), 'result': result}
+    upload = os.environ.get('PRELOOP_EVIDENCE_UPLOAD') or ''
+    if upload in {'uploaded', 'failed', 'absent'}:
+        envelope['evidence_upload'] = upload
     print('PRELOOP_RUNNER_RESULT_V1 ' + base64.b64encode(json.dumps(envelope).encode()).decode())
 except (OSError, ValueError, UnicodeError):
     print('Private runner: no valid structured result produced')
@@ -81,10 +98,31 @@ func runnerLaunchFromJob(job map[string]any) (map[string]any, error) {
 	return launch, nil
 }
 
+func canonicalEvidenceUpload(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return ""
+	case "uploaded":
+		return "uploaded"
+	case "failed":
+		return "failed"
+	case "absent":
+		return "absent"
+	default:
+		return "failed"
+	}
+}
+
 func runnerStructuredResult(lines []string) (map[string]any, []string, error) {
+	result, logs, _, err := parseRunnerStructuredResult(lines)
+	return result, logs, err
+}
+
+func parseRunnerStructuredResult(lines []string) (map[string]any, []string, string, error) {
 	logs := make([]string, 0, len(lines))
 	var result map[string]any
 	var exitCode *int
+	evidenceUpload := ""
 	count := 0
 	for _, line := range lines {
 		if !strings.HasPrefix(line, runnerResultPrefix) {
@@ -101,8 +139,9 @@ func runnerStructuredResult(lines []string) (map[string]any, []string, error) {
 			continue
 		}
 		var envelope struct {
-			ExitCode *int            `json:"exit_code"`
-			Result   json.RawMessage `json:"result"`
+			ExitCode       *int            `json:"exit_code"`
+			Result         json.RawMessage `json:"result"`
+			EvidenceUpload string          `json:"evidence_upload"`
 		}
 		if json.Unmarshal(data, &envelope) != nil || envelope.ExitCode == nil || len(envelope.Result) > runnerResultLimit {
 			continue
@@ -111,22 +150,27 @@ func runnerStructuredResult(lines []string) (map[string]any, []string, error) {
 		if json.Unmarshal(envelope.Result, &decoded) != nil || len(decoded) == 0 {
 			continue
 		}
+		delete(decoded, "evidence_upload")
+		if len(decoded) == 0 {
+			continue
+		}
 		result, exitCode = decoded, envelope.ExitCode
+		evidenceUpload = canonicalEvidenceUpload(envelope.EvidenceUpload)
 	}
 	// Multiple envelopes are ambiguous, so none is accepted as authoritative.
 	if count != 1 || result == nil || exitCode == nil {
-		return nil, logs, fmt.Errorf("agent exited without a valid structured completion result")
+		return nil, logs, "", fmt.Errorf("agent exited without a valid structured completion result")
 	}
 	// Retain valid diagnostic reports even when they cannot confirm success.
 	// The caller separately preserves the actual process exit and halt status.
 	if *exitCode != 0 {
-		return result, logs, fmt.Errorf("agent reported nonzero exit %d", *exitCode)
+		return result, logs, evidenceUpload, fmt.Errorf("agent reported nonzero exit %d", *exitCode)
 	}
 	switch runnerResultConfirmation(result) {
 	case "success", "failure":
-		return result, logs, nil
+		return result, logs, evidenceUpload, nil
 	default:
-		return result, logs, fmt.Errorf("agent exited without a recognized completion verdict")
+		return result, logs, evidenceUpload, fmt.Errorf("agent exited without a recognized completion verdict")
 	}
 }
 

@@ -1,9 +1,10 @@
 """Persisted-execution boundary for CRA result.json validation.
 
-Hosted capture (``FlowExecutionOrchestrator._capture_result_artifact``) and
-private-runner completion both call :func:`apply_cra_persist_boundary` so a
-malformed known schema cannot be stored as a successful release. Raw evidence
-is preserved on the wrapped error object. Non-CRA JSON is unchanged.
+Hosted capture sanitizes the agent JSON, then
+:func:`apply_cra_persist_boundary` validates it. Private-runner completion
+uses the same boundary so a malformed known schema cannot be stored as a
+successful release. Raw evidence is preserved on the wrapped error object.
+Non-CRA JSON is unchanged.
 """
 
 from __future__ import annotations

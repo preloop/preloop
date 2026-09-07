@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import os
 import tarfile
 from pathlib import Path
 from typing import Any
@@ -621,3 +622,223 @@ def test_deadline_uses_flow_timeout_plus_buffer() -> None:
     assert resolve_overall_timeout(explicit=90, flow_timeout_seconds=7200) == 90
     with pytest.raises(CraCIError, match="deadline is unset"):
         resolve_overall_timeout(explicit=None, flow_timeout_seconds=None)
+
+
+def _archive_with_blob(result: dict[str, Any] | None, blob: bytes, name: str) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        if result is not None:
+            packed = json.dumps(result).encode("utf-8")
+            info = tarfile.TarInfo("result.json")
+            info.size = len(packed)
+            tar.addfile(info, io.BytesIO(packed))
+        info = tarfile.TarInfo(name)
+        info.size = len(blob)
+        tar.addfile(info, io.BytesIO(blob))
+    return buf.getvalue()
+
+
+def test_archive_above_old_2mib_cap_is_accepted(
+    tmp_path: Path, sbomaudit_result: dict[str, Any]
+) -> None:
+    blob = os.urandom(2 * 1024 * 1024 + 512 * 1024)
+    archive = _archive_with_blob(sbomaudit_result, blob, "evidence/blob.bin")
+    assert len(archive) > 2 * 1024 * 1024
+    digest = archive_sha256(archive)
+
+    def opener(request: object, timeout: int = 0) -> _FakeResponse:
+        url = _request_url(request)
+        if url.endswith("/evidence-status"):
+            raise _http_error(url, 404)
+        return _FakeResponse(
+            archive,
+            headers={
+                "content-type": "application/gzip",
+                "x-preloop-evidence-sha256": digest,
+                "x-preloop-evidence-status": "available",
+            },
+        )
+
+    dest = fetch_evidence(
+        "https://preloop.example.com",
+        "token",
+        "exec-1",
+        tmp_path / "evidence.tar.gz",
+        opener=opener,
+        max_retries=1,
+        api_result=sbomaudit_result,
+    )
+    assert dest.is_file()
+    assert dest.read_bytes() == archive
+
+
+def test_oversize_archive_is_rejected(
+    monkeypatch: Any, tmp_path: Path, sbomaudit_result: dict[str, Any]
+) -> None:
+    from preloop.config import settings
+
+    monkeypatch.setattr(settings, "flow_evidence_max_bytes", 1024 * 1024)
+    blob = os.urandom(2 * 1024 * 1024 + 1024)
+    archive = _archive_with_blob(sbomaudit_result, blob, "evidence/blob.bin")
+    assert len(archive) > 1024 * 1024
+
+    def opener(request: object, timeout: int = 0) -> _FakeResponse:
+        url = _request_url(request)
+        if url.endswith("/evidence-status"):
+            raise _http_error(url, 404)
+        return _FakeResponse(archive, headers={"content-type": "application/gzip"})
+
+    with pytest.raises(CraCIError, match="exceeds size bound|rejected"):
+        fetch_evidence(
+            "https://preloop.example.com",
+            "token",
+            "exec-1",
+            tmp_path / "evidence.tar.gz",
+            opener=opener,
+            max_retries=1,
+            api_result=sbomaudit_result,
+        )
+
+
+def test_legacy_pack_without_result_json_requires_digest(
+    tmp_path: Path, sbomaudit_result: dict[str, Any]
+) -> None:
+    archive = _archive_with_blob(None, b"# evidence\n", "evidence/sbom-verify.md")
+    digest = archive_sha256(archive)
+
+    def opener(request: object, timeout: int = 0) -> _FakeResponse:
+        url = _request_url(request)
+        if url.endswith("/evidence-status"):
+            return _FakeResponse(
+                json.dumps(
+                    {
+                        "status": "available",
+                        "execution_id": "exec-1",
+                        "sha256": digest,
+                        "kind": "evidence",
+                    }
+                ).encode()
+            )
+        return _FakeResponse(
+            archive,
+            headers={
+                "content-type": "application/gzip",
+                "x-preloop-evidence-sha256": digest,
+                "x-preloop-evidence-status": "available",
+            },
+        )
+
+    dest = fetch_evidence(
+        "https://preloop.example.com",
+        "token",
+        "exec-1",
+        tmp_path / "evidence.tar.gz",
+        opener=opener,
+        max_retries=1,
+        api_result=sbomaudit_result,
+    )
+    assert dest.read_bytes() == archive
+
+
+def test_legacy_flat_paths_accepted_with_digest(
+    tmp_path: Path, sbomaudit_result: dict[str, Any]
+) -> None:
+    archive = _archive_with_blob(None, b"# evidence\n", "sbom-verify.md")
+    digest = archive_sha256(archive)
+
+    def opener(request: object, timeout: int = 0) -> _FakeResponse:
+        url = _request_url(request)
+        if url.endswith("/evidence-status"):
+            raise _http_error(url, 404)
+        return _FakeResponse(
+            archive,
+            headers={
+                "content-type": "application/gzip",
+                "x-preloop-evidence-sha256": digest,
+            },
+        )
+
+    dest = fetch_evidence(
+        "https://preloop.example.com",
+        "token",
+        "exec-1",
+        tmp_path / "evidence.tar.gz",
+        opener=opener,
+        max_retries=1,
+        api_result=sbomaudit_result,
+    )
+    assert dest.read_bytes() == archive
+
+
+def test_legacy_pack_without_digest_is_rejected(
+    tmp_path: Path, sbomaudit_result: dict[str, Any]
+) -> None:
+    archive = _archive_with_blob(None, b"# evidence\n", "evidence/sbom-verify.md")
+
+    def opener(request: object, timeout: int = 0) -> _FakeResponse:
+        url = _request_url(request)
+        if url.endswith("/evidence-status"):
+            raise _http_error(url, 404)
+        return _FakeResponse(archive, headers={"content-type": "application/gzip"})
+
+    with pytest.raises(CraCIError, match="legacy|digest|rejected"):
+        fetch_evidence(
+            "https://preloop.example.com",
+            "token",
+            "exec-1",
+            tmp_path / "evidence.tar.gz",
+            opener=opener,
+            max_retries=1,
+            api_result=sbomaudit_result,
+        )
+
+
+def test_swapped_sbom_content_rejected_despite_same_verdict(
+    tmp_path: Path, sbomaudit_result: dict[str, Any]
+) -> None:
+    packed = clone(sbomaudit_result)
+    packed["coverage"] = dict(packed["coverage"])
+    packed["coverage"]["components"] = 99
+    archive = _make_evidence_archive(packed)
+
+    def opener(request: object, timeout: int = 0) -> _FakeResponse:
+        url = _request_url(request)
+        if url.endswith("/evidence-status"):
+            raise _http_error(url, 404)
+        return _FakeResponse(archive, headers={"content-type": "application/gzip"})
+
+    with pytest.raises(CraCIError, match="content|inconsistent|rejected"):
+        fetch_evidence(
+            "https://preloop.example.com",
+            "token",
+            "exec-1",
+            tmp_path / "evidence.tar.gz",
+            opener=opener,
+            max_retries=1,
+            api_result=sbomaudit_result,
+        )
+
+
+def test_agent_evidence_annotation_is_not_controller_digest(
+    tmp_path: Path, sbomaudit_result: dict[str, Any]
+) -> None:
+    payload = clone(sbomaudit_result)
+    payload["evidence"] = {"sha256": "0" * 64, "status": "available"}
+    archive = _archive_with_blob(None, b"# evidence\n", "evidence/note.md")
+
+    def opener(request: object, timeout: int = 0) -> _FakeResponse:
+        url = _request_url(request)
+        if url.endswith("/evidence-status"):
+            raise _http_error(url, 404)
+        return _FakeResponse(archive, headers={"content-type": "application/gzip"})
+
+    with pytest.raises(CraCIError, match="legacy|digest|rejected"):
+        fetch_evidence(
+            "https://preloop.example.com",
+            "token",
+            "exec-1",
+            tmp_path / "evidence.tar.gz",
+            opener=opener,
+            max_retries=1,
+            api_result=payload,
+        )

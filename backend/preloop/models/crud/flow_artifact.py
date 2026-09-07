@@ -14,6 +14,15 @@ def store(
     db: Session, *, values: dict[str, Any], quota_bytes: int
 ) -> models.FlowArtifact:
     """Serialize account writes and enforce retained ciphertext quota."""
+    from preloop.models.crud import crud_flow_execution
+
+    # Execution row first so a terminal close cannot commit during this PUT.
+    crud_flow_execution.lock_open_for_artifact_put(
+        db, execution_id=values["execution_id"]
+    )
+    now = datetime.now()
+    values.setdefault("created_at", now)
+    values.setdefault("updated_at", now)
     # Serialize quota checks without blocking child audit/usage foreign keys.
     # Account identity does not change, so NO KEY UPDATE is sufficient.
     db.query(models.Account).filter(
@@ -72,7 +81,10 @@ def latest(
             models.FlowArtifact.execution_id == execution_id,
             models.FlowArtifact.kind == kind,
         )
-        .order_by(models.FlowArtifact.created_at.desc())
+        .order_by(
+            models.FlowArtifact.created_at.desc(),
+            models.FlowArtifact.updated_at.desc(),
+        )
         .first()
     )
 

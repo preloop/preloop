@@ -71,8 +71,10 @@ checkpoints travel through authenticated HTTP, never the pod log channel.
 The service validates compressed and expanded size, archive paths and file
 kinds, encrypts the payload with the configured encryption key, and commits the
 immutable manifest and payload together in PostgreSQL. An interrupted upload
-cannot become the latest checkpoint. Result/evidence log transport is unchanged;
-this does not claim to finish the separate evidence-hardening work in #268.
+cannot become the latest checkpoint. Evidence packs use the same store with
+`kind=evidence` and a separate retention window; see
+[Evidence storage and retention](evidence-storage.md). Workspace checkpoint
+log transport is skipped when a checkpoint PUT token is present.
 
 Capabilities permit one artifact kind and operation for one execution, account,
 flow and implementation thread. They confer no general storage access. Reads

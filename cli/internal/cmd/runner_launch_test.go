@@ -14,7 +14,15 @@ import (
 )
 
 func resultLine(result string, code int) string {
-	raw, _ := json.Marshal(map[string]any{"exit_code": code, "result": json.RawMessage(result)})
+	return resultEnvelope(result, code, "")
+}
+
+func resultEnvelope(result string, code int, evidenceUpload string) string {
+	payload := map[string]any{"exit_code": code, "result": json.RawMessage(result)}
+	if evidenceUpload != "" {
+		payload["evidence_upload"] = evidenceUpload
+	}
+	raw, _ := json.Marshal(payload)
 	return runnerResultPrefix + base64.StdEncoding.EncodeToString(raw)
 }
 
@@ -113,6 +121,24 @@ func TestRunnerBootstrapPassesNoSecretsInArgv(t *testing.T) {
 	preserve := dockerRunArgs("ghcr.io/openai/codex-universal:latest", env, runnerDockerOpts{Launch: true, PreserveEntrypoint: true})
 	if strings.Contains(strings.Join(preserve, " "), "--entrypoint") {
 		t.Fatal("universal entrypoint overridden")
+	}
+}
+
+func TestRunnerBootstrapUploadsEvidenceWithoutLoggingPayload(t *testing.T) {
+	if !strings.Contains(runnerBootstrap, "PRELOOP_EVIDENCE_PUT_TOKEN") {
+		t.Fatal("private bootstrap must attempt direct evidence upload")
+	}
+	if !strings.Contains(runnerBootstrap, "checkpoint-client.py evidence") {
+		t.Fatal("private bootstrap must reuse the shared evidence client")
+	}
+	if strings.Contains(runnerBootstrap, "checkpoint-client.py evidence || true") {
+		t.Fatal("final evidence upload outcome must not be discarded")
+	}
+	if !strings.Contains(runnerBootstrap, "PRELOOP_EVIDENCE_UPLOAD") {
+		t.Fatal("bootstrap must record final evidence upload status on the result envelope")
+	}
+	if strings.Contains(runnerBootstrap, "PRELOOP_ARTIFACT_B64") {
+		t.Fatal("private bootstrap must not emit evidence bytes on the log channel")
 	}
 }
 
@@ -361,6 +387,59 @@ func TestRunnerMalformedAndAmbiguousReportsAreNotRetained(t *testing.T) {
 		result, _, err := runnerStructuredResult(splitNonEmptyLines(output))
 		if err == nil || result != nil {
 			t.Fatalf("invalid result retained: result=%v err=%v", result, err)
+		}
+	}
+}
+
+func TestRunnerEvidenceUploadIsBootstrapMetadata(t *testing.T) {
+	result, _, upload, err := parseRunnerStructuredResult([]string{resultEnvelope(`{"status":"success"}`, 0, "failed")})
+	if err != nil || result["status"] != "success" || upload != "failed" {
+		t.Fatalf("result=%v upload=%q err=%v", result, upload, err)
+	}
+	if _, ok := result["evidence_upload"]; ok {
+		t.Fatal("evidence_upload leaked into agent result")
+	}
+	forged, _ := json.Marshal(map[string]any{
+		"exit_code": 0,
+		"result":    map[string]any{"status": "success", "evidence_upload": "uploaded"},
+	})
+	result, _, upload, err = parseRunnerStructuredResult([]string{runnerResultPrefix + base64.StdEncoding.EncodeToString(forged)})
+	if err != nil || upload != "" || result["evidence_upload"] != nil {
+		t.Fatalf("agent JSON authored evidence_upload: result=%v upload=%q err=%v", result, upload, err)
+	}
+	invalid, _ := json.Marshal(map[string]any{
+		"exit_code":       0,
+		"result":          map[string]any{"status": "success"},
+		"evidence_upload": "forged",
+	})
+	_, _, upload, err = parseRunnerStructuredResult([]string{runnerResultPrefix + base64.StdEncoding.EncodeToString(invalid)})
+	if err != nil || upload != "failed" {
+		t.Fatalf("invalid evidence_upload=%q err=%v", upload, err)
+	}
+}
+
+func TestRunnerDockerOutcomeCarriesFinalEvidenceUpload(t *testing.T) {
+	for _, tc := range []struct {
+		status, upload, report string
+		code                   int
+	}{
+		{"SUCCEEDED", "failed", `{"status":"success"}`, 0},
+		{"FAILED", "failed", `{"status":"failure","reason":"tests"}`, 0},
+		{"FAILED", "uploaded", `{"status":"success"}`, 2},
+	} {
+		cmd := exec.Command("sh", "-c", `printf '%s\n' "$REPORT"; exit "$TEST_EXIT"`)
+		cmd.Env = append(os.Environ(), "REPORT="+resultEnvelope(tc.report, tc.code, tc.upload), fmt.Sprintf("TEST_EXIT=%d", tc.code))
+		var output bytes.Buffer
+		cmd.Stdout = &output
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		outcome := waitDockerJob(cmd, "example", &output, nil)
+		if outcome.status != tc.status {
+			t.Fatalf("status=%s want=%s outcome=%+v", outcome.status, tc.status, outcome)
+		}
+		if outcome.evidenceUpload != tc.upload {
+			t.Fatalf("evidence_upload=%q want=%q", outcome.evidenceUpload, tc.upload)
 		}
 	}
 }

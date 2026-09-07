@@ -1,20 +1,14 @@
-"""CRA evidence-pack integrity checks compatible with the evidence worker.
+"""CRA evidence-pack integrity checks for persist and CI.
 
-The sibling evidence clone owns durable storage, receipts, and
-``GET /api/v1/flows/executions/{id}/evidence`` plus ``/evidence-status``.
-This module consumes that HTTP/receipt contract and falls back to local
-stdlib validation when ``preloop.services.flow_artifacts.extract_result_json``
-is not yet merged into this tree.
-
-Public evidence headers (when the evidence worker is deployed):
-
-- ``X-Preloop-Evidence-Status``: ``available`` / ``missing`` / ``expired`` / ``failed``
-- ``X-Preloop-Evidence-SHA256``: hex digest of the gzip body
+Uses ``preloop.services.flow_artifacts`` for gzip/tar validation and
+``result.json`` extraction. Download acceptance binds the controller
+digest. Packed agent JSON is compared on SBOM/finding content, not only
+schema/verdict/status. Server ``evidence`` annotations on the API result
+are not a substitute for that digest.
 """
 
 from __future__ import annotations
 
-import gzip
 import hashlib
 import io
 import json
@@ -22,122 +16,80 @@ import tarfile
 from typing import Any, Mapping, Optional
 from urllib.parse import urlsplit
 
-# Matches hosted capture ``MAX_EVIDENCE_ARCHIVE_BYTES`` and the evidence
-# worker's 256 KiB result.json cap.
-MAX_EVIDENCE_ARCHIVE_BYTES = 2 * 1024 * 1024
-MAX_EVIDENCE_EXPANDED_BYTES = 32 * 1024 * 1024
-MAX_RESULT_JSON_BYTES = 256 * 1024
+from preloop.config import settings
+from preloop.cra.schemas import CAPTURE_ERROR_CODES
+from preloop.cra.validate import json_in
+from preloop.services.flow_artifacts import extract_result_json, validate_archive
+
 EVIDENCE_STATUS_HEADER = "x-preloop-evidence-status"
 EVIDENCE_SHA256_HEADER = "x-preloop-evidence-sha256"
 AVAILABLE_STATUS = "available"
 
-_RESULT_NAMES = ("result.json", "workspace/result.json")
-_EVIDENCE_PREFIXES = ("evidence/", "workspace/evidence/")
+_RESULT_NAMES = frozenset({"result.json", "workspace/result.json"})
+_CONTENT_KEYS = (
+    "findings",
+    "sbom",
+    "source",
+    "source_sbom",
+    "sbom_audit",
+    "vuln_scan",
+    "inventory",
+    "checks",
+    "minimum_elements",
+    "license_flags",
+    "component",
+    "record",
+    "coverage",
+    "art14_candidates",
+    "inputs_declared",
+)
+_VALIDATE_MESSAGES = {
+    "artifact_oversized": "evidence archive exceeds size bound",
+    "artifact_empty": "evidence archive is empty",
+    "artifact_expansion_limit": "evidence archive expansion limit exceeded",
+    "artifact_corrupt": "evidence archive is corrupt",
+    "artifact_unsafe_path": "evidence archive contains an unsafe path",
+    "artifact_unsafe_member": "evidence archive contains an unsafe member",
+    "artifact_invalid_members": "evidence archive members are invalid",
+}
 
 
 class EvidencePackError(ValueError):
     """Raised when an evidence archive cannot be accepted as CRA evidence."""
 
 
-def _canonical_extract() -> Any:
-    try:
-        from preloop.services import flow_artifacts as _fa
-    except ImportError:
-        return None
-    return getattr(_fa, "extract_result_json", None)
+def evidence_archive_max_bytes() -> int:
+    """Compressed evidence cap from durable settings (default 32 MiB)."""
+    return int(settings.flow_evidence_max_bytes)
 
 
-def _canonical_validate() -> Any:
-    try:
-        from preloop.services import flow_artifacts as _fa
-    except ImportError:
-        return None
-    return getattr(_fa, "validate_archive", None)
-
-
-def extract_result_json(archive: bytes) -> Optional[dict[str, Any]]:
-    """Read ``result.json`` packed next to evidence members, if present.
-
-    Prefers the evidence worker's ``flow_artifacts.extract_result_json``
-    when that symbol exists so hosted persist and CI share one extractor.
-    """
-    canonical = _canonical_extract()
-    if canonical is not None:
-        try:
-            parsed = canonical(archive)
-        except Exception:
-            return None
-        return parsed if isinstance(parsed, dict) else None
-    try:
-        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
-            for name in _RESULT_NAMES:
-                try:
-                    member = tar.getmember(name)
-                except KeyError:
-                    continue
-                if not member.isfile() or member.size > MAX_RESULT_JSON_BYTES:
-                    continue
-                source = tar.extractfile(member)
-                if source is None:
-                    continue
-                parsed = json.loads(source.read())
-                if isinstance(parsed, dict):
-                    return parsed
-    except (tarfile.TarError, OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return None
-    return None
+def evidence_expanded_max_bytes() -> int:
+    """Expanded extraction cap from durable settings (default 2 GiB)."""
+    return int(settings.flow_artifact_expanded_max_bytes)
 
 
 def validate_gzip_tar_archive(
     archive: bytes,
     *,
-    max_bytes: int = MAX_EVIDENCE_ARCHIVE_BYTES,
-    max_expanded_bytes: int = MAX_EVIDENCE_EXPANDED_BYTES,
+    max_bytes: Optional[int] = None,
+    max_expanded_bytes: Optional[int] = None,
 ) -> int:
-    """Reject empty, oversized, HTML, or corrupt gzip/tar bodies."""
-    if not archive:
-        raise EvidencePackError("evidence archive is empty")
-    if len(archive) > max_bytes:
-        raise EvidencePackError("evidence archive exceeds size bound")
-    canonical = _canonical_validate()
-    if canonical is not None:
-        try:
-            return int(
-                canonical(
-                    archive,
-                    max_bytes=max_bytes,
-                    max_expanded_bytes=max_expanded_bytes,
-                )
-            )
-        except ValueError as exc:
-            raise EvidencePackError(str(exc) or "evidence archive is corrupt") from exc
+    """Reject empty, oversized, or corrupt gzip/tar bodies."""
+    compressed = evidence_archive_max_bytes() if max_bytes is None else max_bytes
+    expanded = (
+        evidence_expanded_max_bytes()
+        if max_expanded_bytes is None
+        else max_expanded_bytes
+    )
     try:
-        with gzip.GzipFile(fileobj=io.BytesIO(archive), mode="rb") as stream:
-            stream.read(1)
-    except (OSError, EOFError) as exc:
-        raise EvidencePackError("evidence body is not a valid gzip archive") from exc
-    total = 0
-    try:
-        with tarfile.open(fileobj=io.BytesIO(archive), mode="r|gz") as tar:
-            for member in tar:
-                total += max(0, int(member.size))
-                if total > max_expanded_bytes:
-                    raise EvidencePackError("evidence archive expansion limit exceeded")
-                if member.isfile():
-                    handle = tar.extractfile(member)
-                    if handle is None:
-                        raise EvidencePackError("evidence archive is corrupt")
-                    remaining = member.size
-                    while remaining:
-                        chunk = handle.read(min(65536, remaining))
-                        if not chunk:
-                            raise EvidencePackError("evidence archive is corrupt")
-                        remaining -= len(chunk)
-    except EvidencePackError:
-        raise
-    except (tarfile.TarError, OSError, EOFError) as exc:
-        raise EvidencePackError("evidence archive is corrupt") from exc
-    return total
+        return int(
+            validate_archive(archive, max_bytes=compressed, max_expanded_bytes=expanded)
+        )
+    except ValueError as exc:
+        code = str(exc) or "artifact_corrupt"
+        raise EvidencePackError(
+            _VALIDATE_MESSAGES.get(code, "evidence archive is corrupt")
+        ) from exc
 
 
 def _member_names(archive: bytes) -> list[str]:
@@ -149,22 +101,19 @@ def _member_names(archive: bytes) -> list[str]:
     return names
 
 
-def require_result_and_evidence_members(archive: bytes) -> None:
-    """Require ``result.json`` plus at least one ``evidence/`` artifact."""
+def _is_result_member(name: str) -> bool:
+    return name in _RESULT_NAMES or name.endswith("/result.json")
+
+
+def require_evidence_members(archive: bytes) -> list[str]:
+    """Require at least one file member. Legacy packs may omit result.json."""
     try:
         names = _member_names(archive)
     except (tarfile.TarError, OSError) as exc:
         raise EvidencePackError("evidence archive is corrupt") from exc
-    has_result = any(
-        name in _RESULT_NAMES or name.endswith("/result.json") for name in names
-    )
-    has_evidence = any(
-        name == "evidence" or name.startswith(_EVIDENCE_PREFIXES) for name in names
-    )
-    if not has_result:
-        raise EvidencePackError("evidence archive is missing result.json")
-    if not has_evidence:
-        raise EvidencePackError("evidence archive is missing evidence/ members")
+    if not names:
+        raise EvidencePackError("evidence archive has no file members")
+    return names
 
 
 def archive_sha256(archive: bytes) -> str:
@@ -182,8 +131,27 @@ def header_value(headers: Mapping[str, str], name: str) -> Optional[str]:
     return None
 
 
+def controller_digest(
+    headers: Mapping[str, str],
+    receipt: Optional[Mapping[str, Any]] = None,
+) -> Optional[str]:
+    """Return the controller-advertised archive digest, if any.
+
+    Agent annotations on result.json are ignored. Only download headers
+    and the evidence-status receipt are controller authority.
+    """
+    advertised = header_value(headers, EVIDENCE_SHA256_HEADER)
+    if advertised:
+        return advertised.lower().removeprefix("sha256:")
+    if receipt is not None:
+        digest = receipt.get("sha256") or receipt.get("digest")
+        if isinstance(digest, str) and digest.strip():
+            return digest.lower().removeprefix("sha256:")
+    return None
+
+
 def verify_server_digest(archive: bytes, headers: Mapping[str, str]) -> None:
-    """When the evidence worker supplies a digest, it must match the body."""
+    """When the download supplies a digest header, it must match the body."""
     advertised = header_value(headers, EVIDENCE_SHA256_HEADER)
     if not advertised:
         return
@@ -196,7 +164,7 @@ def verify_server_digest(archive: bytes, headers: Mapping[str, str]) -> None:
 
 
 def verify_evidence_status_header(headers: Mapping[str, str]) -> None:
-    """When the evidence worker supplies a status, only ``available`` is usable."""
+    """When the download supplies a status, only ``available`` is usable."""
     status = header_value(headers, EVIDENCE_STATUS_HEADER)
     if status is None:
         return
@@ -223,7 +191,7 @@ def verify_receipt(
         raise EvidencePackError(
             "evidence receipt execution_id does not match the requested execution"
         )
-    digest = receipt.get("sha256")
+    digest = receipt.get("sha256") or receipt.get("digest")
     if isinstance(digest, str) and digest:
         expected = digest.lower().removeprefix("sha256:")
         if expected != archive_sha256(archive):
@@ -237,25 +205,50 @@ def verify_receipt(
         )
 
 
-def results_consistent(
+def _unwrap_result(obj: Any) -> Optional[Mapping[str, Any]]:
+    if not isinstance(obj, Mapping):
+        return None
+    if json_in(obj.get("error"), CAPTURE_ERROR_CODES):
+        raw = obj.get("raw")
+        if isinstance(raw, Mapping):
+            return raw
+        return None
+    return obj
+
+
+def _content_fingerprint(obj: Mapping[str, Any]) -> str:
+    subset = {key: obj.get(key) for key in _CONTENT_KEYS if key in obj}
+    encoded = json.dumps(
+        subset, sort_keys=True, default=str, separators=(",", ":")
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def results_bind_content(
     api_result: Any,
-    archive_result: Optional[Mapping[str, Any]],
-) -> bool:
-    """Require the persisted result and packed result.json to agree."""
-    if archive_result is None:
-        return False
-    candidate = api_result
-    if isinstance(api_result, Mapping) and isinstance(api_result.get("raw"), Mapping):
-        candidate = api_result.get("raw")
-    if not isinstance(candidate, Mapping):
-        return False
-    if candidate.get("schema") != archive_result.get("schema"):
-        return False
-    for key in ("verdict", "status", "flow"):
+    archive_result: Mapping[str, Any],
+) -> None:
+    """Bind packed result.json to the persisted result beyond envelope fields.
+
+    Schema/verdict/status/flow must still agree, and SBOM/finding content
+    must fingerprint-match. Controller ``evidence`` annotations are ignored.
+    """
+    candidate = _unwrap_result(api_result)
+    if candidate is None:
+        raise EvidencePackError(
+            "packed result.json is inconsistent with the persisted execution result"
+        )
+    for key in ("schema", "verdict", "status", "flow"):
         if key in candidate or key in archive_result:
             if candidate.get(key) != archive_result.get(key):
-                return False
-    return True
+                raise EvidencePackError(
+                    "packed result.json is inconsistent with the persisted "
+                    "execution result"
+                )
+    if _content_fingerprint(candidate) != _content_fingerprint(archive_result):
+        raise EvidencePackError(
+            "packed result.json content does not match the persisted result"
+        )
 
 
 def accept_evidence_archive(
@@ -265,27 +258,45 @@ def accept_evidence_archive(
     execution_id: str,
     api_result: Any = None,
     receipt: Optional[Mapping[str, Any]] = None,
-) -> dict[str, Any]:
-    """Validate membership, digest, and result consistency. Returns packed result.json."""
-    validate_gzip_tar_archive(archive)
-    require_result_and_evidence_members(archive)
+    max_bytes: Optional[int] = None,
+    max_expanded_bytes: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    """Validate membership, digest, and result binding.
+
+    Uniform packs include ``result.json``. Legacy capture (default
+    ``FLOW_ARTIFACT_DIRECT_UPLOAD=false``) may omit it and use flat member
+    names; those archives are accepted only with a controller digest.
+    """
+    validate_gzip_tar_archive(
+        archive, max_bytes=max_bytes, max_expanded_bytes=max_expanded_bytes
+    )
+    names = require_evidence_members(archive)
     verify_evidence_status_header(headers)
     verify_server_digest(archive, headers)
     if receipt is not None:
         verify_receipt(receipt, execution_id=execution_id, archive=archive)
     packed = extract_result_json(archive)
-    if packed is None:
-        raise EvidencePackError("evidence archive result.json is missing or unreadable")
-    packed_exec = packed.get("execution_id")
-    if packed_exec is not None and str(packed_exec) != str(execution_id):
+    has_result = packed is not None or any(_is_result_member(name) for name in names)
+    digest = controller_digest(headers, receipt)
+    if has_result:
+        if packed is None:
+            raise EvidencePackError(
+                "evidence archive result.json is missing or unreadable"
+            )
+        packed_exec = packed.get("execution_id")
+        if packed_exec is not None and str(packed_exec) != str(execution_id):
+            raise EvidencePackError(
+                "packed result.json execution_id does not match the requested execution"
+            )
+        if api_result is not None:
+            results_bind_content(api_result, packed)
+        return packed
+    if digest is None or digest != archive_sha256(archive):
         raise EvidencePackError(
-            "packed result.json execution_id does not match the requested execution"
+            "legacy evidence archive has no result.json and no matching "
+            "controller digest"
         )
-    if api_result is not None and not results_consistent(api_result, packed):
-        raise EvidencePackError(
-            "packed result.json is inconsistent with the persisted execution result"
-        )
-    return packed
+    return None
 
 
 def same_origin(left: str, right: str) -> bool:
