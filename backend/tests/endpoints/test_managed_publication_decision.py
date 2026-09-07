@@ -353,6 +353,76 @@ class TestManagedPublicationDecision:
         finally:
             _drop(db_engine, seed.account_id)
 
+    async def test_asgi_http_managed_bearer_denied_then_human_jwt_approves(
+        self, db_engine
+    ) -> None:
+        """ASGI routing: managed Bearer 403, then human JWT approves same row."""
+        from fastapi.testclient import TestClient
+
+        from preloop.api.app import create_app
+        from preloop.models.db.session import get_db_session
+
+        seed = _seed(db_engine)
+        candidates = [_candidate(FIRMWARE, SHA_A)]
+        try:
+            raw = await _call_request_approval(seed, publication_candidates=candidates)
+            request_id = uuid.UUID(json.loads(raw)["request_id"])
+            secret = _mint_flow_secret(db_engine, seed)
+            human_token = create_access_token({"sub": str(seed.user_id)})
+            app = create_app()
+
+            def _db():
+                db = Session(bind=db_engine)
+                try:
+                    yield db
+                finally:
+                    db.close()
+
+            app.dependency_overrides[get_db_session] = _db
+            path = f"/api/v1/approval-requests/{request_id}/approve"
+            from preloop.models.db import session as db_session_mod
+
+            db_session_mod._async_engine = None
+            db_session_mod._async_session_factory = None
+            try:
+                with _publisher_patch(), TestClient(app) as client:
+                    denied = client.post(
+                        path,
+                        json={"approved": True, "comment": "managed self-approve"},
+                        headers={"Authorization": f"Bearer {secret}"},
+                    )
+                    assert denied.status_code == 403
+                    assert denied.json()["detail"] == (
+                        "managed_credential_cannot_decide"
+                    )
+                    pending = _row_snapshot(db_engine, seed.account_id, request_id)
+                    assert pending.status == "pending"
+                    assert pending.responses == []
+                    assert pending.decided_by_ai is False
+                    approved = client.post(
+                        path,
+                        json={"approved": True, "comment": "destinations match"},
+                        headers={"Authorization": f"Bearer {human_token}"},
+                    )
+            finally:
+                db_session_mod._async_engine = None
+                db_session_mod._async_session_factory = None
+            assert approved.status_code == 200
+            assert approved.json()["status"] == "approved"
+            after = _row_snapshot(db_engine, seed.account_id, request_id)
+            assert after.status == "approved"
+            assert after.decided_by_ai is False
+            assert after.auto_approved_reason is None
+            with Session(db_engine) as db:
+                enforce_saved_publication_approval(
+                    db,
+                    account_id=str(seed.account_id),
+                    execution_id=str(seed.execution_id),
+                    candidates=candidates,
+                )
+        finally:
+            _drop(db_engine, seed.account_id)
+
     async def test_human_jwt_approve_satisfies_pre_mint(self, db_engine):
         seed = _seed(db_engine)
         candidates = [_candidate(FIRMWARE, SHA_A), _candidate(APP, SHA_B)]
