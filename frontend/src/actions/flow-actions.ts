@@ -33,6 +33,20 @@ export function flowDetailUrl(flow: FlowActionResource): string {
   return `/console/flows/${encodeURIComponent(flow.id)}`;
 }
 
+/**
+ * The ids the flows bulk bar can run. Edit is a per-row link with an href
+ * fallback, so it is always wired and would otherwise survive intersection
+ * even though the bar has no handler for it.
+ */
+export const FLOW_BULK_ACTION_IDS: Record<
+  string,
+  'pause' | 'resume' | 'delete'
+> = {
+  pause: 'pause',
+  resume: 'resume',
+  delete: 'delete',
+};
+
 export function flowActions(
   flow: FlowActionResource,
   ctx: FlowActionContext = {}

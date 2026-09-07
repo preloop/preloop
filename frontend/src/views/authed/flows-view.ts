@@ -29,7 +29,10 @@ import {
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
 import { actionsFor, intersectActions } from '../../actions';
-import type { FlowActionResource } from '../../actions/flow-actions';
+import {
+  FLOW_BULK_ACTION_IDS,
+  type FlowActionResource,
+} from '../../actions/flow-actions';
 import {
   ListSelectionController,
   confirmBulkAction,
@@ -1274,7 +1277,9 @@ export class FlowsView extends LitElement {
    * a selection of paused flows was still offered Pause. It now keeps only
    * what every selected flow offers, which for a mixed selection is Delete:
    * "resume all" over a mix has to be a selection of the paused ones, and the
-   * filter bar is one click away.
+   * filter bar is one click away. The bar carries pause, resume and delete
+   * only: Edit is a per-row link with an href fallback, so it would otherwise
+   * survive the intersection and fall through to pause.
    */
   private get bulkActions(): BulkAction[] {
     const sets = this.selection.selectedItems.map((row) =>
@@ -1283,15 +1288,17 @@ export class FlowsView extends LitElement {
         onDelete: () => {},
       })
     );
-    return intersectActions(sets).map((action) => ({
-      id: action.id,
-      label: action.label,
-      icon: action.icon,
-      // Pause is neutral on a row, amber in a bar of two over a selection.
-      variant: (action.id === 'pause'
-        ? 'warning'
-        : action.variant) as BulkAction['variant'],
-    }));
+    return intersectActions(sets)
+      .filter((action) => action.id in FLOW_BULK_ACTION_IDS)
+      .map((action) => ({
+        id: action.id,
+        label: action.label,
+        icon: action.icon,
+        // Pause is neutral on a row, amber in a bar of two over a selection.
+        variant: (action.id === 'pause'
+          ? 'warning'
+          : action.variant) as BulkAction['variant'],
+      }));
   }
 
   private renderSelectCheckbox(row: FlowListRow) {

@@ -117,6 +117,12 @@ describe('agentActions', () => {
 
   it('keeps Remove last, outlined and set apart (DESIGN.md)', () => {
     const actions = agentActions(makeAgent(), rowCtx);
+    const decommission = actions.find(
+      (action) => action.id === 'decommission'
+    )!;
+    expect(decommission.separated).to.equal(true);
+    expect(decommission.variant).to.equal('danger');
+    expect(decommission.outline).to.equal(true);
     const remove = actions[actions.length - 1];
     expect(remove.id).to.equal('remove');
     expect(remove.variant).to.equal('danger');

@@ -172,7 +172,8 @@ export function agentActions(
           : undefined,
       },
       // Decommission is the reversible offboard: credentials are revoked but
-      // the agent and its history stay. Remove deletes the record, so the two
+      // the agent and its history stay. The list set it apart from Pause and
+      // Resume with a gap (DESIGN.md). Remove deletes the record, so the two
       // are not the same action and both belong here.
       {
         id: 'decommission',
@@ -180,6 +181,7 @@ export function agentActions(
         icon: 'box-arrow-right',
         variant: 'danger',
         outline: true,
+        separated: true,
         loading: busy,
         available: (item) => item.lifecycle_state !== 'decommissioned',
         onClick: ctx.onLifecycle
