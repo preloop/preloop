@@ -426,7 +426,8 @@ test:unit:cli:
   needs: []
   image: golang:1.26-alpine
   before_script:
-    - apk add --no-cache gcc musl-dev bash
+    # python3 runs the private-runner result export the CLI tests execute.
+    - apk add --no-cache gcc musl-dev bash python3
   script:
     - cd cli
     - go test -v -race -count=1 ./...
