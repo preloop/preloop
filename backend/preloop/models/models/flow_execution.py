@@ -139,6 +139,10 @@ class FlowExecution(Base):
     # GET /flows/executions/{id}/evidence. Deliberately NOT exposed on the
     # execution response schemas.
     evidence_archive = Column(LargeBinary, nullable=True)
+    # Availability/retention receipt for captured evidence. Small JSON so a
+    # release consumer can distinguish available / missing / expired / failed
+    # without downloading the pack. Not a legal-hold claim.
+    evidence_receipt = Column(JSONB, nullable=True)
     # Workspace snapshot (tar.gz of /workspace, .git included) captured by the
     # runner on every terminal path so work that was never pushed survives the
     # container. Size-capped at capture time

@@ -280,6 +280,18 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db.flush()
         return db_obj
 
+    def set_evidence_receipt(
+        self, db: Session, *, db_obj: FlowExecution, receipt: dict[str, Any]
+    ) -> FlowExecution:
+        """Persist the evidence availability receipt without NATS binary payload.
+
+        The receipt is metadata only (digest, size, expiry, status). It must
+        not carry archive bytes or transport credentials.
+        """
+        db_obj.evidence_receipt = receipt  # type: ignore[assignment]
+        db.flush()
+        return db_obj
+
     def set_workspace_snapshot(
         self, db: Session, *, db_obj: FlowExecution, archive: Optional[bytes]
     ) -> FlowExecution:

@@ -18,6 +18,8 @@ from preloop.models.schemas.flow_artifact import ArtifactManifest, ArtifactRefer
 from preloop.utils.encryption import _get_fernet
 
 MAX_MEMBERS = 100_000
+RESERVED_RESULT_FIELDS = ("trusted_publication", "_private_publication")
+ArtifactKind = Literal["workspace", "native_session", "evidence"]
 EVIDENCE_UNAVAILABLE_HTTP = {
     "missing": 404,
     "expired": 410,
@@ -102,128 +104,20 @@ def artifact_reference(artifact: Any) -> ArtifactReference:
     )
 
 
-def put_artifact(
-    db: Session,
-    *,
-    account_id: UUID,
-    flow_id: UUID,
-    thread_id: str,
-    execution_id: UUID,
-    kind: Literal["workspace", "native_session"],
-    archive: bytes,
-) -> ArtifactReference:
-    """Validate and atomically commit encrypted bytes and metadata."""
-    expanded = validate_archive(
-        archive,
-        max_bytes=settings.workspace_snapshot_max_bytes,
-        max_expanded_bytes=settings.flow_artifact_expanded_max_bytes,
-    )
-    metadata: dict[str, Any] = {}
-    native_expiry = None
-    if kind in {"workspace", "native_session"}:
-        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
-            try:
-                member = tar.getmember(
-                    "workspace/.preloop-checkpoint.json"
-                    if kind == "workspace"
-                    else "manifest.json"
-                )
-                if member.size > 65536:
-                    raise ValueError("artifact_metadata_oversized")
-                source = tar.extractfile(member)
-                metadata = json.loads(source.read()) if source else {}
-                if kind == "native_session":
-                    if metadata.get("thread_id") != thread_id:
-                        raise ValueError("artifact_thread_mismatch")
-                    native_expiry = datetime.fromisoformat(
-                        metadata["expires_at"].replace("Z", "+00:00")
-                    )
-                    if native_expiry.tzinfo is None:
-                        raise ValueError("artifact_invalid_expiry")
-            except KeyError:
-                if kind == "native_session":
-                    raise ValueError("artifact_native_manifest_missing") from None
-    now = datetime.now(UTC)
-    ttl = (
-        settings.flow_native_session_retention_hours
-        if kind == "native_session"
-        else settings.workspace_snapshot_ttl_hours
-    )
-    expires_at = now + timedelta(hours=max(0, ttl))
-    if native_expiry is not None:
-        expires_at = min(expires_at, native_expiry)
-    manifest = ArtifactManifest(
-        kind=kind,
-        execution_id=execution_id,
-        thread_id=thread_id,
-        sha256=hashlib.sha256(archive).hexdigest(),
-        size_bytes=len(archive),
-        expanded_bytes=expanded,
-        created_at=now,
-        expires_at=expires_at,
-        metadata=metadata,
-    ).model_dump(mode="json")
-    artifact = crud.store(
-        db,
-        values={
-            "account_id": account_id,
-            "flow_id": flow_id,
-            "thread_id": thread_id,
-            "execution_id": execution_id,
-            "kind": kind,
-            "manifest": manifest,
-            "manifest_sha256": manifest_digest(manifest),
-            "ciphertext": _get_fernet().encrypt(archive),
-            "expires_at": datetime.fromisoformat(
-                manifest["expires_at"].replace("Z", "+00:00")
-            ),
-        },
-        quota_bytes=settings.flow_artifact_account_quota_bytes,
-    )
-    return artifact_reference(artifact)
+def artifact_max_bytes(kind: str) -> int:
+    """Compressed upload cap for one artifact kind."""
+    if kind == "evidence":
+        return int(settings.flow_evidence_max_bytes)
+    return int(settings.workspace_snapshot_max_bytes)
 
 
-def get_artifact(
-    db: Session,
-    *,
-    account_id: UUID,
-    flow_id: UUID,
-    thread_id: str,
-    reference: ArtifactReference,
-) -> bytes:
-    """Authorize, lease, decrypt and revalidate a checkpoint before restore."""
-    if reference.storage_kind != "hosted":
-        raise ValueError("artifact_runner_local")
-    artifact = crud.get(
-        db,
-        artifact_id=reference.artifact_id,
-        account_id=account_id,
-        flow_id=flow_id,
-        thread_id=thread_id,
-    )
-    if artifact is None or artifact.execution_id != reference.execution_id:
-        raise ValueError("artifact_missing")
-    now = datetime.now(UTC)
-    if artifact.expires_at <= now or artifact.ciphertext is None:
-        raise ValueError("artifact_expired")
-    if (
-        artifact.manifest_sha256 != reference.manifest_sha256
-        or manifest_digest(artifact.manifest) != reference.manifest_sha256
-    ):
-        raise ValueError("artifact_manifest_mismatch")
-    artifact = crud.lease(db, artifact=artifact, until=now + timedelta(minutes=10))
-    try:
-        archive = _get_fernet().decrypt(bytes(artifact.ciphertext))
-    except InvalidToken as exc:
-        raise ValueError("artifact_corrupt") from exc
-    if hashlib.sha256(archive).hexdigest() != artifact.manifest["sha256"]:
-        raise ValueError("artifact_digest_mismatch")
-    validate_archive(
-        archive,
-        max_bytes=settings.workspace_snapshot_max_bytes,
-        max_expanded_bytes=settings.flow_artifact_expanded_max_bytes,
-    )
-    return archive
+def artifact_retention_hours(kind: str) -> int:
+    """Operational retention for one artifact kind. Not a legal hold."""
+    if kind == "evidence":
+        return int(settings.flow_evidence_retention_hours)
+    if kind == "native_session":
+        return int(settings.flow_native_session_retention_hours)
+    return int(settings.workspace_snapshot_ttl_hours)
 
 
 class EvidenceUnavailableError(Exception):
@@ -236,13 +130,6 @@ class EvidenceUnavailableError(Exception):
         self.code = code
         self.receipt = receipt
         self.status_code = EVIDENCE_UNAVAILABLE_HTTP[code]
-
-
-def _evidence_retention_hours() -> int:
-    return int(
-        getattr(settings, "flow_evidence_retention_hours", None)
-        or settings.workspace_snapshot_ttl_hours
-    )
 
 
 def evidence_receipt(
@@ -288,12 +175,51 @@ def evidence_receipt(
         "expanded_bytes": manifest.get("expanded_bytes"),
         "created_at": created,
         "expires_at": expires,
-        "retention_hours": _evidence_retention_hours(),
+        "retention_hours": artifact_retention_hours("evidence"),
         "object_lock": False,
         "legal_hold": False,
         "integrity_verified": integrity_verified,
         "error": error,
     }
+
+
+def sanitize_captured_result(result: Any) -> dict[str, Any] | None:
+    """Strip control-plane publication keys from captured agent JSON.
+
+    Shared integration point with the contracts worker: CRA schema validation
+    consumes ``flow_execution.result`` after this helper runs. Getter capture
+    and tar ``result.json`` extraction both use it so reserved keys cannot
+    enter the persisted result.
+    """
+    if not isinstance(result, dict):
+        return None
+    cleaned = dict(result)
+    for key in RESERVED_RESULT_FIELDS:
+        cleaned.pop(key, None)
+    return cleaned
+
+
+def extract_result_json(archive: bytes) -> dict[str, Any] | None:
+    """Read result.json packed next to evidence members, if present."""
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+            for name in ("result.json", "workspace/result.json"):
+                try:
+                    member = tar.getmember(name)
+                except KeyError:
+                    continue
+                if not member.isfile() or member.size > 256 * 1024:
+                    continue
+                source = tar.extractfile(member)
+                if source is None:
+                    continue
+                parsed = json.loads(source.read())
+                cleaned = sanitize_captured_result(parsed)
+                if cleaned is not None:
+                    return cleaned
+    except (tarfile.TarError, OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return None
 
 
 def _as_receipt_dict(value: Any) -> dict[str, Any]:
@@ -325,6 +251,30 @@ def _mark_status_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("object_lock", False)
     out.setdefault("legal_hold", False)
     return out
+
+
+def public_evidence_status(execution: Any) -> dict[str, Any]:
+    """Account-scoped availability from the execution row. No decrypt or hash.
+
+    CI polls ``GET /result`` frequently. Use the persisted receipt (or the
+    presence of the legacy column) rather than querying ciphertext.
+    Availability is not integrity proof.
+    """
+    raw = getattr(execution, "evidence_receipt", None)
+    if isinstance(raw, dict) and raw.get("status"):
+        return _mark_status_receipt(raw)
+    archive = getattr(execution, "evidence_archive", None)
+    if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
+        return evidence_receipt(
+            status="available",
+            execution_id=getattr(execution, "id", None),
+            transport="legacy",
+        )
+    return evidence_receipt(
+        status="missing",
+        execution_id=getattr(execution, "id", None),
+        transport="none",
+    )
 
 
 def inspect_evidence(
@@ -362,6 +312,8 @@ def inspect_evidence(
             execution_id=execution.id,
             transport="legacy",
         )
+    if stored.get("status") == "failed":
+        return _mark_status_receipt(stored)
     return evidence_receipt(
         status="missing",
         execution_id=execution.id,
@@ -455,3 +407,124 @@ def load_evidence(
         archive=archive,
         integrity_verified=True,
     )
+
+
+def put_artifact(
+    db: Session,
+    *,
+    account_id: UUID,
+    flow_id: UUID,
+    thread_id: str,
+    execution_id: UUID,
+    kind: ArtifactKind,
+    archive: bytes,
+) -> ArtifactReference:
+    """Validate and atomically commit encrypted bytes and metadata."""
+    expanded = validate_archive(
+        archive,
+        max_bytes=artifact_max_bytes(kind),
+        max_expanded_bytes=settings.flow_artifact_expanded_max_bytes,
+    )
+    metadata: dict[str, Any] = {}
+    native_expiry = None
+    if kind in {"workspace", "native_session"}:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+            try:
+                member = tar.getmember(
+                    "workspace/.preloop-checkpoint.json"
+                    if kind == "workspace"
+                    else "manifest.json"
+                )
+                if member.size > 65536:
+                    raise ValueError("artifact_metadata_oversized")
+                source = tar.extractfile(member)
+                metadata = json.loads(source.read()) if source else {}
+                if kind == "native_session":
+                    if metadata.get("thread_id") != thread_id:
+                        raise ValueError("artifact_thread_mismatch")
+                    native_expiry = datetime.fromisoformat(
+                        metadata["expires_at"].replace("Z", "+00:00")
+                    )
+                    if native_expiry.tzinfo is None:
+                        raise ValueError("artifact_invalid_expiry")
+            except KeyError:
+                if kind == "native_session":
+                    raise ValueError("artifact_native_manifest_missing") from None
+    now = datetime.now(UTC)
+    ttl = artifact_retention_hours(kind)
+    expires_at = now + timedelta(hours=max(0, ttl))
+    if native_expiry is not None:
+        expires_at = min(expires_at, native_expiry)
+    manifest = ArtifactManifest(
+        kind=kind,
+        execution_id=execution_id,
+        thread_id=thread_id,
+        sha256=hashlib.sha256(archive).hexdigest(),
+        size_bytes=len(archive),
+        expanded_bytes=expanded,
+        created_at=now,
+        expires_at=expires_at,
+        metadata=metadata,
+    ).model_dump(mode="json")
+    artifact = crud.store(
+        db,
+        values={
+            "account_id": account_id,
+            "flow_id": flow_id,
+            "thread_id": thread_id,
+            "execution_id": execution_id,
+            "kind": kind,
+            "manifest": manifest,
+            "manifest_sha256": manifest_digest(manifest),
+            "ciphertext": _get_fernet().encrypt(archive),
+            "availability": "available",
+            "expires_at": datetime.fromisoformat(
+                manifest["expires_at"].replace("Z", "+00:00")
+            ),
+        },
+        quota_bytes=settings.flow_artifact_account_quota_bytes,
+    )
+    return artifact_reference(artifact)
+
+
+def get_artifact(
+    db: Session,
+    *,
+    account_id: UUID,
+    flow_id: UUID,
+    thread_id: str,
+    reference: ArtifactReference,
+) -> bytes:
+    """Authorize, lease, decrypt and revalidate a checkpoint before restore."""
+    if reference.storage_kind != "hosted":
+        raise ValueError("artifact_runner_local")
+    artifact = crud.get(
+        db,
+        artifact_id=reference.artifact_id,
+        account_id=account_id,
+        flow_id=flow_id,
+        thread_id=thread_id,
+    )
+    if artifact is None or artifact.execution_id != reference.execution_id:
+        raise ValueError("artifact_missing")
+    now = datetime.now(UTC)
+    if artifact.expires_at <= now or artifact.ciphertext is None:
+        raise ValueError("artifact_expired")
+    if (
+        artifact.manifest_sha256 != reference.manifest_sha256
+        or manifest_digest(artifact.manifest) != reference.manifest_sha256
+    ):
+        raise ValueError("artifact_manifest_mismatch")
+    artifact = crud.lease(db, artifact=artifact, until=now + timedelta(minutes=10))
+    try:
+        archive = _get_fernet().decrypt(bytes(artifact.ciphertext))
+    except InvalidToken as exc:
+        raise ValueError("artifact_corrupt") from exc
+    if hashlib.sha256(archive).hexdigest() != artifact.manifest["sha256"]:
+        raise ValueError("artifact_digest_mismatch")
+    validate_archive(
+        archive,
+        max_bytes=artifact_max_bytes(str(artifact.kind)),
+        max_expanded_bytes=settings.flow_artifact_expanded_max_bytes,
+    )
+    return archive

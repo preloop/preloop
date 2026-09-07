@@ -1010,6 +1010,8 @@ async def test_get_flow_execution_result(mock_account: Account, mocker: MockerFi
         "summary": "All checks passed",
         "metrics": {"latency_ms": 42},
     }
+    execution.evidence_receipt = None
+    execution.evidence_archive = None
     mock_crud_flow_execution.get.return_value = execution
 
     result = await maybe_await(
@@ -1018,14 +1020,56 @@ async def test_get_flow_execution_result(mock_account: Account, mocker: MockerFi
         )
     )
 
-    assert result == {
-        "execution_id": str(execution_id),
-        "status": "SUCCEEDED",
-        "result": execution.result,
-    }
+    assert result["execution_id"] == str(execution_id)
+    assert result["status"] == "SUCCEEDED"
+    assert result["result"] == execution.result
+    assert result["evidence"]["status"] == "missing"
+    assert result["evidence"]["kind"] == "evidence"
+    assert result["evidence"]["integrity_verified"] is False
     mock_crud_flow_execution.get.assert_called_once_with(
         db=mocker.ANY, id=execution_id, account_id=mock_account.account_id
     )
+
+
+@pytest.mark.asyncio
+async def test_get_flow_execution_result_uses_persisted_receipt_not_inspect(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Frequent CI polls of /result must not inspect/decrypt evidence blobs."""
+    execution_id = uuid.uuid4()
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    artifact_id = uuid.uuid4()
+    execution = MagicMock()
+    execution.id = execution_id
+    execution.status = "FAILED"
+    execution.result = {"schema": "preloop.cra.vulnscan/v1", "verdict": "fail"}
+    execution.evidence_archive = None
+    execution.evidence_receipt = {
+        "status": "available",
+        "kind": "evidence",
+        "transport": "direct",
+        "sha256": "abc",
+        "artifact_id": str(artifact_id),
+    }
+    mock_crud_flow_execution.get.return_value = execution
+    inspect = mocker.patch("preloop.services.flow_artifacts.inspect_evidence")
+    load = mocker.patch("preloop.api.endpoints.flows.load_evidence")
+
+    result = await maybe_await(
+        flows.get_flow_execution_result(
+            db=MagicMock(), execution_id=execution_id, current_user=mock_account
+        )
+    )
+
+    inspect.assert_not_called()
+    load.assert_not_called()
+    assert result["status"] == "FAILED"
+    assert result["evidence"]["status"] == "available"
+    assert result["evidence"]["integrity_verified"] is False
+    assert result["evidence"]["artifact_id"] == str(artifact_id)
 
 
 @pytest.mark.asyncio
@@ -1056,6 +1100,44 @@ async def test_get_flow_execution_result_no_artifact(
 
 
 @pytest.mark.asyncio
+async def test_get_flow_execution_evidence_status_uses_persisted_receipt(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Status polls read the execution receipt only — no live artifact query."""
+    execution_id = uuid.uuid4()
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    execution = MagicMock()
+    execution.id = execution_id
+    execution.evidence_archive = None
+    execution.evidence_receipt = {
+        "status": "available",
+        "kind": "evidence",
+        "transport": "direct",
+        "sha256": "abc",
+        "artifact_id": str(uuid.uuid4()),
+    }
+    mock_crud_flow_execution.get.return_value = execution
+    inspect = mocker.patch("preloop.services.flow_artifacts.inspect_evidence")
+
+    status = await maybe_await(
+        flows.get_flow_execution_evidence_status(
+            db=MagicMock(), execution_id=execution_id, current_user=mock_account
+        )
+    )
+
+    inspect.assert_not_called()
+    assert status["status"] == "available"
+    assert status["kind"] == "evidence"
+    assert status["integrity_verified"] is False
+    mock_crud_flow_execution.get.assert_called_once_with(
+        db=mocker.ANY, id=execution_id, account_id=mock_account.account_id
+    )
+
+
+@pytest.mark.asyncio
 async def test_get_flow_execution_evidence(
     mock_account: Account, mocker: MockerFixture
 ):
@@ -1070,6 +1152,19 @@ async def test_get_flow_execution_evidence(
     execution.id = execution_id
     execution.evidence_archive = b"\x1f\x8b-fake-gzip-bytes"
     mock_crud_flow_execution.get.return_value = execution
+    mocker.patch(
+        "preloop.api.endpoints.flows.load_evidence",
+        return_value=(
+            b"\x1f\x8b-fake-gzip-bytes",
+            {
+                "status": "available",
+                "sha256": "abc",
+                "transport": "legacy",
+                "kind": "evidence",
+                "integrity_verified": True,
+            },
+        ),
+    )
 
     response = await maybe_await(
         flows.get_flow_execution_evidence(
@@ -1083,6 +1178,9 @@ async def test_get_flow_execution_evidence(
         response.headers["content-disposition"]
         == f'attachment; filename="evidence-{execution_id}.tar.gz"'
     )
+    assert response.headers["x-preloop-evidence-status"] == "available"
+    assert response.headers["x-preloop-evidence-kind"] == "evidence"
+    assert response.headers["x-preloop-evidence-integrity"] == "verified"
     mock_crud_flow_execution.get.assert_called_once_with(
         db=mocker.ANY, id=execution_id, account_id=mock_account.account_id
     )
@@ -1103,6 +1201,12 @@ async def test_get_flow_execution_evidence_none_captured(
     execution.id = execution_id
     execution.evidence_archive = None
     mock_crud_flow_execution.get.return_value = execution
+    mocker.patch(
+        "preloop.api.endpoints.flows.load_evidence",
+        side_effect=flows.EvidenceUnavailableError(
+            "missing", {"status": "missing", "execution_id": str(execution_id)}
+        ),
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         await maybe_await(

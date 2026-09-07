@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/guide/flows/security-maintenance.md`. Presets `004`–`007` are
   unchanged; `011` remains the generic implementer and `014` is a
   conservative isolated-publication overlay.
+- **Durable evidence transport**: hosted containers and private Docker
+  runners can upload CRA evidence packs through the existing encrypted
+  artifact API (`kind=evidence`) instead of the Kubernetes log channel.
+  Retrieval verifies digest and account/execution binding and reports
+  missing, expired and failed distinctly. Retention is configurable
+  (`FLOW_EVIDENCE_RETENTION_HOURS`) and is not a legal hold. Guide:
+  `docs/guide/flows/evidence-storage.md`. Status polls use the persisted
+  receipt only (`kind=evidence`); download headers carry the verified
+  digest. Tracking: issues #268, #386.
 
 - **Per-flow label-based model routing**: a flow can store optional ordered
   rules in `agent_config.model_routing` that map current issue labels

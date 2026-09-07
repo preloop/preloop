@@ -56,6 +56,11 @@ from preloop.services.flow_continuation_adoption import (
     preview_continuation,
     adopt_continuation,
 )
+from preloop.services.flow_artifacts import (
+    EvidenceUnavailableError,
+    load_evidence,
+    public_evidence_status,
+)
 
 
 router = APIRouter()
@@ -677,9 +682,11 @@ def read_batch_executions(
     # Present cells in matrix order (creation order is the fallback for rows
     # without a recorded index).
     items.sort(
-        key=lambda i: i.matrix["index"]
-        if i.matrix and i.matrix.get("index") is not None
-        else 1_000_000
+        key=lambda i: (
+            i.matrix["index"]
+            if i.matrix and i.matrix.get("index") is not None
+            else 1_000_000
+        )
     )
 
     return schemas.BatchExecutionsResponse(
@@ -797,6 +804,10 @@ def get_flow_execution_result(
     Eval/observe flows write ``/workspace/result.json`` as their final
     report; the runner captures it as a first-class execution artifact.
     Returns 404 if the execution does not exist or reported no result.
+
+    ``evidence`` is the persisted receipt only: bounded, account-scoped,
+    no decrypt. Availability is not integrity proof; download
+    ``GET .../evidence`` to verify digest.
     """
     execution = crud_flow_execution.get(
         db=db, id=execution_id, account_id=current_user.account_id
@@ -812,7 +823,31 @@ def get_flow_execution_result(
         "execution_id": str(execution.id),
         "status": execution.status,
         "result": execution.result,
+        "evidence": public_evidence_status(execution),
     }
+
+
+@router.get("/flows/executions/{execution_id}/evidence-status")
+@require_permission("view_flows")
+def get_flow_execution_evidence_status(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    """Report evidence availability without downloading the pack.
+
+    Status is one of ``available``, ``missing``, ``expired``, or ``failed``.
+    Served from the persisted execution receipt (no decrypt). Availability
+    is not integrity proof. ``object_lock`` and ``legal_hold`` are always
+    false: this API does not implement WORM retention.
+    """
+    execution = crud_flow_execution.get(
+        db=db, id=execution_id, account_id=current_user.account_id
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Flow execution not found")
+    return public_evidence_status(execution)
 
 
 @router.get("/flows/executions/{execution_id}/evidence")
@@ -827,26 +862,39 @@ def get_flow_execution_evidence(
 
     Audit-style flows write an evidence pack under ``/workspace/evidence``;
     the runner captures it as a tar.gz archive after the agent finishes.
-    Returns 404 if the execution does not exist or no evidence was captured.
+    Durable artifacts are served after digest verification. Distinct
+    outcomes: 404 missing, 410 expired, 409 failed. Legacy executions that
+    only stored ``evidence_archive`` remain readable.
     """
     execution = crud_flow_execution.get(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:
         raise HTTPException(status_code=404, detail="Flow execution not found")
-    if not execution.evidence_archive:
-        raise HTTPException(
-            status_code=404,
-            detail="Flow execution has no captured evidence pack",
+    try:
+        archive, receipt = load_evidence(
+            db, account_id=current_user.account_id, execution=execution
         )
+    except EvidenceUnavailableError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    digest = receipt.get("sha256") or receipt.get("digest") or ""
+    headers = {
+        "Content-Disposition": (
+            f'attachment; filename="evidence-{execution.id}.tar.gz"'
+        ),
+        "Cache-Control": "no-store",
+        "X-Preloop-Evidence-Status": str(receipt.get("status") or "available"),
+        "X-Preloop-Evidence-Kind": "evidence",
+        "X-Preloop-Evidence-Integrity": (
+            "verified" if receipt.get("integrity_verified") else "unverified"
+        ),
+    }
+    if digest:
+        headers["X-Preloop-Evidence-SHA256"] = str(digest)
     return Response(
-        content=bytes(execution.evidence_archive),
+        content=archive,
         media_type="application/gzip",
-        headers={
-            "Content-Disposition": (
-                f'attachment; filename="evidence-{execution.id}.tar.gz"'
-            )
-        },
+        headers=headers,
     )
 
 

@@ -511,6 +511,7 @@ class FlowExecutionOrchestrator:
         # before executor cleanup; persisted at finalize time. Kept out of
         # the agent_result dict so it never travels through NATS updates.
         self._evidence_archive: Optional[bytes] = None
+        self._evidence_receipt: Optional[Dict[str, Any]] = None
         # tar.gz of /workspace captured before the runtime is torn down, so a
         # run that failed before pushing can be downloaded or resumed.
         self._workspace_snapshot: Optional[bytes] = None
@@ -2339,6 +2340,9 @@ class FlowExecutionOrchestrator:
             )
 
         logger.info("Execution context prepared successfully")
+        from preloop.services.checkpoint_runtime import evidence_transport_env
+
+        execution_context["evidence_env"] = evidence_transport_env(execution_context)
         return execution_context
 
     async def _stream_logs_to_nats(self, agent_executor, session_reference: str):
@@ -2848,6 +2852,17 @@ class FlowExecutionOrchestrator:
                 if isinstance(agent_executor, RemoteRunnerExecutor)
                 else checkpoint_context(self.db, execution_context)
             )
+            if "evidence_env" not in execution_context:
+                from preloop.services.checkpoint_runtime import (
+                    evidence_transport_env,
+                )
+
+                try:
+                    execution_context["evidence_env"] = evidence_transport_env(
+                        execution_context
+                    )
+                except (KeyError, TypeError, ValueError):
+                    execution_context["evidence_env"] = {}
 
             # Start the agent
             session_reference = await agent_executor.start(execution_context)
@@ -2995,56 +3010,224 @@ class FlowExecutionOrchestrator:
         artifacts are only readable before the executor is cleaned up, and
         this method is called on every terminal path.
         """
+        from preloop.services.flow_artifacts import (
+            extract_result_json,
+            sanitize_captured_result,
+        )
+
         await self._capture_evidence_archive(agent_executor, session_reference)
         await self._capture_workspace_snapshot(agent_executor, session_reference)
         getter = getattr(agent_executor, "get_result_artifact", None)
-        if not callable(getter):
-            return None
-        try:
-            artifact = await getter(session_reference)
-        except Exception as e:
-            logger.warning(f"Failed to capture result artifact: {e}")
-            return None
-        # Only plain JSON objects are persistable (also guards against mock
-        # executors in tests returning non-dict values).
+        artifact: Optional[Dict[str, Any]] = None
+        if callable(getter):
+            try:
+                captured = await getter(session_reference)
+            except Exception as e:
+                logger.warning(f"Failed to capture result artifact: {e}")
+                captured = None
+            if isinstance(captured, dict):
+                artifact = captured
         if not isinstance(artifact, dict):
+            archive = await self._evidence_bytes_for_result_extract()
+            if archive:
+                artifact = extract_result_json(archive)
+        sanitized = sanitize_captured_result(artifact)
+        if sanitized is None:
             return None
-        # Reserved publisher state is control-plane owned, never agent JSON.
-        artifact = dict(artifact)
-        artifact.pop("trusted_publication", None)
-        artifact.pop("_private_publication", None)
         self.execution_logger.log_milestone(
             "result_artifact_captured",
-            {"keys": sorted(artifact.keys())[:20]},
+            {"keys": sorted(sanitized.keys())[:20]},
         )
-        return artifact
+        return sanitized
+
+    async def _evidence_bytes_for_result_extract(self) -> Optional[bytes]:
+        """Decrypt stored evidence once when result.json is only in the pack.
+
+        Status polls never call this. Direct-path receipts stay metadata-only
+        until the result getter misses and we need the packed JSON.
+        """
+        if self._evidence_archive:
+            return self._evidence_archive
+        if not settings.flow_artifact_direct_upload:
+            return None
+        execution = self.execution_log
+        flow = self.flow
+        if execution is None or flow is None:
+            return None
+        from preloop.models.crud import flow_artifact as crud_flow_artifact
+        from preloop.services.flow_artifacts import (
+            artifact_reference,
+            artifact_thread_id,
+            get_artifact,
+        )
+
+        stored = crud_flow_artifact.latest(
+            self.db,
+            account_id=flow.account_id,
+            flow_id=flow.id,
+            thread_id=artifact_thread_id(execution.trigger_event_details, execution.id),
+            execution_id=execution.id,
+            kind="evidence",
+        )
+        if stored is None or stored.ciphertext is None:
+            return None
+        try:
+            archive = get_artifact(
+                self.db,
+                account_id=flow.account_id,
+                flow_id=flow.id,
+                thread_id=artifact_thread_id(
+                    execution.trigger_event_details, execution.id
+                ),
+                reference=artifact_reference(stored),
+            )
+        except ValueError:
+            return None
+        self._evidence_archive = archive
+        return archive
 
     async def _capture_evidence_archive(
         self, agent_executor: Any, session_reference: str
     ) -> None:
         """Capture the evidence pack archive, if the executor supports it.
 
-        Best-effort and captured at most once per execution: retries on the
-        same terminal path must not overwrite an already captured archive
-        with None after the container is gone.
+        Direct upload stores an encrypted artifact and an honest availability
+        receipt. A later capture (wrapper after postprocessing) refreshes
+        ``latest()`` so an EXIT-trap upload cannot freeze outdated evidence.
+        Getter ``None`` after cleanup must not wipe a prior successful pack.
+        Final transport failure is ``failed``, even if an earlier PUT exists.
         """
-        if self._evidence_archive is not None:
-            return
-        getter = getattr(agent_executor, "get_evidence_archive", None)
-        if not callable(getter):
-            return
-        try:
-            archive = await getter(session_reference)
-        except Exception as e:
-            logger.warning(f"Failed to capture evidence archive: {e}")
-            return
-        if not isinstance(archive, (bytes, bytearray)) or not archive:
-            return
-        self._evidence_archive = bytes(archive)
-        self.execution_logger.log_milestone(
-            "evidence_archive_captured",
-            {"size_bytes": len(self._evidence_archive)},
+        from preloop.models.crud import flow_artifact as crud_flow_artifact
+        from preloop.services.flow_artifacts import (
+            artifact_thread_id,
+            evidence_receipt,
+            put_artifact,
         )
+
+        execution = self.execution_log
+        flow = self.flow
+        direct = bool(settings.flow_artifact_direct_upload) and execution is not None
+
+        getter = getattr(agent_executor, "get_evidence_archive", None)
+        archive: bytes | None = None
+        if callable(getter):
+            try:
+                captured = await getter(session_reference)
+            except Exception as e:
+                logger.warning(f"Failed to capture evidence archive: {e}")
+                captured = None
+            if isinstance(captured, (bytes, bytearray)) and captured:
+                archive = bytes(captured)
+
+        transport_error = getattr(agent_executor, "evidence_transport_error", None)
+        if transport_error:
+            self._evidence_receipt = evidence_receipt(
+                status="failed",
+                execution_id=(
+                    execution.id if execution is not None else session_reference
+                ),
+                transport="direct" if direct else "legacy",
+                error=str(transport_error),
+            )
+            return
+
+        if (
+            archive is not None
+            and direct
+            and flow is not None
+            and execution is not None
+        ):
+            try:
+                reference = put_artifact(
+                    self.db,
+                    account_id=flow.account_id,
+                    flow_id=flow.id,
+                    thread_id=artifact_thread_id(
+                        execution.trigger_event_details, execution.id
+                    ),
+                    execution_id=execution.id,
+                    kind="evidence",
+                    archive=archive,
+                )
+            except ValueError as exc:
+                self._evidence_receipt = evidence_receipt(
+                    status="failed",
+                    execution_id=execution.id,
+                    transport="direct",
+                    archive=archive,
+                    error=str(exc),
+                )
+                logger.warning(
+                    "Failed to persist durable evidence: %s", type(exc).__name__
+                )
+                return
+            stored = crud_flow_artifact.get(
+                self.db,
+                artifact_id=reference.artifact_id,
+                account_id=flow.account_id,
+                flow_id=flow.id,
+                thread_id=artifact_thread_id(
+                    execution.trigger_event_details, execution.id
+                ),
+            )
+            self._evidence_archive = archive
+            self._evidence_receipt = evidence_receipt(
+                status="available",
+                execution_id=execution.id,
+                transport="direct",
+                artifact=stored,
+                archive=archive,
+            )
+            self.execution_logger.log_milestone(
+                "evidence_archive_captured",
+                {"size_bytes": len(archive), "transport": "direct"},
+            )
+            return
+
+        if archive is not None:
+            self._evidence_archive = archive
+            if execution is not None:
+                self._evidence_receipt = evidence_receipt(
+                    status="available",
+                    execution_id=execution.id,
+                    transport="legacy",
+                    archive=archive,
+                )
+            self.execution_logger.log_milestone(
+                "evidence_archive_captured",
+                {"size_bytes": len(archive)},
+            )
+            return
+
+        if direct and flow is not None and execution is not None:
+            stored = crud_flow_artifact.latest(
+                self.db,
+                account_id=flow.account_id,
+                flow_id=flow.id,
+                thread_id=artifact_thread_id(
+                    execution.trigger_event_details, execution.id
+                ),
+                execution_id=execution.id,
+                kind="evidence",
+            )
+            if stored is not None and stored.ciphertext is not None:
+                self._evidence_receipt = evidence_receipt(
+                    status="available",
+                    execution_id=execution.id,
+                    transport="direct",
+                    artifact=stored,
+                )
+                self.execution_logger.log_milestone(
+                    "evidence_archive_captured",
+                    {
+                        "size_bytes": (stored.manifest or {}).get("size_bytes"),
+                        "transport": "direct",
+                    },
+                )
+                return
+
+        if self._evidence_archive is not None or self._evidence_receipt is not None:
+            return
 
     async def _capture_workspace_snapshot(
         self, agent_executor: Any, session_reference: str
@@ -4977,10 +5160,16 @@ class FlowExecutionOrchestrator:
             have_binary_artifacts = (
                 self._evidence_archive is not None
                 or self._workspace_snapshot is not None
+                or self._evidence_receipt is not None
             )
             if have_binary_artifacts and self.execution_log is not None:
                 try:
-                    if self._evidence_archive is not None:
+                    receipt = self._evidence_receipt
+                    direct_evidence = (
+                        isinstance(receipt, dict)
+                        and receipt.get("transport") == "direct"
+                    )
+                    if self._evidence_archive is not None and not direct_evidence:
                         crud_flow_execution.set_evidence_archive(
                             self.db,
                             db_obj=self.execution_log,
@@ -4992,11 +5181,28 @@ class FlowExecutionOrchestrator:
                             db_obj=self.execution_log,
                             archive=self._workspace_snapshot,
                         )
+                    if receipt is not None:
+                        crud_flow_execution.set_evidence_receipt(
+                            self.db,
+                            db_obj=self.execution_log,
+                            receipt=receipt,
+                        )
                 except Exception as evidence_error:
                     logger.warning(
                         "Failed to persist evidence archive / workspace "
                         f"snapshot: {evidence_error}"
                     )
+                    self._evidence_receipt = {
+                        "version": 1,
+                        "status": "failed",
+                        "transport": (
+                            (self._evidence_receipt or {}).get("transport") or "legacy"
+                        ),
+                        "execution_id": str(self.execution_log.id),
+                        "object_lock": False,
+                        "legal_hold": False,
+                        "error": "evidence_persist_failed",
+                    }
                     # A failed flush must not poison the terminal status
                     # update that follows.
                     #
@@ -5009,6 +5215,14 @@ class FlowExecutionOrchestrator:
                     # it would be silently dropped — narrow this recovery
                     # (expire + rebind the execution row) instead.
                     self.db.rollback()
+                    try:
+                        crud_flow_execution.set_evidence_receipt(
+                            self.db,
+                            db_obj=self.execution_log,
+                            receipt=self._evidence_receipt,
+                        )
+                    except Exception:
+                        self.db.rollback()
 
             # The wrapper opens PRs with a raw curl whose response never
             # reaches Python; bind it here, before the refresh below, so the

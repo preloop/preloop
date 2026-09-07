@@ -151,4 +151,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
         "20260906_pub_caps_merge",
         "20260906_issue_lifecycle",
     }
-    assert script.get_heads() == ["20260906_lifecycle_key_merge"]
+    receipt = script.get_revision("20260907_evidence_receipt")
+    assert receipt.down_revision == "20260906_lifecycle_key_merge"
+    assert script.get_heads() == ["20260907_evidence_receipt"]

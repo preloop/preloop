@@ -24,6 +24,9 @@ rm -f /workspace/result.json || exit 1
 printf '%s\n' "$PRELOOP_RUNNER_SCRIPT" | bash
 PRELOOP_HARNESS_EXIT=$?
 export PRELOOP_HARNESS_EXIT
+if [ -n "${PRELOOP_EVIDENCE_PUT_TOKEN:-}" ] && [ -f /tmp/preloop-checkpoint-client.py ]; then
+  python3 /tmp/preloop-checkpoint-client.py evidence || true
+fi
 python3 - <<'PRELOOP_RESULT_EXPORT'
 import base64, json, os, pathlib, stat
 path = pathlib.Path('/workspace/result.json')
