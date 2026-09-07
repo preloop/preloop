@@ -29,7 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`FLOW_EVIDENCE_RETENTION_HOURS`) and is not a legal hold. Guide:
   `docs/guide/flows/evidence-storage.md`. Status polls use the persisted
   receipt only (`kind=evidence`); download headers carry the verified
-  digest. Tracking: issues #268, #386.
+  digest. Tracking: issues #268, #386. Private Docker completions carry the
+  trusted bootstrap `evidence_upload` outcome (`uploaded` / `failed` /
+  `absent`) outside agent JSON so a failed final PUT cannot leave a stale
+  trap artifact marked available.
 
 - **Per-flow label-based model routing**: a flow can store optional ordered
   rules in `agent_config.model_routing` that map current issue labels
