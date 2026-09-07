@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
+from preloop.api.managed_credentials import is_managed_execution_credential
 from preloop.services.approval_attribution import (
     attach_attribution,
     attributed,
@@ -78,19 +79,8 @@ async def _advance_security_maintenance(db: Session, updated: ApprovalRequest) -
 
 
 def _managed_execution_credential(current_user: User) -> bool:
-    """True when this principal authenticated with a managed execution key.
-
-    Reads the API key attached by JWT/API-key auth, not agent-supplied
-    body fields. JWT console sessions have no ``_auth_api_key``. Personal
-    keys without ``flow_execution_id`` or ``managed_agent_id`` are not
-    managed execution credentials. Non-dict ``context_data`` is ignored
-    so mocked users without a real key stay allowed.
-    """
-    api_key = getattr(current_user, "_auth_api_key", None)
-    if api_key is None:
-        return False
-    context = api_key.context_data if isinstance(api_key.context_data, dict) else {}
-    return bool(context.get("flow_execution_id") or context.get("managed_agent_id"))
+    """True when this principal authenticated with a managed execution key."""
+    return is_managed_execution_credential(current_user)
 
 
 def _reject_managed_publication_decision(

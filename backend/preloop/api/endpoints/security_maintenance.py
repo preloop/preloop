@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
+from preloop.api.managed_credentials import is_managed_execution_credential
 from preloop.models import models
 from preloop.models.db.session import get_db_session
 from preloop.schemas.security_maintenance import (
@@ -54,11 +55,7 @@ def _service(db: Session, user: models.User) -> SecurityMaintenanceService:
 
 def _reject_managed_credentials(current_user: models.User) -> None:
     """Deny managed execution/agent credentials for human maintenance decisions."""
-    api_key = getattr(current_user, "_auth_api_key", None)
-    if api_key is None:
-        return
-    context = api_key.context_data if isinstance(api_key.context_data, dict) else {}
-    if context.get("flow_execution_id") or context.get("managed_agent_id"):
+    if is_managed_execution_credential(current_user):
         raise HTTPException(403, "managed_credential_cannot_decide")
 
 
