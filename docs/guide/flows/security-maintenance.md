@@ -64,10 +64,17 @@ That request pins the saved audit flow, `pinned_build_ref`, and
 `sbom_input_ref`, writes a `PENDING` execution with the controller envelope,
 commits, then dispatches through the existing flow trigger path. `GET
 /api/v1/security-maintenance/releases/{release_id}` shows
-`baseline_audit_execution_id` and `baseline_dispatch_state`. A dispatch
-failure leaves the execution `PENDING`; the same `POST` with the same SBOM
-bytes retries without creating a second row. `PENDING` or failed executions
-cannot be accepted.
+`baseline_audit_execution_id` and `baseline_dispatch_state`. Dispatch takes a
+short exclusive claim (the same stale interval as flow-execution recovery,
+default 120 seconds). If the process stops after the claim is stored and
+before the execution is handed off, the row stays `PENDING` with
+`dispatch_state=dispatching`. After the claim expires, the same `POST` with
+the same SBOM bytes, or background reconcile, redelivers that execution id.
+A live claim is not duplicated. An execution that has already started or
+finished is not restarted. Older `dispatching` records without a claim
+timestamp are treated as expired. A dispatch failure that the process
+survives leaves `dispatch_state=pending` so the same retry can run
+immediately. `PENDING` or failed executions cannot be accepted.
 
 After the audit execution is `SUCCEEDED` and evidence is stored:
 
@@ -87,7 +94,10 @@ supplied SBOM bytes. Filename and pin matches alone are not enough.
 2. One implementation execution is dispatched through the existing flow worker.
    Completion reads controller publication receipts (`head_sha`) and
    controller-owned verification for that commit. `SUCCEEDED` without a test
-   receipt does not pass.
+   receipt does not pass. Implementation and recheck use the same expiring
+   dispatch claim as the initial-baseline audit: background reconcile retries
+   an abandoned `PENDING` execution after the claim expires, and does not
+   restart a running or finished execution.
 3. Tests failing holds the item. Tests passing opens a platform approval
    request. Agent `result.approved` is ignored. An execution API key cannot
    approve its own repair. Denied or expired approvals hold or escalate; they

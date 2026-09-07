@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trigger path.
   Omitted or null SBOM component lists, unsupported format versions, and
   malformed nesting cannot prove component removal.
+- Abandoned security-maintenance dispatch claims expire after the same
+  interval as flow-execution recovery (default 120 seconds). Sweep and the
+  initial-baseline retry route redeliver a still-`PENDING` execution id;
+  a live claim is not duplicated, and a started or finished execution is
+  not restarted. Legacy `dispatching` records without a timestamp are
+  treated as expired.
 
 ### Added
 

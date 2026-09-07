@@ -6,6 +6,7 @@ import base64
 import logging
 import os
 from collections.abc import Callable, Iterable
+from datetime import datetime, timezone
 from json import JSONDecodeError, dumps, loads
 from typing import Any
 from uuid import UUID
@@ -15,7 +16,11 @@ from sqlalchemy.orm import Session
 from preloop.cra.schemas import SBOM_FORMATS
 from preloop.models import models
 from preloop.models.crud import crud_security_maintenance
-from preloop.models.crud.security_maintenance import item_identity_key
+from preloop.models.crud.security_maintenance import (
+    DEFAULT_DISPATCH_CLAIM_STALE_SECONDS,
+    dispatch_job_is_claimable,
+    item_identity_key,
+)
 from preloop.models.db.session import SyncApprovalSession
 from preloop.schemas.security_maintenance import (
     ApprovalDecisionRequest,
@@ -82,6 +87,11 @@ AUTHENTICATED_DECISION_CHANNEL = "console"
 SWEEP_LIMIT = 50
 
 
+def _utc_now() -> datetime:
+    """Naive UTC clock used for dispatch-claim leases."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 class SecurityMaintenanceService:
     """Tenant controller for inventory, scan ingest, dispatch, and baselines."""
 
@@ -94,9 +104,13 @@ class SecurityMaintenanceService:
     ) -> None:
         self.db = db
         self.account_id = account_id
-        from datetime import datetime, timezone
+        self._now = now or (lambda: _utc_now())
 
-        self._now = now or (lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    def _dispatch_claim_stale_seconds(self) -> int:
+        """Reuse the flow-execution claim interval for dispatch leases."""
+        from preloop.services.flow_execution_dispatcher import claim_stale_after_seconds
+
+        return int(claim_stale_after_seconds() or DEFAULT_DISPATCH_CLAIM_STALE_SECONDS)
 
     def _approval_service(self) -> ApprovalService:
         base_url = os.getenv("PRELOOP_URL", "http://localhost")
@@ -619,7 +633,11 @@ class SecurityMaintenanceService:
                     and audit.get("sbom_input_ref") == release.sbom_input_ref
                     and audit.get("flow_id") == str(release.audit_flow_id)
                 ):
-                    retry = audit.get("dispatch_state") == "pending"
+                    retry = dispatch_job_is_claimable(
+                        audit,
+                        now=self._now(),
+                        stale_after_seconds=self._dispatch_claim_stale_seconds(),
+                    )
                     return existing, retry
                 raise InvalidTransitionError("baseline_audit_in_progress")
             if existing is not None and existing.status not in TERMINAL:
@@ -1078,7 +1096,11 @@ class SecurityMaintenanceService:
                         "Security-maintenance reconcile failed for item %s", item.id
                     )
             baselines = crud_security_maintenance.list_pending_baseline_releases(
-                self.db, account_id=self.account_id, limit=SWEEP_LIMIT
+                self.db,
+                account_id=self.account_id,
+                now=self._now(),
+                stale_after_seconds=self._dispatch_claim_stale_seconds(),
+                limit=SWEEP_LIMIT,
             )
             for release in baselines:
                 audit = (release.data or {}).get("baseline_audit")
@@ -1489,22 +1511,21 @@ class SecurityMaintenanceService:
         }
 
     async def _enqueue(self, execution_id: UUID, item_id: UUID, kind: str) -> None:
+        claim_id: UUID | None = None
         async with crud_security_maintenance.locked(
             self.db, self.account_id, f"item:{item_id}"
         ):
-            item = self._require_item(item_id)
-            bound = (
-                item.implementation_execution_id
-                if kind == "implementation"
-                else item.recheck_execution_id
+            claim_id = crud_security_maintenance.claim_item_dispatch(
+                self.db,
+                account_id=self.account_id,
+                item_id=item_id,
+                execution_id=execution_id,
+                kind=kind,
+                now=self._now(),
+                stale_after_seconds=self._dispatch_claim_stale_seconds(),
             )
-            if bound != execution_id:
-                return
-            data = dict(item.data or {})
-            if data.get("dispatch_state") != "pending":
-                return
-            data["dispatch_state"] = "dispatching"
-            self._write_item(item, data=data)
+        if claim_id is None:
+            return
         try:
             await self._start_precreated_execution(execution_id)
         except FlowDispatchError:
@@ -1514,57 +1535,51 @@ class SecurityMaintenanceService:
             async with crud_security_maintenance.locked(
                 self.db, self.account_id, f"item:{item_id}"
             ):
-                item = self._require_item(item_id)
-                data = dict(item.data or {})
-                if data.get("dispatch_state") == "dispatching":
-                    data["dispatch_state"] = "pending"
-                    self._write_item(item, data=data)
+                crud_security_maintenance.finish_item_dispatch(
+                    self.db,
+                    account_id=self.account_id,
+                    item_id=item_id,
+                    execution_id=execution_id,
+                    kind=kind,
+                    claim_id=claim_id,
+                    dispatched=False,
+                )
             return
         async with crud_security_maintenance.locked(
             self.db, self.account_id, f"item:{item_id}"
         ):
-            item = self._require_item(item_id)
-            bound = (
-                item.implementation_execution_id
-                if kind == "implementation"
-                else item.recheck_execution_id
-            )
-            if bound != execution_id:
-                return
-            data = dict(item.data or {})
-            if data.get("dispatch_state") != "dispatching":
-                return
-            data["dispatch_state"] = "dispatched"
-            pending_state = (
-                "remediation_pending" if kind == "implementation" else "reaudit_pending"
-            )
-            fields: dict[str, Any] = {"data": data}
-            if item.state == pending_state:
-                fields["state"] = (
-                    "remediating" if kind == "implementation" else "reauditing"
-                )
-            item = self._write_item(item, **fields)
-            self._append(
-                item,
-                kind=kind,
-                outcome="dispatched",
+            item = crud_security_maintenance.finish_item_dispatch(
+                self.db,
+                account_id=self.account_id,
+                item_id=item_id,
                 execution_id=execution_id,
+                kind=kind,
+                claim_id=claim_id,
+                dispatched=True,
             )
+            if item is not None:
+                self._append(
+                    item,
+                    kind=kind,
+                    outcome="dispatched",
+                    execution_id=execution_id,
+                )
 
     async def _dispatch_baseline(self, release_id: UUID, execution_id: UUID) -> None:
+        claim_id: UUID | None = None
         async with crud_security_maintenance.locked(
             self.db, self.account_id, f"release-id:{release_id}"
         ):
-            release = self._require_release(release_id)
-            data = dict(release.data or {})
-            audit = dict(data.get("baseline_audit") or {})
-            if str(audit.get("execution_id") or "") != str(execution_id):
-                return
-            if audit.get("dispatch_state") != "pending":
-                return
-            audit["dispatch_state"] = "dispatching"
-            data["baseline_audit"] = audit
-            self._write_release(release, data=data)
+            claim_id = crud_security_maintenance.claim_baseline_dispatch(
+                self.db,
+                account_id=self.account_id,
+                release_id=release_id,
+                execution_id=execution_id,
+                now=self._now(),
+                stale_after_seconds=self._dispatch_claim_stale_seconds(),
+            )
+        if claim_id is None:
+            return
         try:
             await self._start_precreated_execution(execution_id)
         except FlowDispatchError:
@@ -1575,30 +1590,26 @@ class SecurityMaintenanceService:
             async with crud_security_maintenance.locked(
                 self.db, self.account_id, f"release-id:{release_id}"
             ):
-                release = self._require_release(release_id)
-                data = dict(release.data or {})
-                audit = dict(data.get("baseline_audit") or {})
-                if (
-                    str(audit.get("execution_id") or "") == str(execution_id)
-                    and audit.get("dispatch_state") == "dispatching"
-                ):
-                    audit["dispatch_state"] = "pending"
-                    data["baseline_audit"] = audit
-                    self._write_release(release, data=data)
+                crud_security_maintenance.finish_baseline_dispatch(
+                    self.db,
+                    account_id=self.account_id,
+                    release_id=release_id,
+                    execution_id=execution_id,
+                    claim_id=claim_id,
+                    dispatched=False,
+                )
             return
         async with crud_security_maintenance.locked(
             self.db, self.account_id, f"release-id:{release_id}"
         ):
-            release = self._require_release(release_id)
-            data = dict(release.data or {})
-            audit = dict(data.get("baseline_audit") or {})
-            if str(audit.get("execution_id") or "") != str(execution_id):
-                return
-            if audit.get("dispatch_state") != "dispatching":
-                return
-            audit["dispatch_state"] = "dispatched"
-            data["baseline_audit"] = audit
-            self._write_release(release, data=data)
+            crud_security_maintenance.finish_baseline_dispatch(
+                self.db,
+                account_id=self.account_id,
+                release_id=release_id,
+                execution_id=execution_id,
+                claim_id=claim_id,
+                dispatched=True,
+            )
 
     async def _start_precreated_execution(self, execution_id: UUID) -> None:
         from preloop.services.flow_trigger_service import FlowTriggerService
@@ -1722,7 +1733,11 @@ class SecurityMaintenanceService:
         self, item: models.SecurityMaintenanceItem
     ) -> tuple[UUID, UUID, str] | None:
         data = dict(item.data or {})
-        if data.get("dispatch_state") == "dispatching":
+        if not dispatch_job_is_claimable(
+            data,
+            now=self._now(),
+            stale_after_seconds=self._dispatch_claim_stale_seconds(),
+        ):
             return None
         if item.state == "remediation_pending" and item.implementation_execution_id:
             execution = self._bound_execution(item.implementation_execution_id)

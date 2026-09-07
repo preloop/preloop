@@ -107,5 +107,6 @@ Initial baseline acceptance requires the controller envelope `release_id` and
 the digest of the supplied SBOM. Tests and baselines require
 controller-owned verification and the contracts CRA validator; caller-supplied
 evidence ids and agent `finding_absent` fields do not grant. Platform
-`ApprovalRequest` rows carry human decisions.
+`ApprovalRequest` rows carry human decisions. Dispatch claims expire so a
+crash between claim and enqueue cannot strand a still-`PENDING` execution.
 See [Supported-release vulnerability maintenance](docs/guide/flows/security-maintenance.md).

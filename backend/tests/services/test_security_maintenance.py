@@ -22,7 +22,11 @@ from sqlalchemy.orm import Session
 from preloop.models import models
 from preloop.models.crud import crud_api_key, crud_security_maintenance, flow_artifact
 from preloop.models.crud.base import CRUDBase
-from preloop.models.crud.security_maintenance import item_identity_key
+from preloop.models.crud.security_maintenance import (
+    DEFAULT_DISPATCH_CLAIM_STALE_SECONDS,
+    dispatch_job_is_claimable,
+    item_identity_key,
+)
 from preloop.schemas.security_maintenance import (
     ApprovalDecisionRequest,
     BaselineAcceptRequest,
@@ -2171,3 +2175,524 @@ class TestBaselineAuditEntry:
             app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
             foreign = client.post(path, json={"sbom_content_base64": SBOM_B64})
             assert foreign.status_code == 404
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.current = datetime(2026, 9, 7, 12, 0, 0)
+
+    def __call__(self) -> datetime:
+        return self.current
+
+    def advance(self, seconds: int) -> None:
+        self.current += timedelta(seconds=seconds)
+
+
+def _item_dispatch(item: models.SecurityMaintenanceItem) -> dict:
+    return dict(item.data or {})
+
+
+def _baseline_dispatch(release: models.SecurityMaintenanceRelease) -> dict:
+    audit = (release.data or {}).get("baseline_audit")
+    return dict(audit) if isinstance(audit, dict) else {}
+
+
+class TestDispatchClaimRecovery:
+    @pytest.fixture(autouse=True)
+    def _claim_clock(self):
+        self.clock = _Clock()
+        with (
+            patch(
+                "preloop.services.security_maintenance._utc_now",
+                self.clock,
+            ),
+            patch(
+                "preloop.services.flow_execution_dispatcher.claim_stale_after_seconds",
+                return_value=DEFAULT_DISPATCH_CLAIM_STALE_SECONDS,
+            ),
+        ):
+            yield self.clock
+
+    @pytest.mark.asyncio
+    async def test_item_abandoned_claim_sweep_redelivers_once(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("dispatch_interrupted"),
+        ):
+            with pytest.raises(RuntimeError, match="dispatch_interrupted"):
+                await service.ingest_scan(_scan(issue_id=_issue(world).id))
+        db_session.expire_all()
+        item = crud_security_maintenance.list_reconcile_items(
+            db_session, account_id=test_user.account_id
+        )[0]
+        execution_id = item.implementation_execution_id
+        claim = _item_dispatch(item)
+        assert claim["dispatch_state"] == "dispatching"
+        assert claim.get("dispatch_claimed_at")
+        assert claim.get("dispatch_claim_id")
+        execution = crud_security_maintenance.get_execution(
+            db_session, account_id=test_user.account_id, execution_id=execution_id
+        )
+        assert execution is not None
+        assert execution.status == "PENDING"
+
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ) as fresh:
+            await service.sweep()
+        fresh.assert_not_awaited()
+
+        self.clock.advance(DEFAULT_DISPATCH_CLAIM_STALE_SECONDS + 1)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ) as recovered:
+            await service.sweep()
+        recovered.assert_awaited_once()
+        assert recovered.await_args.args[0] == execution_id
+        db_session.refresh(item)
+        assert item.implementation_execution_id == execution_id
+        assert _item_dispatch(item)["dispatch_state"] == "dispatched"
+
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ) as again:
+            await service.sweep()
+        again.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_recheck_abandoned_claim_sweep_redelivers_once(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ) as dispatched:
+            item = await _to_awaiting_build(service, world, db_session, test_user)
+            dispatched.side_effect = RuntimeError("dispatch_interrupted")
+            with pytest.raises(RuntimeError, match="dispatch_interrupted"):
+                await _submit_rebuild(service, item, test_user)
+        db_session.expire_all()
+        db_session.refresh(item)
+        execution_id = item.recheck_execution_id
+        assert execution_id is not None
+        assert _item_dispatch(item)["dispatch_state"] == "dispatching"
+        self.clock.advance(DEFAULT_DISPATCH_CLAIM_STALE_SECONDS + 1)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ) as recovered:
+            await service.sweep()
+        recovered.assert_awaited_once()
+        assert recovered.await_args.args[0] == execution_id
+        db_session.refresh(item)
+        assert item.recheck_execution_id == execution_id
+        assert _item_dispatch(item)["dispatch_state"] == "dispatched"
+
+    @pytest.mark.asyncio
+    async def test_baseline_abandoned_claim_http_and_sweep_redeliver_once(
+        self, db_session, world, test_user
+    ) -> None:
+        from preloop.api.app import create_app
+        from preloop.api.auth import get_current_active_user
+        from preloop.models.db.session import get_db_session as get_db
+
+        service, *_rest = world
+        created = await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("dispatch_interrupted"),
+        ):
+            with pytest.raises(RuntimeError, match="dispatch_interrupted"):
+                await service.schedule_baseline_audit(created["id"], SBOM_B64)
+        db_session.expire_all()
+        release = crud_security_maintenance.get_release(
+            db_session, account_id=test_user.account_id, release_id=created["id"]
+        )
+        audit = _baseline_dispatch(release)
+        execution_id = UUID(str(audit["execution_id"]))
+        assert audit["dispatch_state"] == "dispatching"
+        assert audit.get("dispatch_claimed_at")
+
+        app = create_app()
+        app.dependency_overrides[get_db] = lambda: db_session
+        app.dependency_overrides[get_current_active_user] = lambda: test_user
+        path = f"/api/v1/security-maintenance/releases/{created['id']}/baseline/audit"
+        with (
+            patch(
+                "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+                new_callable=AsyncMock,
+            ) as fresh,
+            TestClient(app) as client,
+        ):
+            listed = client.get(
+                f"/api/v1/security-maintenance/releases/{created['id']}"
+            )
+            assert listed.status_code == 200
+            assert listed.json()["baseline_dispatch_state"] == "dispatching"
+            retry = client.post(path, json={"sbom_content_base64": SBOM_B64})
+            assert retry.status_code == 200
+            assert retry.json()["execution_id"] == str(execution_id)
+            assert retry.json()["dispatch_state"] == "dispatching"
+        fresh.assert_not_awaited()
+
+        self.clock.advance(DEFAULT_DISPATCH_CLAIM_STALE_SECONDS + 1)
+        with (
+            patch(
+                "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+                new_callable=AsyncMock,
+            ) as recovered,
+            TestClient(app) as client,
+        ):
+            retry = client.post(path, json={"sbom_content_base64": SBOM_B64})
+            assert retry.status_code == 200
+            assert retry.json()["execution_id"] == str(execution_id)
+            assert retry.json()["dispatch_state"] == "dispatched"
+        recovered.assert_awaited_once()
+        assert recovered.await_args.args[0] == execution_id
+
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ) as swept:
+            await service.sweep()
+        swept.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_baseline_legacy_dispatching_without_timestamp_sweeps(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        created = await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("dispatch_interrupted"),
+        ):
+            with pytest.raises(RuntimeError, match="dispatch_interrupted"):
+                await service.schedule_baseline_audit(created["id"], SBOM_B64)
+        db_session.expire_all()
+        release = crud_security_maintenance.get_release(
+            db_session, account_id=test_user.account_id, release_id=created["id"]
+        )
+        data = dict(release.data or {})
+        audit = dict(data.get("baseline_audit") or {})
+        execution_id = UUID(str(audit["execution_id"]))
+        audit.pop("dispatch_claimed_at", None)
+        audit.pop("dispatch_claim_id", None)
+        audit["dispatch_state"] = "dispatching"
+        data["baseline_audit"] = audit
+        crud_security_maintenance.update_release(
+            db_session,
+            account_id=test_user.account_id,
+            release_id=release.id,
+            fields={"data": data},
+        )
+        db_session.flush()
+        assert dispatch_job_is_claimable(audit, now=self.clock())
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ) as recovered:
+            await service.sweep()
+        recovered.assert_awaited_once()
+        assert recovered.await_args.args[0] == execution_id
+        db_session.refresh(release)
+        assert _baseline_dispatch(release)["dispatch_state"] == "dispatched"
+
+    @pytest.mark.asyncio
+    async def test_legacy_item_dispatching_without_timestamp_sweeps(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("dispatch_interrupted"),
+        ):
+            with pytest.raises(RuntimeError, match="dispatch_interrupted"):
+                await service.ingest_scan(_scan(issue_id=_issue(world).id))
+        db_session.expire_all()
+        item = crud_security_maintenance.list_reconcile_items(
+            db_session, account_id=test_user.account_id
+        )[0]
+        execution_id = item.implementation_execution_id
+        data = dict(item.data or {})
+        data.pop("dispatch_claimed_at", None)
+        data.pop("dispatch_claim_id", None)
+        data["dispatch_state"] = "dispatching"
+        crud_security_maintenance.update_item(
+            db_session,
+            account_id=test_user.account_id,
+            item_id=item.id,
+            fields={"data": data},
+        )
+        db_session.flush()
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ) as recovered:
+            await service.sweep()
+        recovered.assert_awaited_once()
+        assert recovered.await_args.args[0] == execution_id
+
+    @pytest.mark.asyncio
+    async def test_fresh_and_concurrent_claims_do_not_duplicate(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+            side_effect=FlowDispatchError(
+                "00000000-0000-0000-0000-000000000001",
+                "PENDING",
+                RuntimeError("broker_unavailable"),
+            ),
+        ):
+            ingested = await service.ingest_scan(_scan(issue_id=_issue(world).id))
+        item = crud_security_maintenance.get_item(
+            db_session,
+            account_id=test_user.account_id,
+            item_id=ingested["items"][0]["id"],
+        )
+        execution_id = item.implementation_execution_id
+        first = crud_security_maintenance.claim_item_dispatch(
+            db_session,
+            account_id=test_user.account_id,
+            item_id=item.id,
+            execution_id=execution_id,
+            kind="implementation",
+            now=self.clock(),
+        )
+        assert first is not None
+        concurrent = crud_security_maintenance.claim_item_dispatch(
+            db_session,
+            account_id=test_user.account_id,
+            item_id=item.id,
+            execution_id=execution_id,
+            kind="implementation",
+            now=self.clock(),
+        )
+        assert concurrent is None
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ) as skipped:
+            await service._enqueue(execution_id, item.id, "implementation")
+            await service.sweep()
+        skipped.assert_not_awaited()
+        db_session.refresh(item)
+        assert item.implementation_execution_id == execution_id
+        assert _item_dispatch(item)["dispatch_state"] == "dispatching"
+        assert _item_dispatch(item)["dispatch_claim_id"] == str(first)
+
+    @pytest.mark.asyncio
+    async def test_stale_claim_does_not_restart_running_or_succeeded(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("dispatch_interrupted"),
+        ):
+            with pytest.raises(RuntimeError, match="dispatch_interrupted"):
+                await service.ingest_scan(_scan(issue_id=_issue(world).id))
+        db_session.expire_all()
+        item = crud_security_maintenance.list_reconcile_items(
+            db_session, account_id=test_user.account_id
+        )[0]
+        execution = crud_security_maintenance.get_execution(
+            db_session,
+            account_id=test_user.account_id,
+            execution_id=item.implementation_execution_id,
+        )
+        execution.status = "RUNNING"
+        db_session.flush()
+        self.clock.advance(DEFAULT_DISPATCH_CLAIM_STALE_SECONDS + 1)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ) as running:
+            await service.sweep()
+            await service.reconcile_item(item.id)
+        running.assert_not_awaited()
+        db_session.refresh(item)
+        assert item.implementation_execution_id == execution.id
+        execution.status = "SUCCEEDED"
+        db_session.flush()
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ) as succeeded:
+            await service.sweep()
+        succeeded.assert_not_awaited()
+
+        created = await service.create_release(
+            SupportedReleaseCreate(
+                product_key="example-widget-audit",
+                release_key="1.2",
+                display_name="Example Widget Audit 1.2",
+                project_id=world[1].id,
+                pinned_build_ref="v1.2.3",
+                sbom_input_ref="sbom/image.spdx.json",
+                audit_flow_id=world[4].id,
+                implementation_flow_id=world[3].id,
+                recheck_flow_id=world[4].id,
+                approval_workflow_id=world[2].id,
+                approval_owner_user_id=test_user.id,
+            )
+        )
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("dispatch_interrupted"),
+        ):
+            with pytest.raises(RuntimeError, match="dispatch_interrupted"):
+                await service.schedule_baseline_audit(created["id"], SBOM_B64)
+        db_session.expire_all()
+        release = crud_security_maintenance.get_release(
+            db_session, account_id=test_user.account_id, release_id=created["id"]
+        )
+        baseline_id = UUID(str(_baseline_dispatch(release)["execution_id"]))
+        baseline = crud_security_maintenance.get_execution(
+            db_session, account_id=test_user.account_id, execution_id=baseline_id
+        )
+        baseline.status = "RUNNING"
+        db_session.flush()
+        self.clock.advance(DEFAULT_DISPATCH_CLAIM_STALE_SECONDS + 1)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ) as running_baseline:
+            await service.sweep()
+            await service.schedule_baseline_audit(created["id"], SBOM_B64)
+        running_baseline.assert_not_awaited()
+        baseline.status = "SUCCEEDED"
+        db_session.flush()
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ) as succeeded_baseline:
+            await service.sweep()
+        succeeded_baseline.assert_not_awaited()
+        assert baseline_id == UUID(str(_baseline_dispatch(release)["execution_id"]))
+
+    @pytest.mark.asyncio
+    async def test_old_claimant_cannot_regress_new_claim(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("dispatch_interrupted"),
+        ):
+            with pytest.raises(RuntimeError, match="dispatch_interrupted"):
+                await service.ingest_scan(_scan(issue_id=_issue(world).id))
+        db_session.expire_all()
+        item = crud_security_maintenance.list_reconcile_items(
+            db_session, account_id=test_user.account_id
+        )[0]
+        old_claim = UUID(str(_item_dispatch(item)["dispatch_claim_id"]))
+        execution_id = item.implementation_execution_id
+        self.clock.advance(DEFAULT_DISPATCH_CLAIM_STALE_SECONDS + 1)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            await service.sweep()
+        db_session.refresh(item)
+        assert _item_dispatch(item)["dispatch_state"] == "dispatched"
+        assert item.state == "remediating"
+        lost_release = crud_security_maintenance.finish_item_dispatch(
+            db_session,
+            account_id=test_user.account_id,
+            item_id=item.id,
+            execution_id=execution_id,
+            kind="implementation",
+            claim_id=old_claim,
+            dispatched=False,
+        )
+        assert lost_release is None
+        db_session.refresh(item)
+        assert _item_dispatch(item)["dispatch_state"] == "dispatched"
+        assert item.state == "remediating"
+        lost_complete = crud_security_maintenance.finish_item_dispatch(
+            db_session,
+            account_id=test_user.account_id,
+            item_id=item.id,
+            execution_id=execution_id,
+            kind="implementation",
+            claim_id=old_claim,
+            dispatched=True,
+        )
+        assert lost_complete is None
+        db_session.refresh(item)
+        assert item.state == "remediating"
+        assert item.implementation_execution_id == execution_id
+
+        created = await service.create_release(
+            SupportedReleaseCreate(
+                product_key="example-widget-baseline-claim",
+                release_key="1.2",
+                display_name="Example Widget Baseline Claim 1.2",
+                project_id=world[1].id,
+                pinned_build_ref="v1.2.3",
+                sbom_input_ref="sbom/image.spdx.json",
+                audit_flow_id=world[4].id,
+                implementation_flow_id=world[3].id,
+                recheck_flow_id=world[4].id,
+                approval_workflow_id=world[2].id,
+                approval_owner_user_id=test_user.id,
+            )
+        )
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("dispatch_interrupted"),
+        ):
+            with pytest.raises(RuntimeError, match="dispatch_interrupted"):
+                await service.schedule_baseline_audit(created["id"], SBOM_B64)
+        db_session.expire_all()
+        release = crud_security_maintenance.get_release(
+            db_session, account_id=test_user.account_id, release_id=created["id"]
+        )
+        old_baseline = UUID(str(_baseline_dispatch(release)["dispatch_claim_id"]))
+        baseline_execution = UUID(str(_baseline_dispatch(release)["execution_id"]))
+        self.clock.advance(DEFAULT_DISPATCH_CLAIM_STALE_SECONDS + 1)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            await service.sweep()
+        db_session.refresh(release)
+        assert _baseline_dispatch(release)["dispatch_state"] == "dispatched"
+        assert (
+            crud_security_maintenance.finish_baseline_dispatch(
+                db_session,
+                account_id=test_user.account_id,
+                release_id=release.id,
+                execution_id=baseline_execution,
+                claim_id=old_baseline,
+                dispatched=False,
+            )
+            is None
+        )
+        db_session.refresh(release)
+        assert _baseline_dispatch(release)["dispatch_state"] == "dispatched"

@@ -1,14 +1,17 @@
 """Transactional security-maintenance persistence and identity serialization."""
 
 import asyncio
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from time import monotonic
 from typing import Any, AsyncIterator
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from preloop.models import models
 
@@ -23,6 +26,85 @@ TERMINAL_EXECUTION_STATUSES = frozenset(
         "ABORTED",
     }
 )
+DEFAULT_DISPATCH_CLAIM_STALE_SECONDS = 120
+
+
+def _naive_utc(value: datetime) -> datetime:
+    """Normalize timestamps stored on dispatch claims to naive UTC."""
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def parse_dispatch_claimed_at(value: object) -> datetime | None:
+    """Parse a stored claim timestamp. Unknown values are treated as missing."""
+    if isinstance(value, datetime):
+        return _naive_utc(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _naive_utc(parsed)
+
+
+def format_dispatch_claimed_at(now: datetime) -> str:
+    """Serialize a claim timestamp for JSON storage."""
+    return _naive_utc(now).isoformat()
+
+
+def dispatch_job_is_claimable(
+    record: Mapping[str, Any] | None,
+    *,
+    now: datetime,
+    stale_after_seconds: int = DEFAULT_DISPATCH_CLAIM_STALE_SECONDS,
+) -> bool:
+    """Return True when a pending or abandoned dispatching record may be claimed.
+
+    ``dispatching`` without ``dispatch_claimed_at`` is a legacy abandoned claim
+    and is eligible immediately. A fresh timestamped claim is not.
+    """
+    data = dict(record or {})
+    state = data.get("dispatch_state")
+    if state in {None, "pending"}:
+        return True
+    if state != "dispatching":
+        return False
+    claimed_at = parse_dispatch_claimed_at(data.get("dispatch_claimed_at"))
+    if claimed_at is None:
+        return True
+    timeout = max(1, int(stale_after_seconds))
+    return claimed_at < _naive_utc(now) - timedelta(seconds=timeout)
+
+
+def _write_dispatch_claim(
+    data: dict[str, Any], *, now: datetime, claim_id: UUID
+) -> dict[str, Any]:
+    """Stamp CAS ownership onto a dispatch record."""
+    updated = dict(data)
+    updated["dispatch_state"] = "dispatching"
+    updated["dispatch_claimed_at"] = format_dispatch_claimed_at(now)
+    updated["dispatch_claim_id"] = str(claim_id)
+    return updated
+
+
+def _clear_dispatch_claim(
+    data: dict[str, Any], *, dispatch_state: str
+) -> dict[str, Any]:
+    """Drop claim fields after a CAS finish or release."""
+    updated = dict(data)
+    updated["dispatch_state"] = dispatch_state
+    updated.pop("dispatch_claimed_at", None)
+    updated.pop("dispatch_claim_id", None)
+    return updated
+
+
+def _owns_dispatch_claim(data: Mapping[str, Any], claim_id: UUID) -> bool:
+    """Return True when this claimant still owns the in-flight lease."""
+    return data.get("dispatch_state") == "dispatching" and str(
+        data.get("dispatch_claim_id") or ""
+    ) == str(claim_id)
 
 
 def item_identity_key(
@@ -304,22 +386,42 @@ class CRUDSecurityMaintenance:
         )
         for row in db.scalars(select(models.SecurityMaintenanceRelease)):
             audit = (row.data or {}).get("baseline_audit")
-            if isinstance(audit, dict) and audit.get("dispatch_state") == "pending":
+            if not isinstance(audit, dict):
+                continue
+            if audit.get("dispatch_state") in {"pending", "dispatching"}:
                 account_ids.add(row.account_id)
         return list(account_ids)
 
     def list_pending_baseline_releases(
-        self, db: Session, *, account_id: UUID, limit: int = 50
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        now: datetime | None = None,
+        stale_after_seconds: int = DEFAULT_DISPATCH_CLAIM_STALE_SECONDS,
+        limit: int = 50,
     ) -> list[models.SecurityMaintenanceRelease]:
-        """Releases whose initial-baseline audit is committed but not dispatched."""
+        """Releases whose initial-baseline audit is committed but not dispatched.
+
+        Includes abandoned ``dispatching`` claims (expired or legacy rows
+        without a timestamp) whose bound execution is still ``PENDING``.
+        """
+        moment = now or datetime.now(timezone.utc).replace(tzinfo=None)
         pending: list[models.SecurityMaintenanceRelease] = []
         for row in self.list_releases(db, account_id=account_id):
             audit = (row.data or {}).get("baseline_audit")
-            if not isinstance(audit, dict):
+            if not isinstance(audit, dict) or not audit.get("execution_id"):
                 continue
-            if audit.get("dispatch_state") != "pending":
+            if not dispatch_job_is_claimable(
+                audit, now=moment, stale_after_seconds=stale_after_seconds
+            ):
                 continue
-            if not audit.get("execution_id"):
+            execution = self.get_execution(
+                db,
+                account_id=account_id,
+                execution_id=UUID(str(audit["execution_id"])),
+            )
+            if execution is None or execution.status != "PENDING":
                 continue
             pending.append(row)
             if len(pending) >= limit:
@@ -615,6 +717,200 @@ class CRUDSecurityMaintenance:
         db.add(issue)
         db.flush()
         return issue
+
+    def _lock_item(
+        self, db: Session, *, account_id: UUID, item_id: UUID
+    ) -> models.SecurityMaintenanceItem | None:
+        """Load one item with a row lock for CAS dispatch ownership."""
+        return db.scalar(
+            select(models.SecurityMaintenanceItem)
+            .where(
+                models.SecurityMaintenanceItem.id == item_id,
+                models.SecurityMaintenanceItem.account_id == account_id,
+            )
+            .with_for_update()
+        )
+
+    def _lock_release(
+        self, db: Session, *, account_id: UUID, release_id: UUID
+    ) -> models.SecurityMaintenanceRelease | None:
+        """Load one release with a row lock for CAS dispatch ownership."""
+        return db.scalar(
+            select(models.SecurityMaintenanceRelease)
+            .where(
+                models.SecurityMaintenanceRelease.id == release_id,
+                models.SecurityMaintenanceRelease.account_id == account_id,
+            )
+            .with_for_update()
+        )
+
+    def _pending_bound_execution(
+        self, db: Session, *, account_id: UUID, execution_id: UUID
+    ) -> models.FlowExecution | None:
+        """Return the tenant execution only while it is still PENDING."""
+        execution = self.get_execution(
+            db, account_id=account_id, execution_id=execution_id
+        )
+        if execution is None or execution.status != "PENDING":
+            return None
+        return execution
+
+    def claim_item_dispatch(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        item_id: UUID,
+        execution_id: UUID,
+        kind: str,
+        now: datetime,
+        stale_after_seconds: int = DEFAULT_DISPATCH_CLAIM_STALE_SECONDS,
+        claim_id: UUID | None = None,
+    ) -> UUID | None:
+        """Take an expiring dispatch claim for an item implementation or recheck.
+
+        Caller holds the item identity lock. Only a still-PENDING bound
+        execution with a pending or abandoned claim can be owned. Returns the
+        claim id, or None when another claimant holds a fresh lease or the
+        execution has already started or finished.
+        """
+        item = self._lock_item(db, account_id=account_id, item_id=item_id)
+        if item is None:
+            return None
+        bound = (
+            item.implementation_execution_id
+            if kind == "implementation"
+            else item.recheck_execution_id
+        )
+        if bound != execution_id:
+            return None
+        if (
+            self._pending_bound_execution(
+                db, account_id=account_id, execution_id=execution_id
+            )
+            is None
+        ):
+            return None
+        data = dict(item.data or {})
+        if not dispatch_job_is_claimable(
+            data, now=now, stale_after_seconds=stale_after_seconds
+        ):
+            return None
+        token = claim_id or uuid4()
+        item.data = _write_dispatch_claim(data, now=now, claim_id=token)
+        flag_modified(item, "data")
+        db.flush()
+        return token
+
+    def finish_item_dispatch(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        item_id: UUID,
+        execution_id: UUID,
+        kind: str,
+        claim_id: UUID,
+        dispatched: bool,
+    ) -> models.SecurityMaintenanceItem | None:
+        """Complete or release an item dispatch claim. Stale claimants no-op.
+
+        A successful finish may advance ``remediation_pending`` /
+        ``reaudit_pending`` to the in-flight state. A failed finish returns
+        the record to ``pending`` only while this claim id still owns it.
+        """
+        item = self._lock_item(db, account_id=account_id, item_id=item_id)
+        if item is None:
+            return None
+        bound = (
+            item.implementation_execution_id
+            if kind == "implementation"
+            else item.recheck_execution_id
+        )
+        if bound != execution_id:
+            return None
+        data = dict(item.data or {})
+        if not _owns_dispatch_claim(data, claim_id):
+            return None
+        next_state = "dispatched" if dispatched else "pending"
+        item.data = _clear_dispatch_claim(data, dispatch_state=next_state)
+        flag_modified(item, "data")
+        if dispatched:
+            pending_state = (
+                "remediation_pending" if kind == "implementation" else "reaudit_pending"
+            )
+            if item.state == pending_state:
+                item.state = "remediating" if kind == "implementation" else "reauditing"
+        db.flush()
+        return item
+
+    def claim_baseline_dispatch(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        release_id: UUID,
+        execution_id: UUID,
+        now: datetime,
+        stale_after_seconds: int = DEFAULT_DISPATCH_CLAIM_STALE_SECONDS,
+        claim_id: UUID | None = None,
+    ) -> UUID | None:
+        """Take an expiring dispatch claim for an initial-baseline audit.
+
+        Caller holds the release lock. Same PENDING and abandoned-claim rules
+        as ``claim_item_dispatch``.
+        """
+        release = self._lock_release(db, account_id=account_id, release_id=release_id)
+        if release is None:
+            return None
+        data = dict(release.data or {})
+        audit = dict(data.get("baseline_audit") or {})
+        if str(audit.get("execution_id") or "") != str(execution_id):
+            return None
+        if (
+            self._pending_bound_execution(
+                db, account_id=account_id, execution_id=execution_id
+            )
+            is None
+        ):
+            return None
+        if not dispatch_job_is_claimable(
+            audit, now=now, stale_after_seconds=stale_after_seconds
+        ):
+            return None
+        token = claim_id or uuid4()
+        data["baseline_audit"] = _write_dispatch_claim(audit, now=now, claim_id=token)
+        release.data = data
+        flag_modified(release, "data")
+        db.flush()
+        return token
+
+    def finish_baseline_dispatch(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        release_id: UUID,
+        execution_id: UUID,
+        claim_id: UUID,
+        dispatched: bool,
+    ) -> models.SecurityMaintenanceRelease | None:
+        """Complete or release a baseline dispatch claim. Stale claimants no-op."""
+        release = self._lock_release(db, account_id=account_id, release_id=release_id)
+        if release is None:
+            return None
+        data = dict(release.data or {})
+        audit = dict(data.get("baseline_audit") or {})
+        if str(audit.get("execution_id") or "") != str(execution_id):
+            return None
+        if not _owns_dispatch_claim(audit, claim_id):
+            return None
+        next_state = "dispatched" if dispatched else "pending"
+        data["baseline_audit"] = _clear_dispatch_claim(audit, dispatch_state=next_state)
+        release.data = data
+        flag_modified(release, "data")
+        db.flush()
+        return release
 
 
 crud_security_maintenance = CRUDSecurityMaintenance()
