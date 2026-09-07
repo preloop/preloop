@@ -246,9 +246,12 @@ describe('token-figures', () => {
   });
 
   it('adds the directions up where the endpoint reported no total', () => {
-    expect(totalTokensOf({ input_tokens: 400, output_tokens: 100 })).to.equal(
-      500
-    );
+    expect(
+      totalTokensOf({
+        input_tokens: 400,
+        output_tokens: 100,
+      } as GatewayTokenUsage)
+    ).to.equal(500);
     expect(totalTokensOf(USAGE)).to.equal(15500);
     expect(totalTokensOf(null)).to.equal(0);
   });

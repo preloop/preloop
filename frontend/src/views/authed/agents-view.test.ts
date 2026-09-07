@@ -1520,12 +1520,18 @@ describe('sortAgentListRows', () => {
       makeRow({
         id: 'small',
         name: 'Small',
-        tokenUsage: { total_tokens: 15500, input_tokens: 12400 },
+        tokenUsage: {
+          total_tokens: 15500,
+          input_tokens: 12400,
+        } as AgentListRow['tokenUsage'],
       }),
       makeRow({
         id: 'large',
         name: 'Large',
-        tokenUsage: { total_tokens: 900000, input_tokens: 100 },
+        tokenUsage: {
+          total_tokens: 900000,
+          input_tokens: 100,
+        } as AgentListRow['tokenUsage'],
       }),
       makeRow({
         id: 'split',
