@@ -548,6 +548,29 @@ async def test_final_upload_failure_overrides_stale_trap_archive() -> None:
     assert orchestrator._evidence_receipt["status"] == "failed"
 
 
+@pytest.mark.asyncio
+async def test_non_string_transport_error_does_not_drop_getter_archive() -> None:
+    """Only a real error string is a transport failure; mock auto-attrs are not."""
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    archive = b"\x1f\x8b" + b"fake-evidence-tar-gz"
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator._evidence_archive = None
+    orchestrator._evidence_receipt = None
+    orchestrator._workspace_snapshot = None
+    orchestrator.execution_log = Mock(
+        id=uuid4(), status="RUNNING", trigger_event_details={}
+    )
+    orchestrator.flow = None
+    orchestrator.db = Mock()
+    orchestrator.execution_logger = Mock()
+    executor = AsyncMock()
+    executor.get_evidence_archive = AsyncMock(return_value=archive)
+    await orchestrator._capture_evidence_archive(executor, "job")
+    assert orchestrator._evidence_archive == archive
+    assert orchestrator._evidence_receipt["status"] == "available"
+
+
 def test_kubernetes_direct_upload_failure_is_honest(tmp_path: Path) -> None:
     import shutil
 

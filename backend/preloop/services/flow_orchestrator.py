@@ -3213,7 +3213,14 @@ class FlowExecutionOrchestrator:
             if isinstance(captured, (bytes, bytearray)) and captured:
                 archive = bytes(captured)
 
-        transport_error = getattr(agent_executor, "evidence_transport_error", None)
+        raw_transport_error = getattr(agent_executor, "evidence_transport_error", None)
+        # Production sets a string; mocks (AsyncMock) auto-create truthy
+        # attributes that must not be treated as a real upload failure.
+        transport_error = (
+            raw_transport_error
+            if isinstance(raw_transport_error, str) and raw_transport_error
+            else None
+        )
         if transport_error:
             self._evidence_receipt = evidence_receipt(
                 status="failed",
