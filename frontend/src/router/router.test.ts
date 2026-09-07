@@ -417,7 +417,15 @@ describe('router', () => {
         },
       });
       await router.setRoutes([{ path: '/fail', component: tag, load }], true);
-      await router.render('/fail');
+      const errorStub = sinon.stub(console, 'error');
+      try {
+        await router.render('/fail');
+        expect(
+          errorStub.calledWith('Failed to load route module', '/fail')
+        ).to.equal(true);
+      } finally {
+        errorStub.restore();
+      }
       // The outlet says something rather than going blank, and the view that
       // could not be built is not left half-created.
       expect(outlet.querySelector('.failed')).to.exist;

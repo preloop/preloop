@@ -385,7 +385,7 @@ export class Router {
       if (outcome.location) this.#announce(outcome.location);
       return;
     }
-    console.error(`Too many redirects rendering ${start.pathname}`);
+    console.error('Too many redirects rendering route', start.pathname);
   }
 
   /** One resolution pass. Returns a redirect instead of following it. */
@@ -509,10 +509,7 @@ export class Router {
       // as a broken app. The rejected promise must not stay cached, or the
       // retry would replay the same failure without asking the network.
       this.#loaded.delete(route);
-      console.error(
-        `Failed to load route module for ${target.pathname}`,
-        error
-      );
+      console.error('Failed to load route module', target.pathname, error);
       // Without a renderer there is nothing to show, so the caller gets the
       // error instead of a silently empty outlet.
       if (!this.#loading) throw error;
