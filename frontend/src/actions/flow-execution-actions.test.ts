@@ -43,6 +43,16 @@ describe('flowExecutionActions', () => {
     ).to.not.contain('open-session');
   });
 
+  it('lets a surface say where Open session goes', () => {
+    const actions = flowExecutionActions(
+      { id: 'e1', status: 'SUCCEEDED', agent_session_reference: 'sess-1' },
+      { ...ctx, sessionHref: (item) => `/runs/${item.id}?tab=transcript` }
+    );
+    expect(actions.find((a) => a.id === 'open-session')!.href).to.equal(
+      '/runs/e1?tab=transcript'
+    );
+  });
+
   it('offers View flow on the execution page only, and only with a flow', () => {
     expect(
       actionIds(

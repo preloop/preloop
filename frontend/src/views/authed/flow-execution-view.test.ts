@@ -1303,19 +1303,26 @@ describe('FlowExecutionView', () => {
         element.shadowRoot!.querySelectorAll('.header-actions sl-menu-item')
       ).map((item) => (item.textContent || '').trim());
 
-      // "View flow" is in the menu for the phone layout, where the header
-      // has no room for it; CSS hides it on a wide screen.
-      expect(items).to.eql([
-        'View flow',
-        'Copy execution id',
-        'Copy session id',
-      ]);
+      // The run's own actions are in resource-actions beside this kebab,
+      // which now carries the two copy commands only: they are about the
+      // page, not about the run.
+      expect(items).to.eql(['Copy execution id', 'Copy session id']);
       // exec-1 has no session reference, so that item cannot be clicked.
       expect(
         element
-          .shadowRoot!.querySelectorAll('.header-actions sl-menu-item')[2]
+          .shadowRoot!.querySelectorAll('.header-actions sl-menu-item')[1]
           .hasAttribute('disabled')
       ).to.equal(true);
+    });
+
+    it('offers the run actions the executions list offers, by status', async () => {
+      const element = await load('exec-1');
+      const actions = element.shadowRoot!.querySelector(
+        '.header-actions resource-actions'
+      ) as HTMLElement & { actions: Array<{ id: string }> };
+
+      // exec-1 succeeded and has no session, so only the flow link is left.
+      expect(actions.actions.map((action) => action.id)).to.eql(['view-flow']);
     });
   });
 

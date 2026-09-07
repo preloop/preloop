@@ -32,6 +32,12 @@ export interface FlowExecutionActionContext extends ActionContext {
   includeOpen?: boolean;
   /** Offered on the execution page, which knows which flow it belongs to. */
   includeViewFlow?: boolean;
+  /**
+   * Where "Open session" goes. The execution page sends the operator to the
+   * session record in the sessions list; a list row sends them to the run's
+   * own transcript, which is the same conversation one page closer.
+   */
+  sessionHref?: (execution: FlowExecutionActionResource) => string;
   onCancel?: (execution: FlowExecutionActionResource) => void;
   onRetry?: (execution: FlowExecutionActionResource) => void;
 }
@@ -90,7 +96,9 @@ export function flowExecutionActions(
         label: 'Open session',
         icon: 'chat-left-text',
         available: (item) => Boolean(item.agent_session_reference),
-        href: executionSessionUrl(execution),
+        href: ctx.sessionHref
+          ? ctx.sessionHref(execution)
+          : executionSessionUrl(execution),
       },
       ctx.includeViewFlow
         ? {
