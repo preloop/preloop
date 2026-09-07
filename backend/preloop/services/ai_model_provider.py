@@ -248,22 +248,27 @@ async def get_available_models_for_provider(
         return _fallback([], ERROR_UNSUPPORTED)
 
 
-def _discovery_http_client() -> Optional[Any]:
+def _discovery_http_client(*, required: bool = False) -> Optional[Any]:
     """Return an httpx client that trusts a mounted private CA, if configured.
 
     The OpenAI SDK uses certifi by default and ignores SSL_CERT_FILE.
     Operators mount a CA via Helm extraVolumes and set SSL_CERT_FILE;
     that path is passed as httpx ``verify``.
+
+    SDK-backed paths only need a client when a private CA is configured, so
+    the default is to return None and let the SDK build its own. Paths that
+    speak plain HTTPS themselves (Google) pass ``required=True`` and always
+    get a client, with the private CA applied when one is configured.
     """
     verify = ssl_verify_setting()
-    if verify is None:
+    if verify is None and not required:
         return None
     import httpx
 
-    return httpx.AsyncClient(
-        verify=verify,
-        timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
-    )
+    client_kwargs: Dict[str, Any] = {"timeout": MODEL_DISCOVERY_TIMEOUT_SECONDS}
+    if verify is not None:
+        client_kwargs["verify"] = verify
+    return httpx.AsyncClient(**client_kwargs)
 
 
 def validate_discovery_endpoint(api_endpoint: str) -> str:
@@ -620,127 +625,124 @@ async def _get_anthropic_models(api_key: Optional[str] = None) -> ModelDiscovery
     return _live(model_ids)
 
 
-# Fallback catalog used when the Google listing call cannot be made.
-# Provenance: hand-curated current Gemini ids, no deprecated preview/exp names.
-def _build_scoped_google_client(api_key: str) -> Optional[object]:
-    """Build a Gemini model client bound to ``api_key`` only, or None.
+GOOGLE_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-    ``genai.configure(api_key=...)`` mutates PROCESS-GLOBAL SDK state, so two
-    concurrent discovery requests for different accounts can race and one
-    account's listing can be made with the other's key. Building a per-call
-    client keeps the key on the call stack instead.
+# Page size for the Google listing call. The API caps a page at 1000 entries
+# and Google serves far fewer chat models than that, so one page is normally
+# enough; nextPageToken is still followed, bounded by GOOGLE_MAX_LIST_PAGES so
+# a misbehaving upstream cannot make this loop forever.
+GOOGLE_LIST_PAGE_SIZE = 200
+GOOGLE_MAX_LIST_PAGES = 10
 
-    The pinned SDK (google-generativeai 0.8.x) has no ``genai.Client``, but
-    ``genai.list_models`` accepts a ``client`` argument, and the underlying
-    ``ModelServiceClient`` takes a per-instance api_key through
-    ``ClientOptions``. Returns None when that construction is unavailable, so
-    the caller can fall back rather than lose listing entirely.
+
+def _extract_google_model_ids(payload: Any) -> List[str]:
+    """Pull bare Gemini ids out of one v1beta ``models.list`` page.
+
+    Names arrive as ``models/gemini-2.5-pro``; the picker and the gateway use
+    the bare ``gemini-...`` form, so the prefix is stripped (this matches what
+    the old SDK path produced). Entries are kept only when
+    ``supportedGenerationMethods`` includes ``generateContent``: the same
+    listing also carries embedding and token-counting-only models, which are
+    not usable as chat models. An entry with no methods field at all is kept,
+    as it was on the SDK path, so a future response shape does not empty the
+    picker.
     """
-    try:
-        import google.ai.generativelanguage as glm
-        from google.api_core import client_options as client_options_lib
+    if not isinstance(payload, dict):
+        return []
+    entries = payload.get("models")
+    if not isinstance(entries, list):
+        return []
 
-        return glm.ModelServiceClient(
-            client_options=client_options_lib.ClientOptions(api_key=api_key)
-        )
-    except Exception as e:
-        # Never log the key or the exception text; the type name is enough to
-        # tell an operator which construction path is unavailable.
-        logger.debug(
-            "Key-scoped Google client unavailable (%s), falling back to "
-            "process-global configure()",
-            type(e).__name__,
-        )
-        return None
+    model_ids: List[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        methods = entry.get("supportedGenerationMethods")
+        if isinstance(methods, list) and "generateContent" not in methods:
+            continue
+        model_id = name.strip().removeprefix("models/").strip()
+        if model_id:
+            model_ids.append(model_id)
+    return model_ids
 
 
 async def _get_google_models(api_key: Optional[str] = None) -> ModelDiscoveryResult:
-    """List Google Gemini models live via ``genai.list_models``.
+    """List Google Gemini models live via the REST listing endpoint.
 
-    Listing API: Google AI Generative Language ``models.list``
-    (https://generativelanguage.googleapis.com/v1beta/models). ``list_models``
-    itself fails on a bad key, so no separate paid ``generate_content``
+    ``GET https://generativelanguage.googleapis.com/v1beta/models``, paginated
+    on ``nextPageToken``. This is plain HTTPS on purpose: the SDK
+    (google-generativeai) is an optional ``ai-providers`` extra that the
+    hash-pinned runtime lock the image installs does not carry, so every
+    container answered ``sdk_missing`` for Google while every other provider
+    listed fine.
+
+    The key travels in the ``x-goog-api-key`` HEADER, never the documented
+    ``?key=`` query parameter: query strings are written to access logs and
+    proxy logs in plaintext (2026-08-04 key-leak incident; the same rule is
+    stated for our own API in the endpoint docstring).
+
+    The listing itself authenticates, so no separate paid ``generateContent``
     validation ping is made.
     """
-    if not api_key:
+    if not (api_key or "").strip():
         return _fallback([], ERROR_MISSING_KEY)
 
+    # required=True never returns None, hence the plain Any annotation.
+    client: Any = _discovery_http_client(required=True)
+    fetched_models: List[str] = []
     try:
-        import google.generativeai as genai
-    except ImportError:
-        logger.warning("Google GenerativeAI package not installed, cannot list models")
-        return _fallback([], ERROR_SDK_MISSING)
-
-    try:
-        fetched_models = []
-        list_models = getattr(genai, "list_models", None)
-        if not callable(list_models):
-            logger.warning("genai.list_models unavailable")
-            return _fallback([], ERROR_SDK_MISSING)
-
-        scoped_client = _build_scoped_google_client(api_key)
-        if scoped_client is not None:
-            listing = list_models(client=scoped_client)
-        else:
-            # No key-scoped client available: fall back to the process-global
-            # configure() so listing keeps working on older/newer SDKs. This
-            # path carries the cross-request contamination risk described in
-            # _build_scoped_google_client.
-            genai.configure(api_key=api_key)
-            listing = list_models()
-
-        for model in listing:
-            model_name = getattr(model, "name", "")
-            supported_methods = set(
-                getattr(model, "supported_generation_methods", []) or []
+        page_token: Optional[str] = None
+        for _ in range(GOOGLE_MAX_LIST_PAGES):
+            params: Dict[str, str] = {"pageSize": str(GOOGLE_LIST_PAGE_SIZE)}
+            if page_token:
+                params["pageToken"] = page_token
+            response = await client.get(
+                GOOGLE_MODELS_URL,
+                params=params,
+                headers={"x-goog-api-key": api_key},
             )
-            if model_name.startswith("models/"):
-                model_name = model_name.removeprefix("models/")
-            if model_name and (
-                not supported_methods or "generateContent" in supported_methods
-            ):
-                fetched_models.append(model_name)
+            status = int(getattr(response, "status_code", 0) or 0)
+            if status in (401, 403):
+                # Never log or surface the provider body: it can echo the
+                # request URL and, on some proxies, the credential.
+                logger.warning("Google authentication failed listing models")
+                raise ProviderAuthError(
+                    "Invalid Google API key. Please check your API key and try again."
+                )
+            if status >= 400:
+                logger.warning("Google model listing failed with HTTP %d", status)
+                return _fallback([], ERROR_UNKNOWN)
+
+            payload = response.json()
+            fetched_models.extend(_extract_google_model_ids(payload))
+
+            next_token = (
+                payload.get("nextPageToken") if isinstance(payload, dict) else None
+            )
+            page_token = next_token.strip() if isinstance(next_token, str) else None
+            if not page_token:
+                break
+    except ProviderAuthError:
+        raise
     except Exception as e:
-        error_msg = str(e).lower()
-        error_type = type(e).__name__.lower()
-        # Check for authentication errors by message content and exception type
-        if any(
-            keyword in error_msg
-            for keyword in [
-                "401",
-                "403",
-                "unauthorized",
-                "unauthenticated",
-                "permission",
-                "invalid",
-                "api key",
-            ]
-        ) or any(
-            keyword in error_type
-            for keyword in [
-                "authentication",
-                "permission",
-                "unauthorized",
-                "unauthenticated",
-                "invalidargument",
-            ]
-        ):
-            logger.warning("Google authentication failed: %s", type(e).__name__)
-            raise ProviderAuthError(
-                "Invalid Google API key. Please check your API key and try again."
-            )
-        logger.warning(
-            "Failed to list Google models: %s",
-            type(e).__name__,
-        )
+        # Type name only: provider messages embed URLs and can embed keys.
+        logger.warning("Failed to list Google models: %s", type(e).__name__)
         return _fallback([], _classify_fetch_error(e))
+    finally:
+        aclose = getattr(client, "aclose", None)
+        if callable(aclose):
+            await aclose()
 
     if not fetched_models:
         logger.info("Google returned no models")
         return _fallback([], ERROR_EMPTY_RESPONSE)
 
     logger.info("Listed %d Google models", len(fetched_models))
-    return _live(sorted(set(fetched_models), reverse=True))
+    # Same shape as before: de-duplicated, newest-looking ids first.
+    return _live(sorted(set(fetched_models), reverse=True)[:MAX_DISCOVERED_MODELS])
 
 
 async def _get_catalog_provider_models(

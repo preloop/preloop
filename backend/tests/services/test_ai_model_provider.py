@@ -14,8 +14,12 @@ from preloop.services.ai_model_provider import (
     ERROR_EMPTY_RESPONSE,
     ERROR_MISSING_KEY,
     ERROR_SDK_MISSING,
+    ERROR_TIMEOUT,
     ERROR_UNKNOWN,
     FALLBACK_ERROR_REASONS,
+    GOOGLE_LIST_PAGE_SIZE,
+    GOOGLE_MAX_LIST_PAGES,
+    GOOGLE_MODELS_URL,
     MODEL_DISCOVERY_TIMEOUT_SECONDS,
     ModelDiscoveryResult,
     ProviderAuthError,
@@ -572,8 +576,53 @@ class TestGetAnthropicModels:
             assert model_id in prices, f"{model_id} missing from model_prices.json"
 
 
+class _StubGoogleResponse:
+    """Minimal stand-in for an httpx Response from the Gemini listing call."""
+
+    def __init__(self, payload, status_code=200):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _StubGoogleClient:
+    """Stub HTTP client that hands back queued responses (or raises them)."""
+
+    def __init__(self, *responses):
+        self._responses = list(responses)
+        self.calls = []
+        self.closed = False
+
+    async def get(self, url, params=None, headers=None):
+        self.calls.append(
+            {"url": url, "params": params or {}, "headers": headers or {}}
+        )
+        item = self._responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    async def aclose(self):
+        self.closed = True
+
+
+def _google_entry(name, methods=("generateContent",)):
+    """One entry as the v1beta models.list REST response shapes it."""
+    entry = {"name": name}
+    if methods is not None:
+        entry["supportedGenerationMethods"] = list(methods)
+    return entry
+
+
+class _FakeTimeoutError(Exception):
+    """Type name carries "timeout", which is how _classify_fetch_error maps it."""
+
+
 class TestGetGoogleModels:
-    """Test _get_google_models function."""
+    """Google listing over plain HTTPS (no SDK: it is an optional extra that
+    the runtime lock the image installs does not carry)."""
 
     @pytest.mark.asyncio
     async def test_get_google_models_without_key(self):
@@ -584,248 +633,250 @@ class TestGetGoogleModels:
         assert result.error == ERROR_MISSING_KEY
 
     @pytest.mark.asyncio
-    async def test_get_google_models_with_valid_key_lists_live(self):
-        """A valid key returns the live listing with provenance live."""
-        mock_google = MagicMock()
-        mock_genai = MagicMock()
-
-        live_entry = MagicMock()
-        live_entry.name = "models/gemini-3.0-pro"
-        live_entry.supported_generation_methods = ["generateContent"]
-        mock_genai.list_models = MagicMock(return_value=[live_entry])
-        mock_google.generativeai = mock_genai
-
-        with patch.dict(
-            sys.modules,
-            {"google": mock_google, "google.generativeai": mock_genai},
-            clear=False,
-        ):
-            result = await _get_google_models("valid_key")
-
-            assert result.source == "live"
-            assert result.models == ["gemini-3.0-pro"]
-            # Under a fully mocked google package the key-scoped client cannot
-            # be constructed, so this exercises the documented fallback path:
-            # process-global configure(). The scoped path (which must NOT call
-            # configure) is covered by the real-SDK tests below.
-            mock_genai.configure.assert_called_once_with(api_key="valid_key")
-            # No paid generate_content validation ping.
-            mock_genai.GenerativeModel.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_get_google_models_empty_listing_is_reported_fallback(self):
-        """A fetch that produces nothing is a REPORTED fallback, not a silent
-        return of known_models (the old behavior)."""
-        mock_google = MagicMock()
-        mock_genai = MagicMock()
-        mock_genai.list_models = MagicMock(return_value=[])
-        mock_google.generativeai = mock_genai
-
-        with patch.dict(
-            sys.modules,
-            {"google": mock_google, "google.generativeai": mock_genai},
-            clear=False,
-        ):
-            result = await _get_google_models("valid_key")
-
-            assert result.models == []
-            assert result.source == "fallback"
-            assert result.error == "empty_response"
-            # And no paid generate_content ping was fired to "validate".
-            mock_genai.GenerativeModel.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_get_google_models_authentication_error(self):
-        """Auth failures during listing raise the ValueError."""
-        mock_google = MagicMock()
-        mock_genai = MagicMock()
-        mock_genai.list_models = MagicMock(
-            side_effect=Exception("403 permission denied")
+    async def test_lists_live_and_follows_pagination(self):
+        """Both pages are merged and nextPageToken is followed."""
+        client = _StubGoogleClient(
+            _StubGoogleResponse(
+                {
+                    "models": [_google_entry("models/gemini-3.0-pro")],
+                    "nextPageToken": "page-2",
+                }
+            ),
+            _StubGoogleResponse({"models": [_google_entry("models/gemini-2.5-flash")]}),
         )
-        mock_google.generativeai = mock_genai
 
-        with patch.dict(
-            sys.modules,
-            {"google": mock_google, "google.generativeai": mock_genai},
-            clear=False,
+        with patch(
+            "preloop.services.ai_model_provider._discovery_http_client",
+            return_value=client,
         ):
-            with pytest.raises(ValueError, match="Invalid Google API key"):
-                await _get_google_models("invalid_key")
+            result = await _get_google_models("AIza-key")
+
+        assert result.source == "live"
+        assert result.error is None
+        # Bare ids (no "models/" prefix), de-duplicated, newest first.
+        assert result.models == ["gemini-3.0-pro", "gemini-2.5-flash"]
+        assert len(client.calls) == 2
+        assert client.calls[0]["url"] == GOOGLE_MODELS_URL
+        assert client.calls[0]["params"] == {"pageSize": str(GOOGLE_LIST_PAGE_SIZE)}
+        assert client.calls[1]["params"]["pageToken"] == "page-2"
+        assert client.closed is True
 
     @pytest.mark.asyncio
-    async def test_get_google_models_url_with_api_key_param_is_not_auth(self):
-        """A URL carrying an api_key query param must not be read as an auth failure."""
-        mock_google = MagicMock()
-        mock_genai = MagicMock()
-        mock_genai.list_models = MagicMock(
-            side_effect=Exception(
-                "Connection refused: https://proxy.internal/v1beta/models?api_key=redacted"
+    async def test_key_travels_in_header_never_in_the_query_string(self):
+        """A key in the query string lands in access logs (2026-08-04 leak)."""
+        client = _StubGoogleClient(
+            _StubGoogleResponse({"models": [_google_entry("models/gemini-2.5-pro")]})
+        )
+
+        with patch(
+            "preloop.services.ai_model_provider._discovery_http_client",
+            return_value=client,
+        ):
+            await _get_google_models("AIza-secret-key")
+
+        call = client.calls[0]
+        assert call["headers"]["x-goog-api-key"] == "AIza-secret-key"
+        assert "key" not in call["params"]
+        assert "AIza-secret-key" not in str(call["params"])
+        assert "?" not in call["url"]
+
+    @pytest.mark.asyncio
+    async def test_filters_by_supported_generation_method(self):
+        """Embedding-only models are not usable in the picker."""
+        client = _StubGoogleClient(
+            _StubGoogleResponse(
+                {
+                    "models": [
+                        _google_entry("models/gemini-2.5-pro"),
+                        _google_entry(
+                            "models/text-embedding-004", methods=["embedContent"]
+                        ),
+                        _google_entry(
+                            "models/gemini-legacy-counter", methods=["countTokens"]
+                        ),
+                        # No methods field at all: kept, as on the old SDK path.
+                        _google_entry("models/gemini-unknown-shape", methods=None),
+                    ]
+                }
             )
         )
-        mock_google.generativeai = mock_genai
 
-        with patch.dict(
-            sys.modules,
-            {"google": mock_google, "google.generativeai": mock_genai},
-            clear=False,
+        with patch(
+            "preloop.services.ai_model_provider._discovery_http_client",
+            return_value=client,
         ):
-            result = await _get_google_models("valid_key")
+            result = await _get_google_models("AIza-key")
+
+        assert result.source == "live"
+        assert result.models == ["gemini-unknown-shape", "gemini-2.5-pro"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_rejected_key_raises_auth(self, status):
+        """401/403 tell the user the key is bad instead of an empty picker."""
+        client = _StubGoogleClient(
+            _StubGoogleResponse({"error": {"message": "API key not valid"}}, status)
+        )
+
+        with patch(
+            "preloop.services.ai_model_provider._discovery_http_client",
+            return_value=client,
+        ):
+            with pytest.raises(ProviderAuthError, match="Invalid Google API key"):
+                await _get_google_models("bad-key")
+
+        assert client.closed is True
+
+    @pytest.mark.asyncio
+    async def test_other_http_error_is_a_safe_fallback(self):
+        """A 500 is a fallback with a vocabulary reason, no provider text."""
+        client = _StubGoogleClient(_StubGoogleResponse({"error": "boom"}, 500))
+
+        with patch(
+            "preloop.services.ai_model_provider._discovery_http_client",
+            return_value=client,
+        ):
+            result = await _get_google_models("AIza-key")
+
+        assert result.models == []
+        assert result.source == "fallback"
+        assert result.error == ERROR_UNKNOWN
+
+    @pytest.mark.asyncio
+    async def test_timeout_is_classified_as_timeout(self):
+        """A hung endpoint maps to the existing timeout reason."""
+        client = _StubGoogleClient(_FakeTimeoutError("read timed out"))
+
+        with patch(
+            "preloop.services.ai_model_provider._discovery_http_client",
+            return_value=client,
+        ):
+            result = await _get_google_models("AIza-key")
+
+        assert result.models == []
+        assert result.source == "fallback"
+        assert result.error == ERROR_TIMEOUT
+        assert client.closed is True
+
+    @pytest.mark.asyncio
+    async def test_network_error_never_leaks_provider_text(self):
+        """A URL carrying an api_key must not reach the caller or be read as auth."""
+        client = _StubGoogleClient(
+            ConnectionError(
+                "Connection refused: https://proxy.internal/v1beta/models?key=redacted"
+            )
+        )
+
+        with patch(
+            "preloop.services.ai_model_provider._discovery_http_client",
+            return_value=client,
+        ):
+            result = await _get_google_models("AIza-key")
 
         assert result.source == "fallback"
+        assert result.error in FALLBACK_ERROR_REASONS
+        assert "://" not in (result.error or "")
 
     @pytest.mark.asyncio
-    async def test_get_google_models_import_error(self):
-        """Test handling when Google package not installed."""
-        genai_module = sys.modules.pop("google.generativeai", None)
-        try:
-            import builtins
+    async def test_empty_listing_is_reported_fallback(self):
+        """A fetch that produces nothing is a REPORTED fallback, not a catalog."""
+        client = _StubGoogleClient(_StubGoogleResponse({"models": []}))
 
-            original_import = builtins.__import__
-
-            def mock_import(name, *args, **kwargs):
-                if name == "google.generativeai":
-                    raise ImportError("No module named 'google.generativeai'")
-                return original_import(name, *args, **kwargs)
-
-            with patch("builtins.__import__", side_effect=mock_import):
-                result = await _get_google_models("test_key")
-                assert result.models == []
-                assert result.error == "sdk_missing"
-        finally:
-            if genai_module is not None:
-                sys.modules["google.generativeai"] = genai_module
-
-    @pytest.mark.asyncio
-    async def test_get_google_models_network_error(self):
-        """Non-auth failures fall back with a reason."""
-        mock_genai = MagicMock()
-        mock_genai.list_models = MagicMock(side_effect=Exception("Connection reset"))
-
-        with patch.dict(sys.modules, {"google.generativeai": mock_genai}):
-            result = await _get_google_models("test_key")
-            assert result.models == []
-            assert result.source == "fallback"
-            assert result.error in FALLBACK_ERROR_REASONS
-
-    @pytest.mark.asyncio
-    async def test_scoped_google_client_isolates_keys(self):
-        """The key must live on a per-call client, not in global SDK state.
-
-        genai.configure() mutates PROCESS-GLOBAL state, so two concurrent
-        discovery requests for different accounts could race and list one
-        account's models with the other's key. These assertions run against
-        the REAL SDK: a fully mocked google package makes the scoped client
-        unconstructible, which is why the mocked tests above cannot cover it.
-        """
-        from preloop.services.ai_model_provider import _build_scoped_google_client
-
-        first = _build_scoped_google_client("AIza-key-one")
-        second = _build_scoped_google_client("AIza-key-two")
-        if first is None or second is None:
-            pytest.skip("google.ai.generativelanguage not available")
-
-        assert first is not second
-        assert first.transport._credentials.token == "AIza-key-one"
-        assert second.transport._credentials.token == "AIza-key-two"
-
-    @pytest.mark.asyncio
-    async def test_scoped_path_does_not_touch_global_configure_mocked(self):
-        """Regression: the scoped path must never call genai.configure().
-
-        This is the SDK-free twin of the real-SDK test below. The google
-        packages are optional extras (``ai-providers``) and are not installed
-        in CI, so the real-SDK test skips there and this one carries the
-        assertion instead.
-
-        The round-3 trap this avoids: mocking the whole google package makes
-        _build_scoped_google_client() fail and return None, which silently
-        routes the call to the FALLBACK branch, so a naive mocked test asserts
-        nothing about the scoped branch. Here the builder itself is patched to
-        hand back a sentinel, which forces the scoped branch to be taken.
-        """
-        from preloop.services import ai_model_provider as module
-
-        sentinel_client = object()
-        mock_google = MagicMock()
-        mock_genai = MagicMock()
-
-        captured = {}
-
-        def fake_list_models(client=None):
-            captured["client"] = client
-            entry = MagicMock()
-            entry.name = "models/gemini-2.5-pro"
-            entry.supported_generation_methods = ["generateContent"]
-            return [entry]
-
-        mock_genai.list_models = MagicMock(side_effect=fake_list_models)
-        mock_google.generativeai = mock_genai
-
-        with patch.dict(
-            sys.modules,
-            {"google": mock_google, "google.generativeai": mock_genai},
-            clear=False,
+        with patch(
+            "preloop.services.ai_model_provider._discovery_http_client",
+            return_value=client,
         ):
-            with patch.object(
-                module, "_build_scoped_google_client", return_value=sentinel_client
-            ):
-                result = await _get_google_models("AIza-scoped-key")
+            result = await _get_google_models("AIza-key")
+
+        assert result.models == []
+        assert result.source == "fallback"
+        assert result.error == ERROR_EMPTY_RESPONSE
+
+    @pytest.mark.asyncio
+    async def test_listing_does_not_need_the_optional_google_sdk(self):
+        """Regression for the prod bug: with google.generativeai unimportable
+        the listing still works, because it is plain HTTPS now."""
+        import builtins
+
+        original_import = builtins.__import__
+
+        def blocked_import(name, *args, **kwargs):
+            if name.startswith("google"):
+                raise ImportError(f"No module named {name!r}")
+            return original_import(name, *args, **kwargs)
+
+        client = _StubGoogleClient(
+            _StubGoogleResponse({"models": [_google_entry("models/gemini-2.5-pro")]})
+        )
+
+        with patch(
+            "preloop.services.ai_model_provider._discovery_http_client",
+            return_value=client,
+        ):
+            with patch("builtins.__import__", side_effect=blocked_import):
+                result = await _get_google_models("AIza-key")
 
         assert result.source == "live"
         assert result.models == ["gemini-2.5-pro"]
-        # The whole point: global state was never mutated.
-        mock_genai.configure.assert_not_called()
-        # ...and the key-scoped client travelled on the call instead.
-        assert captured["client"] is sentinel_client
 
     @pytest.mark.asyncio
-    async def test_live_listing_does_not_touch_global_configure(self):
-        """Regression: the scoped path must never call genai.configure().
+    async def test_pagination_is_bounded(self):
+        """An upstream that always returns a token cannot loop forever."""
+        pages = [
+            _StubGoogleResponse(
+                {
+                    "models": [_google_entry(f"models/gemini-{i}")],
+                    "nextPageToken": f"page-{i}",
+                }
+            )
+            for i in range(GOOGLE_MAX_LIST_PAGES + 5)
+        ]
+        client = _StubGoogleClient(*pages)
 
-        Runs against the REAL SDK, which additionally proves the key rides on
-        the client's credentials. The google packages are optional extras and
-        are absent in CI, hence importorskip; the assertion still runs in CI
-        in mocked form via the test above.
-        """
-        real_genai = pytest.importorskip(
-            "google.generativeai",
-            reason="google-generativeai extra not installed",
-        )
-        pytest.importorskip(
-            "google.ai.generativelanguage",
-            reason="google-generativeai extra not installed",
-        )
-        from preloop.services import ai_model_provider as module
-
-        if module._build_scoped_google_client("AIza-probe") is None:
-            pytest.skip("google.ai.generativelanguage not available")
-
-        configure_calls = []
-        captured = {}
-
-        def fake_list_models(client=None):
-            captured["client"] = client
-            entry = MagicMock()
-            entry.name = "models/gemini-2.5-pro"
-            entry.supported_generation_methods = ["generateContent"]
-            return [entry]
-
-        with (
-            patch.object(
-                real_genai,
-                "configure",
-                side_effect=lambda **kw: configure_calls.append(kw),
-            ),
-            patch.object(real_genai, "list_models", side_effect=fake_list_models),
+        with patch(
+            "preloop.services.ai_model_provider._discovery_http_client",
+            return_value=client,
         ):
-            result = await _get_google_models("AIza-scoped-key")
+            result = await _get_google_models("AIza-key")
+
+        assert len(client.calls) == GOOGLE_MAX_LIST_PAGES
+        assert result.source == "live"
+
+    @pytest.mark.asyncio
+    async def test_request_shape_against_a_real_httpx_client(self):
+        """Same path with a real httpx client on a mock transport.
+
+        The stubs above cannot catch a wrong httpx call signature, so this
+        one drives the actual client and asserts on the wire-level request:
+        the key is a header and the URL carries no credential.
+        """
+        import httpx
+
+        seen = []
+
+        def handler(request):
+            seen.append(request)
+            return httpx.Response(
+                200,
+                json={"models": [_google_entry("models/gemini-2.5-pro")]},
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        with patch(
+            "preloop.services.ai_model_provider._discovery_http_client",
+            return_value=client,
+        ):
+            result = await _get_google_models("AIza-wire-key")
 
         assert result.source == "live"
         assert result.models == ["gemini-2.5-pro"]
-        # The whole point: global state was never mutated.
-        assert configure_calls == []
-        # ...and the key travelled on the per-call client instead.
-        assert captured["client"].transport._credentials.token == "AIza-scoped-key"
+        request = seen[0]
+        assert request.method == "GET"
+        assert str(request.url).startswith(GOOGLE_MODELS_URL)
+        assert request.headers["x-goog-api-key"] == "AIza-wire-key"
+        assert "AIza-wire-key" not in str(request.url)
+        assert client.is_closed is True
 
 
 class TestGetQwenModels:
