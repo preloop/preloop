@@ -68,7 +68,9 @@ unscreened components by count from the source matrix. The machine
 Retrieve the structured result with
 `GET /api/v1/flows/executions/{execution_id}/result`. Download the
 captured evidence tarball with
-`GET /api/v1/flows/executions/{id}/evidence`.
+`GET /api/v1/flows/executions/{id}/evidence`. Operator runbook for
+transport, receipts, and retention:
+[Evidence storage and retention](evidence-storage.md).
 
 ## result.json contract
 
@@ -493,7 +495,15 @@ Waivers are human-authored inputs (`waivers.json` / `waivers.yaml` in
 the seed, or payload `waivers`). The agent never authors a waiver. An
 entry missing `id`, `reason`, `author`, or `date` is invalid and waives
 nothing. Interactive collection (`waiver_collection: "interactive"`)
-uses the built-in `ask_user` channel once, batched; timeout fails closed.
+uses the built-in `ask_user` channel once, batched; the human answer is
+JSON `{id, reason}` per selected finding id. Persist authenticates that
+stored `tool_result` / `responses` content — `status=approved` or a CVE
+mentioned in the question is not a waiver. Timeout fails closed.
+
+The severity gate is KEV or CVSS >= 9.0 unless the trigger/CI payload
+sets `gate.fail_on_kev` / `gate.fail_on_cvss_gte` (CVSS in `[0, 10]`).
+Agent `gate.policy` display text never changes the threshold. There is
+no per-product policy table.
 
 Heuristic sources stay labeled and never enter the severity gate.
 `pkg:generic` and `pkg:github` are not db-resolvable by purl; they may
@@ -678,12 +688,36 @@ If the encoded `workspace_files` would exceed 1 MiB, do not silently
 truncate. Fail the job or switch to URL delivery with the trust warning
 above in mind.
 
-### 3. GitHub Actions (curl)
+### 3. GitHub Actions (`python -m preloop.cra.ci`)
 
 Store `PRELOOP_URL` (API origin, no trailing slash), the full webhook URL
 (including the secret) as `PRELOOP_CRA_WEBHOOK_URL`, and
 `PRELOOP_TOKEN` (account API token with `view_flows`) as repository
-secrets. This job assumes a prior step wrote `sbom/image.spdx.json`.
+secrets. The webhook URL is a bearer secret: do not print it, and do
+not retry the POST after an ambiguous network or HTTP 5xx error.
+
+The helper validates `result.json` against the CRA contracts, requires a
+bounded gzip evidence archive (the durable `FLOW_EVIDENCE_MAX_BYTES` /
+`FLOW_ARTIFACT_EXPANDED_MAX_BYTES` caps), binds the controller digest,
+and compares packed SBOM/finding content rather than schema/verdict/status
+alone. Default legacy capture may omit `result.json` from the tarball;
+those packs are accepted only with a matching controller digest plus the
+authenticated API result. Release is denied on `fail` or unknown
+verdicts. Default policy is a clean `pass` only. `pass_with_findings` is
+an explicit `--policy pass_with_findings` choice. There is no
+failure-bypass mode.
+
+See [Evidence storage and retention](evidence-storage.md) for transport,
+receipts, and retention.
+
+Overall deadline is the selected flow's `timeout_seconds` plus a 120s
+startup buffer (Release Security Audit is 7200s). Set
+`PRELOOP_CRA_TIMEOUT_SECONDS` or `--timeout` when the flow does not
+report a timeout.
+
+This job assumes a prior step wrote `sbom/image.spdx.json` and that the
+job image can import `preloop` (the instance's Python environment, or
+`pip install` of the same release).
 
 ```yaml
 # .github/workflows/cra-evidence.yml
@@ -700,130 +734,56 @@ jobs:
       # from the build job's artifacts.
       - name: Trigger Release Security Audit
         env:
+          PRELOOP_DISABLE_TELEMETRY: "true"
           PRELOOP_URL: ${{ secrets.PRELOOP_URL }}
           PRELOOP_CRA_WEBHOOK_URL: ${{ secrets.PRELOOP_CRA_WEBHOOK_URL }}
           PRELOOP_TOKEN: ${{ secrets.PRELOOP_TOKEN }}
         run: |
           set -euo pipefail
           test -f sbom/image.spdx.json
-          python3 - <<'PY' > /tmp/payload.json
-          import base64, json, os, pathlib, sys
-          files = []
-          for rel in (
-              "sbom/image.spdx.json",
-              "manifests/license.manifest",
-              "previous/result.json",
-          ):
-              p = pathlib.Path(rel)
-              if p.is_file():
-                  files.append({
-                      "path": rel,
-                      "content_base64": base64.b64encode(p.read_bytes()).decode(),
-                  })
-          encoded = sum(len(f["content_base64"]) for f in files)
-          if encoded > 1024 * 1024:
-              raise SystemExit(
-                  f"workspace_files encoded size {encoded} exceeds 1 MiB cap"
-              )
-          json.dump({
-              "release_ref": os.environ.get("GITHUB_REF_NAME", ""),
-              "sbom": {"paths": ["sbom/image.spdx.json"]},
-              "workspace_files": files,
-          }, sys.stdout)
-          PY
-
-          RESP=$(curl -fsS -X POST "$PRELOOP_CRA_WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
-            --data-binary @/tmp/payload.json)
-          EXEC_ID=$(printf '%s' "$RESP" | jq -r '.execution_id')
-          test -n "$EXEC_ID" && test "$EXEC_ID" != "null"
-          echo "Triggered $EXEC_ID"
-
-          for _ in $(seq 1 180); do
-            HTTP=$(curl -sS -o /tmp/exec.json -w '%{http_code}' \
-              -H "Authorization: Bearer $PRELOOP_TOKEN" \
-              "$PRELOOP_URL/api/v1/flows/executions/$EXEC_ID")
-            STATUS=$(jq -r '.status // empty' /tmp/exec.json)
-            case "$STATUS" in
-              SUCCEEDED|FAILED|STOPPED|TIMEOUT|CANCELLED) break ;;
-            esac
-            sleep 10
-          done
-          echo "execution status=$STATUS http=$HTTP"
-          case "$STATUS" in
-            SUCCEEDED) ;;
-            *) echo "execution did not succeed: $STATUS"; exit 1 ;;
-          esac
-
-          curl -fsS -H "Authorization: Bearer $PRELOOP_TOKEN" \
-            "$PRELOOP_URL/api/v1/flows/executions/$EXEC_ID/result" \
-            > result-wrap.json
-          jq '.result' result-wrap.json > result.json
-          VERDICT=$(jq -r '.result.verdict // empty' result-wrap.json)
-          echo "verdict=$VERDICT"
-
-          curl -fsS -H "Authorization: Bearer $PRELOOP_TOKEN" \
-            "$PRELOOP_URL/api/v1/flows/executions/$EXEC_ID/evidence" \
-            -o "evidence-${EXEC_ID}.tar.gz" || echo "no evidence archive"
-
-          mkdir -p artifacts
-          cp result.json "artifacts/result.json"
-          if [ -f "evidence-${EXEC_ID}.tar.gz" ]; then
-            cp "evidence-${EXEC_ID}.tar.gz" artifacts/
-          fi
-
-          if [ -z "$VERDICT" ]; then
-            echo "missing result.verdict"
-            exit 1
-          fi
-          if [ "$VERDICT" = "fail" ]; then
-            echo "audit verdict is fail"
-            exit 1
-          fi
+          python3 -m preloop.cra.ci \
+            --workspace-file sbom/image.spdx.json \
+            --workspace-file manifests/license.manifest \
+            --workspace-file previous/result.json \
+            --artifacts-dir artifacts \
+            --policy pass
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: cra-evidence
-          path: |
-            result.json
-            artifacts/
+          path: artifacts/
 ```
 
-Generic curl (same contract, no Actions):
+Generic invocation (same contract, no Actions):
 
 ```sh
-# 1. POST the webhook. Response carries execution_id.
-RESP=$(curl -fsS -X POST "$PRELOOP_CRA_WEBHOOK_URL" \
-  -H "Content-Type: application/json" \
-  --data-binary @payload.json)
-EXEC_ID=$(printf '%s' "$RESP" | jq -r .execution_id)
-
-# 2. Poll until terminal, then GET /result.
-curl -fsS -H "Authorization: Bearer $PRELOOP_TOKEN" \
-  "$PRELOOP_URL/api/v1/flows/executions/$EXEC_ID/result" \
-  | jq '.result.verdict'
-
-# 3. Retain the evidence tarball.
-curl -fsS -H "Authorization: Bearer $PRELOOP_TOKEN" \
-  "$PRELOOP_URL/api/v1/flows/executions/$EXEC_ID/evidence" \
-  -o "evidence-${EXEC_ID}.tar.gz"
+export PRELOOP_DISABLE_TELEMETRY=true
+python3 -m preloop.cra.ci \
+  --webhook-url "$PRELOOP_CRA_WEBHOOK_URL" \
+  --api-url "$PRELOOP_URL" \
+  --token "$PRELOOP_TOKEN" \
+  --payload payload.json \
+  --artifacts-dir artifacts \
+  --policy pass
 ```
 
 Gating notes:
 
 - Execution status `SUCCEEDED` means the flow completed. A `fail`
-  verdict is still a completed audit; CI must read `result.verdict`
-  (Release Security Audit / SBOM Verify) or `result.gate.passed` plus
-  `result.status` (SBOM Exploit Check). Do not treat a green execution
-  as a clean pack.
-- This example fails the job on `verdict: fail` and on a non-SUCCEEDED
-  execution. `pass_with_findings` is a completed audit with findings;
-  tighten the gate if your release policy requires a clean pack.
-- For SBOM Exploit Check, gate on `result.status == "success"` and
-  `result.gate.passed`. Do not treat `"status": "success"` as a passed
-  severity gate.
+  verdict is still a completed audit (execution succeeded, release
+  denied). Do not treat a green execution as a clean pack.
+- Default `--policy pass` accepts only a clean pack. Use
+  `--policy pass_with_findings` when your product policy allows findings.
+  `fail` and unknown verdicts always deny release.
+- For SBOM Exploit Check, the helper requires `result.status == "success"`
+  and `result.gate.passed is true` (boolean true, not `1` / `"true"`).
+  Findings still need `--policy pass_with_findings`.
+- Schema validation and a verified evidence receipt are required.
+  Operator policy cannot turn missing, empty, HTML, or corrupt evidence
+  into acceptance.
 - Retain `result.json` and the evidence tarball even when the gate
-  fails. The pack is the record.
+  fails, including FAILED / TIMEOUT executions. The helper does not
+  retrigger the webhook.
 
 ### Scheduled re-audits
 

@@ -53,6 +53,7 @@ from preloop.utils.permissions import require_permission
 from preloop.tools.builtin_defs import (
     ASK_USER_TOOL,
     PERMISSION_PROMPT_TOOL,
+    REQUEST_APPROVAL_TOOL,
     RESOLVE_SBOM_UPSTREAMS_TOOL,
 )
 from preloop.tools.native_defs import NATIVE_TOOL_NAMES, NATIVE_TOOLS
@@ -63,39 +64,7 @@ router = APIRouter()
 # Define builtin tools metadata
 # NOTE: Implementations live in initialize_mcp.py; shared defs in builtin_defs.py
 BUILTIN_TOOLS = [
-    {
-        "name": "request_approval",
-        "description": "Request approval for an operation before executing it",
-        "source": "builtin",
-        "requires_tracker": False,
-        "required_tracker_types": [],
-        "schema": {
-            "type": "object",
-            "properties": {
-                "operation": {
-                    "type": "string",
-                    "description": "Description of the operation requiring approval",
-                },
-                "context": {
-                    "type": "string",
-                    "description": "Additional context about the situation",
-                },
-                "reasoning": {
-                    "type": "string",
-                    "description": "Explanation of why this operation is needed",
-                },
-                "caller": {
-                    "type": "string",
-                    "description": "Optional: Name of the agent or flow requesting approval (auto-populated if not specified)",
-                },
-                "approval_workflow": {
-                    "type": "string",
-                    "description": "Optional name of the approval workflow to use",
-                },
-            },
-            "required": ["operation", "context", "reasoning"],
-        },
-    },
+    REQUEST_APPROVAL_TOOL,
     ASK_USER_TOOL,
     PERMISSION_PROMPT_TOOL,
     RESOLVE_SBOM_UPSTREAMS_TOOL,

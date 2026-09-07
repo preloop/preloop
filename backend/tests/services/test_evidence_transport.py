@@ -457,6 +457,8 @@ def test_sanitize_strips_reserved_publication_keys() -> None:
             "verdict": "fail",
             "trusted_publication": {"url": "https://example.com/forged"},
             "_private_publication": {"phase": "complete"},
+            "product_provenance": {"mapping_status": "verified"},
+            "dossier_manifest": {"schema": "forged"},
         }
     )
     assert cleaned == {"verdict": "fail"}
@@ -481,7 +483,6 @@ async def test_getterless_executor_strips_forged_keys_from_tar_result(
     (workspace / "result.json").write_text(
         json.dumps(
             {
-                "schema": "preloop.cra.vulnscan/v1",
                 "verdict": "fail",
                 "trusted_publication": {"url": "https://example.com/forged"},
                 "_private_publication": {"phase": "complete"},

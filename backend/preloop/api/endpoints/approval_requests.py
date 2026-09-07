@@ -10,12 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
+from preloop.api.managed_credentials import is_managed_execution_credential
 from preloop.services.approval_attribution import (
     attach_attribution,
     attributed,
     attributed_async,
 )
 from preloop.services.approval_service import ApprovalService
+from preloop.services.product_provenance import confers_publication_authority
 from preloop.models.crud import crud_approval_event, crud_approval_request
 from preloop.models.db.session import get_async_db_session, get_db_session
 from preloop.models.models import ApprovalRequest
@@ -42,6 +44,62 @@ logger = logging.getLogger(__name__)
 AUTHENTICATED_DECISION_CHANNEL = "console"
 
 
+def _reject_managed_maintenance_decision(
+    current_user: User, approval_request: ApprovalRequest
+) -> None:
+    """Deny managed credentials before a maintenance ApprovalService decision."""
+    if getattr(approval_request, "tool_name", None) != "security_maintenance":
+        return
+    from preloop.api.endpoints.security_maintenance import _reject_managed_credentials
+
+    _reject_managed_credentials(current_user)
+
+
+async def _advance_security_maintenance(db: Session, updated: ApprovalRequest) -> None:
+    """Let a console/token ApprovalService decision advance a maintenance item.
+
+    The ApprovalService write is already committed. A reconcile failure is
+    logged and left retryable (sweep / a later decide) so the caller still
+    receives the committed decision without claiming maintenance advanced.
+    """
+    if getattr(updated, "tool_name", None) != "security_maintenance":
+        return
+    from preloop.services.security_maintenance import SecurityMaintenanceService
+
+    try:
+        db.expire_all()
+        service = SecurityMaintenanceService(db, account_id=updated.account_id)
+        await service.reconcile_platform_approval(updated.id)
+    except Exception:
+        logger.exception(
+            "Security-maintenance reconcile failed after committed approval %s; "
+            "retryable",
+            updated.id,
+        )
+
+
+def _managed_execution_credential(current_user: User) -> bool:
+    """True when this principal authenticated with a managed execution key."""
+    return is_managed_execution_credential(current_user)
+
+
+def _reject_managed_publication_decision(
+    current_user: User, approval_request: ApprovalRequest
+) -> None:
+    """Deny managed execution/agent credentials a publication-authority vote.
+
+    Runs before ApprovalService so a blocked call leaves pending state
+    and votes unchanged. Canonical ``action=isolated_publication`` and
+    legacy ``publish`` / ``isolated_publication`` tool or action names
+    are in scope. Ordinary unrelated approvals are not.
+    """
+    if not confers_publication_authority(approval_request):
+        return
+    if not _managed_execution_credential(current_user):
+        return
+    raise HTTPException(status_code=403, detail="managed_credential_cannot_decide")
+
+
 async def _async_db_session() -> AsyncGenerator[AsyncSession, None]:
     """Yield an async session for handlers that must not block the event loop.
 
@@ -57,7 +115,7 @@ def _require_decide_approvals(
     request: Request,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
-) -> None:
+) -> Session:
     """Enforce ``decide_approvals`` for a handler that holds an async session.
 
     The RBAC check behind ``@require_permission`` runs synchronous CRUD
@@ -69,9 +127,12 @@ def _require_decide_approvals(
     ``Session`` it needs and keeps the blocking pool checkout on FastAPI's
     threadpool rather than on the event loop, which is the liveness risk the
     ratchet in ``tests/api/test_event_loop_pool_wait.py`` exists to bound. The
-    handler keeps its own async session for the decisions.
+    handler keeps its own async session for the decisions and reuses this
+    sync session to reconcile security-maintenance items after a batch
+    decision, matching the single-item endpoints.
     """
-    _ = (request, current_user, db)  # Consumed by @require_permission.
+    _ = (request, current_user)  # Consumed by @require_permission.
+    return db
 
 
 def _record_viewed_event(
@@ -296,6 +357,9 @@ async def approve_request(
                 detail=f"Request already {approval_request.status}",
             )
 
+        _reject_managed_publication_decision(current_user, approval_request)
+        _reject_managed_maintenance_decision(current_user, approval_request)
+
         # Approve (pass user_id for quorum tracking)
         updated = await approval_service.approve_request(
             request_id,
@@ -305,6 +369,8 @@ async def approve_request(
         )
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to approve request")
+
+        await _advance_security_maintenance(db, updated)
 
         # Name the agent, key, session and flow run on the async session the
         # handler already holds (the sync request session would block the
@@ -365,6 +431,9 @@ async def decline_request(
                 detail=f"Request already {approval_request.status}",
             )
 
+        _reject_managed_publication_decision(current_user, approval_request)
+        _reject_managed_maintenance_decision(current_user, approval_request)
+
         # Decline (pass user_id for quorum tracking)
         updated = await approval_service.decline_request(
             request_id,
@@ -374,6 +443,8 @@ async def decline_request(
         )
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to decline request")
+
+        await _advance_security_maintenance(db, updated)
 
         # Name the agent, key, session and flow run on the async session the
         # handler already holds (the sync request session would block the
@@ -437,6 +508,9 @@ async def decide_request(
                 detail=f"Request already {approval_request.status}",
             )
 
+        _reject_managed_publication_decision(current_user, approval_request)
+        _reject_managed_maintenance_decision(current_user, approval_request)
+
         # Approve or decline based on decision (pass user_id for quorum tracking)
         if decision.approved:
             updated = await approval_service.approve_request(
@@ -456,6 +530,8 @@ async def decide_request(
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to process decision")
 
+        await _advance_security_maintenance(db, updated)
+
         # Name the agent, key, session and flow run on the async session the
         # handler already holds (the sync request session would block the
         # event loop), then convert while the write session is still open to
@@ -471,7 +547,6 @@ async def decide_request(
     # decide_approvals is enforced by a sync dependency instead of the
     # handler decorator: the RBAC check needs a sync Session and must not run
     # on the event loop. See _require_decide_approvals.
-    dependencies=[Depends(_require_decide_approvals)],
 )
 async def decide_requests_batch(
     decision: ApprovalBatchDecision,
@@ -480,6 +555,7 @@ async def decide_requests_batch(
     # Async session: a sync Session here would grow the event-loop pool-wait
     # surface (see test_async_sync_session_route_count_does_not_grow).
     db: AsyncSession = Depends(_async_db_session),
+    sync_db: Session | None = Depends(_require_decide_approvals),
 ) -> ApprovalBatchResponse:
     """Approve or decline several requests with one decision.
 
@@ -497,6 +573,8 @@ async def decide_requests_batch(
         request: HTTP request
         current_user: Current authenticated user
         db: Async session used for the decisions
+        sync_db: Sync session from the RBAC dependency; used to reconcile
+            security-maintenance items after a successful decision
 
     Returns:
         One result per requested id, in the order they were sent
@@ -536,6 +614,15 @@ async def decide_requests_batch(
                     status=approval_request.status,
                     error=f"Request already {approval_request.status}",
                 )
+            )
+            continue
+        try:
+            _reject_managed_publication_decision(current_user, approval_request)
+            _reject_managed_maintenance_decision(current_user, approval_request)
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+            results.append(
+                ApprovalBatchItemResult(id=request_id, ok=False, error=detail)
             )
             continue
         # A past-deadline row is not pre-checked here. Expiry belongs to
@@ -596,5 +683,7 @@ async def decide_requests_batch(
         results.append(
             ApprovalBatchItemResult(id=request_id, ok=True, status=updated_status)
         )
+        if isinstance(sync_db, Session):
+            await _advance_security_maintenance(sync_db, updated)
 
     return ApprovalBatchResponse(results=results)

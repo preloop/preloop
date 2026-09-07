@@ -29,6 +29,7 @@ DISPATCHABLE_TASKS: tuple[str, ...] = (
     "resume_flow_execution",
     "cleanup_flow_workspaces",
     "reconcile_flow_feedback",
+    "reconcile_security_maintenance",
 )
 
 
@@ -571,5 +572,18 @@ async def reconcile_flow_feedback() -> int:
     db = next(get_db_session())
     try:
         return await run_feedback_tick(db)
+    finally:
+        db.close()
+
+
+async def reconcile_security_maintenance() -> dict[str, object]:
+    """Retry pending maintenance dispatch and approval expiry."""
+    from preloop.services.security_maintenance_runtime import (
+        sweep_security_maintenance,
+    )
+
+    db = next(get_db_session())
+    try:
+        return await sweep_security_maintenance(db)
     finally:
         db.close()

@@ -53,6 +53,7 @@ from preloop.api.endpoints import (
     pull_requests,
     roles,
     search as search_router,
+    security_maintenance,
     security_screen,
     session_optimization,
     tools,
@@ -1024,6 +1025,12 @@ def create_app() -> FastAPI:
             issue_lifecycle.router,
             prefix="/api/v1",
             tags=["Issues"],
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            security_maintenance.router,
+            prefix="/api/v1",
+            tags=["Security Maintenance"],
             dependencies=[Depends(get_current_active_user)],
         )
         # Note: Issue compliance endpoint is now loaded via plugins/analytics

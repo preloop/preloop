@@ -8,6 +8,86 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+REQUEST_APPROVAL_TOOL: Dict[str, Any] = {
+    "name": "request_approval",
+    "description": (
+        "Request approval for an operation before executing it. For isolated "
+        "publication, pass publication_candidates with the exact repository "
+        "URL, destination branch, base branch, and frozen head SHA for each "
+        "write. Those tuples are the only publication authority; text in "
+        "context cannot authorize a writer lease."
+    ),
+    "source": "builtin",
+    "requires_tracker": False,
+    "required_tracker_types": [],
+    "schema": {
+        "type": "object",
+        "properties": {
+            "operation": {
+                "type": "string",
+                "description": "Description of the operation requiring approval",
+            },
+            "context": {
+                "type": "string",
+                "description": "Additional context about the situation",
+            },
+            "reasoning": {
+                "type": "string",
+                "description": "Explanation of why this operation is needed",
+            },
+            "caller": {
+                "type": "string",
+                "description": (
+                    "Optional: Name of the agent or flow requesting approval "
+                    "(auto-populated if not specified)"
+                ),
+            },
+            "approval_workflow": {
+                "type": "string",
+                "description": "Optional name of the approval workflow to use",
+            },
+            "publication_candidates": {
+                "type": "array",
+                "description": (
+                    "Optional isolated-publication destinations. Each item is "
+                    "one frozen write: repository_url, branch, base, and "
+                    "head_sha. Required when git_clone_config."
+                    "publication_approval is set. Context JSON is not used."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "repository_url": {
+                            "type": "string",
+                            "description": "Repository that would receive the writer lease",
+                        },
+                        "branch": {
+                            "type": "string",
+                            "description": "Destination branch that would be pushed",
+                        },
+                        "base": {
+                            "type": "string",
+                            "description": "Base branch for the publication",
+                        },
+                        "head_sha": {
+                            "type": "string",
+                            "description": "Frozen 40-character commit SHA that would be pushed",
+                        },
+                    },
+                    "required": [
+                        "repository_url",
+                        "branch",
+                        "base",
+                        "head_sha",
+                    ],
+                },
+            },
+        },
+        "required": ["operation", "context", "reasoning"],
+    },
+}
+
+
 ASK_USER_TOOL: Dict[str, Any] = {
     "name": "ask_user",
     "description": (

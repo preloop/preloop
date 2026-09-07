@@ -268,7 +268,12 @@ async def test_completion_confirms_stop_only_on_terminal_owner_ack(
                 runner.reported_status = reported_status
         return True
 
-    execution = SimpleNamespace(id=execution_id, status="RUNNING")
+    execution = SimpleNamespace(
+        id=execution_id,
+        flow_id=uuid4(),
+        status="RUNNING",
+        trigger_event_details=None,
+    )
     websocket = MagicMock()
     websocket.accept = AsyncMock()
     websocket.send_json = AsyncMock()
@@ -290,6 +295,7 @@ async def test_completion_confirms_stop_only_on_terminal_owner_ack(
     monkeypatch.setattr(
         runners.crud_flow_execution, "get", lambda *args, **kwargs: execution
     )
+    monkeypatch.setattr(runners.crud_flow, "get", lambda *args, **kwargs: None)
     confirm = MagicMock()
     monkeypatch.setattr(runners.crud_flow_execution, "confirm_stop", confirm)
     monkeypatch.setattr(
@@ -312,3 +318,129 @@ async def test_completion_confirms_stop_only_on_terminal_owner_ack(
         assert runner.current_execution_id == execution_id
         assert runner.halt_requested is True
         assert execution.status == "RUNNING"
+
+
+_GITHUB_PAT = "github_pat_11ABCDEFG0aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["FAILED", "STOPPED"])
+async def test_invalid_cra_completion_keeps_original_error_and_contract(
+    monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """Malformed CRA on a failed/stopped complete keeps both failure reasons."""
+    execution_id = uuid4()
+    runner = SimpleNamespace(
+        id=uuid4(),
+        account_id=uuid4(),
+        current_execution_id=execution_id,
+        pending_job=None,
+        halt_requested=True,
+        status="online",
+        reported_status="RUNNING",
+        publication_capabilities=None,
+    )
+
+    def set_publication_capabilities(
+        db: object,
+        *,
+        runner_id: UUID,
+        capabilities: dict | None,
+        expected_connection_id: str | None = None,
+        offline: bool = False,
+        clear_lease: bool = False,
+        execution_id: UUID | None = None,
+        reported_status: str | None = None,
+    ) -> bool:
+        current = (runner.publication_capabilities or {}).get("connection_id")
+        if expected_connection_id is not None and current != expected_connection_id:
+            return False
+        if execution_id is not None and runner.current_execution_id != execution_id:
+            return False
+        runner.publication_capabilities = capabilities
+        if clear_lease:
+            runner.pending_job = None
+            runner.current_execution_id = None
+            runner.halt_requested = False
+            runner.status = "offline" if offline else "online"
+            if reported_status is not None:
+                runner.reported_status = reported_status
+        return True
+
+    execution = SimpleNamespace(
+        id=execution_id,
+        flow_id=uuid4(),
+        status="RUNNING",
+        trigger_event_details=None,
+    )
+    flow = SimpleNamespace(
+        prompt_template=(
+            "Required shape (preloop.cra.vulnscan/v1): "
+            '{ "schema": "preloop.cra.vulnscan/v1" }'
+        )
+    )
+    original = (
+        f"container OOM while cloning https://{_GITHUB_PAT}@github.com/acme/app.git"
+    )
+    websocket = MagicMock()
+    websocket.accept = AsyncMock()
+    websocket.send_json = AsyncMock()
+    websocket.receive_json = AsyncMock(
+        side_effect=[
+            {
+                "type": "complete",
+                "execution_id": str(execution_id),
+                "status": status,
+                "error": original,
+                "result": {"schema": "preloop.cra.vulnscan/v1"},
+            },
+            WebSocketDisconnect(),
+        ]
+    )
+    recorded: dict[str, object] = {}
+    original_apply = runners.apply_runner_completion_to_execution
+
+    def capture_completion(*args: object, **kwargs: object) -> None:
+        recorded["status"] = kwargs["status"]
+        recorded["error"] = kwargs["error"]
+        recorded["result"] = kwargs["result"]
+        return original_apply(*args, **kwargs)
+
+    monkeypatch.setattr(runners, "_authenticate_runner", lambda *args: runner)
+    monkeypatch.setattr(runners, "emit_runner_updated", MagicMock())
+    monkeypatch.setattr(runners.crud_flow_runner, "get", lambda *args, **kwargs: runner)
+    monkeypatch.setattr(runners.crud_flow_runner, "touch_heartbeat", MagicMock())
+    monkeypatch.setattr(
+        runners.crud_flow_runner,
+        "set_publication_capabilities",
+        set_publication_capabilities,
+    )
+    monkeypatch.setattr(
+        runners.crud_flow_execution, "get", lambda *args, **kwargs: execution
+    )
+    monkeypatch.setattr(runners.crud_flow, "get", lambda *args, **kwargs: flow)
+    monkeypatch.setattr(runners.crud_flow_execution, "confirm_stop", MagicMock())
+    monkeypatch.setattr(
+        runners.crud_flow_execution,
+        "update",
+        lambda db, db_obj, obj_in: db_obj,
+    )
+    monkeypatch.setattr(
+        runners.crud_api_key, "deactivate_runtime_keys_for_flow_execution", MagicMock()
+    )
+    monkeypatch.setattr(
+        runners, "apply_runner_completion_to_execution", capture_completion
+    )
+
+    await runners.runner_ws(websocket, runner.id, MagicMock())
+
+    assert recorded["status"] == "FAILED"
+    error = recorded["error"]
+    assert isinstance(error, str)
+    assert "container OOM" in error
+    assert "failed contract validation" in error
+    assert _GITHUB_PAT not in error
+    assert "[REDACTED]" in error
+    result = recorded["result"]
+    assert isinstance(result, dict)
+    assert result.get("error") in {"cra_result_invalid", "cra_result_missing"}

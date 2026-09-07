@@ -91,6 +91,33 @@ class TestFormatQuestionNotice:
         assert "Approval needed" in text
         assert "delete prod database" in text
 
+    def test_request_approval_notice_lists_publication_destinations(self):
+        request_id = uuid.uuid4()
+        text = format_question_notice(
+            tool_name="request_approval",
+            arguments={
+                "operation": "publish isolated product repositories",
+                "context": "frozen checkouts are ready",
+                "action": "isolated_publication",
+                "candidates": [
+                    {
+                        "repository_url": "https://github.com/example/firmware.git",
+                        "branch": "preloop/change",
+                        "base": "main",
+                        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    }
+                ],
+            },
+            console_url="https://x.example/console/approval/abc",
+            mobile_link="preloop://approve/abc",
+            request_id=request_id,
+        )
+        assert "Publication destinations:" in text
+        assert "https://github.com/example/firmware.git" in text
+        assert "preloop/change" in text
+        assert "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in text
+        assert "do NOT answer this yourself" in text
+
 
 @pytest.mark.asyncio
 class TestDeliverQuestionToSession:

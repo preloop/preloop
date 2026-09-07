@@ -23,6 +23,18 @@ from preloop.services.publication_credentials import (
     revoke_repository_lease,
     validate_publication_tracker,
 )
+from preloop.services.multi_repo_publication import (
+    IsolatedPublicationTarget,
+    finish_multi_repo_isolated_publication,
+    is_multi_repo_policy,
+    repository_role,
+)
+from preloop.services.product_provenance import (
+    default_clone_path,
+    is_git_sha,
+    normalize_repository_url,
+    require_human_publication_approval,
+)
 from preloop.services.trusted_publisher import (
     PublicationBinding,
     PublicationError,
@@ -56,11 +68,261 @@ class IsolatedPublicationPolicy:
     verification_image: str
     private: bool = False
     nonce: str = ""
+    targets: tuple[IsolatedPublicationTarget, ...] = ()
+    read_leases: tuple[PublicationLease, ...] = ()
 
 
 def isolated_publication_enabled(config: Any) -> bool:
     """Whether a saved flow explicitly opts into the credential boundary."""
     return isinstance(config, dict) and config.get("publication_mode") == "isolated"
+
+
+def _prior_binding_for_remote(
+    prior_publication: dict[str, Any] | None, repository_url: str
+) -> dict[str, Any] | None:
+    """Select the prior receipt for one remote from single- or multi-repo records."""
+    if not isinstance(prior_publication, dict):
+        return None
+    rows = prior_publication.get("repositories")
+    if isinstance(rows, list) and rows:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if row.get("repository_url") == repository_url:
+                return dict(row)
+        return None
+    if prior_publication.get("repository_url") == repository_url:
+        return dict(prior_publication)
+    return None
+
+
+def resume_topology_matches(
+    prior_publication: dict[str, Any],
+    repositories: list[dict[str, Any]],
+) -> None:
+    """Refuse adding, removing, or remapping remotes/clone paths on resume."""
+    from preloop.services.product_provenance import clone_path_slug
+
+    rows = prior_publication.get("repositories")
+    prior_rows: list[dict[str, Any]]
+    if isinstance(rows, list) and rows:
+        prior_rows = [row for row in rows if isinstance(row, dict)]
+    elif prior_publication.get("repository_url"):
+        prior_rows = [prior_publication]
+    else:
+        raise PublicationError(
+            "Continuation requires a trusted publication binding; legacy PRs must be explicitly migrated"
+        )
+    prior_ids = {
+        (
+            normalize_repository_url(str(row["repository_url"])),
+            clone_path_slug(str(row.get("clone_path") or "workspace")),
+        )
+        for row in prior_rows
+        if row.get("repository_url")
+    }
+    current_ids = {
+        (
+            normalize_repository_url(str(row["repository_url"])),
+            clone_path_slug(str(row.get("clone_path") or default_clone_path(index))),
+        )
+        for index, row in enumerate(repositories)
+        if row.get("repository_url")
+    }
+    if prior_ids != current_ids:
+        raise PublicationError(
+            "Resume cannot add, remove, or remap constituent repositories"
+        )
+
+
+async def _bind_isolated_repository(
+    db: Session,
+    *,
+    flow: models.Flow,
+    context: dict[str, Any],
+    repository: dict[str, Any],
+    index: int,
+    branch: str,
+    resume: bool,
+    prior_publication: dict[str, Any] | None,
+    config: dict[str, Any],
+    payload: dict[str, Any],
+    execution_id: str,
+    client: httpx.AsyncClient,
+) -> tuple[
+    IsolatedPublicationTarget,
+    dict[str, Any],
+    PublicationLease,
+    str,
+    str | None,
+    tuple[PublicationRecord, ...],
+]:
+    """Resolve one account-owned repository and mint a read-only clone lease."""
+    project_id = repository.get("project_id") or (
+        context.get("trigger_project_id") if index == 0 else None
+    )
+    project = crud_project.get(db, id=str(project_id)) if project_id else None
+    tracker_id = repository.get("tracker_id") or (
+        str(project.organization.tracker_id)
+        if project and project.organization
+        else None
+    )
+    tracker = (
+        crud_tracker.get_by_id_and_account(
+            db, id=str(tracker_id), account_id=str(flow.account_id)
+        )
+        if tracker_id
+        else None
+    )
+    if tracker is None:
+        raise PublicationError(
+            "Isolated publication requires an account-owned tracker/project binding"
+        )
+    validate_publication_tracker(tracker)
+    repository_url = repository.get("repository_url")
+    if (
+        not repository_url
+        and project
+        and project.organization
+        and str(project.organization.tracker_id) == str(tracker.id)
+        and project.slug
+    ):
+        repository_url = f"https://github.com/{project.slug}.git"
+    if not repository_url:
+        raise PublicationError(
+            "Configure a repository URL or trusted project for isolated publication; webhook clone URLs are not publication authority"
+        )
+    repository_url = normalize_repository_url(str(repository_url))
+    project_path = repository_url.removeprefix("https://github.com/").removesuffix(
+        ".git"
+    )
+    prior_binding = _prior_binding_for_remote(prior_publication, repository_url)
+    previous_records: tuple[PublicationRecord, ...] = ()
+    repo_branch = branch
+    if resume:
+        if prior_binding is None:
+            raise PublicationError(
+                "Continuation requires a trusted publication binding; legacy PRs must be explicitly migrated"
+            )
+        raw_records = prior_binding.get("records")
+        if isinstance(raw_records, list) and raw_records:
+            previous_records = tuple(
+                PublicationRecord(**record) for record in raw_records
+            )
+        if isinstance(prior_binding.get("branch"), str) and prior_binding["branch"]:
+            repo_branch = str(prior_binding["branch"])
+    clone_path = str(repository.get("clone_path") or default_clone_path(index))
+    role = repository_role(clone_path, payload)
+    read_lease = await mint_repository_lease(
+        tracker, repository_url, write=False, client=client
+    )
+    headers = {"Authorization": f"Bearer {read_lease.token}"}
+    try:
+        response = await client.get(
+            f"https://api.github.com/repos/{project_path}",
+            headers=headers,
+            timeout=30,
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        info = response.json()
+        if info.get("full_name") != project_path:
+            raise PublicationError(
+                "Resolved repository does not match publication binding"
+            )
+        configured_base = repository.get("source_branch") or repository.get("branch")
+        if resume and prior_binding is not None and prior_binding.get("base"):
+            base = str(prior_binding["base"])
+        else:
+            base = (
+                configured_base or config.get("source_branch") or info["default_branch"]
+            )
+        PublicationBinding(
+            repository_url,
+            repo_branch,
+            base,
+            "0" * 40,
+            None,
+            (PublicationRecord(execution_id, "0" * 40),),
+            settings.preloop_url,
+            "github",
+        )
+        pinned = None
+        if (
+            resume
+            and prior_binding is not None
+            and is_git_sha(prior_binding.get("base_sha"))
+        ):
+            pinned = str(prior_binding["base_sha"]).lower()
+        if pinned is None:
+            response = await client.get(
+                f"https://api.github.com/repos/{project_path}/git/ref/heads/{base}",
+                headers=headers,
+                timeout=30,
+                follow_redirects=False,
+            )
+            response.raise_for_status()
+            base_sha = response.json()["object"]["sha"]
+            if not isinstance(base_sha, str) or not re.fullmatch(
+                r"[a-f0-9]{40}", base_sha
+            ):
+                raise PublicationError(
+                    "Provider did not resolve an exact trusted base commit"
+                )
+        else:
+            base_sha = pinned
+        response = await client.get(
+            f"https://api.github.com/repos/{project_path}/git/ref/heads/{repo_branch}",
+            headers=headers,
+            timeout=30,
+            follow_redirects=False,
+        )
+        if response.status_code == 404:
+            expected_remote = None
+        else:
+            response.raise_for_status()
+            expected_remote = response.json()["object"]["sha"]
+        if resume and prior_binding is not None:
+            published_head = prior_binding.get("head_sha")
+            if prior_binding.get("status") == "published" and is_git_sha(
+                published_head
+            ):
+                expected_remote = str(published_head).lower()
+            elif is_git_sha(prior_binding.get("expected_remote_sha")):
+                expected_remote = str(prior_binding["expected_remote_sha"]).lower()
+        if not resume and expected_remote is not None:
+            raise PublicationError(
+                "Configured publication branch already exists; use a unique target branch or resume its bound execution"
+            )
+    except (httpx.HTTPError, KeyError, ValueError) as exc:
+        await revoke_repository_lease(read_lease, client)
+        if isinstance(exc, PublicationError):
+            raise
+        raise PublicationError(
+            "Could not resolve isolated publication repository/base/head"
+        ) from exc
+    target = IsolatedPublicationTarget(
+        tracker_id=str(tracker.id),
+        repository_url=repository_url,
+        clone_path=clone_path,
+        role=role,
+        branch=repo_branch,
+        base=base,
+        expected_remote_sha=expected_remote,
+        base_sha=base_sha,
+        previous_records=previous_records,
+    )
+    resolved = {
+        **repository,
+        "repository_url": repository_url,
+        "tracker_id": str(tracker.id),
+        "clone_path": clone_path,
+        "source_branch": base,
+        "target_branch": repo_branch,
+        "commit": base_sha if not resume else (expected_remote or base_sha),
+        "pin_sha": base_sha,
+    }
+    return target, resolved, read_lease, base, expected_remote, previous_records
 
 
 async def prepare_isolated_publication(
@@ -93,48 +355,13 @@ async def prepare_isolated_publication(
         raise PublicationError(
             "Isolated verification requires a digest-pinned generic toolchain image containing the configured check dependencies"
         )
-    repositories = config.get("repositories") or []
-    if len(repositories) > 1:
-        raise PublicationError(
-            "Isolated publication currently supports one bound repository per flow"
-        )
-    repository = dict(repositories[0]) if repositories else {}
-    project_id = repository.get("project_id") or context.get("trigger_project_id")
-    project = crud_project.get(db, id=str(project_id)) if project_id else None
-    tracker_id = repository.get("tracker_id") or (
-        str(project.organization.tracker_id)
-        if project and project.organization
-        else None
-    )
-    tracker = (
-        crud_tracker.get_by_id_and_account(
-            db, id=str(tracker_id), account_id=str(flow.account_id)
-        )
-        if tracker_id
-        else None
-    )
-    if tracker is None:
-        raise PublicationError(
-            "Isolated publication requires an account-owned tracker/project binding"
-        )
-    validate_publication_tracker(tracker)
-    repository_url = repository.get("repository_url")
-    if (
-        not repository_url
-        and project
-        and project.organization
-        and str(project.organization.tracker_id) == str(tracker.id)
-        and project.slug
-    ):
-        repository_url = f"https://github.com/{project.slug}.git"
-    if not repository_url:
-        raise PublicationError(
-            "Configure a repository URL or trusted project for isolated publication; webhook clone URLs are not publication authority"
-        )
-    project_path = (
-        str(repository_url).removeprefix("https://github.com/").removesuffix(".git")
-    )
+    repositories = [dict(row) for row in (config.get("repositories") or [])]
+    if not repositories:
+        repositories = [{}]
     trigger = context.get("trigger_event_data") or {}
+    payload = (
+        trigger.get("payload") if isinstance(trigger.get("payload"), dict) else trigger
+    )
     issue_number = extract_issue_number_from_trigger(trigger) or ""
     execution_id = str(context["execution_id"])
     branch = config.get("target_branch") or (
@@ -142,7 +369,6 @@ async def prepare_isolated_publication(
         if issue_number
         else f"preloop/flow-{execution_id[:8]}"
     )
-    previous_records: tuple[PublicationRecord, ...] = ()
     resume = trigger.get("_resume") or {}
     prior_publication = None
     if resume:
@@ -153,126 +379,117 @@ async def prepare_isolated_publication(
             raise PublicationError(
                 "Isolated continuation requires a prior execution of this flow"
             )
-        prior_publication = (prior.result or {}).get("trusted_publication")
-        if (
-            not isinstance(prior_publication, dict)
-            or prior_publication.get("repository_url") != repository_url
-        ):
+        prior_result: dict[str, Any] = (
+            prior.result if isinstance(prior.result, dict) else {}
+        )
+        prior_publication = prior_result.get("trusted_publication")
+        if not isinstance(prior_publication, dict):
             raise PublicationError(
                 "Continuation requires a trusted publication binding; legacy PRs must be explicitly migrated"
             )
-        branch = prior_publication["branch"]
-        previous_records = tuple(
-            PublicationRecord(**record) for record in prior_publication["records"]
-        )
+        resume_topology_matches(prior_publication, repositories)
+        prior_rows = prior_publication.get("repositories")
+        if isinstance(prior_rows, list) and prior_rows:
+            first_row = prior_rows[0] if isinstance(prior_rows[0], dict) else {}
+            branch = str(
+                first_row.get("branch") or prior_publication.get("branch") or branch
+            )
+        elif prior_publication.get("branch"):
+            branch = str(prior_publication["branch"])
+
+    targets: list[IsolatedPublicationTarget] = []
+    resolved_repos: list[dict[str, Any]] = []
+    leases: list[PublicationLease] = []
+    credentials: dict[str, dict[str, str]] = {}
+    first_base = ""
+    first_expected: str | None = None
+    first_previous: tuple[PublicationRecord, ...] = ()
+
     async with httpx.AsyncClient() as client:
-        read_lease = await mint_repository_lease(
-            tracker, repository_url, write=False, client=client
-        )
-        headers = {"Authorization": f"Bearer {read_lease.token}"}
         try:
-            response = await client.get(
-                f"https://api.github.com/repos/{project_path}",
-                headers=headers,
-                timeout=30,
-                follow_redirects=False,
-            )
-            response.raise_for_status()
-            info = response.json()
-            if info.get("full_name") != project_path:
-                raise PublicationError(
-                    "Resolved repository does not match publication binding"
+            for index, repository in enumerate(repositories):
+                (
+                    target,
+                    resolved,
+                    lease,
+                    base,
+                    expected_remote,
+                    previous_records,
+                ) = await _bind_isolated_repository(
+                    db,
+                    flow=flow,
+                    context=context,
+                    repository=repository,
+                    index=index,
+                    branch=branch,
+                    resume=bool(resume),
+                    prior_publication=prior_publication,
+                    config=config,
+                    payload=payload if isinstance(payload, dict) else {},
+                    execution_id=execution_id,
+                    client=client,
                 )
-            base = (
-                (prior_publication or {}).get("base")
-                or config.get("source_branch")
-                or info["default_branch"]
-            )
-            # Validate branch/URL before interpolating into provider requests.
-            PublicationBinding(
-                repository_url,
-                branch,
-                base,
-                "0" * 40,
-                None,
-                (PublicationRecord(execution_id, "0" * 40),),
-                settings.preloop_url,
-                "github",
-            )
-            response = await client.get(
-                f"https://api.github.com/repos/{project_path}/git/ref/heads/{base}",
-                headers=headers,
-                timeout=30,
-                follow_redirects=False,
-            )
-            response.raise_for_status()
-            base_sha = response.json()["object"]["sha"]
-            if not isinstance(base_sha, str) or not re.fullmatch(
-                r"[a-f0-9]{40}", base_sha
-            ):
-                raise PublicationError(
-                    "Provider did not resolve an exact trusted base commit"
-                )
-            response = await client.get(
-                f"https://api.github.com/repos/{project_path}/git/ref/heads/{branch}",
-                headers=headers,
-                timeout=30,
-                follow_redirects=False,
-            )
-            if response.status_code == 404:
-                expected_remote = None
-            else:
-                response.raise_for_status()
-                expected_remote = response.json()["object"]["sha"]
-            if not resume and expected_remote is not None:
-                raise PublicationError(
-                    "Configured publication branch already exists; use a unique target branch or resume its bound execution"
-                )
-        except (httpx.HTTPError, KeyError, ValueError) as exc:
-            await revoke_repository_lease(read_lease, client)
-            if isinstance(exc, PublicationError):
-                raise
-            raise PublicationError(
-                "Could not resolve isolated publication repository/base/head"
-            ) from exc
-    config["repositories"] = [
-        {**repository, "repository_url": repository_url, "tracker_id": str(tracker.id)}
-    ]
-    config["source_branch"] = base
-    config["target_branch"] = branch
-    context["git_clone_config"] = config
-    context["git_credentials_map"] = {
-        str(tracker.id): {
-            "token": read_lease.token,
+                targets.append(target)
+                resolved_repos.append(resolved)
+                leases.append(lease)
+                credentials[normalize_repository_url(target.repository_url)] = {
+                    "token": lease.token,
+                    "tracker_type": "github",
+                    "permission": "read",
+                }
+                if str(target.tracker_id) not in credentials:
+                    credentials[str(target.tracker_id)] = credentials[
+                        normalize_repository_url(target.repository_url)
+                    ]
+                if index == 0:
+                    first_base = base
+                    first_expected = expected_remote
+                    first_previous = previous_records
+        except Exception:
+            for lease in leases:
+                await revoke_repository_lease(lease, client)
+            raise
+
+    primary = targets[0]
+    credentials.setdefault(
+        str(primary.tracker_id),
+        {
+            "token": leases[0].token,
             "tracker_type": "github",
             "permission": "read",
-        }
-    }
-    context["trigger_tracker_id"] = str(tracker.id)
-    # Only this validated binding may control resume checkout branches.
+        },
+    )
+    config["repositories"] = resolved_repos
+    config["source_branch"] = first_base
+    config["target_branch"] = primary.branch
+    context["git_clone_config"] = config
+    context["git_credentials_map"] = credentials
+    context["trigger_tracker_id"] = str(primary.tracker_id)
     if resume:
         context["trigger_event_data"] = {
             **trigger,
-            "_resume": {**resume, "source_branch": branch},
+            "_resume": {**resume, "source_branch": primary.branch},
         }
     return IsolatedPublicationPolicy(
-        str(tracker.id),
+        str(primary.tracker_id),
         str(flow.account_id),
-        repository_url,
-        branch,
-        base,
-        expected_remote,
+        primary.repository_url,
+        primary.branch,
+        first_base,
+        first_expected,
         execution_id,
-        previous_records,
-        read_lease,
+        first_previous,
+        leases[0],
         interpolate_git_config_text(config.get("pull_request_title"), trigger),
         interpolate_git_config_text(config.get("pull_request_description"), trigger),
         issue_number,
-        base_sha,
+        primary.base_sha,
         verification_policy,
         verification_image,
         private,
         secrets.token_hex(32),
+        tuple(targets),
+        tuple(leases),
     )
 
 
@@ -282,11 +499,28 @@ async def finish_isolated_publication(
     agent_result: dict[str, Any],
     archive: bytes | None,
     verification: Any,
+    verify: Any = None,
+    *,
+    flow: Any = None,
 ) -> dict[str, Any]:
     """Publish only after a trusted verifier returns an exact artifact binding."""
     # #428 adapter supplies this *control-plane* value; agent result.json must
     # never populate it. It binds the exact bytes, commit and execution.
     from preloop.services.publication_verification import require_verified_publication
+
+    if is_multi_repo_policy(policy):
+        if verify is None:
+            raise PublicationError(
+                "Multi-repo isolated publication requires per-repository verification"
+            )
+        return await finish_multi_repo_isolated_publication(
+            db=db,
+            policy=policy,
+            agent_result=agent_result,
+            archive=archive,
+            verify=verify,
+            flow=flow,
+        )
 
     bundle = read_publication_bundle(archive or b"")
     head_sha = require_verified_publication(
@@ -316,6 +550,13 @@ async def finish_isolated_publication(
         raise PublicationError(
             "Publication tracker was removed or is no longer authorized"
         )
+    require_human_publication_approval(
+        db,
+        flow=flow,
+        account_id=str(policy.account_id),
+        execution_id=str(policy.execution_id),
+        candidates=[binding],
+    )
     async with httpx.AsyncClient() as client:
         write_lease = None
 

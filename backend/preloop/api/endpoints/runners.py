@@ -45,6 +45,11 @@ from preloop.services.host_exec import (
     finalize_runner_completion,
     normalize_host_exec_advertisements,
 )
+from preloop.cra.persist import (
+    apply_cra_fail_closed_completion,
+    apply_cra_persist_boundary,
+    resolve_persist_authority,
+)
 from preloop.utils.permissions import require_permission
 
 FlowRunner = models.FlowRunner
@@ -514,6 +519,30 @@ async def runner_ws(
                 execution = crud_flow_execution.get(
                     db, id=execution_id, account_id=str(runner.account_id), refresh=True
                 )
+                prompt = None
+                trigger_payload = None
+                if execution is not None:
+                    trigger_payload = execution.trigger_event_details
+                    flow = crud_flow.get(
+                        db, id=execution.flow_id, account_id=str(runner.account_id)
+                    )
+                    if flow is not None:
+                        prompt = flow.prompt_template
+                result_artifact = result if isinstance(result, dict) else None
+                approvals, authority = resolve_persist_authority(
+                    result_artifact, db, execution_id, prompt=prompt
+                )
+                decision = apply_cra_persist_boundary(
+                    result_artifact,
+                    prompt=prompt,
+                    trigger_payload=trigger_payload,
+                    platform_approvals=approvals,
+                    authority=authority,
+                )
+                result = decision.artifact
+                status, completion_error = apply_cra_fail_closed_completion(
+                    status, completion_error, decision
+                )
                 if isolated:
                     if status == "SUCCEEDED":
                         try:
@@ -542,7 +571,7 @@ async def runner_ws(
                         account_id=runner.account_id,
                         status=status,
                         error=completion_error,
-                        result=result,
+                        result=result if isinstance(result, dict) else None,
                         message=raw,
                         pending_job=leased_job,
                     )

@@ -13,6 +13,7 @@ from sqlalchemy import (
     Enum as SQLEnum,
     Index,
     inspect,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -72,6 +73,20 @@ class ApprovalRequest(Base):
             "status",
             "requested_at",
             postgresql_ops={"requested_at": "DESC"},
+        ),
+        # One pending security-maintenance request per work item. Concurrent
+        # creators race past the advisory lock; this partial unique index is
+        # the durable control. Crash/retry binds the surviving row.
+        Index(
+            "uq_sm_pending_approval_item",
+            "account_id",
+            text("(tool_args->>'item_id')"),
+            unique=True,
+            postgresql_where=text(
+                "tool_name = 'security_maintenance' "
+                "AND status = 'pending' "
+                "AND COALESCE(tool_args->>'item_id', '') <> ''"
+            ),
         ),
     )
 

@@ -3542,12 +3542,27 @@ class ContainerAgentExecutor(AgentExecutor):
             "publication_mode"
         ) == "isolated":
             credentials = execution_context.get("git_credentials_map") or {}
-            tracker_id = str(
-                repo_config.get("tracker_id")
-                or execution_context.get("trigger_tracker_id")
-                or ""
-            )
-            credential = credentials.get(tracker_id) or {}
+            repo_url = repo_config.get("repository_url")
+            credential = {}
+            if isinstance(repo_url, str) and repo_url:
+                from preloop.services.product_provenance import (
+                    ProductProvenanceError,
+                    normalize_repository_url,
+                )
+
+                try:
+                    credential = (
+                        credentials.get(normalize_repository_url(repo_url)) or {}
+                    )
+                except ProductProvenanceError:
+                    credential = credentials.get(repo_url) or {}
+            if not credential:
+                tracker_id = str(
+                    repo_config.get("tracker_id")
+                    or execution_context.get("trigger_tracker_id")
+                    or ""
+                )
+                credential = credentials.get(tracker_id) or {}
             if credential.get("permission") != "read":
                 raise ValueError(
                     "Isolated agent clone requires a controller-issued read-only credential"
@@ -3668,6 +3683,70 @@ class ContainerAgentExecutor(AgentExecutor):
             )
             return clone_branch
         return source_branch
+
+    def _repository_pin_sha(self, repo_config: Dict[str, Any]) -> Optional[str]:
+        """Controller-resolved immutable commit for one isolated checkout."""
+        from preloop.services.product_provenance import is_git_sha
+
+        for key in ("commit", "pin_sha"):
+            value = repo_config.get(key)
+            if is_git_sha(value):
+                return str(value).lower()
+        return None
+
+    def _build_pinned_clone_shell(
+        self, repo_url: str, full_path: str, pin_sha: str, target_branch: str
+    ) -> str:
+        """Clone the exact pin. A moving branch tip is never the checkout."""
+
+        q_url = shlex.quote(repo_url)
+        q_path = shlex.quote(full_path)
+        q_pin = shlex.quote(pin_sha)
+        q_pin_short = shlex.quote(pin_sha[:8])
+        q_target = shlex.quote(target_branch)
+        return f"""
+echo "Cloning pinned commit {q_pin_short} to {q_path}..."
+if ! git clone --no-checkout {q_url} {q_path}; then
+    echo "========================================="
+    echo "FATAL ERROR: Git clone failed!"
+    echo "Could not clone repository to {q_path}"
+    echo "========================================="
+    exit 1
+fi
+cd {q_path}
+if ! git fetch --filter=blob:none origin {q_pin}; then
+    echo "========================================="
+    echo "FATAL ERROR: Could not fetch pinned commit {q_pin_short}"
+    echo "A moving branch tip is not a verified checkout."
+    echo "========================================="
+    exit 1
+fi
+if ! git checkout --force {q_pin}; then
+    echo "========================================="
+    echo "FATAL ERROR: Could not checkout pinned commit {q_pin_short}"
+    echo "========================================="
+    exit 1
+fi
+if [ "$(git rev-parse HEAD)" != {q_pin} ]; then
+    echo "========================================="
+    echo "FATAL ERROR: Checkout HEAD is not the pinned commit {q_pin_short}"
+    echo "========================================="
+    exit 1
+fi
+echo Creating agent target branch {q_target} from pinned commit {q_pin_short}
+if git show-ref --verify --quiet refs/heads/{q_target}; then
+    git checkout {q_target}
+    if [ "$(git rev-parse HEAD)" != {q_pin} ]; then
+        git reset --hard {q_pin}
+    fi
+elif ! git checkout -B {q_target} {q_pin}; then
+    echo "========================================="
+    echo "FATAL ERROR: Could not create target branch {q_target}"
+    echo "========================================="
+    exit 1
+fi
+cd /workspace
+""".strip()
 
     def _build_git_pre_clone_shell(self, full_path: str) -> str:
         """Build shell that prepares the clone target directory."""
@@ -3938,41 +4017,60 @@ true
         # The URL that reaches `git clone` is always credential-free.
         repo_url = strip_url_credentials(repo_url)
         full_path = self._resolve_repository_clone_path(repo_config, repo_index)
-        clone_branch = self._resolve_repository_clone_branch(
-            repo_config,
-            commit_sha=commit_sha,
-            source_branch=source_branch,
-            trigger_data=trigger_data,
+        repo_source = (
+            str(repo_config.get("source_branch") or repo_config.get("branch") or "")
+            or source_branch
         )
-
-        commands = [
-            self._build_git_pre_clone_shell(full_path),
-            self._build_git_clone_shell(repo_url, full_path, clone_branch),
-            self._build_git_branch_setup_shell(
-                full_path=full_path,
+        repo_target = str(repo_config.get("target_branch") or "") or target_branch
+        pin_sha = self._repository_pin_sha(repo_config)
+        if pin_sha:
+            commands = [
+                self._build_git_pre_clone_shell(full_path),
+                self._build_pinned_clone_shell(
+                    repo_url, full_path, pin_sha, repo_target
+                ),
+                self._build_git_clone_validation_shell(
+                    full_path=full_path,
+                    source_branch=pin_sha,
+                    target_branch=repo_target,
+                    commit_sha=pin_sha,
+                ),
+            ]
+        else:
+            clone_branch = self._resolve_repository_clone_branch(
+                repo_config,
                 commit_sha=commit_sha,
-                source_branch=source_branch,
-                target_branch=target_branch,
+                source_branch=repo_source,
                 trigger_data=trigger_data,
-            ),
-            self._build_git_clone_validation_shell(
-                full_path=full_path,
-                source_branch=source_branch,
-                target_branch=target_branch,
-                commit_sha=commit_sha,
-            ),
-        ]
-        if self._is_resume_execution(execution_context):
-            git_config = execution_context.get("git_clone_config") or {}
-            if not isinstance(git_config, dict):
-                git_config = {}
-            base_branch = self._resolve_resume_base_branch(git_config, repo_config)
-            rebase_shell = self._build_git_resume_rebase_shell(
-                full_path=full_path, base_branch=base_branch
             )
-            if rebase_shell:
-                commands.append(rebase_shell)
-                execution_context["_git_resume_rebase"] = True
+            commands = [
+                self._build_git_pre_clone_shell(full_path),
+                self._build_git_clone_shell(repo_url, full_path, clone_branch),
+                self._build_git_branch_setup_shell(
+                    full_path=full_path,
+                    commit_sha=commit_sha,
+                    source_branch=repo_source,
+                    target_branch=repo_target,
+                    trigger_data=trigger_data,
+                ),
+                self._build_git_clone_validation_shell(
+                    full_path=full_path,
+                    source_branch=repo_source,
+                    target_branch=repo_target,
+                    commit_sha=commit_sha,
+                ),
+            ]
+            if self._is_resume_execution(execution_context):
+                git_config = execution_context.get("git_clone_config") or {}
+                if not isinstance(git_config, dict):
+                    git_config = {}
+                base_branch = self._resolve_resume_base_branch(git_config, repo_config)
+                rebase_shell = self._build_git_resume_rebase_shell(
+                    full_path=full_path, base_branch=base_branch
+                )
+                if rebase_shell:
+                    commands.append(rebase_shell)
+                    execution_context["_git_resume_rebase"] = True
         return commands
 
     def _prepare_git_clone_command(self, execution_context: Dict[str, Any]) -> str:
@@ -4193,6 +4291,74 @@ true
             )
         )
 
+    def _wants_readonly_checkout_evidence(
+        self, execution_context: Dict[str, Any]
+    ) -> bool:
+        """True for opted-in maintenance/product audits that must freeze HEAD.
+
+        Isolated publication keeps its own exporter. Write-enabled flows
+        (``create_pull_request``) keep the existing push/PR path.
+        """
+        git_config = execution_context.get("git_clone_config") or {}
+        if git_config.get("publication_mode") == "isolated":
+            return False
+        if git_config.get("create_pull_request"):
+            return False
+        trigger = execution_context.get("trigger_event_data") or {}
+        payload = trigger.get("payload") if isinstance(trigger, dict) else trigger
+        if not isinstance(payload, dict):
+            payload = {}
+        envelope = payload.get("security_maintenance")
+        if isinstance(envelope, dict) and str(envelope.get("kind") or "") in {
+            "baseline",
+            "recheck",
+            "audit",
+        }:
+            return True
+        if isinstance(payload.get("product_provenance"), dict):
+            return True
+        return git_config.get("checkout_evidence") in {True, "required", "readonly"}
+
+    def _readonly_checkout_evidence_commands(
+        self, repositories: list[Dict[str, Any]]
+    ) -> str:
+        """Export frozen HEAD bundles without commit, push, PR, or write creds."""
+        from preloop.services.product_provenance import (
+            ProductProvenanceError,
+            clone_path_slug,
+        )
+
+        parts = [f"mkdir -p {EVIDENCE_DIR_PATH}\n"]
+        if len(repositories) == 1:
+            path = self._resolve_repository_clone_path(repositories[0], 0)
+            dest = EVIDENCE_DIR_PATH
+            parts.append(
+                f"cd {shlex.quote(path)}\n"
+                f"mkdir -p {shlex.quote(dest)}\n"
+                f"git bundle create {shlex.quote(dest)}/branch.bundle HEAD || exit 1\n"
+                f"git rev-parse HEAD > {shlex.quote(dest)}/HEAD.txt || exit 1\n"
+                "cd /workspace\n"
+            )
+            return "".join(parts)
+        for idx, repo_config in enumerate(repositories):
+            path = self._resolve_repository_clone_path(repo_config, idx)
+            try:
+                slug = clone_path_slug(str(repo_config.get("clone_path") or path))
+            except ProductProvenanceError:
+                return (
+                    "echo 'Checkout-evidence clone_path is not a safe "
+                    "repository slug' >&2; exit 1"
+                )
+            dest = f"{EVIDENCE_DIR_PATH}/repos/{slug}"
+            parts.append(
+                f"cd {shlex.quote(path)}\n"
+                f"mkdir -p {shlex.quote(dest)}\n"
+                f"git bundle create {shlex.quote(dest)}/branch.bundle HEAD || exit 1\n"
+                f"git rev-parse HEAD > {shlex.quote(dest)}/HEAD.txt || exit 1\n"
+            )
+        parts.append("cd /workspace\n")
+        return "".join(parts)
+
     def _prepare_git_post_execution_commands(
         self, execution_context: Dict[str, Any]
     ) -> str:
@@ -4234,27 +4400,67 @@ true
                 # No publishing credentials or provider calls enter the agent.
                 # Export complete history; the trusted publisher imports only
                 # objects in a fresh bare repo, never this checkout's config.
-                if len(repositories) != 1:
-                    return "echo 'Isolated publication requires one repository' >&2; exit 1"
-                path = self._resolve_repository_clone_path(repositories[0], 0)
                 checkpoint = (
                     "_preloop_checkpoint || { echo PRELOOP_CHECKPOINT prepublication_failed; exit 1; }\n"
                     if execution_context.get("checkpoint_env")
                     else ""
                 )
-                return (
-                    checkpoint + f"cd {shlex.quote(path)}\n"
-                    f"mkdir -p {EVIDENCE_DIR_PATH}\n"
-                    f"git bundle create {EVIDENCE_DIR_PATH}/branch.bundle HEAD || exit 1\n"
-                    f"git rev-parse HEAD > {EVIDENCE_DIR_PATH}/HEAD.txt || exit 1\n"
+                if len(repositories) == 1:
+                    path = self._resolve_repository_clone_path(repositories[0], 0)
+                    return (
+                        checkpoint + f"cd {shlex.quote(path)}\n"
+                        f"mkdir -p {EVIDENCE_DIR_PATH}\n"
+                        f"git bundle create {EVIDENCE_DIR_PATH}/branch.bundle HEAD || exit 1\n"
+                        f"git rev-parse HEAD > {EVIDENCE_DIR_PATH}/HEAD.txt || exit 1\n"
+                        "if [ -d /preloop-publication-output ]; then\n"
+                        f"  cp {EVIDENCE_DIR_PATH}/branch.bundle /preloop-publication-output/branch.bundle || exit 1\n"
+                        "  if [ -f /workspace/result.json ] && [ $(wc -c < /workspace/result.json) -le 262144 ]; then\n"
+                        "    cp /workspace/result.json /preloop-publication-output/result.json || exit 1\n"
+                        "  fi\n"
+                        "fi\n"
+                        "cd /workspace\n"
+                    )
+                from preloop.services.product_provenance import (
+                    ProductProvenanceError,
+                    clone_path_slug,
+                )
+
+                parts = [checkpoint, f"mkdir -p {EVIDENCE_DIR_PATH}\n"]
+                for idx, repo_config in enumerate(repositories):
+                    path = self._resolve_repository_clone_path(repo_config, idx)
+                    try:
+                        slug = clone_path_slug(
+                            str(repo_config.get("clone_path") or path)
+                        )
+                    except ProductProvenanceError:
+                        return (
+                            "echo 'Isolated publication clone_path is not a safe "
+                            "repository slug' >&2; exit 1"
+                        )
+                    dest = f"{EVIDENCE_DIR_PATH}/repos/{slug}"
+                    parts.append(
+                        f"cd {shlex.quote(path)}\n"
+                        f"mkdir -p {shlex.quote(dest)}\n"
+                        f"git bundle create {shlex.quote(dest)}/branch.bundle HEAD || exit 1\n"
+                        f"git rev-parse HEAD > {shlex.quote(dest)}/HEAD.txt || exit 1\n"
+                        "if [ -d /preloop-publication-output ]; then\n"
+                        f"  mkdir -p /preloop-publication-output/repos/{slug}\n"
+                        f"  cp {shlex.quote(dest)}/branch.bundle "
+                        f"/preloop-publication-output/repos/{slug}/branch.bundle || exit 1\n"
+                        "fi\n"
+                    )
+                parts.append(
                     "if [ -d /preloop-publication-output ]; then\n"
-                    f"  cp {EVIDENCE_DIR_PATH}/branch.bundle /preloop-publication-output/branch.bundle || exit 1\n"
                     "  if [ -f /workspace/result.json ] && [ $(wc -c < /workspace/result.json) -le 262144 ]; then\n"
                     "    cp /workspace/result.json /preloop-publication-output/result.json || exit 1\n"
                     "  fi\n"
                     "fi\n"
                     "cd /workspace\n"
                 )
+                return "".join(parts)
+
+            if self._wants_readonly_checkout_evidence(execution_context):
+                return self._readonly_checkout_evidence_commands(repositories)
 
             self.logger.info(
                 f"Preparing post-execution git commands: "

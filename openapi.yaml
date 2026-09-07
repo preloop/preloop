@@ -4202,8 +4202,10 @@ paths:
         \ while the operator was reading\ncosts that row and nothing else.\n\nArgs:\n\
         \    decision: The ids to decide, the decision, and an optional comment\n\
         \    request: HTTP request\n    current_user: Current authenticated user\n\
-        \    db: Async session used for the decisions\n\nReturns:\n    One result\
-        \ per requested id, in the order they were sent"
+        \    db: Async session used for the decisions\n    sync_db: Sync session from\
+        \ the RBAC dependency; used to reconcile\n        security-maintenance items\
+        \ after a successful decision\n\nReturns:\n    One result per requested id,\
+        \ in the order they were sent"
       operationId: decide_requests_batch_api_v1_approval_requests_decide_batch_post
       requestBody:
         content:
@@ -5808,6 +5810,544 @@ paths:
                 additionalProperties: true
                 title: Response Verify Deployment Api V1 Issues  Issue Id  Lifecycle
                   Deployment Verify Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/security-maintenance/releases:
+    get:
+      tags:
+      - Security Maintenance
+      summary: List Releases
+      description: List this tenant's opted-in supported releases.
+      operationId: list_releases_api_v1_security_maintenance_releases_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  additionalProperties: true
+                  type: object
+                type: array
+                title: Response List Releases Api V1 Security Maintenance Releases
+                  Get
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - Security Maintenance
+      summary: Create Release
+      description: Create an explicit opt-in inventory row.
+      operationId: create_release_api_v1_security_maintenance_releases_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupportedReleaseCreate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Create Release Api V1 Security Maintenance Releases
+                  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/security-maintenance/releases/{release_id}:
+    get:
+      tags:
+      - Security Maintenance
+      summary: Get Release
+      description: Return one inventory row.
+      operationId: get_release_api_v1_security_maintenance_releases__release_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: release_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Release Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Release Api V1 Security Maintenance Releases  Release
+                  Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      tags:
+      - Security Maintenance
+      summary: Update Release
+      description: Update mutable inventory fields. Identity stays fixed.
+      operationId: update_release_api_v1_security_maintenance_releases__release_id__patch
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: release_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Release Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupportedReleaseUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Update Release Api V1 Security Maintenance Releases  Release
+                  Id  Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/security-maintenance/releases/{release_id}/baseline/audit:
+    post:
+      tags:
+      - Security Maintenance
+      summary: Schedule Baseline Audit
+      description: Schedule the initial-baseline audit and dispatch it after commit.
+      operationId: schedule_baseline_audit_api_v1_security_maintenance_releases__release_id__baseline_audit_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: release_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Release Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BaselineAuditRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Schedule Baseline Audit Api V1 Security Maintenance
+                  Releases  Release Id  Baseline Audit Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/security-maintenance/releases/{release_id}/baseline:
+    post:
+      tags:
+      - Security Maintenance
+      summary: Accept Baseline
+      description: Accept a baseline from a bound audit execution with stored evidence.
+      operationId: accept_baseline_api_v1_security_maintenance_releases__release_id__baseline_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: release_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Release Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BaselineAcceptRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Accept Baseline Api V1 Security Maintenance Releases  Release
+                  Id  Baseline Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/security-maintenance/scans:
+    post:
+      tags:
+      - Security Maintenance
+      summary: Ingest Scan
+      description: Ingest a trusted scan. Unsupported product/release names fail closed.
+      operationId: ingest_scan_api_v1_security_maintenance_scans_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScanIngestRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Ingest Scan Api V1 Security Maintenance Scans Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/security-maintenance/items:
+    get:
+      tags:
+      - Security Maintenance
+      summary: List Items
+      description: List durable remediation items.
+      operationId: list_items_api_v1_security_maintenance_items_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: release_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Release Id
+      - name: state
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: State
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                title: Response List Items Api V1 Security Maintenance Items Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/security-maintenance/items/{item_id}:
+    get:
+      tags:
+      - Security Maintenance
+      summary: Get Item
+      description: Return one work item. Reconciliation runs in the background, not
+        here.
+      operationId: get_item_api_v1_security_maintenance_items__item_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Item Api V1 Security Maintenance Items  Item Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/security-maintenance/items/{item_id}/decisions:
+    get:
+      tags:
+      - Security Maintenance
+      summary: List Decisions
+      description: Return append-only decision history.
+      operationId: list_decisions_api_v1_security_maintenance_items__item_id__decisions_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                title: Response List Decisions Api V1 Security Maintenance Items  Item
+                  Id  Decisions Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/security-maintenance/items/{item_id}/approve:
+    post:
+      tags:
+      - Security Maintenance
+      summary: Approve Item
+      description: Record a human approval through the platform approval workflow.
+      operationId: approve_item_api_v1_security_maintenance_items__item_id__approve_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalDecisionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Approve Item Api V1 Security Maintenance Items  Item
+                  Id  Approve Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/security-maintenance/items/{item_id}/deny:
+    post:
+      tags:
+      - Security Maintenance
+      summary: Deny Item
+      description: Hold the item after a human denial. History is preserved.
+      operationId: deny_item_api_v1_security_maintenance_items__item_id__deny_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalDecisionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Deny Item Api V1 Security Maintenance Items  Item
+                  Id  Deny Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/security-maintenance/items/{item_id}/escalate:
+    post:
+      tags:
+      - Security Maintenance
+      summary: Escalate Item
+      description: Escalate a held or expired approval. Never auto-releases.
+      operationId: escalate_item_api_v1_security_maintenance_items__item_id__escalate_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalDecisionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Escalate Item Api V1 Security Maintenance Items  Item
+                  Id  Escalate Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/security-maintenance/items/{item_id}/resume:
+    post:
+      tags:
+      - Security Maintenance
+      summary: Resume Item
+      description: Human retry. Prior decisions stay append-only.
+      operationId: resume_item_api_v1_security_maintenance_items__item_id__resume_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResumeRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Resume Item Api V1 Security Maintenance Items  Item
+                  Id  Resume Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/security-maintenance/items/{item_id}/build:
+    post:
+      tags:
+      - Security Maintenance
+      summary: Submit Rebuilt Inputs
+      description: Submit a rebuilt SBOM for the published commit. The controller
+        does not rebuild.
+      operationId: submit_rebuilt_inputs_api_v1_security_maintenance_items__item_id__build_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RebuiltInputsRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Submit Rebuilt Inputs Api V1 Security Maintenance
+                  Items  Item Id  Build Post
         '422':
           description: Validation Error
           content:
@@ -12106,6 +12646,19 @@ components:
       - approved
       title: ApprovalDecision
       description: Schema for an approval decision or a question answer.
+    ApprovalDecisionRequest:
+      properties:
+        reason:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Reason
+      additionalProperties: false
+      type: object
+      required:
+      - reason
+      title: ApprovalDecisionRequest
+      description: Human decision. Agent-asserted approval in result JSON is ignored.
     ApprovalEventResponse:
       properties:
         id:
@@ -13383,6 +13936,35 @@ components:
       type: object
       title: AvatarResponse
       description: Response after avatar upload or deletion.
+    BaselineAcceptRequest:
+      properties:
+        audit_execution_id:
+          type: string
+          format: uuid
+          title: Audit Execution Id
+        evidence_ref:
+          additionalProperties: true
+          type: object
+          title: Evidence Ref
+      additionalProperties: false
+      type: object
+      required:
+      - audit_execution_id
+      title: BaselineAcceptRequest
+      description: Record an initial or replacement baseline from a bound audit execution.
+    BaselineAuditRequest:
+      properties:
+        sbom_content_base64:
+          type: string
+          minLength: 1
+          title: Sbom Content Base64
+      additionalProperties: false
+      type: object
+      required:
+      - sbom_content_base64
+      title: BaselineAuditRequest
+      description: Authenticated source SBOM for the initial-baseline audit of one
+        release.
     BatchExecutionListItem:
       properties:
         model_alias:
@@ -16277,6 +16859,19 @@ components:
           description: Legacy publishes inside the agent container. Isolated publishes
             from the trusted control plane after verification, using scoped App credentials.
           default: legacy
+        publication_approval:
+          anyOf:
+          - type: boolean
+          - type: string
+            enum:
+            - required
+            - require
+          - type: 'null'
+          title: Publication Approval
+          description: When true, required, or require, isolated publication mints
+            a writer lease only after a human platform approval covers each frozen
+            candidate repository, branch, base, and head SHA. Default flows omit this
+            and keep existing publication behaviour.
         pull_request_template:
           anyOf:
           - type: string
@@ -16371,6 +16966,19 @@ components:
           description: Legacy publishes inside the agent container. Isolated publishes
             from the trusted control plane after verification, using scoped App credentials.
           default: legacy
+        publication_approval:
+          anyOf:
+          - type: boolean
+          - type: string
+            enum:
+            - required
+            - require
+          - type: 'null'
+          title: Publication Approval
+          description: When true, required, or require, isolated publication mints
+            a writer lease only after a human platform approval covers each frozen
+            candidate repository, branch, base, and head SHA. Default flows omit this
+            and keep existing publication behaviour.
         pull_request_template:
           anyOf:
           - type: string
@@ -19923,6 +20531,32 @@ components:
       - issue_revision
       title: ReadyRequest
       description: The reviewer approves one exact issue revision.
+    RebuiltInputsRequest:
+      properties:
+        published_sha:
+          type: string
+          maxLength: 40
+          minLength: 40
+          title: Published Sha
+        sbom_content_base64:
+          type: string
+          minLength: 1
+          title: Sbom Content Base64
+        pinned_build_ref:
+          anyOf:
+          - type: string
+            maxLength: 512
+            minLength: 1
+          - type: 'null'
+          title: Pinned Build Ref
+      additionalProperties: false
+      type: object
+      required:
+      - published_sha
+      - sbom_content_base64
+      title: RebuiltInputsRequest
+      description: Authenticated rebuilt SBOM for the published commit. Not an automatic
+        rebuild.
     RefreshRequest:
       properties:
         refresh_token:
@@ -20041,6 +20675,19 @@ components:
         window really contained no rows" (the exact confusion behind "reprice
 
         examined 0 rows" on large windows).'
+    ResumeRequest:
+      properties:
+        reason:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Reason
+      additionalProperties: false
+      type: object
+      required:
+      - reason
+      title: ResumeRequest
+      description: Explicit human retry. Historical decisions stay append-only.
     RollbackRequest:
       properties:
         preview_only:
@@ -21676,6 +22323,106 @@ components:
       - action
       title: RuntimeSessionUpdateRequest
       description: Operator-driven updates for one runtime session.
+    ScanFinding:
+      properties:
+        advisory_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Advisory Id
+        component_id:
+          type: string
+          maxLength: 512
+          minLength: 1
+          title: Component Id
+        aliases:
+          items:
+            type: string
+          type: array
+          title: Aliases
+        severity:
+          type: string
+          maxLength: 32
+          title: Severity
+          default: unknown
+        present:
+          type: boolean
+          title: Present
+          default: true
+      additionalProperties: false
+      type: object
+      required:
+      - advisory_id
+      - component_id
+      title: ScanFinding
+      description: One advisory/component pair from a trusted scan ingest, not agent
+        prose.
+    ScanIngestRequest:
+      properties:
+        product_key:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Product Key
+        release_key:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Release Key
+        input_kind:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Input Kind
+          default: cyclonedx-json
+        source:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Source
+          default: local
+        execution_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Execution Id
+        issue_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Issue Id
+        sbom_content_base64:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sbom Content Base64
+        workspace_files:
+          items:
+            $ref: '#/components/schemas/WorkspaceSeedInput'
+          type: array
+          title: Workspace Files
+        evidence_ref:
+          additionalProperties: true
+          type: object
+          title: Evidence Ref
+        findings:
+          items:
+            $ref: '#/components/schemas/ScanFinding'
+          type: array
+          title: Findings
+        available:
+          type: boolean
+          title: Available
+          default: true
+      additionalProperties: false
+      type: object
+      required:
+      - product_key
+      - release_key
+      title: ScanIngestRequest
+      description: Trusted controller ingest. Missing product/release is unsupported.
     SchedulePreviewRequest:
       properties:
         schedule_config:
@@ -21918,6 +22665,212 @@ components:
       - subject_id
       - config
       title: SubjectGovernanceResponse
+    SupportedReleaseCreate:
+      properties:
+        product_key:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Product Key
+        release_key:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Release Key
+        display_name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Display Name
+        project_id:
+          type: string
+          format: uuid
+          title: Project Id
+        pinned_build_ref:
+          type: string
+          maxLength: 512
+          minLength: 1
+          title: Pinned Build Ref
+        sbom_input_ref:
+          type: string
+          maxLength: 512
+          minLength: 1
+          title: Sbom Input Ref
+        audit_flow_id:
+          type: string
+          format: uuid
+          title: Audit Flow Id
+        implementation_flow_id:
+          type: string
+          format: uuid
+          title: Implementation Flow Id
+        recheck_flow_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Recheck Flow Id
+        approval_workflow_id:
+          type: string
+          format: uuid
+          title: Approval Workflow Id
+        approval_owner_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Approval Owner User Id
+        escalation_user_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Escalation User Ids
+        escalation_after_seconds:
+          type: integer
+          maximum: 2592000.0
+          minimum: 60.0
+          title: Escalation After Seconds
+          default: 604800
+        max_retries:
+          type: integer
+          maximum: 20.0
+          minimum: 0.0
+          title: Max Retries
+          default: 3
+        allowed_model_ids:
+          anyOf:
+          - items:
+              type: string
+              format: uuid
+            type: array
+          - type: 'null'
+          title: Allowed Model Ids
+        allowed_input_kinds:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Allowed Input Kinds
+        enabled:
+          type: boolean
+          title: Enabled
+          default: true
+      additionalProperties: false
+      type: object
+      required:
+      - product_key
+      - release_key
+      - display_name
+      - project_id
+      - pinned_build_ref
+      - sbom_input_ref
+      - audit_flow_id
+      - implementation_flow_id
+      - approval_workflow_id
+      title: SupportedReleaseCreate
+      description: Opt-in inventory row. Creating a row is the only way to enroll
+        a release.
+    SupportedReleaseUpdate:
+      properties:
+        display_name:
+          anyOf:
+          - type: string
+            maxLength: 255
+            minLength: 1
+          - type: 'null'
+          title: Display Name
+        pinned_build_ref:
+          anyOf:
+          - type: string
+            maxLength: 512
+            minLength: 1
+          - type: 'null'
+          title: Pinned Build Ref
+        sbom_input_ref:
+          anyOf:
+          - type: string
+            maxLength: 512
+            minLength: 1
+          - type: 'null'
+          title: Sbom Input Ref
+        audit_flow_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Audit Flow Id
+        implementation_flow_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Implementation Flow Id
+        recheck_flow_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Recheck Flow Id
+        approval_workflow_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Approval Workflow Id
+        approval_owner_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Approval Owner User Id
+        escalation_user_ids:
+          anyOf:
+          - items:
+              type: string
+              format: uuid
+            type: array
+          - type: 'null'
+          title: Escalation User Ids
+        escalation_after_seconds:
+          anyOf:
+          - type: integer
+            maximum: 2592000.0
+            minimum: 60.0
+          - type: 'null'
+          title: Escalation After Seconds
+        max_retries:
+          anyOf:
+          - type: integer
+            maximum: 20.0
+            minimum: 0.0
+          - type: 'null'
+          title: Max Retries
+        allowed_model_ids:
+          anyOf:
+          - items:
+              type: string
+              format: uuid
+            type: array
+          - type: 'null'
+          title: Allowed Model Ids
+        allowed_input_kinds:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Allowed Input Kinds
+        enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enabled
+      additionalProperties: false
+      type: object
+      title: SupportedReleaseUpdate
+      description: Partial inventory update. Identity keys are immutable.
     TestConnectionRequest:
       properties:
         organization:
@@ -23569,6 +24522,24 @@ components:
       - at
       title: WeeklySchedule
       description: 'Friendly schedule form: run on selected weekdays at a fixed time.'
+    WorkspaceSeedInput:
+      properties:
+        path:
+          type: string
+          maxLength: 512
+          minLength: 1
+          title: Path
+        content_base64:
+          type: string
+          minLength: 1
+          title: Content Base64
+      additionalProperties: false
+      type: object
+      required:
+      - path
+      - content_base64
+      title: WorkspaceSeedInput
+      description: Inline workspace seed carried on the existing trigger contract.
   securitySchemes:
     bearerAuth:
       type: http
