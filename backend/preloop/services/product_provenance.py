@@ -681,6 +681,39 @@ def publication_candidate(value: Any) -> PublicationCandidate:
     )
 
 
+def publication_approval_tool_scope(candidates: Sequence[Any]) -> dict[str, Any]:
+    """Structured ``request_approval`` fields that can authorize a writer lease.
+
+    The MCP parameter is ``publication_candidates``. Persist as ``action`` plus
+    ``candidates`` so ``authorize_publication_decision`` compares exact frozen
+    tuples. Text or JSON in ``context`` is not a scope. An empty list is
+    invalid: omit the parameter for an ordinary approval.
+    """
+    if isinstance(candidates, (str, bytes)) or not isinstance(candidates, Sequence):
+        raise ProductProvenanceError(
+            "Publication approval cannot be bound without exact "
+            "repository, branch, base, and head scope"
+        )
+    rows = [publication_candidate(item) for item in candidates]
+    if not rows:
+        raise ProductProvenanceError(
+            "Publication approval cannot be bound without exact "
+            "repository, branch, base, and head scope"
+        )
+    return {
+        "action": "isolated_publication",
+        "candidates": [
+            {
+                "repository_url": row.repository_url,
+                "branch": row.branch,
+                "base": row.base,
+                "head_sha": row.head_sha,
+            }
+            for row in rows
+        ],
+    }
+
+
 def _approved_candidate_keys(args: Mapping[str, Any]) -> set[tuple[str, str, str, str]]:
     """Exact candidate tuples from one approval. Unpaired repo/SHA lists never match."""
     raw: Any = None

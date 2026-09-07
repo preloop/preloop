@@ -5,7 +5,7 @@ preloop.tools.builtin_defs (and BUILTIN_TOOLS in tools.py).
 """
 
 import logging
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 from fastmcp import Context
@@ -21,6 +21,7 @@ from preloop.services.dynamic_fastmcp import (
 from preloop.tools.builtin_defs import (
     ASK_USER_TOOL,
     PERMISSION_PROMPT_TOOL,
+    REQUEST_APPROVAL_TOOL,
     RESOLVE_SBOM_UPSTREAMS_TOOL,
 )
 
@@ -359,17 +360,22 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         return result.model_dump_json()
 
     # Register Tool 7: request_approval (standalone approval request)
-    # NOTE: Description must match BUILTIN_TOOLS in preloop/api/endpoints/tools.py
-    @mcp.tool()
+    # Shared metadata: tools.builtin_defs.REQUEST_APPROVAL_TOOL
+    @mcp.tool(description=REQUEST_APPROVAL_TOOL["description"])
     async def request_approval(
         operation: str,
         context: str,
         reasoning: str,
         caller: str | None = None,
         approval_workflow: str | None = None,
+        publication_candidates: list[dict[str, str]] | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
-        """Request approval for an operation before executing it."""
+        """Request approval for an operation before executing it.
+
+        Optional ``publication_candidates`` freeze isolated-publication
+        destinations. Context text is not publication authority.
+        """
         # Get user context
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
         from preloop.models.db.session import get_db_session
@@ -381,6 +387,24 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             return "Error: No user context available"
 
         account_id = user_context.account_id
+
+        publication_scope: dict[str, Any] | None = None
+        if publication_candidates:
+            from preloop.services.product_provenance import (
+                ProductProvenanceError,
+                publication_approval_tool_scope,
+            )
+
+            try:
+                publication_scope = publication_approval_tool_scope(
+                    publication_candidates
+                )
+            except (ProductProvenanceError, TypeError, ValueError):
+                return (
+                    "Error: publication_candidates must be objects with "
+                    "repository_url, branch, base, and a 40-character head_sha. "
+                    "Context text is not publication authority."
+                )
 
         # Auto-populate caller if not provided
         if not caller:
@@ -440,12 +464,14 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             db.close()
 
         # Build arguments dict for the approval request
-        arguments = {
+        arguments: dict[str, Any] = {
             "operation": operation,
             "caller": caller,
             "context": context,
             "reasoning": reasoning,
         }
+        if publication_scope:
+            arguments.update(publication_scope)
 
         # Request approval using the standard approval helper
         approved, error = await require_approval(
@@ -458,6 +484,21 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         )
 
         if not approved:
+            # Async-approval workflows return immediately with a pending
+            # payload (request id + deep links + polling instructions). Pass
+            # it through so the human can decide and the agent can poll.
+            if error and error.lstrip().startswith("{"):
+                try:
+                    import json as _json
+
+                    payload = _json.loads(error)
+                except ValueError:
+                    payload = None
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("status") == "pending_approval"
+                ):
+                    return error
             return f"Approval denied: {error}"
 
         return (

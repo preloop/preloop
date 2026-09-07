@@ -98,6 +98,38 @@ class TestListAllTools:
             assert isinstance(tool["schema_tokens_estimate"], int)
             assert tool["schema_tokens_estimate"] > 0
 
+    async def test_request_approval_schema_includes_publication_candidates(
+        self, mock_db, mock_user, mock_account, mocker
+    ):
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_configuration.get_multi_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_mcp_server.get_active_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_access_rule.get_multi_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tracker.get_for_account",
+            return_value=[],
+        )
+        result = tools.list_all_tools(
+            account=mock_account, current_user=mock_user, db=mock_db
+        )
+        request_approval = next(
+            tool for tool in result if tool["name"] == "request_approval"
+        )
+        schema = request_approval["schema"]
+        assert "publication_candidates" in schema["properties"]
+        assert "publication_candidates" not in schema["required"]
+        items = schema["properties"]["publication_candidates"]["items"]
+        assert items["required"] == ["repository_url", "branch", "base", "head_sha"]
+        assert schema["required"] == ["operation", "context", "reasoning"]
+
     async def test_default_disabled_tool_enabled_by_config(
         self, mock_db, mock_user, mock_account, mocker
     ):

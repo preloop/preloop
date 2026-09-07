@@ -147,6 +147,52 @@ empty or whitespace reason is not human. If the saved execution, flow,
 or clone config cannot be read, the writer lease is refused. Default
 flows omit this field and keep existing publication behaviour.
 
+### Supported tool: `request_approval`
+
+Call the builtin `request_approval` tool with optional
+`publication_candidates`. That parameter is the only publication
+authority. Text or JSON in `context` is not. Ordinary
+`request_approval` callers that omit the parameter are unchanged and
+cannot authorize a writer lease.
+
+Runnable payload (synthetic remotes and SHAs):
+
+```json
+{
+  "operation": "publish isolated product repositories",
+  "context": "frozen checkouts are ready to receive writer leases",
+  "reasoning": "human review of destinations and commits before mint",
+  "publication_candidates": [
+    {
+      "repository_url": "https://github.com/example/firmware.git",
+      "branch": "preloop/change",
+      "base": "main",
+      "head_sha": "1111111111111111111111111111111111111111"
+    },
+    {
+      "repository_url": "https://github.com/example/companion-app.git",
+      "branch": "preloop/change",
+      "base": "main",
+      "head_sha": "2222222222222222222222222222222222222222"
+    }
+  ]
+}
+```
+
+The tool stores `action: isolated_publication` plus those exact
+`(repository_url, branch, base, head_sha)` tuples on a normal pending
+`ApprovalRequest` for the current execution. Invalid tuples return an
+error and do not create a row.
+
+**Human workflow:** a reviewer opens the pending request in the console
+(`/console/approval/<id>`) or the in-session notice, confirms the listed
+destinations and frozen SHAs, and approves through the ordinary
+approval surface. Auto-approved and AI-decided rows still cannot
+satisfy publication. After approval, isolated publication compares the
+saved tuples to the candidates about to be minted; a modified SHA, a
+swapped pairing, a source-base tuple, or a row from another execution
+is refused.
+
 Per-repo receipts include the remote URL, PR URL, number, branch, base,
 records, and head SHA. `trusted_publication.complete` is true only when
 every authorized repository published.

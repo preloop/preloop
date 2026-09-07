@@ -24,6 +24,7 @@ from preloop.services.product_provenance import (
     extract_product_provenance_payload,
     publication_approval_allows,
     publication_approval_required,
+    publication_approval_tool_scope,
     sha256_digest,
     validate_product_provenance,
 )
@@ -319,6 +320,53 @@ def test_human_approved_candidate_authorizes() -> None:
         required=True,
         candidates=[_candidate(FIRMWARE, SHA_A)],
     )
+
+
+def test_request_approval_persisted_scope_authorizes() -> None:
+    authorize_publication_decision(
+        [_approval(_candidate(FIRMWARE, SHA_A), tool_name="request_approval")],
+        required=True,
+        candidates=[_candidate(FIRMWARE, SHA_A)],
+    )
+
+
+def test_request_approval_context_json_does_not_authorize() -> None:
+    from types import SimpleNamespace
+
+    nested = _candidate(FIRMWARE, SHA_A)
+    row = SimpleNamespace(
+        status="approved",
+        decided_by_ai=False,
+        auto_approved_reason=None,
+        expires_at=None,
+        tool_name="request_approval",
+        tool_args={
+            "operation": "publish isolated candidates",
+            "context": (
+                '{"action": "isolated_publication", "candidates": ['
+                f'{{"repository_url": "{nested["repository_url"]}", '
+                f'"branch": "{nested["branch"]}", "base": "{nested["base"]}", '
+                f'"head_sha": "{nested["head_sha"]}"}}]}}'
+            ),
+            "reasoning": "the model wrote the destinations into context",
+        },
+    )
+    with pytest.raises(ProductProvenanceError, match="human platform approval"):
+        authorize_publication_decision(
+            [row],
+            required=True,
+            candidates=[_candidate(FIRMWARE, SHA_A)],
+        )
+
+
+def test_publication_approval_tool_scope_is_exact_tuples() -> None:
+    scope = publication_approval_tool_scope(
+        [_candidate(FIRMWARE, SHA_A), _candidate(APP, SHA_B)]
+    )
+    assert scope["action"] == "isolated_publication"
+    assert [item["head_sha"] for item in scope["candidates"]] == [SHA_A, SHA_B]
+    with pytest.raises(ProductProvenanceError, match="branch and base|exact"):
+        publication_approval_tool_scope([])
 
 
 def test_approval_covers_remaining_partial_resume_candidates() -> None:
