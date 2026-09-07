@@ -6,9 +6,10 @@ import json
 import logging
 import socket
 import secrets
+from copy import deepcopy
 from datetime import datetime, timezone
 from string import ascii_letters, digits
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
@@ -499,10 +500,17 @@ async def runner_ws(
                         {"type": "error", "error": "Invalid runner completion status"}
                     )
                     continue
-                status, completion_error, result = finalize_runner_completion(
-                    raw, pending_job=runner.pending_job
+                # Snapshot the leased job before close/clear_lease commit so
+                # evidence_direct_upload and isolated flags stay local.
+                leased_job = (
+                    deepcopy(runner.pending_job)
+                    if isinstance(runner.pending_job, Mapping)
+                    else None
                 )
-                isolated = bool((runner.pending_job or {}).get("_publication"))
+                status, completion_error, result = finalize_runner_completion(
+                    raw, pending_job=leased_job
+                )
+                isolated = bool((leased_job or {}).get("_publication"))
                 execution = crud_flow_execution.get(
                     db, id=execution_id, account_id=str(runner.account_id), refresh=True
                 )
@@ -536,7 +544,7 @@ async def runner_ws(
                         error=completion_error,
                         result=result,
                         message=raw,
-                        pending_job=runner.pending_job,
+                        pending_job=leased_job,
                     )
                     crud_api_key.deactivate_runtime_keys_for_flow_execution(
                         db,
