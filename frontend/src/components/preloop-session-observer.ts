@@ -54,6 +54,11 @@ import {
   formatNumber,
   normalizeObservedSessions,
 } from '../utils/session-observer';
+import type { RuntimeSessionActionResource } from '../actions/runtime-session-actions';
+import {
+  isSessionEnded as isRuntimeSessionEnded,
+  runtimeSessionActions,
+} from '../actions/runtime-session-actions';
 import { confirmDialog } from './confirm-dialog';
 import { reducedMotionStyles } from '../styles/reduced-motion';
 import './session-chat-view';
@@ -1729,14 +1734,44 @@ export class PreloopSessionObserver extends LitElement {
     return session.status === 'active_now';
   }
 
+  /**
+   * Whether the session is over. The rule lives in the shared registry
+   * (src/actions/runtime-session-actions.ts) so this toolbar and any list
+   * offering End session cannot drift apart.
+   */
   private isSessionEnded(session: ObservedSession | null): boolean {
     if (!session) return false;
-    return session.status === 'ended' || Boolean(session.endedAt);
+    return isRuntimeSessionEnded(this.sessionActionResource(session));
+  }
+
+  private sessionActionResource(
+    session: ObservedSession
+  ): RuntimeSessionActionResource {
+    return {
+      id: session.id,
+      status: session.status,
+      ended_at: session.endedAt,
+      flow_execution_id: session.flowExecutionId,
+    };
+  }
+
+  /**
+   * The session's End session control, or nothing when the session has
+   * already ended. Availability comes from the registry, not from a
+   * predicate written into the template.
+   */
+  private endSessionAction(session: ObservedSession | null) {
+    if (!session || !session.canLoadEvents) return undefined;
+    if (!this.enabledFeatures.endSession) return undefined;
+    return runtimeSessionActions(this.sessionActionResource(session), {
+      onEnd: () => void this.endActiveSession(),
+    }).find((action) => action.id === 'end-session');
   }
 
   private renderToolbar() {
     const session = this.activeSession;
     const live = this.isSessionLive(session);
+    const endAction = this.endSessionAction(session);
 
     // With no sessions there is nothing to follow, pause, replay, filter or
     // refresh, so the full toolbar is six controls that all do nothing. Show
@@ -1844,20 +1879,19 @@ export class PreloopSessionObserver extends LitElement {
             Refresh
           </sl-button>
           ${
-            this.enabledFeatures.endSession &&
-            session?.canLoadEvents &&
-            !this.isSessionEnded(session)
+            endAction
               ? html`
                   <!-- DESIGN "Destructive actions": danger outline, last in
-                       the row, and gone once there is nothing left to end. -->
+                       the row, and gone once there is nothing left to end.
+                       Shape and availability both come from the registry. -->
                   <sl-button
                     class="destructive"
                     size="small"
-                    variant="danger"
-                    outline
-                    @click=${this.endActiveSession}
+                    variant=${endAction.variant || 'danger'}
+                    ?outline=${endAction.outline !== false}
+                    @click=${() => endAction.onClick?.()}
                   >
-                    End session
+                    ${endAction.label}
                   </sl-button>
                 `
               : nothing

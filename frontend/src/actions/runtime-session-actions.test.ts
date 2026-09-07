@@ -23,6 +23,18 @@ describe('runtimeSessionActions', () => {
     ).to.deep.equal(['open']);
   });
 
+  it('drops End session once the status says ended, with no end time', () => {
+    expect(
+      actionIds(runtimeSessionActions({ id: 's1', status: 'ended' }, ctx))
+    ).to.deep.equal(['open']);
+  });
+
+  it('keeps End session on a quiet session that has not ended', () => {
+    expect(
+      actionIds(runtimeSessionActions({ id: 's1', status: 'idle' }, ctx))
+    ).to.deep.equal(['open', 'end-session']);
+  });
+
   it('links to the flow run only when the session came from one', () => {
     const actions = runtimeSessionActions(
       { id: 's1', flow_execution_id: 'exec-1' },

@@ -12,6 +12,12 @@ export interface RuntimeSessionActionResource {
   id: string;
   /** Set once the session is over: nothing left to end. */
   ended_at?: string | null;
+  /**
+   * Session summaries carry 'ended', 'active_now' or 'idle' (server side
+   * crud/runtime_session.py, _row_to_summary). Only 'ended' closes a session,
+   * an idle one can still be ended by hand.
+   */
+  status?: string | null;
   flow_execution_id?: string | null;
 }
 
@@ -23,8 +29,16 @@ export interface RuntimeSessionActionContext extends ActionContext {
   onEnd?: (session: RuntimeSessionActionResource) => void;
 }
 
+/**
+ * The one rule for "there is nothing left to end", shared by the session
+ * toolbar and by any list row that offers End session.
+ */
+export function isSessionEnded(session: RuntimeSessionActionResource): boolean {
+  return session.status === 'ended' || Boolean(session.ended_at);
+}
+
 export function isSessionLive(session: RuntimeSessionActionResource): boolean {
-  return !session.ended_at;
+  return !isSessionEnded(session);
 }
 
 export function runtimeSessionActions(
