@@ -197,6 +197,60 @@ describe('FlowsView', () => {
     resetConfirmDialogForTests();
   });
 
+  it('keeps Edit off the bulk bar so it cannot pause the selection', async () => {
+    const mockFlows = [
+      { id: 'flow-1', name: 'Nightly sweep', is_enabled: true },
+      { id: 'flow-2', name: 'PR reviewer', is_enabled: true },
+    ];
+    fetchStub = createFetchStub(mockFlows, []);
+    const element = (await fixture(
+      html`<flows-view></flows-view>`
+    )) as FlowsView;
+    await waitUntil(
+      () => (element as any).flows?.length === 2,
+      'Flows did not load'
+    );
+    await element.updateComplete;
+
+    const rowLink = (id: string) =>
+      element.shadowRoot!.querySelector<HTMLElement>(
+        `tr[data-selection-id="${id}"] a.row-link`
+      )!;
+    rowLink('flow-1').dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'x',
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      })
+    );
+    await element.updateComplete;
+    rowLink('flow-2').dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'X',
+        shiftKey: true,
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      })
+    );
+    await element.updateComplete;
+
+    const ids = ((element as any).bulkActions as Array<{ id: string }>).map(
+      (action) => action.id
+    );
+    expect(ids).to.deep.equal(['pause', 'delete']);
+    expect(
+      ids,
+      'Edit is a per-row link and has no bulk handler'
+    ).to.not.contain('edit');
+
+    const bar = element.shadowRoot!.querySelector('list-bulk-bar')!;
+    expect(bar.shadowRoot!.querySelector('[data-action="edit"]')).to.equal(
+      null
+    );
+  });
+
   it('names the flows it is about to delete and clears with Escape', async () => {
     const mockFlows = [
       { id: 'flow-1', name: 'Nightly sweep', is_enabled: true },

@@ -670,6 +670,26 @@ describe('AgentDetailView', () => {
     expect(remove.separated, 'Remove is set apart').to.equal(true);
   });
 
+  // The page kept its own action array and quietly lost Decommission, which
+  // the list row has always offered for the same agent.
+  it('offers the same lifecycle moves the agents list offers', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    const ids = ((element as any).agentActions as Array<{ id: string }>).map(
+      (action) => action.id
+    );
+    expect(ids).to.contain('decommission');
+    expect(ids).to.contain('pause');
+    expect(ids).to.not.contain('resume');
+  });
+
   // Wave 4: tags are labels, not states, so they lost the pill and took a
   // leading tag icon instead of the hash.
   it('shows operator tags as text with a leading tag icon', async () => {

@@ -24,6 +24,13 @@ import {
   normalizeApprovalRequest,
   partitionApprovalRequests,
 } from '../../utils/approvals';
+import {
+  approvalActions,
+  isApprovalQuestion,
+  isDecidableRequest,
+} from '../../actions/approval-actions';
+import { intersectActions, offersAction } from '../../actions/registry';
+import type { ResourceAction } from '../../components/resource-actions';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import {
   ListSelectionController,
@@ -481,7 +488,9 @@ export class ApprovalsView extends AuthedElement {
    * of the selection by itself.
    */
   private get selectableRequests(): ApprovalRequest[] {
-    return this.waitingRequests.filter((request) => !this.isQuestion(request));
+    return this.waitingRequests.filter((request) =>
+      isDecidableRequest(request, this.nowMs)
+    );
   }
 
   /** Ids of requests this browser has already shown, oldest dropped first. */
@@ -594,7 +603,7 @@ export class ApprovalsView extends AuthedElement {
     // The buttons go disabled while a decision is in flight; the keys have to
     // do the same, or two quick presses POST the same decision twice.
     if (this.decidingId) return false;
-    if (this.isQuestion(request)) return false;
+    if (!isDecidableRequest(request, this.nowMs)) return false;
     return this.waitingRequests.some((waiting) => waiting.id === request.id);
   }
 
@@ -913,7 +922,23 @@ export class ApprovalsView extends AuthedElement {
   }
 
   private isQuestion(request: ApprovalRequest): boolean {
-    return request.is_question === true;
+    return isApprovalQuestion(request);
+  }
+
+  /**
+   * What this row offers, from the shared registry
+   * (src/actions/approval-actions.ts). The row, the bulk bar, the keyboard
+   * and the request page all read the same predicate, so none of them can
+   * offer Approve on a request the others call settled.
+   */
+  private requestActions(request: ApprovalRequest): ResourceAction[] {
+    return approvalActions(request, {
+      busy: this.decidingId === request.id,
+      now: this.nowMs,
+      onApprove: (target) => void this.handleRowApprove(target),
+      onDeny: (target) => void this.handleRowDeny(target),
+      includeDetails: true,
+    });
   }
 
   private questionText(request: ApprovalRequest): string {
@@ -948,7 +973,7 @@ export class ApprovalsView extends AuthedElement {
    */
   private ensureStillWaiting(request: ApprovalRequest): boolean {
     this.nowMs = Date.now();
-    if (isUnexpiredPendingRequest(request, this.nowMs)) return true;
+    if (isDecidableRequest(request, this.nowMs)) return true;
     this.applyFilters();
     return false;
   }
@@ -1008,16 +1033,27 @@ export class ApprovalsView extends AuthedElement {
   }
 
   /**
-   * The bulk bar's two actions.
+   * The bulk bar offers what every selected request offers, and nothing else:
+   * one expired row in the selection takes Approve and Deny off the bar
+   * rather than posting a decision the backend refuses.
    *
    * The bar disables its own buttons while a run is in flight, so there is
    * nothing per action to say here.
    */
   private get bulkActions(): BulkAction[] {
-    return [
-      { id: 'approve', label: 'Approve', icon: 'check-lg', variant: 'success' },
-      { id: 'deny', label: 'Deny', icon: 'x-lg', variant: 'danger' },
-    ];
+    const common = intersectActions(
+      this.selection.selectedItems.map((request) =>
+        this.requestActions(request)
+      )
+    );
+    return common
+      .filter((action) => action.id === 'approve' || action.id === 'deny')
+      .map((action) => ({
+        id: action.id,
+        label: action.label,
+        icon: action.icon,
+        variant: action.variant as BulkAction['variant'],
+      }));
   }
 
   /** Bulk items carry the tool name, which is what a confirm or toast says. */
@@ -1436,7 +1472,11 @@ export class ApprovalsView extends AuthedElement {
     index: number
   ) {
     const focused = this.focusedIndex === index;
-    const selectable = waiting && !this.isQuestion(request);
+    const actions = this.requestActions(request);
+    const detailsAction = actions.find((action) => action.id === 'details');
+    // Only a row that can actually be decided is worth selecting: the bulk
+    // bar has nothing to offer for the others.
+    const selectable = waiting && offersAction(actions, 'approve');
     const selected = this.selection.isSelected(request.id);
     const isNew = waiting && this.newIds.includes(request.id);
     return html`
@@ -1617,34 +1657,25 @@ export class ApprovalsView extends AuthedElement {
             }
           </div>
           <div class="approval-actions">
-            ${
-              waiting && !this.isQuestion(request)
-                ? html`
-                    <sl-button
-                      class="row-approve"
-                      size="small"
-                      variant="success"
-                      ?loading=${this.decidingId === request.id}
-                      ?disabled=${this.decidingId === request.id}
-                      @click=${() => this.handleRowApprove(request)}
-                    >
-                      Approve
-                    </sl-button>
-                    <sl-button
-                      class="row-deny"
-                      size="small"
-                      variant="danger"
-                      outline
-                      ?disabled=${this.decidingId === request.id}
-                      @click=${() => this.handleRowDeny(request)}
-                    >
-                      Deny
-                    </sl-button>
-                  `
-                : ''
-            }
-            <a class="row-details" href="/console/approval/${request.id}"
-              >${waiting ? 'Details' : 'View'}</a
+            ${actions
+              .filter((action) => action.id !== 'details')
+              .map(
+                (action) => html`
+                  <sl-button
+                    class=${`row-${action.id === 'approve' ? 'approve' : 'deny'}`}
+                    size="small"
+                    variant=${action.variant || 'default'}
+                    ?outline=${action.outline === true}
+                    ?loading=${action.loading === true}
+                    ?disabled=${action.disabled === true}
+                    @click=${() => action.onClick?.()}
+                  >
+                    ${action.label}
+                  </sl-button>
+                `
+              )}
+            <a class="row-details" href=${detailsAction?.href ?? '#'}
+              >${detailsAction?.label ?? 'View'}</a
             >
           </div>
         </div>

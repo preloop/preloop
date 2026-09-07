@@ -28,6 +28,11 @@ import {
 } from '../../api';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
+import { actionsFor, intersectActions } from '../../actions';
+import {
+  FLOW_BULK_ACTION_IDS,
+  type FlowActionResource,
+} from '../../actions/flow-actions';
 import {
   ListSelectionController,
   confirmBulkAction,
@@ -157,6 +162,11 @@ export interface FlowListRow {
   /** True when runs, failed and cost all come from the server's window. */
   countsFromServer: boolean;
   source: FlowListItem;
+}
+
+/** The little the action registry needs to know about a flow row. */
+function flowActionResource(row: FlowListRow): FlowActionResource {
+  return { id: row.id, name: row.name, is_enabled: row.status !== 'paused' };
 }
 
 const FLOW_STATUS_LABELS: Record<FlowStatus, string> = {
@@ -1201,47 +1211,18 @@ export class FlowsView extends LitElement {
 
   // --- Row actions ---
 
+  /**
+   * What this flow offers, from the one registry the flow page reads
+   * (`src/actions/flow-actions.ts`).
+   */
   private getRowActions(row: FlowListRow): ResourceAction[] {
-    const paused = row.status === 'paused';
-    const actions: ResourceAction[] = [
-      {
-        id: 'open',
-        label: 'Open',
-        icon: 'box-arrow-up-right',
-        href: row.detailUrl,
-      },
-      {
-        id: 'run-now',
-        label: 'Run now',
-        icon: 'play-circle',
-        disabled: paused || this.triggeringFlowId === row.id,
-        loading: this.triggeringFlowId === row.id,
-        tooltip: paused ? 'Resume the flow before running it' : undefined,
-        onClick: () => void this.triggerRun(row),
-      },
-      {
-        id: 'edit',
-        label: 'Edit',
-        icon: 'pencil',
-        href: `${row.detailUrl}?edit=true`,
-      },
-      {
-        id: 'toggle-enabled',
-        label: paused ? 'Resume' : 'Pause',
-        icon: paused ? 'play-circle' : 'pause-circle',
-        onClick: () => void this.toggleFlowEnabled(row),
-      },
-      {
-        id: 'delete',
-        label: 'Delete',
-        icon: 'trash',
-        variant: 'danger',
-        outline: true,
-        separated: true,
-        onClick: () => void this.deleteFlowHandler(row),
-      },
-    ];
-    return actions;
+    return actionsFor('flow', flowActionResource(row), {
+      includeOpen: true,
+      busy: this.triggeringFlowId === row.id,
+      onRun: () => void this.triggerRun(row),
+      onToggleEnabled: () => void this.toggleFlowEnabled(row),
+      onDelete: () => void this.deleteFlowHandler(row),
+    });
   }
 
   private async triggerRun(row: FlowListRow) {
@@ -1289,22 +1270,34 @@ export class FlowsView extends LitElement {
   }
 
   /**
-   * What a set of flows can be asked to do. Pause and resume are offered
-   * whatever the mix: a selection of five paused and two running is exactly
-   * when an operator reaches for "resume all", and the run reports the ones
-   * that were already there as successes.
+   * What the whole selection can be asked to do.
+   *
+   * The bar used to offer Pause, Resume and Delete whatever was selected, so
+   * a selection of paused flows was still offered Pause. It now keeps only
+   * what every selected flow offers, which for a mixed selection is Delete:
+   * "resume all" over a mix has to be a selection of the paused ones, and the
+   * filter bar is one click away. The bar carries pause, resume and delete
+   * only: Edit is a per-row link with an href fallback, so it would otherwise
+   * survive the intersection and fall through to pause.
    */
   private get bulkActions(): BulkAction[] {
-    return [
-      {
-        id: 'resume',
-        label: 'Resume',
-        icon: 'play-circle',
-        variant: 'success',
-      },
-      { id: 'pause', label: 'Pause', icon: 'pause-circle', variant: 'warning' },
-      { id: 'delete', label: 'Delete', icon: 'trash', variant: 'danger' },
-    ];
+    const sets = this.selection.selectedItems.map((row) =>
+      actionsFor('flow', flowActionResource(row), {
+        onToggleEnabled: () => {},
+        onDelete: () => {},
+      })
+    );
+    return intersectActions(sets)
+      .filter((action) => action.id in FLOW_BULK_ACTION_IDS)
+      .map((action) => ({
+        id: action.id,
+        label: action.label,
+        icon: action.icon,
+        // Pause is neutral on a row, amber in a bar of two over a selection.
+        variant: (action.id === 'pause'
+          ? 'warning'
+          : action.variant) as BulkAction['variant'],
+      }));
   }
 
   private renderSelectCheckbox(row: FlowListRow) {
