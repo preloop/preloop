@@ -4,6 +4,7 @@ import './activity-feed.ts';
 import {
   AUDIT_PAGE_SIZE,
   FEED_CAP,
+  FEED_INITIAL_ROWS,
   feedEventFromAuditGroup,
   feedEventFromRealtime,
   outcomeLabel,
@@ -127,6 +128,19 @@ async function feed(autoload = false): Promise<ActivityFeed> {
 function rowText(el: ActivityFeed): string[] {
   return Array.from(el.shadowRoot!.querySelectorAll('.row')).map((row) =>
     (row.textContent || '').replace(/\s+/g, ' ').trim()
+  );
+}
+
+/**
+ * The list in order, rows and the divider alike, so a test can say what sits
+ * above the "Earlier" line and what sits below it.
+ */
+function listItems(el: ActivityFeed): string[] {
+  const list = el.shadowRoot!.querySelector('.rows');
+  return Array.from(list?.children || []).map((node) =>
+    node.classList.contains('earlier')
+      ? 'earlier'
+      : (node.textContent || '').replace(/\s+/g, ' ').trim()
   );
 }
 
@@ -531,10 +545,11 @@ describe('activity-feed', () => {
       localStorage.removeItem('accessToken');
     });
 
-    it('asks for at most three audit pages, the last two together', async () => {
+    it('asks for at most three audit pages per slice, the last two together', async () => {
       // A busy account whose whole timeline is successful gateway calls: the
       // fill used to walk four pages one after the other for rows that were
-      // never going to be news.
+      // never going to be news. Each slice still stops at three; a window
+      // that produced no rows then asks the unbounded slice the same way.
       localStorage.setItem('accessToken', 'test-token');
       const { restore, urls } = stubFetch([gatewayNoise(AUDIT_PAGE_SIZE)]);
       const el = await fixture<ActivityFeed>(
@@ -545,9 +560,13 @@ describe('activity-feed', () => {
         'the fill finishes'
       );
       const audit = urls.filter((url) => url.includes('/audit-logs/grouped'));
-      expect(audit.length).to.equal(3);
+      expect(audit.length).to.equal(6);
+      expect(audit[0]).to.contain('start_date=');
       expect(audit[1]).to.contain(`skip=${AUDIT_PAGE_SIZE}`);
       expect(audit[2]).to.contain(`skip=${AUDIT_PAGE_SIZE * 2}`);
+      expect(audit[3]).to.not.contain('start_date=');
+      expect(audit[4]).to.contain(`skip=${AUDIT_PAGE_SIZE}`);
+      expect(audit[5]).to.contain(`skip=${AUDIT_PAGE_SIZE * 2}`);
       restore();
       localStorage.removeItem('accessToken');
     });
@@ -684,6 +703,202 @@ describe('activity-feed', () => {
       expect(audit[0]).to.contain('start_date=');
       expect(audit[1]).to.not.contain('start_date=');
       restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('reads history when the last day is full of dropped traffic', async () => {
+      // The window is three full pages of successful gateway calls, which
+      // the feed drops, so `exhausted` is false. Without a zero-row fallback
+      // the card said "Nothing yet" while /console/audit listed real history.
+      localStorage.setItem('accessToken', 'test-token');
+      const old = new Date(Date.now() - 40 * 3600 * 1000).toISOString();
+      const { restore, urls } = stubFetch([
+        gatewayNoise(AUDIT_PAGE_SIZE),
+        gatewayNoise(AUDIT_PAGE_SIZE),
+        gatewayNoise(AUDIT_PAGE_SIZE),
+        [
+          auditGroup(
+            'runtime_session_created',
+            {
+              id: 'old',
+              resource_id: 'sess-old',
+              details: { runtime_principal_name: 'Hermes' },
+              timestamp: old,
+            },
+            'created'
+          ),
+        ],
+      ]);
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(
+        () => rowText(el).length === 1,
+        'history under the noise'
+      );
+      expect(rowText(el)[0]).to.contain('Hermes started a session');
+      expect(listItems(el)[0]).to.equal('earlier');
+      const audit = urls.filter((url) => url.includes('/audit-logs/grouped'));
+      expect(audit.length).to.equal(4);
+      expect(audit[0]).to.contain('start_date=');
+      expect(audit[1]).to.contain('start_date=');
+      expect(audit[2]).to.contain('start_date=');
+      expect(audit[3]).to.not.contain('start_date=');
+      restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('fills the rail from history on a quiet account, under an Earlier line', async () => {
+      // The founder's account on 2026-09-07: nothing in the last day, a full
+      // history behind it, and a card that said "Nothing yet" until the next
+      // socket message arrived.
+      localStorage.setItem('accessToken', 'test-token');
+      const history = Array.from({ length: FEED_INITIAL_ROWS }, (_, index) =>
+        auditGroup(
+          'api_key_created',
+          {
+            id: `h${index}`,
+            timestamp: new Date(
+              Date.now() - (2 * 86400000 + index * 60000)
+            ).toISOString(),
+          },
+          'success'
+        )
+      );
+      const { restore, urls } = stubFetch([[], history]);
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(
+        () => rowText(el).length === FEED_INITIAL_ROWS,
+        'the history fills the rail'
+      );
+      expect(rowText(el)[0]).to.contain('API key created');
+      // Age is stated in the row, so nobody reads two-day-old history as news.
+      expect(
+        el.shadowRoot!.querySelector('.when')!.textContent!.trim()
+      ).to.equal('2d ago');
+      // Everything here is history, so the divider heads the list.
+      const items = listItems(el);
+      expect(items[0]).to.equal('earlier');
+      expect(items.length).to.equal(FEED_INITIAL_ROWS + 1);
+      expect(
+        el.shadowRoot!.querySelector('.earlier')!.textContent!.trim()
+      ).to.equal('Earlier');
+      const audit = urls.filter((url) => url.includes('/audit-logs/grouped'));
+      expect(audit.length).to.equal(2);
+      expect(audit[0]).to.contain('start_date=');
+      expect(audit[1]).to.not.contain('start_date=');
+      restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('prepends a live row above the divider and not a second time', async () => {
+      localStorage.setItem('accessToken', 'test-token');
+      const historyGroup = auditGroup(
+        'api_key_created',
+        {
+          id: 'shared',
+          timestamp: new Date(Date.now() - 3 * 86400000).toISOString(),
+        },
+        'success'
+      );
+      const { restore } = stubFetch([[], [historyGroup]]);
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(() => rowText(el).length === 1, 'the history row lands');
+
+      el.ingest('flow_executions', {
+        execution_id: 'exec-live',
+        flow_id: 'flow-1',
+        type: 'status_update',
+        timestamp: NOW,
+        payload: { status: 'FAILED', flow_name: 'Merge Request Reviewer' },
+      });
+      await el.updateComplete;
+      const items = listItems(el);
+      expect(items[0]).to.contain('Merge Request Reviewer failed');
+      expect(items[1]).to.equal('earlier');
+      expect(items[2]).to.contain('API key created');
+      expect(items.filter((item) => item === 'earlier').length).to.equal(1);
+
+      // The same event again, this time down the audit socket: the history
+      // row already carries that id, so it must not become a second row.
+      el.ingest('audit', {
+        type: 'audit_event',
+        timestamp: historyGroup.primary_event.timestamp,
+        payload: {
+          audit_log_id: historyGroup.primary_event.id,
+          action: 'api_key_created',
+          outcome: 'success',
+        },
+      });
+      await el.updateComplete;
+      expect(rowText(el).length).to.equal(2);
+      restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('says nothing yet only when the account really is empty', async () => {
+      localStorage.setItem('accessToken', 'test-token');
+      const { restore, urls } = stubFetch([[]]);
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(
+        () => !el.shadowRoot!.querySelector('.skeleton-row'),
+        'the fill finishes'
+      );
+      expect(
+        (el.shadowRoot!.querySelector('.empty')?.textContent || '').trim()
+      ).to.equal('Nothing yet. Events appear here as agents work.');
+      expect(el.shadowRoot!.querySelector('.earlier')).to.equal(null);
+      // It asked the history before settling for the empty state.
+      const audit = urls.filter((url) => url.includes('/audit-logs/grouped'));
+      expect(audit.length).to.equal(2);
+      restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('leaves the feed alone when audit is out of reach', async () => {
+      // No `view_audit_logs`: the fill reads nothing, says nothing extra, and
+      // the live rows are still the whole feed.
+      localStorage.setItem('accessToken', 'test-token');
+      const original = window.fetch;
+      const urls: string[] = [];
+      window.fetch = (async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        urls.push(url);
+        if (url.includes('/audit-logs/grouped')) {
+          return new Response(JSON.stringify({ detail: 'nope' }), {
+            status: 403,
+          });
+        }
+        return new Response(JSON.stringify({ users: [] }), { status: 200 });
+      }) as typeof window.fetch;
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(
+        () => !el.shadowRoot!.querySelector('.skeleton-row'),
+        'the fill finishes'
+      );
+      expect(
+        urls.filter((url) => url.includes('/audit-logs/grouped')).length
+      ).to.equal(1);
+      expect(el.shadowRoot!.querySelector('.empty')).to.not.equal(null);
+      el.ingest('flow_executions', {
+        execution_id: 'exec-1',
+        flow_id: 'flow-1',
+        type: 'status_update',
+        timestamp: NOW,
+        payload: { status: 'FAILED', flow_name: 'Merge Request Reviewer' },
+      });
+      await el.updateComplete;
+      expect(rowText(el).length).to.equal(1);
+      expect(el.shadowRoot!.querySelector('.earlier')).to.equal(null);
+      window.fetch = original;
       localStorage.removeItem('accessToken');
     });
 
@@ -1013,21 +1228,22 @@ describe('activity-feed', () => {
 
     it('gives each tone its own dot', async () => {
       const el = await feed();
+      const now = Date.now();
       el.ingest('flow_executions', {
         execution_id: 'exec-9',
         type: 'status_update',
-        timestamp: NOW,
+        timestamp: new Date(now).toISOString(),
         payload: { status: 'SUCCEEDED', flow_name: 'Nightly sweep' },
       });
       el.ingest('approvals', {
         type: 'approval_created',
         approval_request_id: 'req-2',
         tool_name: 'Bash',
-        timestamp: new Date(Date.now() - 1000).toISOString(),
+        timestamp: new Date(now - 1000).toISOString(),
       });
       el.ingest('gateway_activity', {
         type: 'model_gateway_call',
-        timestamp: new Date(Date.now() - 2000).toISOString(),
+        timestamp: new Date(now - 2000).toISOString(),
         payload: {
           api_usage_id: 'u-9',
           status_code: 502,
@@ -1036,7 +1252,7 @@ describe('activity-feed', () => {
       });
       el.ingest('runtime_sessions', {
         type: 'runtime_session_created',
-        timestamp: new Date(Date.now() - 3000).toISOString(),
+        timestamp: new Date(now - 3000).toISOString(),
         payload: {
           runtime_session_id: 's-9',
           runtime_principal_name: 'Hermes',

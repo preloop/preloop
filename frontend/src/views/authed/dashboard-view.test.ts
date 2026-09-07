@@ -2408,7 +2408,14 @@ describe('DashboardView', () => {
       const urls = fetchStub
         .getCalls()
         .map((call) => String(call.args[0]))
-        .filter((url) => !url.startsWith('/api/v1/users'));
+        .filter(
+          (url) =>
+            // The child widgets' own startup reads, which no gateway event
+            // triggers: the feed fills once from audit (and asks the history
+            // for a quiet account), and looks the people list up.
+            !url.startsWith('/api/v1/users') &&
+            !url.startsWith('/api/v1/audit-logs')
+        );
       expect(urls.length, urls.join('\n')).to.be.at.most(4);
       expect(urls.some((url) => url.startsWith('/api/v1/flows'))).to.be.false;
       expect(urls.some((url) => url.includes('include_breakdown=true'))).to.be

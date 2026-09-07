@@ -105,6 +105,13 @@ export interface FeedEvent {
    * `ran update_pull_request` lines, which is one fact, not twelve.
    */
   foldKey?: string;
+  /**
+   * True for a row read out of the audit history on first paint, false (and
+   * usually absent) for one that arrived on a socket while the page was
+   * open. It is what the "Earlier" divider divides: everything under it
+   * happened before this page was opened.
+   */
+  historic?: boolean;
 }
 
 /** A folded row: the newest of a run of identical events, plus the rest. */
@@ -147,7 +154,13 @@ export const FEED_TOPICS = [
 
 /** How many rows the feed keeps in memory, and how many it fetches to start. */
 export const FEED_CAP = 30;
-export const FEED_INITIAL_ROWS = 12;
+/**
+ * How many rows the first paint aims for, from the history if the window has
+ * fewer. Twenty is what the rail holds when the Overview gives it the whole
+ * side column, so an operator opening a quiet console reads a screenful of
+ * what the account did rather than "Nothing yet".
+ */
+export const FEED_INITIAL_ROWS = 20;
 /**
  * The audit timeline is mostly traffic, so the fill pages through it.
  *
@@ -163,7 +176,7 @@ export const AUDIT_PAGE_SIZE = 50;
  * Three pages, and only the first one is on its own: page 0 decides whether
  * more are needed, and pages 1 and 2 are then asked for together rather than
  * one after the other. A fourth page was two more round trips for rows that
- * were already off the bottom of a 12-row rail.
+ * were already off the bottom of a 20-row rail.
  */
 export const AUDIT_MAX_PAGES = 3;
 const AUDIT_WINDOW_HOURS = 24;
@@ -1184,8 +1197,14 @@ export function feedEventFromRealtime(
  *
  * The Overview used to answer that question with three cards that each held
  * one kind of event. This holds all of them, in time order, at one depth: the
- * audit page owns filtering and history, the feed owns "the last hour".
- * Nothing here animates beyond the row being there on the next paint.
+ * audit page owns filtering and search, the feed owns the newest rows.
+ *
+ * It opens on the newest rows the account has, however old they are: an
+ * account that was quiet since yesterday still gets its last twenty events,
+ * under an "Earlier" divider that marks where this session began. Live rows
+ * prepend above the divider. "Nothing yet" is only for an account that has
+ * genuinely never done anything. Nothing here animates beyond the row being
+ * there on the next paint, and nothing here polls.
  */
 @customElement('activity-feed')
 export class ActivityFeed extends LitElement {
@@ -1349,6 +1368,29 @@ export class ActivityFeed extends LitElement {
 
       .row:last-child {
         border-bottom: none;
+      }
+
+      /* The line between what happened while this page was open and what was
+         already there when it opened. It is a label in the meta register with
+         a hairline running off it, not a heading: the feed is still one
+         timeline, and the divider only says where the operator came in. */
+      .earlier {
+        align-items: center;
+        color: var(--console-meta-color);
+        display: flex;
+        font-size: var(--console-text-eyebrow);
+        font-weight: 600;
+        gap: var(--sl-spacing-x-small);
+        letter-spacing: 0.06em;
+        padding: var(--sl-spacing-x-small) var(--sl-spacing-medium)
+          var(--sl-spacing-2x-small);
+        text-transform: uppercase;
+      }
+
+      .earlier::after {
+        border-top: 1px solid var(--console-hairline);
+        content: '';
+        flex: 1;
       }
 
       /* The head is the line; the body is what the line was hiding. The head
@@ -1731,55 +1773,88 @@ export class ActivityFeed extends LitElement {
     }
   }
 
+  /**
+   * Fill `into` from one slice of the audit timeline, paging while it is short.
+   *
+   * `since` bounds the slice (null asks for the newest events whenever they
+   * happened). Page 0 decides whether the rest are needed. When they are,
+   * they are asked for together instead of one after the other, and there
+   * are two of them: a fourth page was two more round trips for rows that
+   * were already off the bottom of the rail.
+   *
+   * Returns whether the timeline was readable at all (a 403 is `false`, and
+   * that is the no-audit-access path) and whether this slice ran out of
+   * groups before it filled the rail, which is what decides if there is any
+   * point asking for an older slice.
+   */
+  private async fillFrom(
+    since: string | null,
+    into: FeedEvent[],
+    page0?: AuditGroupLike[] | null
+  ): Promise<{ read: boolean; exhausted: boolean }> {
+    const firstPage =
+      page0 === undefined ? await this.fetchAuditPage(0, since) : page0;
+    if (firstPage === null) return { read: false, exhausted: false };
+    this.rowsFrom(firstPage, into);
+    if (firstPage.length < AUDIT_PAGE_SIZE) {
+      return { read: true, exhausted: true };
+    }
+    if (foldRows(into).length >= FEED_INITIAL_ROWS) {
+      return { read: true, exhausted: false };
+    }
+    const more = await Promise.all(
+      Array.from({ length: AUDIT_MAX_PAGES - 1 }, (_, index) =>
+        this.fetchAuditPage((index + 1) * AUDIT_PAGE_SIZE, since)
+      )
+    );
+    let exhausted = false;
+    for (const groups of more) {
+      if (groups === null) break;
+      if (foldRows(into).length >= FEED_INITIAL_ROWS) break;
+      this.rowsFrom(groups, into);
+      if (groups.length < AUDIT_PAGE_SIZE) {
+        exhausted = true;
+        break;
+      }
+    }
+    return { read: true, exhausted };
+  }
+
   private async loadInitial(): Promise<void> {
     this.loading = true;
     try {
       const since = new Date(
         Date.now() - AUDIT_WINDOW_HOURS * 60 * 60 * 1000
       ).toISOString();
-      // The timeline and the actor names are asked for at the same time:
-      // the names used to be awaited first, so the feed's first row waited
-      // on a request it does not need in order to draw a row.
-      const firstPage = await this.fetchAuditPage(0, since);
+      const events: FeedEvent[] = [];
+      // The last day first, because on a busy account that is both the news
+      // and the cheaper query. The timeline and the actor names are asked
+      // for at the same time: the names used to be awaited first, so the
+      // feed's first row waited on a request it does not need to draw a row.
+      const firstPage = await this.fetchAuditPage(0, since).catch(() => null);
       // The actor's name belongs on the first paint, not the second, but a
       // lookup that never answers must not hold the timeline hostage either.
       await Promise.race([
         this.usersReady,
         new Promise((resolve) => setTimeout(resolve, 2000)),
       ]);
-      const events: FeedEvent[] = [];
-      let emptyWindow = false;
-      if (firstPage !== null) {
-        emptyWindow = firstPage.length === 0;
-        this.rowsFrom(firstPage, events);
-        // Page 0 decides whether the rest are needed. When they are, they
-        // are asked for together instead of one after the other, and there
-        // are two of them: a fourth page was two more round trips for rows
-        // that were already off the bottom of a twelve-row rail.
-        if (
-          firstPage.length >= AUDIT_PAGE_SIZE &&
-          foldRows(events).length < FEED_INITIAL_ROWS
-        ) {
-          const more = await Promise.all(
-            Array.from({ length: AUDIT_MAX_PAGES - 1 }, (_, index) =>
-              this.fetchAuditPage((index + 1) * AUDIT_PAGE_SIZE, since)
-            )
-          );
-          for (const groups of more) {
-            if (groups === null) break;
-            if (foldRows(events).length >= FEED_INITIAL_ROWS) break;
-            this.rowsFrom(groups, events);
-            if (groups.length < AUDIT_PAGE_SIZE) break;
-          }
-        }
+      const { read, exhausted } = await this.fillFrom(since, events, firstPage);
+      // A quiet account has little or nothing in the last day and still has a
+      // history. Rather than say "Nothing yet" to an account that worked
+      // yesterday, ask again for the newest events whenever they happened.
+      // A day that is full of dropped traffic (successful gateway calls) is
+      // the same empty rail with the same history behind it: `exhausted` is
+      // false because the window still has groups, but the feed has no rows,
+      // so the unwindowed read has to run. Skip it only when the window
+      // already produced news: that account's day is the news, and history
+      // with no lower bound is the expensive read of the two.
+      const rows = foldRows(events).length;
+      if (read && rows < FEED_INITIAL_ROWS && (exhausted || rows === 0)) {
+        await this.fillFrom(null, events);
       }
-      // A quiet account has nothing in the last day and still has a history.
-      // Rather than say "Nothing yet" to an account that worked yesterday,
-      // ask once for the newest events whenever they happened.
-      if (emptyWindow && events.length === 0) {
-        const groups = await this.fetchAuditPage(0, null);
-        if (groups) this.rowsFrom(groups, events);
-      }
+      // Rows read here are history by definition: the socket had nothing to
+      // do with them, and the divider says so.
+      for (const event of events) event.historic = true;
       this.events = this.sortAndCap([...events, ...this.events]);
     } catch {
       // No audit access, no history: the live rows still arrive.
@@ -2118,12 +2193,32 @@ export class ActivityFeed extends LitElement {
         Nothing yet. Events appear here as agents work.
       </div>`;
     }
+    const rows = this.rows;
+    // The first row that was read out of the audit history rather than heard
+    // on a socket. Everything above it happened while this page was open, so
+    // the divider goes here and nowhere else; a feed of nothing but history
+    // (a quiet account on first paint) gets it at the top, which is the
+    // honest label for a list where nothing has happened yet today.
+    const earlier = rows.findIndex((row) => row.event.historic);
     return html`
       <div class="rows" @scroll=${() => this.scheduleMeasure()}>
         ${repeat(
-          this.rows,
+          rows,
           (row) => row.event.id,
-          (row) => this.renderRow(row)
+          (row, index) => html`
+            ${
+              index === earlier
+                ? html`<div
+                    class="earlier"
+                    role="separator"
+                    aria-label="Earlier"
+                  >
+                    <span>Earlier</span>
+                  </div>`
+                : nothing
+            }
+            ${this.renderRow(row)}
+          `
         )}
       </div>
     `;
