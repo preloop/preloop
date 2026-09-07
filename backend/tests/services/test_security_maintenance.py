@@ -61,9 +61,13 @@ TREE = "b" * 40
 REPO_URL = "https://github.com/example/project.git"
 PR_URL = "https://github.com/example/project/pull/7"
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "cra"
-SBOM_B64 = base64.b64encode(
-    b'{"bomFormat": "CycloneDX", "specVersion": "1.5"}'
-).decode()
+
+
+def _sbom_b64(payload: dict) -> str:
+    return base64.b64encode(json.dumps(payload).encode()).decode()
+
+
+SBOM_B64 = _sbom_b64({"bomFormat": "CycloneDX", "specVersion": "1.5", "components": []})
 FRESH_SBOM_B64 = base64.b64encode(
     b'{"bomFormat": "CycloneDX", "specVersion": "1.5", "components": [{"name": "libexample"}]}'
 ).decode()
@@ -128,6 +132,52 @@ INCOMPLETE_SBOM_B64 = base64.b64encode(
     b'{"bomFormat": "CycloneDX", "specVersion": "1.5", "components": [{}]}'
 ).decode()
 UNSUPPORTED_SBOM_B64 = base64.b64encode(b'{"hello": 1}').decode()
+OMITTED_INVENTORY_SBOM_B64 = _sbom_b64({"bomFormat": "CycloneDX", "specVersion": "1.5"})
+NULL_INVENTORY_SBOM_B64 = _sbom_b64(
+    {"bomFormat": "CycloneDX", "specVersion": "1.5", "components": None}
+)
+UNSUPPORTED_VERSION_SBOM_B64 = _sbom_b64(
+    {"bomFormat": "CycloneDX", "specVersion": "9.9", "components": []}
+)
+ARBITRARY_SPDX_VERSION_B64 = _sbom_b64({"spdxVersion": "not-a-spec", "packages": []})
+MALFORMED_NESTING_SBOM_B64 = _sbom_b64(
+    {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "components": [{"name": "other-lib", "components": None}],
+    }
+)
+EMPTY_CDX_B64 = _sbom_b64(
+    {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "serialNumber": "urn:uuid:00000000-0000-4000-8000-000000000001",
+        "components": [],
+    }
+)
+EMPTY_SPDX_B64 = _sbom_b64(
+    {
+        "spdxVersion": "SPDX-2.3",
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": "example-image",
+        "packages": [],
+    }
+)
+OMITTED_SPDX_PACKAGES_B64 = _sbom_b64(
+    {
+        "spdxVersion": "SPDX-2.3",
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": "example-image",
+    }
+)
+NULL_SPDX_PACKAGES_B64 = _sbom_b64(
+    {
+        "spdxVersion": "SPDX-2.3",
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": "example-image",
+        "packages": None,
+    }
+)
 
 PROFILE = {
     "profile_id": "maintenance-tests",
@@ -1751,6 +1801,34 @@ class TestInputIntegrity:
                 await _submit_rebuild(
                     service, item, test_user, sbom=UNSUPPORTED_SBOM_B64
                 )
+            with pytest.raises(InvalidTransitionError, match="sbom_incomplete"):
+                await _submit_rebuild(
+                    service, item, test_user, sbom=OMITTED_INVENTORY_SBOM_B64
+                )
+            with pytest.raises(InvalidTransitionError, match="sbom_incomplete"):
+                await _submit_rebuild(
+                    service, item, test_user, sbom=NULL_INVENTORY_SBOM_B64
+                )
+            with pytest.raises(InvalidTransitionError, match="sbom_unsupported"):
+                await _submit_rebuild(
+                    service, item, test_user, sbom=UNSUPPORTED_VERSION_SBOM_B64
+                )
+            with pytest.raises(InvalidTransitionError, match="sbom_unsupported"):
+                await _submit_rebuild(
+                    service, item, test_user, sbom=ARBITRARY_SPDX_VERSION_B64
+                )
+            with pytest.raises(InvalidTransitionError, match="sbom_malformed"):
+                await _submit_rebuild(
+                    service, item, test_user, sbom=MALFORMED_NESTING_SBOM_B64
+                )
+            with pytest.raises(InvalidTransitionError, match="sbom_incomplete"):
+                await _submit_rebuild(
+                    service, item, test_user, sbom=OMITTED_SPDX_PACKAGES_B64
+                )
+            with pytest.raises(InvalidTransitionError, match="sbom_incomplete"):
+                await _submit_rebuild(
+                    service, item, test_user, sbom=NULL_SPDX_PACKAGES_B64
+                )
             db_session.refresh(item)
             assert item.state == "awaiting_build"
             assert item.recheck_execution_id is None
@@ -1794,6 +1872,24 @@ class TestInputIntegrity:
         ):
             item = await _to_awaiting_build(service, world, db_session, test_user)
             await _submit_rebuild(service, item, test_user, sbom=SPDX_REMOVED_B64)
+            item = await _complete_recheck(
+                service, db_session, test_user, item, _omitted_target_vulnscan()
+            )
+        assert item.state == "resolved"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("sbom", [EMPTY_CDX_B64, EMPTY_SPDX_B64])
+    async def test_explicit_empty_inventory_removes_previously_present_target(
+        self, db_session, world, test_user, sbom
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            item = await _to_awaiting_build(service, world, db_session, test_user)
+            await _submit_rebuild(service, item, test_user, sbom=sbom)
             item = await _complete_recheck(
                 service, db_session, test_user, item, _omitted_target_vulnscan()
             )
@@ -1851,7 +1947,11 @@ class TestInputIntegrity:
                 approval_owner_user_id=test_user.id,
             )
         )
-        scheduled = await service.schedule_baseline_audit(created["id"], SBOM_B64)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            scheduled = await service.schedule_baseline_audit(created["id"], SBOM_B64)
         bound = crud_security_maintenance.get_execution(
             db_session,
             account_id=test_user.account_id,
@@ -1932,7 +2032,11 @@ class TestInputIntegrity:
                 BaselineAcceptRequest(audit_execution_id=wrong_release.id),
             )
 
-        swapped = await service.schedule_baseline_audit(created["id"], SBOM_B64)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            swapped = await service.schedule_baseline_audit(created["id"], SBOM_B64)
         tampered = crud_security_maintenance.get_execution(
             db_session,
             account_id=test_user.account_id,
@@ -1956,3 +2060,114 @@ class TestInputIntegrity:
                 created["id"],
                 BaselineAcceptRequest(audit_execution_id=tampered.id),
             )
+
+
+class TestBaselineAuditEntry:
+    @pytest.mark.asyncio
+    async def test_http_schedules_commits_then_dispatches_and_retries(
+        self, db_session, world, test_user, test_viewer_user
+    ) -> None:
+        from preloop.api.app import create_app
+        from preloop.api.auth import get_current_active_user
+        from preloop.models.db.session import get_db_session as get_db
+
+        created = await _release(world, test_user)
+        calls: list[str] = []
+
+        async def dispatch(execution_id, local):
+            other = Session(bind=db_session.bind)
+            try:
+                found = crud_security_maintenance.get_execution(
+                    other,
+                    account_id=test_user.account_id,
+                    execution_id=execution_id,
+                )
+                assert found is not None
+                assert found.status == "PENDING"
+                payload = (found.trigger_event_details or {}).get("payload") or {}
+                envelope = payload.get("security_maintenance") or {}
+                assert envelope.get("release_id") == created["id"]
+                assert envelope.get("pinned_build_ref") == "v1.2.3"
+                assert envelope.get("sbom_input_ref") == "sbom/image.spdx.json"
+                assert envelope.get("flow_id") == created["audit_flow_id"]
+                files = payload.get("workspace_files") or []
+                assert any(
+                    entry.get("path") == "sbom/image.spdx.json"
+                    and entry.get("content_base64") == SBOM_B64
+                    for entry in files
+                    if isinstance(entry, dict)
+                )
+                calls.append(str(execution_id))
+            finally:
+                other.close()
+            if len(calls) == 1:
+                raise FlowDispatchError(
+                    str(execution_id),
+                    "PENDING",
+                    RuntimeError("broker_unavailable"),
+                )
+            await local()
+
+        start = AsyncMock()
+        app = create_app()
+        app.dependency_overrides[get_db] = lambda: db_session
+        app.dependency_overrides[get_current_active_user] = lambda: test_user
+        path = f"/api/v1/security-maintenance/releases/{created['id']}/baseline/audit"
+        with (
+            patch(
+                "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+                side_effect=dispatch,
+            ),
+            patch.object(FlowTriggerService, "_start_flow_execution", start),
+            TestClient(app) as client,
+        ):
+            first = client.post(path, json={"sbom_content_base64": SBOM_B64})
+            assert first.status_code == 200
+            body = first.json()
+            execution_id = body["execution_id"]
+            assert body["status"] == "PENDING"
+            assert body["dispatch_state"] == "pending"
+            assert calls == [execution_id]
+            start.assert_not_awaited()
+
+            listed = client.get(
+                f"/api/v1/security-maintenance/releases/{created['id']}"
+            )
+            assert listed.status_code == 200
+            assert listed.json()["baseline_audit_execution_id"] == execution_id
+            assert listed.json()["baseline_dispatch_state"] == "pending"
+
+            blocked = client.post(
+                f"/api/v1/security-maintenance/releases/{created['id']}/baseline",
+                json={"audit_execution_id": execution_id},
+            )
+            assert blocked.status_code == 409
+            assert "audit_execution_not_completed" in blocked.text
+
+            omitted = client.post(
+                path, json={"sbom_content_base64": OMITTED_INVENTORY_SBOM_B64}
+            )
+            assert omitted.status_code == 409
+            assert "sbom_incomplete" in omitted.text
+            assert calls == [execution_id]
+
+            retry = client.post(path, json={"sbom_content_base64": SBOM_B64})
+            assert retry.status_code == 200
+            assert retry.json()["execution_id"] == execution_id
+            assert retry.json()["dispatch_state"] == "dispatched"
+            assert calls == [execution_id, execution_id]
+            start.assert_awaited()
+            precreated = start.call_args.kwargs["precreated_execution"]
+            assert str(precreated.id) == execution_id
+            envelope = start.call_args.args[1]["payload"]["security_maintenance"]
+            assert envelope["release_id"] == created["id"]
+
+            still_pending = client.post(
+                f"/api/v1/security-maintenance/releases/{created['id']}/baseline",
+                json={"audit_execution_id": execution_id},
+            )
+            assert still_pending.status_code == 409
+
+            app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
+            foreign = client.post(path, json={"sbom_content_base64": SBOM_B64})
+            assert foreign.status_code == 404

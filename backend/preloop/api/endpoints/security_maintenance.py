@@ -12,6 +12,7 @@ from preloop.models.db.session import get_db_session
 from preloop.schemas.security_maintenance import (
     ApprovalDecisionRequest,
     BaselineAcceptRequest,
+    BaselineAuditRequest,
     RebuiltInputsRequest,
     ResumeRequest,
     ScanIngestRequest,
@@ -121,6 +122,31 @@ def update_release(
         try:
             return await _service(db, current_user).update_release(release_id, body)
         except (CrossAccountError, InvalidTransitionError) as exc:
+            raise HTTPException(_http_status(exc), str(exc)) from exc
+
+    return run_lifecycle_endpoint(operation)
+
+
+@router.post("/releases/{release_id}/baseline/audit")
+@require_permission("edit_flows")
+def schedule_baseline_audit(
+    release_id: UUID,
+    body: BaselineAuditRequest,
+    db: Session = Depends(get_db_session),
+    current_user: models.User = Depends(get_current_active_user),
+) -> dict[str, Any]:
+    """Schedule the initial-baseline audit and dispatch it after commit."""
+
+    async def operation() -> dict[str, Any]:
+        try:
+            return await _service(db, current_user).schedule_baseline_audit(
+                release_id, body.sbom_content_base64
+            )
+        except (
+            CrossAccountError,
+            InvalidTransitionError,
+            UnsupportedReleaseError,
+        ) as exc:
             raise HTTPException(_http_status(exc), str(exc)) from exc
 
     return run_lifecycle_endpoint(operation)

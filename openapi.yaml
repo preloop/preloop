@@ -5936,6 +5936,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/security-maintenance/releases/{release_id}/baseline/audit:
+    post:
+      tags:
+      - Security Maintenance
+      summary: Schedule Baseline Audit
+      description: Schedule the initial-baseline audit and dispatch it after commit.
+      operationId: schedule_baseline_audit_api_v1_security_maintenance_releases__release_id__baseline_audit_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: release_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Release Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BaselineAuditRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Schedule Baseline Audit Api V1 Security Maintenance
+                  Releases  Release Id  Baseline Audit Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/security-maintenance/releases/{release_id}/baseline:
     post:
       tags:
@@ -13911,6 +13950,19 @@ components:
       - audit_execution_id
       title: BaselineAcceptRequest
       description: Record an initial or replacement baseline from a bound audit execution.
+    BaselineAuditRequest:
+      properties:
+        sbom_content_base64:
+          type: string
+          minLength: 1
+          title: Sbom Content Base64
+      additionalProperties: false
+      type: object
+      required:
+      - sbom_content_base64
+      title: BaselineAuditRequest
+      description: Authenticated source SBOM for the initial-baseline audit of one
+        release.
     BatchExecutionListItem:
       properties:
         model_alias:

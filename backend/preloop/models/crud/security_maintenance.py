@@ -285,8 +285,8 @@ class CRUDSecurityMaintenance:
         return None
 
     def list_reconcile_account_ids(self, db: Session) -> list[UUID]:
-        """Accounts with items that may need dispatch retry or approval follow-up."""
-        return list(
+        """Accounts with items or baseline audits that may need dispatch retry."""
+        account_ids = set(
             db.scalars(
                 select(models.SecurityMaintenanceItem.account_id)
                 .where(
@@ -302,6 +302,29 @@ class CRUDSecurityMaintenance:
                 .distinct()
             )
         )
+        for row in db.scalars(select(models.SecurityMaintenanceRelease)):
+            audit = (row.data or {}).get("baseline_audit")
+            if isinstance(audit, dict) and audit.get("dispatch_state") == "pending":
+                account_ids.add(row.account_id)
+        return list(account_ids)
+
+    def list_pending_baseline_releases(
+        self, db: Session, *, account_id: UUID, limit: int = 50
+    ) -> list[models.SecurityMaintenanceRelease]:
+        """Releases whose initial-baseline audit is committed but not dispatched."""
+        pending: list[models.SecurityMaintenanceRelease] = []
+        for row in self.list_releases(db, account_id=account_id):
+            audit = (row.data or {}).get("baseline_audit")
+            if not isinstance(audit, dict):
+                continue
+            if audit.get("dispatch_state") != "pending":
+                continue
+            if not audit.get("execution_id"):
+                continue
+            pending.append(row)
+            if len(pending) >= limit:
+                break
+        return pending
 
     def try_sweep_lock(self, db: Session, account_id: UUID) -> int | None:
         """Session-level sweep mutex. Survives commit; caller must unlock."""

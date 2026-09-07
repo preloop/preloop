@@ -93,6 +93,13 @@ class ScanIngestRequest(BaseModel):
     available: bool = True
 
 
+class BaselineAuditRequest(BaseModel):
+    """Authenticated source SBOM for the initial-baseline audit of one release."""
+
+    model_config = ConfigDict(extra="forbid")
+    sbom_content_base64: str = Field(min_length=1)
+
+
 class BaselineAcceptRequest(BaseModel):
     """Record an initial or replacement baseline from a bound audit execution."""
 

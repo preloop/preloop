@@ -70,6 +70,8 @@ RESUME_STATES = frozenset(
 )
 ENVELOPE_KEY = "security_maintenance"
 ADVERTISED_SBOM_KINDS = frozenset({"cyclonedx-json", "spdx-json"}) | set(SBOM_FORMATS)
+SUPPORTED_CYCLONEDX_SPEC_VERSIONS = frozenset({"1.2", "1.3", "1.4", "1.5", "1.6"})
+SUPPORTED_SPDX_VERSIONS = frozenset({"SPDX-2.2", "SPDX-2.3"})
 _MAX_SBOM_NESTING = 32
 DEFAULT_APPROVAL_TIMEOUT = 86400
 TERMINAL = frozenset(
@@ -139,6 +141,8 @@ class SecurityMaintenanceService:
                 else None
             ),
             "enabled": row.enabled,
+            "baseline_audit_execution_id": _baseline_audit_execution_id(row),
+            "baseline_dispatch_state": _baseline_dispatch_state(row),
         }
 
     def _serialize_item(self, row: models.SecurityMaintenanceItem) -> dict[str, Any]:
@@ -550,11 +554,14 @@ class SecurityMaintenanceService:
     async def schedule_baseline_audit(
         self, release_id: UUID, sbom_content_base64: str
     ) -> dict[str, Any]:
-        """Create a bound initial-baseline audit with controller envelope records."""
+        """Commit a bound initial-baseline audit, then dispatch it."""
+        queued_id: UUID | None = None
         async with crud_security_maintenance.locked(
             self.db, self.account_id, f"release-id:{release_id}"
         ):
             release = self._require_release(release_id)
+            if not release.enabled:
+                raise UnsupportedReleaseError("unsupported_release")
             files = [
                 {
                     "path": release.sbom_input_ref,
@@ -571,39 +578,114 @@ class SecurityMaintenanceService:
                 sbom_content_base64,
                 release.accepted_baseline_id,
             )
-            flow = self._require_flow(release.audit_flow_id, kind="audit")
-            self._assert_audit_flow(flow, self._require_project(release.project_id))
-            event = {
-                "source": "security_maintenance",
-                "type": "security_maintenance",
-                "payload": {
-                    "workspace_files": files,
-                    ENVELOPE_KEY: {
-                        "release_id": str(release.id),
-                        "kind": "baseline",
-                        "product_key": release.product_key,
-                        "release_key": release.release_key,
-                        "flow_id": str(flow.id),
-                        "pinned_build_ref": release.pinned_build_ref,
-                        "sbom_input_ref": release.sbom_input_ref,
-                        "accepted_baseline_id": (
-                            str(release.accepted_baseline_id)
-                            if release.accepted_baseline_id
-                            else None
-                        ),
-                        "input_digest": digest,
-                        "sbom_digest": _sbom_bytes_digest(sbom_content_base64),
-                    },
-                },
-            }
-            execution = crud_security_maintenance.create_execution(
-                self.db, flow_id=flow.id, event=event
+            sbom_digest = _sbom_bytes_digest(sbom_content_base64)
+            execution, should_dispatch = self._reserve_baseline_audit(
+                release,
+                files=files,
+                digest=digest,
+                sbom_digest=sbom_digest,
             )
-            return {
-                "execution_id": str(execution.id),
-                "input_digest": digest,
-                "sbom_digest": _sbom_bytes_digest(sbom_content_base64),
-            }
+            queued_id = execution.id if should_dispatch else None
+            serialized = self._serialize_baseline_audit(release, execution)
+        if queued_id is not None:
+            await self._dispatch_baseline(release_id, queued_id)
+            release = self._require_release(release_id)
+            execution = self._bound_execution(queued_id)
+            serialized = self._serialize_baseline_audit(release, execution)
+        return serialized
+
+    def _reserve_baseline_audit(
+        self,
+        release: models.SecurityMaintenanceRelease,
+        *,
+        files: list[dict[str, Any]],
+        digest: str,
+        sbom_digest: str,
+    ) -> tuple[models.FlowExecution, bool]:
+        data = dict(release.data or {})
+        audit = dict(data.get("baseline_audit") or {})
+        existing_id = audit.get("execution_id")
+        if existing_id:
+            existing = crud_security_maintenance.get_execution(
+                self.db,
+                account_id=self.account_id,
+                execution_id=UUID(str(existing_id)),
+            )
+            if existing is not None and existing.status == "PENDING":
+                if (
+                    audit.get("input_digest") == digest
+                    and audit.get("sbom_digest") == sbom_digest
+                    and audit.get("pinned_build_ref") == release.pinned_build_ref
+                    and audit.get("sbom_input_ref") == release.sbom_input_ref
+                    and audit.get("flow_id") == str(release.audit_flow_id)
+                ):
+                    retry = audit.get("dispatch_state") == "pending"
+                    return existing, retry
+                raise InvalidTransitionError("baseline_audit_in_progress")
+            if existing is not None and existing.status not in TERMINAL:
+                return existing, False
+        flow = self._require_flow(release.audit_flow_id, kind="audit")
+        project = self._require_project(release.project_id)
+        self._assert_audit_flow(flow, project)
+        event = {
+            "source": "security_maintenance",
+            "type": "security_maintenance",
+            "project_id": str(project.id),
+            "payload": {
+                "workspace_files": files,
+                ENVELOPE_KEY: {
+                    "release_id": str(release.id),
+                    "kind": "baseline",
+                    "product_key": release.product_key,
+                    "release_key": release.release_key,
+                    "flow_id": str(flow.id),
+                    "pinned_build_ref": release.pinned_build_ref,
+                    "sbom_input_ref": release.sbom_input_ref,
+                    "accepted_baseline_id": (
+                        str(release.accepted_baseline_id)
+                        if release.accepted_baseline_id
+                        else None
+                    ),
+                    "input_digest": digest,
+                    "sbom_digest": sbom_digest,
+                },
+            },
+        }
+        execution = crud_security_maintenance.create_execution(
+            self.db, flow_id=flow.id, event=event
+        )
+        data["baseline_audit"] = {
+            "execution_id": str(execution.id),
+            "dispatch_state": "pending",
+            "input_digest": digest,
+            "sbom_digest": sbom_digest,
+            "pinned_build_ref": release.pinned_build_ref,
+            "sbom_input_ref": release.sbom_input_ref,
+            "flow_id": str(flow.id),
+        }
+        self._write_release(release, data=data)
+        return execution, True
+
+    def _serialize_baseline_audit(
+        self,
+        release: models.SecurityMaintenanceRelease,
+        execution: models.FlowExecution,
+    ) -> dict[str, Any]:
+        return {
+            "execution_id": str(execution.id),
+            "status": execution.status,
+            "dispatch_state": _baseline_dispatch_state(release),
+            "input_digest": str(
+                ((release.data or {}).get("baseline_audit") or {}).get("input_digest")
+                or ""
+            ),
+            "sbom_digest": str(
+                ((release.data or {}).get("baseline_audit") or {}).get("sbom_digest")
+                or ""
+            ),
+            "flow_id": str(execution.flow_id),
+            "release_id": str(release.id),
+        }
 
     async def ingest_scan(self, request: ScanIngestRequest) -> dict[str, Any]:
         """Upsert findings onto one opted-in release. Unsupported names fail."""
@@ -995,7 +1077,23 @@ class SecurityMaintenanceService:
                     logger.exception(
                         "Security-maintenance reconcile failed for item %s", item.id
                     )
-            return {"acquired": True, "reconciled": len(items)}
+            baselines = crud_security_maintenance.list_pending_baseline_releases(
+                self.db, account_id=self.account_id, limit=SWEEP_LIMIT
+            )
+            for release in baselines:
+                audit = (release.data or {}).get("baseline_audit")
+                if not isinstance(audit, dict) or not audit.get("execution_id"):
+                    continue
+                try:
+                    await self._dispatch_baseline(
+                        release.id, UUID(str(audit["execution_id"]))
+                    )
+                except Exception:
+                    logger.exception(
+                        "Security-maintenance baseline dispatch failed for release %s",
+                        release.id,
+                    )
+            return {"acquired": True, "reconciled": len(items) + len(baselines)}
         finally:
             crud_security_maintenance.release_sweep_lock(self.db, lock)
 
@@ -1391,9 +1489,6 @@ class SecurityMaintenanceService:
         }
 
     async def _enqueue(self, execution_id: UUID, item_id: UUID, kind: str) -> None:
-        from preloop.services.flow_trigger_service import FlowTriggerService
-        from preloop.services.issue_lifecycle_worker import dispatch_lifecycle_execution
-
         async with crud_security_maintenance.locked(
             self.db, self.account_id, f"item:{item_id}"
         ):
@@ -1410,23 +1505,11 @@ class SecurityMaintenanceService:
                 return
             data["dispatch_state"] = "dispatching"
             self._write_item(item, data=data)
-        execution = self._bound_execution(execution_id)
-        flow = self._require_flow(execution.flow_id, kind="dispatch")
-
-        async def local() -> None:
-            service = FlowTriggerService(self.db)
-            await service._start_flow_execution(
-                flow,
-                execution.trigger_event_details or {},
-                None,
-                precreated_execution=execution,
-            )
-
         try:
-            await dispatch_lifecycle_execution(execution.id, local)
+            await self._start_precreated_execution(execution_id)
         except FlowDispatchError:
             logger.warning(
-                "Security-maintenance enqueue deferred for execution %s", execution.id
+                "Security-maintenance enqueue deferred for execution %s", execution_id
             )
             async with crud_security_maintenance.locked(
                 self.db, self.account_id, f"item:{item_id}"
@@ -1467,6 +1550,73 @@ class SecurityMaintenanceService:
                 outcome="dispatched",
                 execution_id=execution_id,
             )
+
+    async def _dispatch_baseline(self, release_id: UUID, execution_id: UUID) -> None:
+        async with crud_security_maintenance.locked(
+            self.db, self.account_id, f"release-id:{release_id}"
+        ):
+            release = self._require_release(release_id)
+            data = dict(release.data or {})
+            audit = dict(data.get("baseline_audit") or {})
+            if str(audit.get("execution_id") or "") != str(execution_id):
+                return
+            if audit.get("dispatch_state") != "pending":
+                return
+            audit["dispatch_state"] = "dispatching"
+            data["baseline_audit"] = audit
+            self._write_release(release, data=data)
+        try:
+            await self._start_precreated_execution(execution_id)
+        except FlowDispatchError:
+            logger.warning(
+                "Security-maintenance baseline enqueue deferred for execution %s",
+                execution_id,
+            )
+            async with crud_security_maintenance.locked(
+                self.db, self.account_id, f"release-id:{release_id}"
+            ):
+                release = self._require_release(release_id)
+                data = dict(release.data or {})
+                audit = dict(data.get("baseline_audit") or {})
+                if (
+                    str(audit.get("execution_id") or "") == str(execution_id)
+                    and audit.get("dispatch_state") == "dispatching"
+                ):
+                    audit["dispatch_state"] = "pending"
+                    data["baseline_audit"] = audit
+                    self._write_release(release, data=data)
+            return
+        async with crud_security_maintenance.locked(
+            self.db, self.account_id, f"release-id:{release_id}"
+        ):
+            release = self._require_release(release_id)
+            data = dict(release.data or {})
+            audit = dict(data.get("baseline_audit") or {})
+            if str(audit.get("execution_id") or "") != str(execution_id):
+                return
+            if audit.get("dispatch_state") != "dispatching":
+                return
+            audit["dispatch_state"] = "dispatched"
+            data["baseline_audit"] = audit
+            self._write_release(release, data=data)
+
+    async def _start_precreated_execution(self, execution_id: UUID) -> None:
+        from preloop.services.flow_trigger_service import FlowTriggerService
+        from preloop.services.issue_lifecycle_worker import dispatch_lifecycle_execution
+
+        execution = self._bound_execution(execution_id)
+        flow = self._require_flow(execution.flow_id, kind="dispatch")
+
+        async def local() -> None:
+            service = FlowTriggerService(self.db)
+            await service._start_flow_execution(
+                flow,
+                execution.trigger_event_details or {},
+                None,
+                precreated_execution=execution,
+            )
+
+        await dispatch_lifecycle_execution(execution.id, local)
 
     async def _open_approval(self, item_id: UUID) -> None:
         tool_id = None
@@ -1810,6 +1960,27 @@ class SecurityMaintenanceService:
         )
 
 
+def _baseline_audit_record(
+    release: models.SecurityMaintenanceRelease,
+) -> dict[str, Any]:
+    audit = (release.data or {}).get("baseline_audit")
+    return dict(audit) if isinstance(audit, dict) else {}
+
+
+def _baseline_audit_execution_id(
+    release: models.SecurityMaintenanceRelease,
+) -> str | None:
+    execution_id = _baseline_audit_record(release).get("execution_id")
+    return str(execution_id) if execution_id else None
+
+
+def _baseline_dispatch_state(
+    release: models.SecurityMaintenanceRelease,
+) -> str | None:
+    state = _baseline_audit_record(release).get("dispatch_state")
+    return str(state) if state else None
+
+
 def _envelope(execution: models.FlowExecution) -> dict[str, Any] | None:
     details = execution.trigger_event_details or {}
     payload = details.get("payload") if isinstance(details.get("payload"), dict) else {}
@@ -2040,10 +2211,8 @@ def _component_identity_tokens(entry: dict[str, Any]) -> set[str]:
 
 def _walk_cyclonedx_components(items: Any, *, depth: int = 0) -> list[dict[str, Any]]:
     if depth > _MAX_SBOM_NESTING:
-        raise InvalidTransitionError("sbom_incomplete")
-    if items is None:
-        return []
-    if not isinstance(items, list):
+        raise InvalidTransitionError("sbom_malformed")
+    if items is None or not isinstance(items, list):
         raise InvalidTransitionError("sbom_malformed")
     found: list[dict[str, Any]] = []
     for item in items:
@@ -2057,7 +2226,19 @@ def _walk_cyclonedx_components(items: Any, *, depth: int = 0) -> list[dict[str, 
     return found
 
 
+def _require_explicit_inventory(document: dict[str, Any], key: str) -> list[Any]:
+    if key not in document:
+        raise InvalidTransitionError("sbom_incomplete")
+    value = document[key]
+    if value is None:
+        raise InvalidTransitionError("sbom_incomplete")
+    if not isinstance(value, list):
+        raise InvalidTransitionError("sbom_malformed")
+    return value
+
+
 def _cyclonedx_entries(document: dict[str, Any]) -> list[dict[str, Any]]:
+    components = _require_explicit_inventory(document, "components")
     entries: list[dict[str, Any]] = []
     metadata = document.get("metadata")
     if metadata is not None and not isinstance(metadata, dict):
@@ -2069,17 +2250,12 @@ def _cyclonedx_entries(document: dict[str, Any]) -> list[dict[str, Any]]:
         entries.append(root)
         if "components" in root:
             entries.extend(_walk_cyclonedx_components(root.get("components")))
-    if "components" in document:
-        entries.extend(_walk_cyclonedx_components(document.get("components")))
+    entries.extend(_walk_cyclonedx_components(components))
     return entries
 
 
 def _spdx_entries(document: dict[str, Any]) -> list[dict[str, Any]]:
-    packages = document.get("packages")
-    if packages is None:
-        return []
-    if not isinstance(packages, list):
-        raise InvalidTransitionError("sbom_malformed")
+    packages = _require_explicit_inventory(document, "packages")
     entries: list[dict[str, Any]] = []
     for item in packages:
         if not isinstance(item, dict):
@@ -2090,9 +2266,30 @@ def _spdx_entries(document: dict[str, Any]) -> list[dict[str, Any]]:
     return entries
 
 
+def _spec_version_token(value: Any) -> str:
+    if isinstance(value, bool) or value is None:
+        return ""
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _require_supported_sbom_version(document: dict[str, Any], kind: str) -> None:
+    if kind == "cyclonedx-json":
+        token = _spec_version_token(document.get("specVersion"))
+        if token not in SUPPORTED_CYCLONEDX_SPEC_VERSIONS:
+            raise InvalidTransitionError("sbom_unsupported")
+        return
+    token = _spec_version_token(document.get("spdxVersion"))
+    if token not in SUPPORTED_SPDX_VERSIONS:
+        raise InvalidTransitionError("sbom_unsupported")
+
+
 def _detect_sbom_kind(document: dict[str, Any]) -> str:
     has_cyclonedx = str(document.get("bomFormat") or "").strip().lower() == "cyclonedx"
-    has_spdx = bool(str(document.get("spdxVersion") or "").strip())
+    has_spdx = bool(_spec_version_token(document.get("spdxVersion")))
     if has_cyclonedx and has_spdx:
         raise InvalidTransitionError("sbom_ambiguous")
     if has_cyclonedx:
@@ -2105,7 +2302,11 @@ def _detect_sbom_kind(document: dict[str, Any]) -> str:
 def _parse_supplied_sbom(
     content_base64: str, *, allowed_kinds: Iterable[str] | None
 ) -> set[str]:
-    """Parse advertised JSON SBOM bytes and return component identity tokens."""
+    """Parse advertised JSON SBOM bytes and return component identity tokens.
+
+    This is inventory integrity for removal and baseline input binding, not
+    full CycloneDX or SPDX schema validation.
+    """
     try:
         raw = base64.b64decode(content_base64, validate=True)
     except Exception as exc:
@@ -2124,6 +2325,7 @@ def _parse_supplied_sbom(
     allowed = _allowed_sbom_kinds(allowed_kinds)
     if kind not in allowed:
         raise InvalidTransitionError("sbom_unsupported")
+    _require_supported_sbom_version(document, kind)
     entries = (
         _cyclonedx_entries(document)
         if kind == "cyclonedx-json"

@@ -15,7 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   approval routes. Recheck removal is derived from the submitted SBOM bytes
   (advertised CycloneDX/SPDX JSON), not from model inventory omission.
   Baseline acceptance requires exact `release_id` and the digest of the
-  supplied SBOM bytes on the controller envelope.
+  supplied SBOM bytes on the controller envelope. The initial-baseline audit
+  is scheduled through
+  `POST /api/v1/security-maintenance/releases/{release_id}/baseline/audit`,
+  which commits the execution then dispatches it through the existing flow
+  trigger path.
+  Omitted or null SBOM component lists, unsupported format versions, and
+  malformed nesting cannot prove component removal.
 
 ### Added
 

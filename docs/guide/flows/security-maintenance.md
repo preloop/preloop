@@ -50,6 +50,35 @@ The implementation flow must use isolated publication and `verification.mode:
 gate`. The audit/recheck flow must not publish, and should keep an empty MCP
 tool list. Model and input-kind allow lists, when set, are enforced.
 
+## Initial baseline
+
+Schedule the source SBOM audit through the authenticated inventory API, then
+accept only a completed bound execution:
+
+```http
+POST /api/v1/security-maintenance/releases/{release_id}/baseline/audit
+{"sbom_content_base64": "<source CycloneDX or SPDX JSON>"}
+```
+
+That request pins the saved audit flow, `pinned_build_ref`, and
+`sbom_input_ref`, writes a `PENDING` execution with the controller envelope,
+commits, then dispatches through the existing flow trigger path. `GET
+/api/v1/security-maintenance/releases/{release_id}` shows
+`baseline_audit_execution_id` and `baseline_dispatch_state`. A dispatch
+failure leaves the execution `PENDING`; the same `POST` with the same SBOM
+bytes retries without creating a second row. `PENDING` or failed executions
+cannot be accepted.
+
+After the audit execution is `SUCCEEDED` and evidence is stored:
+
+```http
+POST /api/v1/security-maintenance/releases/{release_id}/baseline
+{"audit_execution_id": "<execution-uuid>"}
+```
+
+Acceptance still requires the envelope `release_id` and the digest of the
+supplied SBOM bytes. Filename and pin matches alone are not enough.
+
 ## What happens
 
 1. A trusted scan ingest names findings. The same identity updates the existing
@@ -68,15 +97,19 @@ tool list. Model and input-kind allow lists, when set, are enforced.
    (`POST /api/v1/security-maintenance/items/{id}/build`). Reusing the original
    SBOM bytes is rejected. The controller parses the submitted CycloneDX or
    SPDX JSON and derives component identities from those bytes; a model
-   inventory that omits a still-present target cannot prove removal. Malformed,
-   ambiguous, incomplete, or unadvertised SBOM input is rejected. A recheck
-   execution then checks out the published SHA against that new inventory. CRA
-   results are validated by the contracts layer. Missing evidence, unknown
-   `preloop.cra.*` schemas, incomplete scans, and unscreened components cannot
-   prove the advisory is gone. Checkout proof is the controller `HEAD.txt` in
-   the evidence pack, not `payload.sha`. Initial baseline acceptance requires
-   the audit execution's controller envelope `release_id` plus the digest of
-   the supplied SBOM bytes; matching filename and pin alone is not enough.
+   inventory that omits a still-present target cannot prove removal. Removal
+   requires a supported CycloneDX JSON (`specVersion` 1.2–1.6) or SPDX JSON
+   (`spdxVersion` SPDX-2.2 or SPDX-2.3) document with an explicit component
+   list (`components` or `packages`). Omitted or null lists, unsupported
+   versions, and malformed nesting are rejected; an explicit empty list is
+   a valid empty inventory. This is inventory integrity, not full SBOM schema
+   validation. Malformed, ambiguous, incomplete, or unadvertised SBOM input
+   is rejected. A recheck execution then checks out the published SHA against
+   that new inventory. CRA results are validated by the contracts layer.
+   Missing evidence, unknown `preloop.cra.*` schemas, incomplete scans, and
+   unscreened components cannot prove the advisory is gone. Checkout proof is
+   the controller `HEAD.txt` in the evidence pack, not `payload.sha`. Initial
+   baseline acceptance requires the audit execution scheduled above.
 5. Only an accepted recheck writes a new baseline. Prior decisions stay
    append-only. Resume retries without rewriting history.
 
