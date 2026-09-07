@@ -265,6 +265,9 @@ describe('ListTable', () => {
       'th.col-name .col-resize'
     ) as HTMLElement;
     expect(handle.getAttribute('role')).to.equal('separator');
+    expect(handle.getAttribute('aria-valuemin')).to.equal('48');
+    expect(handle.getAttribute('aria-valuemax')).to.equal('2000');
+    expect(handle.getAttribute('aria-valuenow')).to.equal('120');
     handle.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })
     );
@@ -273,6 +276,37 @@ describe('ListTable', () => {
     const name = el.shadowRoot!.querySelector('th.col-name') as HTMLElement;
     expect(name.style.width).to.equal('136px');
     expect(readTablePreferences('test-list')?.columnSizing?.name).to.equal(136);
+    expect(
+      el
+        .shadowRoot!.querySelector('th.col-name .col-resize')!
+        .getAttribute('aria-valuenow')
+    ).to.equal('136');
+  });
+
+  it('does not write column sizing until a pointer drag ends', async () => {
+    const el = await render();
+    el.table.startResize(
+      'name',
+      new MouseEvent('mousedown', { clientX: 120, bubbles: true })
+    );
+    await el.updateComplete;
+    expect(el.table.resizingColumn).to.equal('name');
+
+    document.dispatchEvent(
+      new MouseEvent('mousemove', { clientX: 180, bubbles: true })
+    );
+    await el.updateComplete;
+    expect(el.table.widthOfColumn('name')).to.equal(180);
+    expect(readTablePreferences('test-list')?.columnSizing?.name).to.be
+      .undefined;
+
+    document.dispatchEvent(
+      new MouseEvent('mouseup', { clientX: 180, bubbles: true })
+    );
+    await el.updateComplete;
+
+    expect(el.table.resizingColumn).to.be.null;
+    expect(readTablePreferences('test-list')?.columnSizing?.name).to.equal(180);
   });
 
   it('offers no resize handle on a column that absorbs the leftover width', async () => {

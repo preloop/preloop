@@ -2,7 +2,13 @@ import { html, nothing } from 'lit';
 import type { TemplateResult } from 'lit';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import type { RowData } from '@tanstack/table-core';
-import type { ListTable, ListHeader } from './list-table';
+import {
+  DEFAULT_COLUMN_WIDTH,
+  MAX_COLUMN_WIDTH,
+  MIN_COLUMN_WIDTH,
+  type ListHeader,
+  type ListTable,
+} from './list-table';
 
 /** How far one arrow key moves a resize handle. */
 const KEYBOARD_RESIZE_STEP = 16;
@@ -81,6 +87,13 @@ function renderListHeader<TRow extends RowData>(
               role="separator"
               tabindex="0"
               aria-orientation="vertical"
+              aria-valuemin=${MIN_COLUMN_WIDTH}
+              aria-valuemax=${MAX_COLUMN_WIDTH}
+              aria-valuenow=${
+                header.width ??
+                table.widthOfColumn(column.id) ??
+                DEFAULT_COLUMN_WIDTH
+              }
               aria-label=${`Resize the ${column.header} column`}
               @mousedown=${(event: MouseEvent) =>
                 table.startResize(column.id, event)}

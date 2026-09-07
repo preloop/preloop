@@ -119,10 +119,16 @@ export interface ListTableOptions<TRow extends RowData> {
 }
 
 /** Nothing readable is narrower than this, drag or keyboard. */
-const MIN_COLUMN_WIDTH = 48;
+export const MIN_COLUMN_WIDTH = 48;
+
+/**
+ * High bound for the resize handle's ARIA slider. The table does not cap
+ * how far a drag can go; this is only so the separator reports a range.
+ */
+export const MAX_COLUMN_WIDTH = 2000;
 
 /** What a column with no declared width starts from when it is nudged. */
-const DEFAULT_COLUMN_WIDTH = 150;
+export const DEFAULT_COLUMN_WIDTH = 150;
 
 const DEFAULT_PERSISTED: PersistedSlice[] = [
   'columnVisibility',
@@ -152,6 +158,13 @@ const numberOf = (value: unknown): number => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
 };
+
+/** True while tanstack's resize state names an active pointer-drag column. */
+const isDraggingColumn = (value: unknown): boolean =>
+  typeof value === 'object' &&
+  value !== null &&
+  typeof (value as { isResizingColumn?: unknown }).isResizingColumn ===
+    'string';
 
 /**
  * Drives one list's table model and keeps its host painting.
@@ -445,8 +458,17 @@ export class ListTable<TRow extends RowData> implements ReactiveController {
     this.tableState = { ...this.tableState, [slice]: next };
     const state = this.tableState;
     this.table.setOptions((options) => ({ ...options, state }));
-    // The drag itself is transient: only what it settles on is remembered.
-    if (slice !== 'columnResizing') this.save();
+    // columnResizeMode is 'onChange', so a pointer drag fires sizing on
+    // every move. Preview that live, but write localStorage only when the
+    // drag ends (columnResizing clears) or when there is no drag at all —
+    // keyboard resize never sets resizingColumn, so it still persists.
+    if (slice === 'columnResizing') {
+      const wasDragging = isDraggingColumn(previous);
+      const stillDragging = isDraggingColumn(next);
+      if (wasDragging && !stillDragging) this.save();
+    } else if (slice !== 'columnSizing' || this.resizingColumn === null) {
+      this.save();
+    }
     this.host.requestUpdate();
   }
 
