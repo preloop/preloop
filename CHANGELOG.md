@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Security-maintenance repair: platform ApprovalService votes and console
-  resolution, commit-before-enqueue dispatch, trigger-delivered SBOM/baseline
-  inputs, CRUD-only persistence, and managed-credential denial for human
-  decisions.
+- Security-maintenance repair: rebuilt SBOM ingest after approval, controller
+  checkout `HEAD.txt`, per-component screening, background reconcile without
+  GET, per-request approval policy, and managed-credential denial on console
+  approval routes.
 
 ### Added
 

@@ -179,6 +179,28 @@ class CRUDSecurityMaintenance:
         db.flush()
         return row
 
+    def validate_release_workflow(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        workflow_id: UUID,
+        owner_user_id: UUID | None,
+        escalation_user_ids: list[UUID],
+        timeout_seconds: int,
+    ) -> models.ApprovalWorkflow:
+        """Require a configured workflow. Never mutate shared workflow rows."""
+        workflow = self.get_approval_workflow(
+            db, account_id=account_id, workflow_id=workflow_id
+        )
+        if workflow is None:
+            raise ValueError("approval_workflow_unavailable")
+        approvers = list(workflow.approver_user_ids or [])
+        if owner_user_id is not None and owner_user_id not in approvers:
+            raise ValueError("approval_owner_not_in_workflow")
+        _ = (escalation_user_ids, timeout_seconds)
+        return workflow
+
     def apply_workflow_policy(
         self,
         db: Session,
@@ -189,24 +211,15 @@ class CRUDSecurityMaintenance:
         escalation_user_ids: list[UUID],
         timeout_seconds: int,
     ) -> models.ApprovalWorkflow:
-        """Persist owner, escalation, and timeout onto the platform workflow."""
-        workflow = self.get_approval_workflow(
-            db, account_id=account_id, workflow_id=workflow_id
+        """Back-compat alias. Shared workflow rows are not written."""
+        return self.validate_release_workflow(
+            db,
+            account_id=account_id,
+            workflow_id=workflow_id,
+            owner_user_id=owner_user_id,
+            escalation_user_ids=escalation_user_ids,
+            timeout_seconds=timeout_seconds,
         )
-        if workflow is None:
-            raise ValueError("approval_workflow_unavailable")
-        approvers = list(workflow.approver_user_ids or [])
-        if owner_user_id is not None and owner_user_id not in approvers:
-            approvers.append(owner_user_id)
-        workflow.approver_user_ids = approvers or None
-        escalation = list(workflow.escalation_user_ids or [])
-        for user_id in escalation_user_ids:
-            if user_id not in escalation:
-                escalation.append(user_id)
-        workflow.escalation_user_ids = escalation or None
-        workflow.timeout_seconds = timeout_seconds
-        db.flush()
-        return workflow
 
     def update_release(
         self,
@@ -253,8 +266,59 @@ class CRUDSecurityMaintenance:
             )
         )
 
+    def get_pending_maintenance_approval(
+        self, db: Session, *, account_id: UUID, item_id: UUID
+    ) -> models.ApprovalRequest | None:
+        """Find an unbound pending platform request for this work item."""
+        rows = db.scalars(
+            select(models.ApprovalRequest).where(
+                models.ApprovalRequest.account_id == account_id,
+                models.ApprovalRequest.tool_name == "security_maintenance",
+                models.ApprovalRequest.status == "pending",
+            )
+        )
+        item_key = str(item_id)
+        for row in rows:
+            args = row.tool_args if isinstance(row.tool_args, dict) else {}
+            if str(args.get("item_id") or "") == item_key:
+                return row
+        return None
+
+    def list_reconcile_account_ids(self, db: Session) -> list[UUID]:
+        """Accounts with items that may need dispatch retry or approval follow-up."""
+        return list(
+            db.scalars(
+                select(models.SecurityMaintenanceItem.account_id)
+                .where(
+                    models.SecurityMaintenanceItem.state.in_(
+                        (
+                            "tests_passed",
+                            "approval_pending",
+                            "remediation_pending",
+                            "reaudit_pending",
+                        )
+                    )
+                )
+                .distinct()
+            )
+        )
+
+    def try_sweep_lock(self, db: Session, account_id: UUID) -> int | None:
+        """Session-level sweep mutex. Survives commit; caller must unlock."""
+        key = int.from_bytes(
+            sha256(f"sm:sweep:{account_id}".encode()).digest()[:8],
+            "big",
+            signed=True,
+        )
+        locked = db.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": key})
+        return key if locked else None
+
+    def release_sweep_lock(self, db: Session, key: int) -> None:
+        """Release the session-level sweep mutex."""
+        db.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+
     def list_reconcile_items(
-        self, db: Session, *, account_id: UUID
+        self, db: Session, *, account_id: UUID, limit: int = 50
     ) -> list[models.SecurityMaintenanceItem]:
         """Items that may need expiry, enqueue retry, or approval follow-up."""
         return list(
@@ -272,6 +336,7 @@ class CRUDSecurityMaintenance:
                     ),
                 )
                 .order_by(models.SecurityMaintenanceItem.created_at)
+                .limit(limit)
             )
         )
 

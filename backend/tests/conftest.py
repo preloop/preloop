@@ -1,36 +1,24 @@
 """Pytest configuration file for Preloop tests."""
 
 from typing import Generator
-import importlib.util
 import inspect
+
+import pytest
 import os
-from pathlib import Path
+import fastapi
+from dotenv import load_dotenv
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
-os.environ.setdefault("PRELOOP_DISABLE_TELEMETRY", "true")
+from unittest.mock import patch, MagicMock
 
-_overlay = Path(__file__).with_name("conftest_overlay.py")
-if _overlay.is_file():
-    _spec = importlib.util.spec_from_file_location("conftest_overlay", _overlay)
-    if _spec is not None and _spec.loader is not None:
-        _module = importlib.util.module_from_spec(_spec)
-        _spec.loader.exec_module(_module)
-        _module.install_cra_overlay()
+from fastapi.testclient import TestClient
 
-import pytest  # noqa: E402
-import fastapi  # noqa: E402
-from dotenv import load_dotenv  # noqa: E402
-from sqlalchemy import create_engine  # noqa: E402
-from sqlalchemy.orm import Session  # noqa: E402
-
-from unittest.mock import patch, MagicMock  # noqa: E402
-
-from fastapi.testclient import TestClient  # noqa: E402
-
-from preloop.api.app import create_app  # noqa: E402
-from preloop.api.auth import get_current_active_user  # noqa: E402
-from preloop.models.db.session import get_db_session as get_db  # noqa: E402
-from preloop.models.models.user import User  # noqa: E402
-from preloop.models.crud import crud_account, crud_user  # noqa: E402
+from preloop.api.app import create_app
+from preloop.api.auth import get_current_active_user
+from preloop.models.db.session import get_db_session as get_db
+from preloop.models.models.user import User
+from preloop.models.crud import crud_account, crud_user
 
 
 async def maybe_await(result):

@@ -101,6 +101,23 @@ class BaselineAcceptRequest(BaseModel):
     evidence_ref: dict[str, Any] = Field(default_factory=dict)
 
 
+class RebuiltInputsRequest(BaseModel):
+    """Authenticated rebuilt SBOM for the published commit. Not an automatic rebuild."""
+
+    model_config = ConfigDict(extra="forbid")
+    published_sha: str = Field(min_length=40, max_length=40)
+    sbom_content_base64: str = Field(min_length=1)
+    pinned_build_ref: str | None = Field(default=None, min_length=1, max_length=512)
+
+    @field_validator("published_sha")
+    @classmethod
+    def _hex40(cls, value: str) -> str:
+        token = value.strip().lower()
+        if len(token) != 40 or any(ch not in "0123456789abcdef" for ch in token):
+            raise ValueError("published_sha_must_be_hex40")
+        return token
+
+
 class ApprovalDecisionRequest(BaseModel):
     """Human decision. Agent-asserted approval in result JSON is ignored."""
 
@@ -122,6 +139,7 @@ ItemState = Literal[
     "tests_failed",
     "tests_passed",
     "approval_pending",
+    "awaiting_build",
     "held",
     "escalated",
     "reaudit_pending",

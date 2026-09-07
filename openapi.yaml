@@ -6054,7 +6054,8 @@ paths:
       tags:
       - Security Maintenance
       summary: Get Item
-      description: Return one work item after an idempotent reconcile pass.
+      description: Return one work item. Reconciliation runs in the background, not
+        here.
       operationId: get_item_api_v1_security_maintenance_items__item_id__get
       security:
       - bearerAuth: []
@@ -6266,6 +6267,46 @@ paths:
                 additionalProperties: true
                 title: Response Resume Item Api V1 Security Maintenance Items  Item
                   Id  Resume Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/security-maintenance/items/{item_id}/build:
+    post:
+      tags:
+      - Security Maintenance
+      summary: Submit Rebuilt Inputs
+      description: Submit a rebuilt SBOM for the published commit. The controller
+        does not rebuild.
+      operationId: submit_rebuilt_inputs_api_v1_security_maintenance_items__item_id__build_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RebuiltInputsRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Submit Rebuilt Inputs Api V1 Security Maintenance
+                  Items  Item Id  Build Post
         '422':
           description: Validation Error
           content:
@@ -20404,6 +20445,32 @@ components:
       - issue_revision
       title: ReadyRequest
       description: The reviewer approves one exact issue revision.
+    RebuiltInputsRequest:
+      properties:
+        published_sha:
+          type: string
+          maxLength: 40
+          minLength: 40
+          title: Published Sha
+        sbom_content_base64:
+          type: string
+          minLength: 1
+          title: Sbom Content Base64
+        pinned_build_ref:
+          anyOf:
+          - type: string
+            maxLength: 512
+            minLength: 1
+          - type: 'null'
+          title: Pinned Build Ref
+      additionalProperties: false
+      type: object
+      required:
+      - published_sha
+      - sbom_content_base64
+      title: RebuiltInputsRequest
+      description: Authenticated rebuilt SBOM for the published commit. Not an automatic
+        rebuild.
     RefreshRequest:
       properties:
         refresh_token:

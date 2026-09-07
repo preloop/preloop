@@ -12,6 +12,7 @@ from preloop.models.db.session import get_db_session
 from preloop.schemas.security_maintenance import (
     ApprovalDecisionRequest,
     BaselineAcceptRequest,
+    RebuiltInputsRequest,
     ResumeRequest,
     ScanIngestRequest,
     SupportedReleaseCreate,
@@ -190,15 +191,11 @@ def get_item(
     db: Session = Depends(get_db_session),
     current_user: models.User = Depends(get_current_active_user),
 ) -> dict[str, Any]:
-    """Return one work item after an idempotent reconcile pass."""
-
-    async def operation() -> dict[str, Any]:
-        try:
-            return await _service(db, current_user).reconcile_item(item_id)
-        except CrossAccountError as exc:
-            raise HTTPException(404, str(exc)) from exc
-
-    return run_lifecycle_endpoint(operation)
+    """Return one work item. Reconciliation runs in the background, not here."""
+    try:
+        return _service(db, current_user).get_item(item_id)
+    except CrossAccountError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @router.get("/items/{item_id}/decisions")
@@ -305,6 +302,32 @@ def resume_item(
         try:
             _reject_managed_credentials(current_user)
             return await _service(db, current_user).resume(
+                item_id, body, actor_user_id=current_user.id
+            )
+        except (
+            CrossAccountError,
+            InvalidTransitionError,
+            SourceOutageError,
+        ) as exc:
+            raise HTTPException(_http_status(exc), str(exc)) from exc
+
+    return run_lifecycle_endpoint(operation)
+
+
+@router.post("/items/{item_id}/build")
+@require_permission("edit_flows")
+def submit_rebuilt_inputs(
+    item_id: UUID,
+    body: RebuiltInputsRequest,
+    db: Session = Depends(get_db_session),
+    current_user: models.User = Depends(get_current_active_user),
+) -> dict[str, Any]:
+    """Submit a rebuilt SBOM for the published commit. The controller does not rebuild."""
+
+    async def operation() -> dict[str, Any]:
+        try:
+            _reject_managed_credentials(current_user)
+            return await _service(db, current_user).submit_rebuilt_inputs(
                 item_id, body, actor_user_id=current_user.id
             )
         except (

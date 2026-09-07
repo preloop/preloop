@@ -9,7 +9,9 @@ publication, and verification helpers. It does not vendor the CRA validator.
 from __future__ import annotations
 
 import hashlib
+import io
 import re
+import tarfile
 from dataclasses import dataclass, field
 from json import dumps
 from typing import Any, Sequence
@@ -50,6 +52,11 @@ from preloop.utils.verification_selection import evaluate_from_raw
 HEX40 = re.compile(r"[0-9a-f]{40}")
 EVIDENCE_KIND = "evidence"
 SCREENING_SCHEMAS = frozenset({SCHEMA_VULNSCAN_V1, SCHEMA_RELEASEAUDIT_V1})
+HEAD_TXT_MEMBERS = (
+    "HEAD.txt",
+    "evidence/HEAD.txt",
+    "workspace/evidence/HEAD.txt",
+)
 
 
 class SecurityMaintenanceError(ValueError):
@@ -341,6 +348,9 @@ def audit_acceptance(
     advisory_id: str | None = None,
     platform_approvals: Sequence[Any] | None = None,
     require_finding_absent: bool = False,
+    db: Session | None = None,
+    account_id: UUID | None = None,
+    rebuilt_omits_target: bool = False,
 ) -> AuditAcceptance:
     """Fail closed unless the contracts validator and screening both succeed.
 
@@ -349,6 +359,13 @@ def audit_acceptance(
     required. Unknown ``preloop.cra.*`` schemas are unsupported.
     """
     digest = result_digest(result)
+    if str(getattr(execution, "status", "") or "") != "SUCCEEDED":
+        return AuditAcceptance(
+            accepted=False,
+            verdict="incomplete",
+            reason="audit_execution_not_completed",
+            digest=digest,
+        )
     if not evidence.available:
         return AuditAcceptance(
             accepted=False,
@@ -356,7 +373,9 @@ def audit_acceptance(
             reason="missing_evidence",
             digest=digest,
         )
-    checkout = controller_checkout_sha(execution, flow=flow)
+    checkout = controller_checkout_sha(
+        execution, flow=flow, db=db, account_id=account_id
+    )
     if candidate_revision:
         if not _hex40(checkout):
             return AuditAcceptance(
@@ -413,6 +432,7 @@ def audit_acceptance(
         payload,
         schema_id=schema_id,
         component_id=component_id,
+        rebuilt_omits_target=rebuilt_omits_target,
     )
     finding_absent = _advisory_absent_from_findings(payload, advisory_id)
     if require_finding_absent:
@@ -462,20 +482,40 @@ def controller_checkout_sha(
     execution: models.FlowExecution,
     *,
     flow: models.Flow | None = None,
+    db: Session | None = None,
+    account_id: UUID | None = None,
 ) -> str | None:
-    """SHA the control plane checked out. Agent result fields are ignored."""
-    details = execution.trigger_event_details or {}
-    payload = details.get("payload") if isinstance(details.get("payload"), dict) else {}
-    for candidate in (
-        payload.get("sha"),
-        payload.get("after"),
-        details.get("sha"),
-    ):
-        if _hex40(candidate if isinstance(candidate, str) else None):
-            return str(candidate).strip().lower()
-    publication = publication_ref_from_execution(execution, flow=flow)
-    if publication.available and _hex40(publication.sha):
-        return publication.sha
+    """SHA recorded by the controller checkout, never trigger payload.sha."""
+    del flow
+    if db is None or account_id is None:
+        return None
+    try:
+        archive, _receipt = load_evidence(
+            db, account_id=account_id, execution=execution
+        )
+    except EvidenceUnavailableError:
+        return None
+    return _head_txt_from_archive(archive)
+
+
+def _head_txt_from_archive(archive: bytes) -> str | None:
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+            names = {
+                member.name: member for member in tar.getmembers() if member.isfile()
+            }
+            for path in HEAD_TXT_MEMBERS:
+                member = names.get(path)
+                if member is None or member.size > 64:
+                    continue
+                source = tar.extractfile(member)
+                if source is None:
+                    continue
+                text = source.read().decode("ascii", errors="ignore").strip().lower()
+                if _hex40(text):
+                    return text
+    except (tarfile.TarError, OSError, UnicodeDecodeError):
+        return None
     return None
 
 
@@ -603,39 +643,66 @@ def _target_component_screened(
     *,
     schema_id: str,
     component_id: str | None,
+    rebuilt_omits_target: bool = False,
 ) -> tuple[bool, str]:
     if schema_id not in SCREENING_SCHEMAS:
         return False, "component_not_screened"
     inventory = _inventory_from_payload(payload, schema_id)
     if not isinstance(inventory, dict):
         return False, "component_not_screened"
-    matchable = inventory.get("matchable")
+    listings = inventory.get("components_list")
+    if not isinstance(listings, list) or not listings:
+        return False, "component_identity_missing"
+    names: set[str] = set()
+    targets: list[dict[str, Any]] = []
+    for item in listings:
+        if not isinstance(item, dict):
+            continue
+        identities = {
+            str(item.get("id") or "").strip(),
+            str(item.get("purl") or "").strip(),
+            str(item.get("name") or "").strip(),
+        }
+        identities.discard("")
+        names.update(identities)
+        if component_id and component_id in identities:
+            targets.append(item)
+    if component_id and component_id not in names:
+        if rebuilt_omits_target:
+            return True, "component_removed_from_rebuild"
+        return False, "component_not_in_inventory"
     unmatchable = inventory.get("unmatchable")
     if type(unmatchable) is int and unmatchable > 0:
         return False, "component_screening_incomplete"
+    if component_id:
+        if not targets:
+            return False, "component_not_in_inventory"
+        for target in targets:
+            if _component_sources_screenable(target):
+                return True, "component_screened"
+        return False, "component_source_coverage_incomplete"
+    matchable = inventory.get("matchable")
     if type(matchable) is not int or matchable <= 0:
         return False, "component_not_screened"
-    matrix = inventory.get("source_matrix")
-    if not isinstance(matrix, dict):
-        return False, "component_not_screened"
-    screenable = 0
-    for key in DATABASE_SOURCES:
-        entry = matrix.get(key)
-        if isinstance(entry, dict) and type(entry.get("screenable")) is int:
-            screenable += entry["screenable"]
-    if screenable <= 0:
-        return False, "component_not_screened"
-    if component_id:
-        listings = inventory.get("components_list")
-        if isinstance(listings, list) and listings:
-            names = {
-                str(item.get("id") or item.get("purl") or item.get("name") or "")
-                for item in listings
-                if isinstance(item, dict)
-            }
-            if component_id not in names:
-                return False, "component_not_screened"
+    if not any(
+        _component_sources_screenable(item)
+        for item in listings
+        if isinstance(item, dict)
+    ):
+        return False, "component_source_coverage_incomplete"
     return True, "component_screened"
+
+
+def _component_sources_screenable(component: dict[str, Any]) -> bool:
+    sources = component.get("sources") or component.get("source_matrix")
+    if not isinstance(sources, dict) or not sources:
+        return False
+    for key in DATABASE_SOURCES:
+        entry = sources.get(key)
+        if isinstance(entry, dict) and type(entry.get("screenable")) is int:
+            if entry["screenable"] > 0:
+                return True
+    return False
 
 
 def _inventory_from_payload(

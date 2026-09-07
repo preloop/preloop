@@ -13,10 +13,13 @@ the API, not by pasting a model-output URL. Scan ingest must name an existing
 tracker issue so implementation receives a real issue body, number, and
 repository. The trigger payload carries the pinned build, SBOM bytes or path,
 prior baseline result, and published SHA on the existing workspace/trigger
-contracts. Recheck checks out the verified published commit. Human decisions
-go through the platform approval workflow (owner, escalation, quorum, expiry);
-approving the linked request in the console advances the item without a second
-maintenance-specific call.
+contracts. After human approval, a rebuilt SBOM for that published commit
+must be submitted (`POST /items/{id}/build`); the controller does not rebuild
+the product. Recheck then checks out the verified published commit. Human
+decisions go through the platform approval workflow (owner, escalation, quorum,
+expiry); approving the linked request in the console advances the item without
+a second maintenance-specific call. Background reconciliation retries dispatch
+and expired approvals without requiring a GET. GET returns the stored item.
 
 ## Opt in a release
 
@@ -59,11 +62,15 @@ tool list. Model and input-kind allow lists, when set, are enforced.
 3. Tests failing holds the item. Tests passing opens a platform approval
    request. Agent `result.approved` is ignored. An execution API key cannot
    approve its own repair. Denied or expired approvals hold or escalate; they
-   never auto-release.
-4. After a human approval, a recheck execution checks out the published SHA.
-   CRA results are validated by the contracts worker. Missing evidence,
-   unknown `preloop.cra.*` schemas, incomplete scans, and unscreened
-   components cannot prove the advisory is gone.
+   never auto-release. The approval owner must already be on the selected
+   workflow; maintenance does not rewrite shared workflow rows.
+4. After a human approval, submit a rebuilt SBOM bound to the published SHA
+   (`POST /api/v1/security-maintenance/items/{id}/build`). Reusing the original
+   SBOM bytes is rejected. A recheck execution then checks out the published
+   SHA against that new inventory. CRA results are validated by the contracts
+   layer. Missing evidence, unknown `preloop.cra.*` schemas, incomplete scans,
+   and unscreened components cannot prove the advisory is gone. Checkout proof
+   is the controller `HEAD.txt` in the evidence pack, not `payload.sha`.
 5. Only an accepted recheck writes a new baseline. Prior decisions stay
    append-only. Resume retries without rewriting history.
 

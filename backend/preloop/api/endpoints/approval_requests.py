@@ -42,6 +42,17 @@ logger = logging.getLogger(__name__)
 AUTHENTICATED_DECISION_CHANNEL = "console"
 
 
+def _reject_managed_maintenance_decision(
+    current_user: User, approval_request: ApprovalRequest
+) -> None:
+    """Deny managed credentials before a maintenance ApprovalService decision."""
+    if getattr(approval_request, "tool_name", None) != "security_maintenance":
+        return
+    from preloop.api.endpoints.security_maintenance import _reject_managed_credentials
+
+    _reject_managed_credentials(current_user)
+
+
 async def _advance_security_maintenance(db: Session, updated: ApprovalRequest) -> None:
     """Let a console/token ApprovalService decision advance a maintenance item."""
     if getattr(updated, "tool_name", None) != "security_maintenance":
@@ -307,6 +318,8 @@ async def approve_request(
                 detail=f"Request already {approval_request.status}",
             )
 
+        _reject_managed_maintenance_decision(current_user, approval_request)
+
         # Approve (pass user_id for quorum tracking)
         updated = await approval_service.approve_request(
             request_id,
@@ -377,6 +390,8 @@ async def decline_request(
                 status_code=400,
                 detail=f"Request already {approval_request.status}",
             )
+
+        _reject_managed_maintenance_decision(current_user, approval_request)
 
         # Decline (pass user_id for quorum tracking)
         updated = await approval_service.decline_request(
@@ -451,6 +466,8 @@ async def decide_request(
                 status_code=400,
                 detail=f"Request already {approval_request.status}",
             )
+
+        _reject_managed_maintenance_decision(current_user, approval_request)
 
         # Approve or decline based on decision (pass user_id for quorum tracking)
         if decision.approved:
@@ -553,6 +570,13 @@ async def decide_requests_batch(
                     status=approval_request.status,
                     error=f"Request already {approval_request.status}",
                 )
+            )
+            continue
+        try:
+            _reject_managed_maintenance_decision(current_user, approval_request)
+        except HTTPException as exc:
+            results.append(
+                ApprovalBatchItemResult(id=request_id, ok=False, error=str(exc.detail))
             )
             continue
         # A past-deadline row is not pre-checked here. Expiry belongs to

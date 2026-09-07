@@ -5,8 +5,11 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import io
 import json
 import os
+import tarfile
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -22,6 +25,8 @@ from preloop.models.crud.base import CRUDBase
 from preloop.models.crud.security_maintenance import item_identity_key
 from preloop.schemas.security_maintenance import (
     ApprovalDecisionRequest,
+    BaselineAcceptRequest,
+    RebuiltInputsRequest,
     ResumeRequest,
     ScanFinding,
     ScanIngestRequest,
@@ -44,7 +49,6 @@ from preloop.utils.verification_selection import (
     VERIFICATION_PRODUCER,
     VERIFIER_VERSION,
 )
-from backend.tests.services.test_flow_artifacts import archive_with
 
 os.environ["PRELOOP_DISABLE_TELEMETRY"] = "true"
 
@@ -55,6 +59,9 @@ PR_URL = "https://github.com/example/project/pull/7"
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "cra"
 SBOM_B64 = base64.b64encode(
     b'{"bomFormat": "CycloneDX", "specVersion": "1.5"}'
+).decode()
+FRESH_SBOM_B64 = base64.b64encode(
+    b'{"bomFormat": "CycloneDX", "specVersion": "1.5", "components": [{"name": "libexample"}]}'
 ).decode()
 
 PROFILE = {
@@ -245,8 +252,32 @@ async def _release(world, test_user):
     )
 
 
-def _store_evidence(db_session, execution, *, expires=None, digest=None) -> bytes:
-    archive = archive_with("result.json", b'{"ok": true}')
+def _archive_members(files: dict[str, bytes]) -> bytes:
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    return stream.getvalue()
+
+
+def _store_evidence(
+    db_session,
+    execution,
+    *,
+    expires=None,
+    digest=None,
+    sha: str = SHA,
+    extra=None,
+    include_head: bool = True,
+) -> bytes:
+    members = {"result.json": b'{"ok": true}'}
+    if include_head:
+        members["HEAD.txt"] = f"{sha}\n".encode()
+    if extra:
+        members.update(extra)
+    archive = _archive_members(members)
     now = datetime.now(UTC)
     expires_at = expires or (now + timedelta(hours=1))
     sha256 = digest or hashlib.sha256(archive).hexdigest()
@@ -316,6 +347,19 @@ def _screened_vulnscan(*, advisory="CVE-2024-0001", present=False):
     else:
         payload["findings"] = []
         payload["counts_by_severity"]["high"] = 0
+    payload["inventory"]["components_list"] = [
+        {
+            "id": "libexample",
+            "purl": "pkg:generic/libexample@1.4.2",
+            "name": "libexample",
+            "sources": {"osv_purl": {"kind": "database", "screenable": 1, "blind": 0}},
+        },
+        {
+            "id": "pkg:generic/other@1",
+            "name": "other",
+            "sources": {"osv_purl": {"kind": "database", "screenable": 1, "blind": 0}},
+        },
+    ]
     return payload
 
 
@@ -518,7 +562,7 @@ class TestAuditAcceptance:
             require_finding_absent=True,
         )
         assert denied.accepted is False
-        _store_evidence(db_session, execution)
+        _store_evidence(db_session, execution, include_head=False)
         evidence = evidence_ref_from_execution(
             execution, db=db_session, account_id=test_user.account_id
         )
@@ -531,6 +575,8 @@ class TestAuditAcceptance:
             component_id="libexample",
             advisory_id="CVE-2024-0001",
             require_finding_absent=True,
+            db=db_session,
+            account_id=test_user.account_id,
         )
         assert missing_sha.accepted is False
         assert missing_sha.reason == "missing_checked_out_sha"
@@ -555,6 +601,8 @@ class TestAuditAcceptance:
             execution=execution,
             flow=audit,
             candidate_revision=SHA,
+            db=db_session,
+            account_id=test_user.account_id,
         )
         assert unknown.accepted is False
         assert unknown.reason == "unsupported_cra_schema"
@@ -574,6 +622,8 @@ class TestAuditAcceptance:
             component_id="libexample",
             advisory_id="CVE-2024-0001",
             require_finding_absent=True,
+            db=db_session,
+            account_id=test_user.account_id,
         )
         assert blind.accepted is False
 
@@ -601,6 +651,8 @@ class TestAuditAcceptance:
             component_id="libexample",
             advisory_id="CVE-2024-0001",
             require_finding_absent=True,
+            db=db_session,
+            account_id=test_user.account_id,
         )
         assert accepted.accepted is True
         assert accepted.finding_verified_absent is True
@@ -760,7 +812,11 @@ class TestDurableLifecycle:
                 actor_user_id=test_user.id,
                 approved=True,
             )
-            assert approved["state"] in {"reaudit_pending", "reauditing"}
+            assert approved["state"] == "awaiting_build"
+            with pytest.raises(InvalidTransitionError, match="stale_sbom_reused"):
+                await _submit_rebuild(service, item, test_user, sbom=SBOM_B64)
+            rebuilt = await _submit_rebuild(service, item, test_user)
+            assert rebuilt["state"] in {"reaudit_pending", "reauditing"}
             db_session.refresh(item)
             recheck = crud_security_maintenance.get_execution(
                 db_session,
@@ -772,10 +828,12 @@ class TestDurableLifecycle:
             details["_session_thread_id"] = str(recheck.id)
             payload = dict(details.get("payload") or {})
             assert payload.get("sha") == SHA
-            assert payload.get("workspace_files")
+            files = payload.get("workspace_files") or []
+            assert any(entry.get("content_base64") == FRESH_SBOM_B64 for entry in files)
+            assert all(entry.get("content_base64") != SBOM_B64 for entry in files)
             envelope = payload.get("security_maintenance") or {}
             assert envelope.get("sbom_input_ref") == "sbom/image.spdx.json"
-            assert envelope.get("pinned_build_ref") == "v1.2.3"
+            assert envelope.get("pinned_build_ref") == SHA
             details["payload"] = payload
             recheck.trigger_event_details = details
             recheck.result = _screened_vulnscan(present=False)
@@ -869,6 +927,16 @@ async def _impl_to_approval(service, world, db_session, test_user):
     await service.finish_execution(impl)
     db_session.refresh(item)
     return item, impl
+
+
+async def _submit_rebuild(service, item, test_user, *, sbom: str | None = None):
+    return await service.submit_rebuilt_inputs(
+        item.id,
+        RebuiltInputsRequest(
+            published_sha=SHA, sbom_content_base64=sbom or FRESH_SBOM_B64
+        ),
+        actor_user_id=test_user.id,
+    )
 
 
 class TestDispatchAndApprovals:
@@ -1014,7 +1082,7 @@ class TestDispatchAndApprovals:
             )
             advanced = await service.reconcile_platform_approval(updated.id)
         assert advanced is not None
-        assert advanced["state"] in {"reaudit_pending", "reauditing"}
+        assert advanced["state"] == "awaiting_build"
 
     @pytest.mark.asyncio
     async def test_quorum_and_non_approver(self, db_session, world, test_user) -> None:
@@ -1070,7 +1138,7 @@ class TestDispatchAndApprovals:
                 actor_user_id=other.id,
                 approved=True,
             )
-            assert done["state"] in {"reaudit_pending", "reauditing"}
+            assert done["state"] == "awaiting_build"
 
     @pytest.mark.asyncio
     async def test_stale_recheck_cannot_regress_newer_baseline(
@@ -1089,6 +1157,8 @@ class TestDispatchAndApprovals:
                 actor_user_id=test_user.id,
                 approved=True,
             )
+            db_session.refresh(item)
+            await _submit_rebuild(service, item, test_user)
             db_session.refresh(item)
             recheck = crud_security_maintenance.get_execution(
                 db_session,
@@ -1231,3 +1301,295 @@ class TestHttpRbac:
             assert blocked.status_code == 403
         settings.disable_rbac = True
         monkeypatch.setenv("DISABLE_RBAC", "true")
+
+
+class TestRebuildCheckoutAndSweep:
+    @pytest.mark.asyncio
+    async def test_create_release_does_not_mutate_shared_workflow(
+        self, db_session, world, test_user
+    ) -> None:
+        service, _project, workflow, *_rest = world
+        workflow.timeout_seconds = 1234
+        db_session.flush()
+        await _release(world, test_user)
+        db_session.refresh(workflow)
+        assert workflow.timeout_seconds == 1234
+        assert workflow.approver_user_ids == [test_user.id]
+
+    @pytest.mark.asyncio
+    async def test_failed_audit_execution_is_not_accepted(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        created = await _release(world, test_user)
+        audit = world[4]
+        execution = _execution(
+            db_session,
+            audit,
+            status="FAILED",
+            result=_screened_vulnscan(present=False),
+            details={
+                "_session_thread_id": "failed-audit",
+                "payload": {
+                    "pinned_build_ref": "v1.2.3",
+                    "sbom_input_ref": "sbom/image.spdx.json",
+                    "security_maintenance": {
+                        "release_id": created["id"],
+                        "pinned_build_ref": "v1.2.3",
+                        "sbom_input_ref": "sbom/image.spdx.json",
+                    },
+                },
+            },
+        )
+        _store_evidence(db_session, execution)
+        with pytest.raises(
+            InvalidTransitionError, match="audit_execution_not_completed"
+        ):
+            await service.accept_baseline(
+                created["id"],
+                BaselineAcceptRequest(audit_execution_id=execution.id),
+            )
+
+    @pytest.mark.asyncio
+    async def test_get_item_does_not_enqueue(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+            side_effect=FlowDispatchError(
+                "00000000-0000-0000-0000-000000000001",
+                "PENDING",
+                RuntimeError("broker_unavailable"),
+            ),
+        ) as dispatched:
+            ingested = await service.ingest_scan(_scan(issue_id=_issue(world).id))
+            dispatched.reset_mock()
+            listed = service.get_item(ingested["items"][0]["id"])
+            assert listed["state"] == "remediation_pending"
+            dispatched.assert_not_awaited()
+
+    def test_concurrent_sweeps_do_not_share_lock(
+        self, db_engine, db_session, test_user
+    ) -> None:
+        from sqlalchemy.orm import Session
+
+        held = crud_security_maintenance.try_sweep_lock(
+            db_session, test_user.account_id
+        )
+        assert held is not None
+        connection = db_engine.connect()
+        other = Session(bind=connection)
+        try:
+            skipped = crud_security_maintenance.try_sweep_lock(
+                other, test_user.account_id
+            )
+            assert skipped is None
+        finally:
+            crud_security_maintenance.release_sweep_lock(db_session, held)
+            other.close()
+            connection.close()
+
+    def test_checkout_ignores_payload_sha_and_requires_head_txt(
+        self, db_session, world, test_user
+    ) -> None:
+        from preloop.services.security_maintenance_refs import controller_checkout_sha
+
+        _service, _project, _workflow, _implementer, audit, *_ = world
+        execution = _execution(
+            db_session,
+            audit,
+            details={"payload": {"sha": SHA}, "_session_thread_id": "no-head"},
+        )
+        _store_evidence(db_session, execution, extra={"result.json": b"{}"})
+        # Default store writes HEAD.txt; overwrite with archive that has none.
+        execution.trigger_event_details = {
+            **(execution.trigger_event_details or {}),
+            "_session_thread_id": str(execution.id),
+        }
+        missing = _execution(
+            db_session,
+            audit,
+            details={"payload": {"sha": SHA}, "_session_thread_id": "missing-head"},
+        )
+        archive = _archive_members({"result.json": b'{"ok": true}'})
+        now = datetime.now(UTC)
+        sha256 = hashlib.sha256(archive).hexdigest()
+        expanded = validate_archive(
+            archive, max_bytes=1_000_000, max_expanded_bytes=2_000_000
+        )
+        thread_id = str(missing.id)
+        missing.trigger_event_details = {
+            **(missing.trigger_event_details or {}),
+            "_session_thread_id": thread_id,
+        }
+        manifest = {
+            "version": 1,
+            "kind": "evidence",
+            "execution_id": str(missing.id),
+            "thread_id": thread_id,
+            "sha256": sha256,
+            "size_bytes": len(archive),
+            "expanded_bytes": expanded,
+            "created_at": now.isoformat(),
+            "expires_at": (now + timedelta(hours=1)).isoformat(),
+            "metadata": {},
+        }
+        flow_artifact.store(
+            db_session,
+            values={
+                "account_id": missing.flow.account_id,
+                "flow_id": missing.flow_id,
+                "thread_id": thread_id,
+                "execution_id": missing.id,
+                "kind": "evidence",
+                "manifest": manifest,
+                "manifest_sha256": manifest_digest(manifest),
+                "ciphertext": _get_fernet().encrypt(archive),
+                "availability": "available",
+                "expires_at": now + timedelta(hours=1),
+            },
+            quota_bytes=50_000_000,
+        )
+        assert (
+            controller_checkout_sha(
+                missing, db=db_session, account_id=test_user.account_id
+            )
+            is None
+        )
+        present = _execution(db_session, audit)
+        _store_evidence(db_session, present, sha=SHA)
+        assert (
+            controller_checkout_sha(
+                present, db=db_session, account_id=test_user.account_id
+            )
+            == SHA
+        )
+
+    def test_component_identity_and_partial_coverage(
+        self, db_session, world, test_user
+    ) -> None:
+        _service, _project, _workflow, _implementer, audit, *_ = world
+        execution = _execution(
+            db_session, audit, result=_screened_vulnscan(present=False)
+        )
+        _store_evidence(db_session, execution)
+        evidence = evidence_ref_from_execution(
+            execution, db=db_session, account_id=test_user.account_id
+        )
+        other = _screened_vulnscan(present=False)
+        other["inventory"]["components_list"] = [
+            {
+                "id": "other-product",
+                "name": "other-product",
+                "sources": {
+                    "osv_purl": {"kind": "database", "screenable": 1, "blind": 0}
+                },
+            }
+        ]
+        rejected = audit_acceptance(
+            other,
+            evidence=evidence,
+            execution=execution,
+            flow=audit,
+            candidate_revision=SHA,
+            component_id="libexample",
+            advisory_id="CVE-2024-0001",
+            require_finding_absent=True,
+            db=db_session,
+            account_id=test_user.account_id,
+        )
+        assert rejected.accepted is False
+        assert rejected.reason == "component_not_in_inventory"
+        missing_list = _screened_vulnscan(present=False)
+        missing_list["inventory"].pop("components_list")
+        rejected_list = audit_acceptance(
+            missing_list,
+            evidence=evidence,
+            execution=execution,
+            flow=audit,
+            candidate_revision=SHA,
+            component_id="libexample",
+            advisory_id="CVE-2024-0001",
+            require_finding_absent=True,
+            db=db_session,
+            account_id=test_user.account_id,
+        )
+        assert rejected_list.reason == "component_identity_missing"
+        partial = _screened_vulnscan(present=False)
+        partial["inventory"]["components_list"][0]["sources"] = {
+            "osv_purl": {"kind": "database", "screenable": 0, "blind": 1}
+        }
+        rejected_partial = audit_acceptance(
+            partial,
+            evidence=evidence,
+            execution=execution,
+            flow=audit,
+            candidate_revision=SHA,
+            component_id="libexample",
+            advisory_id="CVE-2024-0001",
+            require_finding_absent=True,
+            db=db_session,
+            account_id=test_user.account_id,
+        )
+        assert rejected_partial.reason == "component_source_coverage_incomplete"
+        accepted = audit_acceptance(
+            _screened_vulnscan(present=False),
+            evidence=evidence,
+            execution=execution,
+            flow=audit,
+            candidate_revision=SHA,
+            component_id="libexample",
+            advisory_id="CVE-2024-0001",
+            require_finding_absent=True,
+            db=db_session,
+            account_id=test_user.account_id,
+        )
+        assert accepted.accepted is True
+        assert accepted.checked_out_sha == SHA
+
+    @pytest.mark.asyncio
+    async def test_managed_api_key_cannot_approve_via_console_route(
+        self, db_session, world, test_user
+    ) -> None:
+        from preloop.api.app import create_app
+        from preloop.models.db.session import SyncApprovalSession
+        from preloop.models.db.session import get_db_session as get_db
+
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            item, _impl = await _impl_to_approval(service, world, db_session, test_user)
+        _key, secret = crud_api_key.create_runtime_key(
+            db_session,
+            name="managed-console",
+            account_id=test_user.account_id,
+            user_id=test_user.id,
+            context_data={"flow_execution_id": str(item.implementation_execution_id)},
+            commit=False,
+        )
+
+        @asynccontextmanager
+        async def _same_session():
+            yield SyncApprovalSession(db_session)
+
+        app = create_app()
+        app.dependency_overrides[get_db] = lambda: db_session
+        with patch(
+            "preloop.api.endpoints.approval_requests.get_async_db_session",
+            _same_session,
+        ):
+            with TestClient(app) as client:
+                blocked = client.post(
+                    f"/api/v1/approval-requests/{item.approval_request_id}/approve",
+                    headers={"Authorization": f"Bearer {secret}"},
+                    json={"approved": True, "comment": "managed key must not ship"},
+                )
+        assert blocked.status_code == 403
+        db_session.refresh(item)
+        assert item.state in {"tests_passed", "approval_pending"}

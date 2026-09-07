@@ -15,9 +15,11 @@ from sqlalchemy.orm import Session
 from preloop.models import models
 from preloop.models.crud import crud_security_maintenance
 from preloop.models.crud.security_maintenance import item_identity_key
+from preloop.models.db.session import SyncApprovalSession
 from preloop.schemas.security_maintenance import (
     ApprovalDecisionRequest,
     BaselineAcceptRequest,
+    RebuiltInputsRequest,
     ResumeRequest,
     ScanFinding,
     ScanIngestRequest,
@@ -50,6 +52,7 @@ IN_FLIGHT_STATES = frozenset(
         "remediating",
         "tests_passed",
         "approval_pending",
+        "awaiting_build",
         "reaudit_pending",
         "reauditing",
     }
@@ -71,46 +74,7 @@ TERMINAL = frozenset(
 )
 TOOL_NAME = "security_maintenance"
 AUTHENTICATED_DECISION_CHANNEL = "console"
-
-
-class _SyncSessionBridge:
-    """Let ApprovalService run against the caller's sync SQLAlchemy session.
-
-    ``commit`` flushes only so an outer advisory lock is not released early.
-    """
-
-    def __init__(self, session: Session) -> None:
-        self._session = session
-
-    def add(self, obj: Any) -> None:
-        self._session.add(obj)
-
-    def delete(self, obj: Any) -> None:
-        self._session.delete(obj)
-
-    async def commit(self) -> None:
-        self._session.flush()
-
-    async def rollback(self) -> None:
-        return None
-
-    async def refresh(self, instance: Any, attribute_names: Any = None) -> None:
-        self._session.refresh(instance, attribute_names)
-
-    async def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
-        return self._session.execute(statement, *args, **kwargs)
-
-    async def scalar(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
-        return self._session.scalar(statement, *args, **kwargs)
-
-    async def get(self, entity: Any, ident: Any, **kwargs: Any) -> Any:
-        return self._session.get(entity, ident, **kwargs)
-
-    async def run_sync(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
-        return fn(self._session, *args, **kwargs)
-
-    def expire_all(self) -> None:
-        self._session.expire_all()
+SWEEP_LIMIT = 50
 
 
 class SecurityMaintenanceService:
@@ -131,7 +95,7 @@ class SecurityMaintenanceService:
 
     def _approval_service(self) -> ApprovalService:
         base_url = os.getenv("PRELOOP_URL", "http://localhost")
-        return ApprovalService(_SyncSessionBridge(self.db), base_url)
+        return ApprovalService(SyncApprovalSession(self.db), base_url)
 
     def _serialize_release(
         self, row: models.SecurityMaintenanceRelease
@@ -331,6 +295,26 @@ class SecurityMaintenanceService:
             raise InvalidTransitionError("approval_workflow_unavailable")
         return workflow
 
+    def _validate_release_workflow(
+        self,
+        workflow_id: UUID,
+        *,
+        owner_user_id: UUID | None,
+        escalation_user_ids: list[UUID],
+        timeout_seconds: int,
+    ) -> models.ApprovalWorkflow:
+        try:
+            return crud_security_maintenance.validate_release_workflow(
+                self.db,
+                account_id=self.account_id,
+                workflow_id=workflow_id,
+                owner_user_id=owner_user_id,
+                escalation_user_ids=escalation_user_ids,
+                timeout_seconds=timeout_seconds,
+            )
+        except ValueError as exc:
+            raise InvalidTransitionError(str(exc)) from exc
+
     def _require_user(self, user_id: UUID, error: str) -> models.User:
         user = crud_security_maintenance.get_user(
             self.db, account_id=self.account_id, user_id=user_id
@@ -366,10 +350,8 @@ class SecurityMaintenanceService:
                 recheck_flow_id=request.recheck_flow_id,
                 allowed_model_ids=request.allowed_model_ids,
             )
-            crud_security_maintenance.apply_workflow_policy(
-                self.db,
-                account_id=self.account_id,
-                workflow_id=request.approval_workflow_id,
+            self._validate_release_workflow(
+                request.approval_workflow_id,
                 owner_user_id=request.approval_owner_user_id,
                 escalation_user_ids=request.escalation_user_ids,
                 timeout_seconds=request.escalation_after_seconds,
@@ -460,10 +442,8 @@ class SecurityMaintenanceService:
                 recheck_flow_id=row.recheck_flow_id,
                 allowed_model_ids=row.allowed_model_ids,
             )
-            crud_security_maintenance.apply_workflow_policy(
-                self.db,
-                account_id=self.account_id,
-                workflow_id=row.approval_workflow_id,
+            self._validate_release_workflow(
+                row.approval_workflow_id,
                 owner_user_id=row.approval_owner_user_id,
                 escalation_user_ids=list(row.escalation_user_ids or []),
                 timeout_seconds=row.escalation_after_seconds,
@@ -510,10 +490,14 @@ class SecurityMaintenanceService:
         ):
             release = self._require_release(release_id)
             execution = self._bound_execution(request.audit_execution_id)
+            if execution.status != "SUCCEEDED":
+                raise InvalidTransitionError("audit_execution_not_completed")
             if execution.flow_id not in {
                 release.audit_flow_id,
                 release.recheck_flow_id,
             }:
+                raise InvalidTransitionError("audit_execution_not_bound")
+            if not _execution_bound_to_release(execution, release):
                 raise InvalidTransitionError("audit_execution_not_bound")
             flow = self._require_flow(execution.flow_id, kind="audit")
             evidence = evidence_ref_from_execution(
@@ -531,6 +515,8 @@ class SecurityMaintenanceService:
                 execution=execution,
                 flow=flow,
                 platform_approvals=[],
+                db=self.db,
+                account_id=self.account_id,
             )
             if not audit.accepted:
                 raise InvalidTransitionError(audit.reason)
@@ -719,7 +705,7 @@ class SecurityMaintenanceService:
                 actor_user_id=actor_user_id,
                 data={"reason": request.reason, "from_state": item.state},
             )
-            if item.state in {"reaudit_incomplete", "tests_passed", "approval_pending"}:
+            if item.state in {"reaudit_incomplete"}:
                 queued = self._reserve_recheck(item, release)
             else:
                 item = self._write_item(item, implementation_execution_id=None)
@@ -739,43 +725,126 @@ class SecurityMaintenanceService:
         approved: bool,
     ) -> dict[str, Any]:
         """Record a vote through ApprovalService, then advance the item."""
+        request_id: UUID | None = None
+        async with crud_security_maintenance.locked(
+            self.db, self.account_id, f"item:{item_id}"
+        ):
+            item = self._require_item(item_id)
+            if item.state in {
+                "held",
+                "escalated",
+                "reauditing",
+                "reaudit_pending",
+                "awaiting_build",
+            }:
+                return self._serialize_item(item)
+            if item.state not in {"tests_passed", "approval_pending"}:
+                raise InvalidTransitionError("item_not_awaiting_approval")
+            release = self._require_release(item.release_id)
+            workflow = self._require_workflow(release.approval_workflow_id)
+            self._assert_actor_can_decide(workflow, release, actor_user_id)
+            row = self._require_platform_approval(item)
+            request_id = row.id
+        service = self._approval_service()
+        if approved:
+            updated = await service.approve_request(
+                request_id,
+                request.reason,
+                user_id=actor_user_id,
+                channel=AUTHENTICATED_DECISION_CHANNEL,
+            )
+        else:
+            updated = await service.decline_request(
+                request_id,
+                request.reason,
+                user_id=actor_user_id,
+                channel=AUTHENTICATED_DECISION_CHANNEL,
+            )
+        if updated is None:
+            raise InvalidTransitionError("approval_missing")
+        async with crud_security_maintenance.locked(
+            self.db, self.account_id, f"item:{item_id}"
+        ):
+            item = self._require_item(item_id)
+            self._apply_platform_approval(item, updated, actor_user_id=actor_user_id)
+            return self._serialize_item(self._require_item(item_id))
+
+    async def submit_rebuilt_inputs(
+        self,
+        item_id: UUID,
+        request: RebuiltInputsRequest,
+        *,
+        actor_user_id: UUID,
+    ) -> dict[str, Any]:
+        """Ingest a rebuilt SBOM bound to the published SHA, then reserve recheck."""
         queued: tuple[UUID, UUID, str] | None = None
         async with crud_security_maintenance.locked(
             self.db, self.account_id, f"item:{item_id}"
         ):
             item = self._require_item(item_id)
-            queued = await self._reconcile_locked(item)
-            item = self._require_item(item_id)
-            if item.state in {"held", "escalated", "reauditing", "reaudit_pending"}:
-                serialized = self._serialize_item(item)
-            elif item.state not in {"tests_passed", "approval_pending"}:
-                raise InvalidTransitionError("item_not_awaiting_approval")
-            else:
-                release = self._require_release(item.release_id)
-                workflow = self._require_workflow(release.approval_workflow_id)
-                self._assert_actor_can_decide(workflow, release, actor_user_id)
-                row = self._require_platform_approval(item)
-                service = self._approval_service()
-                if approved:
-                    updated = await service.approve_request(
-                        row.id,
-                        request.reason,
-                        user_id=actor_user_id,
-                        channel=AUTHENTICATED_DECISION_CHANNEL,
-                    )
-                else:
-                    updated = await service.decline_request(
-                        row.id,
-                        request.reason,
-                        user_id=actor_user_id,
-                        channel=AUTHENTICATED_DECISION_CHANNEL,
-                    )
-                if updated is None:
-                    raise InvalidTransitionError("approval_missing")
-                queued = self._apply_platform_approval(
-                    item, updated, actor_user_id=actor_user_id
+            if item.state != "awaiting_build":
+                raise InvalidTransitionError("item_not_awaiting_build")
+            snapshot = dict(item.data or {})
+            published = str(snapshot.get("published_sha") or "").strip().lower()
+            if request.published_sha != published:
+                raise InvalidTransitionError("published_sha_mismatch")
+            original = snapshot.get("original_sbom_digest")
+            new_digest = _sbom_bytes_digest(request.sbom_content_base64)
+            if original and new_digest == original:
+                raise InvalidTransitionError("stale_sbom_reused")
+            release = self._require_release(item.release_id)
+            pin = request.pinned_build_ref or request.published_sha
+            files: list[dict[str, Any]] = [
+                {
+                    "path": release.sbom_input_ref,
+                    "content_base64": request.sbom_content_base64,
+                }
+            ]
+            if release.accepted_baseline_id:
+                baseline = crud_security_maintenance.get_baseline(
+                    self.db,
+                    account_id=self.account_id,
+                    baseline_id=release.accepted_baseline_id,
                 )
-                serialized = self._serialize_item(self._require_item(item_id))
+                previous = (baseline.data or {}).get("result") if baseline else None
+                if isinstance(previous, dict):
+                    files.append(
+                        {
+                            "path": "previous-result.json",
+                            "content_base64": base64.b64encode(
+                                dumps(previous, sort_keys=True).encode()
+                            ).decode("ascii"),
+                        }
+                    )
+            parse_workspace_files({"workspace_files": files})
+            rebuilt_digest = _input_digest(
+                pin,
+                release.sbom_input_ref,
+                request.sbom_content_base64,
+                release.accepted_baseline_id,
+            )
+            snapshot.update(
+                {
+                    "rebuilt_pinned_build_ref": pin,
+                    "rebuilt_published_sha": request.published_sha,
+                    "rebuilt_input_digest": rebuilt_digest,
+                    "rebuilt_sbom_digest": new_digest,
+                    "workspace_files": files,
+                }
+            )
+            item = self._write_item(item, data=snapshot)
+            self._append(
+                item,
+                kind="build",
+                outcome="accepted",
+                actor_user_id=actor_user_id,
+                data={
+                    "published_sha": request.published_sha,
+                    "sbom_digest": new_digest,
+                },
+            )
+            queued = self._reserve_recheck(item, release)
+            serialized = self._serialize_item(item)
         if queued is not None:
             await self._enqueue(*queued)
             serialized = self._serialize_item(self._require_item(item_id))
@@ -815,21 +884,55 @@ class SecurityMaintenanceService:
         """Idempotent expiry, enqueue retry, and platform-approval follow-up."""
         queued: list[tuple[UUID, UUID, str]] = []
         open_approval = False
+        approval_row_id: UUID | None = None
         async with crud_security_maintenance.locked(
             self.db, self.account_id, f"item:{item_id}"
         ):
             item = self._require_item(item_id)
-            job = await self._reconcile_locked(item)
+            job = self._pending_dispatch_job(item)
             if job is not None:
                 queued.append(job)
             item = self._require_item(item_id)
             if item.state == "tests_passed" and item.approval_request_id is None:
                 open_approval = True
+            elif item.state == "approval_pending" and item.approval_request_id:
+                approval_row_id = item.approval_request_id
         if open_approval:
             await self._open_approval(item_id)
+        if approval_row_id is not None:
+            service = self._approval_service()
+            current = await service.get_approval_request(approval_row_id)
+            if current is not None:
+                guarded = await service._reject_if_not_actionable(current)
+                current = guarded or current
+                async with crud_security_maintenance.locked(
+                    self.db, self.account_id, f"item:{item_id}"
+                ):
+                    item = self._require_item(item_id)
+                    self._apply_platform_approval(item, current)
         for job in queued:
             await self._enqueue(*job)
         return self._serialize_item(self._require_item(item_id))
+
+    async def sweep(self) -> dict[str, Any]:
+        """Bounded background reconcile. Concurrent sweeps of one tenant skip."""
+        lock = crud_security_maintenance.try_sweep_lock(self.db, self.account_id)
+        if lock is None:
+            return {"acquired": False, "reconciled": 0}
+        try:
+            items = crud_security_maintenance.list_reconcile_items(
+                self.db, account_id=self.account_id, limit=SWEEP_LIMIT
+            )
+            for item in items:
+                try:
+                    await self.reconcile_item(item.id)
+                except Exception:
+                    logger.exception(
+                        "Security-maintenance reconcile failed for item %s", item.id
+                    )
+            return {"acquired": True, "reconciled": len(items)}
+        finally:
+            crud_security_maintenance.release_sweep_lock(self.db, lock)
 
     async def finish_execution(self, execution: models.FlowExecution) -> None:
         """Trusted completion hook. Stale or failed runs never advance a baseline."""
@@ -958,6 +1061,9 @@ class SecurityMaintenanceService:
             advisory_id=item.advisory_id,
             platform_approvals=[platform_row] if platform_row is not None else [],
             require_finding_absent=True,
+            db=self.db,
+            account_id=self.account_id,
+            rebuilt_omits_target=_rebuilt_omits_target(item, result),
         )
         if not evidence.available or not audit.accepted:
             item = self._write_item(item, state="reaudit_incomplete")
@@ -1123,7 +1229,7 @@ class SecurityMaintenanceService:
         sha: str | None,
         flow: models.Flow,
     ) -> dict[str, Any]:
-        self._assert_fresh_inputs(item, release)
+        self._assert_fresh_inputs(item, release, kind=kind)
         project = self._require_project(release.project_id)
         issue = None
         if item.issue_id:
@@ -1145,6 +1251,11 @@ class SecurityMaintenanceService:
         if organization is None:
             raise CrossAccountError("project_not_in_account")
         snapshot = dict(item.data or {})
+        pin = (
+            snapshot.get("rebuilt_pinned_build_ref")
+            if kind == "recheck"
+            else snapshot.get("pinned_build_ref") or release.pinned_build_ref
+        )
         payload: dict[str, Any] = {
             "sha": sha,
             "object_attributes": {
@@ -1168,8 +1279,7 @@ class SecurityMaintenanceService:
                 "product_key": release.product_key,
                 "release_key": release.release_key,
                 "flow_id": str(flow.id),
-                "pinned_build_ref": snapshot.get("pinned_build_ref")
-                or release.pinned_build_ref,
+                "pinned_build_ref": pin,
                 "sbom_input_ref": snapshot.get("sbom_input_ref")
                 or release.sbom_input_ref,
                 "accepted_baseline_id": snapshot.get("accepted_baseline_id")
@@ -1178,7 +1288,11 @@ class SecurityMaintenanceService:
                     if release.accepted_baseline_id
                     else None
                 ),
-                "input_digest": snapshot.get("input_digest"),
+                "input_digest": (
+                    snapshot.get("rebuilt_input_digest")
+                    if kind == "recheck"
+                    else snapshot.get("input_digest")
+                ),
                 "published_sha": snapshot.get("published_sha"),
                 "issue_id": str(issue.id),
                 "issue_number": _issue_number(issue),
@@ -1199,6 +1313,22 @@ class SecurityMaintenanceService:
         from preloop.services.flow_trigger_service import FlowTriggerService
         from preloop.services.issue_lifecycle_worker import dispatch_lifecycle_execution
 
+        async with crud_security_maintenance.locked(
+            self.db, self.account_id, f"item:{item_id}"
+        ):
+            item = self._require_item(item_id)
+            bound = (
+                item.implementation_execution_id
+                if kind == "implementation"
+                else item.recheck_execution_id
+            )
+            if bound != execution_id:
+                return
+            data = dict(item.data or {})
+            if data.get("dispatch_state") != "pending":
+                return
+            data["dispatch_state"] = "dispatching"
+            self._write_item(item, data=data)
         execution = self._bound_execution(execution_id)
         flow = self._require_flow(execution.flow_id, kind="dispatch")
 
@@ -1217,6 +1347,14 @@ class SecurityMaintenanceService:
             logger.warning(
                 "Security-maintenance enqueue deferred for execution %s", execution.id
             )
+            async with crud_security_maintenance.locked(
+                self.db, self.account_id, f"item:{item_id}"
+            ):
+                item = self._require_item(item_id)
+                data = dict(item.data or {})
+                if data.get("dispatch_state") == "dispatching":
+                    data["dispatch_state"] = "pending"
+                    self._write_item(item, data=data)
             return
         async with crud_security_maintenance.locked(
             self.db, self.account_id, f"item:{item_id}"
@@ -1230,11 +1368,18 @@ class SecurityMaintenanceService:
             if bound != execution_id:
                 return
             data = dict(item.data or {})
-            if data.get("dispatch_state") != "pending":
+            if data.get("dispatch_state") != "dispatching":
                 return
             data["dispatch_state"] = "dispatched"
-            state = "remediating" if kind == "implementation" else "reauditing"
-            item = self._write_item(item, state=state, data=data)
+            pending_state = (
+                "remediation_pending" if kind == "implementation" else "reaudit_pending"
+            )
+            fields: dict[str, Any] = {"data": data}
+            if item.state == pending_state:
+                fields["state"] = (
+                    "remediating" if kind == "implementation" else "reauditing"
+                )
+            item = self._write_item(item, **fields)
             self._append(
                 item,
                 kind=kind,
@@ -1243,6 +1388,11 @@ class SecurityMaintenanceService:
             )
 
     async def _open_approval(self, item_id: UUID) -> None:
+        tool_id = None
+        workflow = None
+        timeout = DEFAULT_APPROVAL_TIMEOUT
+        tool_args: dict[str, Any] = {}
+        execution_id: str | None = None
         async with crud_security_maintenance.locked(
             self.db, self.account_id, f"item:{item_id}"
         ):
@@ -1252,76 +1402,105 @@ class SecurityMaintenanceService:
             if item.approval_request_id is not None:
                 self._write_item(item, state="approval_pending")
                 return
+            existing = crud_security_maintenance.get_pending_maintenance_approval(
+                self.db, account_id=self.account_id, item_id=item.id
+            )
+            if existing is not None:
+                self._write_item(
+                    item, approval_request_id=existing.id, state="approval_pending"
+                )
+                return
             release = self._require_release(item.release_id)
-            workflow = self._require_workflow(release.approval_workflow_id)
-            crud_security_maintenance.apply_workflow_policy(
-                self.db,
-                account_id=self.account_id,
-                workflow_id=workflow.id,
+            workflow = self._validate_release_workflow(
+                release.approval_workflow_id,
                 owner_user_id=release.approval_owner_user_id,
                 escalation_user_ids=list(release.escalation_user_ids or []),
                 timeout_seconds=release.escalation_after_seconds,
             )
-            workflow = self._require_workflow(release.approval_workflow_id)
             tool = crud_security_maintenance.get_or_create_tool_configuration(
                 self.db, account_id=self.account_id, tool_name=TOOL_NAME
             )
-            service = self._approval_service()
-            created = await service.create_approval_request(
-                account_id=str(self.account_id),
-                tool_configuration_id=tool.id,
-                approval_workflow_id=workflow.id,
-                tool_name=TOOL_NAME,
-                tool_args={
-                    "item_id": str(item.id),
-                    "advisory_id": item.advisory_id,
-                    "component_id": item.component_id,
-                    "release_id": str(release.id),
-                },
-                execution_id=str(item.implementation_execution_id)
+            tool_id = tool.id
+            timeout = release.escalation_after_seconds
+            execution_id = (
+                str(item.implementation_execution_id)
                 if item.implementation_execution_id
-                else None,
-                timeout_seconds=release.escalation_after_seconds,
+                else None
             )
-            try:
-                await service.send_notifications(created, workflow)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "Security-maintenance approval %s created without notify: %s",
-                    created.id,
-                    exc,
+            tool_args = {
+                "item_id": str(item.id),
+                "advisory_id": item.advisory_id,
+                "component_id": item.component_id,
+                "release_id": str(release.id),
+                "policy": {
+                    "owner_user_id": str(release.approval_owner_user_id)
+                    if release.approval_owner_user_id
+                    else None,
+                    "escalation_user_ids": [
+                        str(user_id) for user_id in (release.escalation_user_ids or [])
+                    ],
+                    "timeout_seconds": release.escalation_after_seconds,
+                },
+            }
+            data = dict(item.data or {})
+            data["approval_opening"] = True
+            self._write_item(item, data=data)
+        if workflow is None or tool_id is None:
+            return
+        service = self._approval_service()
+        created = await service.create_approval_request(
+            account_id=str(self.account_id),
+            tool_configuration_id=tool_id,
+            approval_workflow_id=workflow.id,
+            tool_name=TOOL_NAME,
+            tool_args=tool_args,
+            execution_id=execution_id,
+            timeout_seconds=timeout,
+        )
+        try:
+            await service.send_notifications(created, workflow)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Security-maintenance approval %s created without notify: %s",
+                created.id,
+                exc,
+            )
+        async with crud_security_maintenance.locked(
+            self.db, self.account_id, f"item:{item_id}"
+        ):
+            item = self._require_item(item_id)
+            data = dict(item.data or {})
+            data.pop("approval_opening", None)
+            if item.state == "tests_passed" and item.approval_request_id is None:
+                item = self._write_item(
+                    item,
+                    approval_request_id=created.id,
+                    state="approval_pending",
+                    data=data,
                 )
-            item = self._write_item(
-                item, approval_request_id=created.id, state="approval_pending"
-            )
-            self._append(
-                item,
-                kind="approval",
-                outcome="requested",
-                approval_request_id=created.id,
-            )
+                self._append(
+                    item,
+                    kind="approval",
+                    outcome="requested",
+                    approval_request_id=created.id,
+                )
+            else:
+                self._write_item(item, data=data)
 
-    async def _reconcile_locked(
+    def _pending_dispatch_job(
         self, item: models.SecurityMaintenanceItem
     ) -> tuple[UUID, UUID, str] | None:
-        release = self._require_release(item.release_id)
+        data = dict(item.data or {})
+        if data.get("dispatch_state") == "dispatching":
+            return None
         if item.state == "remediation_pending" and item.implementation_execution_id:
             execution = self._bound_execution(item.implementation_execution_id)
             if execution.status == "PENDING":
                 return execution.id, item.id, "implementation"
-        if item.state in {"reaudit_pending"} and item.recheck_execution_id:
+        if item.state == "reaudit_pending" and item.recheck_execution_id:
             execution = self._bound_execution(item.recheck_execution_id)
             if execution.status == "PENDING":
                 return execution.id, item.id, "recheck"
-        if item.state == "approval_pending" and item.approval_request_id:
-            row = self._require_platform_approval(item)
-            service = self._approval_service()
-            current = await service.get_approval_request(row.id)
-            if current is None:
-                return None
-            guarded = await service._reject_if_not_actionable(current)
-            current = guarded or current
-            return self._apply_platform_approval(item, current)
         return None
 
     def _apply_platform_approval(
@@ -1330,9 +1509,9 @@ class SecurityMaintenanceService:
         row: models.ApprovalRequest,
         *,
         actor_user_id: UUID | None = None,
-    ) -> tuple[UUID, UUID, str] | None:
+    ) -> None:
         if item.state not in {"tests_passed", "approval_pending"}:
-            return None
+            return
         outcome = human_platform_approval(row)
         if outcome == "approval_expired":
             self._write_item(item, state="escalated")
@@ -1343,7 +1522,7 @@ class SecurityMaintenanceService:
                 actor_user_id=actor_user_id,
                 approval_request_id=row.id,
             )
-            return None
+            return
         if outcome == "approval_denied":
             self._write_item(item, state="held")
             self._append(
@@ -1353,9 +1532,10 @@ class SecurityMaintenanceService:
                 actor_user_id=actor_user_id,
                 approval_request_id=row.id,
             )
-            return None
+            return
         if outcome != "approved":
-            return None
+            return
+        self._write_item(item, state="awaiting_build")
         self._append(
             item,
             kind="approval",
@@ -1363,8 +1543,6 @@ class SecurityMaintenanceService:
             actor_user_id=actor_user_id,
             approval_request_id=row.id,
         )
-        release = self._require_release(item.release_id)
-        return self._reserve_recheck(item, release)
 
     def _assert_actor_can_decide(
         self,
@@ -1437,6 +1615,9 @@ class SecurityMaintenanceService:
             request.sbom_content_base64,
             release.accepted_baseline_id,
         )
+        original_sbom = None
+        if request.sbom_content_base64:
+            original_sbom = _sbom_bytes_digest(request.sbom_content_base64)
         data = dict(item.data or {})
         data.update(
             {
@@ -1446,6 +1627,8 @@ class SecurityMaintenanceService:
                 if release.accepted_baseline_id
                 else None,
                 "input_digest": digest,
+                "original_sbom_digest": original_sbom
+                or data.get("original_sbom_digest"),
                 "workspace_files": files,
             }
         )
@@ -1455,8 +1638,28 @@ class SecurityMaintenanceService:
         self,
         item: models.SecurityMaintenanceItem,
         release: models.SecurityMaintenanceRelease,
+        *,
+        kind: str,
     ) -> None:
         snapshot = dict(item.data or {})
+        if kind == "recheck":
+            rebuilt = snapshot.get("rebuilt_input_digest")
+            if not rebuilt:
+                raise InvalidTransitionError("rebuilt_inputs_required")
+            computed = _input_digest(
+                str(snapshot.get("rebuilt_pinned_build_ref") or ""),
+                str(snapshot.get("sbom_input_ref") or release.sbom_input_ref),
+                _sbom_b64_from_files(
+                    snapshot.get("workspace_files"),
+                    str(snapshot.get("sbom_input_ref") or release.sbom_input_ref),
+                ),
+                snapshot.get("accepted_baseline_id"),
+            )
+            if computed != rebuilt:
+                raise InvalidTransitionError("stale_rebuilt_inputs")
+            if snapshot.get("rebuilt_published_sha") != snapshot.get("published_sha"):
+                raise InvalidTransitionError("rebuilt_sha_mismatch")
+            return
         expected = _input_digest(
             release.pinned_build_ref,
             release.sbom_input_ref,
@@ -1533,6 +1736,69 @@ def _envelope(execution: models.FlowExecution) -> dict[str, Any] | None:
     if isinstance(envelope, dict) and envelope.get("item_id"):
         return envelope
     return None
+
+
+def _execution_bound_to_release(
+    execution: models.FlowExecution, release: models.SecurityMaintenanceRelease
+) -> bool:
+    envelope = _envelope(execution)
+    details = execution.trigger_event_details or {}
+    payload = details.get("payload") if isinstance(details.get("payload"), dict) else {}
+    source = envelope or (
+        payload.get(ENVELOPE_KEY) if isinstance(payload.get(ENVELOPE_KEY), dict) else {}
+    )
+    if not isinstance(source, dict) or not source:
+        source = payload
+    pin = source.get("pinned_build_ref")
+    sbom = source.get("sbom_input_ref")
+    release_id = source.get("release_id")
+    if release_id and str(release_id) != str(release.id):
+        return False
+    if pin != release.pinned_build_ref:
+        return False
+    if sbom != release.sbom_input_ref:
+        return False
+    return True
+
+
+def _sbom_bytes_digest(content_base64: str) -> str:
+    from hashlib import sha256
+
+    try:
+        raw = base64.b64decode(content_base64, validate=True)
+    except Exception:
+        raw = content_base64.encode()
+    return sha256(raw).hexdigest()
+
+
+def _rebuilt_omits_target(
+    item: models.SecurityMaintenanceItem, result: dict[str, Any]
+) -> bool:
+    snapshot = dict(item.data or {})
+    if not snapshot.get("rebuilt_input_digest"):
+        return False
+    inventory = result.get("inventory")
+    if not isinstance(inventory, dict):
+        nested = result.get("vuln_scan")
+        inventory = nested.get("inventory") if isinstance(nested, dict) else None
+    if not isinstance(inventory, dict):
+        return False
+    listings = inventory.get("components_list")
+    if not isinstance(listings, list) or not listings:
+        return False
+    names = set()
+    for entry in listings:
+        if not isinstance(entry, dict):
+            continue
+        names.update(
+            {
+                str(entry.get("id") or "").strip(),
+                str(entry.get("purl") or "").strip(),
+                str(entry.get("name") or "").strip(),
+            }
+        )
+    names.discard("")
+    return item.component_id not in names
 
 
 def _optional_published_sha(

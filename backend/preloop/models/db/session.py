@@ -2,7 +2,7 @@
 
 import os
 import threading
-from typing import AsyncGenerator, Generator, Optional
+from typing import Any, AsyncGenerator, Generator, Optional
 from contextlib import asynccontextmanager
 
 from loguru import logger
@@ -306,3 +306,48 @@ async def get_async_db_session() -> AsyncGenerator[AsyncSession, None]:
             raise
         finally:
             await _safe_close_async_db_session(session)
+
+
+class SyncApprovalSession:
+    """Adapt a sync Session to ApprovalService with honest commit/rollback.
+
+    ApprovalService must not run while this session holds a
+    ``pg_advisory_xact_lock``; ``commit`` ends that lock. Persistence helpers
+    stay in this module so services do not invent their own session wrappers.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, obj: Any) -> None:
+        self._session.add(obj)
+
+    def delete(self, obj: Any) -> None:
+        self._session.delete(obj)
+
+    async def commit(self) -> None:
+        self._session.commit()
+
+    async def flush(self) -> None:
+        self._session.flush()
+
+    async def rollback(self) -> None:
+        self._session.rollback()
+
+    async def refresh(self, instance: Any, attribute_names: Any = None) -> None:
+        self._session.refresh(instance, attribute_names)
+
+    async def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
+        return self._session.execute(statement, *args, **kwargs)
+
+    async def scalar(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
+        return self._session.scalar(statement, *args, **kwargs)
+
+    async def get(self, entity: Any, ident: Any, **kwargs: Any) -> Any:
+        return self._session.get(entity, ident, **kwargs)
+
+    async def run_sync(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        return fn(self._session, *args, **kwargs)
+
+    def expire_all(self) -> None:
+        self._session.expire_all()
