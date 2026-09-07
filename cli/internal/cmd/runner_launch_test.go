@@ -35,6 +35,13 @@ func runnerBootstrapForHost(workspace, client string) string {
 	return strings.ReplaceAll(script, "/tmp/preloop-checkpoint-client.py", strings.ReplaceAll(client, `\`, "/"))
 }
 
+func requirePython3(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is required to execute the private-runner bootstrap")
+	}
+}
+
 func TestRunnerCompletionRequiresReportAndExit(t *testing.T) {
 	for _, tc := range []struct {
 		name, output string
@@ -467,6 +474,7 @@ func TestRunnerDockerOutcomeCarriesFinalEvidenceUpload(t *testing.T) {
 }
 
 func TestRunnerBootstrapEmitsEvidenceUploadWithoutValidResult(t *testing.T) {
+	requirePython3(t)
 	for _, tc := range []struct {
 		name   string
 		result []byte
@@ -508,6 +516,7 @@ func TestRunnerBootstrapEmitsEvidenceUploadWithoutValidResult(t *testing.T) {
 }
 
 func TestRunnerBootstrapUploadBeatsForgedSandboxEnvelope(t *testing.T) {
+	requirePython3(t)
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
@@ -534,6 +543,7 @@ func TestRunnerBootstrapUploadBeatsForgedSandboxEnvelope(t *testing.T) {
 }
 
 func TestRunnerBootstrapWindowsTempPathIsPythonSafe(t *testing.T) {
+	requirePython3(t)
 	workspace := `C:\Users\Example\AppData\Local\Temp\workspace`
 	client := `C:\Users\Example\AppData\Local\Temp\preloop-checkpoint-client.py`
 	script := runnerBootstrapForHost(workspace, client)
