@@ -4,6 +4,7 @@ import './activity-feed.ts';
 import {
   AUDIT_PAGE_SIZE,
   FEED_CAP,
+  FEED_INITIAL_ROWS,
   feedEventFromAuditGroup,
   feedEventFromRealtime,
   outcomeLabel,
@@ -127,6 +128,19 @@ async function feed(autoload = false): Promise<ActivityFeed> {
 function rowText(el: ActivityFeed): string[] {
   return Array.from(el.shadowRoot!.querySelectorAll('.row')).map((row) =>
     (row.textContent || '').replace(/\s+/g, ' ').trim()
+  );
+}
+
+/**
+ * The list in order, rows and the divider alike, so a test can say what sits
+ * above the "Earlier" line and what sits below it.
+ */
+function listItems(el: ActivityFeed): string[] {
+  const list = el.shadowRoot!.querySelector('.rows');
+  return Array.from(list?.children || []).map((node) =>
+    node.classList.contains('earlier')
+      ? 'earlier'
+      : (node.textContent || '').replace(/\s+/g, ' ').trim()
   );
 }
 
@@ -684,6 +698,160 @@ describe('activity-feed', () => {
       expect(audit[0]).to.contain('start_date=');
       expect(audit[1]).to.not.contain('start_date=');
       restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('fills the rail from history on a quiet account, under an Earlier line', async () => {
+      // The founder's account on 2026-09-07: nothing in the last day, a full
+      // history behind it, and a card that said "Nothing yet" until the next
+      // socket message arrived.
+      localStorage.setItem('accessToken', 'test-token');
+      const history = Array.from({ length: FEED_INITIAL_ROWS }, (_, index) =>
+        auditGroup(
+          'api_key_created',
+          {
+            id: `h${index}`,
+            timestamp: new Date(
+              Date.now() - (2 * 86400000 + index * 60000)
+            ).toISOString(),
+          },
+          'success'
+        )
+      );
+      const { restore, urls } = stubFetch([[], history]);
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(
+        () => rowText(el).length === FEED_INITIAL_ROWS,
+        'the history fills the rail'
+      );
+      expect(rowText(el)[0]).to.contain('API key created');
+      // Age is stated in the row, so nobody reads two-day-old history as news.
+      expect(
+        el.shadowRoot!.querySelector('.when')!.textContent!.trim()
+      ).to.equal('2d ago');
+      // Everything here is history, so the divider heads the list.
+      const items = listItems(el);
+      expect(items[0]).to.equal('earlier');
+      expect(items.length).to.equal(FEED_INITIAL_ROWS + 1);
+      expect(
+        el.shadowRoot!.querySelector('.earlier')!.textContent!.trim()
+      ).to.equal('Earlier');
+      const audit = urls.filter((url) => url.includes('/audit-logs/grouped'));
+      expect(audit.length).to.equal(2);
+      expect(audit[0]).to.contain('start_date=');
+      expect(audit[1]).to.not.contain('start_date=');
+      restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('prepends a live row above the divider and not a second time', async () => {
+      localStorage.setItem('accessToken', 'test-token');
+      const historyGroup = auditGroup(
+        'api_key_created',
+        {
+          id: 'shared',
+          timestamp: new Date(Date.now() - 3 * 86400000).toISOString(),
+        },
+        'success'
+      );
+      const { restore } = stubFetch([[], [historyGroup]]);
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(() => rowText(el).length === 1, 'the history row lands');
+
+      el.ingest('flow_executions', {
+        execution_id: 'exec-live',
+        flow_id: 'flow-1',
+        type: 'status_update',
+        timestamp: NOW,
+        payload: { status: 'FAILED', flow_name: 'Merge Request Reviewer' },
+      });
+      await el.updateComplete;
+      const items = listItems(el);
+      expect(items[0]).to.contain('Merge Request Reviewer failed');
+      expect(items[1]).to.equal('earlier');
+      expect(items[2]).to.contain('API key created');
+      expect(items.filter((item) => item === 'earlier').length).to.equal(1);
+
+      // The same event again, this time down the audit socket: the history
+      // row already carries that id, so it must not become a second row.
+      el.ingest('audit', {
+        type: 'audit_event',
+        timestamp: historyGroup.primary_event.timestamp,
+        payload: {
+          audit_log_id: historyGroup.primary_event.id,
+          action: 'api_key_created',
+          outcome: 'success',
+        },
+      });
+      await el.updateComplete;
+      expect(rowText(el).length).to.equal(2);
+      restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('says nothing yet only when the account really is empty', async () => {
+      localStorage.setItem('accessToken', 'test-token');
+      const { restore, urls } = stubFetch([[]]);
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(
+        () => !el.shadowRoot!.querySelector('.skeleton-row'),
+        'the fill finishes'
+      );
+      expect(
+        (el.shadowRoot!.querySelector('.empty')?.textContent || '').trim()
+      ).to.equal('Nothing yet. Events appear here as agents work.');
+      expect(el.shadowRoot!.querySelector('.earlier')).to.equal(null);
+      // It asked the history before settling for the empty state.
+      const audit = urls.filter((url) => url.includes('/audit-logs/grouped'));
+      expect(audit.length).to.equal(2);
+      restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('leaves the feed alone when audit is out of reach', async () => {
+      // No `view_audit_logs`: the fill reads nothing, says nothing extra, and
+      // the live rows are still the whole feed.
+      localStorage.setItem('accessToken', 'test-token');
+      const original = window.fetch;
+      const urls: string[] = [];
+      window.fetch = (async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        urls.push(url);
+        if (url.includes('/audit-logs/grouped')) {
+          return new Response(JSON.stringify({ detail: 'nope' }), {
+            status: 403,
+          });
+        }
+        return new Response(JSON.stringify({ users: [] }), { status: 200 });
+      }) as typeof window.fetch;
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(
+        () => !el.shadowRoot!.querySelector('.skeleton-row'),
+        'the fill finishes'
+      );
+      expect(
+        urls.filter((url) => url.includes('/audit-logs/grouped')).length
+      ).to.equal(1);
+      expect(el.shadowRoot!.querySelector('.empty')).to.not.equal(null);
+      el.ingest('flow_executions', {
+        execution_id: 'exec-1',
+        flow_id: 'flow-1',
+        type: 'status_update',
+        timestamp: NOW,
+        payload: { status: 'FAILED', flow_name: 'Merge Request Reviewer' },
+      });
+      await el.updateComplete;
+      expect(rowText(el).length).to.equal(1);
+      expect(el.shadowRoot!.querySelector('.earlier')).to.equal(null);
+      window.fetch = original;
       localStorage.removeItem('accessToken');
     });
 
