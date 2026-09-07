@@ -1,4 +1,4 @@
-import { html, fixture, expect } from '@open-wc/testing';
+import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import '../../components/view-header.ts';
 import './flow-executions-view';
@@ -694,6 +694,11 @@ describe('FlowExecutionsView', () => {
           },
         },
       ]);
+
+      await waitUntil(
+        () => Boolean(el.shadowRoot?.querySelector('tbody token-figures')),
+        'Expected the executions response to render its token figures'
+      );
 
       const cells = Array.from(
         el.shadowRoot?.querySelectorAll('tbody tr td') || []

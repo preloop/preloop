@@ -34,7 +34,6 @@ import {
   getAgentGovernance,
   getAccountGovernanceDefaults,
   getAccountAgent,
-  getAccountRuntimeSessionDetail,
   getFeatures,
   getAIModels,
   getTools,
@@ -45,7 +44,6 @@ import {
   getFlows,
 } from '../../api';
 import type {
-  AccountRuntimeSessionDetailResponse,
   GatewayUsageByModel,
   ManagedAgentDetailResponse,
   ManagedAgentModelBindingSummary,
@@ -121,9 +119,6 @@ export class AgentDetailView extends LitElement {
   private agent: ManagedAgentSummary | null = null;
 
   @state()
-  private runtimeDetail: AccountRuntimeSessionDetailResponse | null = null;
-
-  @state()
   private aggregate: ManagedAgentUsageAggregate | null = null;
 
   @state()
@@ -161,9 +156,6 @@ export class AgentDetailView extends LitElement {
 
   @state()
   private sshCommandText = '';
-
-  @state()
-  private selectedSessionId: string | null = null;
 
   @state()
   private loading = true;
@@ -675,7 +667,42 @@ export class AgentDetailView extends LitElement {
     }, 250);
   }
 
+  private loadInFlight: Promise<void> | null = null;
+  private liveRefreshQueued = false;
+  private explicitRefreshWaiters = 0;
+
   private async loadData(isSoftRefresh = false): Promise<void> {
+    if (this.loadInFlight) {
+      // Coalesce live events into one trailing read so changes made after the
+      // current request started are delivered without concurrent page reloads.
+      if (isSoftRefresh) {
+        this.liveRefreshQueued = true;
+        await this.loadInFlight;
+        return;
+      }
+      this.explicitRefreshWaiters += 1;
+      try {
+        await this.loadInFlight;
+      } finally {
+        this.explicitRefreshWaiters -= 1;
+      }
+      return this.loadData();
+    }
+    this.liveRefreshQueued = false;
+    const pending = this.performLoadData(isSoftRefresh);
+    this.loadInFlight = pending;
+    try {
+      await pending;
+    } finally {
+      this.loadInFlight = null;
+      if (this.liveRefreshQueued && this.explicitRefreshWaiters === 0) {
+        this.liveRefreshQueued = false;
+        if (this.isConnected) void this.loadData(true);
+      }
+    }
+  }
+
+  private async performLoadData(isSoftRefresh: boolean): Promise<void> {
     if (!this.agentId) {
       if (!isSoftRefresh) this.error = 'Missing agent id.';
       this.loading = false;
@@ -798,17 +825,6 @@ export class AgentDetailView extends LitElement {
       } catch (e) {
         console.warn('Failed to load associated flows', e);
       }
-
-      if (
-        !this.selectedSessionId ||
-        !this.sessions.some((s) => s.id === this.selectedSessionId)
-      ) {
-        this.selectedSessionId =
-          detail.agent.runtime_session_id ?? detail.sessions[0]?.id ?? null;
-      }
-      this.runtimeDetail = this.selectedSessionId
-        ? await getAccountRuntimeSessionDetail(this.selectedSessionId)
-        : null;
     } catch (error) {
       console.error('Failed to load managed agent detail:', error);
       if (!isSoftRefresh) {
@@ -821,19 +837,6 @@ export class AgentDetailView extends LitElement {
       if (!isSoftRefresh) {
         this.loading = false;
       }
-    }
-  }
-
-  private async selectSession(sessionId: string): Promise<void> {
-    this.selectedSessionId = sessionId;
-    try {
-      this.runtimeDetail = await getAccountRuntimeSessionDetail(sessionId);
-    } catch (error) {
-      console.error('Failed to load runtime session detail:', error);
-      this.error =
-        error instanceof Error
-          ? error.message
-          : 'Failed to load runtime session detail';
     }
   }
 

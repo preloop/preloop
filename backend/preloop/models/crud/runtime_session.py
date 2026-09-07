@@ -17,13 +17,15 @@ from sqlalchemy import (
     literal_column,
     or_,
 )
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
-from ..models.api_usage import ApiUsage
-from ..models.flow import Flow
-from ..models.runtime_session import RuntimeSession
+from preloop.models import models
 from .api_usage import cache_split_columns, cache_split_from_row
 from .base import CRUDBase
+
+ApiUsage = models.ApiUsage
+Flow = models.Flow
+RuntimeSession = models.RuntimeSession
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +153,7 @@ def _latest_gateway_usage_for_sessions(
             ApiUsage.provider_name,
             ApiUsage.timestamp,
         )
+        .distinct(ApiUsage.runtime_session_id)
         .order_by(
             ApiUsage.runtime_session_id.asc(),
             ApiUsage.timestamp.desc(),
@@ -488,6 +491,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             )
         if ai_model_id:
             matching_session_ids = db.query(ApiUsage.runtime_session_id).filter(
+                ApiUsage.account_id == account_id,
                 ApiUsage.runtime_session_id.isnot(None),
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.ai_model_id == ai_model_id,
@@ -530,6 +534,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             usage_count_subq = (
                 db.query(ApiUsage.runtime_session_id)
                 .filter(
+                    ApiUsage.account_id == account_id,
                     ApiUsage.runtime_session_id.isnot(None),
                     ApiUsage.action_type == "model_gateway",
                 )
@@ -586,19 +591,25 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             session_query = session_query.filter(self.model.ended_at.isnot(None))
 
         total = session_query.count()
-        usage_join = self._usage_join_conditions(
-            start_date=start_date, end_date=end_date, ai_model_id=ai_model_id
+        usage_links = self._account_usage_links(
+            db,
+            account_id=account_id,
+            start_date=start_date,
+            end_date=end_date,
+            ai_model_id=ai_model_id,
         )
+        session_usage = aliased(ApiUsage, usage_links)
 
         rows = (
             self._account_sessions_query(
                 session_query=session_query,
-                usage_join=usage_join,
+                usage_join=usage_links.c.session_id == self.model.id,
+                usage_model=session_usage,
                 summary_columns_available=self._summary_columns_available(db),
             )
             .order_by(
                 func.coalesce(
-                    func.max(ApiUsage.timestamp),
+                    func.max(session_usage.timestamp),
                     self.model.last_activity_at,
                     self.model.started_at,
                 ).desc()
@@ -630,11 +641,76 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
 
         return {"total": total, "items": items}
 
+    @staticmethod
+    def _account_usage_links(
+        db: Session,
+        *,
+        account_id: str,
+        start_date: Optional[datetime],
+        end_date: Optional[datetime],
+        ai_model_id: Optional[str],
+    ) -> Any:
+        """Map account usage to sessions using disjoint, equality-join branches.
+
+        The legacy flow attribution must remain supported, but combining it
+        with runtime_session_id in one OR join forces repeated scans of usage
+        for each session. Separate branches allow hash/index joins, including
+        for the legacy UUID-to-text comparison. A row matching both paths for
+        the same session is included only once.
+        """
+        # Keep the UNION narrow even if the planner materializes a branch.
+        # Request/response metadata is only inspected by the exclusion filter.
+        usage = db.query(
+            ApiUsage.id,
+            ApiUsage.flow_id,
+            ApiUsage.flow_execution_id,
+            ApiUsage.model_alias,
+            ApiUsage.provider_name,
+            ApiUsage.status_code,
+            ApiUsage.prompt_tokens,
+            ApiUsage.completion_tokens,
+            ApiUsage.total_tokens,
+            ApiUsage.estimated_cost,
+            ApiUsage.timestamp,
+            ApiUsage.cache_read_tokens,
+            ApiUsage.cache_creation_tokens,
+        ).filter(
+            ApiUsage.account_id == account_id,
+            ApiUsage.action_type == "model_gateway",
+            _exclude_internal_usage_condition(),
+        )
+        if start_date is not None:
+            usage = usage.filter(ApiUsage.timestamp >= start_date)
+        if end_date is not None:
+            usage = usage.filter(ApiUsage.timestamp < end_date)
+        if ai_model_id is not None:
+            usage = usage.filter(ApiUsage.ai_model_id == ai_model_id)
+
+        direct = usage.add_columns(
+            ApiUsage.runtime_session_id.label("session_id")
+        ).filter(ApiUsage.runtime_session_id.isnot(None))
+        legacy = (
+            usage.add_columns(RuntimeSession.id.label("session_id"))
+            .join(
+                RuntimeSession,
+                cast(ApiUsage.flow_execution_id, String)
+                == RuntimeSession.session_source_id,
+            )
+            .filter(
+                RuntimeSession.account_id == account_id,
+                RuntimeSession.session_source_type == "flow_execution",
+                ApiUsage.flow_execution_id.isnot(None),
+                ApiUsage.runtime_session_id.is_distinct_from(RuntimeSession.id),
+            )
+        )
+        return direct.union_all(legacy).subquery("session_usage_links")
+
     def _account_sessions_query(
         self,
         *,
         session_query: Any,
         usage_join: Any,
+        usage_model: Any,
         summary_columns_available: bool,
     ) -> Any:
         """Build the runtime session aggregate query."""
@@ -659,8 +735,8 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             else literal(None)
         )
         return (
-            session_query.outerjoin(ApiUsage, usage_join)
-            .outerjoin(Flow, ApiUsage.flow_id == Flow.id)
+            session_query.outerjoin(usage_model, usage_join)
+            .outerjoin(Flow, usage_model.flow_id == Flow.id)
             .with_entities(
                 self.model.account_id,
                 self.model.id,
@@ -677,32 +753,34 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
-                func.max(cast(ApiUsage.flow_id, String)).label("flow_id"),
+                func.max(cast(usage_model.flow_id, String)).label("flow_id"),
                 func.max(Flow.name).label("flow_name"),
-                func.max(cast(ApiUsage.flow_execution_id, String)).label(
+                func.max(cast(usage_model.flow_execution_id, String)).label(
                     "flow_execution_id"
                 ),
-                func.max(ApiUsage.model_alias).label("latest_model_alias"),
-                func.max(ApiUsage.provider_name).label("latest_provider_name"),
-                func.count(ApiUsage.id).label("request_count"),
+                func.max(usage_model.model_alias).label("latest_model_alias"),
+                func.max(usage_model.provider_name).label("latest_provider_name"),
+                func.count(usage_model.id).label("request_count"),
                 func.coalesce(
-                    func.sum(case((ApiUsage.status_code < 400, 1), else_=0)), 0
+                    func.sum(case((usage_model.status_code < 400, 1), else_=0)), 0
                 ).label("success_count"),
                 func.coalesce(
-                    func.sum(case((ApiUsage.status_code >= 400, 1), else_=0)), 0
+                    func.sum(case((usage_model.status_code >= 400, 1), else_=0)), 0
                 ).label("error_count"),
-                func.coalesce(func.sum(ApiUsage.prompt_tokens), 0).label(
+                func.coalesce(func.sum(usage_model.prompt_tokens), 0).label(
                     "prompt_tokens"
                 ),
-                func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
+                func.coalesce(func.sum(usage_model.completion_tokens), 0).label(
                     "completion_tokens"
                 ),
-                func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
-                func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
+                func.coalesce(func.sum(usage_model.total_tokens), 0).label(
+                    "total_tokens"
+                ),
+                func.coalesce(func.sum(usage_model.estimated_cost), 0.0).label(
                     "estimated_cost"
                 ),
-                func.max(ApiUsage.timestamp).label("last_request_at"),
-                *cache_split_columns(),
+                func.max(usage_model.timestamp).label("last_request_at"),
+                *cache_split_columns(usage_model),
             )
             .group_by(
                 self.model.account_id,
@@ -1036,6 +1114,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             == RuntimeSession.session_source_id,
         )
         conditions = [
+            ApiUsage.account_id == RuntimeSession.account_id,
             ApiUsage.action_type == "model_gateway",
             or_(
                 ApiUsage.runtime_session_id == RuntimeSession.id,
