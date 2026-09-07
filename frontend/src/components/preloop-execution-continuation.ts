@@ -8,6 +8,7 @@ import {
   type FlowContinuationPreview,
   type ContinuationRecoveryMode,
 } from '../api';
+import { formatUTCDateTime } from '../utils/date';
 import { consoleDialogStyles } from '../styles/console-dialog';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -111,7 +112,7 @@ export class PreloopExecutionContinuation extends LitElement {
     const date = new Date(raw);
     return Number.isNaN(date.getTime())
       ? ''
-      : ` until ${date.toLocaleString()}`;
+      : ` until ${formatUTCDateTime(raw)}`;
   }
 
   private async loadPreview() {

@@ -145,7 +145,7 @@ describe('Execution PR follow-up adoption', () => {
     const element = await mount();
     await open(element);
     expect(element.shadowRoot!.textContent!.replace(/\s+/g, ' ')).to.include(
-      'saved checkpoint until'
+      'saved checkpoint until 2026-09-08 12:00:00 UTC'
     );
     expect(element.shadowRoot!.querySelector('[data-continuation-ack]')).to.not
       .exist;
