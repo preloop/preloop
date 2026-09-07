@@ -24,9 +24,13 @@ Docker runners receive an execution-bound JWT (`aud=flow-artifact`,
 `result.json` when present) and PUT it to
 `/api/v1/flows/executions/{id}/artifacts`. Kubernetes logs then carry only
 `PRELOOP_ARTIFACT_*` status markers and `PRELOOP_EVIDENCE committed|failed|absent`
-lines — never the pack bytes. Workspace checkpoints stay on the separate
-`workspace` / `native_session` kinds; private runners still do not receive
-hosted workspace checkpoint capabilities.
+lines — never the pack bytes. Hosted Docker uses the same EXIT-trap PUT;
+after exit the control plane reads those `PRELOOP_EVIDENCE` lines and binds
+the stored artifact instead of copying `/workspace/evidence` a second time.
+Workspace checkpoints stay on the separate `workspace` / `native_session`
+kinds; private runners still do not receive hosted workspace checkpoint
+capabilities. Checkpoint restore reads up to
+`PRELOOP_CHECKPOINT_MAX_BYTES` even when the smaller evidence cap is set.
 
 The capability names one account, flow, thread, execution, kind and
 operation. It is not a storage credential. Agent containers never receive

@@ -177,6 +177,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   string. Truthy mock auto-attributes no longer drop a getter-captured
   pack before it is persisted.
 
+- **Checkpoint restore keeps its own response cap**: the shared artifact
+  client reads workspace archives up to `PRELOOP_CHECKPOINT_MAX_BYTES`
+  even when `PRELOOP_EVIDENCE_MAX_BYTES` is also set. Evidence PUTs stay
+  on the evidence cap.
+
+- **Hosted Docker direct upload stores once**: the EXIT-trap PUT is the
+  durable write. After exit the control plane binds that artifact from
+  `PRELOOP_EVIDENCE` log lines and does not copy leftover workspace files
+  into a second store.
+
 - Prevent database waits in authentication and approval summaries from blocking
   the API event loop; cancellation now waits for shared-session workers to finish.
   Native permission checks release authentication connections before human waits.

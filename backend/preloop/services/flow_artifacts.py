@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import logging
 import tarfile
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -17,6 +18,8 @@ from preloop.config import settings
 from preloop.models.crud import flow_artifact as crud
 from preloop.models.schemas.flow_artifact import ArtifactManifest, ArtifactReference
 from preloop.utils.encryption import _get_fernet
+
+logger = logging.getLogger(__name__)
 
 MAX_MEMBERS = 100_000
 RESERVED_RESULT_FIELDS = (
@@ -379,7 +382,10 @@ def _mark_status_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
             if exp <= datetime.now(UTC):
                 status = "expired"
         except ValueError:
-            pass
+            # Receipt expiry is advisory for polls. A malformed timestamp
+            # must not flip available to expired or raise into the status
+            # endpoint; download still verifies digest.
+            logger.debug("Ignoring unparseable evidence receipt expires_at")
     out = dict(receipt)
     out["status"] = status
     out["kind"] = "evidence"

@@ -2203,13 +2203,32 @@ class ContainerAgentExecutor(AgentExecutor):
             }
         return self._interpret_result_artifact_bytes(stream["data"], job_name)
 
+    def _record_direct_evidence_log_outcome(self, lines: list[str]) -> None:
+        """Honor the last ``PRELOOP_EVIDENCE`` line; never decode pack bytes."""
+        outcome: Optional[str] = None
+        for raw in lines:
+            text = raw.strip() if isinstance(raw, str) else str(raw).strip()
+            if text.startswith("PRELOOP_EVIDENCE committed "):
+                outcome = "uploaded"
+            elif text == "PRELOOP_EVIDENCE absent" or text.startswith(
+                "PRELOOP_EVIDENCE absent "
+            ):
+                outcome = "absent"
+            elif text.startswith("PRELOOP_EVIDENCE failed"):
+                outcome = "failed"
+        if outcome == "failed":
+            self.evidence_transport_error = "evidence_upload_failed"
+
     async def get_evidence_archive(self, session_reference: str) -> Optional[bytes]:
         """Capture the evidence pack (``/workspace/evidence``) as tar.gz bytes.
 
-        Docker: fetches the directory through the archive API and re-packs it
-        as tar.gz. Kubernetes: decodes the base64 emission from the pod log
-        stream (see ``K8S_ARTIFACT_WRAPPER_SCRIPT``) unless direct upload is
-        configured, in which case logs carry no evidence payload.
+        Docker legacy: fetches the directory through the archive API and
+        re-packs it as tar.gz. Docker direct upload: the EXIT trap already
+        PUT the pack; logs carry ``PRELOOP_EVIDENCE committed|failed|absent``
+        and this getter returns no bytes so the orchestrator does not store
+        a second copy. Kubernetes: decodes the base64 emission from the pod
+        log stream (see ``K8S_ARTIFACT_WRAPPER_SCRIPT``) unless direct upload
+        is configured, in which case logs carry no evidence payload.
         """
         if self.use_kubernetes:
             return await self._get_kubernetes_evidence_archive(session_reference)
@@ -2238,14 +2257,23 @@ class ContainerAgentExecutor(AgentExecutor):
                 f"Evidence archive from Job {job_name} not captured "
                 f"(status={stream['status']}, size={stream['size']})"
             )
-            if stream["status"] == "error":
-                self.evidence_transport_error = "evidence_upload_failed"
             return None
         return bytes(stream["data"])
 
     async def _get_docker_evidence_archive(
         self, session_reference: str
     ) -> Optional[bytes]:
+        if self._direct_evidence:
+            try:
+                lines = await self.get_logs(session_reference)
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to read logs for evidence archive of container "
+                    f"{session_reference[:12]}: {_exception_message(e)}"
+                )
+                return None
+            self._record_direct_evidence_log_outcome(lines)
+            return None
         try:
             docker = await self._get_docker_client()
             container = await docker.containers.get(session_reference)

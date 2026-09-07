@@ -3063,8 +3063,14 @@ class FlowExecutionOrchestrator:
         if callable(refresh):
             try:
                 refresh(execution)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Keep the in-memory row. Refresh can fail on a detached or
+                # already-expired identity; evidence bind then uses whatever
+                # receipt that object still carries.
+                logger.debug(
+                    "Skipping execution refresh before evidence bind (%s)",
+                    type(exc).__name__,
+                )
         return execution
 
     def _terminal_bound_evidence_receipt(self) -> dict[str, Any] | None:
