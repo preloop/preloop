@@ -32,6 +32,12 @@ The capability names one account, flow, thread, execution, kind and
 operation. It is not a storage credential. Agent containers never receive
 `SECURITY__ENCRYPTION_KEY`.
 
+Private Docker completions report the final evidence PUT as top-level
+`evidence_upload` (`uploaded`, `failed`, or `absent`) next to `result`.
+That field is runner bootstrap metadata; agent `result` JSON cannot set
+it. A failed or missing final PUT is stored as `failed`/`missing` even
+when an earlier trap artifact exists.
+
 ## Validation, encryption, quota
 
 The shared artifact service (`preloop.services.flow_artifacts`) validates
@@ -70,9 +76,9 @@ no decrypt, no archive hash). Status polls are not an integrity proof.
 | `failed` | 409 `evidence_failed` | Transport, integrity, or persist failed |
 
 Receipt fields include `kind=evidence`, `artifact_id`, `sha256`/`digest`,
-`execution_id`, and `status`. Maintenance/provenance consumers should
-treat `available: true` from a poll as insufficient; they must use the
-stored artifact id and digest, then confirm on download.
+`execution_id`, and `status`. Release consumers should treat `available: true`
+from a poll as insufficient; they must use the stored artifact id and digest,
+then confirm on download.
 
 `object_lock` and `legal_hold` are always `false`. Do not treat a passing
 CRA `result.json` as proof the pack is available: check the receipt, then

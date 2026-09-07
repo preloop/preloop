@@ -40,6 +40,7 @@ from preloop.services.private_publication import (
 )
 from preloop.services.trusted_publisher import PublicationError
 from preloop.services.host_exec import (
+    apply_runner_completion_to_execution,
     finalize_runner_completion,
     normalize_host_exec_advertisements,
 )
@@ -527,29 +528,15 @@ async def runner_ws(
                     break
                 execution = crud_flow_execution.get(db, id=execution_id)
                 if execution:
-                    execution.status = status
-                    if status in {"SUCCEEDED", "FAILED", "STOPPED"}:
-                        crud_flow_execution.confirm_stop(
-                            db, execution_id=execution_id, commit=False
-                        )
-                    execution.end_time = datetime.now(timezone.utc)
-                    if completion_error:
-                        execution.error_message = completion_error
-
-                    if result is not None:
-                        clean_result = {
-                            key: value
-                            for key, value in result.items()
-                            if key
-                            not in {"trusted_publication", "_private_publication"}
-                        }
-                        protected = {
-                            key: value
-                            for key, value in (execution.result or {}).items()
-                            if key in {"trusted_publication", "_private_publication"}
-                        }
-                        execution.result = {**clean_result, **protected}
-                    db.add(execution)
+                    apply_runner_completion_to_execution(
+                        db,
+                        execution,
+                        account_id=runner.account_id,
+                        status=status,
+                        error=completion_error,
+                        result=result,
+                        message=raw,
+                    )
                     crud_api_key.deactivate_runtime_keys_for_flow_execution(
                         db,
                         account_id=runner.account_id,

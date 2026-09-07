@@ -280,6 +280,12 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db.flush()
         return db_obj
 
+    OPEN_ARTIFACT_PUT_STATUSES = (
+        "PENDING",
+        "INITIALIZING",
+        "RUNNING",
+    )
+
     def set_evidence_receipt(
         self, db: Session, *, db_obj: FlowExecution, receipt: dict[str, Any]
     ) -> FlowExecution:
@@ -291,6 +297,26 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db_obj.evidence_receipt = receipt  # type: ignore[assignment]
         db.flush()
         return db_obj
+
+    def lock_open_for_artifact_put(
+        self, db: Session, *, execution_id: uuid.UUID
+    ) -> FlowExecution:
+        """Lock the execution and refuse uploads after terminal close.
+
+        Callers hold this row lock through the artifact insert so a completion
+        commit cannot sneak in between the status check and the PUT commit.
+        """
+        execution = (
+            db.query(FlowExecution)
+            .filter(FlowExecution.id == execution_id)
+            .with_for_update()
+            .first()
+        )
+        if execution is None:
+            raise ValueError("artifact_execution_missing")
+        if execution.status not in self.OPEN_ARTIFACT_PUT_STATUSES:
+            raise ValueError("artifact_execution_closed")
+        return execution
 
     def set_workspace_snapshot(
         self, db: Session, *, db_obj: FlowExecution, archive: Optional[bytes]

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from uuid import UUID
 
 HOST_EXEC_AGENT_TYPE = "cursor"
 HOST_EXEC_COMPLETION_PROTOCOL = "host_exec"
@@ -305,3 +306,50 @@ def finalize_runner_completion(
     if profile:
         return "FAILED", "Invalid durable runner lease protocol", None
     return validate_runner_completion(dict(message), leased_job=dict(pending))
+
+
+def apply_runner_completion_to_execution(
+    db: Any,
+    execution: Any,
+    *,
+    account_id: UUID,
+    status: str,
+    error: str | None,
+    result: dict[str, Any] | None,
+    message: Mapping[str, Any],
+) -> None:
+    """Persist terminal status, sanitized result, and trusted evidence outcome.
+
+    WebSocket complete and tests share this path. Agent JSON cannot author
+    ``evidence_upload``; only the top-level completion field is bound.
+    """
+    from datetime import datetime, timezone
+
+    from preloop.models.crud import crud_flow_execution
+    from preloop.services.flow_artifacts import (
+        bind_terminal_evidence,
+        sanitize_captured_result,
+        trusted_evidence_upload,
+    )
+
+    execution.status = status
+    if status in {"SUCCEEDED", "FAILED", "STOPPED"}:
+        crud_flow_execution.confirm_stop(db, execution_id=execution.id, commit=False)
+    execution.end_time = datetime.now(timezone.utc)
+    if error:
+        execution.error_message = error
+    if result is not None:
+        cleaned = sanitize_captured_result(result) or {}
+        protected = {
+            key: value
+            for key, value in (execution.result or {}).items()
+            if key in {"trusted_publication", "_private_publication"}
+        }
+        execution.result = {**cleaned, **protected}
+    bind_terminal_evidence(
+        db,
+        account_id=account_id,
+        execution=execution,
+        evidence_upload=trusted_evidence_upload(message),
+    )
+    db.add(execution)

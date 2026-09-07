@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -359,6 +360,18 @@ def test_read_bounded_rejects_growth_after_lstat(tmp_path: Path) -> None:
         _read_bounded(path, expected=before, limit=1024)
 
 
+def test_read_bounded_rejects_symlink_replacement(tmp_path: Path) -> None:
+    path = tmp_path / "findings.json"
+    secret = tmp_path / "secret.json"
+    secret.write_bytes(b"secret-not-for-archive")
+    path.write_bytes(b"abc")
+    before = path.lstat()
+    path.unlink()
+    path.symlink_to(secret)
+    with pytest.raises(ValueError, match="evidence_unsafe_member|evidence_busy"):
+        _read_bounded(path, expected=before, limit=1024)
+
+
 def test_public_status_does_not_query_artifacts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -395,12 +408,46 @@ def test_inspect_failed_receipt_is_not_resurrected_by_live_artifact(
         "transport": "direct",
         "error": "evidence_upload_failed",
     }
+    execution.status = "FAILED"
     monkeypatch.setattr(
         "preloop.services.flow_artifacts.crud.latest",
         lambda *args, **kwargs: Mock(id=uuid4(), ciphertext=b"x"),
     )
     receipt = inspect_evidence(Mock(), account_id=uuid4(), execution=execution)
     assert receipt["status"] == "failed"
+
+
+def test_inspect_live_refresh_before_finalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execution = Mock()
+    execution.id = uuid4()
+    execution.flow_id = uuid4()
+    execution.trigger_event_details = {}
+    execution.evidence_archive = None
+    execution.status = "RUNNING"
+    execution.evidence_receipt = {
+        "status": "failed",
+        "transport": "direct",
+        "error": "evidence_upload_failed",
+    }
+    live = Mock(
+        id=uuid4(),
+        ciphertext=b"x",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        availability="available",
+        manifest={"sha256": "abc"},
+        manifest_sha256="def",
+        kind="evidence",
+        execution_id=execution.id,
+    )
+    monkeypatch.setattr(
+        "preloop.services.flow_artifacts.crud.latest",
+        lambda *args, **kwargs: live,
+    )
+    receipt = inspect_evidence(Mock(), account_id=uuid4(), execution=execution)
+    assert receipt["status"] == "available"
+    assert receipt["artifact_id"] == str(live.id)
 
 
 def test_sanitize_strips_reserved_publication_keys() -> None:
@@ -410,6 +457,13 @@ def test_sanitize_strips_reserved_publication_keys() -> None:
             "trusted_publication": {"url": "https://example.com/forged"},
             "_private_publication": {"phase": "complete"},
         }
+    )
+    assert cleaned == {"verdict": "fail"}
+
+
+def test_sanitize_strips_forged_evidence_upload() -> None:
+    cleaned = sanitize_captured_result(
+        {"verdict": "fail", "evidence_upload": "uploaded"}
     )
     assert cleaned == {"verdict": "fail"}
 

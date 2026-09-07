@@ -512,6 +512,7 @@ class FlowExecutionOrchestrator:
         # the agent_result dict so it never travels through NATS updates.
         self._evidence_archive: Optional[bytes] = None
         self._evidence_receipt: Optional[Dict[str, Any]] = None
+        self._evidence_artifact_id: Optional[str] = None
         # tar.gz of /workspace captured before the runtime is torn down, so a
         # run that failed before pushing can be downloaded or resumed.
         self._workspace_snapshot: Optional[bytes] = None
@@ -3040,14 +3041,62 @@ class FlowExecutionOrchestrator:
         )
         return sanitized
 
+    def _sync_evidence_artifact_identity(
+        self, artifact_id: Any, archive: bytes | None = None
+    ) -> None:
+        """Drop cached pack bytes when the bound artifact identity changes."""
+        new_id = str(artifact_id) if artifact_id is not None else None
+        current = getattr(self, "_evidence_artifact_id", None)
+        if new_id != current:
+            self._evidence_archive = None
+            self._evidence_artifact_id = new_id
+        if archive is not None:
+            self._evidence_archive = archive
+
+    def _refresh_execution_for_evidence(self) -> Any:
+        """Reload receipt/status committed by the runner completion handler."""
+        execution = self.execution_log
+        if execution is None:
+            return None
+        db = getattr(self, "db", None)
+        refresh = getattr(db, "refresh", None)
+        if callable(refresh):
+            try:
+                refresh(execution)
+            except Exception:
+                pass
+        return execution
+
+    def _terminal_bound_evidence_receipt(self) -> dict[str, Any] | None:
+        """Trusted receipt written at completion; not agent JSON."""
+        from preloop.services.flow_artifacts import execution_is_terminal
+
+        execution = self._refresh_execution_for_evidence()
+        if execution is None or not execution_is_terminal(execution):
+            return None
+        stored = getattr(execution, "evidence_receipt", None)
+        if isinstance(stored, dict) and stored.get("status"):
+            return stored
+        return None
+
     async def _evidence_bytes_for_result_extract(self) -> Optional[bytes]:
         """Decrypt stored evidence once when result.json is only in the pack.
 
         Status polls never call this. Direct-path receipts stay metadata-only
-        until the result getter misses and we need the packed JSON.
+        until the result getter misses and we need the packed JSON. Cached
+        bytes are used only when they still match the bound artifact identity.
         """
-        if self._evidence_archive:
-            return self._evidence_archive
+        wanted = None
+        receipt = (
+            self._evidence_receipt if isinstance(self._evidence_receipt, dict) else {}
+        )
+        wanted = receipt.get("artifact_id")
+        cached = getattr(self, "_evidence_archive", None)
+        cached_id = getattr(self, "_evidence_artifact_id", None)
+        if cached is not None and (not wanted or str(cached_id) == str(wanted)):
+            return cached
+        if wanted and str(cached_id) != str(wanted):
+            self._evidence_archive = None
         if not settings.flow_artifact_direct_upload:
             return None
         execution = self.execution_log
@@ -3061,14 +3110,38 @@ class FlowExecutionOrchestrator:
             get_artifact,
         )
 
-        stored = crud_flow_artifact.latest(
-            self.db,
-            account_id=flow.account_id,
-            flow_id=flow.id,
-            thread_id=artifact_thread_id(execution.trigger_event_details, execution.id),
-            execution_id=execution.id,
-            kind="evidence",
-        )
+        thread_id = artifact_thread_id(execution.trigger_event_details, execution.id)
+        stored = None
+        if wanted:
+            try:
+                from uuid import UUID
+
+                stored = crud_flow_artifact.get(
+                    self.db,
+                    artifact_id=UUID(str(wanted)),
+                    account_id=flow.account_id,
+                    flow_id=flow.id,
+                    thread_id=thread_id,
+                )
+            except ValueError:
+                stored = None
+            if stored is not None and (
+                stored.execution_id != execution.id
+                or stored.kind != "evidence"
+                or stored.ciphertext is None
+            ):
+                stored = None
+            if stored is None:
+                return None
+        elif stored is None:
+            stored = crud_flow_artifact.latest(
+                self.db,
+                account_id=flow.account_id,
+                flow_id=flow.id,
+                thread_id=thread_id,
+                execution_id=execution.id,
+                kind="evidence",
+            )
         if stored is None or stored.ciphertext is None:
             return None
         try:
@@ -3076,14 +3149,12 @@ class FlowExecutionOrchestrator:
                 self.db,
                 account_id=flow.account_id,
                 flow_id=flow.id,
-                thread_id=artifact_thread_id(
-                    execution.trigger_event_details, execution.id
-                ),
+                thread_id=thread_id,
                 reference=artifact_reference(stored),
             )
         except ValueError:
             return None
-        self._evidence_archive = archive
+        self._sync_evidence_artifact_identity(stored.id, archive)
         return archive
 
     async def _capture_evidence_archive(
@@ -3104,9 +3175,22 @@ class FlowExecutionOrchestrator:
             put_artifact,
         )
 
-        execution = self.execution_log
+        execution = self._refresh_execution_for_evidence()
         flow = self.flow
         direct = bool(settings.flow_artifact_direct_upload) and execution is not None
+
+        bound = self._terminal_bound_evidence_receipt()
+        if bound is not None:
+            status = str(bound.get("status") or "")
+            if status in {"failed", "missing", "expired"}:
+                self._evidence_receipt = bound
+                self._evidence_archive = None
+                self._evidence_artifact_id = None
+                return
+            if status == "available" and bound.get("artifact_id"):
+                self._evidence_receipt = bound
+                self._sync_evidence_artifact_identity(bound.get("artifact_id"))
+                return
 
         getter = getattr(agent_executor, "get_evidence_archive", None)
         archive: bytes | None = None
@@ -3170,7 +3254,9 @@ class FlowExecutionOrchestrator:
                     execution.trigger_event_details, execution.id
                 ),
             )
-            self._evidence_archive = archive
+            self._sync_evidence_artifact_identity(
+                stored.id if stored is not None else None, archive
+            )
             self._evidence_receipt = evidence_receipt(
                 status="available",
                 execution_id=execution.id,
@@ -3185,7 +3271,7 @@ class FlowExecutionOrchestrator:
             return
 
         if archive is not None:
-            self._evidence_archive = archive
+            self._sync_evidence_artifact_identity(None, archive)
             if execution is not None:
                 self._evidence_receipt = evidence_receipt(
                     status="available",
@@ -3211,6 +3297,7 @@ class FlowExecutionOrchestrator:
                 kind="evidence",
             )
             if stored is not None and stored.ciphertext is not None:
+                self._sync_evidence_artifact_identity(stored.id)
                 self._evidence_receipt = evidence_receipt(
                     status="available",
                     execution_id=execution.id,
