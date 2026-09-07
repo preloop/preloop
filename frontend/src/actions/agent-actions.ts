@@ -22,6 +22,44 @@ export const AGENT_LIFECYCLE_ACTION_IDS: Record<string, AgentLifecycleMove> = {
   decommission: 'decommission',
 };
 
+/**
+ * One wording per lifecycle move, so the confirmation an operator reads is
+ * the same on the agents list and on the agent page.
+ */
+export const AGENT_LIFECYCLE_WORDING: Record<
+  AgentLifecycleMove,
+  { title: string; verb: string; verbPast: string; detail: string }
+> = {
+  suspend: {
+    title: 'Pause',
+    verb: 'pause',
+    verbPast: 'paused',
+    detail:
+      'Requests are blocked while paused. Resume restores the agent without re-onboarding it.',
+  },
+  resume: {
+    title: 'Resume',
+    verb: 'resume',
+    verbPast: 'resumed',
+    detail: 'The existing credentials start working again immediately.',
+  },
+  decommission: {
+    title: 'Decommission',
+    verb: 'decommission',
+    verbPast: 'decommissioned',
+    detail:
+      "Decommissioning revokes the agent's runtime credentials. The agent and its history stay in the list, and resuming it restores its own unexpired keys.",
+  },
+};
+
+/** The audit reason the PATCH carries, naming where the move was made. */
+export function agentLifecycleReason(
+  move: AgentLifecycleMove,
+  surface: string
+): string {
+  return `Manually ${AGENT_LIFECYCLE_WORDING[move].verbPast} from ${surface}`;
+}
+
 export interface AgentActionContext extends ActionContext {
   /** True while a call for this agent is in flight. */
   busy?: boolean;

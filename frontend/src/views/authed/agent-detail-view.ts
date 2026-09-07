@@ -28,6 +28,12 @@ import '../../components/time-range-select.ts';
 import '../../components/confirm-dialog.ts';
 import { confirmDialog } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
+import { actionsFor } from '../../actions';
+import {
+  AGENT_LIFECYCLE_WORDING,
+  agentLifecycleReason,
+  type AgentLifecycleMove,
+} from '../../actions/agent-actions';
 import {
   fetchWithAuth,
   getApprovalWorkflows,
@@ -1866,22 +1872,23 @@ export class AgentDetailView extends LitElement {
     }
   }
 
+  /**
+   * Pause, resume or decommission, with the same wording the list uses so the
+   * dialog does not change with the page it was opened from.
+   */
   private async updateAgentLifecycle(
-    lifecycleAction: 'suspend' | 'resume'
+    lifecycleAction: AgentLifecycleMove
   ): Promise<void> {
     if (!this.agentId || !this.agent) {
       return;
     }
-    const isSuspend = lifecycleAction === 'suspend';
+    const wording = AGENT_LIFECYCLE_WORDING[lifecycleAction];
     const confirmed = await confirmDialog({
-      title: isSuspend ? 'Pause agent' : 'Resume agent',
-      message: isSuspend
-        ? `Pause ${this.agent.display_name}?`
-        : `Resume ${this.agent.display_name}?`,
-      detail: isSuspend
-        ? 'Requests are blocked while paused. Resume restores the agent without re-onboarding it.'
-        : 'The existing credentials start working again immediately.',
-      confirmLabel: isSuspend ? 'Pause' : 'Resume',
+      title: `${wording.title} agent`,
+      message: `${wording.title} ${this.agent.display_name}?`,
+      detail: wording.detail,
+      confirmLabel: wording.title,
+      variant: lifecycleAction === 'decommission' ? 'danger' : 'primary',
     });
     if (!confirmed) {
       return;
@@ -1890,10 +1897,7 @@ export class AgentDetailView extends LitElement {
     try {
       await updateAccountAgent(this.agentId, {
         lifecycle_action: lifecycleAction,
-        reason:
-          lifecycleAction === 'suspend'
-            ? 'Manually paused by admin'
-            : 'Manually resumed by admin',
+        reason: agentLifecycleReason(lifecycleAction, 'agent page'),
       });
       await this.loadData();
     } catch (error) {
@@ -1935,93 +1939,32 @@ export class AgentDetailView extends LitElement {
     `;
   }
 
+  /**
+   * What this agent offers, from the one registry the agents list reads
+   * (`src/actions/agent-actions.ts`). The page used to keep its own array,
+   * which is how it ended up without Decommission while the list row had it.
+   */
   private get agentActions(): ResourceAction[] {
     if (!this.agent) return [];
-
-    const actions: ResourceAction[] = [
-      {
-        id: 'rename',
-        label: 'Rename',
-        icon: 'pencil',
-        onClick: () => this.promptRename(),
+    return actionsFor('agent', this.agent, {
+      busy: this.actionLoading,
+      canChangeOwner: this.featureFlags.user_management === true,
+      renderTalk: (agent) => html`
+        <talk-button
+          .agent=${agent}
+          source-context="agent-detail-view"
+        ></talk-button>
+      `,
+      onRename: () => this.promptRename(),
+      onEditTags: () => this.promptEditTags(),
+      onChangeOwner: () => this.promptChangeOwner(),
+      onLifecycle: (_agent, move) => {
+        void this.updateAgentLifecycle(move);
       },
-      {
-        id: 'edit-tags',
-        label: 'Edit tags',
-        icon: 'tag',
-        onClick: () => this.promptEditTags(),
+      onRemove: () => {
+        void this.removeAgent();
       },
-    ];
-
-    if (this.featureFlags.user_management) {
-      actions.push({
-        id: 'change-owner',
-        label: 'Change owner',
-        icon: 'person-gear',
-        onClick: () => this.promptChangeOwner(),
-      });
-    }
-
-    const isSuspendedOrDecommissioned =
-      this.agent.lifecycle_state === 'suspended' ||
-      this.agent.lifecycle_state === 'decommissioned';
-
-    // Resume is a green "start it again"; Pause is an everyday, reversible
-    // control, so it stays neutral. Amber read as a warning next to Talk and
-    // pulled the eye away from the action people actually came for.
-    if (isSuspendedOrDecommissioned) {
-      actions.push({
-        id: 'resume',
-        label: 'Resume',
-        variant: 'success',
-        icon: 'play-fill',
-        loading: this.actionLoading,
-        onClick: () => this.updateAgentLifecycle('resume'),
-        tooltip:
-          'Resume this agent. Its existing credentials start working again immediately.',
-      });
-    } else {
-      actions.push({
-        id: 'pause',
-        label: 'Pause',
-        variant: 'default',
-        icon: 'pause-fill',
-        loading: this.actionLoading,
-        onClick: () => this.updateAgentLifecycle('suspend'),
-        tooltip:
-          'Pause this agent. Requests are blocked while paused; Resume restores it without re-onboarding.',
-      });
-    }
-
-    const controlState = getAgentControlState(this.agent);
-    if (controlState.visible) {
-      actions.push({
-        id: 'talk',
-        label: 'Talk',
-        render: () => html`
-          <talk-button
-            .agent=${this.agent}
-            source-context="agent-detail-view"
-          ></talk-button>
-        `,
-      });
-    }
-
-    // Remove goes last, set apart from the everyday actions and outlined
-    // rather than solid: it is the one action on this page you cannot undo,
-    // and a solid red block next to Rename invites a mis-click.
-    actions.push({
-      id: 'remove',
-      label: 'Remove',
-      icon: 'trash',
-      variant: 'danger',
-      outline: true,
-      separated: true,
-      loading: this.actionLoading,
-      onClick: () => this.removeAgent(),
     });
-
-    return actions;
   }
 
   private handleSshKeyDown(e: KeyboardEvent) {
