@@ -176,7 +176,7 @@ export const AUDIT_PAGE_SIZE = 50;
  * Three pages, and only the first one is on its own: page 0 decides whether
  * more are needed, and pages 1 and 2 are then asked for together rather than
  * one after the other. A fourth page was two more round trips for rows that
- * were already off the bottom of a 12-row rail.
+ * were already off the bottom of a 20-row rail.
  */
 export const AUDIT_MAX_PAGES = 3;
 const AUDIT_WINDOW_HOURS = 24;
@@ -1846,7 +1846,7 @@ export class ActivityFeed extends LitElement {
       // the same empty rail with the same history behind it: `exhausted` is
       // false because the window still has groups, but the feed has no rows,
       // so the unwindowed read has to run. Skip it only when the window
-      // already produced news — that account's day is the news, and history
+      // already produced news: that account's day is the news, and history
       // with no lower bound is the expensive read of the two.
       const rows = foldRows(events).length;
       if (read && rows < FEED_INITIAL_ROWS && (exhausted || rows === 0)) {
@@ -2208,7 +2208,11 @@ export class ActivityFeed extends LitElement {
           (row, index) => html`
             ${
               index === earlier
-                ? html`<div class="earlier" role="separator">
+                ? html`<div
+                    class="earlier"
+                    role="separator"
+                    aria-label="Earlier"
+                  >
                     <span>Earlier</span>
                   </div>`
                 : nothing
