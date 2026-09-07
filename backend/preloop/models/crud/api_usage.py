@@ -2155,12 +2155,13 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         end: datetime,
         limit: int = 5000,
     ) -> List[ApiUsage]:
-        """List model-gateway usage rows for an account within a time window.
+        """List full model-gateway ``ApiUsage`` rows in a half-open window.
 
-        Returns the full ``ApiUsage`` rows (not aggregates) so deterministic
-        analyzers can inspect per-row ``meta_data`` (e.g. ``tools_meta``),
-        ``prompt_tokens``, ``estimated_cost`` and ``ai_model_id``. The window
-        is half-open: ``start <= timestamp < end``.
+        In-tree reporting uses
+        :meth:`list_gateway_tool_usage_in_window`, which projects
+        ``tools_meta`` without transferring request/response payloads.
+        This method is kept for the Enterprise billing plugin's tool-cost
+        detector, which still loads complete rows.
 
         Args:
             db: Database session.

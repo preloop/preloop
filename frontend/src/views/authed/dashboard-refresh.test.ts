@@ -99,4 +99,27 @@ describe('Overview refresh backpressure', () => {
     }
     expect(element['backgroundRefreshInFlight']).to.equal(false);
   });
+
+  it('does not let a queued soft reload replace a full reload', async () => {
+    element['refreshInFlight'] = true;
+    await element['fetchDashboardData']();
+    await element['fetchDashboardData']({ preserveLoadingState: true });
+    expect(element['queuedDashboardRefresh']).to.deep.equal({});
+  });
+
+  it('promotes a queued soft reload when a full reload arrives', async () => {
+    element['refreshInFlight'] = true;
+    await element['fetchDashboardData']({ preserveLoadingState: true });
+    await element['fetchDashboardData']();
+    expect(element['queuedDashboardRefresh']).to.deep.equal({});
+  });
+
+  it('keeps a queued range change soft when only soft reloads arrive', async () => {
+    element['refreshInFlight'] = true;
+    await element['fetchDashboardData']({ preserveLoadingState: true });
+    await element['fetchDashboardData']({ preserveLoadingState: true });
+    expect(element['queuedDashboardRefresh']).to.deep.equal({
+      preserveLoadingState: true,
+    });
+  });
 });

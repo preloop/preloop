@@ -2161,6 +2161,17 @@ export class DashboardView extends AuthedElement {
     }
   }
 
+  private queueDashboardRefresh(options: {
+    preserveLoadingState?: boolean;
+  }): void {
+    const queuedFull =
+      this.queuedDashboardRefresh != null &&
+      this.queuedDashboardRefresh.preserveLoadingState !== true;
+    const incomingFull = options.preserveLoadingState !== true;
+    this.queuedDashboardRefresh =
+      queuedFull || incomingFull ? {} : { preserveLoadingState: true };
+  }
+
   /**
    * The first wave: what the top of the page needs and nothing else.
    *
@@ -2179,7 +2190,7 @@ export class DashboardView extends AuthedElement {
       this.backgroundRefreshInFlight ||
       this.topicRefreshesInFlight.size > 0
     ) {
-      this.queuedDashboardRefresh = options;
+      this.queueDashboardRefresh(options);
       return;
     }
     this.refreshInFlight = true;
