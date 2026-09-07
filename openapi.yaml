@@ -8245,7 +8245,14 @@ paths:
 
         report; the runner captures it as a first-class execution artifact.
 
-        Returns 404 if the execution does not exist or reported no result.'
+        Returns 404 if the execution does not exist or reported no result.
+
+
+        ``evidence`` is the persisted receipt only: bounded, account-scoped,
+
+        no decrypt. Availability is not integrity proof; download
+
+        ``GET .../evidence`` to verify digest.'
       operationId: get_flow_execution_result_api_v1_flows_executions__execution_id__result_get
       security:
       - bearerAuth: []
@@ -8273,6 +8280,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/executions/{execution_id}/evidence-status:
+    get:
+      tags:
+      - Flows
+      summary: Get Flow Execution Evidence Status
+      description: 'Report evidence availability without downloading the pack.
+
+
+        Status is one of ``available``, ``missing``, ``expired``, or ``failed``.
+
+        Served from the persisted execution receipt (no decrypt). Availability
+
+        is not integrity proof. ``object_lock`` and ``legal_hold`` are always
+
+        false: this API does not implement WORM retention.'
+      operationId: get_flow_execution_evidence_status_api_v1_flows_executions__execution_id__evidence_status_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Flow Execution Evidence Status Api V1 Flows Executions  Execution
+                  Id  Evidence Status Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/flows/executions/{execution_id}/evidence:
     get:
       tags:
@@ -8285,7 +8334,11 @@ paths:
 
         the runner captures it as a tar.gz archive after the agent finishes.
 
-        Returns 404 if the execution does not exist or no evidence was captured.'
+        Durable artifacts are served after digest verification. Distinct
+
+        outcomes: 404 missing, 410 expired, 409 failed. Legacy executions that
+
+        only stored ``evidence_archive`` remain readable.'
       operationId: get_flow_execution_evidence_api_v1_flows_executions__execution_id__evidence_get
       security:
       - bearerAuth: []

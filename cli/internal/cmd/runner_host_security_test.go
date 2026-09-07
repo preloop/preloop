@@ -221,7 +221,7 @@ func TestHostExecAndDockerOutcomesUseDistinctProtocolsAfterLogs(t *testing.T) {
 			defer conn.Close()
 			buffer := &runnerLogBuffer{native: native}
 			_, _ = io.WriteString(buffer, "final marker\n")
-			outcome := leasedJobOutcome{executionID: "execution", status: "SUCCEEDED", hostExec: native, profile: "native", result: map[string]any{"status": "success"}, logBuffer: buffer}
+			outcome := leasedJobOutcome{executionID: "execution", status: "SUCCEEDED", hostExec: native, profile: "native", result: map[string]any{"status": "success"}, logBuffer: buffer, evidenceUpload: "failed"}
 			if err = writeJobOutcome(conn, outcome); err != nil {
 				t.Fatal(err)
 			}
@@ -238,6 +238,9 @@ func TestHostExecAndDockerOutcomesUseDistinctProtocolsAfterLogs(t *testing.T) {
 				} else {
 					if complete["completion_protocol"] != "docker_v1" || complete["launch_version"] != float64(1) || complete["host_exec_profile"] != nil {
 						t.Fatalf("docker envelope=%v", complete)
+					}
+					if complete["evidence_upload"] != "failed" {
+						t.Fatalf("docker evidence_upload=%v", complete["evidence_upload"])
 					}
 				}
 			case <-time.After(time.Second):

@@ -138,7 +138,10 @@ dev = [
 ]
 ai-providers = [
     "anthropic>=0.39.0",  # For Anthropic Claude API key validation
-    "google-generativeai>=0.8.0",  # For Google Gemini API key validation
+    # Used only by ai_approval_service._call_google. Model listing no longer
+    # needs it: it speaks plain HTTPS, because this extra is absent from the
+    # hash-pinned runtime lock the image installs.
+    "google-generativeai>=0.8.0",
 ]
 push-notifications = [
     "firebase-admin>=6.0.0",  # For Android FCM push notifications

@@ -804,6 +804,93 @@ class TestEvidenceArchive:
 
         assert await container_executor.get_evidence_archive("container-123") is None
 
+    @pytest.mark.asyncio
+    async def test_docker_direct_upload_after_exit_does_not_repack(
+        self, container_executor, mock_docker
+    ):
+        """Hosted Docker EXIT PUT is the store; completion must not re-copy."""
+        mock_docker.images.inspect = AsyncMock()
+        mock_container = AsyncMock()
+        type(mock_container).id = PropertyMock(return_value="container-123")
+        mock_container.start = AsyncMock()
+        mock_container.show = AsyncMock(
+            return_value={
+                "State": {
+                    "Running": False,
+                    "Status": "exited",
+                    "ExitCode": 0,
+                    "OOMKilled": False,
+                    "Error": "",
+                    "StartedAt": "2026-09-07T00:00:00Z",
+                    "FinishedAt": "2026-09-07T00:01:00Z",
+                },
+                "Name": "/agent",
+                "Id": "container-123",
+            }
+        )
+        mock_container.log = AsyncMock(
+            return_value=[
+                b"agent finished",
+                b"PRELOOP_EVIDENCE committed 00000000-0000-0000-0000-000000000001",
+            ]
+        )
+        mock_container.get_archive = AsyncMock(
+            side_effect=AssertionError("direct upload must not re-fetch leftover files")
+        )
+        mock_docker.containers.create = AsyncMock(return_value=mock_container)
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+
+        session = await container_executor.start(
+            {
+                "flow_id": "flow-456",
+                "execution_id": "exec-789",
+                "prompt": "Test prompt",
+                "agent_config": {},
+                "evidence_env": {"PRELOOP_EVIDENCE_PUT_TOKEN": "scoped-token"},
+            }
+        )
+        result = await container_executor.get_result(session)
+        captured = await container_executor.get_evidence_archive(session)
+
+        assert container_executor._direct_evidence is True
+        assert result.status == AgentStatus.SUCCEEDED
+        assert captured is None
+        assert container_executor.evidence_transport_error is None
+        mock_container.get_archive.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_docker_direct_upload_failed_does_not_repack_leftovers(
+        self, container_executor, mock_docker
+    ):
+        leftover = _make_tar({"evidence/findings.json": b'{"trap":true}'})
+        mock_container = AsyncMock()
+        mock_container.log = AsyncMock(
+            return_value=[b"PRELOOP_EVIDENCE failed OSError"]
+        )
+        mock_container.get_archive = AsyncMock(return_value=leftover)
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+        container_executor._direct_evidence = True
+
+        assert await container_executor.get_evidence_archive("container-123") is None
+        assert container_executor.evidence_transport_error == "evidence_upload_failed"
+        mock_container.get_archive.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_docker_direct_upload_absent_is_not_a_transport_error(
+        self, container_executor, mock_docker
+    ):
+        mock_container = AsyncMock()
+        mock_container.log = AsyncMock(return_value=[b"PRELOOP_EVIDENCE absent"])
+        mock_container.get_archive = AsyncMock(
+            side_effect=AssertionError("absent must not fall back to leftover files")
+        )
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+        container_executor._direct_evidence = True
+
+        assert await container_executor.get_evidence_archive("container-123") is None
+        assert container_executor.evidence_transport_error is None
+        mock_container.get_archive.assert_not_called()
+
 
 class TestKubernetesArtifactWrapper:
     """The wrapper script and its arg-rewriting hook."""

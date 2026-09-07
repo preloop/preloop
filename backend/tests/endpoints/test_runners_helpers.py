@@ -268,7 +268,7 @@ async def test_completion_confirms_stop_only_on_terminal_owner_ack(
                 runner.reported_status = reported_status
         return True
 
-    execution = SimpleNamespace(status="RUNNING")
+    execution = SimpleNamespace(id=execution_id, status="RUNNING")
     websocket = MagicMock()
     websocket.accept = AsyncMock()
     websocket.send_json = AsyncMock()
@@ -292,6 +292,11 @@ async def test_completion_confirms_stop_only_on_terminal_owner_ack(
     )
     confirm = MagicMock()
     monkeypatch.setattr(runners.crud_flow_execution, "confirm_stop", confirm)
+    monkeypatch.setattr(
+        runners.crud_flow_execution,
+        "update",
+        lambda db, db_obj, obj_in: db_obj,
+    )
     monkeypatch.setattr(
         runners.crud_api_key, "deactivate_runtime_keys_for_flow_execution", MagicMock()
     )
