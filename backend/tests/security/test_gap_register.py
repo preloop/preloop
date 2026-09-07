@@ -146,6 +146,30 @@ class TestGapRegisterFreeze:
         except GapRegisterValidationError as exc:
             assert exc.failures
 
+    def test_malformed_nested_items_and_history_do_not_raise(self):
+        result = {
+            "gap_register": {
+                "items": [{"status": {}}],
+                "history_rows": [42],
+            }
+        }
+        failures = validate_gap_register(result)
+        assert failures
+        assert any("status" in f for f in failures)
+        assert any("not an object" in f for f in failures)
+
+    def test_repo_list_is_invalid_not_attribute_error(self):
+        result = _register(_rows())
+        result["gap_register"]["repo"] = ["not-an-object"]
+        failures = validate_gap_register(result, repo_pin=SHA_A)
+        assert any("repo must be an object" in f for f in failures)
+
+    def test_item_status_list_is_invalid(self):
+        result = _register(_rows())
+        result["gap_register"]["items"] = [{"status": ["gap"]}]
+        failures = validate_gap_register(result)
+        assert any("status must be" in f for f in failures)
+
     def test_gitleaks_zero_count_is_not_a_met_verdict(self):
         """finding_count 0 satisfies the count rule; it is not a MET oracle."""
         result = _register([])

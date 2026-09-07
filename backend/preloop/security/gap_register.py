@@ -13,6 +13,16 @@ ALLOWED_ITEM_STATUSES = frozenset({"met", "gap", "partial", "declared"})
 ALLOWED_ROW_STATUSES = frozenset({"finding", "not_a_finding"})
 
 
+def _json_in(value: Any, options: Set[Any]) -> bool:
+    """Set membership that does not raise on unhashable JSON values."""
+    if isinstance(value, (list, dict)):
+        return False
+    try:
+        return value in options
+    except TypeError:
+        return False
+
+
 class GapRegisterValidationError(ValueError):
     """Raised when a gap register fails the deterministic freeze checks."""
 
@@ -33,11 +43,13 @@ def sha_path_key(sha: str, path: str) -> Tuple[str, str]:
 
 
 def extract_sha_path_rows(
-    rows: Optional[Iterable[Mapping[str, Any]]],
+    rows: Optional[Iterable[Any]],
 ) -> List[Dict[str, Any]]:
     """Return rows that participate in the SHA+path floor."""
     extracted: List[Dict[str, Any]] = []
     for row in rows or []:
+        if not isinstance(row, Mapping):
+            continue
         sha = str(row.get("sha") or "").strip()
         path = str(row.get("path") or "").strip()
         if not sha or not _is_hex_sha(sha):
@@ -58,16 +70,19 @@ def secrets_findings_count(rows: Optional[Iterable[Mapping[str, Any]]]) -> int:
 
 
 def classify_rows(
-    rows: Optional[Iterable[Mapping[str, Any]]],
+    rows: Optional[Iterable[Any]],
 ) -> List[str]:
     """Return failures for unclassified or invalid row statuses."""
     failures: List[str] = []
     for idx, row in enumerate(rows or []):
+        if not isinstance(row, Mapping):
+            failures.append(f"row[{idx}] is not an object")
+            continue
         status = row.get("status")
         if status is None:
             failures.append(f"row[{idx}] unclassified (missing status)")
             continue
-        if status not in ALLOWED_ROW_STATUSES:
+        if not _json_in(status, ALLOWED_ROW_STATUSES):
             failures.append(f"row[{idx}] invalid status {status!r}")
             continue
         if status == "not_a_finding" and not str(row.get("reason") or "").strip():
@@ -147,7 +162,14 @@ def validate_gap_register(
         return ["gap_register is not an object"]
 
     if repo_pin:
-        commit = str((register.get("repo") or {}).get("commit") or "")
+        repo = register.get("repo")
+        if repo is None:
+            commit = ""
+        elif not isinstance(repo, Mapping):
+            failures.append("gap_register.repo must be an object")
+            commit = ""
+        else:
+            commit = str(repo.get("commit") or "")
         pin = repo_pin.lower()
         if not commit.lower().startswith(pin[:12]) and pin[:12] not in commit.lower():
             failures.append(
@@ -163,10 +185,13 @@ def validate_gap_register(
             failures.append(f"gap_register.items[{idx}] is not an object")
             continue
         status = item.get("status")
-        if status not in ALLOWED_ITEM_STATUSES:
+        if not _json_in(status, ALLOWED_ITEM_STATUSES):
             failures.append(
                 f"gap_register.items[{idx}].status must be met|gap|partial|declared"
             )
+        aliases = item.get("aliases")
+        if aliases is not None and not isinstance(aliases, list):
+            failures.append(f"gap_register.items[{idx}].aliases must be a list")
 
     not_checkable = register.get("not_checkable")
     if not_checkable is None:

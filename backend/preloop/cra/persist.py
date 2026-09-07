@@ -28,6 +28,8 @@ from preloop.cra.validate import (
     AuthorityMode,
     CraValidationResult,
     PlatformApproval,
+    failure_strings,
+    gate_policy_from_trigger,
     json_in,
     result_claims_authority,
     validate_cra_result,
@@ -54,8 +56,9 @@ class CraPersistDecision:
 
     @property
     def detail(self) -> str:
-        if self.validation.failures:
-            return "; ".join(self.validation.failures)
+        safe = failure_strings(self.validation.failures)
+        if safe:
+            return "; ".join(safe)
         return ""
 
     @property
@@ -127,9 +130,24 @@ def load_platform_approvals(db: Any, execution_id: Any) -> list[PlatformApproval
                 tool_name=str(getattr(row, "tool_name", "") or ""),
                 operation=operation,
                 tool_args=dict(tool_args) if isinstance(tool_args, Mapping) else None,
+                tool_result=getattr(row, "tool_result", None),
+                responses=getattr(row, "responses", None),
+                approver_comment=getattr(row, "approver_comment", None),
+                resolved_at=_resolved_at_text(getattr(row, "resolved_at", None)),
             )
         )
     return loaded
+
+
+def _resolved_at_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return str(isoformat())
+    return str(value)
 
 
 def resolve_persist_authority(
@@ -184,16 +202,18 @@ def apply_cra_persist_boundary(
         else:
             raw_schema = payload.get("schema")
         if expected or is_cra_schema_id(raw_schema):
-            failures = list(payload.get("failures") or [])
+            failures = failure_strings(payload.get("failures"))
             if not failures:
                 failures = [str(payload.get("detail") or payload["error"])]
+            bound = dict(payload)
+            bound["failures"] = failures
             validation = CraValidationResult(
                 ok=False,
                 failures=failures,
                 expected_schema=expected,
                 schema_id=expected,
             )
-            return CraPersistDecision(artifact=dict(payload), validation=validation)
+            return CraPersistDecision(artifact=bound, validation=validation)
         validation = CraValidationResult(ok=True, skipped=True)
         return CraPersistDecision(
             artifact=dict(payload),
@@ -201,6 +221,7 @@ def apply_cra_persist_boundary(
         )
 
     waivers = delivered_waivers_from_trigger(trigger_payload)
+    policy = gate_policy_from_trigger(trigger_payload)
     validation = validate_cra_result(
         payload,
         expected_schema=expected,
@@ -210,6 +231,7 @@ def apply_cra_persist_boundary(
         previous_gap_register=previous_gap_register,
         require_coverage=require_coverage,
         authority=authority,
+        gate_policy=policy,
     )
     if validation.skipped:
         persisted: Optional[dict[str, Any]]
@@ -232,10 +254,9 @@ def apply_cra_persist_boundary(
         return CraPersistDecision(artifact=persisted, validation=validation)
 
     error = UNSUPPORTED_ERROR
-    joined = " ".join(validation.failures).lower()
-    if any(
-        "no result.json" in item or "no schema" in item for item in validation.failures
-    ):
+    safe_failures = failure_strings(validation.failures)
+    joined = " ".join(safe_failures).lower()
+    if any("no result.json" in item or "no schema" in item for item in safe_failures):
         error = MISSING_ERROR
     elif "unsupported cra" in joined:
         error = UNSUPPORTED_ERROR

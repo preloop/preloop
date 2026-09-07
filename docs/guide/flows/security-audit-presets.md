@@ -495,7 +495,15 @@ Waivers are human-authored inputs (`waivers.json` / `waivers.yaml` in
 the seed, or payload `waivers`). The agent never authors a waiver. An
 entry missing `id`, `reason`, `author`, or `date` is invalid and waives
 nothing. Interactive collection (`waiver_collection: "interactive"`)
-uses the built-in `ask_user` channel once, batched; timeout fails closed.
+uses the built-in `ask_user` channel once, batched; the human answer is
+JSON `{id, reason}` per selected finding id. Persist authenticates that
+stored `tool_result` / `responses` content — `status=approved` or a CVE
+mentioned in the question is not a waiver. Timeout fails closed.
+
+The severity gate is KEV or CVSS >= 9.0 unless the trigger/CI payload
+sets `gate.fail_on_kev` / `gate.fail_on_cvss_gte` (CVSS in `[0, 10]`).
+Agent `gate.policy` display text never changes the threshold. There is
+no per-product policy table.
 
 Heuristic sources stay labeled and never enter the severity gate.
 `pkg:generic` and `pkg:github` are not db-resolvable by purl; they may

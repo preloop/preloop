@@ -32,6 +32,7 @@ from preloop.cra.ci import (
     run_cra_ci,
 )
 from preloop.cra.evidence_pack import archive_sha256
+from preloop.cra.validate import GatePolicy
 
 from .conftest import clone
 
@@ -95,9 +96,69 @@ def test_unknown_verdict_is_rejected(sbomaudit_result: dict[str, Any]) -> None:
     assert "verdict" in reason.lower() or "must be" in reason
 
 
-def test_gate_passed_must_be_strict_true(
+def test_model_cvss_99_display_cannot_pass_ci_gate(
     vulnscan_result: dict[str, Any],
 ) -> None:
+    payload = clone(vulnscan_result)
+    payload["findings"] = [
+        {
+            **payload["findings"][0],
+            "id": "CVE-2026-0001",
+            "cvss": 9.8,
+            "kev": False,
+            "waived": False,
+            "severity": "critical",
+        }
+    ]
+    payload["counts_by_severity"] = {
+        "critical": 1,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "unknown": 0,
+    }
+    payload["gate"]["passed"] = True
+    payload["gate"]["policy"] = "fail on CVSS >= 99"
+    accepted, _reason, validation = evaluate_release(
+        payload, policy=ReleasePolicy(), evidence_received=True
+    )
+    assert not accepted
+    assert validation.invalid
+
+
+def test_ci_operator_cvss_override(
+    vulnscan_result: dict[str, Any],
+) -> None:
+    payload = clone(vulnscan_result)
+    payload["findings"] = [
+        {
+            **payload["findings"][0],
+            "cvss": 8.0,
+            "kev": False,
+            "waived": False,
+            "severity": "high",
+        }
+    ]
+    payload["counts_by_severity"] = {
+        "critical": 0,
+        "high": 1,
+        "medium": 0,
+        "low": 0,
+        "unknown": 0,
+    }
+    payload["gate"]["passed"] = True
+    default_accepted, _, default_validation = evaluate_release(
+        payload, policy=ReleasePolicy(), evidence_received=True
+    )
+    assert not default_validation.invalid
+    accepted, _, validation = evaluate_release(
+        payload,
+        policy=ReleasePolicy(),
+        evidence_received=True,
+        gate_policy=GatePolicy(fail_on_kev=True, fail_on_cvss_gte=7.0),
+    )
+    assert not accepted
+    assert validation.invalid
     payload = clone(vulnscan_result)
     payload["gate"]["passed"] = 1
     accepted, reason, _validation = evaluate_release(

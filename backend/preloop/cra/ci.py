@@ -33,12 +33,18 @@ from preloop.cra.evidence_pack import (
 )
 from preloop.cra.schemas import (
     AUDIT_VERDICTS,
+    DEFAULT_GATE_CVSS,
     SCHEMA_DUEDILIGENCE_V1,
     SCHEMA_RELEASEAUDIT_V1,
     SCHEMA_SBOMAUDIT_V1,
     SCHEMA_VULNSCAN_V1,
 )
-from preloop.cra.validate import CraValidationResult, validate_cra_result
+from preloop.cra.validate import (
+    CraValidationResult,
+    GatePolicy,
+    gate_policy_from_trigger,
+    validate_cra_result,
+)
 
 DEFAULT_REQUEST_TIMEOUT = 30
 DEFAULT_POLL_INTERVAL = 10
@@ -76,6 +82,24 @@ class ReleasePolicy:
     accept_pass_with_findings: bool = False
     require_schema_validation: bool = True
     require_coverage: bool = False
+    fail_on_kev: bool = True
+    fail_on_cvss_gte: float = DEFAULT_GATE_CVSS
+
+    def gate_policy(self) -> GatePolicy:
+        """KEV/CVSS thresholds used for result validation.
+
+        Default is KEV or CVSS >= 9.0. Values come from this CI policy
+        object (and the trigger payload when present), never from
+        model-authored ``gate.policy`` display text.
+        """
+        from preloop.cra.validate import parse_gate_policy
+
+        return parse_gate_policy(
+            {
+                "fail_on_kev": self.fail_on_kev,
+                "fail_on_cvss_gte": self.fail_on_cvss_gte,
+            }
+        )
 
     @classmethod
     def from_name(cls, name: str) -> "ReleasePolicy":
@@ -630,6 +654,7 @@ def evaluate_release(
     evidence_received: bool,
     expected_schema: Optional[str] = None,
     prompt: Optional[str] = None,
+    gate_policy: Optional[GatePolicy] = None,
 ) -> tuple[bool, str, CraValidationResult]:
     """Decide whether a persisted CRA result may accept a release.
 
@@ -639,6 +664,7 @@ def evaluate_release(
     """
     if not policy.require_schema_validation:
         raise CraCIError("release acceptance requires schema validation")
+    resolved_gate = gate_policy if gate_policy is not None else policy.gate_policy()
     if not evidence_received:
         return (
             False,
@@ -648,6 +674,7 @@ def evaluate_release(
                 expected_schema=expected_schema,
                 prompt=prompt,
                 require_coverage=policy.require_coverage,
+                gate_policy=resolved_gate,
             ),
         )
     validation = validate_cra_result(
@@ -655,6 +682,7 @@ def evaluate_release(
         expected_schema=expected_schema,
         prompt=prompt,
         require_coverage=policy.require_coverage,
+        gate_policy=resolved_gate,
     )
     if validation.skipped:
         raise CraCIError(
@@ -900,6 +928,7 @@ def run_cra_ci(
             policy=config.policy,
             evidence_received=evidence_received,
             expected_schema=config.expected_schema,
+            gate_policy=gate_policy_from_trigger(payload),
         )
         if not accepted:
             raise CraCIError(f"release denied: {reason}")
@@ -1034,11 +1063,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             else body
         )
         try:
+            trigger = _load_payload(args.payload, []) if args.payload else {}
             accepted, reason, _validation = evaluate_release(
                 result_body,
                 policy=policy,
                 evidence_received=True,
                 expected_schema=args.expected_schema,
+                gate_policy=gate_policy_from_trigger(trigger),
             )
         except CraCIError as exc:
             print(exc, file=sys.stderr)

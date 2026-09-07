@@ -134,6 +134,15 @@ SCHEMAS_WITH_STATUS: FrozenSet[str] = frozenset(
 )
 
 DEFAULT_GATE_CVSS = 9.0
+GATE_CVSS_MIN = 0.0
+GATE_CVSS_MAX = 10.0
+
+# Canonical request_approval operation for an explicit finding waiver.
+# Ambiguous operations (repair, mitigation, prose that mentions a CVE) never
+# confer waiver authority. Preset 006 collects interactive waivers via
+# ask_user, not this operation.
+WAIVE_FINDING_OPERATION = "waive_finding"
+WAIVE_FINDING_DECISIONS = frozenset({"waive", "accept"})
 
 _REQUIRED_SHAPE = re.compile(r"Required shape \((preloop\.cra\.[^)\s]+)\)")
 

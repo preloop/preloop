@@ -18,7 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fingerprints so schema/verdict/status alone cannot swap SBOM or findings.
   Claimed approvals and waivers fail closed when platform authority is
   unavailable; due-diligence matching requires an exact `request_approval`
-  operation. Webhook URLs are redacted in errors and the webhook POST is
+  operation. Interactive release-audit waivers bind stored `ask_user`
+  answers (exact finding ids and human reason); ambiguous
+  `request_approval` prose is not a waiver. KEV/CVSS gate thresholds come
+  from trigger/CI `gate.fail_on_kev` / `gate.fail_on_cvss_gte` (default
+  KEV or CVSS >= 9.0), never from model-authored `gate.policy` text.
+  Webhook URLs are redacted in errors and the webhook POST is
   not retried. Guide: `docs/guide/flows/security-audit-presets.md`.
 
 - **Durable evidence transport**: hosted containers and private Docker

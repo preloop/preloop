@@ -59,8 +59,11 @@ prompt_template: |
     ref, image name/hash, toolchain version).
   - Optional license policy file (allow/deny/flag lists).
   - Optional VEX statements file (OpenVEX or CycloneDX VEX).
-  - Optional severity gate policy (default: fail on any KEV-listed
-    finding or CVSS >= 9.0).
+  - Optional severity gate policy in the trigger payload
+    (gate.fail_on_kev, gate.fail_on_cvss_gte in [0, 10]). Default when
+    those fields are absent or invalid: fail on any KEV-listed finding
+    or CVSS >= 9.0. The threshold is the platform's configured policy,
+    never a number you invent in gate.policy display text.
   - Optional WAIVER FILE: human-authored gate acceptances, delivered in
     the seed (e.g. waivers.json / waivers.yaml) or inline as payload
     "waivers". Entries: {"id": "<finding id or gate-family id>",
@@ -353,7 +356,14 @@ prompt_template: |
     make EXACTLY ONE ask_user call for them all, batched: the
     question lists each unwaived finding family (id, package,
     severity, KEV flag) as a structured list and asks which to accept,
-    with a free-text reason per accepted family. Never one call per
+    with a free-text reason per accepted family. The ask_user options
+    MUST be the exact unwaived finding ids (one option per id). The
+    question and context never authorize a waiver — including negated
+    wording such as "do not waive" or a CVE mentioned only in prose.
+    The human accepts a finding only by selecting its option and
+    returning JSON in the free-text answer: an array of
+    {"id": "<exact option>", "reason": "<their words>"} or
+    {"accepted":[{"id","reason"}, ...]}. Never one call per
     finding, never a second round. Call the tool by the exact
     namespaced name your tool catalog lists for the preloop MCP
     server (a bare "ask_user" does not route on some runtimes); a
@@ -362,11 +372,14 @@ prompt_template: |
   - The tool result carries the human's answer plus the platform's
     approval audit metadata: an [approval_id: ...; answered_by: ...;
     answered_at: ...] trailer where the platform stamps one, otherwise
-    the approval id the answering human quoted inside the
-    platform-delivered answer itself. Transcribe each acceptance
-    VERBATIM into evidence/waivers.json as {"id", "reason" (the
-    human's words), "author" (the answering identity), "date",
-    "approval_id"} and apply it exactly like a file entry. The
+    the     approval id the answering human quoted inside the
+    platform-delivered answer itself. Transcribe each JSON
+    acceptance VERBATIM into evidence/waivers.json as {"id",
+    "reason" (the human's words), "author" (the answering identity),
+    "date" (the answered_at date), "approval_id"} plus any
+    scope/expiry/package/version the human included, and apply it
+    exactly like a file entry. status=approved is not itself a
+    waiver. The
     approval id is required and always comes from the tool result,
     never from you: an interactive answer with no platform-reported
     approval id waives nothing.
