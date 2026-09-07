@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -35,7 +35,11 @@ from preloop.schemas.security_maintenance import (
 from preloop.services.approval_service import ApprovalService
 from preloop.services.flow_artifacts import manifest_digest, validate_archive
 from preloop.services.flow_trigger_service import FlowDispatchError, FlowTriggerService
-from preloop.services.security_maintenance import SecurityMaintenanceService
+from preloop.services.security_maintenance import (
+    SecurityMaintenanceService,
+    _input_digest,
+    _sbom_bytes_digest,
+)
 from preloop.services.security_maintenance_refs import (
     InvalidTransitionError,
     UnsupportedReleaseError,
@@ -63,6 +67,67 @@ SBOM_B64 = base64.b64encode(
 FRESH_SBOM_B64 = base64.b64encode(
     b'{"bomFormat": "CycloneDX", "specVersion": "1.5", "components": [{"name": "libexample"}]}'
 ).decode()
+REMOVED_SBOM_B64 = base64.b64encode(
+    json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "other-lib",
+                    "version": "1.0.0",
+                    "purl": "pkg:generic/other-lib@1.0.0",
+                }
+            ],
+        }
+    ).encode()
+).decode()
+VERSIONED_SBOM_B64 = base64.b64encode(
+    json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "libexample",
+                    "version": "2.0.0",
+                    "purl": "pkg:generic/libexample@2.0.0",
+                }
+            ],
+        }
+    ).encode()
+).decode()
+SPDX_REMOVED_B64 = base64.b64encode(
+    json.dumps(
+        {
+            "spdxVersion": "SPDX-2.3",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "example-image",
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Package-other",
+                    "name": "other-lib",
+                    "versionInfo": "1.0.0",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:generic/other-lib@1.0.0",
+                        }
+                    ],
+                }
+            ],
+        }
+    ).encode()
+).decode()
+MALFORMED_SBOM_B64 = base64.b64encode(b"not-json").decode()
+AMBIGUOUS_SBOM_B64 = base64.b64encode(
+    b'{"bomFormat": "CycloneDX", "spdxVersion": "SPDX-2.3"}'
+).decode()
+INCOMPLETE_SBOM_B64 = base64.b64encode(
+    b'{"bomFormat": "CycloneDX", "specVersion": "1.5", "components": [{}]}'
+).decode()
+UNSUPPORTED_SBOM_B64 = base64.b64encode(b'{"hello": 1}').decode()
 
 PROFILE = {
     "profile_id": "maintenance-tests",
@@ -939,6 +1004,49 @@ async def _submit_rebuild(service, item, test_user, *, sbom: str | None = None):
     )
 
 
+def _omitted_target_vulnscan() -> dict:
+    payload = _screened_vulnscan(present=False)
+    payload["inventory"]["components_list"] = [
+        {
+            "id": "other-product",
+            "name": "other-product",
+            "sources": {"osv_purl": {"kind": "database", "screenable": 1, "blind": 0}},
+        }
+    ]
+    return payload
+
+
+async def _to_awaiting_build(service, world, db_session, test_user):
+    item, _impl = await _impl_to_approval(service, world, db_session, test_user)
+    approved = await service.decide_approval(
+        item.id,
+        ApprovalDecisionRequest(reason="Ship the supported-release patch"),
+        actor_user_id=test_user.id,
+        approved=True,
+    )
+    assert approved["state"] == "awaiting_build"
+    db_session.refresh(item)
+    return item
+
+
+async def _complete_recheck(service, db_session, test_user, item, result):
+    db_session.refresh(item)
+    recheck = crud_security_maintenance.get_execution(
+        db_session,
+        account_id=test_user.account_id,
+        execution_id=item.recheck_execution_id,
+    )
+    recheck.status = "SUCCEEDED"
+    details = dict(recheck.trigger_event_details or {})
+    details["_session_thread_id"] = str(recheck.id)
+    recheck.trigger_event_details = details
+    recheck.result = result
+    _store_evidence(db_session, recheck)
+    await service.finish_execution(recheck)
+    db_session.refresh(item)
+    return item
+
+
 class TestDispatchAndApprovals:
     @pytest.mark.asyncio
     async def test_dispatched_payload_uses_runner_entry(
@@ -1593,3 +1701,258 @@ class TestRebuildCheckoutAndSweep:
         assert blocked.status_code == 403
         db_session.refresh(item)
         assert item.state in {"tests_passed", "approval_pending"}
+
+
+class TestInputIntegrity:
+    @pytest.mark.asyncio
+    async def test_result_omission_does_not_prove_removal(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            item = await _to_awaiting_build(service, world, db_session, test_user)
+            await _submit_rebuild(service, item, test_user, sbom=FRESH_SBOM_B64)
+            item = await _complete_recheck(
+                service, db_session, test_user, item, _omitted_target_vulnscan()
+            )
+        assert item.state == "reaudit_incomplete"
+        reasons = [
+            row["data"].get("reason")
+            for row in service.list_decisions(item.id)
+            if row["kind"] == "recheck" and isinstance(row.get("data"), dict)
+        ]
+        assert "component_not_in_inventory" in reasons
+        assert "component_removed_from_rebuild" not in reasons
+
+    @pytest.mark.asyncio
+    async def test_malformed_rebuilt_sbom_is_rejected(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            item = await _to_awaiting_build(service, world, db_session, test_user)
+            with pytest.raises(InvalidTransitionError, match="sbom_malformed"):
+                await _submit_rebuild(service, item, test_user, sbom=MALFORMED_SBOM_B64)
+            with pytest.raises(InvalidTransitionError, match="sbom_ambiguous"):
+                await _submit_rebuild(service, item, test_user, sbom=AMBIGUOUS_SBOM_B64)
+            with pytest.raises(InvalidTransitionError, match="sbom_incomplete"):
+                await _submit_rebuild(
+                    service, item, test_user, sbom=INCOMPLETE_SBOM_B64
+                )
+            with pytest.raises(InvalidTransitionError, match="sbom_unsupported"):
+                await _submit_rebuild(
+                    service, item, test_user, sbom=UNSUPPORTED_SBOM_B64
+                )
+            db_session.refresh(item)
+            assert item.state == "awaiting_build"
+            assert item.recheck_execution_id is None
+
+    @pytest.mark.asyncio
+    async def test_legitimate_removal_from_submitted_bytes(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            item = await _to_awaiting_build(service, world, db_session, test_user)
+            await _submit_rebuild(service, item, test_user, sbom=REMOVED_SBOM_B64)
+            item = await _complete_recheck(
+                service, db_session, test_user, item, _omitted_target_vulnscan()
+            )
+        assert item.state == "resolved"
+        resolved = [
+            row
+            for row in service.list_decisions(item.id)
+            if row["kind"] == "recheck" and row["outcome"] == "resolved"
+        ]
+        assert resolved
+        release = crud_security_maintenance.get_release(
+            db_session, account_id=test_user.account_id, release_id=item.release_id
+        )
+        assert release.accepted_baseline_id is not None
+
+    @pytest.mark.asyncio
+    async def test_spdx_removal_from_submitted_bytes(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            item = await _to_awaiting_build(service, world, db_session, test_user)
+            await _submit_rebuild(service, item, test_user, sbom=SPDX_REMOVED_B64)
+            item = await _complete_recheck(
+                service, db_session, test_user, item, _omitted_target_vulnscan()
+            )
+        assert item.state == "resolved"
+
+    @pytest.mark.asyncio
+    async def test_version_update_is_not_removal(
+        self, db_session, world, test_user
+    ) -> None:
+        service, *_rest = world
+        await _release(world, test_user)
+        with patch(
+            "preloop.services.issue_lifecycle_worker.dispatch_lifecycle_execution",
+            new_callable=AsyncMock,
+        ):
+            item = await _to_awaiting_build(service, world, db_session, test_user)
+            await _submit_rebuild(service, item, test_user, sbom=VERSIONED_SBOM_B64)
+            omitted = await _complete_recheck(
+                service, db_session, test_user, item, _omitted_target_vulnscan()
+            )
+            assert omitted.state == "reaudit_incomplete"
+            resumed = await service.resume(
+                item.id,
+                ResumeRequest(reason="Retry after screening the new version"),
+                actor_user_id=test_user.id,
+            )
+            assert resumed["state"] in {"reaudit_pending", "reauditing"}
+            screened = _screened_vulnscan(present=False)
+            screened["inventory"]["components_list"][0]["purl"] = (
+                "pkg:generic/libexample@2.0.0"
+            )
+            item = await _complete_recheck(
+                service, db_session, test_user, item, screened
+            )
+        assert item.state == "resolved"
+
+    @pytest.mark.asyncio
+    async def test_baseline_requires_exact_release_and_sbom_binding(
+        self, db_session, world, test_user
+    ) -> None:
+        service, project, workflow, implementer, audit, *_ = world
+        created = await _release(world, test_user)
+        other = await service.create_release(
+            SupportedReleaseCreate(
+                product_key="other-widget",
+                release_key="9.9",
+                display_name="Other Widget 9.9",
+                project_id=project.id,
+                pinned_build_ref="v1.2.3",
+                sbom_input_ref="sbom/image.spdx.json",
+                audit_flow_id=audit.id,
+                implementation_flow_id=implementer.id,
+                recheck_flow_id=audit.id,
+                approval_workflow_id=workflow.id,
+                approval_owner_user_id=test_user.id,
+            )
+        )
+        scheduled = await service.schedule_baseline_audit(created["id"], SBOM_B64)
+        bound = crud_security_maintenance.get_execution(
+            db_session,
+            account_id=test_user.account_id,
+            execution_id=UUID(scheduled["execution_id"]),
+        )
+        bound.status = "SUCCEEDED"
+        bound.result = _screened_vulnscan(present=False)
+        _store_evidence(db_session, bound)
+        accepted = await service.accept_baseline(
+            created["id"],
+            BaselineAcceptRequest(audit_execution_id=bound.id),
+        )
+        assert accepted["id"]
+
+        missing_identity = _execution(
+            db_session,
+            audit,
+            status="SUCCEEDED",
+            result=_screened_vulnscan(present=False),
+            details={
+                "_session_thread_id": "no-release-id",
+                "payload": {
+                    "pinned_build_ref": "v1.2.3",
+                    "sbom_input_ref": "sbom/image.spdx.json",
+                    "workspace_files": [
+                        {
+                            "path": "sbom/image.spdx.json",
+                            "content_base64": SBOM_B64,
+                        }
+                    ],
+                    "security_maintenance": {
+                        "pinned_build_ref": "v1.2.3",
+                        "sbom_input_ref": "sbom/image.spdx.json",
+                        "input_digest": _input_digest(
+                            "v1.2.3", "sbom/image.spdx.json", SBOM_B64, None
+                        ),
+                    },
+                },
+            },
+        )
+        _store_evidence(db_session, missing_identity)
+        with pytest.raises(InvalidTransitionError, match="audit_execution_not_bound"):
+            await service.accept_baseline(
+                created["id"],
+                BaselineAcceptRequest(audit_execution_id=missing_identity.id),
+            )
+
+        wrong_release = _execution(
+            db_session,
+            audit,
+            status="SUCCEEDED",
+            result=_screened_vulnscan(present=False),
+            details={
+                "_session_thread_id": "wrong-release",
+                "payload": {
+                    "workspace_files": [
+                        {
+                            "path": "sbom/image.spdx.json",
+                            "content_base64": SBOM_B64,
+                        }
+                    ],
+                    "security_maintenance": {
+                        "release_id": other["id"],
+                        "pinned_build_ref": "v1.2.3",
+                        "sbom_input_ref": "sbom/image.spdx.json",
+                        "input_digest": _input_digest(
+                            "v1.2.3", "sbom/image.spdx.json", SBOM_B64, None
+                        ),
+                        "sbom_digest": _sbom_bytes_digest(SBOM_B64),
+                    },
+                },
+            },
+        )
+        _store_evidence(db_session, wrong_release)
+        with pytest.raises(InvalidTransitionError, match="audit_execution_not_bound"):
+            await service.accept_baseline(
+                created["id"],
+                BaselineAcceptRequest(audit_execution_id=wrong_release.id),
+            )
+
+        swapped = await service.schedule_baseline_audit(created["id"], SBOM_B64)
+        tampered = crud_security_maintenance.get_execution(
+            db_session,
+            account_id=test_user.account_id,
+            execution_id=UUID(swapped["execution_id"]),
+        )
+        details = dict(tampered.trigger_event_details or {})
+        payload = dict(details.get("payload") or {})
+        payload["workspace_files"] = [
+            {
+                "path": "sbom/image.spdx.json",
+                "content_base64": FRESH_SBOM_B64,
+            }
+        ]
+        details["payload"] = payload
+        tampered.trigger_event_details = details
+        tampered.status = "SUCCEEDED"
+        tampered.result = _screened_vulnscan(present=False)
+        _store_evidence(db_session, tampered)
+        with pytest.raises(InvalidTransitionError, match="audit_execution_not_bound"):
+            await service.accept_baseline(
+                created["id"],
+                BaselineAcceptRequest(audit_execution_id=tampered.id),
+            )

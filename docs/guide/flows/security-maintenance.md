@@ -66,11 +66,17 @@ tool list. Model and input-kind allow lists, when set, are enforced.
    workflow; maintenance does not rewrite shared workflow rows.
 4. After a human approval, submit a rebuilt SBOM bound to the published SHA
    (`POST /api/v1/security-maintenance/items/{id}/build`). Reusing the original
-   SBOM bytes is rejected. A recheck execution then checks out the published
-   SHA against that new inventory. CRA results are validated by the contracts
-   layer. Missing evidence, unknown `preloop.cra.*` schemas, incomplete scans,
-   and unscreened components cannot prove the advisory is gone. Checkout proof
-   is the controller `HEAD.txt` in the evidence pack, not `payload.sha`.
+   SBOM bytes is rejected. The controller parses the submitted CycloneDX or
+   SPDX JSON and derives component identities from those bytes; a model
+   inventory that omits a still-present target cannot prove removal. Malformed,
+   ambiguous, incomplete, or unadvertised SBOM input is rejected. A recheck
+   execution then checks out the published SHA against that new inventory. CRA
+   results are validated by the contracts layer. Missing evidence, unknown
+   `preloop.cra.*` schemas, incomplete scans, and unscreened components cannot
+   prove the advisory is gone. Checkout proof is the controller `HEAD.txt` in
+   the evidence pack, not `payload.sha`. Initial baseline acceptance requires
+   the audit execution's controller envelope `release_id` plus the digest of
+   the supplied SBOM bytes; matching filename and pin alone is not enough.
 5. Only an accepted recheck writes a new baseline. Prior decisions stay
    append-only. Resume retries without rewriting history.
 

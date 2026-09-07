@@ -5,13 +5,14 @@ from __future__ import annotations
 import base64
 import logging
 import os
-from collections.abc import Callable
-from json import dumps
+from collections.abc import Callable, Iterable
+from json import JSONDecodeError, dumps, loads
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from preloop.cra.schemas import SBOM_FORMATS
 from preloop.models import models
 from preloop.models.crud import crud_security_maintenance
 from preloop.models.crud.security_maintenance import item_identity_key
@@ -68,6 +69,8 @@ RESUME_STATES = frozenset(
     }
 )
 ENVELOPE_KEY = "security_maintenance"
+ADVERTISED_SBOM_KINDS = frozenset({"cyclonedx-json", "spdx-json"}) | set(SBOM_FORMATS)
+_MAX_SBOM_NESTING = 32
 DEFAULT_APPROVAL_TIMEOUT = 86400
 TERMINAL = frozenset(
     {"SUCCEEDED", "FAILED", "CANCELLED", "STOPPED", "TIMED_OUT", "ABORTED"}
@@ -544,6 +547,64 @@ class SecurityMaintenanceService:
             )
             return self._serialize_baseline(baseline)
 
+    async def schedule_baseline_audit(
+        self, release_id: UUID, sbom_content_base64: str
+    ) -> dict[str, Any]:
+        """Create a bound initial-baseline audit with controller envelope records."""
+        async with crud_security_maintenance.locked(
+            self.db, self.account_id, f"release-id:{release_id}"
+        ):
+            release = self._require_release(release_id)
+            files = [
+                {
+                    "path": release.sbom_input_ref,
+                    "content_base64": sbom_content_base64,
+                }
+            ]
+            parse_workspace_files({"workspace_files": files})
+            _parse_supplied_sbom(
+                sbom_content_base64, allowed_kinds=release.allowed_input_kinds
+            )
+            digest = _input_digest(
+                release.pinned_build_ref,
+                release.sbom_input_ref,
+                sbom_content_base64,
+                release.accepted_baseline_id,
+            )
+            flow = self._require_flow(release.audit_flow_id, kind="audit")
+            self._assert_audit_flow(flow, self._require_project(release.project_id))
+            event = {
+                "source": "security_maintenance",
+                "type": "security_maintenance",
+                "payload": {
+                    "workspace_files": files,
+                    ENVELOPE_KEY: {
+                        "release_id": str(release.id),
+                        "kind": "baseline",
+                        "product_key": release.product_key,
+                        "release_key": release.release_key,
+                        "flow_id": str(flow.id),
+                        "pinned_build_ref": release.pinned_build_ref,
+                        "sbom_input_ref": release.sbom_input_ref,
+                        "accepted_baseline_id": (
+                            str(release.accepted_baseline_id)
+                            if release.accepted_baseline_id
+                            else None
+                        ),
+                        "input_digest": digest,
+                        "sbom_digest": _sbom_bytes_digest(sbom_content_base64),
+                    },
+                },
+            }
+            execution = crud_security_maintenance.create_execution(
+                self.db, flow_id=flow.id, event=event
+            )
+            return {
+                "execution_id": str(execution.id),
+                "input_digest": digest,
+                "sbom_digest": _sbom_bytes_digest(sbom_content_base64),
+            }
+
     async def ingest_scan(self, request: ScanIngestRequest) -> dict[str, Any]:
         """Upsert findings onto one opted-in release. Unsupported names fail."""
         token = f"scan:{request.product_key}:{request.release_key}"
@@ -817,6 +878,10 @@ class SecurityMaintenanceService:
                         }
                     )
             parse_workspace_files({"workspace_files": files})
+            _parse_supplied_sbom(
+                request.sbom_content_base64,
+                allowed_kinds=release.allowed_input_kinds,
+            )
             rebuilt_digest = _input_digest(
                 pin,
                 release.sbom_input_ref,
@@ -1051,6 +1116,20 @@ class SecurityMaintenanceService:
         platform_row = (
             self._require_platform_approval(item) if item.approval_request_id else None
         )
+        try:
+            rebuilt_omits_target = _rebuilt_omits_target(item, release)
+        except InvalidTransitionError as exc:
+            item = self._write_item(item, state="reaudit_incomplete")
+            self._append(
+                item,
+                kind="recheck",
+                outcome="incomplete",
+                execution_id=execution.id,
+                evidence_ref=evidence.as_dict(),
+                publication_ref=publication.as_dict(),
+                data={"reason": str(exc)},
+            )
+            return
         audit = audit_acceptance(
             result,
             evidence=evidence,
@@ -1063,7 +1142,7 @@ class SecurityMaintenanceService:
             require_finding_absent=True,
             db=self.db,
             account_id=self.account_id,
-            rebuilt_omits_target=_rebuilt_omits_target(item, result),
+            rebuilt_omits_target=rebuilt_omits_target,
         )
         if not evidence.available or not audit.accepted:
             item = self._write_item(item, state="reaudit_incomplete")
@@ -1256,6 +1335,8 @@ class SecurityMaintenanceService:
             if kind == "recheck"
             else snapshot.get("pinned_build_ref") or release.pinned_build_ref
         )
+        sbom_input_ref = str(snapshot.get("sbom_input_ref") or release.sbom_input_ref)
+        sbom_b64 = _sbom_b64_from_files(snapshot.get("workspace_files"), sbom_input_ref)
         payload: dict[str, Any] = {
             "sha": sha,
             "object_attributes": {
@@ -1280,8 +1361,7 @@ class SecurityMaintenanceService:
                 "release_key": release.release_key,
                 "flow_id": str(flow.id),
                 "pinned_build_ref": pin,
-                "sbom_input_ref": snapshot.get("sbom_input_ref")
-                or release.sbom_input_ref,
+                "sbom_input_ref": sbom_input_ref,
                 "accepted_baseline_id": snapshot.get("accepted_baseline_id")
                 or (
                     str(release.accepted_baseline_id)
@@ -1293,6 +1373,7 @@ class SecurityMaintenanceService:
                     if kind == "recheck"
                     else snapshot.get("input_digest")
                 ),
+                "sbom_digest": _sbom_bytes_digest(sbom_b64) if sbom_b64 else None,
                 "published_sha": snapshot.get("published_sha"),
                 "issue_id": str(issue.id),
                 "issue_number": _issue_number(issue),
@@ -1738,25 +1819,55 @@ def _envelope(execution: models.FlowExecution) -> dict[str, Any] | None:
     return None
 
 
+def _controller_release_envelope(
+    execution: models.FlowExecution,
+) -> dict[str, Any] | None:
+    details = execution.trigger_event_details or {}
+    payload = details.get("payload") if isinstance(details.get("payload"), dict) else {}
+    envelope = payload.get(ENVELOPE_KEY) or details.get(ENVELOPE_KEY)
+    if isinstance(envelope, dict) and envelope.get("release_id"):
+        return envelope
+    return None
+
+
 def _execution_bound_to_release(
     execution: models.FlowExecution, release: models.SecurityMaintenanceRelease
 ) -> bool:
-    envelope = _envelope(execution)
+    envelope = _controller_release_envelope(execution)
+    if envelope is None:
+        return False
+    if str(envelope.get("release_id")) != str(release.id):
+        return False
+    if envelope.get("pinned_build_ref") != release.pinned_build_ref:
+        return False
+    if envelope.get("sbom_input_ref") != release.sbom_input_ref:
+        return False
+    expected_baseline = (
+        str(release.accepted_baseline_id) if release.accepted_baseline_id else None
+    )
+    envelope_baseline = envelope.get("accepted_baseline_id")
+    if expected_baseline is not None:
+        if str(envelope_baseline or "") != expected_baseline:
+            return False
+    elif envelope_baseline not in {None, ""}:
+        return False
     details = execution.trigger_event_details or {}
     payload = details.get("payload") if isinstance(details.get("payload"), dict) else {}
-    source = envelope or (
-        payload.get(ENVELOPE_KEY) if isinstance(payload.get(ENVELOPE_KEY), dict) else {}
+    actual_b64 = _sbom_b64_from_files(
+        payload.get("workspace_files"), release.sbom_input_ref
     )
-    if not isinstance(source, dict) or not source:
-        source = payload
-    pin = source.get("pinned_build_ref")
-    sbom = source.get("sbom_input_ref")
-    release_id = source.get("release_id")
-    if release_id and str(release_id) != str(release.id):
+    if not actual_b64:
         return False
-    if pin != release.pinned_build_ref:
+    expected = _input_digest(
+        release.pinned_build_ref,
+        release.sbom_input_ref,
+        actual_b64,
+        release.accepted_baseline_id,
+    )
+    if envelope.get("input_digest") != expected:
         return False
-    if sbom != release.sbom_input_ref:
+    stored_digest = envelope.get("sbom_digest")
+    if stored_digest and stored_digest != _sbom_bytes_digest(actual_b64):
         return False
     return True
 
@@ -1772,33 +1883,31 @@ def _sbom_bytes_digest(content_base64: str) -> str:
 
 
 def _rebuilt_omits_target(
-    item: models.SecurityMaintenanceItem, result: dict[str, Any]
+    item: models.SecurityMaintenanceItem,
+    release: models.SecurityMaintenanceRelease,
 ) -> bool:
     snapshot = dict(item.data or {})
     if not snapshot.get("rebuilt_input_digest"):
         return False
-    inventory = result.get("inventory")
-    if not isinstance(inventory, dict):
-        nested = result.get("vuln_scan")
-        inventory = nested.get("inventory") if isinstance(nested, dict) else None
-    if not isinstance(inventory, dict):
-        return False
-    listings = inventory.get("components_list")
-    if not isinstance(listings, list) or not listings:
-        return False
-    names = set()
-    for entry in listings:
-        if not isinstance(entry, dict):
-            continue
-        names.update(
-            {
-                str(entry.get("id") or "").strip(),
-                str(entry.get("purl") or "").strip(),
-                str(entry.get("name") or "").strip(),
-            }
-        )
-    names.discard("")
-    return item.component_id not in names
+    path = str(snapshot.get("sbom_input_ref") or release.sbom_input_ref)
+    sbom_b64 = _sbom_b64_from_files(snapshot.get("workspace_files"), path)
+    if not sbom_b64:
+        raise InvalidTransitionError("rebuilt_sbom_missing")
+    computed = _input_digest(
+        str(snapshot.get("rebuilt_pinned_build_ref") or ""),
+        path,
+        sbom_b64,
+        snapshot.get("accepted_baseline_id"),
+    )
+    if computed != snapshot.get("rebuilt_input_digest"):
+        raise InvalidTransitionError("stale_rebuilt_inputs")
+    stored_digest = snapshot.get("rebuilt_sbom_digest")
+    if stored_digest and stored_digest != _sbom_bytes_digest(sbom_b64):
+        raise InvalidTransitionError("stale_rebuilt_inputs")
+    identities = _parse_supplied_sbom(
+        sbom_b64, allowed_kinds=release.allowed_input_kinds
+    )
+    return not _identity_matches(item.component_id, identities)
 
 
 def _optional_published_sha(
@@ -1868,3 +1977,162 @@ def _sbom_b64_from_files(files: Any, sbom_input_ref: str) -> str | None:
             value = entry.get("content_base64")
             return value if isinstance(value, str) else None
     return None
+
+
+def _canonical_sbom_kind(kind: str) -> str:
+    token = kind.strip().lower()
+    if token in {"cyclonedx", "cyclonedx-json"}:
+        return "cyclonedx-json"
+    if token in {"spdx", "spdx-json"}:
+        return "spdx-json"
+    return token
+
+
+def _allowed_sbom_kinds(allowed_kinds: Iterable[str] | None) -> set[str]:
+    if not allowed_kinds:
+        return {kind for kind in ADVERTISED_SBOM_KINDS if kind.endswith("-json")}
+    normalized = {_canonical_sbom_kind(str(kind)) for kind in allowed_kinds}
+    advertised = {_canonical_sbom_kind(kind) for kind in ADVERTISED_SBOM_KINDS}
+    return {kind for kind in normalized if kind in advertised}
+
+
+def _identity_tokens(value: str) -> set[str]:
+    token = value.strip()
+    if not token:
+        return set()
+    tokens = {token}
+    if token.lower().startswith("pkg:"):
+        base = token.split("#", 1)[0].split("?", 1)[0]
+        tokens.add(base)
+        if "@" in base:
+            without_version = base.rsplit("@", 1)[0]
+            tokens.add(without_version)
+            name = without_version.rsplit("/", 1)[-1]
+            if name:
+                tokens.add(name)
+    return {item for item in tokens if item}
+
+
+def _identity_matches(component_id: str, identities: set[str]) -> bool:
+    needles = {item.lower() for item in _identity_tokens(component_id)}
+    haystack = {item.lower() for item in identities}
+    return bool(needles & haystack)
+
+
+def _component_identity_tokens(entry: dict[str, Any]) -> set[str]:
+    tokens: set[str] = set()
+    for key in ("id", "name", "purl", "bom-ref", "bom_ref", "SPDXID"):
+        raw = entry.get(key)
+        if isinstance(raw, str):
+            tokens.update(_identity_tokens(raw))
+    refs = entry.get("externalRefs")
+    if isinstance(refs, list):
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            if str(ref.get("referenceType") or "").strip().lower() != "purl":
+                continue
+            locator = ref.get("referenceLocator")
+            if isinstance(locator, str):
+                tokens.update(_identity_tokens(locator))
+    return tokens
+
+
+def _walk_cyclonedx_components(items: Any, *, depth: int = 0) -> list[dict[str, Any]]:
+    if depth > _MAX_SBOM_NESTING:
+        raise InvalidTransitionError("sbom_incomplete")
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        raise InvalidTransitionError("sbom_malformed")
+    found: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise InvalidTransitionError("sbom_malformed")
+        found.append(item)
+        if "components" in item:
+            found.extend(
+                _walk_cyclonedx_components(item.get("components"), depth=depth + 1)
+            )
+    return found
+
+
+def _cyclonedx_entries(document: dict[str, Any]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    metadata = document.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        raise InvalidTransitionError("sbom_malformed")
+    root = metadata.get("component") if isinstance(metadata, dict) else None
+    if root is not None and not isinstance(root, dict):
+        raise InvalidTransitionError("sbom_malformed")
+    if isinstance(root, dict):
+        entries.append(root)
+        if "components" in root:
+            entries.extend(_walk_cyclonedx_components(root.get("components")))
+    if "components" in document:
+        entries.extend(_walk_cyclonedx_components(document.get("components")))
+    return entries
+
+
+def _spdx_entries(document: dict[str, Any]) -> list[dict[str, Any]]:
+    packages = document.get("packages")
+    if packages is None:
+        return []
+    if not isinstance(packages, list):
+        raise InvalidTransitionError("sbom_malformed")
+    entries: list[dict[str, Any]] = []
+    for item in packages:
+        if not isinstance(item, dict):
+            raise InvalidTransitionError("sbom_malformed")
+        if str(item.get("SPDXID") or "").strip() == "SPDXRef-DOCUMENT":
+            continue
+        entries.append(item)
+    return entries
+
+
+def _detect_sbom_kind(document: dict[str, Any]) -> str:
+    has_cyclonedx = str(document.get("bomFormat") or "").strip().lower() == "cyclonedx"
+    has_spdx = bool(str(document.get("spdxVersion") or "").strip())
+    if has_cyclonedx and has_spdx:
+        raise InvalidTransitionError("sbom_ambiguous")
+    if has_cyclonedx:
+        return "cyclonedx-json"
+    if has_spdx:
+        return "spdx-json"
+    raise InvalidTransitionError("sbom_unsupported")
+
+
+def _parse_supplied_sbom(
+    content_base64: str, *, allowed_kinds: Iterable[str] | None
+) -> set[str]:
+    """Parse advertised JSON SBOM bytes and return component identity tokens."""
+    try:
+        raw = base64.b64decode(content_base64, validate=True)
+    except Exception as exc:
+        raise InvalidTransitionError("sbom_malformed") from exc
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise InvalidTransitionError("sbom_malformed") from exc
+    try:
+        document = loads(text)
+    except JSONDecodeError as exc:
+        raise InvalidTransitionError("sbom_malformed") from exc
+    if not isinstance(document, dict):
+        raise InvalidTransitionError("sbom_malformed")
+    kind = _detect_sbom_kind(document)
+    allowed = _allowed_sbom_kinds(allowed_kinds)
+    if kind not in allowed:
+        raise InvalidTransitionError("sbom_unsupported")
+    entries = (
+        _cyclonedx_entries(document)
+        if kind == "cyclonedx-json"
+        else _spdx_entries(document)
+    )
+    identities: set[str] = set()
+    for entry in entries:
+        tokens = _component_identity_tokens(entry)
+        if not tokens:
+            raise InvalidTransitionError("sbom_incomplete")
+        identities.update(tokens)
+    return identities

@@ -12,7 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Security-maintenance repair: rebuilt SBOM ingest after approval, controller
   checkout `HEAD.txt`, per-component screening, background reconcile without
   GET, per-request approval policy, and managed-credential denial on console
-  approval routes.
+  approval routes. Recheck removal is derived from the submitted SBOM bytes
+  (advertised CycloneDX/SPDX JSON), not from model inventory omission.
+  Baseline acceptance requires exact `release_id` and the digest of the
+  supplied SBOM bytes on the controller envelope.
 
 ### Added
 

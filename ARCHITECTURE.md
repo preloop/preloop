@@ -101,7 +101,10 @@ inventory, one work item per product/release/advisory/component, and
 fail-closed completion. Inventory is API-configured. Implementation uses the
 existing flow dispatcher and isolated publication receipts (`head_sha`).
 After approval, a rebuilt SBOM must be submitted for the published commit;
-recheck does not reuse the original inventory. Tests and baselines require
+recheck does not reuse the original inventory. Removal is derived from
+identities in those submitted bytes, not from model inventory omission.
+Initial baseline acceptance requires the controller envelope `release_id` and
+the digest of the supplied SBOM. Tests and baselines require
 controller-owned verification and the contracts CRA validator; caller-supplied
 evidence ids and agent `finding_absent` fields do not grant. Platform
 `ApprovalRequest` rows carry human decisions.
