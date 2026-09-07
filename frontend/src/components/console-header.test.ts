@@ -211,6 +211,16 @@ describe('console-header bell empty state', () => {
   });
 });
 
+/**
+ * A handled approval is not a notification.
+ *
+ * The bell used to leave an unread "Approval approved" row behind every
+ * resolution, so policy auto-approvals nobody ever looked at pushed the badge
+ * up for good: there is no read-all, and nothing ages an entry out. The bell
+ * now converges on the server's truth, which is pending unexpired approvals
+ * and nothing else. The history of what was decided lives on the Approvals
+ * page and in the audit trail.
+ */
 describe('console-header bell approvals', () => {
   const APPROVAL = {
     id: 'ar-1',
@@ -221,11 +231,19 @@ describe('console-header bell approvals', () => {
     expires_at: new Date(Date.now() + 600_000).toISOString(),
     execution_id: 'exec-1',
   };
+  const OTHER_APPROVAL = {
+    ...APPROVAL,
+    id: 'ar-2',
+    tool_name: 'read_file',
+  };
 
   let restoreFetch: () => void;
   let restoreSubscribe: () => void;
   let approvalListeners: ((message: any) => void)[];
   let approvals: any[];
+  let approvalReads: number;
+  /** When set, the pending list request waits on it before answering. */
+  let gate: Promise<void> | null;
   let routes: string[];
   let restoreRouterGo: () => void;
 
@@ -236,7 +254,12 @@ describe('console-header bell approvals', () => {
       const url = typeof input === 'string' ? input : input.toString();
       let body: unknown = [];
       if (url.includes('/users/me')) body = USER;
-      else if (url.includes('/approval-requests')) body = approvals;
+      else if (url.includes('/approval-requests')) {
+        approvalReads++;
+        if (gate) await gate;
+        // Read after the gate, so a test can change the answer mid-flight.
+        body = approvals;
+      }
       return new Response(JSON.stringify(body), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -250,6 +273,8 @@ describe('console-header bell approvals', () => {
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-token');
     approvals = [APPROVAL];
+    approvalReads = 0;
+    gate = null;
     approvalListeners = [];
     routes = [];
     restoreFetch = stubApprovalFetch();
@@ -307,31 +332,79 @@ describe('console-header bell approvals', () => {
     );
   }
 
-  it('leaves an approval notification when one resolves elsewhere', async () => {
-    const el = await header();
+  function names(el: ConsoleHeader): string[] {
+    return [...el.shadowRoot!.querySelectorAll('.approval-name')].map((row) =>
+      row.textContent!.trim()
+    );
+  }
 
-    emit({
-      type: 'approval_declined',
-      approval_request_id: 'ar-1',
-      tool_name: 'write_file',
+  function badge(el: ConsoleHeader): string | undefined {
+    return el
+      .shadowRoot!.querySelector('.notification-badge')
+      ?.textContent?.trim();
+  }
+
+  function unreadCount(el: ConsoleHeader): number {
+    return (el as unknown as { _userNotifications: { read: boolean }[] })
+      ._userNotifications.length;
+  }
+
+  /**
+   * Every way an approval can stop waiting, including the one nobody looked
+   * at: a policy bypass approving without review. The badge has to drop for
+   * all of them, and none may leave an unread row behind.
+   */
+  const RESOLUTIONS: { label: string; message: Record<string, unknown> }[] = [
+    {
+      label: 'approved by another operator',
+      message: { type: 'approval_approved', tool_name: 'write_file' },
+    },
+    {
+      label: 'auto-approved by policy with nobody watching',
+      message: {
+        type: 'approval_approved',
+        tool_name: 'write_file',
+        status: 'approved',
+        auto_approved_reason: 'configured_bypass',
+        summary: 'Auto-approved without review: native tool approvals are off',
+      },
+    },
+    {
+      label: 'declined',
+      message: { type: 'approval_declined', tool_name: 'write_file' },
+    },
+    {
+      label: 'expired',
+      message: { type: 'approval_expired', tool_name: 'write_file' },
+    },
+    {
+      label: 'cancelled',
+      message: { type: 'approval_cancelled', tool_name: 'write_file' },
+    },
+  ];
+
+  RESOLUTIONS.forEach(({ label, message }) => {
+    it(`drops a request ${label} from the list and the badge`, async () => {
+      approvals = [APPROVAL, OTHER_APPROVAL];
+      const el = await header();
+      expect(names(el)).to.deep.equal(['write_file', 'read_file']);
+      expect(badge(el)).to.equal('2');
+
+      emit({ ...message, approval_request_id: 'ar-1' });
+      await el.updateComplete;
+
+      expect(names(el), 'pending rows').to.deep.equal(['read_file']);
+      expect(badge(el), 'badge').to.equal('1');
+      // Nothing was left for the operator to acknowledge.
+      expect(notificationItems(el), 'notification rows').to.have.lengthOf(0);
+      expect(unreadCount(el), 'stored notifications').to.equal(0);
     });
-    await el.updateComplete;
-
-    const items = notificationItems(el);
-    expect(items.length, 'notification rows').to.equal(1);
-    expect(items[0].textContent).to.contain('Approval declined');
-    expect(items[0].textContent).to.contain('write_file');
-    expect(items[0].querySelector('sl-icon')?.getAttribute('name')).to.equal(
-      'shield-check'
-    );
-    // The pending row is gone, so the notification is the only trace left.
-    expect(el.shadowRoot!.querySelectorAll('.approval-item').length).to.equal(
-      0
-    );
   });
 
-  it('opens the approval when its notification is clicked', async () => {
+  it('empties the bell when the last pending request resolves', async () => {
     const el = await header();
+    expect(badge(el)).to.equal('1');
+
     emit({
       type: 'approval_approved',
       approval_request_id: 'ar-1',
@@ -339,14 +412,28 @@ describe('console-header bell approvals', () => {
     });
     await el.updateComplete;
 
-    const item = notificationItems(el)[0];
-    expect(item.getAttribute('data-href')).to.equal('/console/approval/ar-1');
-    item.click();
+    expect(names(el)).to.deep.equal([]);
+    expect(badge(el), 'badge is gone, not "1"').to.equal(undefined);
+    expect(notificationItems(el)).to.have.lengthOf(0);
+    expect(
+      el.shadowRoot!.querySelector('.empty-state')?.textContent
+    ).to.contain('No new notifications');
+  });
+
+  it('ignores a resolution for a request this bell never carried', async () => {
+    const el = await header();
+
+    emit({
+      type: 'approval_approved',
+      approval_request_id: 'somebody-elses-request',
+      tool_name: 'deploy',
+    });
     await el.updateComplete;
 
-    expect(routes).to.deep.equal(['/console/approval/ar-1']);
-    // Reading it also marks it read, so the badge stops counting it.
-    expect(item.classList.contains('unread')).to.be.false;
+    expect(names(el)).to.deep.equal(['write_file']);
+    expect(badge(el)).to.equal('1');
+    expect(notificationItems(el), 'notification rows').to.have.lengthOf(0);
+    expect(unreadCount(el), 'stored notifications').to.equal(0);
   });
 
   it('says nothing about a decision made in this bell', async () => {
@@ -368,7 +455,84 @@ describe('console-header bell approvals', () => {
     });
     await el.updateComplete;
 
-    expect(notificationItems(el).length, 'notification rows').to.equal(0);
+    expect(notificationItems(el), 'notification rows').to.have.lengthOf(0);
+  });
+
+  it('does not resurrect a resolved row when a later list still says pending', async () => {
+    const el = await header();
+
+    emit({
+      type: 'approval_approved',
+      approval_request_id: 'ar-1',
+      tool_name: 'write_file',
+    });
+    await el.updateComplete;
+    expect(names(el)).to.deep.equal([]);
+
+    // The refresh on focus answers with the row still pending, either from a
+    // read replica behind the decision or from a response prepared before it.
+    window.dispatchEvent(new Event('focus'));
+    await waitUntil(() => approvalReads >= 2, 'refresh never ran');
+    await el.updateComplete;
+
+    expect(names(el), 'resolved row came back').to.deep.equal([]);
+    expect(badge(el)).to.equal(undefined);
+    expect(notificationItems(el)).to.have.lengthOf(0);
+  });
+
+  it('does not resurrect a row resolved while a list fetch is in flight', async () => {
+    approvals = [APPROVAL, OTHER_APPROVAL];
+    const el = await header();
+    expect(names(el)).to.deep.equal(['write_file', 'read_file']);
+
+    let release!: () => void;
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    window.dispatchEvent(new Event('focus'));
+    await waitUntil(() => approvalReads >= 2, 'refresh never started');
+
+    emit({
+      type: 'approval_declined',
+      approval_request_id: 'ar-1',
+      tool_name: 'write_file',
+    });
+    await el.updateComplete;
+    expect(names(el)).to.deep.equal(['read_file']);
+
+    release();
+    gate = null;
+    await waitUntil(
+      () => names(el).length > 0,
+      'in-flight answer never applied'
+    );
+    await el.updateComplete;
+
+    expect(names(el), 'resolved row came back').to.deep.equal(['read_file']);
+    expect(badge(el)).to.equal('1');
+    expect(notificationItems(el)).to.have.lengthOf(0);
+  });
+
+  it('forgets a resolution once the server list agrees', async () => {
+    const el = await header();
+    emit({
+      type: 'approval_approved',
+      approval_request_id: 'ar-1',
+      tool_name: 'write_file',
+    });
+    await el.updateComplete;
+
+    const held = (el as unknown as { resolvedApprovals: Map<string, number> })
+      .resolvedApprovals;
+    expect(held.has('ar-1'), 'held back until the server agrees').to.be.true;
+
+    approvals = [];
+    window.dispatchEvent(new Event('focus'));
+    await waitUntil(() => approvalReads >= 2, 'refresh never ran');
+    await el.updateComplete;
+
+    // A tab left open for a day must not accumulate one entry per approval.
+    expect(held.size, 'resolved ids held').to.equal(0);
   });
 
   it('keeps a notification with no target reachable and marks it read', async () => {
@@ -400,6 +564,31 @@ describe('console-header bell approvals', () => {
     expect(notificationItems(el)[0].classList.contains('unread')).to.be.false;
     // Nothing to open, so nothing was opened.
     expect(routes).to.deep.equal([]);
+  });
+
+  it('opens a notification that names a destination and marks it read', async () => {
+    const el = await header();
+    (el as unknown as { _userNotifications: unknown[] })._userNotifications = [
+      {
+        id: 'n-2',
+        type: 'policy_added',
+        title: 'Policy assigned',
+        message: 'Production guardrails',
+        created_at: new Date().toISOString(),
+        read: false,
+        href: '/console/policies',
+      },
+    ];
+    el.requestUpdate();
+    await el.updateComplete;
+
+    const item = notificationItems(el)[0];
+    expect(item.getAttribute('data-href')).to.equal('/console/policies');
+    item.click();
+    await el.updateComplete;
+
+    expect(routes).to.deep.equal(['/console/policies']);
+    expect(item.classList.contains('unread')).to.be.false;
   });
 
   it('drops an approval that expires while the tab stays open', async () => {
@@ -486,21 +675,28 @@ describe('console-header approval deadlines', () => {
     localStorage.removeItem('accessToken');
   });
 
-  async function mount(): Promise<void> {
-    el = await fixture<ConsoleHeader>(html`<console-header></console-header>`);
-    // Fetch + json() are native promises. Flush them without advancing
-    // expiry timers (those are at least 1ms).
+  /**
+   * Fetch + json() are native promises, so a single tickAsync(0) can fire
+   * the coalesced refresh timer without the list answer landing. Flush
+   * microtasks without advancing expiry timers (those are at least 1ms).
+   */
+  async function flushApprovalReads(count: number): Promise<void> {
     for (let i = 0; i < 25; i++) {
       await Promise.resolve();
       await clock.tickAsync(0);
       await el.updateComplete;
-      if (approvalReads >= 1) {
+      if (approvalReads >= count) {
         await Promise.resolve();
         await clock.tickAsync(0);
         await el.updateComplete;
-        break;
+        return;
       }
     }
+  }
+
+  async function mount(): Promise<void> {
+    el = await fixture<ConsoleHeader>(html`<console-header></console-header>`);
+    await flushApprovalReads(1);
   }
 
   function names(): string[] {
@@ -622,10 +818,7 @@ describe('console-header approval deadlines', () => {
     window.dispatchEvent(new Event('focus'));
     changeState(ConnectionState.CONNECTED);
     window.dispatchEvent(new Event('focus'));
-    await clock.tickAsync(0);
-    await el.updateComplete;
-    await clock.tickAsync(0);
-    await el.updateComplete;
+    await flushApprovalReads(2);
     expect(names()).to.deep.equal(['new-request']);
     expect(badge()).to.equal('1');
     expect(approvalReads).to.equal(2);
@@ -642,8 +835,7 @@ describe('console-header approval deadlines', () => {
     approvals = [approval('visible-request', 10_000)];
     visibility.get(() => 'visible');
     document.dispatchEvent(new Event('visibilitychange'));
-    await clock.tickAsync(0);
-    await el.updateComplete;
+    await flushApprovalReads(2);
     expect(names()).to.deep.equal(['visible-request']);
     expect(badge()).to.equal('1');
     expect(approvalReads).to.equal(2);
@@ -654,8 +846,7 @@ describe('console-header approval deadlines', () => {
     await mount();
     approvals = [];
     changeState(ConnectionState.CONNECTED);
-    await clock.tickAsync(0);
-    await el.updateComplete;
+    await flushApprovalReads(2);
     expect(names()).to.deep.equal([]);
     expect(badge()).to.equal(undefined);
     expect(approvalReads).to.equal(2);
@@ -673,8 +864,7 @@ describe('console-header approval deadlines', () => {
     await clock.tickAsync(2_000);
     expect(approvalReads).to.equal(1);
     document.body.append(el);
-    await clock.tickAsync(0);
-    await el.updateComplete;
+    await flushApprovalReads(2);
     expect(names()).to.deep.equal([]);
     expect(badge()).to.equal(undefined);
     expect(approvalReads).to.equal(2);
