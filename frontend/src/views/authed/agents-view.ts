@@ -4620,7 +4620,6 @@ export class AgentsView extends LitElement {
             ? html`
                 <preloop-deploy-wizard
                   initial-path="govern"
-                  hide-step-title
                   .aiModels=${this.aiModels}
                   .computeFeatureEnabled=${this.computeFeatureEnabled}
                   .isEnterprise=${this.isEnterprise}
