@@ -77,7 +77,11 @@ publication mode. The platform checks:
 - clone paths are unique and match the flow config
 - each mapped SHA equals the immutable commit the control plane pinned
   and later observed in a frozen checkout bundle. A moving branch tip
-  is never a verified checkout.
+  is never a verified checkout. The mapping names intended remotes and
+  SHAs; it is not a signed build attestation. Read-only
+  maintenance/product audits freeze HEAD into the same
+  `evidence/branch.bundle` (or `evidence/repos/<clone_path>/branch.bundle`)
+  path without writer credentials when isolated publication is off.
 - the mapped SBOM digest equals the sha256 of the supplied artifact bytes
 
 Ambiguous, duplicate, or mismatched mappings fail the execution. A

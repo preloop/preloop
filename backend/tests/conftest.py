@@ -51,6 +51,7 @@ def pytest_configure(config):
     """
     # Set TESTING mode to skip external service connections (NATS, MCP, etc.)
     os.environ["TESTING"] = "true"
+    os.environ["PRELOOP_DISABLE_TELEMETRY"] = "true"
 
     # Disable RBAC permission checks during unit tests
     # This ensures tests work consistently regardless of whether the EE RBAC

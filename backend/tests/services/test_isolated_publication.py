@@ -248,6 +248,85 @@ def test_agent_receives_read_credential_without_db_fallback_or_post_push() -> No
         executor._apply_git_credential_env({}, context)
 
 
+def test_readonly_audit_exports_bundle_without_target_branch_or_writes() -> None:
+    executor = ContainerAgentExecutor(agent_type="codex", config={}, image="test")
+    context = {
+        "git_clone_config": {
+            "create_pull_request": False,
+            "repositories": [
+                {
+                    "repository_url": "https://github.com/example/project.git",
+                    "clone_path": "/workspace",
+                }
+            ],
+        },
+        "trigger_event_data": {
+            "payload": {
+                "security_maintenance": {"kind": "baseline", "release_id": "r1"},
+            }
+        },
+    }
+    script = executor._prepare_git_post_execution_commands(context)
+    assert "git bundle create" in script
+    assert " HEAD " in script
+    assert "/workspace/evidence/branch.bundle" in script
+    for forbidden in [
+        "git push",
+        "git commit",
+        "curl",
+        "PRELOOP_GIT_TOKEN",
+        "/preloop-publication-output",
+        "contents:write",
+    ]:
+        assert forbidden not in script
+    context["git_clone_config"]["create_pull_request"] = True
+    assert executor._prepare_git_post_execution_commands(context) == ""
+
+
+def test_readonly_export_script_succeeds_on_unchanged_repo_and_fails_without_git(
+    tmp_path: Path,
+) -> None:
+    import subprocess
+
+    from tests.services.test_multi_repo_publication import _init_repo
+
+    repo, head, _prebuilt = _init_repo(tmp_path, "workspace", "unchanged firmware")
+    del _prebuilt
+    executor = ContainerAgentExecutor(agent_type="codex", config={}, image="test")
+    script = executor._prepare_git_post_execution_commands(
+        {
+            "git_clone_config": {
+                "create_pull_request": False,
+                "repositories": [
+                    {
+                        "repository_url": "https://github.com/example/project.git",
+                        "clone_path": "/workspace",
+                    }
+                ],
+            },
+            "trigger_event_data": {
+                "payload": {
+                    "security_maintenance": {"kind": "audit", "release_id": "r1"},
+                }
+            },
+        }
+    )
+    adapted = script.replace("/workspace", str(repo))
+    subprocess.run(["bash", "-c", adapted], check=True, cwd=repo)
+    produced = repo / "evidence" / "branch.bundle"
+    listed = subprocess.check_output(
+        ["git", "bundle", "list-heads", str(produced)],
+        text=True,
+    )
+    assert head in listed
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    failed = script.replace("/workspace", str(empty))
+    result = subprocess.run(["bash", "-c", failed], cwd=empty)
+    assert result.returncode != 0
+    assert not (empty / "evidence" / "branch.bundle").exists()
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_publication_failure_changes_terminal_status() -> None:
     orchestrator = object.__new__(FlowExecutionOrchestrator)

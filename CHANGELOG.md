@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Security-maintenance repair: rebuilt SBOM ingest after approval, controller
+  checkout from frozen publication records (not agent-writable `HEAD.txt`),
+  per-component screening, background reconcile without
+  GET, per-request approval policy, and managed-credential denial on console
+  approval routes. Recheck removal is derived from the submitted SBOM bytes
+  (advertised CycloneDX/SPDX JSON), not from model inventory omission.
+  Baseline acceptance requires exact `release_id` and the digest of the
+  supplied SBOM bytes on the controller envelope. The initial-baseline audit
+  is scheduled through
+  `POST /api/v1/security-maintenance/releases/{release_id}/baseline/audit`,
+  which commits the execution then dispatches it through the existing flow
+  trigger path.
+  Omitted or null SBOM component lists, unsupported format versions, and
+  malformed nesting cannot prove component removal.
+- Abandoned security-maintenance dispatch claims expire after the same
+  interval as flow-execution recovery (default 120 seconds). Sweep and the
+  initial-baseline retry route redeliver a still-`PENDING` execution id;
+  a live claim is not duplicated, and a started or finished execution is
+  not restarted. Legacy `dispatching` records without a timestamp are
+  treated as expired. Claim helpers flush and re-read the locked row and
+  bound execution with `populate_existing` so a second session cannot
+  finish or redeliver from a stale identity-map copy.
+- Security-maintenance audit and recheck completion observes frozen Git
+  bundles even when isolated publication is off. A hex40 pin plus
+  `git_clone_config.repositories[].repository_url` produces a controller
+  `product_provenance` mapping; agent `HEAD.txt` and forged
+  `sha_status=verified` rows cannot establish checkout. Hosted and
+  private post-exec export `evidence/branch.bundle` for those opted-in
+  audits even with no code changes, no target branch, and publication
+  off. The export does not commit, push, open a pull request, or mint
+  writer credentials. Isolated publication is unchanged. The mapping is
+  checkout observation, not signed build attestation.
+
 ### Added
 
 - **CRA runtime result.json contracts and fail-closed CI gate**: versioned
@@ -30,6 +65,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Webhook URLs are redacted in errors and the webhook POST is
   not retried. Guide: `docs/guide/flows/security-audit-presets.md`.
 
+- **Supported-release vulnerability maintenance**: opt-in product/release
+  inventory, one durable item per advisory/component, implementation then
+  human approval then re-audit before a new baseline. Completion reads
+  controller publication receipts and evidence artifacts; agent availability
+  flags, test claims, and approval JSON are not authority. Guide:
+  `docs/guide/flows/security-maintenance.md`. Presets `004`–`007` are
+  unchanged; `011` remains the generic implementer and `014` is a
+  conservative isolated-publication overlay.
 - **Durable evidence transport**: hosted containers and private Docker
   runners can upload CRA evidence packs through the existing encrypted
   artifact API (`kind=evidence`) instead of the Kubernetes log channel.
@@ -71,7 +114,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot approve, decline, decide, or batch-decide a publication-authority
   request; human console/JWT and token-link decisions are unchanged. Guide:
   `docs/guide/flows/product-evidence.md`.
-
 
 - **Per-flow label-based model routing**: a flow can store optional ordered
   rules in `agent_config.model_routing` that map current issue labels
@@ -226,6 +268,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   controller-passed receipt so resume can rebind. Omitted repository
   `clone_path` now defaults to `workspace`, then `workspace-2`, matching
   isolated bind/resume. Guide: `docs/guide/flows/product-evidence.md`.
+
+- **Maintenance checkout uses frozen publication records**: `HEAD.txt` in an
+  evidence archive is not release or build provenance. Recheck matches the
+  candidate SHA against controller-verified `product_provenance` repositories
+  (`sha_status=verified`) and isolated publication receipts.
+
+- **Security-maintenance sweep rotates past a stuck prefix**: idle
+  waiting-for-human `approval_pending` rows no longer occupy the bounded
+  page. A durable per-account keyset continues later dispatch retries and
+  baseline audits on the next sweep, wrapping when the cursor walks off
+  the end. Expiry, claim recovery, and PENDING-only restart are unchanged.
 
 - **CRA evidence binding recognizes controller `product_provenance` and
   `dossier_manifest` annotations**: packed agent JSON is still compared in

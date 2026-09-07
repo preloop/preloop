@@ -4291,6 +4291,74 @@ true
             )
         )
 
+    def _wants_readonly_checkout_evidence(
+        self, execution_context: Dict[str, Any]
+    ) -> bool:
+        """True for opted-in maintenance/product audits that must freeze HEAD.
+
+        Isolated publication keeps its own exporter. Write-enabled flows
+        (``create_pull_request``) keep the existing push/PR path.
+        """
+        git_config = execution_context.get("git_clone_config") or {}
+        if git_config.get("publication_mode") == "isolated":
+            return False
+        if git_config.get("create_pull_request"):
+            return False
+        trigger = execution_context.get("trigger_event_data") or {}
+        payload = trigger.get("payload") if isinstance(trigger, dict) else trigger
+        if not isinstance(payload, dict):
+            payload = {}
+        envelope = payload.get("security_maintenance")
+        if isinstance(envelope, dict) and str(envelope.get("kind") or "") in {
+            "baseline",
+            "recheck",
+            "audit",
+        }:
+            return True
+        if isinstance(payload.get("product_provenance"), dict):
+            return True
+        return git_config.get("checkout_evidence") in {True, "required", "readonly"}
+
+    def _readonly_checkout_evidence_commands(
+        self, repositories: list[Dict[str, Any]]
+    ) -> str:
+        """Export frozen HEAD bundles without commit, push, PR, or write creds."""
+        from preloop.services.product_provenance import (
+            ProductProvenanceError,
+            clone_path_slug,
+        )
+
+        parts = [f"mkdir -p {EVIDENCE_DIR_PATH}\n"]
+        if len(repositories) == 1:
+            path = self._resolve_repository_clone_path(repositories[0], 0)
+            dest = EVIDENCE_DIR_PATH
+            parts.append(
+                f"cd {shlex.quote(path)}\n"
+                f"mkdir -p {shlex.quote(dest)}\n"
+                f"git bundle create {shlex.quote(dest)}/branch.bundle HEAD || exit 1\n"
+                f"git rev-parse HEAD > {shlex.quote(dest)}/HEAD.txt || exit 1\n"
+                "cd /workspace\n"
+            )
+            return "".join(parts)
+        for idx, repo_config in enumerate(repositories):
+            path = self._resolve_repository_clone_path(repo_config, idx)
+            try:
+                slug = clone_path_slug(str(repo_config.get("clone_path") or path))
+            except ProductProvenanceError:
+                return (
+                    "echo 'Checkout-evidence clone_path is not a safe "
+                    "repository slug' >&2; exit 1"
+                )
+            dest = f"{EVIDENCE_DIR_PATH}/repos/{slug}"
+            parts.append(
+                f"cd {shlex.quote(path)}\n"
+                f"mkdir -p {shlex.quote(dest)}\n"
+                f"git bundle create {shlex.quote(dest)}/branch.bundle HEAD || exit 1\n"
+                f"git rev-parse HEAD > {shlex.quote(dest)}/HEAD.txt || exit 1\n"
+            )
+        parts.append("cd /workspace\n")
+        return "".join(parts)
+
     def _prepare_git_post_execution_commands(
         self, execution_context: Dict[str, Any]
     ) -> str:
@@ -4390,6 +4458,9 @@ true
                     "cd /workspace\n"
                 )
                 return "".join(parts)
+
+            if self._wants_readonly_checkout_evidence(execution_context):
+                return self._readonly_checkout_evidence_commands(repositories)
 
             self.logger.info(
                 f"Preparing post-execution git commands: "

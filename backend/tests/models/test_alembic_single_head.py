@@ -153,4 +153,15 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     }
     receipt = script.get_revision("20260907_evidence_receipt")
     assert receipt.down_revision == "20260906_lifecycle_key_merge"
-    assert script.get_heads() == ["20260907_evidence_receipt"]
+    maintenance = script.get_revision("20260907_security_maintenance")
+    assert maintenance.down_revision == "20260906_lifecycle_key_merge"
+    joined = script.get_revision("20260907_sm_evidence_merge")
+    assert set(joined.down_revision) == {
+        "20260907_security_maintenance",
+        "20260907_evidence_receipt",
+    }
+    pending_item = script.get_revision("20260907_sm_pending_item")
+    assert pending_item.down_revision == "20260907_sm_evidence_merge"
+    sweep_cursor = script.get_revision("20260907_sm_sweep_cursor")
+    assert sweep_cursor.down_revision == "20260907_sm_pending_item"
+    assert script.get_heads() == ["20260907_sm_sweep_cursor"]

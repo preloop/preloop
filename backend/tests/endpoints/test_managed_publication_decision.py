@@ -329,6 +329,7 @@ class TestManagedPublicationDecision:
                             request=_http_request(),
                             current_user=principal,
                             db=session,
+                            sync_db=None,
                         )
             by_id = {item.id: item for item in response.results}
             assert by_id[publication_id].ok is False

@@ -160,6 +160,20 @@ async def run_scheduler_async(
         misfire_grace_time=30,
     )
 
+    async def _publish_security_maintenance_tick() -> None:
+        try:
+            await event_bus_service.publish_task("reconcile_security_maintenance")
+        except Exception:
+            logger.exception("Failed to publish security-maintenance reconciliation")
+
+    scheduler.add_job(
+        _publish_security_maintenance_tick,
+        trigger=IntervalTrigger(seconds=30),
+        id="security_maintenance_reconciliation",
+        replace_existing=True,
+        misfire_grace_time=30,
+    )
+
     # Hourly workspace retention pass: delete captured workspace snapshots
     # and Docker agent-workspace-* volumes older than the retention window.
     async def _publish_workspace_cleanup() -> None:

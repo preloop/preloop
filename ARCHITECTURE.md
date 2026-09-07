@@ -93,3 +93,23 @@ manual completion alone does not start an audit. Readiness consumes approved
 execution-environment capabilities rather than implementing test setup. See
 [Issue readiness and completion audits](docs/guide/flows/issue-lifecycle.md) for
 policy, API and recovery configuration.
+
+### Security maintenance controller
+
+`services/security_maintenance.py` coordinates opt-in supported-release
+inventory, one work item per product/release/advisory/component, and
+fail-closed completion. Inventory is API-configured. Implementation uses the
+existing flow dispatcher and isolated publication receipts (`head_sha`).
+After approval, a rebuilt SBOM must be submitted for the published commit;
+recheck does not reuse the original inventory. Removal is derived from
+identities in those submitted bytes, not from model inventory omission.
+Initial baseline acceptance requires the controller envelope `release_id` and
+the digest of the supplied SBOM. Tests and baselines require
+controller-owned verification and the contracts CRA validator; caller-supplied
+evidence ids and agent `finding_absent` fields do not grant. Platform
+`ApprovalRequest` rows carry human decisions. Dispatch claims expire so a
+crash between claim and enqueue cannot strand a still-`PENDING` execution.
+Audit/recheck completion observes frozen Git bundles from evidence when the
+flow names repository URLs and the pin is an exact git SHA; `HEAD.txt` is
+not checkout proof.
+See [Supported-release vulnerability maintenance](docs/guide/flows/security-maintenance.md).

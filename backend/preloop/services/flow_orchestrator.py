@@ -4833,6 +4833,16 @@ class FlowExecutionOrchestrator:
                 )
             except Exception:
                 logger.exception("Issue lifecycle completion needs reconciliation")
+            try:
+                from preloop.services.security_maintenance_runtime import (
+                    maintenance_execution_finished,
+                )
+
+                await maintenance_execution_finished(
+                    self.db, self.execution_log, self.flow
+                )
+            except Exception:
+                logger.exception("Security maintenance completion needs reconciliation")
             notifications = getattr(self.flow, "notifications", None)
             if not notifications:
                 return
@@ -5124,6 +5134,35 @@ class FlowExecutionOrchestrator:
             {"execution_id": str(self.execution_log.id)},
         )
 
+    def _load_evidence_archive_bytes(self) -> bytes | None:
+        """Load the persisted evidence archive for checkout observation."""
+        from uuid import UUID
+
+        from preloop.services.flow_artifacts import (
+            EvidenceUnavailableError,
+            load_evidence,
+        )
+
+        execution = getattr(self, "execution_log", None)
+        flow = getattr(self, "flow", None)
+        if execution is None or flow is None or getattr(self, "db", None) is None:
+            return None
+        account_id = getattr(flow, "account_id", None)
+        if account_id is None:
+            return None
+        try:
+            archive, _receipt = load_evidence(
+                self.db,
+                account_id=UUID(str(account_id)),
+                execution=execution,
+            )
+        except EvidenceUnavailableError:
+            return None
+        if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
+            self._evidence_archive = bytes(archive)
+            return bytes(archive)
+        return None
+
     def _product_runtime_facts(self) -> Any:
         """Trusted checkout URLs/SHAs and supplied SBOM bytes for mapping checks."""
         from preloop.services.multi_repo_publication import policy_targets
@@ -5154,10 +5193,24 @@ class FlowExecutionOrchestrator:
         policy = getattr(self, "_isolated_publication_policy", None)
         clone_shas: dict[str, str] = {}
         requested_pins: dict[str, str] = {}
+        archive = getattr(self, "_evidence_archive", None)
+        checkout = None
+        if policy is None:
+            from preloop.services.security_maintenance_refs import (
+                checkout_observation_policy,
+            )
+
+            checkout = checkout_observation_policy(
+                flow, execution=getattr(self, "execution_log", None)
+            )
+        if policy is not None or checkout is not None:
+            if not isinstance(archive, (bytes, bytearray, memoryview)) or not bytes(
+                archive
+            ):
+                archive = self._load_evidence_archive_bytes()
         if policy is not None:
             from preloop.services.multi_repo_publication import observed_checkout_shas
 
-            archive = getattr(self, "_evidence_archive", None)
             if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
                 clone_shas = observed_checkout_shas(policy, bytes(archive))
             for target in policy_targets(policy):
@@ -5171,6 +5224,21 @@ class FlowExecutionOrchestrator:
                     }
                     for target in policy_targets(policy)
                 ]
+        elif checkout is not None:
+            from preloop.services.multi_repo_publication import (
+                observed_checkout_shas,
+                policy_targets as checkout_targets,
+            )
+            from preloop.services.trusted_publisher import PublicationError
+
+            if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
+                try:
+                    clone_shas = observed_checkout_shas(checkout, bytes(archive))
+                except PublicationError:
+                    clone_shas = {}
+            for target in checkout_targets(checkout):
+                if target.base_sha:
+                    requested_pins[target.repository_url] = target.base_sha
         remotes, paths, _configured = facts_from_git_clone_config(
             git_config, clone_shas=clone_shas
         )
