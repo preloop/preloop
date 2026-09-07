@@ -189,6 +189,11 @@ def clone_path_slug(clone_path: str) -> str:
     return slug
 
 
+def default_clone_path(index: int) -> str:
+    """Canonical omitted-path layout: workspace, then workspace-2, workspace-3."""
+    return "workspace" if index == 0 else f"workspace-{index + 1}"
+
+
 def sha256_digest(data: bytes) -> str:
     """Return a ``sha256:<hex>`` digest of exact bytes."""
     return "sha256:" + hashlib.sha256(data).hexdigest()
@@ -291,7 +296,7 @@ def facts_from_git_clone_config(
         if not url:
             continue
         remote = normalize_repository_url(str(url))
-        path = str(repo.get("clone_path") or f"workspace-{index + 1}")
+        path = str(repo.get("clone_path") or default_clone_path(index))
         slug = clone_path_slug(path)
         if remote in seen_remote:
             raise DuplicateProductMappingError(

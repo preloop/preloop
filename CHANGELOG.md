@@ -220,6 +220,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Hosted isolated publication keeps the controller `trusted_publication`
+  receipt on the persisted result**: `_attach_product_evidence_records`
+  still strips any agent-authored copy, then reattaches only the
+  controller-passed receipt so resume can rebind. Omitted repository
+  `clone_path` now defaults to `workspace`, then `workspace-2`, matching
+  isolated bind/resume. Guide: `docs/guide/flows/product-evidence.md`.
+
 - **CRA evidence binding recognizes controller `product_provenance` and
   `dossier_manifest` annotations**: packed agent JSON is still compared in
   full. Those controller records (and the older `provenance`/`dossier`

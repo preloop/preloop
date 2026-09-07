@@ -2,21 +2,33 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from sqlalchemy.orm import Session
+
+os.environ["PRELOOP_DISABLE_TELEMETRY"] = "true"
 
 from preloop.agents.container import ContainerAgentExecutor
+from preloop.models import models
+from preloop.services.flow_artifacts import EvidenceUnavailableError
 from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+from preloop.services.flow_pr_binding import merge_result_preserving_pr_binding
+from preloop.services.isolated_publication import IsolatedPublicationPolicy
+from preloop.services.multi_repo_publication import IsolatedPublicationTarget
 from preloop.services.publication_credentials import (
     mint_repository_lease,
     validate_publication_tracker,
 )
+from preloop.services.publication_verification import VerifiedPublication
 from preloop.services.trusted_publisher import PublicationError, PublicationLease
 
 
@@ -710,3 +722,495 @@ async def test_private_recovered_monitor_restores_policy_and_finalizes_before_st
     restore.assert_called_once()
     create.assert_called_once()
     assert events == ["monitor", "finalize", "FAILED"]
+
+
+PROJECT = "https://github.com/example/project.git"
+FORGED_PUBLICATION = {"url": "https://github.com/example/forged/pull/9"}
+
+
+def _evidence_uuid() -> str:
+    return "11111111-1111-4111-8111-111111111111"
+
+
+def _attach_orchestrator() -> FlowExecutionOrchestrator:
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.flow = SimpleNamespace(account_id=_evidence_uuid())
+    orchestrator.db = MagicMock()
+    orchestrator.execution_id = _evidence_uuid()
+    orchestrator.execution_log = SimpleNamespace(id=_evidence_uuid())
+    orchestrator._product_evidence_context = {"product_evidence": True}
+    return orchestrator
+
+
+def test_attach_strips_agent_receipt_without_controller_publication() -> None:
+    orchestrator = _attach_orchestrator()
+    agent_result = {
+        "status": "SUCCEEDED",
+        "result": {
+            "status": "success",
+            "trusted_publication": dict(FORGED_PUBLICATION),
+        },
+    }
+    with (
+        patch(
+            "preloop.models.crud.crud_approval_request.get_multi_by_execution",
+            return_value=[],
+        ),
+        patch(
+            "preloop.services.flow_artifacts.load_evidence",
+            side_effect=EvidenceUnavailableError(
+                "missing", {"status": "missing", "kind": "evidence"}
+            ),
+        ),
+    ):
+        orchestrator._attach_product_evidence_records(agent_result)
+    assert "trusted_publication" not in agent_result["result"]
+    assert "dossier_manifest" in agent_result["result"]
+
+
+def test_attach_reattaches_only_controller_trusted_receipt() -> None:
+    orchestrator = _attach_orchestrator()
+    receipt = {
+        "url": "https://github.com/example/project/pull/1",
+        "head_sha": "a" * 40,
+        "repository_url": PROJECT,
+        "branch": "preloop/flow-11111111",
+        "base": "main",
+        "complete": True,
+    }
+    agent_result = {
+        "status": "SUCCEEDED",
+        "result": {
+            "status": "success",
+            "trusted_publication": dict(FORGED_PUBLICATION),
+        },
+    }
+    with (
+        patch(
+            "preloop.models.crud.crud_approval_request.get_multi_by_execution",
+            return_value=[],
+        ),
+        patch(
+            "preloop.services.flow_artifacts.load_evidence",
+            side_effect=EvidenceUnavailableError(
+                "missing", {"status": "missing", "kind": "evidence"}
+            ),
+        ),
+    ):
+        orchestrator._attach_product_evidence_records(agent_result, publication=receipt)
+    stored = agent_result["result"]["trusted_publication"]
+    assert stored is receipt
+    assert stored["url"] != FORGED_PUBLICATION["url"]
+    assert (
+        agent_result["result"]["dossier_manifest"]["publication"]["url"]
+        == (receipt["url"])
+    )
+
+
+def _hosted_finish_orchestrator(
+    db: Session,
+    flow: Any,
+    execution: Any,
+    policy: IsolatedPublicationPolicy,
+    archive: bytes,
+) -> FlowExecutionOrchestrator:
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.db = db
+    orchestrator.flow = flow
+    orchestrator.execution_log = execution
+    orchestrator.execution_id = str(execution.id)
+    orchestrator.execution_logger = MagicMock()
+    orchestrator.trigger_event_data = {}
+    orchestrator._isolated_publication_policy = policy
+    orchestrator._publication_runtime_stopped = True
+    orchestrator._publication_executor = SimpleNamespace(cleanup=AsyncMock())
+    orchestrator._evidence_archive = archive
+    orchestrator._publication_verification = None
+    orchestrator._opened_pr = None
+    orchestrator._publish_update = AsyncMock()
+    return orchestrator
+
+
+async def _persist_finished_result(
+    orchestrator: FlowExecutionOrchestrator, agent_result: dict[str, Any]
+) -> None:
+    merged = merge_result_preserving_pr_binding(
+        getattr(orchestrator.execution_log, "result", None),
+        agent_result.get("result"),
+    )
+    await orchestrator._update_execution_log(
+        status=str(agent_result["status"]),
+        result=merged,
+        error_message=agent_result.get("error_message"),
+    )
+
+
+def _verification_image() -> dict[str, Any]:
+    from tests.services.test_multi_repo_publication import _verification_config
+
+    return _verification_config()
+
+
+@pytest.mark.asyncio
+async def test_hosted_finish_persists_trusted_receipt_for_resume(
+    tmp_path: Path, db_session: Session, test_user: models.User, tracker: Any
+) -> None:
+    from preloop.services.isolated_publication import prepare_isolated_publication
+    from tests.services.test_multi_repo_publication import _init_repo
+    from tests.services.test_publication_approval_gate import (
+        BRANCH,
+        _hosted_flow,
+        _hosted_policy,
+        _single_bundle_archive,
+    )
+
+    tracker.id = "tracker"
+    _, head, bundle = _init_repo(tmp_path, "project", "src")
+    flow, execution = _hosted_flow(db_session, test_user, approval=False)
+    policy = _hosted_policy(
+        account_id=str(test_user.account_id),
+        execution_id=str(execution.id),
+        targets=(
+            IsolatedPublicationTarget(
+                tracker_id="tracker",
+                repository_url=PROJECT,
+                clone_path="workspace",
+                role="code",
+                branch=BRANCH,
+                base="main",
+                expected_remote_sha=None,
+                base_sha="c" * 40,
+            ),
+        ),
+    )
+    archive = _single_bundle_archive(bundle)
+    orchestrator = _hosted_finish_orchestrator(
+        db_session, flow, execution, policy, archive
+    )
+    agent_result = {
+        "status": "SUCCEEDED",
+        "result": {
+            "status": "success",
+            "trusted_publication": dict(FORGED_PUBLICATION),
+        },
+    }
+    digest = hashlib.sha256(bundle).hexdigest()
+    mint = AsyncMock(
+        return_value=PublicationLease(
+            "write",
+            PROJECT,
+            datetime.now(timezone.utc) + timedelta(minutes=10),
+        )
+    )
+
+    async def fake_publish(**kwargs: Any) -> dict[str, Any]:
+        lease = await kwargs["acquire_lease"]()
+        assert lease.token == "write"
+        return {
+            "url": "https://github.com/example/project/pull/1",
+            "number": 1,
+            "branch": BRANCH,
+            "provider": "github",
+            "head_sha": head,
+            "metadata_warnings": [],
+        }
+
+    with (
+        patch(
+            "preloop.services.publication_hosted_verifier.verify_hosted_publication",
+            new=AsyncMock(
+                return_value=SimpleNamespace(
+                    verification=VerifiedPublication(str(execution.id), head, digest),
+                    manifest={},
+                    checks=(),
+                    image="toolchain",
+                )
+            ),
+        ),
+        patch(
+            "preloop.services.isolated_publication.crud_tracker.get_by_id_and_account",
+            return_value=tracker,
+        ),
+        patch(
+            "preloop.services.isolated_publication.mint_repository_lease",
+            new=mint,
+        ),
+        patch(
+            "preloop.services.isolated_publication.publish_verified_bundle",
+            new=AsyncMock(side_effect=fake_publish),
+        ),
+        patch(
+            "preloop.services.isolated_publication.revoke_repository_lease",
+            new=AsyncMock(),
+        ),
+        patch(
+            "preloop.services.publication_credentials.revoke_repository_lease",
+            new=AsyncMock(),
+        ),
+    ):
+        await orchestrator._finish_isolated_publication(agent_result)
+        await _persist_finished_result(orchestrator, agent_result)
+
+    persisted = orchestrator.execution_log.result
+    assert persisted["trusted_publication"]["head_sha"] == head
+    assert persisted["trusted_publication"]["url"] == (
+        "https://github.com/example/project/pull/1"
+    )
+    assert persisted["trusted_publication"]["url"] != FORGED_PUBLICATION["url"]
+    assert persisted["trusted_publication"]["repository_url"] == PROJECT
+    assert "dossier_manifest" in persisted
+
+    resume_client = AsyncMock()
+    dummy = httpx.Request("GET", "https://api.github.com")
+    resume_client.get.side_effect = [
+        httpx.Response(
+            200,
+            json={"full_name": "example/project", "default_branch": "main"},
+            request=dummy,
+        ),
+        httpx.Response(200, json={"object": {"sha": "c" * 40}}, request=dummy),
+        httpx.Response(200, json={"object": {"sha": head}}, request=dummy),
+    ]
+    resume_context = {
+        "execution_id": "22222222-2222-4222-8222-222222222222",
+        "git_clone_config": {
+            "publication_mode": "isolated",
+            "verification": _verification_image(),
+            "repositories": [
+                {"repository_url": PROJECT, "tracker_id": "tracker"},
+            ],
+        },
+        "trigger_event_data": {"_resume": {"execution_id": str(execution.id)}},
+    }
+    with (
+        patch("preloop.services.runner_service.resolve_runner_pool", return_value=None),
+        patch(
+            "preloop.services.isolated_publication.crud_tracker.get_by_id_and_account",
+            return_value=tracker,
+        ),
+        patch("preloop.services.isolated_publication.validate_publication_tracker"),
+        patch(
+            "preloop.services.isolated_publication.mint_repository_lease",
+            new=AsyncMock(
+                return_value=PublicationLease(
+                    "read",
+                    PROJECT,
+                    datetime.now(timezone.utc) + timedelta(minutes=10),
+                )
+            ),
+        ),
+        patch("preloop.services.isolated_publication.httpx.AsyncClient") as factory,
+    ):
+        factory.return_value.__aenter__.return_value = resume_client
+        resumed = await prepare_isolated_publication(db_session, flow, resume_context)
+    assert resumed.repository_url == PROJECT
+    assert resumed.expected_remote_sha == head
+    assert resumed.previous_records
+
+
+@pytest.mark.asyncio
+async def test_hosted_partial_finish_persists_receipt_for_resume(
+    tmp_path: Path, db_session: Session, test_user: models.User, tracker: Any
+) -> None:
+    from preloop.services.isolated_publication import prepare_isolated_publication
+    from tests.services.test_multi_repo_publication import (
+        APP,
+        FIRMWARE,
+        _archive,
+        _init_repo,
+        _resume_bind_responses,
+    )
+    from tests.services.test_publication_approval_gate import (
+        BRANCH,
+        _hosted_flow,
+        _hosted_policy,
+    )
+
+    tracker.id = "tracker"
+    _, fw_head, fw_bundle = _init_repo(tmp_path, "firmware", "fw")
+    _, app_head, app_bundle = _init_repo(tmp_path, "app", "app")
+    flow, execution = _hosted_flow(db_session, test_user, approval=False)
+    targets = (
+        IsolatedPublicationTarget(
+            tracker_id="tracker",
+            repository_url=FIRMWARE,
+            clone_path="firmware",
+            role="code",
+            branch=BRANCH,
+            base="main",
+            expected_remote_sha=None,
+            base_sha="e" * 40,
+        ),
+        IsolatedPublicationTarget(
+            tracker_id="tracker",
+            repository_url=APP,
+            clone_path="companion-app",
+            role="code",
+            branch=BRANCH,
+            base="main",
+            expected_remote_sha=None,
+            base_sha="d" * 40,
+        ),
+    )
+    policy = _hosted_policy(
+        account_id=str(test_user.account_id),
+        execution_id=str(execution.id),
+        targets=targets,
+    )
+    archive = _archive({"firmware": fw_bundle, "companion-app": app_bundle})
+    orchestrator = _hosted_finish_orchestrator(
+        db_session, flow, execution, policy, archive
+    )
+    agent_result = {
+        "status": "SUCCEEDED",
+        "result": {
+            "status": "success",
+            "trusted_publication": dict(FORGED_PUBLICATION),
+        },
+    }
+
+    async def fake_verify(
+        _executor: Any, _policy: Any, bundle: bytes
+    ) -> SimpleNamespace:
+        digest = hashlib.sha256(bundle).hexdigest()
+        head = {
+            hashlib.sha256(fw_bundle).hexdigest(): fw_head,
+            hashlib.sha256(app_bundle).hexdigest(): app_head,
+        }[digest]
+        return SimpleNamespace(
+            verification=VerifiedPublication(str(execution.id), head, digest)
+        )
+
+    async def fake_publish(**kwargs: Any) -> dict[str, Any]:
+        binding = kwargs["binding"]
+        if binding.repository_url == APP:
+            raise PublicationError("provider unavailable")
+        lease = await kwargs["acquire_lease"]()
+        assert lease.token == "write"
+        return {
+            "url": "https://github.com/example/firmware/pull/1",
+            "number": 1,
+            "branch": BRANCH,
+            "provider": "github",
+            "head_sha": fw_head,
+            "metadata_warnings": [],
+        }
+
+    with (
+        patch(
+            "preloop.services.publication_hosted_verifier.verify_hosted_publication",
+            new=AsyncMock(side_effect=fake_verify),
+        ),
+        patch(
+            "preloop.services.multi_repo_publication.crud_tracker.get_by_id_and_account",
+            return_value=tracker,
+        ),
+        patch(
+            "preloop.services.isolated_publication.crud_tracker.get_by_id_and_account",
+            return_value=tracker,
+        ),
+        patch(
+            "preloop.services.multi_repo_publication.mint_repository_lease",
+            new=AsyncMock(
+                return_value=PublicationLease(
+                    "write",
+                    FIRMWARE,
+                    datetime.now(timezone.utc) + timedelta(minutes=10),
+                )
+            ),
+        ),
+        patch(
+            "preloop.services.isolated_publication.mint_repository_lease",
+            new=AsyncMock(
+                return_value=PublicationLease(
+                    "write",
+                    FIRMWARE,
+                    datetime.now(timezone.utc) + timedelta(minutes=10),
+                )
+            ),
+        ),
+        patch(
+            "preloop.services.multi_repo_publication.publish_verified_bundle",
+            new=AsyncMock(side_effect=fake_publish),
+        ),
+        patch(
+            "preloop.services.isolated_publication.publish_verified_bundle",
+            new=AsyncMock(side_effect=fake_publish),
+        ),
+        patch(
+            "preloop.services.multi_repo_publication.revoke_repository_lease",
+            new=AsyncMock(),
+        ),
+        patch(
+            "preloop.services.isolated_publication.revoke_repository_lease",
+            new=AsyncMock(),
+        ),
+        patch(
+            "preloop.services.publication_credentials.revoke_repository_lease",
+            new=AsyncMock(),
+        ),
+    ):
+        await orchestrator._finish_isolated_publication(agent_result)
+        await _persist_finished_result(orchestrator, agent_result)
+
+    persisted = orchestrator.execution_log.result
+    receipt = persisted["trusted_publication"]
+    assert agent_result["status"] == "FAILED"
+    assert receipt["complete"] is False
+    assert receipt.get("url") != FORGED_PUBLICATION["url"]
+    by_url = {row["repository_url"]: row for row in receipt["repositories"]}
+    assert by_url[FIRMWARE]["status"] == "published"
+    assert by_url[FIRMWARE]["head_sha"] == fw_head
+    assert by_url[APP]["status"] == "failed"
+    assert "dossier_manifest" in persisted
+
+    resume_context = {
+        "execution_id": "22222222-2222-4222-8222-222222222222",
+        "git_clone_config": {
+            "publication_mode": "isolated",
+            "verification": _verification_image(),
+            "repositories": [
+                {
+                    "repository_url": FIRMWARE,
+                    "tracker_id": "tracker",
+                    "clone_path": "firmware",
+                },
+                {
+                    "repository_url": APP,
+                    "tracker_id": "tracker",
+                    "clone_path": "companion-app",
+                },
+            ],
+        },
+        "trigger_event_data": {"_resume": {"execution_id": str(execution.id)}},
+    }
+    resume_client = AsyncMock()
+    resume_client.get.side_effect = _resume_bind_responses(
+        ("example/firmware", fw_head),
+        ("example/companion-app", None),
+    )
+    with (
+        patch("preloop.services.runner_service.resolve_runner_pool", return_value=None),
+        patch(
+            "preloop.services.isolated_publication.crud_tracker.get_by_id_and_account",
+            return_value=tracker,
+        ),
+        patch("preloop.services.isolated_publication.validate_publication_tracker"),
+        patch(
+            "preloop.services.isolated_publication.mint_repository_lease",
+            new=AsyncMock(
+                return_value=PublicationLease(
+                    "read",
+                    FIRMWARE,
+                    datetime.now(timezone.utc) + timedelta(minutes=10),
+                )
+            ),
+        ),
+        patch("preloop.services.isolated_publication.httpx.AsyncClient") as factory,
+    ):
+        factory.return_value.__aenter__.return_value = resume_client
+        resumed = await prepare_isolated_publication(db_session, flow, resume_context)
+    by_target = {target.repository_url: target for target in resumed.targets}
+    assert by_target[FIRMWARE].expected_remote_sha == fw_head
+    assert by_target[FIRMWARE].previous_records
+    assert by_target[APP].expected_remote_sha is None
