@@ -189,8 +189,8 @@ const AUDIT_WINDOW_HOURS = 24;
  *
  * Paging cannot get past a busy gateway. `GET /audit-logs/grouped` has no
  * "everything except" filter, so an unfiltered read answers with the newest
- * primary events whatever they are, and on the founder's account that is
- * 8,251 groups in a day, effectively all of them successful
+ * primary events whatever they are, and on an account doing thousands of
+ * gateway calls a day that is effectively all successful
  * `model_gateway_request`, which is not news and never becomes a row. Three
  * pages is 150 groups, about nine minutes of that traffic; dropping the date
  * bound reads the same newest 150 groups again, so the unbounded slice cannot
@@ -199,12 +199,18 @@ const AUDIT_WINDOW_HOURS = 24;
  *
  * The list mirrors the primary actions of
  * `AuditLogCRUD.get_grouped_by_correlation` (backend/preloop/models/crud/
- * audit_log.py) minus the two the feed has nothing to say about: a successful
- * gateway call, and `runtime_session_updated` (a session still going is not
- * an event). It is a filter, not the feed's vocabulary: the unfiltered page
- * is still read first, so an action the server starts writing before this
- * list hears about it is still on the rail whenever it is among the newest
- * fifty groups, and always on the socket.
+ * audit_log.py) minus `model_gateway_request` and `runtime_session_updated`.
+ * The grouped API filters `event_type` by action only — no status clause —
+ * so naming `model_gateway_request` would drown the slice in successful
+ * calls. Failed and `budget_denied` gateway requests are news the feed
+ * knows how to draw, but they stay out of reach of this named slice by
+ * design: there is no status-aware action filter that can ask for those
+ * without also returning success traffic. `runtime_session_updated` (a
+ * session still going) is not an event. It is a filter, not the feed's
+ * vocabulary: the unfiltered page is still read first, so an action the
+ * server starts writing before this list hears about it is still on the
+ * rail whenever it is among the newest fifty groups, and always on the
+ * socket.
  */
 export const AUDIT_NEWS_ACTIONS = [
   'tool_call',
@@ -1727,7 +1733,7 @@ export class ActivityFeed extends LitElement {
   }
 
   /**
-   * Names for `... by dimo`. Unavailable to non-admins, and that is fine.
+   * Names for `... by alice`. Unavailable to non-admins, and that is fine.
    *
    * Never throws and never stores anything but an array: the actor's name is
    * a nicety, and a lookup that fails, 403s or answers in a shape nobody

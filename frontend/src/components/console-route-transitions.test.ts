@@ -222,7 +222,7 @@ const TRACKER = {
 /**
  * A busy gateway account's audit timeline, as the server answers it.
  *
- * The founder's account on 2026-09-08: 91,822 groups, and the newest of them
+ * On an account doing thousands of gateway calls a day, the newest groups
  * are all successful `model_gateway_request`, which the activity feed drops.
  * Every unfiltered read is that traffic however deep it pages, so the history
  * is reachable only by a read that names the actions it wants.
@@ -263,14 +263,14 @@ function stubbedBody(url: string): unknown {
       groups: parsed.searchParams.has('event_type')
         ? AUDIT_HISTORY
         : GATEWAY_TRAFFIC,
-      total: 91822,
+      total: 14000,
     };
   }
   if (path.endsWith('/api/v1/features')) return { features: {}, plugins: [] };
   if (path.endsWith('/api/v1/auth/users/me')) {
     return {
-      username: 'founder',
-      email: 'founder@example.com',
+      username: 'operator',
+      email: 'operator@example.com',
       email_verified: true,
       permissions: null,
       is_superuser: true,
@@ -564,9 +564,8 @@ describe('console route transitions', () => {
         await assertLanded(entry, `return to ${entry.path}`);
       }
     }
-    // The founder's report was that these do nothing. If a view stops
-    // rendering one, this test quietly stops covering it, so the count is
-    // part of the assertion.
+    // These used to do nothing. If a view stops rendering one, this test
+    // quietly stops covering it, so the count is part of the assertion.
     expect(
       clicked.length,
       `section exit links exercised: ${clicked.join(', ')}`

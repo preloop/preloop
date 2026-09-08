@@ -581,8 +581,8 @@ describe('activity-feed', () => {
     });
 
     it('fills the rail when every unfiltered page is gateway traffic', async () => {
-      // The founder's account: 91,822 audit groups, 8,251 of them in the last
-      // day, and effectively all of the newest ones successful gateway calls.
+      // An account doing thousands of gateway calls a day: the newest audit
+      // groups are successful `model_gateway_request`, which is not news.
       // No unfiltered page, windowed or not, ever holds a row, so this is the
       // case the paging fallback could not reach and the rail read
       // "Nothing yet" under a full history.
@@ -612,7 +612,7 @@ describe('activity-feed', () => {
           const news = url.includes('event_type=');
           const groups = news ? history : gatewayNoise(AUDIT_PAGE_SIZE);
           return new Response(
-            JSON.stringify({ groups, total: 91822, skip: 0, limit: 50 }),
+            JSON.stringify({ groups, total: 14000, skip: 0, limit: 50 }),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
           );
         }
@@ -813,9 +813,9 @@ describe('activity-feed', () => {
     });
 
     it('fills the rail from history on a quiet account, under an Earlier line', async () => {
-      // The founder's account on 2026-09-07: nothing in the last day, a full
-      // history behind it, and a card that said "Nothing yet" until the next
-      // socket message arrived.
+      // A quiet account: nothing in the last day, a full history behind it,
+      // and a card that said "Nothing yet" until the next socket message
+      // arrived.
       localStorage.setItem('accessToken', 'test-token');
       const history = Array.from({ length: FEED_INITIAL_ROWS }, (_, index) =>
         auditGroup(
