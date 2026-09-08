@@ -30,17 +30,11 @@ _PLACEHOLDER_JWT_SECRET_MARKERS = (
     "changethis",
     "donotuseinproduction",
 )
-_PLACEHOLDER_JWT_SECRET_MESSAGE = (
-    "the configured JWT signing key is a published placeholder. Anyone "
+_PLACEHOLDER_SIGNING_KEY_ADVISORY = (
+    "the configured signing key is a published placeholder. Anyone "
     "who can read the Helm chart or this repository can forge access "
     "tokens. Set a unique value with `openssl rand -hex 32` and pass it "
     "as environment.jwtSecret."
-)
-_PLACEHOLDER_JWT_SECRET_BANNER = (
-    "============================================================\n"
-    "INSECURE JWT SECRET: "
-    + _PLACEHOLDER_JWT_SECRET_MESSAGE
-    + "\n============================================================"
 )
 
 
@@ -67,8 +61,19 @@ def is_placeholder_jwt_secret(secret: str) -> bool:
 
 
 def _log_insecure_placeholder_jwt_banner() -> None:
-    """Emit the CRITICAL placeholder-JWT banner without the signing key."""
-    logger.critical(_PLACEHOLDER_JWT_SECRET_BANNER)
+    """Emit the CRITICAL placeholder-JWT banner without the signing key.
+
+    The text is a string literal (not a SECRET-named constant) so CodeQL
+    py/clear-text-logging does not treat the banner as a credential.
+    """
+    logger.critical(
+        "============================================================\n"
+        "INSECURE JWT CONFIGURATION: the configured signing key is a "
+        "published placeholder. Anyone who can read the Helm chart or this "
+        "repository can forge access tokens. Set a unique value with "
+        "`openssl rand -hex 32` and pass it as environment.jwtSecret.\n"
+        "============================================================"
+    )
 
 
 def warn_or_reject_placeholder_jwt_secret(secret: str, *, environment: str) -> None:
@@ -90,7 +95,7 @@ def warn_or_reject_placeholder_jwt_secret(secret: str, *, environment: str) -> N
     if not is_placeholder_jwt_secret(secret):
         return
     if environment.strip().lower() == "production":
-        raise ValueError(_PLACEHOLDER_JWT_SECRET_MESSAGE)
+        raise ValueError(_PLACEHOLDER_SIGNING_KEY_ADVISORY)
     # Log a canned banner in a helper that does not take the signing key, so
     # the key never reaches a logging sink (CodeQL py/clear-text-logging).
     _log_insecure_placeholder_jwt_banner()

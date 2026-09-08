@@ -92,7 +92,7 @@ def test_non_production_logs_unmissable_warning(
         "change-this-in-production", environment="development"
     )
     text = "\n".join(config_logs.messages)
-    assert "INSECURE JWT SECRET" in text
+    assert "INSECURE JWT CONFIGURATION" in text
     assert "published placeholder" in text
     assert "change-this-in-production" not in text
 
@@ -124,4 +124,4 @@ def test_settings_from_env_warns_in_development(
     loaded = Settings.from_env()
     assert loaded.security.secret_key == "change-this-in-production"
     assert loaded.environment == "development"
-    assert "INSECURE JWT SECRET" in "\n".join(config_logs.messages)
+    assert "INSECURE JWT CONFIGURATION" in "\n".join(config_logs.messages)
