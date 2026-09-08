@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CRA `dossier_manifest.evidence` no longer reports a run's evidence pack as
+  `missing` while `evidence-status` reports it `available`. The dossier is
+  built before finalize persists the captured pack, so `load_evidence` sees a
+  stale row; the orchestrator's in-memory captured receipt (the same receipt
+  finalize stores) now fills that window, and a genuinely failed or expired
+  DB receipt stays authoritative.
 - The flow form only offers PR-dependent options where they apply. PR review
   and CI follow-up render when "Create a pull request on commit" is checked,
   and the success comment on the triggering issue also requires a tracker
