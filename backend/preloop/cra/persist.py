@@ -289,14 +289,28 @@ def cra_fail_closed_completion_error(
 
     Original text is scrubbed the same way execution logs are, so preserving
     it cannot store a credential the invalid-CRA path previously discarded.
+
+    One exception: when the prior failure is the runner refusing to start the
+    container, "no result.json was persisted" is a consequence of that, not an
+    independent finding. Concatenating the two made operators debug the preset
+    or the model when the cause was in the first clause (preloop/preloop#505,
+    dogfood report 4.2), so a runner failure stands alone.
     """
+    from preloop.services.flow_failure_category import (
+        FAILURE_CATEGORY_RUNNER_CONFLICT,
+        FAILURE_CATEGORY_RUNNER_ERROR,
+        derive_failure_category,
+    )
     from preloop.utils.secret_scrubbing import scrub_secrets
 
     contract = cra_fail_closed_error_message(decision)
     prior = (scrub_secrets(original) or "").strip() if original else ""
-    if prior and prior != contract:
-        return f"{prior}; {contract}"
-    return contract
+    if not prior or prior == contract:
+        return contract
+    category = derive_failure_category(status="FAILED", error_message=prior)
+    if category in (FAILURE_CATEGORY_RUNNER_CONFLICT, FAILURE_CATEGORY_RUNNER_ERROR):
+        return prior
+    return f"{prior}; {contract}"
 
 
 def apply_cra_fail_closed_completion(

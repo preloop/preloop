@@ -640,9 +640,17 @@ API token (`Authorization: Bearer`, same `PRELOOP_TOKEN` as
 ### 2. Deliver the SBOM inline
 
 Prefer **inline** [`workspace_files`](../../webhook-triggers.md)
-(base64, 1 MiB encoded cap across files, 50 files). Payload field
-names are conventions the prompt understands; the agent also searches
-`/workspace` for SBOM-shaped files.
+(base64; 96 KiB encoded per file, 1 MiB encoded across all files, 50
+files). Payload field names are conventions the prompt understands; the
+agent also searches `/workspace` for SBOM-shaped files.
+
+The seed budget is **not** shared with the rendered prompt. Seeds travel
+in the container environment and the launch command references them by
+name, so a preset with a long prompt gets the same seed allowance as one
+with a short prompt. The trigger endpoints validate the declaration
+before an execution exists: `400` for a malformed one, `413` for an
+oversized one, in both cases naming the cap, the actual size and the
+overage.
 
 URL delivery is allowed (`sbom.urls` and similar) but is hostile input:
 anyone holding the webhook secret can inject them, and the exec
@@ -684,9 +692,12 @@ package manifests for cross-checks, and the previous audit's
 `result.json` if you want drift. Optional: VEX file, license policy,
 human-authored `waivers.json`.
 
-If the encoded `workspace_files` would exceed 1 MiB, do not silently
-truncate. Fail the job or switch to URL delivery with the trust warning
-above in mind.
+If the encoded `workspace_files` would exceed a cap, do not silently
+truncate and do not reshape the artefact to fit. An SBOM edited to fit a
+transport produces findings about the edit rather than about the product,
+and nothing in the evidence pack would let a reader tell the difference.
+Gzip the artefacts and decompress them in a setup command, fail the job,
+or switch to URL delivery with the trust warning above in mind.
 
 ### 3. GitHub Actions (`python -m preloop.cra.ci`)
 

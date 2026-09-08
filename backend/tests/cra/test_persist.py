@@ -387,6 +387,36 @@ def test_invalid_cra_keeps_original_failure_and_contract_diagnostics(
     assert contract in error
 
 
+@pytest.mark.parametrize(
+    "runner_error",
+    [
+        "exec /opt/entrypoint.sh: argument list too long",
+        "Failed to start agent Job: ImagePullBackOff",
+    ],
+)
+def test_runner_failure_stands_alone_without_contract_diagnostics(
+    vulnscan_result: dict[str, Any], runner_error: str
+) -> None:
+    """A runner that never started the container is the whole cause.
+
+    "no result.json was persisted" is a consequence of the container not
+    running. Concatenating the two sent operators to debug the preset or the
+    model when the answer was in the first clause (preloop/preloop#505,
+    dogfood report 4.2).
+    """
+    payload = clone(vulnscan_result)
+    del payload["gate"]
+    decision = apply_cra_persist_boundary(payload)
+    assert decision.invalid
+
+    status, error = apply_cra_fail_closed_completion("FAILED", runner_error, decision)
+
+    assert status == "FAILED"
+    assert error == runner_error
+    assert "failed contract validation" not in error
+    assert "cra_result_missing" not in (error or "")
+
+
 def test_invalid_cra_without_original_error_is_contract_only(
     vulnscan_result: dict[str, Any],
 ) -> None:

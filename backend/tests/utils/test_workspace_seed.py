@@ -11,7 +11,12 @@ from preloop.utils.workspace_seed import (
     WorkspaceSeedError,
     attach_workspace_file_paths,
     build_workspace_seed_shell,
+    MAX_SINGLE_SEED_ENCODED_BYTES,
+    SEED_ENV_PREFIX,
     parse_workspace_files,
+    seed_env_var,
+    workspace_seed_env,
+    workspace_seed_env_from_payload,
     workspace_seed_paths,
 )
 
@@ -136,35 +141,60 @@ class TestParseWorkspaceFiles:
             parse_workspace_files(_payload({"path": "a.txt", "url": "http://x"}))
 
     def test_total_cap_enforced_on_encoded_size(self):
-        """The cap applies to the base64-ENCODED size (what is embedded in
-        the container launch command / K8s Job spec), across all files."""
-        # Each file's encoded form is just over half the cap.
-        decoded_half = (MAX_TOTAL_SEED_ENCODED_BYTES // 2 // 4) * 3 + 3
-        half = _b64(b"x" * decoded_half)
-        assert len(half) > MAX_TOTAL_SEED_ENCODED_BYTES // 2
-        with pytest.raises(WorkspaceSeedError, match="inline cap"):
+        """The cap applies to the base64-ENCODED size, across all files.
+
+        Built from files that each sit at the per-file cap, so the total cap
+        is what trips rather than the per-file one.
+        """
+        at_cap = _b64(b"x" * (MAX_SINGLE_SEED_ENCODED_BYTES // 4 * 3))
+        assert len(at_cap) == MAX_SINGLE_SEED_ENCODED_BYTES
+        count = MAX_TOTAL_SEED_ENCODED_BYTES // MAX_SINGLE_SEED_ENCODED_BYTES + 1
+        with pytest.raises(WorkspaceSeedError, match="total base64-encoded size"):
             parse_workspace_files(
                 _payload(
-                    {"path": "a.bin", "content_base64": half},
-                    {"path": "b.bin", "content_base64": half},
+                    *[
+                        {"path": f"f{i}.bin", "content_base64": at_cap}
+                        for i in range(count)
+                    ]
                 )
             )
 
-    def test_decoded_size_at_old_cap_now_rejected(self):
-        """1 MiB of decoded content encodes to ~1.33 MiB — over the encoded
-        cap. Guards against regressing to a decoded-size check."""
-        content = _b64(b"x" * MAX_TOTAL_SEED_ENCODED_BYTES)
-        assert len(content) > MAX_TOTAL_SEED_ENCODED_BYTES
-        with pytest.raises(WorkspaceSeedError, match="inline cap"):
+    def test_total_cap_message_names_cap_and_overage(self):
+        """A caller must learn how much to shed without a second round trip."""
+        at_cap = _b64(b"x" * (MAX_SINGLE_SEED_ENCODED_BYTES // 4 * 3))
+        count = MAX_TOTAL_SEED_ENCODED_BYTES // MAX_SINGLE_SEED_ENCODED_BYTES + 1
+        with pytest.raises(WorkspaceSeedError) as excinfo:
             parse_workspace_files(
-                _payload({"path": "a.bin", "content_base64": content})
+                _payload(
+                    *[
+                        {"path": f"f{i}.bin", "content_base64": at_cap}
+                        for i in range(count)
+                    ]
+                )
             )
+        message = str(excinfo.value)
+        assert str(MAX_TOTAL_SEED_ENCODED_BYTES) in message
+        assert "exceeds" in message
+        assert "by at least" in message
 
-    def test_single_file_at_encoded_cap_allowed(self):
+    def test_per_file_cap_enforced(self):
+        """One oversized file is rejected even when the total is under cap."""
+        over = _b64(b"x" * MAX_SINGLE_SEED_ENCODED_BYTES)
+        assert len(over) > MAX_SINGLE_SEED_ENCODED_BYTES
+        assert len(over) < MAX_TOTAL_SEED_ENCODED_BYTES
+        with pytest.raises(WorkspaceSeedError) as excinfo:
+            parse_workspace_files(_payload({"path": "a.bin", "content_base64": over}))
+        message = str(excinfo.value)
+        assert "per-file cap" in message
+        assert "'a.bin'" in message
+        assert str(len(over)) in message
+        assert str(len(over) - MAX_SINGLE_SEED_ENCODED_BYTES) in message
+
+    def test_single_file_at_per_file_cap_allowed(self):
         # Decoded size chosen so the encoded form is exactly at the cap.
-        decoded = MAX_TOTAL_SEED_ENCODED_BYTES // 4 * 3
+        decoded = MAX_SINGLE_SEED_ENCODED_BYTES // 4 * 3
         content = _b64(b"x" * decoded)
-        assert len(content) == MAX_TOTAL_SEED_ENCODED_BYTES
+        assert len(content) == MAX_SINGLE_SEED_ENCODED_BYTES
         files = parse_workspace_files(
             _payload({"path": "a.bin", "content_base64": content})
         )
@@ -195,7 +225,10 @@ class TestBuildWorkspaceSeedShell:
         # resolved-to-resolved (tolerates a symlinked workspace root).
         assert 'cd -P "$w0"' in shell
         assert "__pl_seed fixtures/input.json" in shell
-        assert _b64(b"{}") in shell
+        # The content is referenced by environment variable, never inlined:
+        # the launch command is one execve string capped at MAX_ARG_STRLEN.
+        assert _b64(b"{}") not in shell
+        assert f'"${seed_env_var(0)}"' in shell
         # Runtime symlink-containment guard is present.
         assert "cd -P" in shell
         assert "set -e" in shell
@@ -214,14 +247,25 @@ class TestWorkspaceSeedShellRuntime:
     """Functional tests: run the generated block in a real POSIX shell
     against a temp workspace root, including symlink-escape attempts."""
 
-    @staticmethod
-    def _run(shell: str):
+    # Seed contents live in the environment, not in the block. _shell_for
+    # records the matching environment so _run can supply it, exactly as the
+    # container launcher does.
+    _seed_env: dict = {}
+
+    def _run(self, shell: str):
+        import os
         import subprocess
 
-        return subprocess.run(["sh", "-c", shell], capture_output=True, text=True)
+        return subprocess.run(
+            ["sh", "-c", shell],
+            capture_output=True,
+            text=True,
+            env={**os.environ, **self._seed_env},
+        )
 
     def _shell_for(self, root, *entries) -> str:
         files = parse_workspace_files(_payload(*entries))
+        self._seed_env = workspace_seed_env(files)
         return build_workspace_seed_shell(files, workspace_root=str(root))
 
     def test_materializes_files(self, tmp_path):
@@ -400,3 +444,74 @@ class TestAttachWorkspaceFilePaths:
     def test_workspace_seed_paths_helper(self):
         payload = _payload({"path": "a.txt", "content_base64": _b64(b"1")})
         assert workspace_seed_paths(payload) == ["a.txt"]
+
+
+class TestSeedEnvironmentTransport:
+    """Seeds travel in the environment, not in the launch command.
+
+    Interpolating base64 into the command made the usable seed budget the
+    kernel's MAX_ARG_STRLEN (128 KiB) minus the rendered prompt, an order of
+    magnitude below the documented cap, and blew up at container exec rather
+    than at the trigger (preloop/preloop#505).
+    """
+
+    def test_env_has_one_variable_per_file_in_order(self):
+        files = parse_workspace_files(
+            _payload(
+                {"path": "a.txt", "content_base64": _b64(b"first")},
+                {"path": "b.txt", "content_base64": _b64(b"second")},
+            )
+        )
+        env = workspace_seed_env(files)
+        assert env == {
+            f"{SEED_ENV_PREFIX}0": _b64(b"first"),
+            f"{SEED_ENV_PREFIX}1": _b64(b"second"),
+        }
+
+    def test_env_from_payload_matches_the_shell_indices(self):
+        payload = _payload(
+            {"path": "a.txt", "content_base64": _b64(b"first")},
+            {"path": "b.txt", "content_base64": _b64(b"second")},
+        )
+        shell = build_workspace_seed_shell(parse_workspace_files(payload))
+        env = workspace_seed_env_from_payload(payload)
+        for index in (0, 1):
+            assert f'"${seed_env_var(index)}"' in shell
+            assert seed_env_var(index) in env
+
+    def test_env_from_invalid_payload_is_empty(self):
+        assert workspace_seed_env_from_payload({"workspace_files": "nope"}) == {}
+        assert workspace_seed_env_from_payload(None) == {}
+
+    def test_command_length_is_independent_of_seed_size(self):
+        """The whole point: bigger seeds must not grow the launch command."""
+        small = _payload({"path": "a.bin", "content_base64": _b64(b"x")})
+        large = _payload(
+            {
+                "path": "a.bin",
+                "content_base64": _b64(b"x" * (64 * 1024)),
+            }
+        )
+        small_shell = build_workspace_seed_shell(parse_workspace_files(small))
+        large_shell = build_workspace_seed_shell(parse_workspace_files(large))
+        assert small_shell == large_shell
+        assert len(large_shell) < 2048
+
+    def test_missing_environment_aborts_rather_than_seeding_empty(self, tmp_path):
+        """A transport that drops the environment must fail loudly."""
+        import os
+        import subprocess
+
+        files = parse_workspace_files(
+            _payload({"path": "a.txt", "content_base64": _b64(b"hello")})
+        )
+        shell = build_workspace_seed_shell(files, workspace_root=str(tmp_path))
+        result = subprocess.run(
+            ["sh", "-c", shell],
+            capture_output=True,
+            text=True,
+            env={k: v for k, v in os.environ.items() if k != seed_env_var(0)},
+        )
+        assert result.returncode != 0
+        assert "no content delivered" in result.stderr
+        assert not (tmp_path / "a.txt").exists()

@@ -17,12 +17,36 @@ trigger payload may instead declare files to materialize in the agent's
 v1 is inline-only (no URLs). Contents are base64 so arbitrary bytes survive
 the JSON payload and the JSONB trigger snapshot. Validation is strict:
 relative paths only (no ``..`` traversal, no absolute paths, no ``.git``
-segment at any depth), a total size cap, and a file-count cap. The size cap
-is enforced on the base64-ENCODED form — that is what the v1 transport
-embeds into the container launch command, which on Kubernetes lives in the
-Job spec and must stay well under etcd's ~1.5 MiB object limit alongside
-the prompt and MCP config — and is deliberately at the low end (1 MiB
-encoded, ~768 KiB decoded).
+segment at any depth), a per-file size cap, a total size cap, and a
+file-count cap. Size caps are enforced on the base64-ENCODED form, because
+that is the form the transport carries.
+
+Transport, and why the caps are what they are
+---------------------------------------------
+
+Seed contents used to be interpolated straight into the container launch
+command, alongside the rendered prompt. That command is a single ``execve``
+argument string, and Linux caps one such string at ``MAX_ARG_STRLEN``, 128
+KiB. So the real usable budget was 128 KiB *shared with the prompt*, an
+order of magnitude below the documented 1 MiB cap, and exceeding it failed
+inside the container with ``exec /opt/entrypoint.sh: argument list too
+long`` rather than at the trigger (preloop/preloop#505).
+
+Seeds now travel in the container environment, one variable per file, and
+the launch command references those variables by name. That decouples the
+seed budget from the prompt: the command carries only the prompt, and each
+seed is its own ``execve`` string. The caps follow directly from the two
+limits that remain:
+
+- ``MAX_SINGLE_SEED_ENCODED_BYTES`` (96 KiB) keeps one environment variable
+  under ``MAX_ARG_STRLEN`` with room for the variable name and the rest of
+  the environment.
+- ``MAX_TOTAL_SEED_ENCODED_BYTES`` (1 MiB) keeps the whole set inside a
+  Kubernetes Job spec, which must stay well under etcd's ~1.5 MiB object
+  limit alongside the prompt and MCP config.
+
+Both are checked at trigger time, so a caller gets a 4xx naming the actual
+budget and the actual overage instead of a container that never starts.
 
 Lexical path validation cannot see symlinks in the cloned workspace, so the
 emitted materialization block re-checks physical containment at runtime;
@@ -47,19 +71,28 @@ WORKSPACE_FILES_KEY = "workspace_files"
 # ``_subject`` key attached by preloop.sync.event_normalizer).
 WORKSPACE_FILE_PATHS_KEY = "_workspace_file_paths"
 
-# Total base64-ENCODED bytes allowed across all seeded files. The encoded
-# form (not the decoded content) is what travels inside the container launch
-# command — on Kubernetes that lives in the Job spec, which must stay well
-# under etcd's ~1.5 MiB object limit alongside the prompt and MCP config —
-# so the cap is enforced on the encoded size directly. Decoded content is
-# therefore capped at ~768 KiB (base64 is a 4/3 expansion).
+# Total base64-ENCODED bytes allowed across all seeded files. On Kubernetes
+# the environment lives in the Job spec, which must stay well under etcd's
+# ~1.5 MiB object limit alongside the prompt and MCP config, so the cap is
+# enforced on the encoded size directly. Decoded content is therefore capped
+# at ~768 KiB (base64 is a 4/3 expansion).
 MAX_TOTAL_SEED_ENCODED_BYTES = 1 * 1024 * 1024  # 1 MiB
+
+# Base64-ENCODED bytes allowed for a single file. Each seed travels as one
+# environment variable, and Linux caps a single execve string
+# (``MAX_ARG_STRLEN``) at 128 KiB; 96 KiB leaves room for the variable name
+# and keeps the limit a round, quotable number. Decoded, that is ~72 KiB.
+MAX_SINGLE_SEED_ENCODED_BYTES = 96 * 1024  # 96 KiB
 
 # Bound on the number of files, to keep the init-command prelude sane.
 MAX_SEED_FILES = 50
 
 # Where files are written inside agent containers.
 WORKSPACE_ROOT = "/workspace"
+
+# Prefix of the per-seed environment variables. The launch command references
+# these by name, so no seed content is ever interpolated into it.
+SEED_ENV_PREFIX = "PRELOOP_WORKSPACE_SEED_"
 
 
 class WorkspaceSeedError(ValueError):
@@ -156,17 +189,29 @@ def parse_workspace_files(
             )
         content = "".join(content.split())  # tolerate wrapped base64
 
-        # Cap the ENCODED size BEFORE decoding: the base64 text is what is
-        # embedded in the container launch command (K8s Job spec / etcd
-        # limit), so that is the size that matters for the transport, and
-        # oversized payloads should be rejected without decode work.
+        # Cap the ENCODED size BEFORE decoding: the base64 text is what the
+        # transport carries, so that is the size that matters, and oversized
+        # payloads should be rejected without decode work. Both messages name
+        # the cap, the actual size and the overage, so a caller knows how much
+        # to shed without a second round trip.
+        if len(content) > MAX_SINGLE_SEED_ENCODED_BYTES:
+            raise WorkspaceSeedError(
+                f"workspace_files[{index}] ({path!r}) is "
+                f"{len(content)} base64-encoded bytes, which exceeds the "
+                f"{MAX_SINGLE_SEED_ENCODED_BYTES} byte per-file cap by "
+                f"{len(content) - MAX_SINGLE_SEED_ENCODED_BYTES} bytes. Each "
+                "file travels as one environment variable, which the kernel "
+                "caps at MAX_ARG_STRLEN. Compress the file or split it."
+            )
         total_bytes += len(content)
         if total_bytes > MAX_TOTAL_SEED_ENCODED_BYTES:
             raise WorkspaceSeedError(
-                "workspace_files total base64-encoded size exceeds the "
-                f"{MAX_TOTAL_SEED_ENCODED_BYTES // (1024 * 1024)} MiB inline "
-                "cap (the encoded form is embedded in the container launch "
-                "command); use fewer/smaller files"
+                f"workspace_files total base64-encoded size is at least "
+                f"{total_bytes} bytes, which exceeds the "
+                f"{MAX_TOTAL_SEED_ENCODED_BYTES} byte "
+                f"({MAX_TOTAL_SEED_ENCODED_BYTES // (1024 * 1024)} MiB) cap "
+                f"by at least {total_bytes - MAX_TOTAL_SEED_ENCODED_BYTES} "
+                "bytes. Use fewer or smaller files."
             )
         try:
             base64.b64decode(content, validate=True)
@@ -176,6 +221,40 @@ def parse_workspace_files(
             ) from exc
         files.append(WorkspaceSeedFile(path=path, content_base64=content))
     return files
+
+
+def seed_env_var(index: int) -> str:
+    """Name of the environment variable carrying seed ``index``."""
+    return f"{SEED_ENV_PREFIX}{index}"
+
+
+def workspace_seed_env(files: List[WorkspaceSeedFile]) -> Dict[str, str]:
+    """Environment carrying the seed contents, one variable per file.
+
+    Paired with :func:`build_workspace_seed_shell`, which emits references to
+    these names. Both derive their ordering from the same
+    :func:`parse_workspace_files` result, so index N in the shell and index N
+    in the environment are the same file.
+    """
+    return {
+        seed_env_var(index): seed.content_base64 for index, seed in enumerate(files)
+    }
+
+
+def workspace_seed_env_from_payload(
+    payload: Optional[Dict[str, Any]],
+) -> Dict[str, str]:
+    """Seed environment for a trigger payload; empty when nothing is declared.
+
+    Invalid declarations yield an empty environment rather than raising: the
+    orchestrator has already rejected them with a user-visible error, and the
+    shell block is built from the same parse, so a silent mismatch is not
+    possible.
+    """
+    try:
+        return workspace_seed_env(parse_workspace_files(payload))
+    except WorkspaceSeedError:
+        return {}
 
 
 def workspace_seed_paths(payload: Optional[Dict[str, Any]]) -> List[str]:
@@ -211,8 +290,14 @@ def build_workspace_seed_shell(
     """Build the init-command block that writes seeds under ``/workspace``.
 
     Runs after git clone (which relocates pre-existing files) and before
-    custom commands (which may consume the seeds). Contents travel as quoted
-    base64 so arbitrary bytes survive the shell.
+    custom commands (which may consume the seeds).
+
+    Contents are *not* in this block. Each seed's base64 is read from the
+    environment variable :func:`seed_env_var` gives it, which is what keeps
+    the launch command (a single ``execve`` string, capped at 128 KiB) free
+    of seed bytes. An unset or empty variable aborts the prelude rather than
+    writing an empty file, so a transport that drops the environment fails
+    loudly instead of silently seeding nothing.
 
     Path validation is lexical and cannot see the filesystem, but the seeds
     are materialized *after* git clone and a cloned repository may contain
@@ -246,6 +331,8 @@ def build_workspace_seed_shell(
     # root; `$1` the validated relative path; `$2` the base64 content.
     helper = (
         "__pl_seed() { "
+        '[ -n "$2" ] || { '
+        'echo "workspace_files: no content delivered for $1" >&2; exit 1; }; '
         't="$w/$1"; d="${t%/*}"; e="$d"; '
         'while [ ! -d "$e" ]; do e="${e%/*}"; '
         '[ -n "$e" ] || { echo "workspace_files: $w does not exist" >&2; exit 1; }; '
@@ -261,8 +348,8 @@ def build_workspace_seed_shell(
         'printf \'%s\' "$2" | base64 -d > "$t"; }'
     )
     calls = "; ".join(
-        f"__pl_seed {shlex.quote(seed.path)} {shlex.quote(seed.content_base64)}"
-        for seed in files
+        f'__pl_seed {shlex.quote(seed.path)} "${seed_env_var(index)}"'
+        for index, seed in enumerate(files)
     )
     # Canonicalize the root once so the containment check compares
     # resolved-to-resolved; a symlinked root would otherwise fail the
