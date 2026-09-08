@@ -59,6 +59,20 @@ ensure_tool_venv() {
     --require-hashes -r "${REPO_ROOT}/.github/requirements/sbom.txt"
 }
 
+# Always install the pinned cyclonedx-gomod into WORK_DIR/bin. Reusing
+# whatever is on PATH would let a developer machine emit an SBOM that is not
+# comparable with the release artifact this script exists to reproduce.
+ensure_cyclonedx_gomod() {
+  local dest="${WORK_DIR}/bin/cyclonedx-gomod"
+  if [ -x "${dest}" ]; then
+    return 0
+  fi
+  log "cli: installing cyclonedx-gomod ${CYCLONEDX_GOMOD_VERSION} into ${WORK_DIR}/bin"
+  mkdir -p "${WORK_DIR}/bin"
+  GOBIN="${WORK_DIR}/bin" go install \
+    "github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@${CYCLONEDX_GOMOD_VERSION}"
+}
+
 generate_backend() {
   local target="${OUT_DIR}/preloop-sbom-backend-${VERSION}.cdx.json"
   log "backend: building an analysis venv from requirements/runtime.txt"
@@ -106,20 +120,15 @@ generate_cli() {
   local goos="${GOOS:-linux}"
   local goarch="${GOARCH:-amd64}"
 
-  if ! command -v cyclonedx-gomod >/dev/null 2>&1; then
-    log "cli: installing cyclonedx-gomod ${CYCLONEDX_GOMOD_VERSION}"
-    GOBIN="${WORK_DIR}/bin" go install \
-      "github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@${CYCLONEDX_GOMOD_VERSION}"
-    PATH="${WORK_DIR}/bin:${PATH}"
-    export PATH
-  fi
+  ensure_cyclonedx_gomod
 
   log "cli: generating ${target} for ${goos}/${goarch}"
   # Build constraints select modules, so the SBOM is only true for one
   # target. linux/amd64 is the default because that is what the container
   # images and the primary release binary use; the constraints are recorded
   # as properties on the main component.
-  (cd "${REPO_ROOT}/cli" && GOOS="${goos}" GOARCH="${goarch}" cyclonedx-gomod app \
+  (cd "${REPO_ROOT}/cli" && GOOS="${goos}" GOARCH="${goarch}" \
+    "${WORK_DIR}/bin/cyclonedx-gomod" app \
     -json \
     -licenses \
     -std \
