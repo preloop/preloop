@@ -84,6 +84,7 @@ def create_message(
         db,
         auth_context,
         budget_enforcer=budget_enforcer,
+        owns_db_session=True,
         client_session_id=x_preloop_session_id or x_claude_code_session_id,
     )
     if payload.get("stream"):

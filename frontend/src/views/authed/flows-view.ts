@@ -15,7 +15,7 @@ import '../../components/list-selection.ts';
 import '../../components/time-range-select.ts';
 import { totalTokensOf } from '../../components/token-figures';
 import { router } from '../../router';
-import { Router } from '@vaadin/router';
+import { Router } from '../../router';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import {
   getFlows,

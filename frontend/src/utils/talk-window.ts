@@ -11,7 +11,7 @@
  * anywhere focuses the window that is already open for that agent instead of
  * opening a second one.
  */
-import { Router } from '@vaadin/router';
+import { Router } from '../router';
 
 import { showToast } from '../components/confirm-dialog';
 import type { ManagedAgentSummary, RuntimeSessionSummary } from '../types';

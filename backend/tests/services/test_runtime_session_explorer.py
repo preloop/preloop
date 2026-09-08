@@ -322,21 +322,43 @@ def test_run_title_generation_noop_when_service_unavailable():
         )
 
 
-def test_run_title_generation_calls_service_and_closes_db():
-    generate = MagicMock()
+def test_run_title_generation_only_submits_to_scheduler():
+    schedule = MagicMock()
     pm = MagicMock()
-    pm.get_service.return_value = generate
-    fake_db = MagicMock()
-    factory = MagicMock(return_value=fake_db)
+    pm.get_service.return_value = schedule
     with (
         patch("preloop.plugins.base.get_plugin_manager", return_value=pm),
-        patch("preloop.models.db.session.get_session_factory", return_value=factory),
+        patch("preloop.models.db.session.get_session_factory") as factory,
     ):
         RuntimeSessionExplorerService._run_title_generation(
             account_id="acct", session_ids=["s1", "s2"]
         )
-    assert generate.call_count == 2
-    fake_db.close.assert_called_once()
+    pm.get_service.assert_called_once_with("session_title_scheduler")
+    schedule.assert_called_once_with(account_id="acct", session_ids=["s1", "s2"])
+    factory.assert_not_called()
+
+
+def test_run_title_generation_skips_old_plugins_without_scheduler():
+    pm = MagicMock()
+    pm.get_service.return_value = None
+    with (
+        patch("preloop.plugins.base.get_plugin_manager", return_value=pm),
+        patch("preloop.models.db.session.get_session_factory") as factory,
+    ):
+        RuntimeSessionExplorerService._run_title_generation(
+            account_id="a", session_ids=["s"]
+        )
+    pm.get_service.assert_called_once_with("session_title_scheduler")
+    factory.assert_not_called()
+
+
+def test_run_title_generation_swallows_scheduler_failure():
+    pm = MagicMock()
+    pm.get_service.return_value.side_effect = RuntimeError("scheduler stopped")
+    with patch("preloop.plugins.base.get_plugin_manager", return_value=pm):
+        RuntimeSessionExplorerService._run_title_generation(
+            account_id="a", session_ids=["s"]
+        )
 
 
 # --- _attach_optimization_badges -------------------------------------------

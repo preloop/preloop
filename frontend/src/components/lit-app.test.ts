@@ -1,6 +1,6 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
-import { Router } from '@vaadin/router';
+import { Router } from '../router';
 
 import './lit-app';
 
@@ -65,6 +65,26 @@ describe('LitApp routing', () => {
     expect(customElements.get('profile-view')).to.equal(undefined);
     expect(customElements.get('agent-detail-view')).to.equal(undefined);
     expect(customElements.get('flow-execution-view')).to.equal(undefined);
+  });
+
+  it('renders the landing page and /login without touching a console chunk', async () => {
+    const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
+    await waitUntil(
+      () => Boolean(el.shadowRoot?.querySelector('landing-view')),
+      'Expected the landing page to render'
+    );
+
+    Router.go('/login');
+    await waitUntil(
+      () => Boolean(el.shadowRoot?.querySelector('login-view')),
+      'Expected /login to render'
+    );
+
+    // The two doors an anonymous visitor uses. Neither may drag the console
+    // in behind it; that is the whole point of the split.
+    expect(customElements.get('console-shell')).to.equal(undefined);
+    expect(customElements.get('dashboard-view')).to.equal(undefined);
+    expect(customElements.get('agents-view')).to.equal(undefined);
   });
 
   it('registers a nested console view on navigation and handles OAuth tokens', async () => {

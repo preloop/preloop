@@ -1,7 +1,7 @@
 """Signed outbound event webhooks: endpoints plus a delivery outbox.
 
 Revision ID: 20260908_event_webhooks
-Revises: 20260907_sm_sweep_cursor
+Revises: 20260908_structured_answer
 Create Date: 2026-09-08
 
 ``webhook_endpoint`` holds the operator-registered targets (and the
@@ -17,7 +17,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 revision: str = "20260908_event_webhooks"
-down_revision: Union[str, None] = "20260907_sm_sweep_cursor"
+down_revision: Union[str, None] = "20260908_structured_answer"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 _ALEMBIC_IDENTIFIERS = (revision, down_revision, branch_labels, depends_on)

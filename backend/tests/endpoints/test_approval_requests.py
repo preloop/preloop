@@ -278,6 +278,8 @@ class TestApproveRequest:
                         decision.comment,
                         user_id=mock_user.id,
                         channel=approval_requests.AUTHENTICATED_DECISION_CHANNEL,
+                        # No input_schema on this request, so no form answer.
+                        structured_answer=None,
                     )
 
     @pytest.mark.asyncio

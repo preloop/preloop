@@ -57,6 +57,27 @@ describe('ApprovalView', () => {
     });
   }
 
+  /** The waiver form preset 006 asks for: pick rows, give a reason each. */
+  const WAIVER_SCHEMA = {
+    type: 'object',
+    properties: {
+      waived: {
+        type: 'array',
+        title: 'Findings to waive',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', enum: ['CVE-1', 'CVE-2'] },
+            reason: { type: 'string', title: 'Reason', minLength: 5 },
+          },
+          required: ['id', 'reason'],
+        },
+      },
+      approver: { type: 'string', title: 'Approver', 'x-autofill': 'author' },
+    },
+    required: ['waived'],
+  } as any;
+
   function createFetchStub(
     opts: {
       request?: Record<string, unknown> | null;
@@ -1392,6 +1413,118 @@ describe('ApprovalView', () => {
         () => (element as any).approvalRequest?.status === 'declined',
         'request was not marked declined'
       );
+    });
+
+    it('renders a form instead of a textarea when the agent sent a schema', async () => {
+      const { element, panel } = await renderQuestion({
+        question: 'Which findings do you waive?',
+        allow_free_text: true,
+        question_items: [
+          { id: 'CVE-1', title: 'curl 8.4.0', severity: 'high' },
+          { id: 'CVE-2', title: 'requests 2.31.0', severity: 'medium' },
+        ],
+        question_schema: WAIVER_SCHEMA,
+        has_answer_form: true,
+      });
+
+      const form = panel.shadowRoot.querySelector('answer-form');
+      expect(form, 'expected an answer form').to.exist;
+      await form.updateComplete;
+      // The rows are read, not matched against ids in prose.
+      expect(form.shadowRoot.textContent).to.contain('curl 8.4.0');
+      expect(
+        form.shadowRoot.querySelectorAll('.item-checkbox').length
+      ).to.equal(2);
+      // The option buttons are gone: they would answer a different question.
+      expect(
+        panel.shadowRoot.querySelectorAll('.question-option').length
+      ).to.equal(0);
+      void element;
+    });
+
+    it('posts the form as answer JSON, with the author left to the server', async () => {
+      const { element, panel } = await renderQuestion({
+        question: 'Which findings do you waive?',
+        question_items: [{ id: 'CVE-1', title: 'curl 8.4.0' }],
+        question_schema: WAIVER_SCHEMA,
+        has_answer_form: true,
+      });
+
+      const form = panel.shadowRoot.querySelector('answer-form') as any;
+      await form.updateComplete;
+      const box = form.shadowRoot.querySelector('.item-checkbox');
+      box.checked = true;
+      box.dispatchEvent(new CustomEvent('sl-change', { bubbles: true }));
+      await form.updateComplete;
+      const reason = form.shadowRoot.querySelector('.field-input');
+      reason.value = 'no fix released yet';
+      reason.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+      await form.updateComplete;
+
+      (panel.shadowRoot.querySelector('.send-form') as HTMLElement).click();
+      await waitUntil(
+        () =>
+          fetchStub
+            .getCalls()
+            .some((c) => String(c.args[0]).includes('/approve')),
+        'no approve call'
+      );
+      await element.updateComplete;
+
+      const body = bodyOf(
+        fetchStub
+          .getCalls()
+          .find((c) => String(c.args[0]).includes('/approve'))!
+      );
+      expect(body.approved).to.be.true;
+      expect(body.answer).to.deep.equal({
+        waived: [{ id: 'CVE-1', reason: 'no fix released yet' }],
+      });
+      expect(body.answer.approver, 'the author is never typed').to.be.undefined;
+    });
+
+    it('sends nothing while a required field is empty', async () => {
+      const { panel } = await renderQuestion({
+        question_items: [{ id: 'CVE-1', title: 'curl 8.4.0' }],
+        question_schema: WAIVER_SCHEMA,
+        has_answer_form: true,
+      });
+
+      (panel.shadowRoot.querySelector('.send-form') as HTMLElement).click();
+      await aTimeout(10);
+
+      expect(
+        fetchStub
+          .getCalls()
+          .some((c) => String(c.args[0]).includes('/approve')),
+        'an empty form was submitted'
+      ).to.be.false;
+    });
+
+    it('renders the recorded answer of a decided question as fields', async () => {
+      fetchStub = createFetchStub({
+        request: questionRequest({
+          status: 'approved',
+          resolved_at: new Date().toISOString(),
+          question_schema: WAIVER_SCHEMA,
+          structured_answer: {
+            waived: [{ id: 'CVE-1', reason: 'no fix released yet' }],
+            approver: 'tester@example.com',
+          },
+        }),
+      });
+      const element = (await fixture(
+        html`<approval-view .requestId=${'req-1'}></approval-view>`
+      )) as ApprovalView;
+      await waitUntil(() => !(element as any).loading, 'still loading');
+      await element.updateComplete;
+
+      const recorded = element.shadowRoot?.querySelector('.recorded-answer');
+      expect(recorded, 'expected the answer section').to.exist;
+      const text = recorded?.textContent || '';
+      expect(text).to.contain('Findings to waive');
+      expect(text).to.contain('no fix released yet');
+      expect(text, 'no raw JSON on screen').to.not.contain('{"');
     });
 
     it('renders the normal approve/decline UI when question fields are absent', async () => {

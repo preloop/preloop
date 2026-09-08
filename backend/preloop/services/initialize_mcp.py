@@ -369,12 +369,20 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         caller: str | None = None,
         approval_workflow: str | None = None,
         publication_candidates: list[dict[str, str]] | None = None,
+        items: list[dict[str, Any]] | None = None,
+        input_schema: dict[str, Any] | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
         """Request approval for an operation before executing it.
 
         Optional ``publication_candidates`` freeze isolated-publication
         destinations. Context text is not publication authority.
+
+        When the decision itself needs structured input (a reason per item,
+        an expiry, a scope), pass ``items`` (the rows the decision is about)
+        and ``input_schema`` (the shape of the answer). The approver then
+        fills a form and the validated JSON comes back with the approval,
+        instead of a paragraph somebody has to parse.
         """
         # Get user context
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
@@ -473,6 +481,25 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         if publication_scope:
             arguments.update(publication_scope)
 
+        # Optional decision form. Refused here rather than rendered as a
+        # blank page: a schema the console cannot draw is the agent's
+        # mistake, and the agent is the one that can fix it.
+        from preloop.services.question_schema import (
+            QuestionSchemaError,
+            normalize_input_schema,
+            normalize_items,
+        )
+
+        try:
+            normalized_schema = normalize_input_schema(input_schema)
+            normalized_items = normalize_items(items)
+        except QuestionSchemaError as schema_error:
+            return f"Error: {schema_error}"
+        if normalized_items:
+            arguments["items"] = normalized_items
+        if normalized_schema:
+            arguments["input_schema"] = normalized_schema
+
         # Request approval using the standard approval helper
         approved, error = await require_approval(
             tool_name="request_approval",
@@ -501,10 +528,34 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                     return error
             return f"Approval denied: {error}"
 
-        return (
+        granted = (
             f"Approval granted for operation: {operation}\n"
             f"Caller: {caller}\n"
             f"Workflow used: {approval_workflow or 'default'}"
+        )
+        if not normalized_schema:
+            return granted
+
+        # A form was attached, so the decision carries data: hand the agent
+        # the validated JSON (and the identity that filled it) rather than
+        # make it read the approval back out of a sentence.
+        from preloop.services.approval_helper import consume_last_approval_meta
+
+        meta = consume_last_approval_meta() or {}
+        import json as _json
+
+        return (
+            granted
+            + "\n"
+            + _json.dumps(
+                {
+                    "status": "approved",
+                    "answer": meta.get("answer"),
+                    "approval_id": meta.get("request_id"),
+                    "answered_by": meta.get("responded_by"),
+                    "answered_at": meta.get("resolved_at"),
+                }
+            )
         )
 
     # Register Tool 7b: ask_user (shared metadata: tools.builtin_defs.ASK_USER_TOOL)
@@ -514,6 +565,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         options: list[str] | None = None,
         allow_free_text: bool = True,
         context: str | None = None,
+        items: list[dict[str, Any]] | None = None,
+        input_schema: dict[str, Any] | None = None,
         approval_workflow: str | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
@@ -523,6 +576,14 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         (``allow_free_text``). Returns the user's answer as text. Unlike a plain
         approval, this is a question: the human's chosen option or typed answer
         is returned so the agent can act on it.
+
+        For anything with structure, pass ``items`` (the rows the question is
+        about: findings, files, hosts) and ``input_schema`` (the shape of the
+        answer, in the subset documented in services/question_schema.py). The
+        console then renders a form (a table with a checkbox and a reason per
+        row, switches, selects) and this tool returns the validated JSON. Ask
+        for JSON in free text and you will get prose: a text box is not a
+        form.
         """
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
         from preloop.models.db.session import get_db_session
@@ -564,16 +625,35 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
 
         normalized_options = [str(o) for o in (options or []) if str(o).strip()]
 
-        # The question payload rides in tool_args (JSONB) — the response schema
-        # exposes it (is_question/question/question_options/allow_free_text) so
-        # the console and mobile apps render options + a free-text answer field.
-        arguments = {
+        # A form the console cannot draw is refused here, while the agent can
+        # still fix it, rather than delivered to a human as a blank page.
+        from preloop.services.question_schema import (
+            QuestionSchemaError,
+            normalize_input_schema,
+            normalize_items,
+        )
+
+        try:
+            normalized_schema = normalize_input_schema(input_schema)
+            normalized_items = normalize_items(items)
+        except QuestionSchemaError as schema_error:
+            return f"Error: {schema_error}"
+
+        # The question payload rides in tool_args (JSONB): the response schema
+        # exposes it (is_question/question/question_options/allow_free_text/
+        # question_items/question_schema) so the console, the token page and
+        # the mobile apps render the same question.
+        arguments: dict[str, Any] = {
             "is_question": True,
             "question": question,
             "options": normalized_options,
             "allow_free_text": bool(allow_free_text),
             "context": context or "",
         }
+        if normalized_items:
+            arguments["items"] = normalized_items
+        if normalized_schema:
+            arguments["input_schema"] = normalized_schema
 
         answered, answer = await require_approval(
             tool_name=ASK_USER_TOOL["name"],
@@ -627,6 +707,24 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             # Declined / cancelled / timed out — no answer was provided.
             return _with_audit_trailer(
                 f"No answer provided: {answer}" if answer else "No answer provided."
+            )
+
+        if normalized_schema:
+            # A form was asked for, so a form was filled: return the validated
+            # JSON, exactly as the schema described it, plus answer_text (the
+            # one-line rendering) for callers written against the old shape.
+            # Nothing here needs parsing out of prose.
+            import json as _json
+
+            return _json.dumps(
+                {
+                    "status": "answered",
+                    "answer": (approval_meta or {}).get("answer"),
+                    "answer_text": answer or "",
+                    "approval_id": (approval_meta or {}).get("request_id"),
+                    "answered_by": (approval_meta or {}).get("responded_by"),
+                    "answered_at": (approval_meta or {}).get("resolved_at"),
+                }
             )
 
         if answer:
@@ -1194,6 +1292,9 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                         # human's answer — capture it before releasing the
                         # lock so the re-executed tool can return it.
                         approver_comment = approval_request.approver_comment
+                        # Same for a form answer: the data, plus the id it was
+                        # decided under, so the replayed tool can return both.
+                        approver_answer = approval_request.structured_answer
                         approval_request.tool_result = {"_executing": True}
                         await db.commit()
 
@@ -1215,12 +1316,16 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                         result_preview: Optional[str] = None
                         try:
                             from preloop.services.dynamic_fastmcp import (
+                                _approved_answer_var,
                                 _approved_comment_var,
+                                _approved_id_var,
                                 _bypass_approval_var,
                             )
 
                             _bypass_approval_var.set(True)
                             _approved_comment_var.set(approver_comment)
+                            _approved_answer_var.set(approver_answer)
+                            _approved_id_var.set(str(req_id))
                             try:
                                 # Try internal (namespaced) name first, fall
                                 # back to original name for built-in tools.
@@ -1248,6 +1353,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                             finally:
                                 _bypass_approval_var.set(False)
                                 _approved_comment_var.set(None)
+                                _approved_answer_var.set(None)
+                                _approved_id_var.set(None)
 
                             # Normalise the result to a JSON-safe dict
                             if hasattr(tool_result, "model_dump"):

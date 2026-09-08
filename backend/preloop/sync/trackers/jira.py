@@ -63,8 +63,13 @@ class JiraTracker(BaseTracker):
     tracker_type: str = "jira"
 
     def __init__(
-        self, tracker_id: str, api_key: str, connection_details: Dict[str, Any]
-    ):
+        self,
+        tracker_id: str,
+        api_key: str,
+        connection_details: Dict[str, Any],
+        *,
+        initialize_client: bool = True,
+    ) -> None:
         """
         Initialize the Jira tracker.
         """
@@ -74,12 +79,12 @@ class JiraTracker(BaseTracker):
         if not jira_url:
             raise ValueError("Jira URL is required in connection_details")
 
-        if "username" not in connection_details:
+        if initialize_client and "username" not in connection_details:
             raise ValueError("Jira username is required in connection_details")
 
         self.jira_url = jira_url.rstrip("/")
         self.base_url = self.jira_url  # Alias for compatibility
-        self.username = connection_details["username"]
+        self.username = connection_details.get("username", "")
 
         auth_str = f"{self.username}:{api_key}"
         encoded_auth = base64.b64encode(auth_str.encode()).decode()
@@ -89,7 +94,7 @@ class JiraTracker(BaseTracker):
         }
 
         self.jira_client: Optional[JIRA] = None
-        if self.jira_url and self.username and api_key:
+        if initialize_client and self.jira_url and self.username and api_key:
             try:
                 self.jira_client = JIRA(
                     server=self.jira_url,

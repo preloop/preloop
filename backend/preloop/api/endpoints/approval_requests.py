@@ -30,6 +30,11 @@ from preloop.models.schemas.approval_request import (
     ApprovalDecision,
     ApprovalEventResponse,
 )
+from preloop.services.question_schema import (
+    AnswerValidationError,
+    prepare_answer,
+    question_form,
+)
 from preloop.utils.permissions import require_permission
 
 router = APIRouter(
@@ -42,6 +47,53 @@ logger = logging.getLogger(__name__)
 #: Channel label recorded on the timeline for decisions made through the
 #: authenticated API (web console and mobile app sessions).
 AUTHENTICATED_DECISION_CHANNEL = "console"
+
+
+def _decider_identity(current_user: User) -> str:
+    """How the platform names the person taking this decision.
+
+    Used for ``x-autofill: author`` fields: a waiver author is stamped from
+    the authenticated session, never typed into the form.
+    """
+    return (
+        getattr(current_user, "email", None)
+        or getattr(current_user, "username", None)
+        or str(getattr(current_user, "id", ""))
+    )
+
+
+def _resolve_form_answer(
+    approval_request: ApprovalRequest,
+    decision: ApprovalDecision,
+    *,
+    author: Optional[str],
+    approving: bool,
+) -> tuple[Optional[dict], Optional[str]]:
+    """Validate the submitted form answer against the request's schema.
+
+    Returns ``(answer, comment)``: the JSON to store and the sentence to put
+    on the timeline. The console validates the same rules while the operator
+    types, but this is the check that decides, because a decision recorded
+    from an unvalidated payload cannot be relied on afterwards. A decline
+    needs no answer: dismissing a question is not filling its form.
+    """
+    schema, _items = question_form(approval_request.tool_args)
+    if schema is None or not approving:
+        return None, decision.effective_comment
+    try:
+        answer, summary = prepare_answer(
+            approval_request.tool_args, decision.answer, author=author
+        )
+    except AnswerValidationError as invalid:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "The answer does not fit this question's form",
+                "errors": invalid.errors,
+            },
+        ) from None
+    comment = "; ".join(part for part in (summary, decision.comment) if part)
+    return answer, comment or decision.effective_comment
 
 
 def _reject_managed_maintenance_decision(
@@ -360,12 +412,20 @@ async def approve_request(
         _reject_managed_publication_decision(current_user, approval_request)
         _reject_managed_maintenance_decision(current_user, approval_request)
 
+        answer, comment = _resolve_form_answer(
+            approval_request,
+            decision,
+            author=_decider_identity(current_user),
+            approving=True,
+        )
+
         # Approve (pass user_id for quorum tracking)
         updated = await approval_service.approve_request(
             request_id,
-            decision.effective_comment,
+            comment,
             user_id=current_user.id,
             channel=AUTHENTICATED_DECISION_CHANNEL,
+            structured_answer=answer,
         )
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to approve request")
@@ -511,13 +571,21 @@ async def decide_request(
         _reject_managed_publication_decision(current_user, approval_request)
         _reject_managed_maintenance_decision(current_user, approval_request)
 
+        answer, comment = _resolve_form_answer(
+            approval_request,
+            decision,
+            author=_decider_identity(current_user),
+            approving=decision.approved,
+        )
+
         # Approve or decline based on decision (pass user_id for quorum tracking)
         if decision.approved:
             updated = await approval_service.approve_request(
                 request_id,
-                decision.effective_comment,
+                comment,
                 user_id=current_user.id,
                 channel=AUTHENTICATED_DECISION_CHANNEL,
+                structured_answer=answer,
             )
         else:
             updated = await approval_service.decline_request(
@@ -613,6 +681,21 @@ async def decide_requests_batch(
                     ok=False,
                     status=approval_request.status,
                     error=f"Request already {approval_request.status}",
+                )
+            )
+            continue
+        schema, _items = question_form(approval_request.tool_args)
+        if schema is not None and decision.approved:
+            # A batch carries one comment for many requests, and a form
+            # answer belongs to exactly one. Approving this in bulk would
+            # store no answer at all and the agent would fail closed on an
+            # empty one, so say so instead.
+            results.append(
+                ApprovalBatchItemResult(
+                    id=request_id,
+                    ok=False,
+                    status=approval_request.status,
+                    error="This request needs its form filled in; open it to answer",
                 )
             )
             continue

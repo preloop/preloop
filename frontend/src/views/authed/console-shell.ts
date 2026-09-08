@@ -30,6 +30,7 @@ import {
 } from '../../api';
 import '../../components/permission-denied';
 import { consoleDialogStyles } from '../../styles/console-dialog';
+import { LOCATION_CHANGED } from '../../router';
 
 /** Nav items that require at least one of the listed permissions when RBAC is on. */
 const NAV_PERMISSIONS: Record<string, string[]> = {
@@ -412,10 +413,7 @@ export class ConsoleShell extends LitElement {
   async connectedCallback() {
     super.connectedCallback();
     window.addEventListener('show-upgrade-modal', this._handleShowUpgradeModal);
-    window.addEventListener(
-      'vaadin-router-location-changed',
-      this._handleLocationChanged
-    );
+    window.addEventListener(LOCATION_CHANGED, this._handleLocationChanged);
     this._mediaQuery = window.matchMedia(
       `(max-width: ${SIDEBAR_BREAKPOINT}px)`
     );
@@ -630,10 +628,7 @@ export class ConsoleShell extends LitElement {
       'show-upgrade-modal',
       this._handleShowUpgradeModal
     );
-    window.removeEventListener(
-      'vaadin-router-location-changed',
-      this._handleLocationChanged
-    );
+    window.removeEventListener(LOCATION_CHANGED, this._handleLocationChanged);
     window.removeEventListener('popstate', this._handleLocationChanged);
     this._mediaQuery?.removeEventListener('change', this._mediaQueryHandler!);
     super.disconnectedCallback();

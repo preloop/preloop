@@ -1740,12 +1740,79 @@ export interface ApprovalFlowExecutionSummary {
 }
 
 /**
+ * One row a question is about: a finding, a file, a host.
+ *
+ * `id` is the value an answer refers to; everything else exists so the person
+ * deciding reads the finding instead of matching an opaque id against prose.
+ */
+export interface QuestionItem {
+  id: string;
+  title?: string;
+  description?: string;
+  /** critical | high | medium | low | info. Rendered as a chip. */
+  severity?: string;
+  badges?: string[];
+  /** http(s) source link. The server refuses anything else. */
+  href?: string;
+}
+
+/**
+ * One field of an answer form, in the JSON Schema subset the platform accepts
+ * (backend/preloop/services/question_schema.py is the authoritative grammar).
+ *
+ * The subset is deliberately small because every field here has to be drawable:
+ * a schema the console cannot render is refused when the agent asks, not
+ * shown to a person as a blank page.
+ */
+export interface QuestionField {
+  type?: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object';
+  title?: string;
+  description?: string;
+  enum?: Array<string | number>;
+  /** date | date-time | textarea | email | uri */
+  format?: string;
+  minLength?: number;
+  maxLength?: number;
+  minimum?: number;
+  maximum?: number;
+  minItems?: number;
+  maxItems?: number;
+  items?: QuestionField;
+  properties?: Record<string, QuestionField>;
+  required?: string[];
+  default?: unknown;
+  /**
+   * Filled by the platform from the deciding identity and the decision time.
+   * Rendered read-only: an identity a person can type is not an identity.
+   */
+  'x-autofill'?: 'author' | 'date';
+}
+
+/** The shape of an answer. Always an object at the root. */
+export interface QuestionSchema {
+  type?: 'object';
+  title?: string;
+  description?: string;
+  properties: Record<string, QuestionField>;
+  required?: string[];
+}
+
+/** One field-level complaint, as the server reports it on a 422. */
+export interface AnswerFieldError {
+  path: string;
+  message: string;
+}
+
+/**
  * A pending human decision surfaced by the approvals API.
  *
- * Two flavours share this shape:
+ * Three flavours share this shape:
  *  - tool approvals (approve / decline, optional comment)
  *  - agent questions (`is_question`, tool_name `ask_user`): the operator picks
  *    one of `question_options` or types free text when `allow_free_text`.
+ *  - either of those carrying a form (`question_schema`, optionally with
+ *    `question_items`): the operator fills the form and the answer is
+ *    submitted as validated JSON.
  *
  * The question fields are optional so older backends that omit them degrade to
  * the plain approve/decline UI.
@@ -1786,6 +1853,14 @@ export interface ApprovalRequest {
   question?: string | null;
   question_options?: string[] | null;
   allow_free_text?: boolean;
+  /** Rows the question is about, rendered as a table with a checkbox each. */
+  question_items?: QuestionItem[] | null;
+  /** Shape of the answer. Present turns the answer box into a form. */
+  question_schema?: QuestionSchema | null;
+  /** Convenience mirror of `question_schema !== null`. */
+  has_answer_form?: boolean;
+  /** The validated form answer, once somebody filled it in. */
+  structured_answer?: Record<string, unknown> | null;
   /** True when an AI judged this request rather than a person. */
   decided_by_ai?: boolean;
   /**
@@ -1922,11 +1997,15 @@ export interface KillSwitchStatus {
  * Optional payload carried on an approve/decline decision.
  *
  * Server-side precedence: `answer_text` > `selected_option` > `comment`.
+ * `answer` is separate from all three: it is the filled-in form, validated
+ * against the request's `question_schema`, and it is stored as data rather
+ * than folded into the comment sentence.
  */
 export interface ApprovalDecisionOptions {
   comment?: string | null;
   selected_option?: string | null;
   answer_text?: string | null;
+  answer?: Record<string, unknown> | null;
 }
 
 /**

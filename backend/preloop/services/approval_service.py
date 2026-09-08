@@ -961,6 +961,7 @@ class ApprovalService:
         comment: Optional[str] = None,
         user_id: Optional[uuid.UUID] = None,
         channel: Optional[str] = None,
+        structured_answer: Optional[dict] = None,
     ) -> Optional[ApprovalRequest]:
         """Approve an approval request.
 
@@ -977,6 +978,9 @@ class ApprovalService:
             channel: Surface the decision came through (console, token link,
                 mobile, mcp). Recorded on the timeline for audit; None keeps
                 the channel out of the event detail.
+            structured_answer: The validated form answer for a request that
+                carried an input_schema. Stored as data next to the comment,
+                which stays the sentence a human reads on the timeline.
 
         Returns:
             Updated approval request or None if not found
@@ -1041,6 +1045,7 @@ class ApprovalService:
                 update = ApprovalRequestUpdate(
                     status="approved",
                     approver_comment=comment,
+                    structured_answer=structured_answer,
                     resolved_at=datetime.utcnow(),
                 )
                 updated_request = await self.update_approval_request(request_id, update)
@@ -1108,6 +1113,7 @@ class ApprovalService:
             update = ApprovalRequestUpdate(
                 status="approved",
                 approver_comment=comment,
+                structured_answer=structured_answer,
                 resolved_at=datetime.utcnow(),
             )
             # Update responses in the database

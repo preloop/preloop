@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import threading
 from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
 from typing import Any, Iterator
@@ -425,10 +426,11 @@ def test_gateway_streaming_response_records_after_body_flush() -> None:
 
 def test_gateway_streaming_response_records_via_threadpool() -> None:
     """Usage recording must not run on the ASGI event loop."""
-    recorded_on: list[str] = []
+    recorded_on: list[int] = []
+    event_loop_thread = threading.get_ident()
 
     def _on_complete() -> None:
-        recorded_on.append("worker")
+        recorded_on.append(threading.get_ident())
 
     response = GatewayStreamingResponse(
         iter(["data: hi\n\n"]),
@@ -439,16 +441,52 @@ def test_gateway_streaming_response_records_via_threadpool() -> None:
     async def _send(_message: dict[str, Any]) -> None:
         return None
 
-    with patch(
-        "preloop.services.gateway_streaming.run_in_threadpool",
-        new_callable=MagicMock,
-    ) as mock_pool:
+    asyncio.run(response.stream_response(_send))
+    assert len(recorded_on) == 1
+    assert recorded_on[0] != event_loop_thread
 
-        async def _run(fn: Any) -> None:
-            recorded_on.append("pool")
-            fn()
 
-        mock_pool.side_effect = _run
-        asyncio.run(response.stream_response(_send))
+def test_raw_cancellation_drains_active_pull_before_closing_stream() -> None:
+    """Disconnect teardown must never close a generator its worker is executing."""
+    entered = threading.Event()
+    can_finish = threading.Event()
+    events: list[str] = []
 
-    assert recorded_on == ["pool", "worker"]
+    class HeldStream:
+        def __iter__(self) -> "HeldStream":
+            return self
+
+        def __next__(self) -> str:
+            events.append("pull-start")
+            entered.set()
+            assert can_finish.wait(3)
+            events.append("pull-finish")
+            return "data: held\n\n"
+
+        def close(self) -> None:
+            assert events[-1] == "pull-finish"
+            events.append("close")
+
+    async def exercise() -> None:
+        async def send(_message: dict[str, Any]) -> None:
+            return None
+
+        response = GatewayStreamingResponse(
+            HeldStream(), on_complete=lambda: events.append("record")
+        )
+        task = asyncio.create_task(response.stream_response(send))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            assert events == ["pull-start"]
+        finally:
+            can_finish.set()
+        results = await asyncio.gather(task, return_exceptions=True)
+        assert isinstance(results[0], asyncio.CancelledError)
+
+    asyncio.run(exercise())
+    assert events == ["pull-start", "pull-finish", "close", "record"]

@@ -31,7 +31,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -546,6 +546,7 @@ async def hold_for_model_io_approval(
     account_id: Any,
     target: str,
     decision: ModelIODecision,
+    release_after_lookup: Optional[Callable[[], None]] = None,
 ) -> bool:
     """Hold on the existing tool-approval workflow.
 
@@ -557,7 +558,11 @@ async def hold_for_model_io_approval(
     Returns True when approved. False when declined, expired, or the
     workflow is missing (fail closed).
     """
-    workflow_id = _resolve_workflow_id(db, account_id, decision.approval_workflow)
+    try:
+        workflow_id = _resolve_workflow_id(db, account_id, decision.approval_workflow)
+    finally:
+        if release_after_lookup is not None:
+            release_after_lookup()
     if not workflow_id:
         logger.error(
             "model I/O require_approval has no workflow rule_id=%s",
@@ -636,6 +641,7 @@ def _apply_decision(
                 account_id=gateway.auth_context.user.account_id,
                 target=target,
                 decision=decision,
+                release_after_lookup=getattr(gateway, "release_db_for_wait", None),
             )
         )
         if approved:
@@ -656,7 +662,12 @@ def enforce_request_policy(
 ) -> None:
     """Evaluate model.request rules before the provider call."""
     account_id = gateway.auth_context.user.account_id
-    rules = load_model_io_rules(gateway.db, account_id)
+    try:
+        rules = load_model_io_rules(gateway.db, account_id)
+    finally:
+        release = getattr(gateway, "release_db_for_wait", None)
+        if release is not None:
+            release(ai_model)
     if not any(rule.enabled and str(rule.target) == "model.request" for rule in rules):
         return
     text = canonical_request_text(messages, payload)
@@ -688,7 +699,12 @@ def enforce_response_policy(
 ) -> None:
     """Evaluate model.response rules before bytes reach the client."""
     account_id = gateway.auth_context.user.account_id
-    rules = load_model_io_rules(gateway.db, account_id)
+    try:
+        rules = load_model_io_rules(gateway.db, account_id)
+    finally:
+        release = getattr(gateway, "release_db_for_wait", None)
+        if release is not None:
+            release(ai_model)
     if not any(rule.enabled and str(rule.target) == "model.response" for rule in rules):
         return
     decision = evaluate_model_io(
@@ -810,7 +826,12 @@ def wrap_stream_for_response_policy(
     when any ``model.response`` rule is enabled.
     """
     account_id = gateway.auth_context.user.account_id
-    rules = load_model_io_rules(gateway.db, account_id)
+    try:
+        rules = load_model_io_rules(gateway.db, account_id)
+    finally:
+        release = getattr(gateway, "release_db_for_wait", None)
+        if release is not None:
+            release(ai_model)
     if not any(rule.enabled and str(rule.target) == "model.response" for rule in rules):
         yield from events
         return

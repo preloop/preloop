@@ -2,6 +2,15 @@
 
 Agent Control is the audited operator channel to managed agents such as OpenClaw and Hermes. This chapter covers the control WebSocket, CLI/desktop enrollment, and mobile/watch voice contact.
 
+The control WebSocket runs authentication, heartbeat, command persistence and
+disconnect cleanup in short worker-thread database sessions. It detaches identity
+fields and copies command envelopes before socket or NATS waits, so an idle socket
+does not reserve a database connection. Delivery callbacks use separate sessions;
+DB phases for a connection are serialized and cancellation drains the active
+worker before releasing that serialization lock. Database capacity errors remain
+transient failures rather than invalid credentials. API readiness detects an
+unresponsive pod before the database-independent liveness restart window.
+
 ## Agent Control
 *   **Purpose:** Agent Control gives autonomous agents such as OpenClaw and Hermes a single, audited channel for online presence, operator messages, status updates, interruption, and future voice-originated contact.
 *   **Implemented Today:** Backend Agent Control exposes `WS /api/v1/agents/control/ws` for runtime-credential agent connections and `POST /api/v1/agents/{agent_id}/control/commands` for authenticated operator text commands. It authenticates the runtime principal, binds presence to the managed agent and runtime session, publishes command envelopes through NATS when available, falls back to local delivery, emits account-scoped realtime events, and accepts heartbeat/status/presence/event envelopes from agents. Operator commands are now persisted BEFORE delivery in the `agent_control_command` table (state machine: pending → delivered → acked, with failed/expired side states, TTL via `agent_control_command_ttl_seconds`); reconnecting agents receive undelivered commands in order with their original `command_id`s (runtime plugins should dedupe on `message_id`), and inbound `command_ack`/`command_result`/`command_error` envelopes mark acknowledgement.
