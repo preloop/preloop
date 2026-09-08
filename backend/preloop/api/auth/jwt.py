@@ -8,11 +8,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jwt import PyJWTError
-from passlib.context import CryptContext
 from sqlalchemy.exc import TimeoutError as SQLAlchemyPoolTimeout
 from sqlalchemy.orm import Session
 
@@ -40,8 +40,10 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
 MAX_SESSION_DAYS = int(os.getenv("MAX_SESSION_DAYS", "30"))
 
-# Password context for hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Hash with bcrypt directly. passlib 1.7.4 probes a wrap bug by hashing a
+# secret longer than 72 bytes on first use; bcrypt 5.0.0 raises ValueError
+# instead of wrapping, which would make every register/login fail.
+_BCRYPT_MAX_PASSWORD_BYTES = 72
 
 # OAuth2 for token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
@@ -328,6 +330,16 @@ def authenticate_runtime_bearer_token(
     )
 
 
+def _bcrypt_secret(password: str) -> bytes:
+    """Return the 72-byte prefix bcrypt actually hashes.
+
+    Returning the raw slice (which may end mid-character) matches bcrypt 4.x
+    + passlib truncation, so a legacy password whose UTF-8 encoding
+    straddles byte 72 still verifies after the bcrypt 5.0.0 bump.
+    """
+    return password.encode("utf-8")[:_BCRYPT_MAX_PASSWORD_BYTES]
+
+
 def get_password_hash(password: str) -> str:
     """Hash a password.
 
@@ -337,7 +349,7 @@ def get_password_hash(password: str) -> str:
     Returns:
         Hashed password.
     """
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(_bcrypt_secret(password), bcrypt.gensalt()).decode("ascii")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -350,7 +362,12 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     Returns:
         True if the password matches the hash, False otherwise.
     """
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return bcrypt.checkpw(
+            _bcrypt_secret(plain_password), hashed_password.encode("ascii")
+        )
+    except ValueError:
+        return False
 
 
 def create_access_token(

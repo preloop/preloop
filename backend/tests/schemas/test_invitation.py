@@ -85,6 +85,15 @@ class TestInvitationAccept:
                 password="short",
             )
 
+    def test_password_too_long_raises(self):
+        """Passwords longer than bcrypt's 72-byte limit are rejected."""
+        with pytest.raises(ValueError):
+            InvitationAccept(
+                token="t",
+                username="user",
+                password="a" * 73,
+            )
+
 
 class TestInvitationResponse:
     """Test InvitationResponse schema."""

@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- bcrypt 5.0.0 raises on secrets longer than 72 bytes instead of truncating.
+  New passwords stay capped at 72 characters. Login and `current_password`
+  do not: hashing and verify use bcrypt's 72-byte prefix so existing longer
+  passwords still authenticate (the same truncation passlib used to apply).
+  Forgot-password remains available to set a new password under the cap.
 - CRA `dossier_manifest.evidence` no longer reports a run's evidence pack as
   `missing` while `evidence-status` reports it `available`. The dossier is
   built before finalize persists the captured pack, so `load_evidence` sees a

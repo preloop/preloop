@@ -13716,6 +13716,7 @@ components:
           title: Email
         password:
           type: string
+          maxLength: 72
           minLength: 8
           title: Password
         full_name:
@@ -19769,6 +19770,7 @@ components:
           title: Current Password
         new_password:
           type: string
+          maxLength: 72
           minLength: 8
           title: New Password
       type: object
@@ -19784,6 +19786,7 @@ components:
           title: Token
         new_password:
           type: string
+          maxLength: 72
           minLength: 8
           title: New Password
       type: object
