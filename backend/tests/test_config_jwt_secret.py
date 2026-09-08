@@ -93,7 +93,8 @@ def test_non_production_logs_unmissable_warning(
     )
     text = "\n".join(config_logs.messages)
     assert "INSECURE JWT SECRET" in text
-    assert "change-this-in-production" in text
+    assert "published placeholder" in text
+    assert "change-this-in-production" not in text
 
 
 def test_real_secret_is_silent_in_production(

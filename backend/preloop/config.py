@@ -31,10 +31,16 @@ _PLACEHOLDER_JWT_SECRET_MARKERS = (
     "donotuseinproduction",
 )
 _PLACEHOLDER_JWT_SECRET_MESSAGE = (
-    "SECRET_KEY is a published placeholder (for example "
-    "change-this-in-production). Anyone who can read the Helm chart or "
-    "this repository can forge access tokens. Set a unique secret with "
-    "`openssl rand -hex 32` and pass it as environment.jwtSecret / SECRET_KEY."
+    "the configured JWT signing key is a published placeholder. Anyone "
+    "who can read the Helm chart or this repository can forge access "
+    "tokens. Set a unique value with `openssl rand -hex 32` and pass it "
+    "as environment.jwtSecret."
+)
+_PLACEHOLDER_JWT_SECRET_BANNER = (
+    "============================================================\n"
+    "INSECURE JWT SECRET: "
+    + _PLACEHOLDER_JWT_SECRET_MESSAGE
+    + "\n============================================================"
 )
 
 
@@ -60,6 +66,11 @@ def is_placeholder_jwt_secret(secret: str) -> bool:
     return any(marker in normalized for marker in _PLACEHOLDER_JWT_SECRET_MARKERS)
 
 
+def _log_insecure_placeholder_jwt_banner() -> None:
+    """Emit the CRITICAL placeholder-JWT banner without the signing key."""
+    logger.critical(_PLACEHOLDER_JWT_SECRET_BANNER)
+
+
 def warn_or_reject_placeholder_jwt_secret(secret: str, *, environment: str) -> None:
     """Reject placeholder JWT secrets in production; warn loudly otherwise.
 
@@ -80,12 +91,9 @@ def warn_or_reject_placeholder_jwt_secret(secret: str, *, environment: str) -> N
         return
     if environment.strip().lower() == "production":
         raise ValueError(_PLACEHOLDER_JWT_SECRET_MESSAGE)
-    logger.critical(
-        "============================================================\n"
-        "INSECURE JWT SECRET: %s\n"
-        "============================================================",
-        _PLACEHOLDER_JWT_SECRET_MESSAGE,
-    )
+    # Log a canned banner in a helper that does not take the signing key, so
+    # the key never reaches a logging sink (CodeQL py/clear-text-logging).
+    _log_insecure_placeholder_jwt_banner()
 
 
 def _load_release_version(
