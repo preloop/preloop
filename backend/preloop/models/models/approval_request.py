@@ -247,6 +247,20 @@ class ApprovalRequest(Base):
         comment="Comment from the approver",
     )
 
+    # The answer to a structured question, as JSON validated against the
+    # ``input_schema`` the asking tool call carried in ``tool_args``. Kept out
+    # of ``approver_comment`` on purpose: that column is a sentence for
+    # humans (timelines, notification bodies) and this one is data the agent
+    # applies, and squeezing the second into the first is exactly the "type
+    # JSON in the text box" the form replaced. NULL for every request without
+    # a form, which is most of them.
+    structured_answer: Mapped[Optional[dict]] = mapped_column(
+        JSONB,
+        nullable=True,
+        default=None,
+        comment="Validated form answer for a structured question (input_schema)",
+    )
+
     # Quorum tracking: stores individual votes
     # Format: [{"user_id": "uuid", "decision": "approved"|"declined", "comment": "...", "timestamp": "iso"}]
     responses: Mapped[Optional[list]] = mapped_column(

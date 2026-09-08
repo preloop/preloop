@@ -193,6 +193,7 @@ class ApprovalRequestUpdate(BaseModel):
     status: Optional[str] = None
     summary: Optional[str] = None
     approver_comment: Optional[str] = None
+    structured_answer: Optional[Dict[str, Any]] = None
     resolved_at: Optional[datetime] = None
     webhook_posted_at: Optional[datetime] = None
     webhook_error: Optional[str] = None
@@ -219,6 +220,9 @@ class ApprovalRequestResponse(ApprovalRequestBase):
     resolved_at: Optional[datetime]
     expires_at: Optional[datetime]
     approver_comment: Optional[str]
+    # The validated form answer, once somebody filled it. Surfaces render the
+    # recorded answer on a resolved request instead of a sentence about it.
+    structured_answer: Optional[Dict[str, Any]] = None
     webhook_posted_at: Optional[datetime]
     webhook_error: Optional[str]
     # Managed-agent linkage (populated for onboarded-agent tool approvals).
@@ -325,6 +329,40 @@ class ApprovalRequestResponse(ApprovalRequestBase):
             return bool(self.tool_args.get("allow_free_text"))
         return True
 
+    @computed_field
+    def question_items(self) -> list[Dict[str, Any]]:
+        """Rows the question is about, e.g. one per unwaived finding.
+
+        Each row is {id, title, description?, severity?, badges?, href?}. The
+        console renders them as a table with a checkbox per row, so a human
+        picks findings instead of transcribing ids. Empty for every question
+        that has no rows, which surfaces render as before.
+        """
+        if isinstance(self.tool_args, dict):
+            items = self.tool_args.get("items")
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+        return []
+
+    @computed_field
+    def question_schema(self) -> Optional[Dict[str, Any]]:
+        """The answer form, in the subset documented in question_schema.py.
+
+        None means there is no form and the legacy options + free-text path
+        applies. Present on questions AND on approvals whose decision needs
+        structured input (request_approval also accepts input_schema).
+        """
+        if isinstance(self.tool_args, dict):
+            schema = self.tool_args.get("input_schema")
+            if isinstance(schema, dict) and isinstance(schema.get("properties"), dict):
+                return schema
+        return None
+
+    @computed_field
+    def has_answer_form(self) -> bool:
+        """True when this request must be decided through a form."""
+        return self.question_schema is not None
+
     model_config = ConfigDict(from_attributes=True)
 
     @field_serializer(
@@ -404,6 +442,15 @@ class ApprovalDecision(BaseModel):
     )
     answer_text: Optional[str] = Field(
         None, description="For ask_user questions: a free-text answer the user typed"
+    )
+    answer: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "For questions carrying an input_schema: the filled form, as JSON. "
+            "Validated against that schema server-side; x-autofill fields "
+            "(author, date) are stamped by the platform and anything sent for "
+            "them is ignored."
+        ),
     )
 
     @property

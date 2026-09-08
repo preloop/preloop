@@ -517,6 +517,11 @@ def _validate_object(
     out: Dict[str, Any] = {}
     for name, field_spec in properties.items():
         child_path = f"{path}.{name}" if path else name
+        if isinstance(field_spec, dict) and field_spec.get("x-autofill"):
+            # The server fills these from the decision itself. Whatever the
+            # client sent is dropped rather than validated: a typed author is
+            # not an author, and a missing one is not the human's mistake.
+            continue
         if name not in value or value[name] is None:
             if name in required:
                 errors.append({"path": child_path, "message": "is required"})
@@ -705,3 +710,45 @@ def answer_field_names(schema: Optional[Dict[str, Any]]) -> Tuple[str, ...]:
     if not isinstance(properties, dict):
         return ()
     return tuple(properties.keys())
+
+
+# --------------------------------------------------------------------------
+# The decision path: one entry point for every surface
+# --------------------------------------------------------------------------
+
+
+def question_form(
+    tool_args: Any,
+) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Read ``(input_schema, items)`` off a stored approval's ``tool_args``."""
+    if not isinstance(tool_args, dict):
+        return None, []
+    schema = tool_args.get("input_schema")
+    items = tool_args.get("items")
+    return (
+        schema if isinstance(schema, dict) and schema.get("properties") else None,
+        items if isinstance(items, list) else [],
+    )
+
+
+def prepare_answer(
+    tool_args: Any,
+    answer: Any,
+    *,
+    author: Optional[str] = None,
+    decided_at: Optional[datetime] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Validate, stamp and summarize a form answer for one approval request.
+
+    Every surface that can take a decision (console, token link, mobile) calls
+    this, so the rules cannot differ between them. Returns
+    ``(stored_answer, summary_line)``; ``(None, None)`` when the request has no
+    form and the answer is therefore not ours to interpret. Raises
+    :class:`AnswerValidationError` when the submitted answer does not fit.
+    """
+    schema, _items = question_form(tool_args)
+    if schema is None:
+        return None, None
+    cleaned = validate_answer(schema, answer)
+    stamped = apply_autofill(schema, cleaned, author=author, decided_at=decided_at)
+    return stamped, summarize_answer(schema, stamped)
