@@ -105,7 +105,6 @@ async def resume_existing_execution(
             )
             await orchestrator._notify_terminal(
                 status="FAILED",
-                failure_category="verification_blocked",
                 result=saved_result,
             )
             orchestrator._sync_runtime_session(ended_at=datetime.now(timezone.utc))
@@ -153,7 +152,6 @@ async def resume_existing_execution(
         )
         await orchestrator._notify_terminal(
             status=final_status,
-            failure_category=resume_category,
             result=merged_result,
         )
         # The worker that finishes a run owns its teardown, even though it did

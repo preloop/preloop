@@ -7,8 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Flow failure comments. `notifications.on_failure.comment_on_trigger_issue`
+  is still accepted by `POST/PATCH /api/v1/flows` (no 422 for stored flows or
+  older clients) but is parsed and ignored: a failed or timed out execution no
+  longer posts a comment with the redacted log tail on the triggering issue.
+  A failed execution is an attention item on Overview instead. `notifications`
+  is a JSONB column, so there is no migration; the ignored block is dropped
+  the next time the flow is saved from the console. This matches the existing
+  treatment of `notifications.on_failure.attention_item`.
+
 ### Changed
 
+- The flow form only offers PR-dependent options where they apply. PR review
+  and CI follow-up render when "Create a pull request on commit" is checked,
+  and the success comment on the triggering issue also requires a tracker
+  trigger with at least one issue or comment event. Hidden sections are
+  preserved byte for byte in the submitted payload, since a flow can also open
+  its pull request through the MCP `create_pull_request` tool.
 - Security-maintenance repair: rebuilt SBOM ingest after approval, controller
   checkout from frozen publication records (not agent-writable `HEAD.txt`),
   per-component screening, background reconcile without

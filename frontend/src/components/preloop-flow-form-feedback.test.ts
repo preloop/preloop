@@ -17,10 +17,18 @@ describe('PreloopFlowForm PR feedback controls', () => {
     sessionStorage.clear();
   });
 
+  // The follow-up card only renders for a flow that opens the pull request
+  // itself, so every mount here sets git_clone_config.create_pull_request.
   const mount = async (agentConfig?: unknown) => {
     const element = await fixture<PreloopFlowForm>(
       html`<preloop-flow-form
-        .flow=${{ id: 'saved-flow', name: 'Implement', agent_type: 'codex', agent_config: agentConfig }}
+        .flow=${{
+          id: 'saved-flow',
+          name: 'Implement',
+          agent_type: 'codex',
+          agent_config: agentConfig,
+          git_clone_config: { enabled: true, create_pull_request: true },
+        }}
       ></preloop-flow-form>`
     );
     while ((element as any)._loadingReferenceData) {
@@ -144,19 +152,22 @@ describe('PreloopFlowForm PR feedback controls', () => {
     });
   });
 
-  it('refreshes controls when a preset is selected and clears them for a blank flow', async () => {
+  it('refreshes controls when a preset is selected and drops them for a blank flow', async () => {
     const element = await mount({ feedback: { enabled: true, max_turns: 9 } });
     await (element as any).selectPreset({
       id: 'preset',
       name: 'Preset',
       agent_type: 'codex',
+      git_clone_config: { enabled: true, create_pull_request: true },
       agent_config: { feedback: { enabled: true, max_turns: 2 } },
     });
     await element.updateComplete;
     expect(control(element, 'max_turns').value).to.equal('2');
     (element as any).selectBlankFlow();
     await element.updateComplete;
-    expect(control(element, 'enabled').checked).to.equal(false);
+    // A blank flow opens no pull request, so the card is not offered at all.
+    expect(element.shadowRoot!.querySelector('[data-feedback-editor]')).to.not
+      .exist;
     expect(element.flow.agent_config).to.equal(undefined);
   });
 

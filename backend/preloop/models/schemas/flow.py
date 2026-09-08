@@ -454,13 +454,20 @@ class SchedulePreviewResponse(BaseModel):
 
 
 class FlowFailureNotifications(BaseModel):
-    """What to do when an execution ends FAILED or TIMEOUT."""
+    """Failure-side keys, all ignored.
+
+    Both options were removed. The block itself is kept so a flow stored
+    before the removal, or a client that still sends the keys, parses instead
+    of failing with a 422.
+    """
 
     comment_on_trigger_issue: bool = Field(
         default=False,
         description=(
-            "Post one comment on the triggering issue with status, "
-            "execution link, failure category, and the last 20 log lines."
+            "Ignored since 2026-09. Used to post a failure comment with a "
+            "redacted log tail on the triggering issue; a failed execution is "
+            "an attention item on Overview instead. Kept so stored JSON and "
+            "older clients still parse."
         ),
     )
     attention_item: bool = Field(

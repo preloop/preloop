@@ -1,9 +1,15 @@
 """Terminal-path notifications for flow executions.
 
+One notification survives: a short "PR opened: <url>" comment on the
+triggering issue after a successful run that recorded a pull request URL.
 Comments go through the tracker client (the same service MCP ``add_comment``
-uses), never through the MCP HTTP endpoint. Failed executions always
-surface as console attention items of kind ``flow``; there is no
-per-flow gate for that.
+uses), never through the MCP HTTP endpoint.
+
+The failure comment (``notifications.on_failure.comment_on_trigger_issue``)
+was removed in 2026-09: a failed run already surfaces as a console attention
+item of kind ``flow``, and a redacted log tail pasted onto someone's issue was
+noise on the tracker rather than a notification. Stored flows may still carry
+the key; it is parsed and ignored, like ``on_failure.attention_item``.
 """
 
 from __future__ import annotations
@@ -11,16 +17,14 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Optional
 
 from preloop.models.models.flow_execution import TRIGGER_SUBJECT_KEY
-from preloop.utils.secret_scrubbing import scrub_secret_lines, scrub_secrets
+from preloop.utils.secret_scrubbing import scrub_secrets
 
 logger = logging.getLogger(__name__)
 
-FAILURE_STATUSES = frozenset({"FAILED", "TIMEOUT", "TIMED_OUT"})
 SUCCESS_STATUSES = frozenset({"SUCCEEDED", "SUCCESS"})
-LOG_TAIL_LINES = 20
 
 # Issue / PR / MR identifiers the tracker comment APIs accept. Branch
 # names, tags, and SHAs show up on ``_subject.reference`` for some events
@@ -32,7 +36,6 @@ _ISSUE_LIKE_REFERENCE = re.compile(r"^(?:\d+|[A-Za-z][A-Za-z0-9]+-\d+)$")
 class ParsedNotifications:
     """Resolved on/off flags for one terminal notification pass."""
 
-    on_failure_comment: bool
     on_success_comment: bool
 
 
@@ -40,7 +43,6 @@ class ParsedNotifications:
 class NotificationOutcome:
     """What the terminal notifier did (or skipped)."""
 
-    failure_comment_posted: bool = False
     success_comment_posted: bool = False
     skipped_reason: Optional[str] = None
 
@@ -51,8 +53,11 @@ def parse_notifications(raw: Any) -> Optional[ParsedNotifications]:
     Args:
         raw: ``flow.notifications`` (dict, pydantic model, or None).
 
+    Keys under ``on_failure`` are read and dropped: the failure comment was
+    removed and the attention item was never optional.
+
     Returns:
-        Parsed flags, or None when the flow has no notifications configured.
+        Parsed flags, or None when the flow asks for no comment.
     """
     if raw is None:
         return None
@@ -63,30 +68,13 @@ def parse_notifications(raw: Any) -> Optional[ParsedNotifications]:
     if not raw:
         return None
 
-    on_failure = raw.get("on_failure") or {}
     on_success = raw.get("on_success") or {}
-    if not isinstance(on_failure, dict):
-        on_failure = {}
     if not isinstance(on_success, dict):
         on_success = {}
 
-    parsed = ParsedNotifications(
-        on_failure_comment=bool(on_failure.get("comment_on_trigger_issue")),
-        on_success_comment=bool(on_success.get("comment_on_trigger_issue")),
-    )
-    if not (parsed.on_failure_comment or parsed.on_success_comment):
+    if not bool(on_success.get("comment_on_trigger_issue")):
         return None
-    return parsed
-
-
-def is_failure_status(status: str, failure_category: Optional[str] = None) -> bool:
-    """True for FAILED/TIMEOUT rows, including timeout-categorised FAILED."""
-    normalized = (status or "").upper()
-    if normalized in FAILURE_STATUSES:
-        return True
-    if normalized in SUCCESS_STATUSES or normalized in {"STOPPED", "CANCELLED"}:
-        return False
-    return (failure_category or "").lower() == "timeout"
+    return ParsedNotifications(on_success_comment=True)
 
 
 def is_success_status(status: str) -> bool:
@@ -94,20 +82,12 @@ def is_success_status(status: str) -> bool:
     return (status or "").upper() in SUCCESS_STATUSES
 
 
-def needs_tracker_comment(
-    notifications: Any,
-    status: str,
-    failure_category: Optional[str] = None,
-) -> bool:
+def needs_tracker_comment(notifications: Any, status: str) -> bool:
     """True when the terminal path should resolve a tracker client."""
     parsed = parse_notifications(notifications)
     if parsed is None:
         return False
-    if parsed.on_failure_comment and is_failure_status(status, failure_category):
-        return True
-    if parsed.on_success_comment and is_success_status(status):
-        return True
-    return False
+    return parsed.on_success_comment and is_success_status(status)
 
 
 def extract_trigger_comment_target(
@@ -185,50 +165,6 @@ def extract_opened_pr_url(result: Optional[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
-def tail_log_lines(lines: Sequence[str], *, tail: int = LOG_TAIL_LINES) -> List[str]:
-    """Return the last ``tail`` lines with secrets redacted."""
-    cleaned = [line if isinstance(line, str) else "" for line in lines]
-    return scrub_secret_lines(cleaned[-tail:])
-
-
-def format_failure_comment(
-    *,
-    status: str,
-    execution_url: str,
-    failure_category: Optional[str],
-    log_lines: Sequence[str],
-) -> str:
-    """Build the single failure comment posted on the triggering issue.
-
-    Args:
-        status: Terminal execution status (FAILED, TIMEOUT, ...).
-        execution_url: Console URL for the execution.
-        failure_category: Closed-vocabulary category, or None.
-        log_lines: Already-tailed, already-redacted log lines.
-
-    Returns:
-        Comment body. User-facing text uses ASCII punctuation only.
-    """
-    category = failure_category or "unknown"
-    lines = list(log_lines)
-    if lines:
-        log_block = "\n".join(lines)
-        logs_section = f"Last {len(lines)} log lines:\n```\n{log_block}\n```"
-    else:
-        logs_section = "No log lines were captured."
-
-    display_status = (status or "FAILED").upper()
-    return (
-        f"Flow execution {display_status}\n"
-        f"\n"
-        f"Status: {display_status}\n"
-        f"Execution: {execution_url}\n"
-        f"Failure category: {category}\n"
-        f"\n"
-        f"{logs_section}"
-    )
-
-
 def format_success_comment(pr_url: str) -> str:
     """Build the short success comment posted when a PR was opened."""
     return f"PR opened: {pr_url}"
@@ -238,12 +174,9 @@ async def notify_terminal_execution(
     *,
     notifications: Any,
     status: str,
-    failure_category: Optional[str],
     execution_id: str,
-    execution_url: str,
     trigger_event_details: Optional[Dict[str, Any]],
     result: Optional[Dict[str, Any]],
-    log_lines: Sequence[str],
     tracker_client: Any,
 ) -> NotificationOutcome:
     """Apply flow.notifications after a terminal status write.
@@ -251,40 +184,21 @@ async def notify_terminal_execution(
     Args:
         notifications: Raw ``flow.notifications`` value.
         status: Terminal status written on the execution.
-        failure_category: Derived category, if any.
         execution_id: Execution id (for logs).
-        execution_url: Console URL embedded in comments.
         trigger_event_details: Execution trigger snapshot.
         result: Execution result (PR URL lives here).
-        log_lines: In-memory or persisted agent log lines.
         tracker_client: Tracker client with ``add_comment``, or None.
 
     Returns:
-        What was posted or raised. Never raises: tracker errors are logged.
+        What was posted or skipped. Never raises: tracker errors are logged.
     """
     parsed = parse_notifications(notifications)
     if parsed is None:
         return NotificationOutcome(skipped_reason="notifications_unset")
 
     outcome = NotificationOutcome()
-    failed = is_failure_status(status, failure_category)
-    succeeded = is_success_status(status)
 
-    if failed and parsed.on_failure_comment:
-        posted = await _post_trigger_comment(
-            tracker_client=tracker_client,
-            trigger_event_details=trigger_event_details,
-            body=format_failure_comment(
-                status=status,
-                execution_url=execution_url,
-                failure_category=failure_category,
-                log_lines=tail_log_lines(log_lines),
-            ),
-            execution_id=execution_id,
-        )
-        outcome.failure_comment_posted = posted
-
-    if succeeded and parsed.on_success_comment:
+    if is_success_status(status) and parsed.on_success_comment:
         pr_url = extract_opened_pr_url(result)
         if not pr_url:
             logger.info(
