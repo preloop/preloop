@@ -132,14 +132,14 @@ class Flow(Base):
     # Failed executions always surface as console attention items.
     # Shape:
     # {
-    #     "on_failure": {
-    #         "comment_on_trigger_issue": bool,
-    #         "attention_item": bool,  # ignored; kept for stored JSON
-    #     },
     #     "on_success": {
     #         "comment_on_trigger_issue": bool,
     #     },
     # }
+    # An "on_failure" block may still be stored on rows written before the
+    # failure comment was removed (2026-09). Every key in it is ignored: the
+    # column is JSONB, so there is nothing to migrate, and the console drops
+    # the block the next time the flow is saved.
     notifications = Column(JSONB, nullable=True, default=None)
 
     ai_model = relationship("AIModel", back_populates="flows")
