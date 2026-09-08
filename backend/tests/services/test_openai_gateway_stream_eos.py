@@ -490,3 +490,32 @@ def test_raw_cancellation_drains_active_pull_before_closing_stream() -> None:
 
     asyncio.run(exercise())
     assert events == ["pull-start", "pull-finish", "close", "record"]
+
+
+def test_gateway_streaming_response_asgi_23_starts_body_before_disconnect() -> None:
+    """ASGI 2.3 must pull the SSE iterator, not park forever on disconnect."""
+    import httpx
+
+    pulled: list[str] = []
+
+    def _gen() -> Iterator[str]:
+        pulled.append("start")
+        yield "data: hi\n\n"
+        yield "data: [DONE]\n\n"
+
+    async def asgi_app(scope, receive, send):
+        scope.setdefault("asgi", {})["spec_version"] = "2.3"
+        response = GatewayStreamingResponse(_gen(), media_type="text/event-stream")
+        await response(scope, receive, send)
+
+    async def exercise() -> httpx.Response:
+        transport = httpx.ASGITransport(app=asgi_app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            return await client.get("/")
+
+    response = asyncio.run(exercise())
+    assert response.status_code == 200
+    assert pulled == ["start"]
+    assert "hi" in response.text

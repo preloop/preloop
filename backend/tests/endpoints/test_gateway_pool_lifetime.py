@@ -185,6 +185,36 @@ def _probe_pool(engine: Engine) -> None:
         assert connection.execute(text("SELECT 1")).scalar_one() == 1
 
 
+async def _await_provider_event(
+    event: Event,
+    tasks: list[asyncio.Task[httpx.Response]],
+    *,
+    message: str,
+    timeout: float = 10,
+) -> None:
+    """Wait until a provider event fires, or fail with the HTTP outcome."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not event.is_set():
+        for task in tasks:
+            if not task.done():
+                continue
+            if task.cancelled():
+                raise AssertionError(f"{message}; request was cancelled")
+            exc = task.exception()
+            if exc is not None:
+                raise AssertionError(f"{message}; request raised {exc!r}") from exc
+            response = task.result()
+            raise AssertionError(
+                f"{message}; request finished HTTP {response.status_code}: "
+                f"{response.text[:400]!r}"
+            )
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise AssertionError(f"{message}; request still in flight")
+        await asyncio.to_thread(event.wait, min(0.1, remaining))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("protocol", ["chat", "responses", "anthropic", "gemini"])
 @pytest.mark.parametrize("asgi_spec", ["2.3", "2.4"])
@@ -226,19 +256,33 @@ async def test_concurrent_authenticated_streams_release_request_pool(
                 asyncio.create_task(client.post(path, json=payload, headers=headers))
             ]
             try:
-                assert await asyncio.to_thread(provider.first_handshake.wait, 3)
+                await _await_provider_event(
+                    provider.first_handshake,
+                    tasks,
+                    message="provider handshake never started",
+                )
                 tasks.append(
                     asyncio.create_task(
                         client.post(path, json=payload, headers=headers)
                     )
                 )
-                assert await asyncio.to_thread(provider.both_handshakes.wait, 3), (
-                    f"request/auth DB connection remained checked out during provider handshake; provider calls={provider.handshakes}"
+                await _await_provider_event(
+                    provider.both_handshakes,
+                    tasks,
+                    message=(
+                        "request/auth DB connection remained checked out during "
+                        f"provider handshake; provider calls={provider.handshakes}"
+                    ),
                 )
                 await asyncio.to_thread(_probe_pool, gateway_pool.engine)
                 provider.release_handshakes.set()
-                assert await asyncio.to_thread(provider.both_streams.wait, 3), (
-                    "stream iteration or policy lookup reacquired and retained request DB"
+                await _await_provider_event(
+                    provider.both_streams,
+                    tasks,
+                    message=(
+                        "stream iteration or policy lookup reacquired and "
+                        "retained request DB"
+                    ),
                 )
                 assert all(not task.done() for task in tasks)
                 await asyncio.to_thread(_probe_pool, gateway_pool.engine)

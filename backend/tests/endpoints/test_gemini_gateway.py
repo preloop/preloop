@@ -584,3 +584,24 @@ def test_stream_generate_content_midstream_failure_emits_gemini_error_event(
         for p in payloads
         for candidate in p.get("candidates", [])
     )
+
+
+def test_gemini_closing_stream_closes_upstream_when_never_consumed() -> None:
+    """ASGI 2.3 teardown must close the inner stream even if no chunk was pulled."""
+    from preloop.services.gemini_gateway import _GeminiClosingStream
+
+    closed: list[str] = []
+
+    class Inner:
+        def close(self) -> None:
+            closed.append("upstream")
+
+    def events():
+        yield "data: {}\n\n"
+        closed.append("yielded")
+
+    stream = _GeminiClosingStream(Inner(), events())
+    stream.close()
+    assert closed == ["upstream"]
+    stream.close()
+    assert closed == ["upstream"]
