@@ -79,11 +79,43 @@ class ExecutionMonitor:
             except Exception as e:
                 logger.error(f"Error in execution monitor loop: {e}", exc_info=True)
 
+            try:
+                await self._sweep_parked_executions()
+            except Exception as e:
+                logger.error(f"Error sweeping parked executions: {e}", exc_info=True)
+
             # Wait before next check
             try:
                 await asyncio.sleep(self.check_interval)
             except asyncio.CancelledError:
                 break
+
+    async def _sweep_parked_executions(self):
+        """Close out approval windows and retry resumes that did not land.
+
+        Parked executions are the one class of run nothing else watches: no
+        container is streaming and no worker holds a claim, so if the decision
+        callback lost its race with a restart the run would sit there forever.
+        This sweep expires closed windows (resuming the agent with an expired
+        answer so it can finish gracefully instead of the platform reporting a
+        missing result), retries decided-but-unresumed rows, and sends the
+        50 percent and 90 percent window reminders.
+        """
+        from preloop.services.approval_park import (
+            park_enabled,
+            sweep_parked_executions,
+        )
+
+        if not park_enabled():
+            return
+        counts = await sweep_parked_executions()
+        if any(counts.values()):
+            logger.info(
+                "Parked execution sweep: %s expired, %s resumed, %s reminded",
+                counts.get("expired", 0),
+                counts.get("resumed", 0),
+                counts.get("reminded", 0),
+            )
 
     async def _check_stale_executions(self):
         """Check for stale executions and update their status."""

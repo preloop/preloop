@@ -1053,6 +1053,152 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db.commit()
         return bool(count)
 
+    # --- Park / resume on a human decision ---------------------------------
+    #
+    # The approval path and the orchestrator run in different processes, so
+    # the park handshake is three durable steps on this row: request (approval
+    # path), confirm (orchestrator, once the runtime is released), claim
+    # (decision path, exactly once).
+
+    WAITING_FOR_HUMAN_STATUS = "WAITING_FOR_HUMAN"
+
+    def request_park(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        approval_request_id: Any,
+        expires_at: Optional[datetime] = None,
+        commit: bool = True,
+    ) -> bool:
+        """Ask the orchestrator to park this execution on an approval.
+
+        Only a live execution can be parked; a run that already finished
+        (the human answered a question its agent had abandoned) must not be
+        resurrected into a park. Returns True when the request was recorded.
+        """
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.status.in_(self.ACTIVE_ORCHESTRATOR_STATUSES),
+                models.FlowExecution.park_request_id.is_(None),
+            )
+            .update(
+                {
+                    models.FlowExecution.park_request_id: approval_request_id,
+                    models.FlowExecution.park_requested_at: datetime.now(timezone.utc),
+                    models.FlowExecution.park_expires_at: expires_at,
+                },
+                synchronize_session=False,
+            )
+        )
+        if commit:
+            db.commit()
+        return bool(count)
+
+    def get_park_request(self, db: Session, *, execution_id: Any) -> Optional[dict]:
+        """Read park intent fresh on each monitor poll (see get_stop_request)."""
+        row = (
+            db.query(
+                models.FlowExecution.park_request_id,
+                models.FlowExecution.park_requested_at,
+                models.FlowExecution.park_expires_at,
+                models.FlowExecution.parked_at,
+            )
+            .filter(models.FlowExecution.id == execution_id)
+            .first()
+        )
+        if row is None or row.park_request_id is None:
+            return None
+        return {
+            "request_id": row.park_request_id,
+            "requested_at": row.park_requested_at,
+            "expires_at": row.park_expires_at,
+            "parked_at": row.parked_at,
+        }
+
+    def confirm_park(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        compute_seconds: int,
+        commit: bool = True,
+    ) -> None:
+        """Record that the runtime is released and the run is genuinely parked.
+
+        ``compute_seconds`` is the agent wall clock this park chain has spent
+        so far. Human waiting time is never added to it, which is what makes
+        the flow's timeout budget pause while parked.
+        """
+        db.query(models.FlowExecution).filter(
+            models.FlowExecution.id == execution_id,
+        ).update(
+            {
+                models.FlowExecution.status: self.WAITING_FOR_HUMAN_STATUS,
+                models.FlowExecution.parked_at: datetime.now(timezone.utc),
+                models.FlowExecution.parked_compute_seconds: max(0, compute_seconds),
+            },
+            synchronize_session=False,
+        )
+        if commit:
+            db.commit()
+
+    def claim_parked_for_resume(
+        self, db: Session, *, execution_id: Any, approval_request_id: Any
+    ) -> bool:
+        """Claim a parked execution for exactly one resume.
+
+        A decision can arrive twice (console and mobile, a retried webhook, an
+        expiry sweep racing a late approval). The conditional update is the
+        whole idempotency story: the second caller claims zero rows and does
+        nothing.
+        """
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.status == self.WAITING_FOR_HUMAN_STATUS,
+                models.FlowExecution.park_request_id == approval_request_id,
+            )
+            .update(
+                {models.FlowExecution.status: "RESUMING"},
+                synchronize_session=False,
+            )
+        )
+        db.commit()
+        return bool(count)
+
+    def list_parked_for_request(
+        self, db: Session, *, approval_request_id: Any
+    ) -> List[FlowExecution]:
+        """Every execution parked on one approval request."""
+        return (
+            db.query(FlowExecution)
+            .filter(
+                FlowExecution.park_request_id == approval_request_id,
+                FlowExecution.status == self.WAITING_FOR_HUMAN_STATUS,
+            )
+            .all()
+        )
+
+    def list_parked_expired(
+        self, db: Session, *, now: datetime, limit: int = 50
+    ) -> List[FlowExecution]:
+        """Parked executions whose approval window has closed."""
+        return (
+            db.query(FlowExecution)
+            .filter(
+                FlowExecution.status == self.WAITING_FOR_HUMAN_STATUS,
+                FlowExecution.park_expires_at.isnot(None),
+                FlowExecution.park_expires_at <= now,
+            )
+            .order_by(FlowExecution.park_expires_at.asc())
+            .limit(limit)
+            .all()
+        )
+
     def get_stop_request(self, db: Session, *, execution_id: Any) -> Optional[dict]:
         """Read intent fresh on each monitor poll, independent of halt caching."""
         row = (

@@ -14071,6 +14071,21 @@ components:
           - type: string
           - type: 'null'
           title: Flow Name
+        parked_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Parked At
+          description: When this execution was parked waiting for a human decision
+            (status WAITING_FOR_HUMAN). Null for every other row.
+        park_expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Park Expires At
+          description: When the pending approval window closes
         trigger_subject:
           anyOf:
           - type: string
@@ -15021,6 +15036,60 @@ components:
       - model_alias
       title: ExecutionModelUsage
       description: One model alias that served requests during an execution.
+    ExecutionPark:
+      properties:
+        request_id:
+          type: string
+          format: uuid
+          title: Request Id
+          description: The pending approval request
+        since:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Since
+          description: When the execution was parked
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+          description: When the approval window closes
+        waiting_for:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Waiting For
+          description: 'Who the run is waiting on: the approval workflow''s name,
+            which is the routing decision an operator actually made.'
+        tool_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Name
+          description: The gated call that raised the question
+        question:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Question
+          description: The question text, for ask_user requests
+      type: object
+      required:
+      - request_id
+      title: ExecutionPark
+      description: 'Why a ``WAITING_FOR_HUMAN`` execution is waiting, and until when.
+
+
+        Projected onto the detail response so the console can render "waiting for
+
+        <who> since <when>, expires <when>" without the page having to know how
+
+        approvals are stored. A parked run holds no container and no runner: this
+
+        is a governance object, not a spinner.'
     ExecutionRunner:
       properties:
         kind:
@@ -15259,6 +15328,19 @@ components:
             Leave unset to use the deployment default (3600). A run that exceeds the
             budget is stopped and fails with the timeout category, and the failure
             message names the budget that expired.
+        approval_window_seconds:
+          anyOf:
+          - type: integer
+            maximum: 2592000.0
+            minimum: 60.0
+          - type: 'null'
+          title: Approval Window Seconds
+          description: 'How long a human has to answer an approval or question raised
+            by an execution of this flow, in seconds (60s to 30 days). Leave unset
+            to use the approval workflow''s timeout, then the deployment default (300s).
+            While the request is outstanding the execution is parked (WAITING_FOR_HUMAN):
+            it holds no container and no runner, and the decision resumes it, so a
+            window measured in days costs calendar time only.'
         notifications:
           anyOf:
           - $ref: '#/components/schemas/FlowNotifications'
@@ -15394,6 +15476,21 @@ components:
           - type: string
           - type: 'null'
           title: Flow Name
+        parked_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Parked At
+          description: When this execution was parked waiting for a human decision
+            (status WAITING_FOR_HUMAN). Null for every other row.
+        park_expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Park Expires At
+          description: When the pending approval window closes
         trigger_subject:
           anyOf:
           - type: string
@@ -15533,6 +15630,29 @@ components:
             format: date-time
           - type: 'null'
           title: Launch Requested At
+        parked_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Parked At
+          description: When this execution was parked waiting for a human decision.
+            Set only while status is WAITING_FOR_HUMAN and cleared when the decision
+            resumes it.
+        park_expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Park Expires At
+          description: When the pending approval window closes
+        park_request_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Park Request Id
+          description: The approval request this execution is parked on
         stop_requested_at:
           anyOf:
           - type: string
@@ -15631,6 +15751,12 @@ components:
           - type: string
           - type: 'null'
           title: Flow Name
+        park:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutionPark'
+          - type: 'null'
+          description: Present while the execution is parked on a human decision (status
+            WAITING_FOR_HUMAN).
         runner:
           $ref: '#/components/schemas/ExecutionRunner'
           description: Where this execution ran. Hosted when the built-in executor
@@ -15915,6 +16041,19 @@ components:
             Leave unset to use the deployment default (3600). A run that exceeds the
             budget is stopped and fails with the timeout category, and the failure
             message names the budget that expired.
+        approval_window_seconds:
+          anyOf:
+          - type: integer
+            maximum: 2592000.0
+            minimum: 60.0
+          - type: 'null'
+          title: Approval Window Seconds
+          description: 'How long a human has to answer an approval or question raised
+            by an execution of this flow, in seconds (60s to 30 days). Leave unset
+            to use the approval workflow''s timeout, then the deployment default (300s).
+            While the request is outstanding the execution is parked (WAITING_FOR_HUMAN):
+            it holds no container and no runner, and the decision resumes it, so a
+            window measured in days costs calendar time only.'
         notifications:
           anyOf:
           - $ref: '#/components/schemas/FlowNotifications'
@@ -16152,6 +16291,19 @@ components:
             Leave unset to use the deployment default (3600). A run that exceeds the
             budget is stopped and fails with the timeout category, and the failure
             message names the budget that expired.
+        approval_window_seconds:
+          anyOf:
+          - type: integer
+            maximum: 2592000.0
+            minimum: 60.0
+          - type: 'null'
+          title: Approval Window Seconds
+          description: 'How long a human has to answer an approval or question raised
+            by an execution of this flow, in seconds (60s to 30 days). Leave unset
+            to use the approval workflow''s timeout, then the deployment default (300s).
+            While the request is outstanding the execution is parked (WAITING_FOR_HUMAN):
+            it holds no container and no runner, and the decision resumes it, so a
+            window measured in days costs calendar time only.'
         notifications:
           anyOf:
           - $ref: '#/components/schemas/FlowNotifications'

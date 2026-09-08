@@ -620,7 +620,9 @@ class ApprovalService:
             tool_args: Arguments passed to the tool
             agent_reasoning: Agent's reasoning for the tool call
             execution_id: Flow execution ID (if applicable)
-            timeout_seconds: How long to wait for approval (default: 5 minutes)
+            timeout_seconds: Requested decision window in seconds. Resolved
+                and capped by services/approval_window.py; None falls back to
+                the deployment default (300s).
             managed_agent_id: Managed agent that asked, when known.
             runtime_session_id: Runtime session the call came from, when known.
             managed_agent_name: Display name for the agent. Backfilled from
@@ -637,8 +639,27 @@ class ApprovalService:
         Returns:
             Created approval request
         """
-        # Calculate expiration time
-        timeout = timeout_seconds or 300  # Default: 5 minutes
+        # Calculate expiration time. The window is resolved in one place
+        # (services/approval_window.py) from the tool argument, the flow, the
+        # workflow and the deployment default, in that order, capped per
+        # account. A caller that already resolved it passes timeout_seconds.
+        from preloop.services.approval_window import resolve_approval_window
+
+        account = None
+        try:
+            from preloop.models.models.account import Account
+
+            account = await self.db.get(Account, uuid.UUID(str(account_id)))
+        except Exception:
+            # The cap then falls back to the deployment ceiling, which is the
+            # safe direction: a missing account row must not lift the limit.
+            logger.debug(
+                "Could not load account %s for the approval window cap", account_id
+            )
+        window = resolve_approval_window(
+            requested_seconds=timeout_seconds, account=account
+        )
+        timeout = window.seconds
         from preloop.models.crud import crud_account_halt
 
         await self.db.run_sync(
@@ -789,7 +810,44 @@ class ApprovalService:
         await self.db.commit()
         await self.db.refresh(approval_request)
 
+        # Every resolution path in this service funnels through here, which is
+        # why the resume hangs off the write rather than off approve_request:
+        # console, mobile, public token, API, quorum completion, AI decision,
+        # bypass auto-approve and expiry all land on the same line. A run that
+        # is parked on this request is released exactly once (the claim is a
+        # conditional UPDATE), so a duplicate decision is harmless.
+        if str(getattr(approval_request, "status", "")) in self._TERMINAL_STATUSES:
+            await self._release_parked_executions(approval_request)
+
         return approval_request
+
+    async def _release_parked_executions(
+        self, approval_request: ApprovalRequest
+    ) -> None:
+        """Resume any flow execution parked on a now-decided request.
+
+        Awaited rather than fired and forgotten: a decision that does not
+        restart the run is exactly the failure this whole change exists to
+        remove. Never raises, and the park sweep retries what fails here.
+        """
+        if not getattr(approval_request, "execution_id", None):
+            return
+        try:
+            from preloop.services.approval_park import resume_parked_executions
+
+            started = await resume_parked_executions(approval_request.id)
+        except Exception:
+            logger.exception(
+                "Could not resume executions parked on approval %s",
+                approval_request.id,
+            )
+            return
+        if started:
+            logger.info(
+                "Approval %s released parked executions: %s",
+                approval_request.id,
+                ", ".join(started),
+            )
 
     async def _record_event(
         self,
@@ -1879,6 +1937,7 @@ class ApprovalService:
         api_key_id: Optional[uuid.UUID] = None,
         standing_bypass_reason: Optional[str] = None,
         rule_context: Optional[Dict[str, Any]] = None,
+        timeout_seconds: Optional[int] = None,
     ) -> ApprovalRequest:
         """Create approval request and send notifications through configured channels.
 
@@ -1920,7 +1979,9 @@ class ApprovalService:
             tool_args=tool_args,
             agent_reasoning=agent_reasoning,
             execution_id=execution_id,
-            timeout_seconds=approval_workflow.timeout_seconds,
+            # An explicitly resolved window (flow setting or tool argument)
+            # outranks the workflow default; see services/approval_window.py.
+            timeout_seconds=timeout_seconds or approval_workflow.timeout_seconds,
             managed_agent_id=managed_agent_id,
             runtime_session_id=runtime_session_id,
             managed_agent_name=managed_agent_name,
@@ -2517,6 +2578,56 @@ class ApprovalService:
             logger.debug(
                 f"Failed to record notification timeline event for {channel}: {exc}"
             )
+
+    async def send_window_reminder(
+        self,
+        approval_request: ApprovalRequest,
+        approval_workflow: ApprovalWorkflow,
+        percent: int,
+    ) -> bool:
+        """Re-notify approvers halfway and near the end of a long window.
+
+        A three-day approval window is a real improvement over five minutes
+        and a real way to forget a decision entirely. Reminders go out through
+        the same per-user preferences as the original notification (push, then
+        email); ``send_notifications`` itself cannot be reused because it
+        deliberately refuses to fire for a request older than 30 seconds.
+
+        Returns True when the reminder was recorded on the timeline, which is
+        also what makes it fire at most once per threshold.
+        """
+        recorded = False
+        try:
+            await self._record_event(
+                approval_request_id=approval_request.id,
+                account_id=approval_request.account_id,
+                event_type="reminder_sent",
+                detail=(
+                    f"Reminder: {percent}% of the approval window has passed "
+                    "with no decision"
+                ),
+            )
+            await self.db.commit()
+            recorded = True
+        except Exception:
+            logger.exception(
+                "Could not record the %s%% reminder for approval %s",
+                percent,
+                approval_request.id,
+            )
+            return False
+
+        # Best effort from here: a failed channel must not cost the timeline
+        # entry, and must never re-raise into the sweep.
+        try:
+            await self._send_push_notification(approval_request, approval_workflow)
+        except Exception:
+            logger.warning("Push reminder failed for approval %s", approval_request.id)
+        try:
+            await self._send_email_notification(approval_request, approval_workflow)
+        except Exception:
+            logger.warning("Email reminder failed for approval %s", approval_request.id)
+        return recorded
 
     async def _get_all_approver_user_ids(
         self, approval_workflow: ApprovalWorkflow

@@ -7,12 +7,14 @@ with real-time progress updates via FastMCP Context.
 import asyncio
 import logging
 import os
+import uuid
 from contextvars import ContextVar
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastmcp import Context
+from preloop.config import settings
 from preloop.models import models
 
 logger = logging.getLogger(__name__)
@@ -120,6 +122,69 @@ def _session_context_for_in_band() -> _InBandSessionContext:
     )
 
 
+async def _flow_for_execution(db: AsyncSession, execution_id: Any) -> Any:
+    """The flow that owns a running execution, or None.
+
+    Used to read ``approval_window_seconds``: a question raised by a release
+    audit is a compliance decision and gets that flow's window, while an
+    interactive tool call from a developer session keeps the 5 minute default.
+    """
+    if not execution_id:
+        return None
+    try:
+        from sqlalchemy import select
+
+        result = await db.execute(
+            select(models.Flow)
+            .join(models.FlowExecution, models.FlowExecution.flow_id == models.Flow.id)
+            .where(models.FlowExecution.id == uuid.UUID(str(execution_id)))
+        )
+        return result.scalars().first()
+    except Exception:
+        logger.warning(
+            "Could not resolve the flow for execution %s; using the workflow window",
+            execution_id,
+            exc_info=True,
+        )
+        return None
+
+
+async def _account_for_window(db: AsyncSession, account_id: Any) -> Any:
+    """The account row, read only for its approval-window cap."""
+    try:
+        return await db.get(models.Account, uuid.UUID(str(account_id)))
+    except Exception:
+        logger.debug("Could not load account %s for the window cap", account_id)
+        return None
+
+
+async def _park_execution(
+    *, execution_id: Any, approval_request_id: Any, expires_at: Any
+) -> bool:
+    """Record the park request on the execution row (short-lived session)."""
+    from preloop.api.loop_safety import run_db_off_loop
+    from preloop.models.db.session import get_session_factory
+    from preloop.services.approval_park import request_park
+
+    def _write() -> bool:
+        db = get_session_factory()()
+        try:
+            return request_park(
+                db,
+                execution_id=execution_id,
+                approval_request_id=approval_request_id,
+                expires_at=expires_at,
+            )
+        finally:
+            db.close()
+
+    try:
+        return await run_db_off_loop(_write)
+    except Exception:
+        logger.exception("Could not park execution %s", execution_id)
+        return False
+
+
 async def _deliver_question_in_band(
     *,
     tool_name: str,
@@ -179,6 +244,7 @@ async def require_approval(
     return_comment_on_approve: bool = False,
     rule_context: Optional[dict] = None,
     halt_scope: str = "tools",
+    requested_timeout_seconds: Optional[int] = None,
 ) -> Tuple[bool, str]:
     """Check if tool requires approval and wait for decision with streaming.
 
@@ -199,6 +265,11 @@ async def require_approval(
         justification: Optional justification text provided by the agent explaining
                       why this tool is being called. Injected by DynamicFastMCP when
                       justification_mode is configured on the tool.
+        requested_timeout_seconds: Decision window asked for by the caller
+                      (the optional ``timeout_seconds`` on ask_user /
+                      request_approval). Bounded by the flow's
+                      approval_window_seconds and the account cap; see
+                      services/approval_window.py.
         rule_context: Snapshot of the policy rule that demanded this approval
                       (see services/approval_rule_context.py). When omitted,
                       falls back to whatever DynamicFastMCP's central policy
@@ -513,6 +584,24 @@ async def require_approval(
 
             caller = current_caller_attribution()
 
+            # Resolve the decision window before the request exists, because
+            # expires_at is what a human is actually racing. Precedence: the
+            # tool's own timeout_seconds, this flow's approval_window_seconds,
+            # the workflow timeout, the deployment default; capped per account.
+            from preloop.services.approval_window import (
+                resolve_approval_window,
+                should_park,
+            )
+
+            window_flow = await _flow_for_execution(db, caller.execution_id)
+            window = resolve_approval_window(
+                requested_seconds=requested_timeout_seconds,
+                flow=window_flow,
+                workflow=workflow,
+                account=await _account_for_window(db, account_id),
+            )
+            logger.info("Approval window for %s: %s", tool_name, window.describe())
+
             try:
                 # Create approval request and send notification
                 approval_request = await approval_service.create_and_notify(
@@ -532,6 +621,7 @@ async def require_approval(
                     managed_agent_name=caller.managed_agent_name,
                     api_key_id=caller.api_key_id,
                     rule_context=rule_context,
+                    timeout_seconds=window.seconds,
                 )
 
                 # Extract every value needed past this point into plain
@@ -548,7 +638,10 @@ async def require_approval(
                 resolved_workflow_id = workflow.id
                 workflow_name = workflow.name
                 workflow_approval_type = workflow.approval_type
-                workflow_timeout_seconds = workflow.timeout_seconds or 300
+                # The poll loop is bounded by the resolved window, not by the
+                # workflow default: they are the same number unless the flow
+                # or the tool asked for a longer one.
+                workflow_timeout_seconds = window.seconds
                 workflow_async_enabled = bool(
                     getattr(workflow, "async_approval_enabled", False)
                 )
@@ -861,6 +954,52 @@ async def require_approval(
                             responded_by=current_responded_by,
                         )
                         break
+
+                    # Park the flow execution rather than burn it against a
+                    # human timescale. After a short in-process wait the run
+                    # holds a container, a runner slot and a pooled DB session
+                    # for nothing: the decision is minutes or days away. The
+                    # tool returns a structured pending result, the
+                    # orchestrator releases the runtime, and the decision (or
+                    # the expiry) resumes the same agent session.
+                    if (
+                        caller.execution_id
+                        and should_park(window.seconds)
+                        and elapsed >= int(settings.approval_park_after_seconds)
+                    ):
+                        parked = await _park_execution(
+                            execution_id=caller.execution_id,
+                            approval_request_id=approval_request_id,
+                            expires_at=approval_request_expires_at,
+                        )
+                        if parked:
+                            from preloop.services.approval_park import (
+                                park_pending_payload,
+                            )
+                            from preloop.services.ask_user_inband import (
+                                approval_console_url,
+                            )
+
+                            logger.info(
+                                "Execution %s parked on approval %s (window %ss)",
+                                caller.execution_id,
+                                approval_request_id,
+                                window.seconds,
+                            )
+                            return (
+                                False,
+                                park_pending_payload(
+                                    request_id=approval_request_id,
+                                    tool_name=tool_name,
+                                    expires_at=approval_request_expires_at,
+                                    console_url=approval_console_url(
+                                        base_url, approval_request_id
+                                    ),
+                                    question=arguments.get("question")
+                                    if isinstance(arguments, dict)
+                                    else None,
+                                ),
+                            )
 
                     # Check if initial timeout expired
                     if elapsed >= timeout_seconds and not escalation_triggered:

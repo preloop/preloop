@@ -128,6 +128,13 @@ class Flow(Base):
     # hours cannot share one ceiling: with a single global value, "stuck" and
     # "genuinely long" produce the same timeout row.
     timeout_seconds = Column(Integer, nullable=True)
+    # How long a human has to answer an approval or question raised by an
+    # execution of this flow, in seconds. NULL falls back to the approval
+    # workflow's timeout and then to the deployment default (300s). A flow
+    # whose questions are compliance decisions (a CRA waiver, a release
+    # sign-off) sets days here: while the request is outstanding the run is
+    # parked, so a long window costs nothing but calendar time.
+    approval_window_seconds = Column(Integer, nullable=True)
     # Terminal-path notifications. NULL means no tracker comments.
     # Failed executions always surface as console attention items.
     # Shape:

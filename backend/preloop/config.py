@@ -520,6 +520,33 @@ class Settings(BaseSettings):
         3600,
         description="Maximum wall-clock time to wait for one flow execution before failing it",
     )
+    approval_default_window_seconds: int = Field(
+        300,
+        description=(
+            "How long a human has to decide an approval when nothing more "
+            "specific applies. Interactive tool calls keep the historical 5 "
+            "minutes; a flow that needs a compliance timescale sets "
+            "approval_window_seconds on the flow instead of moving this."
+        ),
+    )
+    approval_max_window_seconds: int = Field(
+        2592000,
+        description=(
+            "Deployment ceiling for any approval window (30 days). An account "
+            "may lower it via meta_data.approval_window_max_seconds. Nothing "
+            "raises it: a request that never expires is a governance object "
+            "nobody ever closes."
+        ),
+    )
+    approval_park_after_seconds: int = Field(
+        90,
+        description=(
+            "How long a gated tool call waits in-process before the flow "
+            "execution is parked (WAITING_FOR_HUMAN), the container released "
+            "and the run resumed on the decision. Below this, waiting in "
+            "place is cheaper than a park/resume round trip."
+        ),
+    )
     flow_execution_max_attempts: int = Field(
         2,
         description=(
@@ -895,6 +922,15 @@ class Settings(BaseSettings):
             ),
             flow_execution_max_wait_seconds=int(
                 os.getenv("FLOW_EXECUTION_MAX_WAIT_SECONDS", "3600")
+            ),
+            approval_default_window_seconds=int(
+                os.getenv("APPROVAL_DEFAULT_WINDOW_SECONDS", "300")
+            ),
+            approval_max_window_seconds=int(
+                os.getenv("APPROVAL_MAX_WINDOW_SECONDS", "2592000")
+            ),
+            approval_park_after_seconds=int(
+                os.getenv("APPROVAL_PARK_AFTER_SECONDS", "90")
             ),
             flow_execution_max_attempts=int(
                 os.getenv("FLOW_EXECUTION_MAX_ATTEMPTS", "2")
