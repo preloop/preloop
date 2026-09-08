@@ -1851,7 +1851,9 @@ class TestWorkspaceSeedValidation:
             WorkspaceSeedError,
         )
 
-        # Encoded size just over the cap (the cap applies to the base64 form).
+        # Encoded size just over the total cap (the cap applies to the
+        # base64 form). A single file this large also exceeds the per-file
+        # budget, which is what the message now names.
         too_big = base64.b64encode(
             b"x" * (MAX_TOTAL_SEED_ENCODED_BYTES // 4 * 3 + 3)
         ).decode("ascii")
@@ -2149,8 +2151,14 @@ class TestSuccessConfirmationChannels:
             _confirmation_executor(artifact=artifact),
         )
 
+        expected = dict(artifact)
+        expected["runner"] = {
+            "kind": "hosted",
+            "id": None,
+            "attested_by": "control_plane",
+        }
         assert result["status"] == "SUCCEEDED"
-        assert result["result"] == artifact
+        assert result["result"] == expected
 
     @pytest.mark.asyncio
     async def test_audit_error_verdict_overrides_to_failed(
@@ -2174,11 +2182,17 @@ class TestSuccessConfirmationChannels:
             _confirmation_executor(artifact=artifact),
         )
 
+        expected = dict(artifact)
+        expected["runner"] = {
+            "kind": "hosted",
+            "id": None,
+            "attested_by": "control_plane",
+        }
         assert result["status"] == "FAILED"
         assert "result.json" in (
             result["error_message"] or ""
         ) or "CRA result.json" in (result["error_message"] or "")
-        assert result["result"] == artifact
+        assert result["result"] == expected
 
     @pytest.mark.asyncio
     async def test_unrecognized_verdict_without_sentinel_still_fails(

@@ -434,6 +434,52 @@ async def test_read_presets(mock_account: Account, mocker: MockerFixture):
     )
 
 
+@pytest.mark.asyncio
+async def test_read_presets_carries_the_catalog_slug(
+    mock_account: Account, mocker: MockerFixture
+):
+    """A scripted caller can go from the list to run-preset without a name match.
+
+    ``POST /flows/run-preset`` takes ``preset_slug``. The list used to
+    return display names only, so callers had to hard-code "SBOM Verify"
+    and hope nobody renamed it (dogfood report 4.5).
+    """
+    mock_crud_flow = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow",
+        new_callable=MagicMock,
+    )
+
+    class Row:
+        pass
+
+    global_preset = Row()
+    global_preset.is_preset = True
+    global_preset.account_id = None
+    global_preset.name = "SBOM Verify"
+    unknown_global = Row()
+    unknown_global.is_preset = True
+    unknown_global.account_id = None
+    unknown_global.name = "Something Not In The Catalog"
+    account_copy = Row()
+    account_copy.is_preset = True
+    account_copy.account_id = mock_account.account_id
+    account_copy.name = "SBOM Verify"
+    mock_crud_flow.get_presets_for_account.return_value = [
+        global_preset,
+        unknown_global,
+        account_copy,
+    ]
+
+    result = await maybe_await(
+        flows.read_presets(db=MagicMock(), current_user=mock_account)
+    )
+
+    assert result[0].slug == "sbom-verify"
+    assert result[1].slug is None
+    # A clone's name is user-editable, so it is not catalog identity.
+    assert getattr(account_copy, "slug", None) is None
+
+
 def _make_preset(flow_id: uuid.UUID, ai_model_id=None):
     """Build a preset-like object with __dict__ support (like the ORM row)."""
 

@@ -34,7 +34,7 @@ Every `result.json` and every markdown evidence file carries this line:
 
 | Preset | What it does | result.json schema |
 | --- | --- | --- |
-| SBOM Verify | Format validity, NTIA / CRA Annex I Part II minimum elements, completeness vs delivered build manifests, license flags | `preloop.cra.sbomaudit/v1` |
+| SBOM Verify | Format validity, NTIA / CRA Annex I Part II minimum elements, completeness vs delivered build manifests, license flags, provenance consistency | `preloop.cra.sbomaudit/v1` |
 | SBOM Exploit Check | Components to CVEs via OSV.dev, known-exploited flags via CISA KEV, per-source screening matrix, severity gate | `preloop.cra.vulnscan/v1` |
 | Release Security Audit | Both of the above in one execution, plus drift vs a previous run's `result.json`, optional [gap register](#preloopcrareleaseauditv1-release-security-audit) and [multi-repo evidence storage](#evidence-storage-architecture-multi-repo-products) | `preloop.cra.releaseaudit/v1` |
 | [Component Due Diligence Record](#component-due-diligence-record) | Agent legwork on one integrated component; a human carries the risk decision via approval; the record can land in a compliance repo | `preloop.cra.duediligence/v1` |
@@ -117,6 +117,48 @@ Every schema includes:
 }
 ```
 
+`runner` is the one envelope field the platform overwrites. The agent
+writes nulls because it cannot see which runner leased its job; the
+persist boundary stamps the execution's actual runner. See [Keys the
+control plane adds to the stored
+result](#keys-the-control-plane-adds-to-the-stored-result).
+
+### Incompletion envelope
+
+Every schema above requires a full audit body, so a run that stops early
+(an input that never arrived, an interactive waiver question nobody
+answered) has nothing valid to write. It writes the incompletion
+envelope instead:
+
+```json
+{
+  "schema": "preloop.cra.releaseaudit/v1",
+  "flow": "release-security-audit",
+  "run_at": "2026-09-08T10:15:00Z",
+  "regime_profile": "cra",
+  "verdict": "error",
+  "incomplete": {"reason": "the waiver approval did not resolve in time", "stage": "PHASE 2"},
+  "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+}
+```
+
+`incomplete.reason` is required and must be prose. The schema's
+completion signal must say `error`: `verdict` on SBOM Verify and Release
+Security Audit, `status` on SBOM Exploit Check, both on Component Due
+Diligence. `git`, `tool_versions`, `inputs_declared`, `runner`,
+`checks`, `assessments` and `artifacts` may be included. Audit body
+sections may not: a document that reports findings, a gate, or a
+decision is claiming work, and claimed work is validated in full,
+waiver authenticity included.
+
+The platform stores the envelope as the result, **fails** the execution,
+and denies the release with `run did not complete: <reason>`. Before
+this, a graceful failure with no `schema` field was recorded as
+`cra_result_missing` and the agent's explanation survived only under
+`result.raw`, where nobody reads it. "The audit could not be completed
+because a required human decision did not arrive" is itself a
+compliance-relevant fact.
+
 ### `preloop.cra.sbomaudit/v1` (SBOM Verify)
 
 Envelope plus:
@@ -146,12 +188,25 @@ Envelope plus:
 }
 ```
 
-Verdict: `fail` = invalid SBOM or minimum elements absent (missing inputs
-entirely also yields `fail`); `pass_with_findings` = valid but findings
-exist (coverage gaps, license flags, skipped cross-checks); `pass` =
-clean. Build cross-checks are marked `skipped` when no build manifests
-were delivered. `delta` is **always `null`** in this standalone preset;
-only the Release Security Audit computes drift.
+Verdict: `fail` = invalid SBOM, minimum elements absent, or a declared
+SBOM digest that does not match the parsed file (missing inputs entirely
+also yields `fail`); `pass_with_findings` = valid but findings exist
+(coverage gaps, license flags, skipped cross-checks, provenance
+contradictions); `pass` = clean. Build cross-checks are marked `skipped`
+when no build manifests were delivered. `delta` is **always `null`** in
+this standalone preset; only the Release Security Audit computes drift.
+
+**Provenance consistency.** `checks[]` always carries a
+`provenance_consistency` entry, passed or skipped. It compares what the
+caller declared (generator, SBOM sha256, build ref, any "unmodified tool
+output" claim) against what the file says: creator/tool metadata, the
+digest of the bytes actually parsed, and machine-checkable signs of
+post-processing such as byte-identical duplicate components or
+dependency references with no matching `bom-ref`. A contradiction is a
+finding about the declaration, recorded separately from findings about
+the SBOM's content. Callers who reshape an SBOM before delivering it
+(to fit a size limit, for instance) get told, instead of getting an
+audit of the reshaped file that reads as an audit of their build.
 
 This schema has no top-level `status` field. Completion is the
 `verdict`. Artifacts: `audit_report` (`evidence/audit-report.md`),
@@ -500,10 +555,22 @@ JSON `{id, reason}` per selected finding id. Persist authenticates that
 stored `tool_result` / `responses` content — `status=approved` or a CVE
 mentioned in the question is not a waiver. Timeout fails closed.
 
-The severity gate is KEV or CVSS >= 9.0 unless the trigger/CI payload
-sets `gate.fail_on_kev` / `gate.fail_on_cvss_gte` (CVSS in `[0, 10]`).
-Agent `gate.policy` display text never changes the threshold. There is
-no per-product policy table.
+The severity gate is KEV, CVSS >= 9.0, or a database-source finding
+with **no CVSS score at all**, unless the trigger/CI payload sets
+`gate.fail_on_kev` / `gate.fail_on_cvss_gte` (CVSS in `[0, 10]`) /
+`gate.fail_on_unscored`. Agent `gate.policy` display text never changes
+the threshold. There is no per-product policy table.
+
+**Unscored findings are gate-relevant by default.** Go and Rust
+advisories routinely reach OSV with no CVSS vector. Under a score-only
+gate every one of them passes silently, and the pack then reads as
+"screened and cleared" when it means "never scored". Unscored failures
+are labeled `UNSCORED` on the cover and in the register, and they are
+waivable like any other gate failure. Set
+`gate.fail_on_unscored: false` in the payload (or
+`ReleasePolicy(fail_on_unscored=False)` in CI) to opt out; the gate line
+then says so. Heuristic-only findings are unaffected: they never enter
+the gate, scored or not.
 
 Heuristic sources stay labeled and never enter the severity gate.
 `pkg:generic` and `pkg:github` are not db-resolvable by purl; they may
@@ -608,6 +675,25 @@ of a supplier CE declaration document, never its authenticity.
 `reviewer` is always `null` in the record. Reviewer identity lives in
 Preloop's approval audit trail.
 
+### Keys the control plane adds to the stored result
+
+The stored `result` is the agent's document plus a small number of keys
+the platform owns. They are not part of any `preloop.cra.*` schema and
+the agent cannot write them: an agent-authored copy is stripped or
+renamed before the result is saved. Reading the raw JSON, you will see:
+
+| Key | Written by | What it is |
+| --- | --- | --- |
+| `runner` | control plane, over the agent's field | Where the run executed: `{"kind": "hosted" \| "self_hosted", "id": <runner id or null>, "attested_by": "control_plane"}`, plus `pool` when the run was queued to one. The agent cannot see which runner leased its job, so every preset tells it to write nulls and the persist boundary replaces them. |
+| `container_termination` | the executor's runtime observation | How the sandbox ended: `reason`, `oom_killed`, `exit_code`. The only evidence that a run died rather than concluded. A `result.json` claim of this key is discarded. |
+| `dossier_manifest` | control plane, on product-evidence runs | `preloop.cra.dossier_manifest/v1`: content digests over the raw agent result, the annotated result, the declared source inputs, artifact references, approvals and publication receipts. It is large (on a real 004 run, 39,815 bytes of a 92,796 byte result) because it restates identity in canonical, hashable form. See [Product evidence](product-evidence.md#dossier-manifest). |
+| `product_provenance` | control plane, from the trigger | The caller's declared product mapping, echoed onto the result so the dossier and the evidence receipt describe the same artefact. |
+| `trusted_publication`, `evidence_upload`, `verification` | control plane | Publication receipts, evidence-archive receipt, and the runner-captured verification verdict. |
+
+`runner` is a fact about the platform, not about the audit: it does not
+enter any verdict or gate. `container_termination` is the field to read
+first when a run has no audit body.
+
 ## CI runbook
 
 One copy-paste path: clone the preset, fire the webhook after the build
@@ -676,7 +762,7 @@ Example payload (Release Security Audit):
   "sbom": {"paths": ["sbom/image.spdx.json"]},
   "manifests": {"license_manifest_path": "manifests/license.manifest"},
   "license_policy_path": "policy/licenses.yaml",
-  "gate": {"fail_on_kev": true, "fail_on_cvss_gte": 7.0},
+  "gate": {"fail_on_kev": true, "fail_on_cvss_gte": 7.0, "fail_on_unscored": true},
   "previous_result_path": "previous/result.json",
   "workspace_files": [
     {"path": "sbom/image.spdx.json", "content_base64": "..."},

@@ -38,6 +38,14 @@ from preloop.cra.validate import (
 
 logger = logging.getLogger(__name__)
 
+# The execution row says "private" where the CRA envelope says "self_hosted".
+CRA_RUNNER_KIND_BY_EXECUTION_KIND: Mapping[str, str] = {
+    "hosted": "hosted",
+    "private": "self_hosted",
+}
+# Marks the runner block as a control-plane fact, not an agent claim.
+PLATFORM_ATTESTATION = "control_plane"
+
 
 class CraAuthorityUnavailableError(RuntimeError):
     """Platform approval lookup failed; claimed decisions must fail closed."""
@@ -178,6 +186,61 @@ def resolve_persist_authority(
         return None, AUTHORITY_REQUIRED
 
 
+def cra_runner_identity(execution_runner: Any) -> Optional[dict[str, Any]]:
+    """Translate the control plane's runner record into CRA envelope terms.
+
+    The console calls a self-hosted CLI runner "private"; the CRA envelope
+    says "self_hosted" (:data:`preloop.cra.schemas.RUNNER_KINDS`). Only the
+    facts the platform can prove travel: kind, runner id and pool. The
+    display name is left out because it falls back to a placeholder when no
+    runner row is loaded, and a placeholder is not evidence. Anything the
+    platform cannot classify returns ``None``, which leaves the agent's own
+    field untouched.
+    """
+    if not isinstance(execution_runner, Mapping):
+        return None
+    kind = CRA_RUNNER_KIND_BY_EXECUTION_KIND.get(
+        str(execution_runner.get("kind") or "").strip()
+    )
+    if kind is None:
+        return None
+    identity: dict[str, Any] = {
+        "kind": kind,
+        "id": None,
+        "attested_by": PLATFORM_ATTESTATION,
+    }
+    runner_id = execution_runner.get("id")
+    if runner_id is not None:
+        identity["id"] = str(runner_id)
+    pool = execution_runner.get("pool")
+    if isinstance(pool, str) and pool.strip():
+        identity["pool"] = pool.strip()
+    return identity
+
+
+def stamp_runner_identity(payload: Any, execution_runner: Any) -> Any:
+    """Overwrite ``result.runner`` with what the control plane knows.
+
+    The agent cannot see which runner leased its job, so every preset tells
+    it to write ``{"kind": null, "id": null}`` and every stored result used
+    to say exactly that. Where the run executed is a compliance-relevant
+    fact the platform owns, so it is stamped here, before validation, on any
+    document that carries a CRA schema id. The stored block is exactly
+    :func:`cra_runner_identity`: ``kind``, ``id``, ``attested_by``, and
+    ``pool`` only when the platform has one. Agent-written keys (a display
+    ``name``, a guessed ``pool``, ``image``, ...) are dropped rather than
+    merged, so only provable facts travel.
+    """
+    identity = cra_runner_identity(execution_runner)
+    if identity is None or not isinstance(payload, Mapping):
+        return payload
+    if not is_cra_schema_id(payload.get("schema")):
+        return payload
+    stamped = dict(payload)
+    stamped["runner"] = identity
+    return stamped
+
+
 def apply_cra_persist_boundary(
     artifact: Optional[Mapping[str, Any]],
     *,
@@ -188,15 +251,19 @@ def apply_cra_persist_boundary(
     previous_gap_register: Optional[Mapping[str, Any]] = None,
     require_coverage: bool = False,
     authority: AuthorityMode = AUTHORITY_OFFLINE,
+    execution_runner: Any = None,
 ) -> CraPersistDecision:
     """Validate at the persist boundary and wrap failures without dropping raw JSON.
 
     Expected CRA flows with a missing schema cannot evade validation. Capture
     error objects produced by the runner stay visible. Unknown non-CRA JSON is
-    returned unchanged (``validation.skipped``).
+    returned unchanged (``validation.skipped``). ``execution_runner`` is the
+    control plane's runner record for this execution; when it is given, it
+    replaces the agent's ``runner`` block.
     """
     expected = expected_schema or expected_cra_schema_from_prompt(prompt)
     payload: Any = dict(artifact) if isinstance(artifact, Mapping) else artifact
+    payload = stamp_runner_identity(payload, execution_runner)
 
     if isinstance(payload, Mapping) and json_in(
         payload.get("error"), CAPTURE_ERROR_CODES

@@ -333,8 +333,19 @@ def read_presets(
     """Retrieve flow presets available to the account.
 
     Returns global presets (account_id=None) plus any account-specific presets.
+    Global rows carry their catalog ``slug``, the stable identifier
+    ``POST /flows/run-preset`` takes, so scripted callers do not have to
+    match on a display name that can be renamed.
     """
-    return crud_flow.get_presets_for_account(db, account_id=current_user.account_id)
+    from preloop.flow_presets import PRESET_SLUGS_BY_NAME
+
+    presets = crud_flow.get_presets_for_account(db, account_id=current_user.account_id)
+    for preset in presets:
+        # Account-specific rows are copies: their name is user-editable and
+        # is not catalog identity, so they stay unslugged.
+        if getattr(preset, "account_id", None) is None:
+            preset.slug = PRESET_SLUGS_BY_NAME.get(getattr(preset, "name", None) or "")
+    return presets
 
 
 def _resolve_clone_model_binding(

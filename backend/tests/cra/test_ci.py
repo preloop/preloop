@@ -96,6 +96,33 @@ def test_unknown_verdict_is_rejected(sbomaudit_result: dict[str, Any]) -> None:
     assert "verdict" in reason.lower() or "must be" in reason
 
 
+def test_incompletion_envelope_denies_release_with_the_stated_reason() -> None:
+    """A valid report of an unfinished run is denied in those words."""
+    payload = {
+        "schema": "preloop.cra.releaseaudit/v1",
+        "flow": "release-security-audit",
+        "run_at": "2026-09-08T10:15:00Z",
+        "regime_profile": "cra",
+        "verdict": "error",
+        "incomplete": {
+            "reason": "The interactive waiver approval did not resolve in time.",
+            "stage": "PHASE 2 waiver collection",
+        },
+        "disclaimer": (
+            "Machine-generated evidence for conformity assessment support. "
+            "Not a conformity assessment, certification, or legal advice."
+        ),
+    }
+    accepted, reason, validation = evaluate_release(
+        payload, policy=ReleasePolicy(), evidence_received=True
+    )
+    assert not accepted
+    assert validation.ok and validation.incomplete
+    assert reason == (
+        "run did not complete: The interactive waiver approval did not resolve in time."
+    )
+
+
 def test_model_cvss_99_display_cannot_pass_ci_gate(
     vulnscan_result: dict[str, Any],
 ) -> None:

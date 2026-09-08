@@ -60,10 +60,18 @@ prompt_template: |
   - Optional license policy file (allow/deny/flag lists).
   - Optional VEX statements file (OpenVEX or CycloneDX VEX).
   - Optional severity gate policy in the trigger payload
-    (gate.fail_on_kev, gate.fail_on_cvss_gte in [0, 10]). Default when
-    those fields are absent or invalid: fail on any KEV-listed finding
-    or CVSS >= 9.0. The threshold is the platform's configured policy,
-    never a number you invent in gate.policy display text.
+    (gate.fail_on_kev, gate.fail_on_cvss_gte in [0, 10],
+    gate.fail_on_unscored). Default when those fields are absent or
+    invalid: fail on any KEV-listed finding, on CVSS >= 9.0, and on any
+    database-source finding that carries NO CVSS score at all. Unscored
+    is not a low score: Go and Rust advisories routinely reach OSV with
+    no vector, and a score-only gate passes every one of them silently,
+    which reads as "screened and cleared" when it means "never scored".
+    An unscored gate failure is waivable like any other. Only
+    gate.fail_on_unscored: false in the payload turns it off, and the
+    gate line must then say so. The threshold is the platform's
+    configured policy, never a number you invent in gate.policy display
+    text.
   - Optional WAIVER FILE: human-authored gate acceptances, delivered in
     the seed (e.g. waivers.json / waivers.yaml) or inline as payload
     "waivers". Entries: {"id": "<finding id or gate-family id>",
@@ -330,7 +338,9 @@ prompt_template: |
   - If egress is unavailable, report the vulnerability phase as "error:
     sources unreachable" — never fabricate findings or their absence.
   Apply VEX suppressions (echoed, never silently dropped) and the
-  severity gate.
+  severity gate. A database-source finding with cvss null fails the gate
+  unless the payload turned that off; record it as an unscored failure,
+  not as a scored one, and never invent a score to fill the field.
 
   WAIVER APPLICATION (deterministic; the gate is the only thing a
   waiver reconfigures). After computing the severity-gate failures,
@@ -923,6 +933,13 @@ prompt_template: |
   - Heuristic sources (nvd_cpe, osv_distro) are labeled as such
     everywhere they surface and never enter the severity gate or count
     a component as matchable; only database sources do.
+  - An unscored database-source finding (cvss null) is a gate failure
+    under the default policy, and it is labeled UNSCORED wherever it
+    appears: the gate line on the cover, gate.unwaived_failures, and
+    the findings register. Never fill cvss with a guess, a
+    severity-derived number, or an EPSS value to make the gate
+    arithmetic look complete: a fabricated score is a worse defect than
+    a missing one.
   - Deterministic facts go to "checks" and the structured sections;
     interpretation goes to "assessments" and is marked as judgment.
   - Never claim vulnerability absence for unmatchable or
@@ -949,6 +966,42 @@ prompt_template: |
     nullable fields — like inventory.source_matrix, the per-finding
     sources/match_kind/waived fields, and the gate's waiver fields —
     keep the schema at preloop.cra.releaseaudit/v1.
+
+  ═══════════════════════════════════════════════════════════
+  IF THE AUDIT CANNOT FINISH
+  ═══════════════════════════════════════════════════════════
+  This applies to the case that actually happens: an interactive waiver
+  question that no human answers before the execution limit. Do NOT
+  write a bare {"status": "failure", "reason": "..."} object: it carries
+  no schema, so the platform cannot tell it from a broken run and your
+  explanation is discarded. Do NOT invent an audit body you never
+  measured. Write the INCOMPLETION ENVELOPE to /workspace/result.json
+  instead, with exactly these keys:
+
+  {
+    "schema": "preloop.cra.releaseaudit/v1",
+    "flow": "release-security-audit",
+    "run_at": "<ISO 8601 UTC>",
+    "regime_profile": "cra",
+    "verdict": "error",
+    "incomplete": {
+      "reason": "<what stopped the run, in one or two sentences>",
+      "stage": "<the phase you had reached, or null>"
+    },
+    "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+  }
+
+  You MAY add git, tool_versions, inputs_declared, runner, checks,
+  assessments and artifacts when you have them. You may NOT add the
+  audit body (sbom_audit, vuln_scan, drift, gap_register,
+  evidence_storage): a document that reports a gate or findings is
+  claiming work, and claimed work is validated in full, waiver
+  authenticity included. A timed-out waiver question is still FAIL
+  CLOSED: nothing is waived and nothing is released. The platform
+  stores this envelope as a first-class result, fails the execution,
+  and never reads it as a release. "The audit could not be completed
+  because a required human decision did not arrive" is itself a
+  compliance-relevant fact; a discarded message is not.
 agent_type: codex
 agent_config:
   sandbox_type: exec

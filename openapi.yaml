@@ -8471,7 +8471,13 @@ paths:
       description: 'Retrieve flow presets available to the account.
 
 
-        Returns global presets (account_id=None) plus any account-specific presets.'
+        Returns global presets (account_id=None) plus any account-specific presets.
+
+        Global rows carry their catalog ``slug``, the stable identifier
+
+        ``POST /flows/run-preset`` takes, so scripted callers do not have to
+
+        match on a display name that can be renamed.'
       operationId: read_presets_api_v1_flows_presets_get
       responses:
         '200':
@@ -15934,6 +15940,11 @@ components:
           type: string
           format: date-time
           title: Updated At
+        slug:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Slug
         execution_stats:
           anyOf:
           - additionalProperties: true
