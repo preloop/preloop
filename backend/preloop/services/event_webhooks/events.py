@@ -33,6 +33,25 @@ EVENT_TYPES_V1: tuple[str, ...] = (
     EVENT_FLOW_EXECUTION_FINISHED,
 )
 
+# One line per event, rendered in the console's create form and in the
+# catalogue endpoint so the list an operator picks from cannot drift from
+# the list the outbox actually routes.
+EVENT_TYPE_DESCRIPTIONS: dict[str, str] = {
+    EVENT_APPROVAL_CREATED: "An approval request was raised for a tool call.",
+    EVENT_APPROVAL_DECIDED: (
+        "An approval request reached a terminal state: approved, declined, "
+        "expired or cancelled."
+    ),
+    EVENT_POLICY_DENIED: "A policy rule denied a tool call.",
+    EVENT_SESSION_ENDED: "A runtime session closed.",
+    EVENT_BUDGET_THRESHOLD: "Spend crossed a configured soft budget limit.",
+    EVENT_BUDGET_EXCEEDED: "Spend passed a configured hard budget limit.",
+    EVENT_FLOW_EXECUTION_FINISHED: (
+        "A flow execution reached a terminal status, with the evidence "
+        "receipt when one was captured."
+    ),
+}
+
 # Produced only by the console/API test button. It is not subscribable: an
 # endpoint filtered to one event type still receives its own test send.
 EVENT_TEST = "webhook.test"

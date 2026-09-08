@@ -39,6 +39,7 @@ from preloop.api.endpoints import (
     approval_requests,
     comments,
     cost,
+    event_webhooks,
     features,
     gemini_gateway,
     health,
@@ -363,6 +364,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.info("Skipping optimization job sweeper for %s role.", service_role)
 
+    # Start the webhook delivery worker (skip in testing mode). Outbound
+    # deliveries never run on the request path; this drains the outbox.
+    webhook_delivery_worker = None
+    if not is_testing and is_api_role and settings.webhook_delivery_enabled:
+        from preloop.services.event_webhooks.worker import (
+            get_webhook_delivery_worker,
+        )
+
+        webhook_delivery_worker = get_webhook_delivery_worker()
+        await webhook_delivery_worker.start()
+        logger.info("Webhook delivery worker started.")
+    else:
+        logger.info("Skipping webhook delivery worker for %s role.", service_role)
+
     # Recover orphaned flow executions (skip in testing mode)
     recovery_service = None
     if not is_testing and is_api_role:
@@ -550,6 +565,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.error(f"Error stopping MCP lifespan: {e}", exc_info=True)
     else:
         logger.info("Skipping MCP shutdown for %s role.", service_role)
+
+    # Stop the webhook delivery worker. In-flight deliveries are lost from
+    # this process, not from the queue: their claim lease lapses and the next
+    # process picks them up, so at-least-once still holds across a restart.
+    if webhook_delivery_worker:
+        try:
+            await webhook_delivery_worker.stop()
+            logger.info("Webhook delivery worker stopped.")
+        except Exception as e:
+            logger.error(f"Error stopping webhook delivery worker: {e}", exc_info=True)
 
     # Stop the optimization-job sweeper and abandon in-flight optimization
     # jobs (skip in testing mode). shutdown(wait=False) on purpose: a model
@@ -986,6 +1011,11 @@ def create_app() -> FastAPI:
         )
         app.include_router(
             kill_switch.router,
+            prefix="/api/v1",
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            event_webhooks.router,
             prefix="/api/v1",
             dependencies=[Depends(get_current_active_user)],
         )
