@@ -4,6 +4,7 @@ import threading
 import uuid
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -25,6 +26,10 @@ from .flow_orchestrator import FlowExecutionOrchestrator
 from preloop.services.kill_switch import FlowHaltActiveError, flows_halted
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.sync.services.event_bus import get_nats_client
+from preloop.services.webhook_delivery_dedupe import (
+    delivery_key_for_event,
+    find_execution_for_delivery,
+)
 from preloop.utils.workspace_seed import attach_workspace_file_paths
 from preloop.models.db.session import get_session_factory
 
@@ -131,7 +136,8 @@ class FlowTriggerService:
                 session.close()
         return flows_halted(db, account_id)
 
-    def _extract_resource_key(self, event_data: Dict[str, Any]) -> Optional[str]:
+    @staticmethod
+    def _extract_resource_key(event_data: Dict[str, Any]) -> Optional[str]:
         """
         Extract a unique resource identifier from the event payload.
 
@@ -761,8 +767,42 @@ class FlowTriggerService:
                 trigger_event_details=trigger_details,
                 retry_of_execution_id=retry_of_execution_id,
             )
-            execution = crud_flow_execution.create(self.db, obj_in=execution_data)
-            self.db.commit()
+            # A retry is a deliberate second run of the same delivery, so it
+            # must not claim the delivery key (nor collide with the original).
+            delivery_key = (
+                None
+                if retry_of_execution_id is not None
+                else delivery_key_for_event(event_data)
+            )
+            try:
+                execution = crud_flow_execution.create(self.db, obj_in=execution_data)
+                if delivery_key:
+                    execution.webhook_delivery_key = delivery_key
+                self.db.commit()
+            except IntegrityError:
+                # Lost a race with another worker holding the same redelivered
+                # message: the partial unique index on
+                # (flow_id, webhook_delivery_key) refused the second row.
+                # Return the row that won; dispatching again is what created
+                # duplicate pull requests in the first place.
+                self.db.rollback()
+                existing = (
+                    find_execution_for_delivery(
+                        self.db, flow_id=flow.id, delivery_key=delivery_key
+                    )
+                    if delivery_key
+                    else None
+                )
+                if existing is None:
+                    raise
+                logger.warning(
+                    "Flow %s: delivery %s already has execution %s (unique "
+                    "index); not creating or dispatching a second one",
+                    flow.id,
+                    delivery_key,
+                    existing.id,
+                )
+                return existing
             self.db.refresh(execution)
             execution_id = execution.id
             logger.info("Created flow execution: %s", execution_id)
@@ -1136,9 +1176,37 @@ class FlowTriggerService:
             if commit_sha:
                 logger.info(f"Extracted commit SHA for deduplication: {commit_sha[:8]}")
 
+            # Delivery-level idempotency key for this event, independent of
+            # any resource key. See preloop.services.webhook_delivery_dedupe.
+            delivery_key = delivery_key_for_event(event_data)
+
             # Trigger each matching flow
             for flow in flows_to_trigger:
                 try:
+                    # One provider delivery, one execution per flow. At-least-
+                    # once message delivery (a drained pod naks its in-flight
+                    # message, ack_wait expires, a pod dies before acking)
+                    # would otherwise replay a webhook that already produced
+                    # an execution, which is how one `agent-ready` label
+                    # produced two pull requests in production.
+                    if delivery_key:
+                        already = find_execution_for_delivery(
+                            self.db, flow_id=flow.id, delivery_key=delivery_key
+                        )
+                        if already is not None:
+                            logger.info(
+                                "Skipping flow '%s' (%s): webhook delivery %s "
+                                "already created execution %s (status %s). "
+                                "Redelivery of the same message never creates "
+                                "a second execution.",
+                                flow.name,
+                                flow.id,
+                                delivery_key,
+                                already.id,
+                                already.status,
+                            )
+                            continue
+
                     # Check for a running execution with the same repo + commit SHA.
                     # This catches duplicate events for the same commit
                     # (e.g., push + PR update when description is edited).

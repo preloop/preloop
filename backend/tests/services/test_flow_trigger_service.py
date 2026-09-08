@@ -13,8 +13,15 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture
 def mock_db():
-    """Create a mock database session."""
-    return MagicMock(spec=Session)
+    """Create a mock database session.
+
+    The delivery-idempotency guard queries the session directly, so the
+    default answer for "has this delivery already produced an execution" has
+    to be "no" instead of a truthy MagicMock.
+    """
+    db = MagicMock(spec=Session)
+    db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+    return db
 
 
 @pytest.fixture
