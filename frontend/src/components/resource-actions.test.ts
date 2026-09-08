@@ -83,6 +83,42 @@ describe('ResourceActions', () => {
     }
   });
 
+  it('keeps an action that brings its own element out of the overflow menu', async () => {
+    // The agent page passes Talk as a `render` action, and it is declared
+    // first, which is the first thing the width heuristic folds. A menu item
+    // built from a `render` action has neither href nor onClick, so folding it
+    // left a row that did nothing at all. Talk stays on the row instead.
+    const host = await fixture<HTMLElement>(html`
+      <div style="width: 420px;">
+        <resource-actions></resource-actions>
+      </div>
+    `);
+    const el = host.querySelector('resource-actions') as ResourceActions;
+    el.actions = [
+      {
+        id: 'talk',
+        label: 'Talk',
+        render: () => html`<button class="talk-button">Talk</button>`,
+      },
+      ...ACTIONS.slice(1),
+      { id: 'pause', label: 'Pause', icon: 'pause' },
+    ];
+    await el.updateComplete;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await el.updateComplete;
+
+    const menuLabels = Array.from(
+      el.shadowRoot?.querySelectorAll('sl-menu-item') ?? []
+    ).map((item) => item.textContent?.trim());
+    expect(menuLabels, 'something folded, so this is the case under test').to
+      .not.be.empty;
+    expect(menuLabels, 'no dead Talk row in the menu').to.not.include('Talk');
+    expect(
+      el.shadowRoot?.querySelector('.talk-button'),
+      'Talk keeps its place on the row'
+    ).to.exist;
+  });
+
   it('keeps every action on the row when there is room', async () => {
     const { element, cleanup } = await renderInPhoneFrame<ResourceActions>({
       moduleUrl: new URL('./resource-actions.ts', import.meta.url).href,

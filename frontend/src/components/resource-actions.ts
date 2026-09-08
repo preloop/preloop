@@ -309,6 +309,15 @@ export class ResourceActions extends LitElement {
       visibleActions = inlineActions;
       overflowActions = [];
     }
+    // An action that brings its own element (Talk) has no click handler the
+    // menu can call, so folding it would leave a row that does nothing. It
+    // keeps its place on the row instead.
+    const customRendered = overflowActions.filter((action) => action.render);
+    if (customRendered.length > 0) {
+      overflowActions = overflowActions.filter((action) => !action.render);
+      visibleActions = [...customRendered, ...visibleActions];
+    }
+
     // Destructive actions stay last in the menu, as they are on the row.
     overflowActions = [...overflowActions, ...foldedActions];
 
