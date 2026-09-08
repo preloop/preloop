@@ -232,6 +232,14 @@ class TestReleaseSecurityAuditPreset:
         data = _load_preset(PRESET_FILES["Release Security Audit"])
         assert "schedule" in data["description"].lower()
 
+    def test_interactive_waiver_window_is_three_days(self):
+        """Interactive waiver collection asks a human for a decision that can
+        take days. A 5 minute window guarantees the run dies waiting."""
+        data = _load_preset(PRESET_FILES["Release Security Audit"])
+        assert data["approval_window_seconds"] == 3 * 24 * 60 * 60
+        # The window only helps if it outlives the run's own compute budget.
+        assert data["approval_window_seconds"] > data["timeout_seconds"]
+
 
 class TestReleaseAuditEvidenceStorage:
     """Multi-repo product mode: hybrid evidence storage (per-repo stubs +

@@ -974,4 +974,12 @@ trigger_config: null
 # component and reconciles waivers. Two hours is normal work here, and the
 # hour-long default was cutting genuine runs off mid-scan.
 timeout_seconds: 7200
+# Interactive waiver collection asks a human to accept a documented risk. That
+# is a compliance decision, not a chat prompt: the reviewer may have to check
+# reachability, read the advisory and consult the component owner. Five minutes
+# (the interactive default) burned a real run on staging 27 seconds before the
+# human answered. Three days is the window this flow gets, and the execution is
+# parked (no container, no runner, no budget spent) until the decision or the
+# expiry resumes it.
+approval_window_seconds: 259200
 is_preset: true
