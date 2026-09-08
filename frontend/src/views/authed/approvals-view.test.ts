@@ -1,5 +1,5 @@
 import { html, fixture, expect, nextFrame, waitUntil } from '@open-wc/testing';
-import { Router } from '@vaadin/router';
+import { Router } from '../../router';
 import sinon from 'sinon';
 
 import '../../components/view-header.ts';

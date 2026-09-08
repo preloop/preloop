@@ -1,9 +1,9 @@
 import { LitElement, html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
-import { router } from '../router';
-import { Router, type Route } from '@vaadin/router';
+import { router, Router, type Route } from '../router';
 import { withLazyRoutes } from '../lazy-routes';
 import { consoleRouteLoaders } from './console-route-loaders';
+import { routeLoadingRenderer } from './route-loading';
 import { getBrandConfig, isSaaS } from '../brand-config';
 import {
   pagesFromRuntimeConfig,
@@ -73,6 +73,9 @@ export class LitApp extends LitElement {
 
     // Always initialize router
     router.setOutlet(outlet);
+    // Route chunks are fetched on demand, so the router needs somewhere to say
+    // "still loading" and somewhere to offer a retry when a chunk never lands.
+    router.setLoadingRenderer(routeLoadingRenderer);
 
     // Note: Page view tracking is handled in main.ts to avoid duplication
     // and ensure all navigation methods are tracked

@@ -1,6 +1,6 @@
 import { html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { Router } from '@vaadin/router';
+import { Router } from '../../router';
 import {
   AuthedElement,
   approveRequest,

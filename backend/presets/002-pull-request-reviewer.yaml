@@ -4,7 +4,9 @@ description: >-
   Automatically review pull requests for code quality, potential bugs, security
   issues, and best practices. Works with both GitHub PRs and GitLab MRs.
   Supports stateful review management - updates previous comments and resolves addressed issues.
-  Maintains a Changes Summary in the PR body that updates on each review.
+  Reads the issue the PR references (closing keywords, issue URLs, branch name)
+  and reports whether the PR addresses it in full or in part, with gaps and
+  follow-ups. Maintains a Changes Summary in the PR body that updates on each review.
 icon: code-square
 trigger_event_source: null
 # Event types use underscore notation (e.g., pull_request_opened, pull_request_updated)
@@ -26,6 +28,7 @@ prompt_template: |
   - URL: {{trigger_event.payload.object_attributes.url}}
   - Source Branch: {{trigger_event.payload.object_attributes.source_branch}}
   - Target Branch: {{trigger_event.payload.object_attributes.target_branch}}
+  - Referenced issues (parsed by Preloop): {{trigger_event.payload.object_attributes.referenced_issues}}
   - Trigger: {{trigger_event.type}}
 
   ═══════════════════════════════════════════════════════════
@@ -156,6 +159,48 @@ prompt_template: |
   sample files beyond that cap. (Verification reads for specific findings in
   Step 2.3 have their own budget and don't count against this cap.) Match the
   project's conventions rather than imposing generic ones.
+
+  **Step 1.6: Identify the Referenced Issue(s)** *(runs in every scope)*
+
+  A PR usually exists to answer an issue. Reviewing the diff without reading
+  that issue answers "is this code good" but never "does this do what was
+  asked", which is the question the author's team actually has.
+
+  Preloop pre-parses the PR body, title, and branch name and hands you the
+  result in the **Referenced issues** field above, as
+  `key [kind, from source] url` entries separated by `; `:
+  - `closes`: a closing keyword pointed at an issue (`Closes #12`,
+    `Fixes org/repo#12`, `Resolves PROJ-7`). The strongest signal.
+  - `reference`: a plain mention or an issue URL in the body.
+  - `branch`: a number recovered from the branch name (`123-slug`,
+    `fix/issue-123`, `feature/PROJ-7-slug`). The weakest signal, a guess.
+
+  That list is a starting point, not gospel. Check it against the PR
+  description you already fetched in Step 1.1 and add anything it missed
+  (an issue named only in prose, a tracker link in a table). Drop entries the
+  description clearly uses as context rather than as this PR's purpose.
+
+  If the field says `none detected` and the description names no issue, this
+  PR has **no referenced issue**: skip Step 2.8, omit the Issue Coverage
+  section from the summary entirely, and say nothing about coverage anywhere
+  in the review. Do not speculate about which issue it might have meant.
+
+  Otherwise read the issues, `closes` entries first, then `reference`, then
+  `branch`. Call `get_issue` with the entry's URL when it has one, else its
+  key (`org/repo#12`, `PROJ-7`). **Hard budget: at most 2 issues read and at
+  most 3 `get_issue` calls per run.** If more issues are referenced, judge the
+  ones you read and name the rest as "not assessed in this review".
+
+  `get_issue` reads Preloop's synced copy of the tracker. When it returns
+  "not found" (the issue lives in a repository this account does not sync, or
+  sync has not caught up yet), do NOT reconstruct the issue from the PR
+  description: the author's summary of the issue is exactly the thing under
+  review. Record that reference as UNREADABLE and report it in Step 2.8 as
+  verdict UNCLEAR with the reason.
+
+  On INCREMENTAL runs, if the previous summary already carries an Issue
+  Coverage section for the same issue key, reuse the criteria recorded there
+  and skip the `get_issue` call.
 
   ═══════════════════════════════════════════════════════════
   PHASE 2: ANALYZE CODE CHANGES
@@ -306,6 +351,47 @@ prompt_template: |
   (clear description), recommendation (specific fix), and code_snippet (the
   problematic code, if short).
 
+  **Step 2.8: Issue Coverage Judgement** *(only when Step 1.6 found an issue)*
+
+  For each issue you read (at most 2), judge what this diff actually does
+  against what the issue actually asks. Judge the FULL PR diff here even in
+  INCREMENTAL scope: coverage is a property of the whole branch, not of the
+  latest push.
+
+  1. **Take the acceptance criteria from the issue text, not from your own
+     standards.** Prefer, in this order: an explicit "Acceptance criteria" /
+     "Definition of done" / requirements checklist; numbered or bulleted
+     asks; otherwise the concrete asks stated in prose. Quote the issue where
+     you can, keep each criterion to one line, at most 8 of them.
+     **Never invent a criterion the issue does not state.** Tests, docs,
+     telemetry, and refactors are NOT criteria unless the issue asks for
+     them; they are ordinary findings from Steps 2.4 and 2.6 and belong
+     there. If the issue states no criteria at all (a one-line bug report, a
+     link dump), say so plainly and judge against its single stated ask.
+  2. **Map each criterion to the diff**: name the hunk that satisfies it
+     (`file.ext:line`), or record that nothing does. The Step 2.3 discipline
+     applies: if you cannot point at code, the criterion is not satisfied,
+     and a criterion you cannot check either way is `unknown`, not `met`.
+  3. **Pick exactly ONE verdict per issue**, with one line of reasoning:
+     - `FULL`: every stated criterion is satisfied by this PR.
+     - `PARTIAL`: some criteria are satisfied and at least one is not.
+     - `NOT ADDRESSED`: none of the criteria are satisfied. Normal for a PR
+       that merely mentions a related issue: say that is what happened.
+     - `UNCLEAR`: the issue could not be read (Step 1.6 UNREADABLE), or its
+       asks are too vague to map onto code. Say which of the two it is.
+  4. **List the gaps**: one line per unmet criterion saying what the issue
+     asks and what this diff does not do, with a `file.ext:line` pointer when
+     the place it belongs is visible in the diff.
+  5. **Phrase every gap as a follow-up item** someone can paste into a new
+     issue: an imperative title plus one sentence of context.
+
+  **Coverage is not a code-review finding.** A PARTIAL or NOT ADDRESSED
+  verdict does not create findings, does not change the review action from
+  Step 4.1, and never blocks a merge on its own: authors split work across
+  PRs deliberately and the issue may be closed by a later one. Report it,
+  do not police it. (A criterion the diff claims to satisfy but demonstrably
+  breaks is a different thing: that is a normal finding, severitied normally.)
+
   ═══════════════════════════════════════════════════════════
   PHASE 3: COMPARE WITH PREVIOUS REVIEW
   ═══════════════════════════════════════════════════════════
@@ -379,6 +465,30 @@ prompt_template: |
   Plan the comment management: NEW findings → new comments; ADDRESSED issues →
   resolve (update_comment with resolved=true); PERSISTING issues → update;
   already-resolved, unchanged, or out-of-scope comments → leave untouched.
+
+  **Step 3.4: Carry Issue Coverage Forward** *(skip when there is no referenced issue)*
+
+  If the previous summary comment has an Issue Coverage section (find it by
+  the `<!-- preloop-review:issue-coverage -->` marker), it already holds the
+  criteria list for that issue. Reuse those criteria verbatim instead of
+  deriving a differently-worded set: the criteria come from the issue and the
+  issue rarely changes between pushes, so a reworded list looks like the
+  review changed its mind when nothing changed.
+
+  For each criterion that was unchecked, decide from the CURRENT code (the
+  Step 3.2 rules apply: read, do not remember) whether later commits satisfy
+  it now. When one does, check it off and delete its gap and follow-up lines.
+  In INCREMENTAL scope, re-check only criteria whose file appears in the
+  changed-files list; the rest keep their previous checkbox exactly.
+
+  Never uncheck a criterion a previous review checked unless the code that
+  satisfied it is gone from the branch, and say so when you do. Never
+  silently drop a criterion: if you no longer think it belongs, keep the line
+  and explain in one clause why. Recompute the verdict from the checkbox
+  tally you just derived; never restate the previous verdict.
+
+  A newly checked criterion is progress worth showing: keep it in the list as
+  `- [x]`, do not move it out of sight.
 
   ═══════════════════════════════════════════════════════════
   PHASE 4: DETERMINE REVIEW ACTION & SUBMIT
@@ -522,7 +632,9 @@ prompt_template: |
   When updating the summary, preserve the checked state of any checkboxes the user has
   manually checked. If a previous summary had `- [x] **Security**: SQL injection risk`,
   keep it as `- [x]` in the updated summary (move to "Resolved Issues" section if appropriate).
-  Never reset a checked checkbox to unchecked.
+  Never reset a checked checkbox to unchecked. This applies to the Issue
+  Coverage criteria too (Step 3.4): they are the same contract, one summary,
+  updated in place.
 
   ```markdown
   <!-- preloop-review:flow-id:pr-reviewer -->
@@ -544,6 +656,34 @@ prompt_template: |
   ### ✅ What Looks Good
   - [Positive aspects — include this section ONLY when the review action is
     approve or comment; omit it entirely when requesting changes]
+
+  ---
+
+  ### 🎯 Issue Coverage
+
+  <!-- preloop-review:issue-coverage -->
+
+  [Omit this whole section, marker included, when Step 1.6 found no
+  referenced issue. One block per issue judged in Step 2.8, at most 2.]
+
+  **[`{issue_key}`]({issue_url}): {issue title}** (verdict: **FULL | PARTIAL | NOT ADDRESSED | UNCLEAR**)
+
+  [One line of reasoning for that verdict.]
+
+  Acceptance criteria as this review reads them (quoted from the issue):
+  - [x] [Criterion the diff satisfies] - `file.ext:line`
+  - [ ] [Criterion the diff does not satisfy]
+
+  Gaps:
+  - [What the issue asks that this PR does not do] - `file.ext:line` when the place is visible
+
+  Follow-ups (ready to file as issues):
+  - **[Imperative title]**: [one sentence of context]
+
+  [Omit the Gaps and Follow-ups lists when the verdict is FULL. When the
+  verdict is UNCLEAR because the issue could not be read, print only the
+  reason line and no criteria list. Coverage never changes the Review Status
+  above.]
 
   ---
 
@@ -761,8 +901,20 @@ prompt_template: |
     "review_posted": true | false,
     "risk_level": "low" | "medium" | "high",
     "findings_count": <total issues reported in this review>,
-    "review_action": "approve" | "request_changes" | "comment" | null
+    "review_action": "approve" | "request_changes" | "comment" | null,
+    "issue_coverage": [
+      {
+        "issue": "<issue key or URL you read>",
+        "verdict": "full" | "partial" | "not_addressed" | "unclear",
+        "criteria_total": <number of criteria you listed>,
+        "criteria_met": <number you checked off>,
+        "gaps": <number of open gaps>
+      }
+    ]
   }
+
+  Set "issue_coverage" to [] when the PR references no issue. Its counts must
+  match the checkboxes you published; never report coverage you did not judge.
 
   Use "status": "success" when the run completed — whether the review was
   submitted (review_posted: true, Step 4.4) or you deliberately decided not
@@ -796,6 +948,15 @@ prompt_template: |
   - DO flag documentation gaps as findings (MEDIUM or LOW severity)
   - DO NOT create or modify documentation files directly
   - Documentation updates are the PR author's responsibility
+
+  ⚠️ **ISSUE COVERAGE**
+  - Judge the PR against the issue's OWN stated asks. Never invent a
+    criterion the issue does not state, and quote the issue where you can.
+  - When the issue cannot be read, say UNCLEAR and why. Never reconstruct the
+    issue from the PR description.
+  - A PARTIAL verdict is information, not a blocker: it never changes the
+    review action and never blocks a merge.
+  - No referenced issue means no Issue Coverage section at all.
 
   ⚠️ **APPROVAL CRITERIA**
   - NEVER approve if there are unaddressed CRITICAL issues
@@ -840,6 +1001,11 @@ agent_config:
   enable_auto_lint: true
 allowed_mcp_servers: []
 allowed_mcp_tools:
+  # get_issue is read-only and is what makes Step 2.8 (issue coverage)
+  # possible: neither platform returns the linked issue on a PR read.
+  # No create_issue/update_issue: follow-ups are proposed in the review for a
+  # human to file, the reviewer never writes to the tracker.
+  - name: get_issue
   - name: get_pull_request
   - name: update_pull_request
   - name: add_comment

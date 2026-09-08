@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { Router } from '@vaadin/router';
+import { Router, LOCATION_CHANGED } from '../router';
 import { getUserProfile, getFeatures } from '../api';
 import { getBrandConfig, isSaaS } from '../brand-config';
 import { trackGoal } from '../services/web-analytics';
@@ -108,9 +108,7 @@ export class AppHeader extends LitElement {
     this.checkAuth();
     this.checkBillingEnabled();
     window.addEventListener('auth-change', () => this.checkAuth());
-    window.addEventListener('vaadin-router-location-changed', () =>
-      this.requestUpdate()
-    );
+    window.addEventListener(LOCATION_CHANGED, () => this.requestUpdate());
   }
 
   async checkBillingEnabled() {
@@ -135,9 +133,7 @@ export class AppHeader extends LitElement {
 
   disconnectedCallback() {
     window.removeEventListener('auth-change', () => this.checkAuth());
-    window.removeEventListener('vaadin-router-location-changed', () =>
-      this.requestUpdate()
-    );
+    window.removeEventListener(LOCATION_CHANGED, () => this.requestUpdate());
     super.disconnectedCallback();
   }
 
