@@ -141,6 +141,103 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ==========================================================================
+  # SBOM (CycloneDX, one per shipped component)
+  # ==========================================================================
+  # Preloop sells SBOM verification, so it has to ship one. CRA Annex I Part II
+  # requires the manufacturer to identify and document the components of the
+  # product, and the standard artefact for that is a build-time SBOM.
+  #
+  # This job deliberately has no tag guard. It runs on every push to main too,
+  # so there is always a recent, provenance-attested SBOM to point a scanner
+  # at without cutting a release first. On a tag the artifact is picked up by
+  # create-release, copied into release-assets, hashed into SHA256SUMS and
+  # published with the other assets.
+  #
+  # The SBOMs come from built artefacts, not from manifests: an installed venv
+  # for the backend, the resolved node_modules tree for the frontend, and the
+  # Go build graph for the CLI. See scripts/generate_sbom.sh.
+
+  sbom:
+    name: SBOM
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # attest-build-provenance mints a Sigstore certificate from the
+      # workflow's OIDC identity, so consumers can check the SBOM was built
+      # here rather than pasted in by hand.
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+
+      - name: Resolve SBOM version
+        id: sbom-version
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            sbom_version="${GITHUB_REF_NAME#v}"
+          else
+            # Main-branch SBOMs are not a release, so mark them with the
+            # commit they describe instead of pretending to be the tag.
+            sbom_version="$(tr -d '[:space:]' < VERSION)-g${GITHUB_SHA:0:7}"
+          fi
+          echo "value=${sbom_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate CycloneDX SBOMs
+        env:
+          SBOM_VERSION: ${{ steps.sbom-version.outputs.value }}
+          # The CLI SBOM is only true for one target, because build
+          # constraints select modules. linux/amd64 matches the container
+          # images and the primary release binary.
+          GOOS: linux
+          GOARCH: amd64
+        run: ./scripts/generate_sbom.sh
+
+      - name: Record SBOM digests
+        run: |
+          set -euo pipefail
+          cd sbom
+          sha256sum ./*.cdx.json | tee SBOM-SHA256SUMS
+          {
+            echo "### CycloneDX SBOMs"
+            echo
+            echo '```'
+            cat SBOM-SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attest SBOM build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: 'sbom/*.cdx.json'
+
+      - name: Upload SBOMs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom
+          path: sbom/
+          if-no-files-found: error
+
+  # ==========================================================================
   # Build Python Package (sdist + wheel)
   # ==========================================================================
 
@@ -425,7 +522,7 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-backend, build-frontend, build-python, build-cli, sign-windows-cli, verify-oss-install]
+    needs: [build-backend, build-frontend, build-python, build-cli, sign-windows-cli, sbom, verify-oss-install]
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
@@ -466,13 +563,20 @@ jobs:
           helm repo update
           helm dependency build helm/preloop
           helm package helm/preloop --destination release-assets/
+          # Copy the CycloneDX SBOMs. They are named preloop-sbom-* so the
+          # SHA256SUMS step below records their digests alongside the
+          # binaries, which is what an assessor asks for.
+          if [ -d "artifacts/sbom" ]; then
+            cp artifacts/sbom/*.cdx.json release-assets/
+          fi
           # Copy installer assets
           cp docker-compose.release.yaml release-assets/docker-compose.release.yaml
           cp scripts/install-cli.sh release-assets/install-cli.sh
           cp scripts/install-cli.ps1 release-assets/install-cli.ps1
           cp scripts/install-oss.sh release-assets/install-oss.sh
           chmod +x release-assets/install-cli.sh release-assets/install-oss.sh
-          # Checksums for CLI binaries (Defender / supply-chain verification)
+          # Checksums for CLI binaries and SBOMs, both named preloop-*
+          # (Defender / supply-chain verification)
           (
             cd release-assets
             if command -v sha256sum >/dev/null 2>&1; then
@@ -595,6 +699,16 @@ jobs:
             ```
 
             For ingress and custom hostname, see [Kubernetes Setup](https://github.com/preloop/preloop#kubernetes-setup) and the [chart README](https://github.com/preloop/preloop/blob/main/helm/preloop/README.md).
+
+            ## SBOM
+
+            CycloneDX 1.6 SBOMs are attached for each shipped component:
+
+            - `preloop-sbom-backend-${{ steps.version.outputs.package_version }}.cdx.json`
+            - `preloop-sbom-frontend-${{ steps.version.outputs.package_version }}.cdx.json`
+            - `preloop-sbom-cli-${{ steps.version.outputs.package_version }}.cdx.json` (linux/amd64 build constraints)
+
+            Their digests are in `SHA256SUMS` and their build provenance is in the attestation bundle. Regenerate locally with `scripts/generate_sbom.sh`.
 
             ## Changelog
 
