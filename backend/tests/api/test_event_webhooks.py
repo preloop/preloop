@@ -355,3 +355,35 @@ def test_replay_requeues_a_dead_event_as_a_new_generation(
 
 def test_replay_of_an_unknown_event_is_404(client):
     assert client.post(f"{BASE}/deliveries/{uuid.uuid4()}/replay").status_code == 404
+
+
+def test_create_refuses_an_internal_target_when_the_guard_is_on(client, monkeypatch):
+    """Multi-tenant hosting turns this on so an admin cannot aim at 169.254."""
+    from preloop.services.event_webhooks import targets
+
+    monkeypatch.setattr(targets.settings, "webhook_block_private_targets", True)
+
+    response = client.post(
+        f"{BASE}/endpoints",
+        json={"url": "https://169.254.169.254/latest/meta-data", "event_types": []},
+    )
+
+    assert response.status_code == 400
+    assert "link-local" in response.json()["detail"]
+
+
+def test_update_refuses_an_internal_target_when_the_guard_is_on(
+    client, endpoint_row, monkeypatch
+):
+    """The URL is checked on edit too, not only at creation."""
+    from preloop.services.event_webhooks import targets
+
+    monkeypatch.setattr(targets.settings, "webhook_block_private_targets", True)
+
+    response = client.patch(
+        f"{BASE}/endpoints/{endpoint_row.id}",
+        json={"url": "http://127.0.0.1:9999/hook"},
+    )
+
+    assert response.status_code == 400
+    assert "loopback" in response.json()["detail"]

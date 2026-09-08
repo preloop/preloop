@@ -54,6 +54,7 @@ from preloop.services.event_webhooks.events import (
     EVENT_TYPE_DESCRIPTIONS,
     EVENT_TYPES_V1,
 )
+from preloop.services.event_webhooks.targets import blocked_target_reason
 from preloop.services.event_webhooks.signing import (
     DEFAULT_TOLERANCE_SECONDS,
     SIGNATURE_HEADER,
@@ -109,6 +110,19 @@ def _get_owned(db: Session, account_id, endpoint_id: UUID) -> WebhookEndpoint:
             status_code=status.HTTP_404_NOT_FOUND, detail="Webhook endpoint not found"
         )
     return endpoint
+
+
+def _reject_blocked_target(url: str) -> None:
+    """Refuse an internal target when the deployment blocks them."""
+    reason = blocked_target_reason(url)
+    if reason:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"This deployment refuses webhook targets in {reason} address "
+                "space. Use a publicly routable URL."
+            ),
+        )
 
 
 def _reject_shim_edit(endpoint: WebhookEndpoint, verb: str) -> None:
@@ -183,6 +197,7 @@ async def create_webhook_endpoint(
     db: Session = Depends(get_db_session),
 ):
     """Create an endpoint and return its signing secret, once."""
+    _reject_blocked_target(payload.url)
     existing = (
         db.execute(
             select(WebhookEndpoint).where(
@@ -235,6 +250,8 @@ async def update_webhook_endpoint(
     _reject_shim_edit(endpoint, "Edit")
 
     fields = payload.model_dump(exclude_unset=True)
+    if fields.get("url"):
+        _reject_blocked_target(fields["url"])
     for name, value in fields.items():
         setattr(endpoint, name, value)
     if "url" in fields or fields.get("active") is True:
