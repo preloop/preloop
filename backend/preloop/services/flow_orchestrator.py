@@ -3055,6 +3055,23 @@ class FlowExecutionOrchestrator:
             return resolved
         return None
 
+    def _cra_execution_runner(self) -> Optional[Dict[str, Any]]:
+        """Where this execution ran, derived from the row the same way the API does.
+
+        The agent cannot know this, so the persist boundary stamps it into
+        ``result.runner`` rather than storing the agent's null placeholder.
+        """
+        from preloop.services.runner_service import derive_execution_runner
+
+        execution = getattr(self, "execution_log", None)
+        if execution is None:
+            return None
+        reference = getattr(execution, "agent_session_reference", None)
+        return derive_execution_runner(
+            runner_id=getattr(execution, "runner_id", None),
+            agent_session_reference=reference if isinstance(reference, str) else None,
+        )
+
     def _persist_cra_result_boundary(
         self, artifact: Optional[Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:
@@ -3076,6 +3093,7 @@ class FlowExecutionOrchestrator:
             trigger_payload=getattr(self, "trigger_event_data", None),
             platform_approvals=approvals,
             authority=authority,
+            execution_runner=self._cra_execution_runner(),
         )
         self._cra_persist_decision = decision
         persisted = decision.artifact

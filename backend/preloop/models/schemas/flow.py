@@ -718,6 +718,9 @@ class FlowResponse(FlowBase):
     account_id: Optional[UUID] = None
     created_at: datetime
     updated_at: datetime
+    # Catalog identity for built-in presets. Null for account flows and for
+    # cloned presets, whose name is user-editable and is not identity.
+    slug: Optional[str] = None
     # Template tracking - expose in response for UI to show update notifications
     source_preset_id: Optional[UUID] = None
     prompt_customized: bool = False

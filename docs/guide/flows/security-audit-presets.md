@@ -117,6 +117,12 @@ Every schema includes:
 }
 ```
 
+`runner` is the one envelope field the platform overwrites. The agent
+writes nulls because it cannot see which runner leased its job; the
+persist boundary stamps the execution's actual runner. See [Keys the
+control plane adds to the stored
+result](#keys-the-control-plane-adds-to-the-stored-result).
+
 ### Incompletion envelope
 
 Every schema above requires a full audit body, so a run that stops early
@@ -668,6 +674,25 @@ of a supplier CE declaration document, never its authenticity.
 
 `reviewer` is always `null` in the record. Reviewer identity lives in
 Preloop's approval audit trail.
+
+### Keys the control plane adds to the stored result
+
+The stored `result` is the agent's document plus a small number of keys
+the platform owns. They are not part of any `preloop.cra.*` schema and
+the agent cannot write them: an agent-authored copy is stripped or
+renamed before the result is saved. Reading the raw JSON, you will see:
+
+| Key | Written by | What it is |
+| --- | --- | --- |
+| `runner` | control plane, over the agent's field | Where the run executed: `{"kind": "hosted" \| "self_hosted", "id": <runner id or null>, "attested_by": "control_plane"}`, plus `pool` when the run was queued to one. The agent cannot see which runner leased its job, so every preset tells it to write nulls and the persist boundary replaces them. |
+| `container_termination` | the executor's runtime observation | How the sandbox ended: `reason`, `oom_killed`, `exit_code`. The only evidence that a run died rather than concluded. A `result.json` claim of this key is discarded. |
+| `dossier_manifest` | control plane, on product-evidence runs | `preloop.cra.dossier_manifest/v1`: content digests over the raw agent result, the annotated result, the declared source inputs, artifact references, approvals and publication receipts. It is large (on a real 004 run, 39,815 bytes of a 92,796 byte result) because it restates identity in canonical, hashable form. See [Product evidence](product-evidence.md#dossier-manifest). |
+| `product_provenance` | control plane, from the trigger | The caller's declared product mapping, echoed onto the result so the dossier and the evidence receipt describe the same artefact. |
+| `trusted_publication`, `evidence_upload`, `verification` | control plane | Publication receipts, evidence-archive receipt, and the runner-captured verification verdict. |
+
+`runner` is a fact about the platform, not about the audit: it does not
+enter any verdict or gate. `container_termination` is the field to read
+first when a run has no audit body.
 
 ## CI runbook
 

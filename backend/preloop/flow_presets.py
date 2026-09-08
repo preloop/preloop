@@ -150,3 +150,9 @@ FLOW_PRESETS: List[Dict[str, Any]] = load_flow_presets()
 # (loader-internal); this map is how API callers resolve a slug to the
 # global preset row (looked up by name).
 PRESET_SLUGS: Dict[str, str] = dict(_PRESET_SLUGS)
+# name -> slug, the inverse of PRESET_SLUGS. Preset rows are stored and
+# looked up by display name, so this is how a listed row gets its slug back.
+# A duplicate name would make the inverse ambiguous; catalog order wins.
+PRESET_SLUGS_BY_NAME: Dict[str, str] = {}
+for _catalog_slug, _catalog_name in PRESET_SLUGS.items():
+    PRESET_SLUGS_BY_NAME.setdefault(_catalog_name, _catalog_slug)

@@ -31,6 +31,7 @@ from preloop.models.crud.flow_runner import crud_flow_runner
 from preloop.models.db.session import get_db_session as get_db
 
 from preloop.services.runner_service import (
+    derive_execution_runner,
     emit_runner_updated,
     hash_runner_token,
     mint_runner_token,
@@ -538,6 +539,12 @@ async def runner_ws(
                     trigger_payload=trigger_payload,
                     platform_approvals=approvals,
                     authority=authority,
+                    execution_runner=derive_execution_runner(
+                        runner_id=runner.id,
+                        agent_session_reference=getattr(
+                            execution, "agent_session_reference", None
+                        ),
+                    ),
                 )
                 result = decision.artifact
                 status, completion_error = apply_cra_fail_closed_completion(
