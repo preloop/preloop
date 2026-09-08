@@ -8237,13 +8237,10 @@ paths:
       tags:
       - Webhooks
       summary: Receive Webhook
-      description: 'Receive webhook events from external trackers (GitHub, GitLab,
-        Jira).
+      description: 'Receive tracker webhooks and queue event processing.
 
 
-        Parses the payload to identify the organization and updates its
-
-        last_webhook_update timestamp.'
+        Return HTTP 503 when task publication is not acknowledged.'
       operationId: receive_webhook_api_v1_private_webhooks__tracker_type___organization_id__post
       parameters:
       - name: tracker_type

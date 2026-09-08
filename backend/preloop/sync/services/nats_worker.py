@@ -4,6 +4,8 @@ Subscribes to NATS messages and triggers tracker synchronization.
 """
 
 import asyncio
+from contextlib import asynccontextmanager, suppress
+from collections.abc import AsyncIterator
 import json
 import logging
 import os
@@ -13,7 +15,7 @@ import signal
 import nats
 import socket
 import uuid
-from typing import List, Optional, Set, Tuple
+from typing import Any, List, Optional, Set, Tuple
 from nats.aio.client import Client as NATSClient
 from nats.aio.errors import ErrNoServers
 from nats.js.api import ConsumerConfig, StreamConfig
@@ -23,6 +25,30 @@ import preloop.sync.tasks as tasks
 from preloop.sync.config import logger
 
 FLOW_ORCHESTRATION_TASKS = frozenset({"execute_flow", "resume_flow_execution"})
+
+
+WEBHOOK_PROGRESS_INTERVAL_SECONDS = 60.0
+
+
+@asynccontextmanager
+async def _webhook_progress(msg: Any) -> AsyncIterator[None]:
+    """Renew the 180-second lease while webhook embeddings run off-loop."""
+
+    async def renew() -> None:
+        while True:
+            await asyncio.sleep(WEBHOOK_PROGRESS_INTERVAL_SECONDS)
+            try:
+                await msg.in_progress()
+            except Exception:
+                logger.warning("Failed to renew webhook task progress", exc_info=True)
+
+    heartbeat = asyncio.create_task(renew())
+    try:
+        yield
+    finally:
+        heartbeat.cancel()
+        with suppress(asyncio.CancelledError):
+            await heartbeat
 
 
 class PreloopSyncNatsWorker:
@@ -296,7 +322,14 @@ class PreloopSyncNatsWorker:
                 if task_name in getattr(tasks, "ACK_AFTER_CLAIM_TASKS", ()):
                     call_kwargs["_ack"] = early_ack
 
-                if inspect.iscoroutinefunction(func):
+                if task_name == "process_webhook_event" and call_kwargs.get(
+                    "embedding_requests"
+                ):
+                    # Generation drains its worker thread on cancellation; keep
+                    # renewing until that drain finishes, then ack/nak below.
+                    async with _webhook_progress(msg):
+                        stats = await func(*payload.get("args", []), **call_kwargs)
+                elif inspect.iscoroutinefunction(func):
                     stats = await func(*payload.get("args", []), **call_kwargs)
                 else:
                     stats = func(*payload.get("args", []), **call_kwargs)
