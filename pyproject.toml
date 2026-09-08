@@ -54,7 +54,6 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "pydantic[email]>=2.4.0",
     "PyJWT>=2.8.0",
-    "passlib[bcrypt]>=1.7.4",
     "bcrypt<5.1.0",
     "python-multipart>=0.0.6",
     "Pillow>=10.0.0",  # Avatar decode/resize/re-encode (preloop.services.avatar)
@@ -210,8 +209,6 @@ filterwarnings = [
     "ignore::pytest.PytestWarning",
     # Ignore Pydantic V2 deprecation warnings (will fix in future migration)
     "ignore::pydantic.warnings.PydanticDeprecatedSince20",
-    # Ignore passlib crypt deprecation
-    "ignore:'crypt' is deprecated:DeprecationWarning",
     # Ignore pythonjsonlogger move warning
     "ignore:pythonjsonlogger.jsonlogger has been moved:DeprecationWarning",
     # Ignore datetime.utcnow() deprecation (will fix in future cleanup)
