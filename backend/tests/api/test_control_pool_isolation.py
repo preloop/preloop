@@ -95,7 +95,8 @@ async def test_control_auth_pool_wait_keeps_loop_responsive(monkeypatch: Any) ->
         finally:
             release.set()
             with pytest.raises(PoolTimeout):
-                await connection
+                result = await connection
+                pytest.fail(f"control auth returned {result!r}")
 
 
 @pytest.mark.asyncio
@@ -180,8 +181,9 @@ async def test_cancelled_control_phase_drains_worker_before_next_phase() -> None
         assert engine.pool.checkedout() == 1
         release.set()
         with pytest.raises(asyncio.CancelledError):
-            await first
-        await second
+            result = await first
+            pytest.fail(f"cancelled phase returned {result!r}")
+        assert await second is None
     assert sessions[0] is not sessions[1]
     assert engine.pool.checkedout() == 0
     engine.dispose()

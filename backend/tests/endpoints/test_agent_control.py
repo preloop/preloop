@@ -973,12 +973,10 @@ def test_agent_control_ws_evicts_previous_connection_with_close_4000(
     client, db_session, test_user, caplog, monkeypatch
 ):
     """Second WebSocket for the same agent evicts the first with close 4000."""
-    # App logging configuration replaces root handlers. Capture this logger
-    # directly so the eviction assertion also runs under the real app fixture.
-    control_logger = logging.getLogger("preloop.api.endpoints.agent_control")
-    monkeypatch.setattr(
-        control_logger, "handlers", [*control_logger.handlers, caplog.handler]
-    )
+    # App logging may set propagate=False on "preloop", hiding records from
+    # caplog's root handler. Restore propagation instead of attaching
+    # caplog.handler onto this logger; that double-records the same eviction.
+    monkeypatch.setattr(logging.getLogger("preloop"), "propagate", True)
     token_body = _issue_runtime_token(client, session_source_id="openclaw-eviction")
     url = f"/api/v1/agents/control/ws?token={token_body['token']}"
 
