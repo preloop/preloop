@@ -22,7 +22,20 @@ const cssInlinePlugin = {
 };
 
 export default {
-  plugins: [cssInlinePlugin, esbuildPlugin({ ts: true, tsconfig: './tsconfig.json', target: 'es2020' })],
+  plugins: [
+    cssInlinePlugin,
+    esbuildPlugin({
+      ts: true,
+      tsconfig: './tsconfig.json',
+      target: 'es2020',
+      // Vite substitutes this in `npm run build`; the test runner serves the
+      // same dependency sources untouched, so a library guarded by
+      // `process.env.NODE_ENV` (table-core's debug logging) threw
+      // "process is not defined" in the browser. Substituting the same value
+      // the build uses keeps the two environments on one code path.
+      define: { 'process.env.NODE_ENV': '"production"' },
+    }),
+  ],
   browsers: [playwrightLauncher({
     product: 'chromium',
     launchOptions: { headless: !headed }
