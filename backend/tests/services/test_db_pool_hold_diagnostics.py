@@ -285,13 +285,64 @@ def test_public_stats_omit_acquisition_metadata(engine: Engine) -> None:
     assert logged[0]["holds"]["tracked"] == 1
 
 
+def test_callsite_walk_skipped_until_half_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DB_POOL_HOLD_DIAGNOSTICS", raising=False)
+    monkeypatch.delenv("DB_POOL_HOLD_STACKS", raising=False)
+    pool_engine = create_engine(
+        "sqlite://", poolclass=QueuePool, pool_size=4, max_overflow=0
+    )
+    diagnostics.install_pool_hold_diagnostics(pool_engine)
+    try:
+        with patch.object(
+            diagnostics, "_capture_callsite", return_value=("walked",)
+        ) as capture:
+            below = pool_engine.connect()
+            capture.assert_not_called()
+            snapshot = diagnostics.collect_pool_holds(pool_engine)
+            assert snapshot["tracked"] == 1
+            assert snapshot["oldest"][0]["acquired_at"] == ()
+
+            at_threshold = pool_engine.connect()
+            capture.assert_called_once()
+            acquired = [
+                hold["acquired_at"]
+                for hold in diagnostics.collect_pool_holds(pool_engine)["oldest"]
+            ]
+            assert () in acquired
+            assert ("walked",) in acquired
+
+            saturated = [pool_engine.connect(), pool_engine.connect()]
+            assert capture.call_count == 3
+            below.close()
+            at_threshold.close()
+            for connection in saturated:
+                connection.close()
+    finally:
+        pool_engine.dispose()
+
+
+def test_should_capture_callsite_at_half_of_size_and_overflow() -> None:
+    pool = SimpleNamespace(_max_overflow=2, size=lambda: 4)
+    pool.checkedout = lambda: 2
+    assert not diagnostics._should_capture_callsite(pool)
+    pool.checkedout = lambda: 3
+    assert diagnostics._should_capture_callsite(pool)
+    pool.checkedout = lambda: 6
+    assert diagnostics._should_capture_callsite(pool)
+
+
 def test_dispose_during_capture_cannot_reinsert_old_hold(engine: Engine) -> None:
     tracker = getattr(engine, diagnostics._ATTRIBUTE)
     old_record = object()
-    with patch.object(
-        diagnostics,
-        "_capture_callsite",
-        side_effect=lambda _limit: engine.dispose() or (),
+    with (
+        patch.object(tracker._pool, "checkedout", return_value=engine.pool.size()),
+        patch.object(
+            diagnostics,
+            "_capture_callsite",
+            side_effect=lambda _limit: engine.dispose() or (),
+        ),
     ):
         tracker._checkout(None, old_record, None)
     assert diagnostics.collect_pool_holds(engine)["tracked"] == 0

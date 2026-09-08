@@ -23,6 +23,8 @@ MAX_REPORTED_HOLDS = 5
 MAX_WALKED_FRAMES = 64
 LONG_HOLD_SECONDS = 5.0
 RECENT_HOLD_TTL_SECONDS = 300.0
+# Frame walks run only once utilization is material, including saturation.
+CALLSITE_UTILIZATION_RATIO = 0.5
 _PACKAGE_ROOT = str(Path(__file__).parents[2]) + os.sep
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_./<>-]")
 _ATTRIBUTE = "_preloop_pool_hold_diagnostics"
@@ -65,6 +67,20 @@ def _capture_callsite(frame_limit: int) -> tuple[str, ...]:
         del frame
         del parent
     return tuple(frames)
+
+
+def _should_capture_callsite(pool: Any) -> bool:
+    """Walk frames only when checkout volume is already near saturation.
+
+    QueuePool counters only. Unbounded overflow (``max_overflow < 0``) uses
+    ``size`` as the capacity baseline. Keep capturing through saturation.
+    """
+    overflow = pool._max_overflow
+    size = pool.size()
+    capacity = size + overflow if overflow >= 0 else size
+    if capacity <= 0:
+        return False
+    return pool.checkedout() >= CALLSITE_UTILIZATION_RATIO * capacity
 
 
 class PoolHoldDiagnostics:
@@ -136,6 +152,7 @@ class PoolHoldDiagnostics:
             # These are QueuePool counters only, never a query or connection.
             overflow = pool._max_overflow
             saturated = overflow >= 0 and pool.checkedout() >= (pool.size() + overflow)
+            capture_callsite = saturated or _should_capture_callsite(pool)
             with self._lock:
                 if generation != self._generation:
                     return
@@ -144,7 +161,11 @@ class PoolHoldDiagnostics:
                     self._last_evidence = now
                 if len(self._holds) >= MAX_TRACKED_HOLDS:
                     return
-            hold = ConnectionHold(now, _capture_callsite(self._frame_limit))
+            # Healthy fast path skips the frame walk; timing is still tracked.
+            acquired_at = (
+                _capture_callsite(self._frame_limit) if capture_callsite else ()
+            )
+            hold = ConnectionHold(now, acquired_at)
             with self._lock:
                 if (
                     generation == self._generation

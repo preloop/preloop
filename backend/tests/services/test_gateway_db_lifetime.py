@@ -321,6 +321,26 @@ def test_owned_prepare_preserves_detached_orm_values_and_writes(
     service.release_db_for_wait(model)
 
 
+def test_release_gateway_session_commits_preparation_unlike_embedding_guard(
+    db_session: Session, test_user: models.User
+) -> None:
+    from preloop.models.db.gateway_session import release_gateway_session
+
+    user_id = test_user.id
+    test_user.full_name = "preparation write must persist"
+    pending = (*db_session.new, *db_session.dirty, *db_session.deleted)
+    assert test_user in pending
+    # HTTP-owned gateway sessions disable expire-on-commit so detached
+    # snapshots keep materialized preparation values across this boundary.
+    db_session.expire_on_commit = False
+    release_gateway_session(db_session, preserve=(test_user,))
+    assert inspect(test_user).detached
+    assert test_user.full_name == "preparation write must persist"
+    refreshed = db_session.get(models.User, user_id)
+    assert refreshed is not None
+    assert refreshed.full_name == "preparation write must persist"
+
+
 @pytest.mark.parametrize(
     "transport",
     ["codex", "anthropic", "anthropic_stream", "responses", "responses_stream"],

@@ -804,6 +804,12 @@ class OpenAIGatewayService:
         Retained model/auth objects are fully loaded detached snapshots, so
         rendering a chunk cannot reacquire a connection by implicit ORM I/O.
         Caller-owned internal sessions are deliberately unaffected.
+
+        Sole production caller of ``release_gateway_session``. Invoke only after
+        HTTP request preparation (or after persisted accounting) so any pending
+        state is that request's unit of work, never an unrelated mid-request
+        transaction. Provider waits, streams, retries, approval holds, and
+        accounting cleanup all share this boundary.
         """
         if not self._owns_db_session:
             return
