@@ -544,17 +544,19 @@ class TestRunnerIdentityStamp:
         payload["runner"] = {
             "kind": "self_hosted",
             "id": "made-up",
+            "name": "build-box",
+            "pool": "guessed-pool",
             "image": "ghcr.io/example/audit:1",
         }
         decision = apply_cra_persist_boundary(
-            payload, execution_runner={"kind": "hosted", "id": None}
+            payload, execution_runner={"kind": "hosted", "id": None, "pool": None}
         )
         assert decision.artifact is not None
-        runner = decision.artifact["runner"]
-        assert runner["kind"] == "hosted"
-        assert runner["id"] is None
-        # Detail the platform cannot own stays as the agent recorded it.
-        assert runner["image"] == "ghcr.io/example/audit:1"
+        assert decision.artifact["runner"] == {
+            "kind": "hosted",
+            "id": None,
+            "attested_by": "control_plane",
+        }
 
     def test_unknown_runner_kind_leaves_the_field_alone(
         self, sbomaudit_result: dict[str, Any]

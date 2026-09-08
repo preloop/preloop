@@ -225,19 +225,19 @@ def stamp_runner_identity(payload: Any, execution_runner: Any) -> Any:
     it to write ``{"kind": null, "id": null}`` and every stored result used
     to say exactly that. Where the run executed is a compliance-relevant
     fact the platform owns, so it is stamped here, before validation, on any
-    document that carries a CRA schema id. Other agent-written keys under
-    ``runner`` are preserved; the platform-owned ones win.
+    document that carries a CRA schema id. The stored block is exactly
+    :func:`cra_runner_identity`: ``kind``, ``id``, ``attested_by``, and
+    ``pool`` only when the platform has one. Agent-written keys (a display
+    ``name``, a guessed ``pool``, ``image``, ...) are dropped rather than
+    merged, so only provable facts travel.
     """
     identity = cra_runner_identity(execution_runner)
     if identity is None or not isinstance(payload, Mapping):
         return payload
     if not is_cra_schema_id(payload.get("schema")):
         return payload
-    existing = payload.get("runner")
-    merged = dict(existing) if isinstance(existing, Mapping) else {}
-    merged.update(identity)
     stamped = dict(payload)
-    stamped["runner"] = merged
+    stamped["runner"] = identity
     return stamped
 
 
