@@ -100,6 +100,12 @@ export interface LoadingSlot {
    * around it paying the page padding.
    */
   atOutlet: boolean;
+  /**
+   * Whether this slot still belongs to the navigation that asked for it.
+   * A pending timer that fires after a newer render has started must not
+   * paint; without this, `replaceChildren` would clobber the current view.
+   */
+  isCurrent?: () => boolean;
 }
 
 /** How the router should render a pending or failed `Route.load()`. */
@@ -255,6 +261,8 @@ export class Router {
   #listening = false;
   #loading: LoadingRenderer | null = null;
   #loaded = new WeakMap<Route, Promise<unknown>>();
+  /** Teardown for the in-flight pending renderer, if one is armed. */
+  #pendingStop: (() => void) | null = null;
 
   /** The location most recently rendered, or `null` before the first render. */
   location: RouterLocation | null = null;
@@ -373,6 +381,10 @@ export class Router {
     options: { history?: 'push' | 'replace' | 'none' } = {}
   ): Promise<void> {
     const renderId = ++this.#renderId;
+    // A previous navigation may have armed a pending timer against this
+    // outlet. Cancel it before this pass commits, or a late `replaceChildren`
+    // would paint `route-loading` over the view that just won.
+    this.#cancelPending();
     const start =
       typeof target === 'string'
         ? splitUrl(target)
@@ -547,7 +559,14 @@ export class Router {
     if (!route.load) return 'ok';
     const pending = this.#loaded.get(route) ?? route.load();
     this.#loaded.set(route, pending);
-    const stopPending = this.#loading?.pending(slot);
+    const stopPending =
+      renderId === this.#renderId
+        ? this.#loading?.pending({
+            ...slot,
+            isCurrent: () => renderId === this.#renderId,
+          })
+        : undefined;
+    if (stopPending) this.#pendingStop = stopPending;
     try {
       await pending;
       return 'ok';
@@ -568,7 +587,14 @@ export class Router {
       return 'failed';
     } finally {
       stopPending?.();
+      if (this.#pendingStop === stopPending) this.#pendingStop = null;
     }
+  }
+
+  /** Drop a pending loader once a newer navigation owns the outlet. */
+  #cancelPending(): void {
+    this.#pendingStop?.();
+    this.#pendingStop = null;
   }
 
   #commands(): RouterCommands {

@@ -177,9 +177,10 @@ export class RouteLoadError extends LitElement {
  * the router by `lit-app`; the router itself stays free of design decisions.
  */
 export const routeLoadingRenderer: LoadingRenderer = {
-  pending({ parent, atOutlet }: LoadingSlot) {
+  pending({ parent, atOutlet, isCurrent }: LoadingSlot) {
     let element: RouteLoading | undefined;
     const timer = window.setTimeout(() => {
+      if (isCurrent && !isCurrent()) return;
       element = document.createElement('route-loading') as RouteLoading;
       element.standalone = atOutlet;
       parent.replaceChildren(element);

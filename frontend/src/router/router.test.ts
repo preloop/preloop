@@ -1,5 +1,9 @@
-import { expect, waitUntil, oneEvent } from '@open-wc/testing';
+import { expect, waitUntil, oneEvent, aTimeout } from '@open-wc/testing';
 import sinon from 'sinon';
+import {
+  PENDING_DELAY_MS,
+  routeLoadingRenderer,
+} from '../components/route-loading';
 import {
   Router,
   LOCATION_CHANGED,
@@ -638,6 +642,28 @@ describe('router', () => {
       }
       expect(outlet.querySelector(fast)).to.exist;
       expect(outlet.querySelector('.failed')).to.equal(null);
+      expect(outlet.querySelector(slow)).to.equal(null);
+    });
+
+    it('does not let a stale pending timer clobber a newer view', async () => {
+      const slow = defineTag('rt-stale-pending');
+      const fast = defineTag('rt-stale-pending-fast');
+      const load = sinon.spy(() => new Promise<void>(() => undefined));
+      router.setLoadingRenderer(routeLoadingRenderer);
+      await router.setRoutes(
+        [
+          { path: '/stale-pending', component: slow, load },
+          { path: '/stale-ok', component: fast },
+        ],
+        true
+      );
+      void router.render('/stale-pending');
+      await waitUntil(() => load.called);
+      await router.render('/stale-ok');
+      expect(outlet.querySelector(fast)).to.exist;
+      await aTimeout(PENDING_DELAY_MS + 50);
+      expect(outlet.querySelector(fast)).to.exist;
+      expect(outlet.querySelector('route-loading')).to.equal(null);
       expect(outlet.querySelector(slow)).to.equal(null);
     });
   });

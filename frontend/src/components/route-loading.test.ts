@@ -47,6 +47,33 @@ describe('route loading states', () => {
     expect(parent.querySelector('route-loading')).to.equal(null);
   });
 
+  it('does not paint once the navigation is no longer current', async () => {
+    let current = true;
+    const stop = routeLoadingRenderer.pending({
+      parent,
+      atOutlet: true,
+      isCurrent: () => current,
+    });
+    current = false;
+    await aTimeout(PENDING_DELAY_MS + 50);
+    expect(parent.querySelector('route-loading')).to.equal(null);
+    expect(parent.querySelector('.previous')).to.exist;
+    stop();
+  });
+
+  it('still clears a painted pending state after the navigation is superseded', async () => {
+    let current = true;
+    const stop = routeLoadingRenderer.pending({
+      parent,
+      atOutlet: true,
+      isCurrent: () => current,
+    });
+    await waitUntil(() => !!parent.querySelector('route-loading'));
+    current = false;
+    stop();
+    expect(parent.querySelector('route-loading')).to.equal(null);
+  });
+
   it('fades in, and does not move at all under reduced motion (D19)', async () => {
     const stop = routeLoadingRenderer.pending({ parent, atOutlet: false });
     await waitUntil(() => !!parent.querySelector('route-loading'));
