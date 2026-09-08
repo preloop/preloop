@@ -30,6 +30,10 @@ from preloop.cra.schemas import (
     GATE_CVSS_MAX,
     GATE_CVSS_MIN,
     HEURISTIC_SOURCES,
+    INCOMPLETE_ALLOWED,
+    INCOMPLETE_FIELD,
+    INCOMPLETE_REQUIRED,
+    INCOMPLETE_SIGNALS,
     INVALID_ERROR,
     LICENSE_FLAGS,
     MATCH_KINDS,
@@ -341,6 +345,99 @@ def _check_envelope(
     if not isinstance(artifacts, Mapping):
         failures.append(f"{path}.artifacts must be an object")
     failures.extend(_check_disclaimer(obj, path=path))
+    return failures
+
+
+def is_incomplete_envelope(obj: Any) -> bool:
+    """Return True when ``obj`` is the minimal incompletion envelope.
+
+    The marker is an ``incomplete`` object and nothing outside the allowed
+    key set. A document that also carries audit body sections (findings, a
+    gate, a decision) is claiming completed work and is validated in full,
+    even when it names a reason for stopping.
+    """
+    if not isinstance(obj, Mapping):
+        return False
+    if not isinstance(obj.get(INCOMPLETE_FIELD), Mapping):
+        return False
+    return set(obj) <= INCOMPLETE_ALLOWED
+
+
+def _check_incomplete_optional(obj: Mapping[str, Any], *, path: str) -> list[str]:
+    """Type-check the context fields an interrupted run may still carry."""
+    failures: list[str] = []
+    git = obj.get("git")
+    if git is not None and not isinstance(git, Mapping):
+        failures.append(f"{path}.git must be an object or null")
+    for key in ("tool_versions", "inputs_declared", "runner", "artifacts"):
+        if key in obj and not isinstance(obj.get(key), Mapping):
+            failures.append(f"{path}.{key} must be an object")
+    runner = obj.get("runner")
+    if isinstance(runner, Mapping):
+        kind = runner.get("kind")
+        if kind is not None and not json_in(kind, RUNNER_KINDS):
+            failures.append(
+                f"{path}.runner.kind must be hosted|self_hosted|null, got {kind!r}"
+            )
+    if "assessments" in obj and not isinstance(obj.get("assessments"), list):
+        failures.append(f"{path}.assessments must be a list")
+    checks = obj.get("checks")
+    if "checks" in obj and not isinstance(checks, list):
+        failures.append(f"{path}.checks must be a list")
+    elif isinstance(checks, list):
+        for idx, item in enumerate(checks):
+            failures.extend(_check_check_item(item, path=f"{path}.checks[{idx}]"))
+    return failures
+
+
+def _validate_incomplete_envelope(
+    obj: Mapping[str, Any], *, schema_id: str, path: str = "result"
+) -> list[str]:
+    """Validate the minimal envelope of a run that could not complete.
+
+    Identity and honesty only: the reason must be stated, the completion
+    signal must say error, and no audit body may be smuggled in. Callers
+    treat the outcome as incomplete, which fails the execution and denies
+    the release regardless of what the reason says.
+    """
+    failures = _require_keys(obj, INCOMPLETE_REQUIRED, path=path)
+    expected_flow = FLOW_BY_SCHEMA.get(schema_id)
+    if expected_flow is not None and obj.get("flow") != expected_flow:
+        failures.append(
+            f"{path}.flow must be {expected_flow!r}, got {obj.get('flow')!r}"
+        )
+    if obj.get("regime_profile") != REGIME_PROFILE:
+        failures.append(
+            f"{path}.regime_profile must be {REGIME_PROFILE!r}, "
+            f"got {obj.get('regime_profile')!r}"
+        )
+    run_at = obj.get("run_at")
+    if not isinstance(run_at, str) or not run_at.strip():
+        failures.append(f"{path}.run_at must be a non-empty ISO-8601 string")
+    incomplete = obj.get(INCOMPLETE_FIELD)
+    if isinstance(incomplete, Mapping):
+        reason = incomplete.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            failures.append(
+                f"{path}.{INCOMPLETE_FIELD}.reason must state, in prose, what "
+                "stopped the run"
+            )
+        stage = incomplete.get("stage")
+        if stage is not None and not isinstance(stage, str):
+            failures.append(f"{path}.{INCOMPLETE_FIELD}.stage must be a string or null")
+    signals = INCOMPLETE_SIGNALS.get(schema_id, ())
+    for signal in signals:
+        if obj.get(signal) != AUDIT_INCOMPLETE_VERDICT:
+            failures.append(
+                f"{path}.{signal} must be {AUDIT_INCOMPLETE_VERDICT!r} in an "
+                f"incompletion envelope, got {obj.get(signal)!r}"
+            )
+    if json_in(schema_id, SCHEMAS_WITHOUT_STATUS) and "status" in obj:
+        failures.append(
+            f"{path}.status is not part of {schema_id}; completion is the verdict"
+        )
+    failures.extend(_check_disclaimer(obj, path=path))
+    failures.extend(_check_incomplete_optional(obj, path=path))
     return failures
 
 
@@ -1892,6 +1989,20 @@ def validate_cra_result(
         )
 
     assert claimed is not None
+    if is_incomplete_envelope(payload):
+        # A run that stopped early reports why instead of inventing a body.
+        # It is never a completion and never a release.
+        incomplete_failures = _validate_incomplete_envelope(payload, schema_id=claimed)
+        return CraValidationResult(
+            ok=not incomplete_failures,
+            failures=incomplete_failures,
+            schema_id=claimed,
+            expected_schema=expected,
+            execution_completed=False,
+            release_denied=True,
+            incomplete=True,
+        )
+
     if claimed == SCHEMA_SBOMAUDIT_V1:
         failures, advisories, completed, incomplete = _validate_sbomaudit(payload)
     elif claimed == SCHEMA_VULNSCAN_V1:

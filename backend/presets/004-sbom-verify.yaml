@@ -217,6 +217,38 @@ prompt_template: |
     rather than inventing values.
   - Keep result.json under 200 KB; large listings go to
     evidence/findings.json and are referenced from "artifacts".
+
+  ═══════════════════════════════════════════════════════════
+  IF THE AUDIT CANNOT FINISH
+  ═══════════════════════════════════════════════════════════
+  A run that stops early still owes the reader a report. Do NOT write a
+  bare {"status": "failure", "reason": "..."} object: it carries no
+  schema, so the platform cannot tell it from a broken run and your
+  explanation is discarded. Do NOT invent an SBOM body you never
+  measured. Write the INCOMPLETION ENVELOPE to /workspace/result.json
+  instead, with exactly these keys:
+
+  {
+    "schema": "preloop.cra.sbomaudit/v1",
+    "flow": "sbom-verify",
+    "run_at": "<ISO 8601 UTC>",
+    "regime_profile": "cra",
+    "verdict": "error",
+    "incomplete": {
+      "reason": "<what stopped the run, in one or two sentences>",
+      "stage": "<the phase or check you had reached, or null>"
+    },
+    "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+  }
+
+  You MAY add git, tool_versions, inputs_declared, runner, checks,
+  assessments and artifacts when you have them. You may NOT add the
+  audit body (source, valid, minimum_elements, coverage, license_flags,
+  delta): a document that reports audit content is claiming work, and
+  claimed work is validated in full. The platform stores this envelope
+  as a first-class result, fails the execution, and never reads it as a
+  release. "The audit could not be completed because X" is itself a
+  compliance-relevant fact; a discarded message is not.
 agent_type: codex
 agent_config:
   sandbox_type: exec

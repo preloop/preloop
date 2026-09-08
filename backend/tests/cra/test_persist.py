@@ -108,6 +108,50 @@ def test_valid_fail_verdict_is_execution_completed(
     assert decision.artifact == payload
 
 
+def test_incompletion_envelope_is_persisted_intact_and_fails_the_run() -> None:
+    """The reason survives as the result, not buried under result.raw.
+
+    A graceful "I could not finish" used to be wrapped as
+    cra_result_missing with the agent's text under raw. It is now stored
+    as written, and the execution still fails.
+    """
+    payload = {
+        "schema": "preloop.cra.releaseaudit/v1",
+        "flow": "release-security-audit",
+        "run_at": "2026-09-08T10:15:00Z",
+        "regime_profile": "cra",
+        "verdict": "error",
+        "incomplete": {
+            "reason": "The interactive waiver approval did not resolve in time.",
+            "stage": "PHASE 2 waiver collection",
+        },
+        "disclaimer": (
+            "Machine-generated evidence for conformity assessment support. "
+            "Not a conformity assessment, certification, or legal advice."
+        ),
+    }
+    decision = apply_cra_persist_boundary(payload)
+    assert not decision.invalid
+    assert decision.artifact == payload
+    assert "error" not in decision.artifact
+    assert decision.validation.incomplete
+    assert not decision.validation.execution_completed
+    assert decision.validation.release_denied
+    assert decision.fail_closed_status == "FAILED"
+
+
+def test_bare_failure_object_still_fails_closed() -> None:
+    """The pre-fix shape stays a contract violation: it carries no schema."""
+    payload = {"status": "failure", "reason": "waiver never arrived"}
+    decision = apply_cra_persist_boundary(
+        payload, expected_schema="preloop.cra.releaseaudit/v1"
+    )
+    assert decision.invalid
+    assert decision.fail_closed_status == "FAILED"
+    assert decision.artifact is not None
+    assert decision.artifact.get("raw") == payload
+
+
 def test_trigger_waivers_key_absent_is_none() -> None:
     assert delivered_waivers_from_trigger({"release_ref": "v1"}) is None
 

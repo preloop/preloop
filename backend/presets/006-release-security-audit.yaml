@@ -949,6 +949,42 @@ prompt_template: |
     nullable fields — like inventory.source_matrix, the per-finding
     sources/match_kind/waived fields, and the gate's waiver fields —
     keep the schema at preloop.cra.releaseaudit/v1.
+
+  ═══════════════════════════════════════════════════════════
+  IF THE AUDIT CANNOT FINISH
+  ═══════════════════════════════════════════════════════════
+  This applies to the case that actually happens: an interactive waiver
+  question that no human answers before the execution limit. Do NOT
+  write a bare {"status": "failure", "reason": "..."} object: it carries
+  no schema, so the platform cannot tell it from a broken run and your
+  explanation is discarded. Do NOT invent an audit body you never
+  measured. Write the INCOMPLETION ENVELOPE to /workspace/result.json
+  instead, with exactly these keys:
+
+  {
+    "schema": "preloop.cra.releaseaudit/v1",
+    "flow": "release-security-audit",
+    "run_at": "<ISO 8601 UTC>",
+    "regime_profile": "cra",
+    "verdict": "error",
+    "incomplete": {
+      "reason": "<what stopped the run, in one or two sentences>",
+      "stage": "<the phase you had reached, or null>"
+    },
+    "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+  }
+
+  You MAY add git, tool_versions, inputs_declared, runner, checks,
+  assessments and artifacts when you have them. You may NOT add the
+  audit body (sbom_audit, vuln_scan, drift, gap_register,
+  evidence_storage): a document that reports a gate or findings is
+  claiming work, and claimed work is validated in full, waiver
+  authenticity included. A timed-out waiver question is still FAIL
+  CLOSED: nothing is waived and nothing is released. The platform
+  stores this envelope as a first-class result, fails the execution,
+  and never reads it as a release. "The audit could not be completed
+  because a required human decision did not arrive" is itself a
+  compliance-relevant fact; a discarded message is not.
 agent_type: codex
 agent_config:
   sandbox_type: exec

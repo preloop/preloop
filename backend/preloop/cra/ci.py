@@ -647,6 +647,17 @@ def _has_findings(result_body: Mapping[str, Any]) -> bool:
     return False
 
 
+def _incompletion_reason(result_body: Any) -> str:
+    """Return the stated reason a run could not complete, or a placeholder."""
+    if isinstance(result_body, Mapping):
+        incomplete = result_body.get("incomplete")
+        if isinstance(incomplete, Mapping):
+            reason = incomplete.get("reason")
+            if isinstance(reason, str) and reason.strip():
+                return reason.strip()
+    return "no reason stated"
+
+
 def evaluate_release(
     result_body: Any,
     *,
@@ -690,6 +701,14 @@ def evaluate_release(
         )
     if not validation.ok:
         return False, "; ".join(validation.failures), validation
+    if validation.incomplete:
+        # A valid report of a run that did not finish. Denying it here says
+        # so plainly instead of leaving the caller to read "unknown verdict".
+        return (
+            False,
+            f"run did not complete: {_incompletion_reason(result_body)}",
+            validation,
+        )
     schema_id = validation.schema_id
     if schema_id == SCHEMA_VULNSCAN_V1:
         if not isinstance(result_body, Mapping):

@@ -1398,3 +1398,199 @@ class TestNestedJsonAndErrorEnvelopes:
         assert result.invalid
         assert result.failures
         assert all(isinstance(item, str) for item in result.failures)
+
+
+DISCLAIMER_LINE = (
+    "Machine-generated evidence for conformity assessment support. "
+    "Not a conformity assessment, certification, or legal advice."
+)
+
+
+def _incomplete(schema_id: str, flow: str, **extra: Any) -> dict[str, Any]:
+    """The minimal envelope a run that could not finish writes."""
+    payload: dict[str, Any] = {
+        "schema": schema_id,
+        "flow": flow,
+        "run_at": "2026-09-08T10:15:00Z",
+        "regime_profile": "cra",
+        "incomplete": {
+            "reason": (
+                "The interactive waiver approval timed out or did not resolve "
+                "before the execution limit."
+            ),
+            "stage": "PHASE 2 waiver collection",
+        },
+        "disclaimer": DISCLAIMER_LINE,
+    }
+    payload.update(extra)
+    return payload
+
+
+class TestIncompletionEnvelope:
+    """A run that stops early reports why, as a first-class result.
+
+    The four schemas all require a full audit body, so before this a
+    graceful "I could not finish, here is why" was rejected for having no
+    schema and its text survived only under result.raw.
+    """
+
+    def test_release_audit_incompletion_is_valid_and_never_releases(self) -> None:
+        payload = _incomplete(
+            SCHEMA_RELEASEAUDIT_V1, "release-security-audit", verdict="error"
+        )
+        result = validate_cra_result(payload)
+        assert result.ok
+        assert result.incomplete
+        assert not result.execution_completed
+        assert result.release_denied
+        assert result.schema_id == SCHEMA_RELEASEAUDIT_V1
+
+    def test_sbom_verify_incompletion_is_valid(self) -> None:
+        payload = _incomplete(SCHEMA_SBOMAUDIT_V1, "sbom-verify", verdict="error")
+        result = validate_cra_result(payload)
+        assert result.ok
+        assert result.incomplete
+
+    def test_vulnscan_incompletion_uses_status(self) -> None:
+        payload = _incomplete(SCHEMA_VULNSCAN_V1, "sbom-exploit-check", status="error")
+        result = validate_cra_result(payload)
+        assert result.ok
+        assert result.incomplete
+
+    def test_due_diligence_incompletion_needs_both_signals(self) -> None:
+        payload = _incomplete(
+            SCHEMA_DUEDILIGENCE_V1, "component-due-diligence", status="error"
+        )
+        result = validate_cra_result(payload)
+        assert result.invalid
+        assert any("verdict" in item for item in result.failures)
+        payload["verdict"] = "error"
+        assert validate_cra_result(payload).ok
+
+    def test_expected_schema_is_satisfied_by_the_envelope(self) -> None:
+        payload = _incomplete(
+            SCHEMA_RELEASEAUDIT_V1, "release-security-audit", verdict="error"
+        )
+        result = validate_cra_result(payload, expected_schema=SCHEMA_RELEASEAUDIT_V1)
+        assert result.ok
+        assert result.incomplete
+
+    def test_reason_must_be_stated(self) -> None:
+        payload = _incomplete(
+            SCHEMA_RELEASEAUDIT_V1, "release-security-audit", verdict="error"
+        )
+        payload["incomplete"] = {"stage": "PHASE 2"}
+        result = validate_cra_result(payload)
+        assert result.invalid
+        assert any("reason" in item for item in result.failures)
+
+    def test_blank_reason_is_not_a_reason(self) -> None:
+        payload = _incomplete(
+            SCHEMA_RELEASEAUDIT_V1, "release-security-audit", verdict="error"
+        )
+        payload["incomplete"] = {"reason": "   "}
+        assert validate_cra_result(payload).invalid
+
+    def test_completion_signal_must_say_error(self) -> None:
+        payload = _incomplete(
+            SCHEMA_RELEASEAUDIT_V1, "release-security-audit", verdict="pass"
+        )
+        result = validate_cra_result(payload)
+        assert result.invalid
+        assert any("verdict" in item for item in result.failures)
+
+    def test_missing_completion_signal_is_invalid(self) -> None:
+        payload = _incomplete(SCHEMA_SBOMAUDIT_V1, "sbom-verify")
+        assert validate_cra_result(payload).invalid
+
+    def test_flow_and_regime_still_bind(self) -> None:
+        payload = _incomplete(
+            SCHEMA_RELEASEAUDIT_V1, "some-other-flow", verdict="error"
+        )
+        payload["regime_profile"] = "nis2"
+        result = validate_cra_result(payload)
+        assert result.invalid
+        joined = " ".join(result.failures)
+        assert "flow" in joined and "regime_profile" in joined
+
+    def test_disclaimer_still_required(self) -> None:
+        payload = _incomplete(
+            SCHEMA_RELEASEAUDIT_V1, "release-security-audit", verdict="error"
+        )
+        payload["disclaimer"] = "All clear."
+        assert validate_cra_result(payload).invalid
+
+    def test_status_is_not_smuggled_into_a_verdict_schema(self) -> None:
+        payload = _incomplete(
+            SCHEMA_SBOMAUDIT_V1, "sbom-verify", verdict="error", status="error"
+        )
+        result = validate_cra_result(payload)
+        assert result.invalid
+        assert any("status is not part of" in item for item in result.failures)
+
+    def test_context_fields_are_allowed_and_type_checked(self) -> None:
+        payload = _incomplete(
+            SCHEMA_SBOMAUDIT_V1,
+            "sbom-verify",
+            verdict="error",
+            tool_versions={"syft": "1.18.1"},
+            inputs_declared={"sbom": "sbom.cdx.json"},
+            runner={"kind": "hosted", "id": "runner-1"},
+            checks=[
+                {
+                    "name": "waiver_collection",
+                    "passed": False,
+                    "skipped": False,
+                    "details": "no answer",
+                }
+            ],
+            assessments=[],
+            artifacts={},
+            git=None,
+        )
+        assert validate_cra_result(payload).ok
+        payload["runner"] = {"kind": "borrowed"}
+        result = validate_cra_result(payload)
+        assert result.invalid
+        assert any("runner.kind" in item for item in result.failures)
+
+    def test_an_audit_body_is_validated_in_full(self) -> None:
+        """Claimed work is not excused by naming a reason."""
+        payload = _incomplete(
+            SCHEMA_RELEASEAUDIT_V1,
+            "release-security-audit",
+            verdict="error",
+            vuln_scan={"gate": {"passed": True, "policy": "KEV or CVSS >= 9.0"}},
+        )
+        result = validate_cra_result(payload)
+        assert result.invalid
+        # It fell through to the full releaseaudit contract, not the envelope.
+        assert any("is required" in item for item in result.failures)
+
+    def test_waivers_cannot_ride_in_on_an_incompletion(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        payload = clone(releaseaudit_result)
+        payload["verdict"] = "error"
+        payload["incomplete"] = {"reason": "human never answered"}
+        payload["vuln_scan"]["gate"]["waivers_applied"] = [
+            {
+                "id": "CVE-2026-0001",
+                "reason": "accepted",
+                "author": "someone",
+                "date": "2026-09-08",
+            }
+        ]
+        result = validate_cra_result(payload)
+        # Full validation ran: the agent-asserted waiver is not authentic.
+        assert result.invalid
+
+    def test_a_bare_failure_object_is_still_rejected(self) -> None:
+        """The shape this replaces: no schema, so nothing can accept it."""
+        payload = {
+            "status": "failure",
+            "reason": "The interactive waiver approval timed out.",
+        }
+        result = validate_cra_result(payload, expected_schema=SCHEMA_RELEASEAUDIT_V1)
+        assert result.invalid
+        assert any("no schema field" in item for item in result.failures)

@@ -117,6 +117,42 @@ Every schema includes:
 }
 ```
 
+### Incompletion envelope
+
+Every schema above requires a full audit body, so a run that stops early
+(an input that never arrived, an interactive waiver question nobody
+answered) has nothing valid to write. It writes the incompletion
+envelope instead:
+
+```json
+{
+  "schema": "preloop.cra.releaseaudit/v1",
+  "flow": "release-security-audit",
+  "run_at": "2026-09-08T10:15:00Z",
+  "regime_profile": "cra",
+  "verdict": "error",
+  "incomplete": {"reason": "the waiver approval did not resolve in time", "stage": "PHASE 2"},
+  "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+}
+```
+
+`incomplete.reason` is required and must be prose. The schema's
+completion signal must say `error`: `verdict` on SBOM Verify and Release
+Security Audit, `status` on SBOM Exploit Check, both on Component Due
+Diligence. `git`, `tool_versions`, `inputs_declared`, `runner`,
+`checks`, `assessments` and `artifacts` may be included. Audit body
+sections may not: a document that reports findings, a gate, or a
+decision is claiming work, and claimed work is validated in full,
+waiver authenticity included.
+
+The platform stores the envelope as the result, **fails** the execution,
+and denies the release with `run did not complete: <reason>`. Before
+this, a graceful failure with no `schema` field was recorded as
+`cra_result_missing` and the agent's explanation survived only under
+`result.raw`, where nobody reads it. "The audit could not be completed
+because a required human decision did not arrive" is itself a
+compliance-relevant fact.
+
 ### `preloop.cra.sbomaudit/v1` (SBOM Verify)
 
 Envelope plus:
