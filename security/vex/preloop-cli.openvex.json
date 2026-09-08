@@ -1,0 +1,128 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://preloop.ai/vex/preloop-cli-0.15.0-1",
+  "author": "Preloop <security@preloop.ai>",
+  "timestamp": "2026-09-08T01:23:55Z",
+  "last_updated": "2026-09-08T01:23:55Z",
+  "version": 1,
+  "tooling": "https://github.com/preloop/preloop/blob/main/scripts/generate_vex.py",
+  "statements": [
+    {
+      "vulnerability": {
+        "@id": "https://pkg.go.dev/vuln/GO-2026-5932",
+        "name": "GO-2026-5932",
+        "description": "golang.org/x/crypto/openpgp is unmaintained and unsafe by design"
+      },
+      "timestamp": "2026-09-08T01:23:55Z",
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/preloop/preloop/cli@v0.15.0",
+          "identifiers": {
+            "purl": "pkg:golang/github.com/preloop/preloop/cli@v0.15.0"
+          },
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/crypto@v0.56.0",
+              "identifiers": {
+                "purl": "pkg:golang/golang.org/x/crypto@v0.56.0"
+              }
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "There is no fixed version of this advisory and there will not be one, so a version bump cannot clear it. The package is not imported. govulncheck reports this at module level, not package or symbol level, so the vulnerable package is not in the CLI's import graph. The only import from golang.org/x/crypto is golang.org/x/crypto/scrypt, in cli/internal/cmd/agents_openclaw.go. Re-verified by the cli-vuln-scan job in .github/workflows/ci.yml on every push and pull request."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://pkg.go.dev/vuln/GO-2026-6303",
+        "name": "GO-2026-6303",
+        "description": "Source-address critical option not enforced for non-public-key auth callbacks in golang.org/x/crypto/ssh",
+        "aliases": [
+          "CVE-2026-56854"
+        ]
+      },
+      "timestamp": "2026-09-08T01:23:55Z",
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/preloop/preloop/cli@v0.15.0",
+          "identifiers": {
+            "purl": "pkg:golang/github.com/preloop/preloop/cli@v0.15.0"
+          },
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/crypto@v0.56.0",
+              "identifiers": {
+                "purl": "pkg:golang/golang.org/x/crypto@v0.56.0"
+              }
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "Additionally fixed upstream in golang.org/x/crypto v0.55.0, which the CLI is past. The package is not imported either way. govulncheck reports this at module level, not package or symbol level, so the vulnerable package is not in the CLI's import graph. The only import from golang.org/x/crypto is golang.org/x/crypto/scrypt, in cli/internal/cmd/agents_openclaw.go. Re-verified by the cli-vuln-scan job in .github/workflows/ci.yml on every push and pull request."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://pkg.go.dev/vuln/GO-2026-6354",
+        "name": "GO-2026-6354",
+        "description": "Prevent DoS on deadlocked undecided channel in golang.org/x/crypto/ssh",
+        "aliases": [
+          "CVE-2026-78662"
+        ]
+      },
+      "timestamp": "2026-09-08T01:23:55Z",
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/preloop/preloop/cli@v0.15.0",
+          "identifiers": {
+            "purl": "pkg:golang/github.com/preloop/preloop/cli@v0.15.0"
+          },
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/crypto@v0.56.0",
+              "identifiers": {
+                "purl": "pkg:golang/golang.org/x/crypto@v0.56.0"
+              }
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "Additionally fixed upstream in golang.org/x/crypto v0.56.0, which the CLI is on. The package is not imported either way. govulncheck reports this at module level, not package or symbol level, so the vulnerable package is not in the CLI's import graph. The only import from golang.org/x/crypto is golang.org/x/crypto/scrypt, in cli/internal/cmd/agents_openclaw.go. Re-verified by the cli-vuln-scan job in .github/workflows/ci.yml on every push and pull request."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://pkg.go.dev/vuln/GO-2026-6355",
+        "name": "GO-2026-6355",
+        "description": "Prevent DoS on deadlocked established channel in golang.org/x/crypto/ssh",
+        "aliases": [
+          "CVE-2026-56855"
+        ]
+      },
+      "timestamp": "2026-09-08T01:23:55Z",
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/preloop/preloop/cli@v0.15.0",
+          "identifiers": {
+            "purl": "pkg:golang/github.com/preloop/preloop/cli@v0.15.0"
+          },
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/crypto@v0.56.0",
+              "identifiers": {
+                "purl": "pkg:golang/golang.org/x/crypto@v0.56.0"
+              }
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "Additionally fixed upstream in golang.org/x/crypto v0.56.0, which the CLI is on. The package is not imported either way. govulncheck reports this at module level, not package or symbol level, so the vulnerable package is not in the CLI's import graph. The only import from golang.org/x/crypto is golang.org/x/crypto/scrypt, in cli/internal/cmd/agents_openclaw.go. Re-verified by the cli-vuln-scan job in .github/workflows/ci.yml on every push and pull request."
+    }
+  ]
+}

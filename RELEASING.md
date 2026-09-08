@@ -67,6 +67,30 @@ It can also optionally:
 - [ ] Uploaded assets match the release notes.
 - [ ] PyPI prereleases are expected to use PEP 440 normalization, so `0.8.0-beta.1` is published as `0.8.0b1`.
 
+### SBOM
+
+The `sbom` job in `.github/workflows/release.yml` emits one CycloneDX 1.6 SBOM
+per shipped component and attaches all three to the release. It also runs on
+every push to `main`, so there is a current, provenance-attested SBOM between
+releases.
+
+- [ ] Three `preloop-sbom-*.cdx.json` assets are present on the release.
+- [ ] Their digests appear in `SHA256SUMS`.
+- [ ] The job summary's component counts are in the expected range; a sudden
+      drop usually means an install step silently failed and the SBOM now
+      describes an empty tree.
+
+Regenerate locally (same tool versions as CI):
+
+```bash
+./scripts/generate_sbom.sh              # backend, frontend and CLI
+./scripts/generate_sbom.sh cli          # one component only
+```
+
+The CLI SBOM is only true for one target because Go build constraints select
+modules. CI pins `GOOS=linux GOARCH=amd64`, which matches the container images
+and the primary release binary.
+
 ## First Public OSS Release Gate
 
 Before `v0.8.0-beta.1`, confirm these release-facing areas are resolved:

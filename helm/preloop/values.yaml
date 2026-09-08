@@ -327,7 +327,12 @@ environment:
   # Database settings
   databaseUrl: ""
   # JWT settings
-  jwtSecret: "b6fe6fa9-cf7c-4798-8328-f778712062df"
+  # No usable default on purpose. The chart used to ship a concrete UUID here,
+  # which meant every install that did not override it signed JWTs with a key
+  # published on GitHub. README.md has documented the default as
+  # change-this-in-production all along; values.yaml now matches. Set a real
+  # one: --set environment.jwtSecret="$(openssl rand -hex 32)"
+  jwtSecret: "change-this-in-production"
   jwtAlgorithm: "HS256"
   # Access token lifetime. 1440 (24h) matches the documented session design:
   # 24h access token + 7 day rotating refresh token capped at 30 days.
