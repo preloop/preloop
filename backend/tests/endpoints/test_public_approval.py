@@ -240,6 +240,183 @@ class TestPublicApprovalDecide:
                 assert "1 recipient" in notified["detail"]
 
 
+WAIVER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "waived": {
+            "type": "array",
+            "title": "Findings you accept",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "enum": ["CVE-1", "CVE-2"]},
+                    "reason": {"type": "string", "minLength": 3},
+                },
+                "required": ["id", "reason"],
+            },
+        },
+        "author": {"type": "string", "x-autofill": "author"},
+    },
+    "required": [],
+}
+
+WAIVER_ITEMS = [
+    {"id": "CVE-1", "title": "openssl 1.1.1", "severity": "critical"},
+    {"id": "CVE-2", "title": "curl 7.50", "severity": "high"},
+]
+
+
+def _question_args():
+    """tool_args for an ask_user that wants a filled-in form back."""
+    return {
+        "is_question": True,
+        "question": "Which findings do you accept?",
+        "options": [],
+        "allow_free_text": True,
+        "items": WAIVER_ITEMS,
+        "input_schema": WAIVER_SCHEMA,
+    }
+
+
+class TestPublicApprovalForm:
+    """The token link is a different door into the same decision, so it gets
+    the same form and the same validation, not a looser one."""
+
+    def _seed(self, db_session, test_user, token):
+        workflow = crud_approval_workflow.create(
+            db_session,
+            obj_in=ApprovalWorkflowCreate(name="Form WF", approval_type="manual"),
+            account_id=str(test_user.account_id),
+        )
+        db_session.flush()
+        tool_config = ToolConfiguration(
+            tool_name="ask_user",
+            tool_source="builtin",
+            account_id=test_user.account_id,
+            approval_workflow_id=workflow.id,
+        )
+        db_session.add(tool_config)
+        db_session.flush()
+        approval_request = ApprovalRequest(
+            account_id=test_user.account_id,
+            tool_configuration_id=tool_config.id,
+            approval_workflow_id=workflow.id,
+            execution_id="exec-form",
+            tool_name="ask_user",
+            tool_args=_question_args(),
+            status="pending",
+            requested_at=datetime.now(UTC),
+            approval_token=token,
+        )
+        db_session.add(approval_request)
+        db_session.flush()
+        return approval_request
+
+    def test_get_data_carries_the_form(self, client: TestClient, db_session, test_user):
+        request = self._seed(db_session, test_user, "form-token-get")
+        response = client.get(
+            f"/approval/{request.id}/data", params={"token": "form-token-get"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["question"] == "Which findings do you accept?"
+        assert [item["id"] for item in data["question_items"]] == ["CVE-1", "CVE-2"]
+        assert data["question_schema"]["properties"]["waived"]["type"] == "array"
+
+    def test_approve_stores_the_validated_answer(
+        self, client: TestClient, db_session, test_user
+    ):
+        request = self._seed(db_session, test_user, "form-token-ok")
+        updated = MagicMock()
+        updated.id = request.id
+        updated.tool_name = "ask_user"
+        updated.tool_args = _question_args()
+        updated.agent_reasoning = None
+        updated.status = "approved"
+        updated.requested_at = request.requested_at
+        updated.expires_at = None
+        updated.resolved_at = datetime.now(UTC)
+
+        with patch(
+            "preloop.api.endpoints.public_approval.get_async_db_session"
+        ) as mock_get_session:
+            mock_get_session.return_value.__aenter__.return_value = AsyncMock()
+            with patch(
+                "preloop.api.endpoints.public_approval.ApprovalService"
+            ) as mock_service_cls:
+                mock_service = AsyncMock()
+                mock_service.approve_request = AsyncMock(return_value=updated)
+                mock_service_cls.return_value = mock_service
+                response = client.post(
+                    f"/approval/{request.id}/decide",
+                    params={"token": "form-token-ok"},
+                    json={
+                        "action": "approve",
+                        "answer": {
+                            "waived": [{"id": "CVE-1", "reason": "Not reachable"}]
+                        },
+                    },
+                )
+        assert response.status_code == 200
+        stored = mock_service.approve_request.await_args.kwargs["structured_answer"]
+        assert stored["waived"] == [{"id": "CVE-1", "reason": "Not reachable"}]
+        # A token proves someone was sent the link, not who they are, so the
+        # autofilled author stays empty rather than being invented.
+        assert stored.get("author") in (None, "")
+
+    def test_bad_answer_is_refused_with_field_paths(
+        self, client: TestClient, db_session, test_user
+    ):
+        request = self._seed(db_session, test_user, "form-token-bad")
+        response = client.post(
+            f"/approval/{request.id}/decide",
+            params={"token": "form-token-bad"},
+            json={"action": "approve", "answer": {"waived": [{"id": "CVE-9"}]}},
+        )
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        paths = {error["path"] for error in detail["errors"]}
+        assert any(path.startswith("waived[0]") for path in paths)
+
+
+class TestPublicApprovalTemplate:
+    """The token page draws the form itself (no Lit bundle out here), so the
+    template has to carry the renderer, the validation, and the payload."""
+
+    @staticmethod
+    def _template():
+        from pathlib import Path
+
+        import preloop
+
+        path = Path(preloop.__file__).parent / "templates" / "approval.html"
+        return path.read_text()
+
+    def test_template_renders_the_schema(self):
+        template = self._template()
+        for marker in (
+            "function renderAnswerForm(",
+            "function renderRowTable(",
+            "function renderIdChecklist(",
+            "answerSchema = approvalData.question_schema",
+            "answerItems = approvalData.question_items",
+        ):
+            assert marker in template, f"missing: {marker}"
+
+    def test_template_validates_before_posting(self):
+        template = self._template()
+        assert "function validateAnswer(" in template
+        assert "body.answer = answerPayload();" in template
+        assert "showAnswerErrors(detail.errors)" in template
+
+    def test_template_never_posts_autofilled_fields(self):
+        template = self._template()
+        payload = template.split("function answerPayload(")[1].split("return payload")[
+            0
+        ]
+        assert "if (properties[name]['x-autofill']) continue;" in payload
+
+
 class TestPublicApprovalPage:
     """GET /approval/{id} is the public HTML page, only with a token."""
 
