@@ -3,14 +3,15 @@
 import asyncio
 
 import pytest
-from sqlalchemy import inspect as sa_inspect, text
-
 from preloop.services import db_executor
 from preloop.services.db_executor import (
     detach_user,
     run_db_async,
     run_db_sync,
+    submit_off_loop,
 )
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import text
 
 
 class TestDetachUser:
@@ -38,6 +39,35 @@ class TestDetachUser:
         assert detached.email == "test@example.com"
         assert detached.username == "testuser"
         assert detached.is_active is True
+
+
+class TestSubmitOffLoop:
+    """Tests for submit_off_loop."""
+
+    def test_does_not_run_inline(self, monkeypatch):
+        """The caller returns before the submitted work runs."""
+        queued = []
+        monkeypatch.setattr(
+            db_executor._db_executor, "submit", lambda fn: queued.append(fn)
+        )
+        ran = []
+        submit_off_loop(lambda: ran.append("ran"))
+        assert ran == []
+        assert len(queued) == 1
+        queued[0]()
+        assert ran == ["ran"]
+
+    def test_logs_exceptions_from_the_worker(self, monkeypatch):
+        """Uncaught worker errors must not become unretrieved Futures."""
+        monkeypatch.setattr(db_executor._db_executor, "submit", lambda fn: fn())
+        logged = []
+        monkeypatch.setattr(
+            db_executor.logger,
+            "exception",
+            lambda msg, *a, **k: logged.append(msg),
+        )
+        submit_off_loop(lambda: (_ for _ in ()).throw(ValueError("boom")))
+        assert logged == ["Off-loop database work failed"]
 
 
 class TestRunDbSync:

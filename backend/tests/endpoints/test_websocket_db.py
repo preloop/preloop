@@ -44,6 +44,7 @@ def _make_user(db, email="ws@example.com"):
 def test_db_executor_exports_expected_helpers():
     """The module should expose the WebSocket DB helper callables."""
     assert callable(db_executor.detach_user)
+    assert callable(db_executor.submit_off_loop)
     assert asyncio.iscoroutinefunction(db_executor.run_db_async)
 
 

@@ -238,7 +238,8 @@ def emit_policy_denied(
 
     The policy evaluator records a decision rather than changing state, so
     there is no caller transaction worth joining and the row is committed on
-    its own.
+    its own. Callers that sit on the deny path should submit this via
+    ``db_executor.submit_off_loop`` rather than invoking it inline.
     """
     outbox.enqueue_event_detached(
         account_id=account_id,
