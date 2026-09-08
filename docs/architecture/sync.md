@@ -20,6 +20,22 @@ only after acknowledgment. Tracker redelivery can repeat a previously committed
 issue update or partially acknowledged publication; this path does not promise
 exactly-once task delivery.
 
+It does promise one execution per delivery. Message handling is at-least-once
+(a drained pod naks its in-flight message, `ack_wait` expires, a pod can die
+before acking), so the guarantee is durable rather than message-level: the
+delivery id (`X-GitHub-Delivery`, `X-Gitlab-Event-UUID`) is recorded on the
+execution it created as `flow_execution.webhook_delivery_key`, a partial
+unique index on `(flow_id, webhook_delivery_key)` stops two workers racing the
+same redelivery, and `FlowTriggerService.process_event` skips a flow whose
+delivery already produced an execution (any status, 7 day window). Tracker
+sources that send no delivery id fall back to a content fingerprint of the
+event identity, which is only treated as a duplicate inside a 15 minute
+redelivery window because such a fingerprint legitimately repeats. Retries,
+matrix cells, manual and scheduled triggers never claim a key, and
+`process_webhook_event` acks as soon as the trigger stage commits so a deploy
+drain does not replay work that already happened. See
+`preloop.services.webhook_delivery_dedupe`.
+
 Deploy updated sync workers before the API when introducing the embedding-work
 payload. Older workers accept extra event fields but do not execute the new
 `embedding_requests` field; the worker-first rollout preserves embedding work
