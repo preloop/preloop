@@ -6,7 +6,7 @@ columns that let an execution be parked while the question is outstanding and
 resumed on the decision.
 
 Revision ID: 20260908_approval_park
-Revises: 20260907_sm_sweep_cursor
+Revises: 20260908_structured_answer
 """
 
 from typing import Sequence, Union
@@ -16,7 +16,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "20260908_approval_park"
-down_revision: Union[str, None] = "20260907_sm_sweep_cursor"
+down_revision: Union[str, None] = "20260908_structured_answer"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

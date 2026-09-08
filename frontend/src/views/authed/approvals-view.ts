@@ -10,6 +10,7 @@ import {
 import type { ApprovalRequest } from '../../types';
 import '../../components/question-answer-panel';
 import type { QuestionAnswerDetail } from '../../components/question-answer-panel';
+import { questionFormSummary } from '../../utils/question-form';
 import {
   formatFutureRelativeTime,
   formatRelativeTime,
@@ -26,8 +27,10 @@ import {
 } from '../../utils/approvals';
 import {
   approvalActions,
+  approvalDetailUrl,
   isApprovalQuestion,
   isDecidableRequest,
+  requestNeedsForm,
 } from '../../actions/approval-actions';
 import { intersectActions, offersAction } from '../../actions/registry';
 import type { ResourceAction } from '../../components/resource-actions';
@@ -291,6 +294,22 @@ export class ApprovalsView extends AuthedElement {
         font-size: var(--sl-font-size-small);
       }
 
+      /* A row cannot hold a form, so it states the size of the job and links
+         to the page that can. */
+      .form-summary {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        font-size: var(--console-text-meta, 13px);
+        color: var(--sl-color-neutral-600);
+        padding: 0.5rem 0 0 0;
+      }
+
+      .form-summary sl-icon {
+        color: var(--sl-color-neutral-500);
+      }
+
       .approval-item:hover {
         border-color: var(--sl-color-primary-300);
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
@@ -481,16 +500,21 @@ export class ApprovalsView extends AuthedElement {
   }
 
   /**
-   * The rows a bulk decision can touch: waiting, not a question.
+   * The rows a bulk decision can touch: waiting, not a question, and not a
+   * form.
    *
-   * A question is answered, not approved in bulk, and anything already
-   * resolved or timed out has nothing left to decide. Handing only these to
-   * the controller means a row that expires while the page is open drops out
-   * of the selection by itself.
+   * A question is answered, not approved in bulk. A form-bearing
+   * `request_approval` is the same: the decision is the filled-in form, and
+   * the per-row checkbox already refuses it. Selecting it here would only
+   * strip Approve from the bulk bar and let bulk Deny deny the form as a
+   * side effect. Anything already resolved or timed out has nothing left to
+   * decide. Handing only these to the controller means a row that expires
+   * while the page is open drops out of the selection by itself.
    */
   private get selectableRequests(): ApprovalRequest[] {
-    return this.waitingRequests.filter((request) =>
-      isDecidableRequest(request, this.nowMs)
+    return this.waitingRequests.filter(
+      (request) =>
+        isDecidableRequest(request, this.nowMs) && !requestNeedsForm(request)
     );
   }
 
@@ -673,6 +697,11 @@ export class ApprovalsView extends AuthedElement {
         question: message.question || null,
         question_options: message.question_options || [],
         allow_free_text: message.allow_free_text === true,
+        // A live-arriving row has to know it carries a form, or it would
+        // offer an Approve button the server will refuse.
+        question_items: message.question_items || [],
+        question_schema: message.question_schema || null,
+        has_answer_form: message.has_answer_form === true,
       };
 
       if (!isUnexpiredPendingRequest(newApproval)) {
@@ -1692,7 +1721,23 @@ export class ApprovalsView extends AuthedElement {
           </div>
         </div>
         ${
-          this.isQuestion(request) && waiting
+          waiting && requestNeedsForm(request)
+            ? html`
+                <div class="form-summary" role="gridcell">
+                  <sl-icon name="ui-checks"></sl-icon>
+                  <span
+                    >${
+                      questionFormSummary(request) ??
+                      'This one needs a form filled in'
+                    }</span
+                  >
+                  <a href=${approvalDetailUrl(request)}>Open to answer</a>
+                </div>
+              `
+            : ''
+        }
+        ${
+          this.isQuestion(request) && waiting && !requestNeedsForm(request)
             ? html`
                 <div role="gridcell">
                   <question-answer-panel

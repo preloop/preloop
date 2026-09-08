@@ -1,22 +1,25 @@
 import hashlib
 import hmac
 import logging
+import json
+from dataclasses import dataclass, field
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
+from preloop.api.loop_safety import run_db_off_loop
+from preloop.models import models
 from preloop.models.crud import (
     crud_comment,
     crud_issue,
-    crud_issue_embedding,
     crud_organization,
     crud_project,
     crud_tracker,
 )
-from preloop.models.db.session import get_db_session
-from preloop.models.models.tracker import Tracker
+from preloop.models.db.session import get_db_session, _safe_close_db_session
 from preloop.sync.scanner.core import TrackerClient
 
 from preloop.sync.services.event_bus import EventBus, get_task_publisher
@@ -64,32 +67,126 @@ DEFAULT_JIRA_SUBSCRIBED_EVENTS = [
 ]
 
 
-@router.post("/private/webhooks/{tracker_type}/{organization_id}")
+@dataclass
+class _WebhookPlan:
+    """Plain payloads and IDs crossing from DB preparation to async delivery."""
+
+    tasks: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = field(
+        default_factory=list
+    )
+    embeddings: list[dict[str, Any]] = field(default_factory=list)
+    tracker_id: Any = None
+    organization_id: Any = None
+    db_processed: Optional[bool] = None
+
+    def queue_task(self, name: str, *args: Any, **kwargs: Any) -> None:
+        self.tasks.append((name, args, kwargs))
+
+
+@router.post("/private/webhooks/{tracker_type}/{organization_id}", response_model=None)
 async def receive_webhook(
     tracker_type: str,
     organization_id: str,
     request: Request,
     db: Session = Depends(get_db_session),
-    task_publisher: EventBus = Depends(get_task_publisher),  # NATS Integration
-):
-    """
-    Receive webhook events from external trackers (GitHub, GitLab, Jira).
+    task_publisher: EventBus = Depends(get_task_publisher),
+) -> dict[str, Any]:
+    """Receive tracker webhooks and queue event processing.
 
-    Parses the payload to identify the organization and updates its
-    last_webhook_update timestamp.
+    Return HTTP 503 when task publication is not acknowledged.
     """
+    raw_body = await request.body()
+    headers = request.headers
+    plan = _WebhookPlan()
+    result: dict[str, Any] = {}
+    preparation_error: Optional[Exception] = None
+
+    def prepare() -> dict[str, Any]:
+        try:
+            return _prepare_webhook(
+                tracker_type, organization_id, raw_body, headers, db, plan
+            )
+        finally:
+            _safe_close_db_session(db)
+
+    try:
+        result = await run_db_off_loop(prepare)
+    except Exception as exc:
+        # Notifications queued before a validation/DB failure must still be sent.
+        preparation_error = exc
+
+    publish_failed = False
+    for name, args, kwargs in plan.tasks:
+        try:
+            ack = await task_publisher.publish_task(name, *args, **kwargs)
+            if ack is None:
+                raise RuntimeError("NATS did not acknowledge the webhook task")
+        except Exception:
+            logger.exception("Webhook task publication failed: %s", name)
+            if name != "notify_admins":
+                publish_failed = True
+
+    if preparation_error is not None:
+        raise preparation_error
+    if publish_failed:
+        # Returning 200 would stop tracker redelivery even though no task was
+        # acknowledged. Inline issue changes are idempotent on a delivery retry.
+        raise HTTPException(
+            503, "Webhook task publication unavailable", headers={"Retry-After": "5"}
+        )
+
+    if plan.db_processed:
+
+        def update_timestamp() -> None:
+            try:
+                crud_organization.touch_webhook(
+                    db,
+                    organization_id=plan.organization_id,
+                    observed_at=datetime.now(timezone.utc),
+                )
+            finally:
+                _safe_close_db_session(db)
+
+        try:
+            await run_db_off_loop(update_timestamp)
+        except Exception:
+            logger.exception(
+                "Webhook timestamp update failed for tracker %s", plan.tracker_id
+            )
+        return {
+            "status": "success",
+            "message": "Webhook processed and task published",
+            "tracker_id": plan.tracker_id,
+        }
+    if plan.db_processed is False:
+        return {
+            "status": "partial_success",
+            "message": "Webhook event published but database processing failed",
+            "tracker_id": plan.tracker_id,
+            "nats_published": True,
+            "db_processed": False,
+        }
+    return result
+
+
+def _prepare_webhook(
+    tracker_type: str,
+    organization_id: str,
+    raw_body: bytes,
+    headers: Mapping[str, str],
+    db: Session,
+    plan: _WebhookPlan,
+) -> dict[str, Any]:
     logger.info(
         f"Received webhook for tracker_type={tracker_type}, organization_id={organization_id}"
     )
 
     # --- 1. Read Raw Body ---
-    raw_body = await request.body()
     logger.info(f"Raw webhook body length: {len(raw_body)}")
 
     # --- 2. Resolve Tracker, Secret, and context for timestamp update ---
-    resolved_tracker: Optional[Tracker] = None
+    resolved_tracker: Optional[models.Tracker] = None
     webhook_secret_to_use: Optional[str] = None
-    organization_context_for_timestamp: Optional[CRUDOrganization.model] = None
     default_event_list_for_type: List[str] = []
     event_type_header_key: Optional[str] = None
 
@@ -114,7 +211,7 @@ async def receive_webhook(
             f"Organization not found for id={organization_id}, tracker_type={tracker_type}"
         )
         # Notify admins
-        await task_publisher.publish_task(
+        plan.queue_task(
             "notify_admins",
             subject="Organization not found for webhook",
             message=f"Organization not found for id={organization_id}, tracker_type={tracker_type}",
@@ -126,7 +223,7 @@ async def receive_webhook(
     if not organization_data.tracker:
         logger.error(f"Tracker not found for organization ID {organization_data.id}")
         # Notify admins
-        await task_publisher.publish_task(
+        plan.queue_task(
             "notify_admins",
             subject="Tracker not found for organization ID",
             message=f"Tracker not found for organization ID {organization_data.id}",
@@ -146,15 +243,16 @@ async def receive_webhook(
         )
 
     resolved_tracker = organization_data.tracker
+    plan.tracker_id = resolved_tracker.id
+    plan.organization_id = organization_data.id
     webhook_secret_to_use = organization_data.webhook_secret
-    organization_context_for_timestamp = organization_data
 
     if not resolved_tracker:
         logger.error(
             f"Failed to resolve tracker for {tracker_type} with organization_id {organization_id}"
         )
         # Notify admins
-        await task_publisher.publish_task(
+        plan.queue_task(
             "notify_admins",
             subject="Failed to resolve tracker",
             message=f"Failed to resolve tracker for {tracker_type} with organization_id {organization_id}",
@@ -174,7 +272,7 @@ async def receive_webhook(
     if webhook_secret_to_use is None:  # Should also be caught
         logger.error(f"Webhook secret is not set for tracker ID {resolved_tracker.id}")
         # Notify admins
-        await task_publisher.publish_task(
+        plan.queue_task(
             "notify_admins",
             subject="Webhook secret is not set for tracker",
             message=f"Webhook secret is not set for tracker ID {resolved_tracker.id}",
@@ -188,7 +286,7 @@ async def receive_webhook(
     encoded_secret = webhook_secret_to_use.encode("utf-8")
 
     if tracker_type.lower() == "github":
-        signature_header = request.headers.get("X-Hub-Signature-256")
+        signature_header = headers.get("X-Hub-Signature-256")
         if not signature_header:
             logger.warning("Missing X-Hub-Signature-256 header for GitHub webhook")
             raise HTTPException(
@@ -212,7 +310,7 @@ async def receive_webhook(
                     f"GitHub webhook signature mismatch for tracker ID {resolved_tracker.id}"
                 )
                 # Notify admins
-                await task_publisher.publish_task(
+                plan.queue_task(
                     "notify_admins",
                     subject="GitHub webhook signature mismatch",
                     message=f"GitHub webhook signature mismatch for tracker ID {resolved_tracker.id}",
@@ -229,7 +327,7 @@ async def receive_webhook(
         except Exception as e:
             logger.error(f"Error during GitHub signature verification: {e}")
             # Notify admins
-            await task_publisher.publish_task(
+            plan.queue_task(
                 "notify_admins",
                 subject="Error during GitHub signature verification",
                 message=f"Error during GitHub signature verification for tracker ID {resolved_tracker.id}: {e}",
@@ -240,11 +338,11 @@ async def receive_webhook(
             )
 
     elif tracker_type.lower() == "gitlab":
-        token_header = request.headers.get("X-Gitlab-Token")
+        token_header = headers.get("X-Gitlab-Token")
         if not token_header:
             logger.warning("Missing X-Gitlab-Token header for GitLab webhook")
             # Notify admins
-            await task_publisher.publish_task(
+            plan.queue_task(
                 "notify_admins",
                 subject="Missing X-Gitlab-Token header for GitLab webhook",
                 message=f"Missing X-Gitlab-Token header for GitLab webhook, tracker ID {resolved_tracker.id}",
@@ -261,7 +359,7 @@ async def receive_webhook(
                 f"GitLab webhook token mismatch for tracker ID {resolved_tracker.id}"
             )
             # Notify admins
-            await task_publisher.publish_task(
+            plan.queue_task(
                 "notify_admins",
                 subject="GitLab webhook token mismatch",
                 message=f"GitLab webhook token mismatch for tracker ID {resolved_tracker.id}",
@@ -276,13 +374,13 @@ async def receive_webhook(
     elif tracker_type.lower() == "jira":
         # Jira Cloud webhooks use HMAC-SHA256 signature with a pre-configured secret.
         # The signature is in the 'X-Hub-Signature' header, format: 'sha256=<signature>'
-        signature_header = request.headers.get("X-Hub-Signature")
+        signature_header = headers.get("X-Hub-Signature")
         if not signature_header:
             logger.warning(
                 f"Missing X-Hub-Signature header for Jira webhook, tracker ID {resolved_tracker.id}"
             )
             # Notify admins
-            await task_publisher.publish_task(
+            plan.queue_task(
                 "notify_admins",
                 subject="Missing X-Hub-Signature header for Jira webhook",
                 message=f"Missing X-Hub-Signature header for Jira webhook, tracker ID {resolved_tracker.id}",
@@ -311,7 +409,7 @@ async def receive_webhook(
                         f"Jira webhook signature mismatch for tracker ID {resolved_tracker.id}"
                     )
                     # Notify admins
-                    await task_publisher.publish_task(
+                    plan.queue_task(
                         "notify_admins",
                         subject="Jira webhook signature mismatch",
                         message=f"Jira webhook signature mismatch for tracker ID {resolved_tracker.id}",
@@ -330,7 +428,7 @@ async def receive_webhook(
                     f"Error during Jira signature verification for tracker ID {resolved_tracker.id}: {e}"
                 )
                 # Notify admins
-                await task_publisher.publish_task(
+                plan.queue_task(
                     "notify_admins",
                     subject="Error during Jira signature verification",
                     message=f"Error during Jira signature verification for tracker ID {resolved_tracker.id}: {e}",
@@ -345,13 +443,13 @@ async def receive_webhook(
     parsed_payload: Dict[str, Any]
 
     try:
-        parsed_payload = await request.json()
+        parsed_payload = json.loads(raw_body)
     except Exception as e:
         logger.error(
             f"Failed to parse webhook JSON payload for tracker ID {resolved_tracker.id}: {e}"
         )
         # Notify admins
-        await task_publisher.publish_task(
+        plan.queue_task(
             "notify_admins",
             subject="Failed to parse webhook JSON payload",
             message=f"Failed to parse webhook JSON payload for tracker ID {resolved_tracker.id}: {e}",
@@ -366,7 +464,7 @@ async def receive_webhook(
                 f"Internal error: event_type_header_key not set for {tracker_type}"
             )
             # Notify admins
-            await task_publisher.publish_task(
+            plan.queue_task(
                 "notify_admins",
                 subject="Internal error: event_type_header_key not set for tracker",
                 message=f"Internal error: event_type_header_key not set for tracker {tracker_type}",
@@ -374,7 +472,7 @@ async def receive_webhook(
             raise HTTPException(
                 status_code=500, detail="Internal configuration error for event type."
             )
-        actual_event_type = request.headers.get(event_type_header_key)
+        actual_event_type = headers.get(event_type_header_key)
         if not actual_event_type:
             logger.warning(
                 f"Could not determine event type from header '{event_type_header_key}' for {tracker_type}, tracker ID {resolved_tracker.id}."
@@ -418,22 +516,18 @@ async def receive_webhook(
         )
         # Still update timestamp as the webhook was validly received and authenticated (if applicable)
         try:
-            if organization_context_for_timestamp:  # GH/GL
-                organization_context_for_timestamp.last_webhook_update = datetime.now(
-                    timezone.utc
-                )
-                db.add(organization_context_for_timestamp)
-            else:  # Jira or other direct tracker updates
-                resolved_tracker.last_updated = datetime.now(timezone.utc)
-                db.add(resolved_tracker)
-            db.commit()
+            crud_organization.touch_webhook(
+                db,
+                organization_id=plan.organization_id,
+                observed_at=datetime.now(timezone.utc),
+            )
         except Exception as e_ts:
             db.rollback()
             logger.error(
                 f"Failed to update timestamp after skipping non-subscribed event for tracker {resolved_tracker.id}: {e_ts}"
             )
             # Notify admins
-            await task_publisher.publish_task(
+            plan.queue_task(
                 "notify_admins",
                 subject="Failed to update timestamp after skipping non-subscribed event",
                 message=f"Failed to update timestamp after skipping non-subscribed event for tracker {resolved_tracker.id}: {e_ts}",
@@ -450,7 +544,6 @@ async def receive_webhook(
 
     # --- 6. Process Payload and Update Database ---
     try:
-        tracker_client = TrackerClient(resolved_tracker)
         if actual_event_type in [
             "Issue Hook",
             "issues",
@@ -480,7 +573,7 @@ async def receive_webhook(
 
             if not project_identifier:
                 # Notify admins
-                await task_publisher.publish_task(
+                plan.queue_task(
                     "notify_admins",
                     subject="Could not determine project identifier from payload",
                     message=f"Could not determine project identifier from payload for tracker {resolved_tracker.id}.",
@@ -533,7 +626,7 @@ async def receive_webhook(
                     f"Unknown project on webhook; triggering sync. {context}. "
                     "Reason: no project row matches the webhook's project identifier."
                 )
-                await task_publisher.publish_task(
+                plan.queue_task(
                     "poll_tracker",
                     tracker_id=resolved_tracker.id,
                     force_update=True,
@@ -574,6 +667,7 @@ async def receive_webhook(
                             detail="Missing data to construct GitHub issue key.",
                         )
 
+            tracker_client = TrackerClient(resolved_tracker, initialize_client=False)
             if hasattr(tracker_client.client, "transform_issue_webhook"):
                 transformed_issue = tracker_client.client.transform_issue_webhook(
                     issue_data, project
@@ -614,9 +708,7 @@ async def receive_webhook(
             else:
                 db_issue = crud_issue.create(db, obj_in=transformed_issue)
 
-            crud_issue_embedding.create_embeddings(
-                db, issue_id=db_issue.id, force_update=True
-            )
+            plan.embeddings.append({"issue_id": db_issue.id, "force_update": True})
 
         elif actual_event_type in [
             "Note Hook",
@@ -684,6 +776,7 @@ async def receive_webhook(
                     detail=f"No comment data found in webhook payload for {tracker_type}",
                 )
 
+            tracker_client = TrackerClient(resolved_tracker, initialize_client=False)
             transformed_comment = tracker_client.client.transform_comment(
                 comment_data, issue.id
             )
@@ -704,8 +797,12 @@ async def receive_webhook(
             else:
                 db_comment = crud_comment.create(db, obj_in=transformed_comment)
 
-            crud_issue_embedding.create_embeddings(
-                db, issue_id=issue.id, comment_id=db_comment.id, force_update=True
+            plan.embeddings.append(
+                {
+                    "issue_id": issue.id,
+                    "comment_id": db_comment.id,
+                    "force_update": True,
+                }
             )
 
         db.commit()
@@ -738,100 +835,18 @@ async def receive_webhook(
         )
         # Don't raise yet - publish to NATS first
 
-    # --- 7. Publish Event to NATS (always attempt this, even if DB processing failed) ---
-    # This ensures flows can be triggered even if database operations fail
-    nats_publish_success = False
-    try:
-        logger.info(
-            f"Publishing webhook event to NATS for tracker {resolved_tracker.id}, "
-            f"event_type={actual_event_type}, db_processing_success={db_processing_success}"
-        )
-        await task_publisher.publish_task(
-            "process_webhook_event",
-            tracker_type=tracker_type.lower(),
-            event_type=actual_event_type,
-            delivery_id=request.headers.get("X-GitHub-Delivery")
-            or request.headers.get("X-Gitlab-Event-UUID"),
-            payload=parsed_payload,
-            tracker_id=str(
-                resolved_tracker.id
-            ),  # Convert UUID to string for JSON serialization
-            organization_id=str(
-                organization_data.id
-            ),  # Convert UUID to string for JSON serialization
-        )
-        nats_publish_success = True
-        logger.info(
-            f"Successfully published webhook event to NATS for tracker {resolved_tracker.id}"
-        )
-    except Exception as e:
-        logger.error(
-            f"Failed to publish webhook event to NATS for tracker {resolved_tracker.id}: {e}",
-            exc_info=True,
-        )
-
-    # --- 8. Update Timestamp (best effort, after NATS publish) ---
-    if db_processing_success:
-        try:
-            if organization_context_for_timestamp:  # GH/GL
-                organization_context_for_timestamp.last_webhook_update = datetime.now(
-                    timezone.utc
-                )
-                db.add(organization_context_for_timestamp)
-                logger.info(
-                    f"Updated last_webhook_update for organization ID {organization_context_for_timestamp.id}"
-                )
-            elif resolved_tracker:  # Jira
-                resolved_tracker.last_updated = datetime.now(
-                    timezone.utc
-                )  # Use the general last_updated
-                db.add(resolved_tracker)
-                logger.info(
-                    f"Updated last_updated for tracker ID {resolved_tracker.id}"
-                )
-            db.commit()
-        except Exception as e:
-            db.rollback()
-            logger.error(
-                f"Failed to update timestamp for tracker {resolved_tracker.id} / org: {e}",
-                exc_info=True,
-            )
-
-    # --- 9. Determine final response status ---
-    # If DB processing failed but NATS succeeded, we consider it a partial success
-    # If both failed, we return an error
-    if not db_processing_success and not nats_publish_success:
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to process webhook: both database operations and NATS publishing failed",
-        )
-    elif not db_processing_success:
-        # DB failed but NATS succeeded - log warning but return success
-        logger.warning(
-            f"Webhook event published to NATS but database processing failed for tracker {resolved_tracker.id}"
-        )
-        return {
-            "status": "partial_success",
-            "message": "Webhook event published but database processing failed",
-            "tracker_id": resolved_tracker.id,
-            "nats_published": True,
-            "db_processed": False,
-        }
-    elif not nats_publish_success:
-        # DB succeeded but NATS failed - log warning but return success
-        logger.warning(
-            f"Database processing succeeded but NATS publishing failed for tracker {resolved_tracker.id}"
-        )
-        return {
-            "status": "partial_success",
-            "message": "Database processed but NATS publishing failed",
-            "tracker_id": resolved_tracker.id,
-            "nats_published": False,
-            "db_processed": True,
-        }
-
-    return {
-        "status": "success",
-        "message": "Webhook processed and task published",
-        "tracker_id": resolved_tracker.id,
-    }
+    # Return primitive publication data; the request loop publishes only after
+    # the worker has closed its transaction, including error/notification paths.
+    plan.db_processed = db_processing_success
+    plan.queue_task(
+        "process_webhook_event",
+        tracker_type=tracker_type.lower(),
+        event_type=actual_event_type,
+        delivery_id=headers.get("X-GitHub-Delivery")
+        or headers.get("X-Gitlab-Event-UUID"),
+        payload=parsed_payload,
+        tracker_id=str(plan.tracker_id),
+        organization_id=str(plan.organization_id),
+        embedding_requests=plan.embeddings if db_processing_success else [],
+    )
+    return {"status": "success", "tracker_id": plan.tracker_id}

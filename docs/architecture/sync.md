@@ -2,6 +2,29 @@
 
 Preloop Sync polls issue trackers, generates embeddings, and writes through `preloop.models`. This chapter covers the scheduler/worker, tracker clients, the sync data flow, and tracker scope rules.
 
+Private webhook ingress prepares database changes on a worker thread and closes
+the session before publishing any NATS tasks, including validation notifications
+and unknown-project sync requests. Issue/comment transformations initialize no
+network client; GitLab job and pipeline events require no tracker authentication
+call. The existing `process_webhook_event` task generates embeddings before
+triggering flows, so webhook responses never wait for the embedding provider.
+Generation uses an owned session and snapshots provider settings before
+committing and returning the connection during provider work. A progress heartbeat
+renews the task's NATS lease during generation, including cancellation draining;
+the worker acknowledges or requeues only after its active thread finishes.
+
+An event still forwards when inline issue processing fails. NATS timeout and
+connection-closed errors retry at most three times. Missing task acknowledgments
+produce HTTP 503 with `Retry-After`, and the successful-delivery timestamp updates
+only after acknowledgment. Tracker redelivery can repeat a previously committed
+issue update or partially acknowledged publication; this path does not promise
+exactly-once task delivery.
+
+Deploy updated sync workers before the API when introducing the embedding-work
+payload. Older workers accept extra event fields but do not execute the new
+`embedding_requests` field; the worker-first rollout preserves embedding work
+during mixed-version deployments.
+
 ## Preloop Sync ( `./backend/preloop/sync`)
 *   **Purpose:** Data synchronization and embedding generation service.
 *   **Functionality:**

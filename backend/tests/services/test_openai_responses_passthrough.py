@@ -964,7 +964,8 @@ class _HttpxLikeClient:
 def test_passthrough_does_not_pass_verify_as_a_request_kwarg(monkeypatch):
     """Private-CA operators set PRELOOP_SSL_VERIFY; httpx only accepts it on init."""
     monkeypatch.setenv("PRELOOP_SSL_VERIFY", "false")
-    service = OpenAIGatewayService.__new__(OpenAIGatewayService)
+    # Initialize lifecycle state normally; this transport-only test needs no DB rows.
+    service = _service(MagicMock(), MagicMock())
     client = _HttpxLikeClient()
     model = _model()
     url = f"{ZEN_BASE_URL}/responses"

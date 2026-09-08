@@ -86,6 +86,7 @@ def generate_content(
         auth_context,
         client_session_id=x_preloop_session_id,
         budget_enforcer=budget_enforcer,
+        owns_db_session=True,
     ).generate_content(model_name, payload)
 
 
@@ -104,6 +105,7 @@ def stream_generate_content(
         auth_context,
         client_session_id=x_preloop_session_id,
         budget_enforcer=budget_enforcer,
+        owns_db_session=True,
     )
     return GatewayStreamingResponse(
         service.stream_generate_content(model_name, payload),

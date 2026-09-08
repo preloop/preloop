@@ -7,6 +7,7 @@ import './approvals-view';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import { bulkActionButton, bulkCountText } from '../../utils/test-bulk-bar';
 import type { ApprovalsView } from './approvals-view';
+import type SlAlert from '@shoelace-style/shoelace/dist/components/alert/alert.js';
 
 describe('ApprovalsView', () => {
   let fetchStub: sinon.SinonStub;
@@ -113,12 +114,20 @@ describe('ApprovalsView', () => {
     localStorage.setItem('refreshToken', 'test-refresh-token');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     fetchStub?.restore();
     resetConfirmDialogForTests();
-    // Any alert, not just [open]: a toast raised at the end of a test can set
-    // its open attribute after this hook runs and leak into the next test.
-    document.querySelectorAll('sl-alert').forEach((a) => a.remove());
+    // toast() schedules show() on the next frame and removes itself on
+    // sl-after-hide. Finish that lifecycle before removing any leftovers;
+    // direct removal races Shoelace's own toastStack.removeChild listener.
+    await nextFrame();
+    await Promise.all(
+      [...document.querySelectorAll<SlAlert>('sl-alert')].map(async (alert) => {
+        await alert.updateComplete;
+        await alert.hide();
+        alert.remove();
+      })
+    );
     localStorage.clear();
   });
 
@@ -805,6 +814,84 @@ describe('ApprovalsView', () => {
       expect(element.shadowRoot?.textContent).to.contain('Details');
     });
   });
+  describe('a request that carries an answer form', () => {
+    const formRequest = (overrides: Record<string, unknown> = {}) =>
+      questionRequest({
+        question: 'Which findings do you waive?',
+        question_items: [
+          { id: 'CVE-1', title: 'curl 8.4.0' },
+          { id: 'CVE-2', title: 'requests 2.31.0' },
+          { id: 'CVE-3', title: 'urllib3 2.0.7' },
+          { id: 'CVE-4', title: 'jinja2 3.1.2' },
+        ],
+        question_schema: {
+          type: 'object',
+          properties: {
+            waived: { type: 'array', title: 'Findings to waive' },
+          },
+          required: ['waived'],
+        },
+        has_answer_form: true,
+        ...overrides,
+      });
+
+    it('says how big the job is instead of showing the form in a row', async () => {
+      const element = await renderList([formRequest()]);
+
+      const summary = element.shadowRoot?.querySelector('.form-summary');
+      expect(summary, 'expected a form summary line').to.exist;
+      expect(summary?.textContent).to.contain('4 items to pick from');
+      expect(summary?.textContent).to.contain('1 field to fill in');
+      expect(summary?.querySelector('a')?.getAttribute('href')).to.equal(
+        '/console/approval/ar-1'
+      );
+      // The inline panel would offer an answer box for a question that needs
+      // a form, which is the shortcut this feature exists to remove.
+      expect(element.shadowRoot?.querySelector('question-answer-panel')).to.not
+        .exist;
+    });
+
+    it('offers no row Approve and cannot be picked for a bulk decision', async () => {
+      const element = await renderList([formRequest()]);
+
+      expect(element.shadowRoot?.querySelector('.row-approve')).to.not.exist;
+      expect(element.shadowRoot?.querySelector('list-select-checkbox')).to.not
+        .exist;
+    });
+
+    it('does not include a form-bearing request_approval in Select all', async () => {
+      const element = await renderList([
+        baseRequest({
+          id: 'plain',
+          tool_name: 'write_file',
+          expires_at: inMinutes(10),
+        }),
+        baseRequest({
+          id: 'form-approval',
+          tool_name: 'request_approval',
+          has_answer_form: true,
+          question_schema: {
+            type: 'object',
+            properties: {
+              waived: { type: 'array', title: 'Findings to waive' },
+            },
+            required: ['waived'],
+          },
+          expires_at: inMinutes(10),
+        }),
+      ]);
+
+      expect(
+        element.shadowRoot?.querySelectorAll('list-select-checkbox').length,
+        'only the plain request offers a row checkbox'
+      ).to.equal(1);
+      (element as any).selection.toggleAll(true);
+      await element.updateComplete;
+      await nextFrame();
+      expect((element as any).selectedIds).to.deep.equal(['plain']);
+    });
+  });
+
   describe('bulk decisions', () => {
     function rows(element: ApprovalsView) {
       return Array.from(

@@ -62,8 +62,13 @@ class GitLabTracker(BaseTracker):
     tracker_type: str = "gitlab"
 
     def __init__(
-        self, tracker_id: str, api_key: str, connection_details: Dict[str, Any]
-    ):
+        self,
+        tracker_id: str,
+        api_key: str,
+        connection_details: Dict[str, Any],
+        *,
+        initialize_client: bool = True,
+    ) -> None:
         """
         Initialize the GitLab tracker.
         """
@@ -75,6 +80,9 @@ class GitLabTracker(BaseTracker):
         if gitlab_url.endswith("/api/v4"):
             gitlab_url = gitlab_url[:-7]
         self.url = gitlab_url
+        if not initialize_client:
+            self.gl = None
+            return
         try:
             self.gl = gitlab.Gitlab(self.url, private_token=api_key)
             self.gl.auth()

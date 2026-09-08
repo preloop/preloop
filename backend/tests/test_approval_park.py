@@ -206,6 +206,18 @@ class TestAnswerProjection:
         assert answer["answer"] == "90 days"
         assert answer["selected_option"] == "waive"
 
+    def test_structured_form_answer_is_carried_on_resume(self):
+        """A parked resume must deliver the form JSON, not only free text."""
+        payload = {"waived": [{"id": "CVE-2026-1234", "reason": "reachability"}]}
+        answer = approval_park.answer_from_request(
+            self._request(structured_answer=payload)
+        )
+        assert answer["structured_answer"] == payload
+        block = approval_park.answers_prompt_block(answer)
+        assert "RESUMED AFTER A HUMAN DECISION" in block
+        assert "CVE-2026-1234" in block
+        assert "reachability" in block
+
     def test_missing_fields_do_not_raise(self):
         answer = approval_park.answer_from_request(SimpleNamespace(id=uuid.uuid4()))
         assert answer["status"] == ""
@@ -384,6 +396,25 @@ class _FakeQuery:
 
     def update(self, values, synchronize_session=False):
         self._owner.updates.append(values)
+        clause = self._owner.filters[-1] if self._owner.filters else ""
+        applied = 0
+        for row in getattr(self._owner, "rows", []):
+            resume_id = getattr(row, "resume_execution_id", None)
+            if resume_id is None:
+                continue
+            tokens = {str(resume_id), getattr(resume_id, "hex", "")}
+            if (
+                any(token and token in clause for token in tokens)
+                and "RESUMING" in clause
+                and getattr(row, "status", None) == "RESUMING"
+            ):
+                for key, val in values.items():
+                    name = getattr(key, "key", None)
+                    if name:
+                        setattr(row, name, val)
+                applied += 1
+        if applied:
+            return applied
         return self._owner.rowcounts.pop(0) if self._owner.rowcounts else 0
 
 
@@ -399,6 +430,9 @@ class _FakeDB:
 
     def commit(self):
         self.commits += 1
+
+    def flush(self):
+        return None
 
 
 class TestStatusTransitions:
@@ -499,6 +533,65 @@ class TestStatusTransitions:
         )
         assert "RESUMING" in db.filters[0]
         assert resume_id in db.updates[0].values()
+
+    def test_close_parked_parent_requires_a_linked_resume_child(self):
+        db = _FakeDB(rowcounts=[1])
+        child_id = uuid.uuid4()
+        count = self.crud.close_parked_parent_for_resume(
+            db,
+            resume_execution_id=child_id,
+            status="SUCCEEDED",
+            end_time=datetime.now(UTC),
+        )
+        assert count == 1
+        clause = db.filters[0]
+        assert "RESUMING" in clause
+        assert "resume_execution_id IS NOT NULL" in clause
+        assert child_id.hex in clause
+        assert "SUCCEEDED" in db.updates[0].values()
+
+    def test_close_parked_parent_ignores_non_terminal_status(self):
+        db = _FakeDB(rowcounts=[1])
+        assert (
+            self.crud.close_parked_parent_for_resume(
+                db, resume_execution_id=uuid.uuid4(), status="RUNNING"
+            )
+            == 0
+        )
+        assert db.updates == []
+
+    def test_apply_runner_completion_closes_the_parked_parent(self):
+        """A finished resume child must not leave the parent RESUMING."""
+        child_id = uuid.uuid4()
+        child = SimpleNamespace(id=child_id, status="RUNNING", end_time=None)
+        parent = SimpleNamespace(
+            id=uuid.uuid4(),
+            status="RESUMING",
+            resume_execution_id=child_id,
+            end_time=None,
+        )
+        db = _FakeDB(rowcounts=[1, 1])
+        db.rows = [parent]
+        self.crud.apply_runner_completion(db, db_obj=child, status="SUCCEEDED")
+        assert child.status == "SUCCEEDED"
+        assert parent.status == "SUCCEEDED"
+        assert parent.status != "RESUMING"
+        assert parent.end_time is not None
+
+    def test_apply_runner_completion_does_not_close_a_stranded_claim(self):
+        """RESUMING with no resume_execution_id is a crash claim, not a parent."""
+        child = SimpleNamespace(id=uuid.uuid4(), status="RUNNING", end_time=None)
+        stranded = SimpleNamespace(
+            id=uuid.uuid4(),
+            status="RESUMING",
+            resume_execution_id=None,
+            end_time=None,
+        )
+        db = _FakeDB(rowcounts=[1, 1])
+        db.rows = [stranded]
+        self.crud.apply_runner_completion(db, db_obj=child, status="SUCCEEDED")
+        assert stranded.status == "RESUMING"
+        assert stranded.end_time is None
 
 
 class _SessionFactory:
@@ -1007,7 +1100,7 @@ class TestMigration:
     def test_revision_chains_onto_head(self):
         module = self._module()
         assert module.revision == "20260908_approval_park"
-        assert module.down_revision == "20260907_sm_sweep_cursor"
+        assert module.down_revision == "20260908_structured_answer"
 
     def test_upgrade_adds_the_window_and_park_columns(self, monkeypatch):
         module = self._module()

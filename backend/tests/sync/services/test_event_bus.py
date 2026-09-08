@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, patch, Mock
 
 from nats.js.errors import APIError
 from preloop.sync.services.event_bus import EventBus
+from nats.aio.errors import ErrTimeout
+from tenacity import wait_none
 
 
 @pytest.fixture
@@ -13,6 +15,30 @@ def event_bus():
     # Mock settings for the test environment
     bus.nats_url = "nats://test-server:4222"
     return bus
+
+
+@pytest.mark.asyncio
+async def test_transient_publish_failure_retries_until_actual_ack(
+    event_bus: EventBus,
+) -> None:
+    ack = Mock(stream="tasks", seq=1)
+    event_bus.js = AsyncMock()
+    event_bus.js.publish.side_effect = [ErrTimeout(), ErrTimeout(), ack]
+    publish = event_bus.publish_task.retry_with(wait=wait_none())
+    assert await publish(event_bus, "process_webhook_event") is ack
+    assert event_bus.js.publish.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_transient_publish_failure_is_bounded_and_not_silently_successful(
+    event_bus: EventBus,
+) -> None:
+    event_bus.js = AsyncMock()
+    event_bus.js.publish.side_effect = ErrTimeout()
+    publish = event_bus.publish_task.retry_with(wait=wait_none())
+    with pytest.raises(ErrTimeout):
+        await publish(event_bus, "process_webhook_event")
+    assert event_bus.js.publish.await_count == 3
 
 
 @pytest.mark.asyncio

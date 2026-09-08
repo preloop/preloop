@@ -8,6 +8,60 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+#: The form vocabulary, described once and shared by ask_user and
+#: request_approval. Both tools render the same console form, so their tool
+#: definitions must document the same subset (see
+#: services/question_schema.py for the authoritative grammar).
+QUESTION_ITEMS_SCHEMA: Dict[str, Any] = {
+    "type": "array",
+    "description": (
+        "Optional rows the question is about (findings, files, hosts). The "
+        "console renders them as a table with a checkbox per row, so the "
+        "human reads the finding instead of matching an opaque id against "
+        "prose. Each row: id (required, the value an answer refers to), "
+        "title, description, severity, badges, href."
+    ),
+    "items": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "Stable id an answer refers to"},
+            "title": {"type": "string", "description": "One-line label for the row"},
+            "description": {"type": "string", "description": "Supporting detail"},
+            "severity": {
+                "type": "string",
+                "description": "critical | high | medium | low | info",
+            },
+            "badges": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Short labels shown on the row (e.g. KEV, pip)",
+            },
+            "href": {"type": "string", "description": "http(s) link to the source"},
+        },
+        "required": ["id"],
+    },
+}
+
+QUESTION_INPUT_SCHEMA_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "Optional JSON Schema subset describing the SHAPE of the answer. The "
+        "console renders it as a form and the server validates the submitted "
+        "answer against it, so the human never types JSON. Root must be "
+        '{"type": "object", "properties": {...}, "required": [...]}. Field '
+        "types: string (with optional enum, format date/date-time/textarea, "
+        "minLength/maxLength), number, integer, boolean, array of "
+        '{"enum": [...]} for a multi-select, array of {"type": "object", '
+        '"properties": {...}} for per-row fields (give the row an "id" '
+        "property whose enum lists the item ids to get the item table with a "
+        "reason per row), and object for a named group of scalars. A string "
+        'field may carry "x-autofill": "author" or "date"; the platform fills '
+        "those from the deciding identity and the decision time and the human "
+        "cannot type them. The answer comes back as validated JSON."
+    ),
+}
+
+
 REQUEST_APPROVAL_TOOL: Dict[str, Any] = {
     "name": "request_approval",
     "description": (
@@ -46,6 +100,8 @@ REQUEST_APPROVAL_TOOL: Dict[str, Any] = {
                 "type": "string",
                 "description": "Optional name of the approval workflow to use",
             },
+            "items": QUESTION_ITEMS_SCHEMA,
+            "input_schema": QUESTION_INPUT_SCHEMA_SCHEMA,
             "timeout_seconds": {
                 "type": "integer",
                 "description": (
@@ -102,8 +158,11 @@ ASK_USER_TOOL: Dict[str, Any] = {
     "name": "ask_user",
     "description": (
         "Ask the human a question and wait for their answer. Offer "
-        "multiple-choice options and/or let them type a free-text reply. "
-        "Returns the user's answer as text."
+        "multiple-choice options and/or let them type a free-text reply, or "
+        "pass items (rows to pick from) and input_schema (the shape of the "
+        "answer) to get a real form: a table with checkboxes and per-row "
+        "fields instead of a request to type JSON. Returns the answer as "
+        "text, or as validated JSON when input_schema was given."
     ),
     "source": "builtin",
     "requires_tracker": False,
@@ -126,6 +185,8 @@ ASK_USER_TOOL: Dict[str, Any] = {
                     "Whether the user may type a free-text answer (default true)"
                 ),
             },
+            "items": QUESTION_ITEMS_SCHEMA,
+            "input_schema": QUESTION_INPUT_SCHEMA_SCHEMA,
             "context": {
                 "type": "string",
                 "description": "Optional additional context shown to the human",

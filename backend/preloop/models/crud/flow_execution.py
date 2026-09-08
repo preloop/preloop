@@ -258,6 +258,19 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         db.flush()  # Use flush instead of commit to stay in transaction
 
+        # Orchestrator, stop, and cancel finish a resume child through this
+        # path rather than apply_runner_completion. Close the parked parent
+        # so it does not stay RESUMING after the child is terminal.
+        terminal_status = update_data.get("status")
+        if terminal_status in self.PARK_PARENT_CLOSE_STATUSES:
+            self.close_parked_parent_for_resume(
+                db,
+                resume_execution_id=db_obj.id,
+                status=terminal_status,
+                end_time=getattr(db_obj, "end_time", None),
+                commit=False,
+            )
+
         # Debug logging after flush
         if "tool_calls_count" in update_data or "total_tokens" in update_data:
             logger.debug(
@@ -349,7 +362,17 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             payload["error_message"] = error
         if result is not None:
             payload["result"] = result
-        return self.update(db, db_obj=db_obj, obj_in=FlowExecutionUpdate(**payload))
+        updated = self.update(db, db_obj=db_obj, obj_in=FlowExecutionUpdate(**payload))
+        # A parked parent stays RESUMING until this child finishes; copy the
+        # terminal status so the console does not keep a blue "Resuming" chip.
+        self.close_parked_parent_for_resume(
+            db,
+            resume_execution_id=updated.id,
+            status=status,
+            end_time=updated.end_time,
+            commit=False,
+        )
+        return updated
 
     def set_workspace_snapshot(
         self, db: Session, *, db_obj: FlowExecution, archive: Optional[bytes]
@@ -1062,6 +1085,9 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
     WAITING_FOR_HUMAN_STATUS = "WAITING_FOR_HUMAN"
     RESUMING_STATUS = "RESUMING"
+    PARK_PARENT_CLOSE_STATUSES = frozenset(
+        {"SUCCEEDED", "FAILED", "STOPPED", "CANCELLED"}
+    )
 
     def request_park(
         self,
@@ -1211,6 +1237,45 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             db.commit()
         return bool(count)
 
+    def close_parked_parent_for_resume(
+        self,
+        db: Session,
+        *,
+        resume_execution_id: Any,
+        status: str,
+        end_time: Optional[datetime] = None,
+        commit: bool = False,
+    ) -> int:
+        """Mark the parked parent terminal once its resume child finishes.
+
+        Matches rows whose ``resume_execution_id`` is this child and whose
+        status is still ``RESUMING``. Crash-stranded claims (RESUMING with
+        no child) are left for ``reclaim_stale_resuming_claims``.
+        """
+        if status not in self.PARK_PARENT_CLOSE_STATUSES:
+            return 0
+        if resume_execution_id is None:
+            return 0
+        closed_at = end_time or datetime.now(timezone.utc)
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.resume_execution_id == resume_execution_id,
+                models.FlowExecution.status == self.RESUMING_STATUS,
+                models.FlowExecution.resume_execution_id.isnot(None),
+            )
+            .update(
+                {
+                    models.FlowExecution.status: status,
+                    models.FlowExecution.end_time: closed_at,
+                },
+                synchronize_session=False,
+            )
+        )
+        if commit:
+            db.commit()
+        return count
+
     def reclaim_stale_resuming_claims(
         self,
         db: Session,
@@ -1351,7 +1416,16 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             runner.halt_requested = True
         elif str(execution.agent_session_reference or "").startswith("runner:queued:"):
             execution.status = "STOPPED"
+            stopped_at = datetime.now(timezone.utc)
+            execution.end_time = stopped_at
             self.confirm_stop(db, execution_id=execution_id, commit=False)
+            self.close_parked_parent_for_resume(
+                db,
+                resume_execution_id=execution_id,
+                status="STOPPED",
+                end_time=stopped_at,
+                commit=False,
+            )
         db.commit()
 
     @staticmethod

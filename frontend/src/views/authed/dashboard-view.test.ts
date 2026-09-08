@@ -1486,6 +1486,8 @@ describe('DashboardView', () => {
       await waitUntil(
         () =>
           !element['loading'] &&
+          !element['refreshInFlight'] &&
+          !element['backgroundRefreshInFlight'] &&
           !element['fetchingAgents'] &&
           !element['fetchingBudget'] &&
           !element['fetchingAudit'] &&
@@ -2096,9 +2098,7 @@ describe('DashboardView', () => {
     });
 
     it('dims the usage numbers over a range change rather than blanking them', async () => {
-      const element = await mountDashboard();
-      await waitUntil(() => !element['loading'], 'first pass did not finish');
-      await element.updateComplete;
+      const element = await mountLoaded();
 
       const usage = element.shadowRoot?.querySelector('usage-card') as any;
       const shown = usage.summary;
@@ -2324,16 +2324,33 @@ describe('DashboardView', () => {
 
     it('takes its turn when an event lands during a refresh', async () => {
       const element = await mountLoaded();
-      // A socket event arriving mid-refresh used to be dropped, leaving the
-      // header claiming numbers older than the event that announced them.
-      element['lastFetchStartedAt'] = Date.now() - 60000;
-      element['lastUpdatedAt'] = new Date(Date.now() - 60000).toISOString();
-      let ran = 0;
-      element['scheduleTopicRefresh']('gateway', async () => {
-        ran += 1;
+      // Hold an actual refresh so the event is guaranteed to land during
+      // it, rather than depending on which initial requests are still pending.
+      let releaseSummary = () => {};
+      summaryGate = new Promise<void>((resolve) => {
+        releaseSummary = resolve;
       });
+      const refresh = element['fetchDashboardData']({
+        preserveLoadingState: true,
+      });
+      let ran = 0;
+      try {
+        expect(element['refreshInFlight']).to.be.true;
+        element['scheduleTopicRefresh']('gateway', async () => {
+          ran += 1;
+        });
+        expect(element['pendingTopicRefreshes'].has('gateway')).to.be.true;
+        expect(ran, 'event must wait for the current refresh').to.equal(0);
+      } finally {
+        // Remove only the throttle floor; keep the queued debounce/callback.
+        element['lastFetchStartedAt'] = Date.now() - 60000;
+        summaryGate = null;
+        releaseSummary();
+        await refresh;
+      }
       expect(element['refreshTimers']['gateway']).to.not.equal(undefined);
       await waitUntil(() => ran === 1, 'queued refresh never ran');
+      expect(element['pendingTopicRefreshes'].has('gateway')).to.be.false;
     });
 
     it('loads the fold without asking for the same thing twice', async () => {

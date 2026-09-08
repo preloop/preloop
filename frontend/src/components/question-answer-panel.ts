@@ -1,18 +1,25 @@
-import { LitElement, html, css } from 'lit';
-import { customElement, property, state } from 'lit/decorators.js';
+import { LitElement, html, css, nothing } from 'lit';
+import { customElement, property, state, query } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
+import './answer-form';
+import type { AnswerForm, AnswerFormState } from './answer-form';
+import type { QuestionItem, QuestionSchema } from '../types';
 
 /**
  * Payload emitted when the operator answers an agent question.
  *
- * Exactly one of `selectedOption` / `answerText` is set. Both map onto an
- * APPROVE decision server-side (precedence: answer_text > selected_option).
+ * One of `selectedOption` / `answerText` / `answer` is set. All map onto an
+ * APPROVE decision server-side (precedence: answer_text > selected_option),
+ * except `answer`, which is the filled-in form and is stored as data next to
+ * the comment rather than inside it.
  */
 export interface QuestionAnswerDetail {
   selectedOption?: string;
   answerText?: string;
+  answer?: Record<string, unknown>;
+  comment?: string;
 }
 
 /**
@@ -40,6 +47,21 @@ export class QuestionAnswerPanel extends LitElement {
   @property({ type: Boolean })
   allowFreeText = false;
 
+  /**
+   * The shape of the answer, when the agent asked for one. Present replaces
+   * the options and the free-text box with a form.
+   */
+  @property({ type: Object })
+  inputSchema: QuestionSchema | null = null;
+
+  /** The rows the question is about, rendered as a table inside the form. */
+  @property({ type: Array })
+  items: QuestionItem[] = [];
+
+  /** Who the platform will record as the author. Never typed by a human. */
+  @property({ type: String })
+  author = '';
+
   /** Disables all controls while a decision is in flight. */
   @property({ type: Boolean })
   submitting = false;
@@ -50,6 +72,13 @@ export class QuestionAnswerPanel extends LitElement {
 
   @state()
   private answerText = '';
+
+  /** Live form state, so the send button can say whether it will go through. */
+  @state()
+  private formValid = false;
+
+  @query('answer-form')
+  private formElement?: AnswerForm;
 
   static styles = css`
     :host {
@@ -127,6 +156,17 @@ export class QuestionAnswerPanel extends LitElement {
       color: var(--sl-color-neutral-600);
       margin-bottom: 0.75rem;
     }
+
+    .answer-form-block {
+      margin-bottom: 0.75rem;
+    }
+
+    .form-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
   `;
 
   private emitOption(option: string) {
@@ -153,6 +193,21 @@ export class QuestionAnswerPanel extends LitElement {
     this.answerText = '';
   }
 
+  /** Send the filled-in form. Refuses while a required field is empty. */
+  private emitForm() {
+    if (this.submitting) return;
+    const form = this.formElement;
+    if (!form || !form.validate()) return;
+    const note = this.answerText.trim();
+    this.dispatchEvent(
+      new CustomEvent<QuestionAnswerDetail>('question-answer', {
+        detail: { answer: form.answer, comment: note || undefined },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
   private emitDismiss() {
     if (this.submitting) return;
     this.dispatchEvent(
@@ -160,9 +215,65 @@ export class QuestionAnswerPanel extends LitElement {
     );
   }
 
+  /**
+   * The form path: the agent described the shape of the answer, so the human
+   * fills fields instead of typing JSON that nobody can validate.
+   */
+  private renderForm() {
+    return html`
+      <div class="answer-form-block">
+        <answer-form
+          .schema=${this.inputSchema}
+          .items=${this.items ?? []}
+          .author=${this.author}
+          .disabled=${this.submitting}
+          ?compact=${this.compact}
+          @answer-change=${(e: CustomEvent<AnswerFormState>) =>
+            (this.formValid = e.detail.valid)}
+        ></answer-form>
+      </div>
+      ${
+        this.allowFreeText
+          ? html`
+              <div class="free-text">
+                <sl-textarea
+                  class="answer-input"
+                  label="Note (optional)"
+                  placeholder="Anything the agent should know"
+                  rows="2"
+                  resize="auto"
+                  .value=${this.answerText}
+                  ?disabled=${this.submitting}
+                  @sl-input=${(e: Event) =>
+                    (this.answerText = (e.target as HTMLTextAreaElement).value)}
+                ></sl-textarea>
+              </div>
+            `
+          : nothing
+      }
+      <div class="form-actions">
+        <sl-button
+          class="send-form"
+          size=${this.compact ? 'small' : 'medium'}
+          variant="success"
+          ?loading=${this.submitting}
+          ?disabled=${this.submitting}
+          @click=${this.emitForm}
+        >
+          <sl-icon slot="prefix" name="send"></sl-icon>
+          Send answer
+        </sl-button>
+      </div>
+    `;
+  }
+
   render() {
     const options = this.options ?? [];
-    const hasAnswerControl = options.length > 0 || this.allowFreeText;
+    const hasForm = Boolean(
+      this.inputSchema && Object.keys(this.inputSchema.properties ?? {}).length
+    );
+    const hasAnswerControl =
+      hasForm || options.length > 0 || this.allowFreeText;
 
     return html`
       <div class="question-panel" part="panel">
@@ -172,8 +283,9 @@ export class QuestionAnswerPanel extends LitElement {
         </div>
         <p class="question-text">${this.question}</p>
 
+        ${hasForm ? this.renderForm() : nothing}
         ${
-          options.length > 0
+          !hasForm && options.length > 0
             ? html`
                 <div class="options">
                   ${options.map(
@@ -196,7 +308,7 @@ export class QuestionAnswerPanel extends LitElement {
             : ''
         }
         ${
-          this.allowFreeText
+          !hasForm && this.allowFreeText
             ? html`
                 <div class="free-text">
                   <sl-textarea

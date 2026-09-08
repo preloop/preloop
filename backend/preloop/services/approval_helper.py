@@ -35,8 +35,14 @@ def _set_last_approval_meta(
     status: str,
     resolved_at: Any = None,
     responded_by: Optional[str] = None,
+    answer: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Record the approval audit metadata for the current task."""
+    """Record the approval audit metadata for the current task.
+
+    ``answer`` is the validated form answer when the request carried an
+    ``input_schema``; it rides here rather than in the returned comment
+    because the comment is a sentence and the answer is data.
+    """
     _last_approval_meta_var.set(
         {
             "request_id": str(request_id),
@@ -47,6 +53,7 @@ def _set_last_approval_meta(
                 else resolved_at
             ),
             "responded_by": responded_by,
+            "answer": answer,
         }
     )
 
@@ -329,12 +336,22 @@ async def require_approval(
         # Check if approval should be bypassed (e.g. during async re-execution
         # of an already-approved tool call).
         from preloop.services.dynamic_fastmcp import (
+            _approved_answer_var,
             _approved_comment_var,
+            _approved_id_var,
             _bypass_approval_var,
         )
 
         if _bypass_approval_var.get(False):
             logger.info(f"Bypassing approval for '{tool_name}' (async re-execution)")
+            # Replay still owes the tool its audit metadata: the request id,
+            # who answered and the form answer come from the decided record
+            # (set by get_approval_status), so an async ask_user returns the
+            # same payload as a synchronous one.
+            replay_answer = _approved_answer_var.get(None)
+            replay_id = _approved_id_var.get(None)
+            if replay_id:
+                _set_last_approval_meta(replay_id, "approved", answer=replay_answer)
             if return_comment_on_approve:
                 # ask_user consumes the approver comment as the human's
                 # answer; during replay the original decision's comment is
@@ -898,6 +915,12 @@ async def require_approval(
                             if current_request
                             else None
                         )
+                        # The form answer, when this request carried one.
+                        current_answer = (
+                            getattr(current_request, "structured_answer", None)
+                            if current_request
+                            else None
+                        )
                         current_resolved_at = (
                             current_request.resolved_at if current_request else None
                         )
@@ -952,6 +975,7 @@ async def require_approval(
                             current_status,
                             resolved_at=current_resolved_at,
                             responded_by=current_responded_by,
+                            answer=current_answer,
                         )
                         break
 

@@ -1,5 +1,7 @@
 """CRUD operations for Organization model."""
 
+from datetime import datetime
+from uuid import UUID
 from typing import List, Optional
 
 from sqlalchemy.orm import Session, joinedload
@@ -12,6 +14,15 @@ from .base import CRUDBase
 
 class CRUDOrganization(CRUDBase[Organization]):
     """CRUD operations for Organization model."""
+
+    def touch_webhook(
+        self, db: Session, *, organization_id: UUID, observed_at: datetime
+    ) -> None:
+        """Record acknowledged webhook delivery in a short standalone phase."""
+        db.query(Organization).filter(Organization.id == organization_id).update(
+            {Organization.last_webhook_update: observed_at}, synchronize_session=False
+        )
+        db.commit()
 
     def get_by_identifier(
         self, db: Session, *, identifier: str, account_id: Optional[str] = None
