@@ -169,11 +169,19 @@ async def process_webhook_event(
     event_type: str,
     payload: dict[str, Any],
     embedding_requests: Optional[list[dict[str, Any]]] = None,
+    _ack: Any = None,
     **kwargs: Any,
 ) -> None:
     """
     This task is triggered when a webhook event is received from a tracker.
     It uses the FlowTriggerService to check if any flows should be initiated.
+
+    ``_ack`` is injected by the NATS worker (never published in the message)
+    and is called once the flow-trigger stage has committed: everything the
+    delivery had to durably produce exists in the database at that point, so
+    the message must not be redelivered for the rest of the handler. Declared
+    explicitly rather than left in ``**kwargs`` because ``kwargs`` is
+    serialized into the event and persisted on the execution.
     """
     logger.info(f"Processing tracker event: {tracker_id} - {event_type}")
     logger.debug(f"Payload: {payload}")
@@ -239,6 +247,13 @@ async def process_webhook_event(
 
         trigger_service = FlowTriggerService(db)
         await trigger_service.process_event(event_data)
+
+        # Executions for this delivery are committed. Ack now so a drain,
+        # crash, or ack_wait expiry later in this handler cannot replay a
+        # delivery that already did its durable work. The delivery-key guard
+        # in FlowTriggerService still makes a replay harmless.
+        if _ack is not None:
+            await _ack()
     finally:
         db.close()
 
@@ -565,6 +580,12 @@ async def cleanup_tracker_webhooks(tracker_id: str) -> None:
 
 # Tasks that ack JetStream after a successful DB claim, then run for a long time.
 ACK_AFTER_CLAIM_TASKS = frozenset({"execute_flow", "resume_flow_execution"})
+
+# Tasks that receive an ``_ack`` callable and ack once their database writes
+# are committed, instead of when the handler returns. Without this a webhook
+# handler that is cancelled after committing an execution naks the message,
+# and the redelivery repeats work that already happened.
+ACK_AFTER_COMMIT_TASKS = frozenset({"process_webhook_event"})
 
 
 async def execute_flow(

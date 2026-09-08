@@ -315,12 +315,18 @@ class PreloopSyncNatsWorker:
                         await msg.ack()
                         acked = True
                         logger.info(
-                            "Acknowledged task '%s' after claim (ack-after-claim)",
+                            "Acknowledged task '%s' early: the handler "
+                            "reported its durable work is committed",
                             task_name,
                         )
 
                 call_kwargs = dict(payload.get("kwargs", {}) or {})
-                if task_name in getattr(tasks, "ACK_AFTER_CLAIM_TASKS", ()):
+                # ack-after-claim (flow orchestration) and ack-after-commit
+                # (webhook fan-out) both hand the handler an ack callable so
+                # it decides when redelivery stops being useful.
+                if task_name in getattr(
+                    tasks, "ACK_AFTER_CLAIM_TASKS", ()
+                ) or task_name in getattr(tasks, "ACK_AFTER_COMMIT_TASKS", ()):
                     call_kwargs["_ack"] = early_ack
 
                 if task_name == "process_webhook_event" and call_kwargs.get(
