@@ -114,6 +114,17 @@ _approved_comment_var: ContextVar[Optional[str]] = ContextVar(
     "_approved_comment_var", default=None
 )
 
+# The validated form answer and the approval id of the request being
+# re-executed. A structured ask_user returns JSON built from both, so an
+# async-approval replay has to carry them the same way it carries the
+# comment; without them the agent would get an answer with no provenance.
+_approved_answer_var: ContextVar[Optional[dict]] = ContextVar(
+    "_approved_answer_var", default=None
+)
+_approved_id_var: ContextVar[Optional[str]] = ContextVar(
+    "_approved_id_var", default=None
+)
+
 # Context variable to ensure internal proxied tool names are only called via proxy translation
 _is_proxy_translation_var: ContextVar[bool] = ContextVar(
     "_is_proxy_translation_var", default=False
@@ -1745,6 +1756,8 @@ _CONTEXT_VAR_EXPORTS = (
     _justification_var,
     _bypass_approval_var,
     _approved_comment_var,
+    _approved_answer_var,
+    _approved_id_var,
     _is_proxy_translation_var,
 )
 assert _CONTEXT_VAR_EXPORTS, "contextvar exports must be defined"
