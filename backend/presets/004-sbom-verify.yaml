@@ -81,6 +81,33 @@ prompt_template: |
   5. LICENSE FLAGS (only if a policy file was provided; otherwise flag
      only components with no license at all) — denylist hits and
      flag-list matches, per component.
+  6. PROVENANCE CONSISTENCY — the caller's description of the artefact
+     is a claim, not a fact. Test it against the file you were given and
+     record the check under the name "provenance_consistency". Compare,
+     using only what the SBOM itself says:
+     - declared generator vs the SBOM's own creator/tool metadata
+       (SPDX creationInfo.creators, CycloneDX metadata.tools);
+     - declared sha256 (e.g. payload product_provenance.sbom.digest) vs
+       the sha256 of the file you actually parsed;
+     - declared build ref / image hash vs the SBOM's own build
+       references, when it carries any;
+     - any claim that the document is unmodified tool output vs
+       machine-checkable evidence of post-processing: byte-identical
+       duplicate component objects, identifier fields present on some
+       components and stripped from others, and identifier references
+       that do not resolve (CycloneDX dependencies ref/dependsOn
+       entries with no matching bom-ref, SPDX relationship SPDXIDs with
+       no matching element). Count these exactly: report the number of
+       occurrences AND the number of distinct targets, never one figure
+       described as the other.
+     A contradiction is a finding about the DECLARATION, recorded
+     separately from findings about the SBOM's content, and it makes
+     the verdict at least "pass_with_findings". A declared sha256 that
+     does not match the parsed file is a "fail": you cannot audit an
+     artefact you cannot identify. If the caller declared nothing to
+     check, mark the check "skipped: no provenance declared" — an
+     absent declaration is not a passing one, and silence from the
+     caller is never evidence that the SBOM is unmodified tool output.
 
   ═══════════════════════════════════════════════════════════
   PHASE 2: EVIDENCE PACK
@@ -94,9 +121,13 @@ prompt_template: |
     three clearly labelled boxes, in this order:
       BOX 1 — "What we checked". List the SBOM actually delivered and
       the deterministic checks that ran (format validity, minimum
-      elements, coverage quality, build cross-check, license flags).
-      Derive this from inputs_declared and checks[]. No aggregate
-      claim the checks do not support.
+      elements, coverage quality, build cross-check, license flags,
+      provenance consistency). Derive this from inputs_declared and
+      checks[]. No aggregate claim the checks do not support. If
+      provenance consistency found a contradiction, the cover says so
+      in one sentence: a reader must not have to reach the findings
+      register to learn that the artefact disagrees with how it was
+      described.
       BOX 2 — "What we did NOT check". Mandatory. May not be empty if
       anything was out of scope, skipped, or not delivered. List
       skipped build cross-check when no manifests were delivered,
@@ -165,11 +196,19 @@ prompt_template: |
   Rules:
   - "valid" and every entry in "checks" reflect deterministic outcomes
     only; anything requiring interpretation goes to "assessments".
+  - "checks" ALWAYS carries an entry named "provenance_consistency",
+    passed or skipped, with the compared values in "details" (declared
+    vs observed). Its absence would let a run that never tested the
+    caller's claims read exactly like one that tested and cleared them.
+    Contradictions go to inputs_declared and evidence/findings.json,
+    labelled as findings about the declaration, not about the SBOM.
   - verdict: "pass" = valid, minimum elements present, no findings;
     "pass_with_findings" = valid but findings exist (coverage gaps,
-    license flags, skipped cross-checks); "fail" = invalid SBOM or
-    minimum elements absent. Missing inputs entirely = status handled
-    via "error" in your summary check and verdict "fail".
+    license flags, skipped cross-checks, provenance contradictions);
+    "fail" = invalid SBOM, minimum elements absent, or a declared SBOM
+    digest that does not match the file you parsed. Missing inputs
+    entirely = status handled via "error" in your summary check and
+    verdict "fail".
   - "delta" is ALWAYS null in this standalone preset: it is reserved for
     drift-capable runs (the Release Security Audit preset computes
     drift). Do not attempt to populate it here.
@@ -178,6 +217,38 @@ prompt_template: |
     rather than inventing values.
   - Keep result.json under 200 KB; large listings go to
     evidence/findings.json and are referenced from "artifacts".
+
+  ═══════════════════════════════════════════════════════════
+  IF THE AUDIT CANNOT FINISH
+  ═══════════════════════════════════════════════════════════
+  A run that stops early still owes the reader a report. Do NOT write a
+  bare {"status": "failure", "reason": "..."} object: it carries no
+  schema, so the platform cannot tell it from a broken run and your
+  explanation is discarded. Do NOT invent an SBOM body you never
+  measured. Write the INCOMPLETION ENVELOPE to /workspace/result.json
+  instead, with exactly these keys:
+
+  {
+    "schema": "preloop.cra.sbomaudit/v1",
+    "flow": "sbom-verify",
+    "run_at": "<ISO 8601 UTC>",
+    "regime_profile": "cra",
+    "verdict": "error",
+    "incomplete": {
+      "reason": "<what stopped the run, in one or two sentences>",
+      "stage": "<the phase or check you had reached, or null>"
+    },
+    "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+  }
+
+  You MAY add git, tool_versions, inputs_declared, runner, checks,
+  assessments and artifacts when you have them. You may NOT add the
+  audit body (source, valid, minimum_elements, coverage, license_flags,
+  delta): a document that reports audit content is claiming work, and
+  claimed work is validated in full. The platform stores this envelope
+  as a first-class result, fails the execution, and never reads it as a
+  release. "The audit could not be completed because X" is itself a
+  compliance-relevant fact; a discarded message is not.
 agent_type: codex
 agent_config:
   sandbox_type: exec

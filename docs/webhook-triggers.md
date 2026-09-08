@@ -45,21 +45,37 @@ commands can consume them.
 
 ### Validation rules
 
-An invalid declaration fails the execution with a clear error message before
-any agent container starts:
+The declaration is validated at trigger time. `POST /flows/{flow_id}/trigger`
+and the webhook trigger endpoint reject an invalid declaration with `400` and
+an oversized one with `413`, naming the cap, the actual size and the overage.
+No execution record is created. Trigger paths that do not go through those
+endpoints fail the execution with the same message before any agent container
+starts.
 
-- **Relative paths only** — absolute paths, `~`, backslashes, control
+- **Relative paths only**: absolute paths, `~`, backslashes, control
   characters, and any `..` traversal are rejected.
 - **No `.git` segment at any depth** (e.g. `.git/config`,
-  `client/.git/hooks/post-commit`) — seeds cannot touch git metadata of
+  `client/.git/hooks/post-commit`), so seeds cannot touch git metadata of
   cloned repositories.
 - **No duplicate paths** (after normalization).
 - **Strict base64** for `content_base64`.
-- **Size cap: 1 MiB total base64-encoded** across all files (~768 KiB
-  decoded). The encoded form is embedded in the container launch command —
-  on Kubernetes that lives in the Job spec, which must stay well under
-  etcd's ~1.5 MiB object limit — so the cap applies to the encoded size.
+- **Per-file cap: 96 KiB base64-encoded** (~72 KiB decoded). Each file
+  travels as one container environment variable, and Linux caps a single
+  `execve` string (`MAX_ARG_STRLEN`) at 128 KiB.
+- **Total cap: 1 MiB base64-encoded** across all files (~768 KiB decoded).
+  On Kubernetes the environment lives in the Job spec, which must stay well
+  under etcd's ~1.5 MiB object limit.
 - **File-count cap: 50 files** per payload.
+
+Both size caps apply to the **encoded** form, because that is what the
+transport carries. Neither budget is shared with the rendered prompt: seed
+contents are passed in the environment, and the launch command references
+them by variable name. A large prompt does not shrink the seed allowance.
+
+If your artefacts do not fit, gzip them and have the flow decompress in a
+setup command. Do not reshape the artefact itself to fit the transport: a
+CRA evidence pack that audits an edited SBOM records findings about the
+edit, not about the product.
 
 At runtime the materialization step re-checks physical containment: writes
 that would resolve outside `/workspace` through a symlink in the cloned

@@ -759,3 +759,128 @@ async def test_webhook_trigger_reports_error_when_no_execution_created(
     assert body.get("status") != "triggered"
     # Matches the wording: truly no execution row exists.
     assert _executions_for_flow(db, flow.id) == []
+
+
+class TestWorkspaceSeedBudgetAtTriggerTime:
+    """Oversized `workspace_files` must be rejected before an execution exists.
+
+    Before this, the declaration was only checked in the orchestrator, so an
+    oversized payload produced a 200, an execution row, and then a FAILED run
+    whose message named the CRA contract rather than the input size
+    (preloop/preloop#505).
+    """
+
+    @staticmethod
+    def _seed(size: int) -> str:
+        import base64
+
+        return base64.b64encode(b"x" * size).decode("ascii")
+
+    def test_oversized_single_file_is_413_with_no_execution(
+        self, db_session: Session, test_user
+    ):
+        from preloop.utils.workspace_seed import MAX_SINGLE_SEED_ENCODED_BYTES
+
+        db = db_session
+        flow, webhook_secret = _create_webhook_flow(
+            db, test_user, "Webhook Flow Oversized Seed"
+        )
+        client = _make_client(db)
+
+        response = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}",
+            json={
+                "workspace_files": [
+                    {
+                        "path": "sbom/image.spdx.json",
+                        "content_base64": self._seed(MAX_SINGLE_SEED_ENCODED_BYTES),
+                    }
+                ]
+            },
+        )
+
+        assert response.status_code == 413
+        detail = response.json()["detail"]
+        assert "per-file cap" in detail
+        assert str(MAX_SINGLE_SEED_ENCODED_BYTES) in detail
+        assert "sbom/image.spdx.json" in detail
+        assert _executions_for_flow(db, flow.id) == []
+
+    def test_manual_trigger_oversized_single_file_is_413_with_no_execution(
+        self, client: TestClient, db_session: Session, test_user
+    ):
+        from preloop.utils.workspace_seed import MAX_SINGLE_SEED_ENCODED_BYTES
+
+        db = db_session
+        flow, _ = _create_webhook_flow(db, test_user, "Manual Trigger Oversized Seed")
+
+        response = client.post(
+            f"/api/v1/flows/{flow.id}/trigger",
+            json={
+                "payload": {
+                    "workspace_files": [
+                        {
+                            "path": "sbom/image.spdx.json",
+                            "content_base64": self._seed(MAX_SINGLE_SEED_ENCODED_BYTES),
+                        }
+                    ]
+                }
+            },
+        )
+
+        assert response.status_code == 413
+        detail = response.json()["detail"]
+        assert "per-file cap" in detail
+        assert str(MAX_SINGLE_SEED_ENCODED_BYTES) in detail
+        assert "sbom/image.spdx.json" in detail
+        assert _executions_for_flow(db, flow.id) == []
+
+    def test_malformed_declaration_is_400_with_no_execution(
+        self, db_session: Session, test_user
+    ):
+        db = db_session
+        flow, webhook_secret = _create_webhook_flow(
+            db, test_user, "Webhook Flow Traversing Seed"
+        )
+        client = _make_client(db)
+
+        response = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}",
+            json={
+                "workspace_files": [
+                    {"path": "../escape.txt", "content_base64": self._seed(8)}
+                ]
+            },
+        )
+
+        assert response.status_code == 400
+        assert "escapes /workspace" in response.json()["detail"]
+        assert _executions_for_flow(db, flow.id) == []
+
+    def test_within_budget_still_triggers(self, db_session: Session, test_user):
+        """A payload inside the caps is unaffected by the new check."""
+        from preloop.services.flow_trigger_service import FlowTriggerService
+
+        db = db_session
+        flow, webhook_secret = _create_webhook_flow(
+            db, test_user, "Webhook Flow Small Seed"
+        )
+        client = _make_client(db)
+
+        with patch.object(
+            FlowTriggerService, "_start_flow_execution", new_callable=AsyncMock
+        ):
+            response = client.post(
+                f"/webhooks/flows/{flow.id}/{webhook_secret}",
+                json={
+                    "workspace_files": [
+                        {
+                            "path": "sbom/image.spdx.json",
+                            "content_base64": self._seed(1024),
+                        }
+                    ]
+                },
+            )
+
+        assert response.status_code == 200
+        assert len(_executions_for_flow(db, flow.id)) == 1

@@ -1896,7 +1896,7 @@ class TestWorkspaceSeedValidation:
     async def test_oversized_seed_fails_context_preparation(
         self, db_session: Session, test_flow: Flow, mock_nats_client
     ):
-        """Seeds above the inline cap must abort with a clear message."""
+        """Seeds above the per-file cap must abort with a clear message."""
         import base64
 
         from preloop.utils.workspace_seed import (
@@ -1904,7 +1904,9 @@ class TestWorkspaceSeedValidation:
             WorkspaceSeedError,
         )
 
-        # Encoded size just over the cap (the cap applies to the base64 form).
+        # Encoded size just over the total cap (the cap applies to the
+        # base64 form). A single file this large also exceeds the per-file
+        # budget, which is what the message now names.
         too_big = base64.b64encode(
             b"x" * (MAX_TOTAL_SEED_ENCODED_BYTES // 4 * 3 + 3)
         ).decode("ascii")
@@ -1915,7 +1917,7 @@ class TestWorkspaceSeedValidation:
             mock_nats_client,
             {"workspace_files": [{"path": "big.bin", "content_base64": too_big}]},
         )
-        with pytest.raises(WorkspaceSeedError, match="inline cap"):
+        with pytest.raises(WorkspaceSeedError, match="per-file cap"):
             await orchestrator._prepare_execution_context()
 
     @pytest.mark.asyncio
@@ -2202,8 +2204,14 @@ class TestSuccessConfirmationChannels:
             _confirmation_executor(artifact=artifact),
         )
 
+        expected = dict(artifact)
+        expected["runner"] = {
+            "kind": "hosted",
+            "id": None,
+            "attested_by": "control_plane",
+        }
         assert result["status"] == "SUCCEEDED"
-        assert result["result"] == artifact
+        assert result["result"] == expected
 
     @pytest.mark.asyncio
     async def test_audit_error_verdict_overrides_to_failed(
@@ -2227,11 +2235,17 @@ class TestSuccessConfirmationChannels:
             _confirmation_executor(artifact=artifact),
         )
 
+        expected = dict(artifact)
+        expected["runner"] = {
+            "kind": "hosted",
+            "id": None,
+            "attested_by": "control_plane",
+        }
         assert result["status"] == "FAILED"
         assert "result.json" in (
             result["error_message"] or ""
         ) or "CRA result.json" in (result["error_message"] or "")
-        assert result["result"] == artifact
+        assert result["result"] == expected
 
     @pytest.mark.asyncio
     async def test_unrecognized_verdict_without_sentinel_still_fails(

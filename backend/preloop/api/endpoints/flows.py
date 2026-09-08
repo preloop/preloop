@@ -28,6 +28,12 @@ from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.utils.hashing import compute_content_hash
 from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import require_permission
+from preloop.utils.workspace_seed import (
+    WORKSPACE_FILES_KEY,
+    WorkspaceSeedError,
+    WorkspaceSeedSizeError,
+    parse_workspace_files,
+)
 from preloop.models.crud.flow_execution_log import crud_flow_execution_log
 from preloop.services.runner_service import (
     derive_execution_runner,
@@ -327,8 +333,19 @@ def read_presets(
     """Retrieve flow presets available to the account.
 
     Returns global presets (account_id=None) plus any account-specific presets.
+    Global rows carry their catalog ``slug``, the stable identifier
+    ``POST /flows/run-preset`` takes, so scripted callers do not have to
+    match on a display name that can be renamed.
     """
-    return crud_flow.get_presets_for_account(db, account_id=current_user.account_id)
+    from preloop.flow_presets import PRESET_SLUGS_BY_NAME
+
+    presets = crud_flow.get_presets_for_account(db, account_id=current_user.account_id)
+    for preset in presets:
+        # Account-specific rows are copies: their name is user-editable and
+        # is not catalog identity, so they stay unslugged.
+        if getattr(preset, "account_id", None) is None:
+            preset.slug = PRESET_SLUGS_BY_NAME.get(getattr(preset, "name", None) or "")
+    return presets
 
 
 def _resolve_clone_model_binding(
@@ -1515,6 +1532,35 @@ def _halted_response() -> HTTPException:
     return HTTPException(status_code=403, detail=FLOW_DENIAL_MESSAGE)
 
 
+def _reject_oversized_workspace_seeds(
+    trigger_event_data: Optional[Dict[str, Any]],
+) -> None:
+    """Validate ``workspace_files`` before an execution row exists.
+
+    Seeds used to be checked only in the orchestrator, so an invalid or
+    oversized declaration produced a FAILED execution and a message about the
+    agent rather than a rejected request. The caller learns nothing actionable
+    from a 200 followed by a failure, and the failure text pointed at the
+    wrong subsystem (preloop/preloop#505).
+
+    413 rather than 400 for the size caps: the request is well formed, it is
+    the payload that is too large, and 413 is what a client library retries
+    with a smaller body.
+    """
+    if not isinstance(trigger_event_data, dict):
+        return
+    payload = trigger_event_data.get("payload")
+    if not isinstance(payload, dict) or WORKSPACE_FILES_KEY not in payload:
+        return
+    try:
+        parse_workspace_files(payload)
+    except WorkspaceSeedError as exc:
+        raise HTTPException(
+            status_code=413 if isinstance(exc, WorkspaceSeedSizeError) else 400,
+            detail=str(exc),
+        ) from exc
+
+
 def _validate_matrix(
     db: Session, matrix: Any, account_id: uuid.UUID
 ) -> List[Dict[str, Any]]:
@@ -1611,6 +1657,8 @@ async def trigger_flow_execution(
     flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
+
+    _reject_oversized_workspace_seeds(trigger_event_data)
 
     # Pop the reserved matrix key so it never leaks into template variables.
     matrix = None
@@ -2165,6 +2213,8 @@ async def trigger_flow_via_webhook(
         "payload": payload,
         "account_id": str(flow.account_id),
     }
+
+    _reject_oversized_workspace_seeds(event_data)
 
     def _execution_url(execution_id: str) -> str:
         # Built from settings.preloop_url; self-hosted deployments where the

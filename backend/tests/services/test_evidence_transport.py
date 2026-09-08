@@ -18,6 +18,13 @@ import pytest
 from preloop.agents.checkpoint_client import _read_bounded, pack_evidence
 from preloop.agents.container import ContainerAgentExecutor, K8S_ARTIFACT_WRAPPER_SCRIPT
 from preloop.config import settings
+from preloop.cra.evidence_pack import (
+    PACK_MANIFEST_NAME,
+    PACK_MANIFEST_SCHEMA,
+    EvidencePackError,
+    read_pack_manifest,
+    verify_pack_manifest,
+)
 from preloop.services.checkpoint_runtime import evidence_transport_env
 from preloop.services.flow_artifacts import (
     EvidenceUnavailableError,
@@ -529,7 +536,15 @@ async def test_later_capture_replaces_early_trap_archive() -> None:
     executor.evidence_transport_error = None
     executor.get_evidence_archive = AsyncMock(return_value=later)
     await orchestrator._capture_evidence_archive(executor, "job")
-    assert orchestrator._evidence_archive == later
+    # Capture now stamps manifest.json into a pack that arrived without
+    # one, so the stored bytes are the described bytes.
+    stored = orchestrator._evidence_archive
+    assert stored != b"stale-trap-bytes"
+    manifest = verify_pack_manifest(stored)
+    assert [member["name"] for member in manifest["members"]] == [
+        "evidence/after-postprocess.json"
+    ]
+    assert extract_result_json(stored) == extract_result_json(later)
 
 
 @pytest.mark.asyncio
@@ -919,3 +934,128 @@ async def test_hosted_docker_failed_direct_upload_does_not_store_leftovers(
     assert orchestrator._evidence_receipt is not None
     assert orchestrator._evidence_receipt["status"] == "failed"
     mock_container.get_archive.assert_not_called()
+
+
+class TestEvidencePackManifest:
+    """Packs describe themselves: members, inputs, declared source."""
+
+    def test_container_pack_carries_a_verifiable_manifest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("PRELOOP_EVIDENCE_MANIFEST", raising=False)
+        body = _evidence_archive(tmp_path)
+        manifest = verify_pack_manifest(body)
+        assert manifest["schema"] == PACK_MANIFEST_SCHEMA
+        assert sorted(member["name"] for member in manifest["members"]) == [
+            "evidence/findings.json",
+            "result.json",
+        ]
+        assert manifest["inputs"] == []
+        assert manifest["source"] == {}
+
+    def test_container_pack_embeds_the_control_plane_context(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        execution_id = str(uuid4())
+        monkeypatch.setenv(
+            "PRELOOP_EVIDENCE_MANIFEST",
+            json.dumps(
+                {
+                    "execution_id": execution_id,
+                    "inputs": [{"path": "sbom.json", "sha256": "c" * 64}],
+                    "source": {"status": "declared", "repositories": []},
+                }
+            ),
+        )
+        manifest = verify_pack_manifest(_evidence_archive(tmp_path))
+        assert manifest["execution_id"] == execution_id
+        assert manifest["inputs"] == [{"path": "sbom.json", "sha256": "c" * 64}]
+        assert manifest["source"]["status"] == "declared"
+
+    def test_container_pack_manifest_matches_its_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import hashlib
+
+        monkeypatch.delenv("PRELOOP_EVIDENCE_MANIFEST", raising=False)
+        payload = b'{"id":"CVE-2026-0001"}'
+        manifest = read_pack_manifest(_evidence_archive(tmp_path, payload))
+        findings = next(
+            member
+            for member in manifest["members"]
+            if member["name"] == "evidence/findings.json"
+        )
+        assert findings["sha256"] == hashlib.sha256(payload).hexdigest()
+        assert findings["size_bytes"] == len(payload)
+
+    def test_transport_env_delivers_seed_digests_not_seed_contents(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import base64
+        import hashlib
+
+        monkeypatch.setattr(settings, "flow_artifact_direct_upload", True)
+        content = b'{"bomFormat":"CycloneDX"}'
+        execution_id = str(uuid4())
+        env = evidence_transport_env(
+            {
+                "account_id": str(uuid4()),
+                "flow_id": str(uuid4()),
+                "execution_id": execution_id,
+                "trigger_event_data": {
+                    "payload": {
+                        "workspace_files": [
+                            {
+                                "path": "sbom.json",
+                                "content_base64": base64.b64encode(content).decode(),
+                            }
+                        ]
+                    }
+                },
+            }
+        )
+        context = json.loads(env["PRELOOP_EVIDENCE_MANIFEST"])
+        assert context["execution_id"] == execution_id
+        assert context["inputs"] == [
+            {
+                "path": "sbom.json",
+                "size_bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        ]
+        assert (
+            base64.b64encode(content).decode() not in env["PRELOOP_EVIDENCE_MANIFEST"]
+        )
+
+    def test_a_pack_missing_its_manifest_member_is_not_silently_accepted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Dropping a listed member is a verification failure, not a shorter pack."""
+        import io
+        import tarfile
+
+        monkeypatch.delenv("PRELOOP_EVIDENCE_MANIFEST", raising=False)
+        body = _evidence_archive(tmp_path)
+        buf = io.BytesIO()
+        with (
+            tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as src,
+            tarfile.open(fileobj=buf, mode="w:gz") as out,
+        ):
+            for member in src.getmembers():
+                if member.name == "evidence/findings.json":
+                    continue
+                out.addfile(member, src.extractfile(member))
+        with pytest.raises(EvidencePackError, match="not in the archive"):
+            verify_pack_manifest(buf.getvalue())
+
+    def test_manifest_member_name_is_at_the_archive_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import io
+        import tarfile
+
+        monkeypatch.delenv("PRELOOP_EVIDENCE_MANIFEST", raising=False)
+        with tarfile.open(
+            fileobj=io.BytesIO(_evidence_archive(tmp_path)), mode="r:gz"
+        ) as tar:
+            assert PACK_MANIFEST_NAME in tar.getnames()

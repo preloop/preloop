@@ -43,6 +43,44 @@ That field is runner bootstrap metadata and is emitted even when
 A failed or missing final PUT is stored as `failed`/`missing` even
 when an earlier trap artifact exists.
 
+## What is in a pack
+
+A pack is a gzip tar holding the agent's files under `evidence/`,
+`result.json` when the flow writes one, and `manifest.json`
+(`preloop.cra.evidence_manifest/v1`) at the archive root:
+
+```json
+{
+  "schema": "preloop.cra.evidence_manifest/v1",
+  "execution_id": "0b0f...",
+  "generated_at": "2026-09-08T10:15:00Z",
+  "members": [
+    {"name": "evidence/audit-report.md", "size_bytes": 8412, "sha256": "9f2c..."},
+    {"name": "result.json", "size_bytes": 5120, "sha256": "1a77..."}
+  ],
+  "members_digest": "4d51...",
+  "inputs": [{"path": "sbom.json", "size_bytes": 91233, "sha256": "aa10..."}],
+  "source": {"status": "declared", "repositories": [{"remote": "...", "commit": "..."}]}
+}
+```
+
+`members` covers every file in the archive except the manifest itself.
+`inputs` digests the `workspace_files` seeds as delivered to the run, so a
+reader can check that the SBOM in the pack is the SBOM that was audited.
+`source` repeats the commits the caller declared in `product_provenance`:
+it is a declaration, not an attestation, and the verified form lives in
+`dossier_manifest` on the execution result.
+
+The container writes the manifest on the direct path. On the legacy path
+the control plane adds it when the pack arrives, before the archive is
+stored and before its receipt is minted, so the digest in the receipt is
+the digest of the bytes that are kept. Packs captured before this existed
+have no manifest and still download and verify by receipt digest.
+
+`python -m preloop.cra.ci` checks the manifest whenever one is present: a member
+whose bytes do not match, a listed member that is gone, and a packed member
+that nothing lists are all failures.
+
 ## Validation, encryption, quota
 
 The shared artifact service (`preloop.services.flow_artifacts`) validates

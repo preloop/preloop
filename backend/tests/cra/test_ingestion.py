@@ -140,3 +140,53 @@ async def test_hosted_extracts_result_from_evidence_archive(
     assert artifact is not None
     assert artifact["verdict"] == "fail"
     assert artifact["schema"] == "preloop.cra.sbomaudit/v1"
+
+
+@pytest.mark.asyncio
+async def test_hosted_capture_stamps_the_hosted_runner(
+    sbomaudit_result: dict[str, Any],
+) -> None:
+    """The stored result names the executor the platform assigned."""
+    prompt = (
+        "Required shape (preloop.cra.sbomaudit/v1): "
+        '{ "schema": "preloop.cra.sbomaudit/v1" }'
+    )
+    orchestrator = _hosted_orchestrator(prompt=prompt)
+    executor = AsyncMock()
+    executor.get_result_artifact = AsyncMock(return_value=clone(sbomaudit_result))
+    artifact = await orchestrator._capture_result_artifact(executor, "hosted-session")
+    assert artifact is not None
+    assert artifact["runner"] == {
+        "kind": "hosted",
+        "id": None,
+        "attested_by": "control_plane",
+    }
+
+
+@pytest.mark.asyncio
+async def test_leased_execution_stamps_the_private_runner(
+    sbomaudit_result: dict[str, Any],
+) -> None:
+    """A leased run records self_hosted and the runner id from the row."""
+    prompt = (
+        "Required shape (preloop.cra.sbomaudit/v1): "
+        '{ "schema": "preloop.cra.sbomaudit/v1" }'
+    )
+    runner_id = uuid4()
+    orchestrator = _hosted_orchestrator(prompt=prompt)
+    orchestrator.execution_log = type(
+        "Log",
+        (),
+        {
+            "id": uuid4(),
+            "resolved_input_prompt": prompt,
+            "runner_id": runner_id,
+            "agent_session_reference": f"runner:{runner_id}:pool-eu",
+        },
+    )()
+    executor = AsyncMock()
+    executor.get_result_artifact = AsyncMock(return_value=clone(sbomaudit_result))
+    artifact = await orchestrator._capture_result_artifact(executor, "runner-session")
+    assert artifact is not None
+    assert artifact["runner"]["kind"] == "self_hosted"
+    assert artifact["runner"]["id"] == str(runner_id)

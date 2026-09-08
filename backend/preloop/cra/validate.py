@@ -30,6 +30,10 @@ from preloop.cra.schemas import (
     GATE_CVSS_MAX,
     GATE_CVSS_MIN,
     HEURISTIC_SOURCES,
+    INCOMPLETE_ALLOWED,
+    INCOMPLETE_FIELD,
+    INCOMPLETE_REQUIRED,
+    INCOMPLETE_SIGNALS,
     INVALID_ERROR,
     LICENSE_FLAGS,
     MATCH_KINDS,
@@ -147,13 +151,20 @@ class GatePolicy:
     """Authoritative KEV/CVSS gate policy from trigger/flow/CI config.
 
     Never parsed from agent-authored ``gate.policy`` display text. Default is
-    fail on KEV or CVSS >= 9.0. Operator override is the trigger/CI
-    ``gate.fail_on_kev`` / ``gate.fail_on_cvss_gte`` fields only; there is no
-    per-product policy table.
+    fail on KEV, on CVSS >= 9.0, or on a database-source finding carrying no
+    score at all. Operator override is the trigger/CI ``gate.fail_on_kev`` /
+    ``gate.fail_on_cvss_gte`` / ``gate.fail_on_unscored`` fields only; there
+    is no per-product policy table.
+
+    ``fail_on_unscored`` defaults to True because Go and Rust advisories
+    routinely reach OSV with no CVSS vector. With a score-only gate every one
+    of them passes silently, which reads as "screened and cleared" when it
+    means "never scored". An unscored finding is waivable like any other.
     """
 
     fail_on_kev: bool = True
     fail_on_cvss_gte: float = DEFAULT_GATE_CVSS
+    fail_on_unscored: bool = True
 
 
 DEFAULT_GATE_POLICY = GatePolicy()
@@ -222,8 +233,9 @@ def parse_gate_policy(configured: Any) -> GatePolicy:
     """Build gate policy from trustworthy operator config.
 
     Invalid, non-finite, or out-of-range CVSS values are ignored (default
-    9.0 remains). ``fail_on_kev`` must be a JSON boolean. Model-authored
-    ``gate.policy`` display strings are never consulted.
+    9.0 remains). ``fail_on_kev`` and ``fail_on_unscored`` must be JSON
+    booleans. Model-authored ``gate.policy`` display strings are never
+    consulted.
     """
     if not isinstance(configured, Mapping):
         return DEFAULT_GATE_POLICY
@@ -231,11 +243,19 @@ def parse_gate_policy(configured: Any) -> GatePolicy:
     raw_kev = configured.get("fail_on_kev")
     if type(raw_kev) is bool:
         fail_on_kev = raw_kev
+    fail_on_unscored = DEFAULT_GATE_POLICY.fail_on_unscored
+    raw_unscored = configured.get("fail_on_unscored")
+    if type(raw_unscored) is bool:
+        fail_on_unscored = raw_unscored
     cvss = DEFAULT_GATE_POLICY.fail_on_cvss_gte
     parsed = _finite_cvss(configured.get("fail_on_cvss_gte"))
     if parsed is not None:
         cvss = parsed
-    return GatePolicy(fail_on_kev=fail_on_kev, fail_on_cvss_gte=cvss)
+    return GatePolicy(
+        fail_on_kev=fail_on_kev,
+        fail_on_cvss_gte=cvss,
+        fail_on_unscored=fail_on_unscored,
+    )
 
 
 def gate_policy_from_trigger(payload: Any) -> GatePolicy:
@@ -341,6 +361,99 @@ def _check_envelope(
     if not isinstance(artifacts, Mapping):
         failures.append(f"{path}.artifacts must be an object")
     failures.extend(_check_disclaimer(obj, path=path))
+    return failures
+
+
+def is_incomplete_envelope(obj: Any) -> bool:
+    """Return True when ``obj`` is the minimal incompletion envelope.
+
+    The marker is an ``incomplete`` object and nothing outside the allowed
+    key set. A document that also carries audit body sections (findings, a
+    gate, a decision) is claiming completed work and is validated in full,
+    even when it names a reason for stopping.
+    """
+    if not isinstance(obj, Mapping):
+        return False
+    if not isinstance(obj.get(INCOMPLETE_FIELD), Mapping):
+        return False
+    return set(obj) <= INCOMPLETE_ALLOWED
+
+
+def _check_incomplete_optional(obj: Mapping[str, Any], *, path: str) -> list[str]:
+    """Type-check the context fields an interrupted run may still carry."""
+    failures: list[str] = []
+    git = obj.get("git")
+    if git is not None and not isinstance(git, Mapping):
+        failures.append(f"{path}.git must be an object or null")
+    for key in ("tool_versions", "inputs_declared", "runner", "artifacts"):
+        if key in obj and not isinstance(obj.get(key), Mapping):
+            failures.append(f"{path}.{key} must be an object")
+    runner = obj.get("runner")
+    if isinstance(runner, Mapping):
+        kind = runner.get("kind")
+        if kind is not None and not json_in(kind, RUNNER_KINDS):
+            failures.append(
+                f"{path}.runner.kind must be hosted|self_hosted|null, got {kind!r}"
+            )
+    if "assessments" in obj and not isinstance(obj.get("assessments"), list):
+        failures.append(f"{path}.assessments must be a list")
+    checks = obj.get("checks")
+    if "checks" in obj and not isinstance(checks, list):
+        failures.append(f"{path}.checks must be a list")
+    elif isinstance(checks, list):
+        for idx, item in enumerate(checks):
+            failures.extend(_check_check_item(item, path=f"{path}.checks[{idx}]"))
+    return failures
+
+
+def _validate_incomplete_envelope(
+    obj: Mapping[str, Any], *, schema_id: str, path: str = "result"
+) -> list[str]:
+    """Validate the minimal envelope of a run that could not complete.
+
+    Identity and honesty only: the reason must be stated, the completion
+    signal must say error, and no audit body may be smuggled in. Callers
+    treat the outcome as incomplete, which fails the execution and denies
+    the release regardless of what the reason says.
+    """
+    failures = _require_keys(obj, INCOMPLETE_REQUIRED, path=path)
+    expected_flow = FLOW_BY_SCHEMA.get(schema_id)
+    if expected_flow is not None and obj.get("flow") != expected_flow:
+        failures.append(
+            f"{path}.flow must be {expected_flow!r}, got {obj.get('flow')!r}"
+        )
+    if obj.get("regime_profile") != REGIME_PROFILE:
+        failures.append(
+            f"{path}.regime_profile must be {REGIME_PROFILE!r}, "
+            f"got {obj.get('regime_profile')!r}"
+        )
+    run_at = obj.get("run_at")
+    if not isinstance(run_at, str) or not run_at.strip():
+        failures.append(f"{path}.run_at must be a non-empty ISO-8601 string")
+    incomplete = obj.get(INCOMPLETE_FIELD)
+    if isinstance(incomplete, Mapping):
+        reason = incomplete.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            failures.append(
+                f"{path}.{INCOMPLETE_FIELD}.reason must state, in prose, what "
+                "stopped the run"
+            )
+        stage = incomplete.get("stage")
+        if stage is not None and not isinstance(stage, str):
+            failures.append(f"{path}.{INCOMPLETE_FIELD}.stage must be a string or null")
+    signals = INCOMPLETE_SIGNALS.get(schema_id, ())
+    for signal in signals:
+        if obj.get(signal) != AUDIT_INCOMPLETE_VERDICT:
+            failures.append(
+                f"{path}.{signal} must be {AUDIT_INCOMPLETE_VERDICT!r} in an "
+                f"incompletion envelope, got {obj.get(signal)!r}"
+            )
+    if json_in(schema_id, SCHEMAS_WITHOUT_STATUS) and "status" in obj:
+        failures.append(
+            f"{path}.status is not part of {schema_id}; completion is the verdict"
+        )
+    failures.extend(_check_disclaimer(obj, path=path))
+    failures.extend(_check_incomplete_optional(obj, path=path))
     return failures
 
 
@@ -748,6 +861,13 @@ def _check_counts_by_severity(
 def _default_gate_failures(
     findings: Sequence[Any], *, policy: GatePolicy
 ) -> list[dict[str, Any]]:
+    """Findings the configured policy fails on, before waivers.
+
+    A database-source finding with no usable CVSS score is gate-relevant by
+    default: unscored is unknown, and unknown is not a pass. Heuristic-only
+    hits still never enter the gate, so this cannot fail a release on a
+    fuzzy CPE match.
+    """
     failing: list[dict[str, Any]] = []
     for item in findings:
         if not isinstance(item, Mapping):
@@ -757,10 +877,13 @@ def _default_gate_failures(
         cvss = item.get("cvss")
         kev = item.get("kev") is True and policy.fail_on_kev
         high_cvss = False
+        scored = False
         if _is_number(cvss):
             score = float(cvss)
-            high_cvss = math.isfinite(score) and score >= policy.fail_on_cvss_gte
-        if kev or high_cvss:
+            scored = math.isfinite(score)
+            high_cvss = scored and score >= policy.fail_on_cvss_gte
+        unscored = policy.fail_on_unscored and not scored
+        if kev or high_cvss or unscored:
             finding_id = str(item.get("id") or "")
             if finding_id:
                 aliases = item.get("aliases")
@@ -866,7 +989,7 @@ def _check_gate(
         expected_passed = bool(outcome["gate_passed_after_waivers"])
         if passed is True and not expected_passed:
             failures.append(
-                f"{path}.passed is true but remaining unwaived KEV/CVSS "
+                f"{path}.passed is true but remaining unwaived KEV/CVSS/unscored "
                 f"failures {outcome['unwaived_failures']} are not covered"
             )
         if passed is False and expected_passed:
@@ -907,13 +1030,13 @@ def _check_gate(
     else:
         if passed is True and computed:
             failures.append(
-                f"{path}.passed is true but KEV/CVSS gate failures "
+                f"{path}.passed is true but KEV/CVSS/unscored gate failures "
                 f"{computed_ids} remain"
             )
         if passed is False and not computed:
             failures.append(
                 f"{path}.passed is false but no database finding fails the "
-                "configured KEV/CVSS policy"
+                "configured KEV/CVSS/unscored policy"
             )
     return failures
 
@@ -1892,6 +2015,20 @@ def validate_cra_result(
         )
 
     assert claimed is not None
+    if is_incomplete_envelope(payload):
+        # A run that stopped early reports why instead of inventing a body.
+        # It is never a completion and never a release.
+        incomplete_failures = _validate_incomplete_envelope(payload, schema_id=claimed)
+        return CraValidationResult(
+            ok=not incomplete_failures,
+            failures=incomplete_failures,
+            schema_id=claimed,
+            expected_schema=expected,
+            execution_completed=False,
+            release_denied=True,
+            incomplete=True,
+        )
+
     if claimed == SCHEMA_SBOMAUDIT_V1:
         failures, advisories, completed, incomplete = _validate_sbomaudit(payload)
     elif claimed == SCHEMA_VULNSCAN_V1:

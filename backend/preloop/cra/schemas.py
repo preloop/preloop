@@ -46,6 +46,46 @@ AUDIT_VERDICTS: FrozenSet[str] = frozenset({"pass", "pass_with_findings", "fail"
 AUDIT_INCOMPLETE_VERDICT = "error"
 
 VULNSCAN_STATUSES: FrozenSet[str] = frozenset({"success", "error"})
+
+# Incompletion envelope. Every schema below requires a full audit body, so
+# a run that stopped early (a human decision that never arrived, an input
+# that was never delivered) had no valid way to say so and its report was
+# discarded as a contract violation. The minimal envelope carries identity,
+# the schema's completion signal set to "error", and a stated reason. It is
+# a first-class result that always fails the execution and never releases.
+INCOMPLETE_FIELD = "incomplete"
+INCOMPLETE_REQUIRED: tuple[str, ...] = (
+    "schema",
+    "flow",
+    "run_at",
+    "regime_profile",
+    INCOMPLETE_FIELD,
+    "disclaimer",
+)
+# Optional context an interrupted run may still know. Audit body sections
+# are deliberately absent: a document that carries findings, a gate, or a
+# decision is claiming work, and claimed work is validated in full.
+INCOMPLETE_OPTIONAL: tuple[str, ...] = (
+    "git",
+    "tool_versions",
+    "inputs_declared",
+    "runner",
+    "checks",
+    "assessments",
+    "artifacts",
+    "status",
+    "verdict",
+)
+INCOMPLETE_ALLOWED: FrozenSet[str] = frozenset(
+    INCOMPLETE_REQUIRED + INCOMPLETE_OPTIONAL
+)
+# The completion signal each schema must set to the incompletion value.
+INCOMPLETE_SIGNALS: Mapping[str, tuple[str, ...]] = {
+    SCHEMA_SBOMAUDIT_V1: ("verdict",),
+    SCHEMA_RELEASEAUDIT_V1: ("verdict",),
+    SCHEMA_VULNSCAN_V1: ("status",),
+    SCHEMA_DUEDILIGENCE_V1: ("status", "verdict"),
+}
 DUEDILIGENCE_STATUSES: FrozenSet[str] = frozenset({"success", "error"})
 DUEDILIGENCE_VERDICTS: FrozenSet[str] = frozenset({"recorded", "error"})
 DUEDILIGENCE_OUTCOMES: FrozenSet[str] = frozenset({"accepted", "rejected", "pending"})
