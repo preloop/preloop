@@ -170,9 +170,11 @@ def _load_control_identity(db: Session, token: str) -> RuntimeBearerAuthContext:
     context = authenticate_runtime_bearer_token(
         db, token, enforce_current_binding=False
     )
+    # Detached entities must only be read by column attribute (no
+    # relationships, lazy loads, db.merge, or db.add). api_key is unused after
+    # auth, so it is not hydrated onto the socket.
     for entity in (
         context.user,
-        context.api_key,
         context.runtime_session,
         context.managed_agent,
     ):
