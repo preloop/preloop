@@ -81,6 +81,10 @@ import type {
   SpeechToTextResponse,
   TextToSpeechRequest,
   ApprovalDecisionOptions,
+  WebhookCatalogue,
+  WebhookDelivery,
+  WebhookEndpoint,
+  WebhookEndpointCreated,
 } from './types';
 
 // Global refresh promise to prevent concurrent refresh requests
@@ -5468,6 +5472,143 @@ export async function deactivateKillSwitch(params: {
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(body?.detail ?? 'Failed to lift the kill switch');
+  }
+  return response.json();
+}
+
+/** The event types an endpoint can subscribe to, and the delivery contract. */
+export async function getWebhookCatalogue(): Promise<WebhookCatalogue> {
+  const response = await fetchWithAuth('/api/v1/event-webhooks/catalogue');
+  if (!response.ok) {
+    throw new Error('Failed to fetch the webhook catalogue');
+  }
+  return response.json();
+}
+
+/** List this account's outbound webhook endpoints, newest first. */
+export async function getWebhookEndpoints(): Promise<WebhookEndpoint[]> {
+  const response = await fetchWithAuth('/api/v1/event-webhooks/endpoints');
+  if (!response.ok) {
+    throw new Error('Failed to fetch webhook endpoints');
+  }
+  return response.json();
+}
+
+/**
+ * Register an endpoint.
+ *
+ * The response is the one and only time the signing secret is readable, so
+ * the caller must show it before discarding it.
+ */
+export async function createWebhookEndpoint(params: {
+  url: string;
+  description?: string | null;
+  event_types: string[];
+}): Promise<WebhookEndpointCreated> {
+  const response = await fetchWithAuth('/api/v1/event-webhooks/endpoints', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: params.url,
+      description: params.description ?? null,
+      event_types: params.event_types,
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail ?? 'Failed to create the webhook endpoint');
+  }
+  return response.json();
+}
+
+/** Update an endpoint's URL, filter, description or active flag. */
+export async function updateWebhookEndpoint(
+  endpointId: string,
+  params: {
+    url?: string;
+    description?: string | null;
+    event_types?: string[];
+    active?: boolean;
+  }
+): Promise<WebhookEndpoint> {
+  const response = await fetchWithAuth(
+    `/api/v1/event-webhooks/endpoints/${endpointId}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    }
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail ?? 'Failed to update the webhook endpoint');
+  }
+  return response.json();
+}
+
+/** Delete an endpoint and its delivery history. */
+export async function deleteWebhookEndpoint(endpointId: string): Promise<void> {
+  const response = await fetchWithAuth(
+    `/api/v1/event-webhooks/endpoints/${endpointId}`,
+    { method: 'DELETE' }
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail ?? 'Failed to delete the webhook endpoint');
+  }
+}
+
+/** Queue a `webhook.test` event to one endpoint, ignoring its filter. */
+export async function sendWebhookTest(
+  endpointId: string
+): Promise<{ event_id: string | null; queued: number }> {
+  const response = await fetchWithAuth(
+    `/api/v1/event-webhooks/endpoints/${endpointId}/test`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail ?? 'Failed to queue the test event');
+  }
+  return response.json();
+}
+
+/** Recent deliveries, optionally narrowed to one endpoint or one status. */
+export async function getWebhookDeliveries(params?: {
+  endpointId?: string;
+  status?: string;
+  limit?: number;
+}): Promise<WebhookDelivery[]> {
+  const query = new URLSearchParams();
+  if (params?.endpointId) query.set('endpoint_id', params.endpointId);
+  if (params?.status) query.set('delivery_status', params.status);
+  if (params?.limit) query.set('limit', String(params.limit));
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  const response = await fetchWithAuth(
+    `/api/v1/event-webhooks/deliveries${suffix}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch webhook deliveries');
+  }
+  return response.json();
+}
+
+/**
+ * Re-queue one event id to every endpoint that already received it.
+ *
+ * The original rows are untouched, so a dead-lettered attempt stays on the
+ * record and the receiver sees the same event id in a new delivery.
+ */
+export async function replayWebhookEvent(
+  eventId: string
+): Promise<{ event_id: string; queued: number }> {
+  const response = await fetchWithAuth(
+    `/api/v1/event-webhooks/deliveries/${eventId}/replay`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail ?? 'Failed to replay the event');
   }
   return response.json();
 }

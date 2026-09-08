@@ -15,6 +15,7 @@ from preloop.models.crud import (
     crud_runtime_session,
     crud_user,
 )
+from preloop.services.event_webhooks.emitters import emit_session_ended
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,7 @@ def end_flow_execution_runtime_session(
         session.ended_at = ended_at or datetime.now(timezone.utc)
         session.last_activity_at = session.ended_at
         db.add(session)
+        emit_session_ended(db, session, reason="execution_finished")
         db.commit()
         return True
     except Exception as exc:

@@ -4468,6 +4468,306 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/event-webhooks/catalogue:
+    get:
+      tags:
+      - Outbound Webhooks
+      summary: Get Webhook Catalogue
+      description: Return the subscribable events and the delivery contract.
+      operationId: get_webhook_catalogue_api_v1_event_webhooks_catalogue_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookCatalogue'
+      security:
+      - bearerAuth: []
+  /api/v1/event-webhooks/endpoints:
+    get:
+      tags:
+      - Outbound Webhooks
+      summary: List Webhook Endpoints
+      description: 'List this account''s webhook endpoints, newest first.
+
+
+        Includes the read-only rows the approval-workflow shim owns, so an
+
+        operator can see why a legacy approval webhook is failing.'
+      operationId: list_webhook_endpoints_api_v1_event_webhooks_endpoints_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/WebhookEndpointRead'
+                type: array
+                title: Response List Webhook Endpoints Api V1 Event Webhooks Endpoints
+                  Get
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - Outbound Webhooks
+      summary: Create Webhook Endpoint
+      description: Create an endpoint and return its signing secret, once.
+      operationId: create_webhook_endpoint_api_v1_event_webhooks_endpoints_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEndpointCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointCreated'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/event-webhooks/endpoints/{endpoint_id}:
+    patch:
+      tags:
+      - Outbound Webhooks
+      summary: Update Webhook Endpoint
+      description: Update an endpoint's URL, filter, description or active flag.
+      operationId: update_webhook_endpoint_api_v1_event_webhooks_endpoints__endpoint_id__patch
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: endpoint_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Endpoint Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEndpointUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Outbound Webhooks
+      summary: Delete Webhook Endpoint
+      description: Delete an endpoint and its delivery history.
+      operationId: delete_webhook_endpoint_api_v1_event_webhooks_endpoints__endpoint_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: endpoint_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Endpoint Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/event-webhooks/endpoints/{endpoint_id}/test:
+    post:
+      tags:
+      - Outbound Webhooks
+      summary: Test Webhook Endpoint
+      description: 'Queue a ``webhook.test`` event for one endpoint.
+
+
+        Queued, not sent: the response says the event is on its way, and the
+
+        deliveries list says what the receiver actually answered. Reporting the
+
+        outcome synchronously would mean putting an HTTP call back on the request
+
+        path, which is the thing this change removed.'
+      operationId: test_webhook_endpoint_api_v1_event_webhooks_endpoints__endpoint_id__test_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: endpoint_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Endpoint Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookTestSendResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/event-webhooks/deliveries/dead-letter:
+    get:
+      tags:
+      - Outbound Webhooks
+      summary: List Dead Letter Deliveries
+      description: List deliveries that exhausted their retries.
+      operationId: list_dead_letter_deliveries_api_v1_event_webhooks_deliveries_dead_letter_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WebhookDeliveryRead'
+                title: Response List Dead Letter Deliveries Api V1 Event Webhooks
+                  Deliveries Dead Letter Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/event-webhooks/deliveries:
+    get:
+      tags:
+      - Outbound Webhooks
+      summary: List Webhook Deliveries
+      description: 'List recent deliveries, newest first.
+
+
+        Dead-lettered rows are visible here rather than only in a server log:
+
+        they are the ones an operator needs to find and replay.'
+      operationId: list_webhook_deliveries_api_v1_event_webhooks_deliveries_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: endpoint_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Endpoint Id
+      - name: delivery_status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: pending, delivered or dead
+          title: Delivery Status
+        description: pending, delivered or dead
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WebhookDeliveryRead'
+                title: Response List Webhook Deliveries Api V1 Event Webhooks Deliveries
+                  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/event-webhooks/deliveries/{event_id}/replay:
+    post:
+      tags:
+      - Outbound Webhooks
+      summary: Replay Webhook Event
+      description: 'Re-queue one event id to every endpoint that already received
+        it.
+
+
+        The original rows are left alone: a replay is a new generation, so a
+
+        dead-lettered attempt stays on the record.'
+      operationId: replay_webhook_event_api_v1_event_webhooks_deliveries__event_id__replay_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Event Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookReplayResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/notification-preferences/me:
     get:
       tags:
@@ -24693,6 +24993,40 @@ components:
         the changed-file diff; ``unknown_default`` covers unknown impact so a
 
         diff never resolves to an empty required list.'
+    WebhookCatalogue:
+      properties:
+        version:
+          type: string
+          title: Version
+        event_types:
+          items:
+            $ref: '#/components/schemas/WebhookEventTypeInfo'
+          type: array
+          title: Event Types
+        signature_header:
+          type: string
+          title: Signature Header
+        tolerance_seconds:
+          type: integer
+          title: Tolerance Seconds
+        max_attempts:
+          type: integer
+          title: Max Attempts
+        retry_delays_seconds:
+          items:
+            type: integer
+          type: array
+          title: Retry Delays Seconds
+      type: object
+      required:
+      - version
+      - event_types
+      - signature_header
+      - tolerance_seconds
+      - max_attempts
+      - retry_delays_seconds
+      title: WebhookCatalogue
+      description: What a console needs to render the create form.
     WebhookConfig:
       properties:
         webhook_secret:
@@ -24712,6 +25046,355 @@ components:
       - webhook_secret
       title: WebhookConfig
       description: Configuration for webhook triggers.
+    WebhookDeliveryRead:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        endpoint_id:
+          type: string
+          format: uuid
+          title: Endpoint Id
+        event_id:
+          type: string
+          format: uuid
+          title: Event Id
+        event_type:
+          type: string
+          title: Event Type
+        status:
+          type: string
+          title: Status
+        attempt_count:
+          type: integer
+          title: Attempt Count
+        generation:
+          type: integer
+          title: Generation
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+        next_attempt_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Next Attempt At
+        delivered_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Delivered At
+        response_status:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Response Status
+        last_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Error
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+      type: object
+      required:
+      - id
+      - endpoint_id
+      - event_id
+      - event_type
+      - status
+      - attempt_count
+      - generation
+      - occurred_at
+      title: WebhookDeliveryRead
+      description: One delivery attempt row.
+    WebhookEndpointCreate:
+      properties:
+        url:
+          type: string
+          maxLength: 2048
+          title: Url
+          description: HTTPS URL to POST events to
+        description:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Description
+        event_types:
+          items:
+            type: string
+          type: array
+          title: Event Types
+          description: Event types to receive. Empty means every v1 event.
+        active:
+          type: boolean
+          title: Active
+          default: true
+      type: object
+      required:
+      - url
+      title: WebhookEndpointCreate
+      description: Create request. The secret is generated server side.
+    WebhookEndpointCreated:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        url:
+          type: string
+          title: Url
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        event_types:
+          items:
+            type: string
+          type: array
+          title: Event Types
+        active:
+          type: boolean
+          title: Active
+        source:
+          type: string
+          title: Source
+        secret_hint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Secret Hint
+        created_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Created By User Id
+        consecutive_failures:
+          type: integer
+          title: Consecutive Failures
+          default: 0
+        circuit_open:
+          type: boolean
+          title: Circuit Open
+          default: false
+        last_delivery_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Delivery Status
+        last_delivery_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Delivery At
+        last_response_code:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Last Response Code
+        last_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Error
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        secret:
+          type: string
+          title: Secret
+        secret_note:
+          type: string
+          title: Secret Note
+          default: Shown once. Store it now; it cannot be read back.
+      type: object
+      required:
+      - id
+      - url
+      - active
+      - source
+      - secret
+      title: WebhookEndpointCreated
+      description: Create response, the one and only time the secret is returned.
+    WebhookEndpointRead:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        url:
+          type: string
+          title: Url
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        event_types:
+          items:
+            type: string
+          type: array
+          title: Event Types
+        active:
+          type: boolean
+          title: Active
+        source:
+          type: string
+          title: Source
+        secret_hint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Secret Hint
+        created_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Created By User Id
+        consecutive_failures:
+          type: integer
+          title: Consecutive Failures
+          default: 0
+        circuit_open:
+          type: boolean
+          title: Circuit Open
+          default: false
+        last_delivery_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Delivery Status
+        last_delivery_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Delivery At
+        last_response_code:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Last Response Code
+        last_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Error
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+      type: object
+      required:
+      - id
+      - url
+      - active
+      - source
+      title: WebhookEndpointRead
+      description: Endpoint as returned by the API. Never carries the secret.
+    WebhookEndpointUpdate:
+      properties:
+        url:
+          anyOf:
+          - type: string
+            maxLength: 2048
+          - type: 'null'
+          title: Url
+        description:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Description
+        event_types:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Event Types
+        active:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Active
+      type: object
+      title: WebhookEndpointUpdate
+      description: Partial update. Omitted fields are left alone.
+    WebhookEventTypeInfo:
+      properties:
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          title: Description
+      type: object
+      required:
+      - name
+      - description
+      title: WebhookEventTypeInfo
+      description: One entry in the subscribable event catalogue.
+    WebhookReplayResult:
+      properties:
+        event_id:
+          type: string
+          format: uuid
+          title: Event Id
+        delivery_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Delivery Ids
+        queued:
+          type: integer
+          title: Queued
+          default: 0
+      type: object
+      required:
+      - event_id
+      title: WebhookReplayResult
+      description: Result of replaying one event id.
+    WebhookTestSendResult:
+      properties:
+        event_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Event Id
+        delivery_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Delivery Ids
+        queued:
+          type: integer
+          title: Queued
+          default: 0
+      type: object
+      title: WebhookTestSendResult
+      description: Result of queueing a test event.
     WeeklySchedule:
       properties:
         timezone:

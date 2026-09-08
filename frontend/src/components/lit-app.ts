@@ -376,6 +376,7 @@ export class LitApp extends LitElement {
           { path: 'settings/security', component: 'security-view' },
           { path: 'settings/api-keys', component: 'api-keys-view' },
           { path: 'settings/runners', component: 'runners-view' },
+          { path: 'settings/webhooks', component: 'webhooks-view' },
           {
             path: 'settings/api-keys/:keyId',
             component: 'api-key-view',

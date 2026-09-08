@@ -37,6 +37,7 @@ const NAV_PERMISSIONS: Record<string, string[]> = {
   '/console/agents': ['view_agents'],
   '/console/flows': ['view_flows'],
   '/console/settings/runners': ['view_flows'],
+  '/console/settings/webhooks': ['view_policies'],
   '/console/tools': ['view_tools', 'view_policies'],
   '/console/policies': ['view_policies'],
   '/console/trackers': ['view_trackers'],
@@ -855,6 +856,10 @@ export class ConsoleShell extends LitElement {
                         ${this._renderNavLink(
                           '/console/settings/runners',
                           html`<sl-menu-item>Runners</sl-menu-item>`
+                        )}
+                        ${this._renderNavLink(
+                          '/console/settings/webhooks',
+                          html`<sl-menu-item>Webhooks</sl-menu-item>`
                         )}
                         <!-- The four personal pages had routes and a place in
                              the avatar menu, but no way in from the sidebar,

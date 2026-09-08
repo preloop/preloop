@@ -1,15 +1,16 @@
 """Tests for policy evaluator service."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import pytest
 from preloop.services.policy_evaluator import (
     _evaluate_simple_condition_on_bindings,
+    _log_policy_decision_async as _real_log_policy_decision_async,
+    evaluate_cel_expression,
     evaluate_policy,
     evaluate_policy_async,
     evaluate_simple_expression,
-    evaluate_cel_expression,
 )
 
 
@@ -675,3 +676,51 @@ class TestEvaluatePolicyAsync:
 
         assert action == "allow"
         assert approval_id is None
+
+
+class TestPolicyDeniedWebhookOffLoop:
+    """policy.denied must not open a session on the deny path."""
+
+    def test_deny_submits_emit_instead_of_running_it(self):
+        """The deny path schedules emit_policy_denied; it does not call it."""
+        from preloop.services import policy_evaluator as pe
+
+        submitted = []
+        emit = MagicMock()
+        with (
+            patch.object(pe, "submit_off_loop", lambda fn: submitted.append(fn)),
+            patch(
+                "preloop.services.event_webhooks.emitters.emit_policy_denied",
+                emit,
+            ),
+        ):
+            account_id = uuid4()
+            _real_log_policy_decision_async(
+                account_id=account_id,
+                tool_name="shell",
+                action="deny",
+                rule_description="blocked",
+                extra_details={"source": "test"},
+            )
+
+            assert emit.call_count == 0
+            assert len(submitted) == 1
+            submitted[0]()
+            emit.assert_called_once()
+            kwargs = emit.call_args.kwargs
+            assert kwargs["account_id"] == account_id
+            assert kwargs["tool_name"] == "shell"
+            assert kwargs["extra_details"] == {"source": "test"}
+
+    def test_allow_does_not_submit_a_webhook(self):
+        """Allow/approval decisions are not policy.denied events."""
+        from preloop.services import policy_evaluator as pe
+
+        submitted = []
+        with patch.object(pe, "submit_off_loop", lambda fn: submitted.append(fn)):
+            _real_log_policy_decision_async(
+                account_id=uuid4(),
+                tool_name="shell",
+                action="allow",
+            )
+            assert submitted == []

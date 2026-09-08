@@ -4988,6 +4988,34 @@ class FlowExecutionOrchestrator:
 
         logger.debug(f"Execution log updated: status={status}")
 
+    def _emit_execution_finished_webhook(
+        self, status: str, failure_category: Optional[str]
+    ) -> None:
+        """Queue flow.execution.finished for account webhook subscribers.
+
+        Never raises: a webhook must not rewrite a terminal status.
+        """
+        try:
+            from preloop.services.event_webhooks.emitters import (
+                emit_flow_execution_finished,
+            )
+
+            emit_flow_execution_finished(
+                self.db,
+                self.execution_log,
+                self.flow,
+                status=status,
+                failure_category=failure_category
+                or getattr(self.execution_log, "failure_category", None),
+            )
+            self.db.commit()
+        except Exception:
+            logger.warning(
+                "Failed to queue flow.execution.finished webhook for %s",
+                getattr(self.execution_log, "id", "unknown"),
+                exc_info=True,
+            )
+
     async def _finalize_park(
         self,
         *,
@@ -5055,6 +5083,14 @@ class FlowExecutionOrchestrator:
         try:
             if not self.flow or not self.execution_log:
                 return
+            # Emitted before the tracker-notification work below, which
+            # returns early when the flow has no notifications configured.
+            # A webhook subscriber asked for every finish, not just the
+            # finishes that also comment on a ticket. Callers persist
+            # failure_category on the execution log before this runs.
+            self._emit_execution_finished_webhook(
+                status, getattr(self.execution_log, "failure_category", None)
+            )
             try:
                 from preloop.services.issue_lifecycle_runtime import (
                     lifecycle_execution_finished,

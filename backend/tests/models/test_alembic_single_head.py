@@ -168,4 +168,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert structured_answer.down_revision == "20260907_sm_sweep_cursor"
     approval_park = script.get_revision("20260908_approval_park")
     assert approval_park.down_revision == "20260908_structured_answer"
-    assert script.get_heads() == ["20260908_approval_park"]
+    event_webhooks = script.get_revision("20260908_event_webhooks")
+    assert event_webhooks.down_revision == "20260908_approval_park"
+    assert script.get_heads() == ["20260908_event_webhooks"]
