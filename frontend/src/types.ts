@@ -1924,3 +1924,69 @@ export interface ApprovalDecisionOptions {
   selected_option?: string | null;
   answer_text?: string | null;
 }
+
+/**
+ * An outbound webhook endpoint as the API returns it.
+ *
+ * The signing secret is never in here: it is returned once by the create
+ * call and afterwards only `secret_hint` (its last characters) is readable.
+ * `source` is `account` for endpoints an operator registered and
+ * `approval_workflow` for the compatibility rows mirroring a workflow's
+ * `webhook_url`, which are listed but not editable here.
+ */
+export interface WebhookEndpoint {
+  id: string;
+  url: string;
+  description: string | null;
+  event_types: string[];
+  active: boolean;
+  source: string;
+  secret_hint: string | null;
+  created_by_user_id: string | null;
+  consecutive_failures: number;
+  circuit_open: boolean;
+  last_delivery_status: string | null;
+  last_delivery_at: string | null;
+  last_response_code: number | null;
+  last_error: string | null;
+  created_at: string | null;
+}
+
+/** Create response, the only time the signing secret is readable. */
+export interface WebhookEndpointCreated extends WebhookEndpoint {
+  secret: string;
+  secret_note: string;
+}
+
+/** One outbox row: what was queued, how it went and how many tries it took. */
+export interface WebhookDelivery {
+  id: string;
+  endpoint_id: string;
+  event_id: string;
+  event_type: string;
+  status: string;
+  attempt_count: number;
+  generation: number;
+  occurred_at: string;
+  next_attempt_at: string | null;
+  delivered_at: string | null;
+  response_status: number | null;
+  last_error: string | null;
+  created_at: string | null;
+}
+
+/**
+ * The subscribable events plus this deployment's delivery contract.
+ *
+ * The console renders the create form from this rather than from a hard-coded
+ * list, so a new event type or a retuned retry schedule shows up without a
+ * frontend change.
+ */
+export interface WebhookCatalogue {
+  version: string;
+  event_types: { name: string; description: string }[];
+  signature_header: string;
+  tolerance_seconds: number;
+  max_attempts: number;
+  retry_delays_seconds: number[];
+}
