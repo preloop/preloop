@@ -94,6 +94,17 @@ class TestApprovalWindowResolution:
         assert window.seconds == APPROVAL_WINDOW_MIN_SECONDS
         assert window.capped is True
 
+    def test_existing_short_workflow_timeout_is_not_lengthened(self):
+        """A deployed workflow with a 1 second timeout keeps it. Raising it to
+        the floor would change when existing gates auto-deny, which is not
+        this change's business."""
+        window = resolve_approval_window(
+            workflow=SimpleNamespace(timeout_seconds=1),
+        )
+        assert window.seconds == 1
+        assert window.source == "workflow"
+        assert window.capped is False
+
     def test_garbage_setting_is_ignored_not_obeyed(self):
         window = resolve_approval_window(
             requested_seconds="soon",

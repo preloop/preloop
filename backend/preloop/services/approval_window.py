@@ -37,6 +37,10 @@ APPROVAL_WINDOW_MIN_SECONDS = 60
 #: Account metadata key holding a per-account ceiling (seconds).
 ACCOUNT_WINDOW_CAP_KEY = "approval_window_max_seconds"
 
+#: Sources introduced with the window setting, and the only ones the one
+#: minute floor is applied to (see ``resolve_approval_window``).
+NEW_SETTING_SOURCES = ("tool_argument", "flow")
+
 
 @dataclass(frozen=True)
 class ApprovalWindow:
@@ -116,7 +120,13 @@ def resolve_approval_window(
     for source, seconds in candidates:
         if seconds is None:
             continue
-        clamped = max(APPROVAL_WINDOW_MIN_SECONDS, min(cap, seconds))
+        # The one minute floor applies to windows asked for through the new
+        # settings. An approval workflow that already carries a deliberately
+        # short timeout keeps it: silently lengthening the window of every
+        # deployed workflow would change when existing runs auto-deny, and a
+        # fast fail-closed gate is a legitimate configuration.
+        floor = APPROVAL_WINDOW_MIN_SECONDS if source in NEW_SETTING_SOURCES else 1
+        clamped = max(floor, min(cap, seconds))
         if clamped != seconds:
             logger.info(
                 "Approval window %ss from %s clamped to %ss",
