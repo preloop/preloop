@@ -1,0 +1,2 @@
+# Regenerate with: uv pip compile --universal --generate-hashes --python-version 3.11 sbom.in -o sbom.txt
+cyclonedx-bom==7.3.1

@@ -1,0 +1,123 @@
+# Automated dependency updates.
+#
+# There was no dependency update mechanism at all before this file: no
+# dependabot config, no renovate, nothing. That is the direct cause of a
+# directly-required Go module sitting on a version with four published
+# advisories for months. CRA Article 13(8) obliges timely security updates
+# through the declared support period in SECURITY.md, and "someone notices"
+# is not a mechanism.
+#
+# Grouping policy: minor and patch bumps arrive as one PR per ecosystem per
+# week, because reviewing forty single-line PRs is how a team learns to
+# rubber-stamp them. Majors stay ungrouped so each one gets read.
+#
+# Security updates are not affected by the weekly schedule. Dependabot opens
+# those as soon as an advisory lands, and they are deliberately left
+# ungrouped so a fix is never blocked behind an unrelated bump.
+
+version: 2
+
+updates:
+  # ------------------------------------------------------------------------
+  # Go CLI
+  # ------------------------------------------------------------------------
+  - package-ecosystem: gomod
+    directory: /cli
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Athens
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - cli
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      gomod-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  # ------------------------------------------------------------------------
+  # Backend (Python)
+  # ------------------------------------------------------------------------
+  # `/` and not `/backend`: backend/ holds the package source but no manifest.
+  # The declared dependencies live in the root pyproject.toml.
+  #
+  # The hash-pinned locks under requirements/ and .github/requirements/ are
+  # compiled from pyproject.toml with uv, so dependabot is deliberately not
+  # pointed at them: it would rewrite a lock without regenerating it from the
+  # constraint it came from. It watches pyproject.toml, and when a bump lands
+  # the locks are regenerated with the uv command recorded at the top of each
+  # .txt file.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Athens
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - backend
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      pip-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  # ------------------------------------------------------------------------
+  # Frontend (npm)
+  # ------------------------------------------------------------------------
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Athens
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - frontend
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      npm-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  # ------------------------------------------------------------------------
+  # GitHub Actions
+  # ------------------------------------------------------------------------
+  # Every action in this repo is pinned to a commit SHA with a version
+  # comment, which OpenSSF Scorecard requires and which dependabot
+  # understands: it rewrites the SHA and the comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Athens
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch

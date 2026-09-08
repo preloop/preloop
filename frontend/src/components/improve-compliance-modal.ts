@@ -1,10 +1,7 @@
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import {
-  Issue,
-  getComplianceImprovementSuggestion,
-  updateIssueContent,
-} from '../api';
+import { getComplianceImprovementSuggestion, updateIssueContent } from '../api';
+import type { Issue } from '../types';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
@@ -136,7 +133,8 @@ export class ImproveComplianceModal extends LitElement {
       const response = await updateIssueContent(
         this.issue.id,
         this._suggestedTitle,
-        this._suggestedDescription
+        this._suggestedDescription,
+        ''
       );
 
       console.log('[Modal] API call successful, response:', response);

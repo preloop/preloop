@@ -1,11 +1,11 @@
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import {
-  DuplicatePair,
   executeIssueDuplicateResolution,
   IssueDuplicateResolutionRequest,
   getResolutionSuggestion,
 } from '../api';
+import type { DuplicatePair } from '../types';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/radio-group/radio-group.js';

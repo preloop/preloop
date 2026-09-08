@@ -346,6 +346,9 @@ jobs:
       - name: Check formatting
         run: npm run format:check
 
+      - name: Typecheck
+        run: npm run typecheck
+
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
@@ -487,6 +490,50 @@ jobs:
         run: go test ./...
 
   # ==========================================================================
+  # CLI Vulnerability Scan
+  # ==========================================================================
+  #
+  # Deliberately NOT path-filtered, unlike every other suite here. The failure
+  # this job exists to catch is a dependency going stale while nobody touches
+  # cli/: golang.org/x/crypto sat at v0.54.0 with four published advisories
+  # and no check in this repo would have said so. A filter on cli/** would
+  # reproduce exactly that blind spot, and the job costs well under a minute.
+  #
+  # govulncheck is a reachability scanner, not a manifest scanner. It reports
+  # at three levels and only the first one fails the build:
+  #   Symbol   your code calls the vulnerable function. Fix it.
+  #   Package  you import the package but do not call the symbol.
+  #   Module   you require the module but do not import the package.
+  # It is also the tool that settles VEX claims: security/vex/ asserts
+  # vulnerable_code_not_present for the x/crypto advisories, and this job is
+  # the evidence behind that assertion.
+
+  cli-vuln-scan:
+    name: CLI Vulnerability Scan
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+
+      # -show verbose prints the package- and module-level findings too. They
+      # do not fail the build, but they are what a release audit will ask
+      # about, so they belong in the log rather than behind a rerun.
+      - name: Run govulncheck
+        run: govulncheck -show verbose ./...
+
+  # ==========================================================================
   # Build and Push Docker Images
   # ==========================================================================
 
@@ -508,7 +555,7 @@ jobs:
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
@@ -595,6 +642,7 @@ jobs:
       - test-backend-coverage
       - test-frontend
       - test-runtime-plugins
+      - cli-vuln-scan
     steps:
       - name: Require every suite to have passed or been skipped
         env:
@@ -605,6 +653,7 @@ jobs:
           COVERAGE: ${{ needs.test-backend-coverage.result }}
           FRONTEND: ${{ needs.test-frontend.result }}
           PLUGINS: ${{ needs.test-runtime-plugins.result }}
+          CLIVULN: ${{ needs.cli-vuln-scan.result }}
         run: |
           failed=0
           check() {
@@ -626,4 +675,5 @@ jobs:
           check test-backend-coverage "$COVERAGE"
           check test-frontend "$FRONTEND"
           check test-runtime-plugins "$PLUGINS"
+          check cli-vuln-scan "$CLIVULN"
           exit "$failed"

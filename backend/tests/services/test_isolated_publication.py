@@ -847,6 +847,95 @@ def test_attach_strips_agent_receipt_without_controller_publication() -> None:
     assert "dossier_manifest" in agent_result["result"]
 
 
+def test_attach_uses_captured_receipt_when_row_not_yet_persisted() -> None:
+    """Dossier evidence follows the captured pack, not a stale DB "missing".
+
+    Regression for issue #506: the archive is captured in memory during
+    monitoring but persisted on the execution row only at finalize, so
+    load_evidence reports "missing" while the dossier is built. The
+    orchestrator's captured receipt must drive dossier_manifest.evidence.
+    """
+    orchestrator = _attach_orchestrator()
+    digest = "d" * 64
+    orchestrator._evidence_receipt = {
+        "version": 1,
+        "kind": "evidence",
+        "status": "available",
+        "transport": "legacy",
+        "execution_id": _evidence_uuid(),
+        "sha256": digest,
+        "digest": digest,
+        "size_bytes": 13517,
+        "integrity_verified": False,
+        "error": None,
+    }
+    agent_result = {
+        "status": "SUCCEEDED",
+        "result": {"status": "success", "schema": "preloop.cra.sbomaudit/v1"},
+    }
+    with (
+        patch(
+            "preloop.models.crud.crud_approval_request.get_multi_by_execution",
+            return_value=[],
+        ),
+        patch(
+            "preloop.services.flow_artifacts.load_evidence",
+            side_effect=EvidenceUnavailableError(
+                "missing", {"status": "missing", "transport": "none"}
+            ),
+        ),
+    ):
+        orchestrator._attach_product_evidence_records(agent_result)
+    evidence = agent_result["result"]["dossier_manifest"]["evidence"]
+    assert evidence["status"] == "available"
+    assert evidence["transport"] == "legacy"
+    assert evidence["sha256"] == digest
+    assert evidence["integrity_verified"] is False
+
+
+def test_attach_keeps_failed_db_receipt_over_captured_available() -> None:
+    """A genuinely failed DB receipt is not masked by a captured pack.
+
+    The in-memory receipt fallback exists only for the pre-finalize window
+    where the DB row is stale; once the platform recorded a failure the
+    dossier must report it instead of claiming availability.
+    """
+    orchestrator = _attach_orchestrator()
+    orchestrator._evidence_receipt = {
+        "version": 1,
+        "kind": "evidence",
+        "status": "available",
+        "transport": "legacy",
+        "execution_id": _evidence_uuid(),
+        "sha256": "d" * 64,
+        "integrity_verified": False,
+        "error": None,
+    }
+    agent_result = {
+        "status": "FAILED",
+        "result": {"status": "failure", "schema": "preloop.cra.sbomaudit/v1"},
+    }
+    failed = {
+        "status": "failed",
+        "transport": "direct",
+        "error": "evidence_upload_failed",
+    }
+    with (
+        patch(
+            "preloop.models.crud.crud_approval_request.get_multi_by_execution",
+            return_value=[],
+        ),
+        patch(
+            "preloop.services.flow_artifacts.load_evidence",
+            side_effect=EvidenceUnavailableError("failed", failed),
+        ),
+    ):
+        orchestrator._attach_product_evidence_records(agent_result)
+    evidence = agent_result["result"]["dossier_manifest"]["evidence"]
+    assert evidence["status"] == "failed"
+    assert evidence["error"] == "evidence_upload_failed"
+
+
 def test_attach_reattaches_only_controller_trusted_receipt() -> None:
     orchestrator = _attach_orchestrator()
     receipt = {

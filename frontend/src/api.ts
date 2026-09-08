@@ -528,6 +528,13 @@ export async function getEntitlements(): Promise<Entitlements> {
   return response.json();
 }
 
+export type {
+  AIModel,
+  DuplicatePair,
+  Issue,
+  ManagedAgentSummary,
+} from './types';
+export type IssueDuplicateResolutionRequest = Record<string, unknown>;
 export type { UserPermissions } from './permissions';
 export {
   PermissionError,

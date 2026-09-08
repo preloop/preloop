@@ -1078,7 +1078,7 @@ export class AddAIModelModal extends LitElement {
             <sl-checkbox
               .checked=${this._preloopGatewayEnabled}
               @sl-change=${(e: Event) => {
-                const el = e.target as { checked: boolean };
+                const el = e.target as unknown as { checked: boolean };
                 this._preloopGatewayEnabled = Boolean(el.checked);
                 this.requestUpdate();
               }}

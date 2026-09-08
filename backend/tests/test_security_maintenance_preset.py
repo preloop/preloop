@@ -31,3 +31,12 @@ def test_isolated_gate_and_no_agent_approval(preset):
     assert git["create_pull_request"] is True
     assert "does not backport" in preset["description"]
     assert "backport" not in preset["prompt_template"].lower()
+
+
+def test_ask_user_waits_on_a_human_timescale(preset):
+    """The overlay can ask a question, and the answer comes from a person who
+    may be asleep, so the window is days and the run parks while it waits."""
+    names = [item["name"] for item in preset["allowed_mcp_tools"]]
+    assert "ask_user" in names
+    assert preset["approval_window_seconds"] == 3 * 24 * 60 * 60
+    assert preset["approval_window_seconds"] > preset["timeout_seconds"]

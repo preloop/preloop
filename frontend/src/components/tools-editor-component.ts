@@ -7,9 +7,9 @@ import type { RuleFormData } from './tool-rule-editor';
 import type { GatewayUsageByTool } from '../types';
 import './tool-list-item';
 
-export interface ToolWithRules extends Tool {
+export type ToolWithRules = Omit<Tool, 'access_rules'> & {
   access_rules?: AccessRuleSummary[];
-}
+};
 
 export const NATIVE_ADAPTERS: ReadonlyArray<{
   value: string;
@@ -198,7 +198,11 @@ export class ToolsEditorComponent extends LitElement {
     }
   `;
 
-  private _getToolKey(tool: Tool): string {
+  private _getToolKey(tool: {
+    name: string;
+    source: string;
+    source_id?: string | null;
+  }): string {
     return `${tool.name}-${tool.source}-${tool.source_id || 'none'}`;
   }
 

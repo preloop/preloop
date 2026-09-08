@@ -343,6 +343,7 @@ export class DashboardView extends AuthedElement {
   @state() private lastUpdatedAt: string | null = null;
   @state() private hasFlows = false;
   @state() private hasAIModels = false;
+  @state() private deployModel = '';
   @state() private aiModelsCount = 0;
   @state() private enabledUsersCount = 0;
   /** Active users, kept for the Inventory's Users tab (Cloud/Enterprise). */
@@ -1960,7 +1961,7 @@ export class DashboardView extends AuthedElement {
             limit: GATEWAY_FAILURES_REFRESH_LIMIT,
             startDate: startDateStr,
           }),
-          { items: [] } as Awaited<
+          { items: [] } as unknown as Awaited<
             ReturnType<typeof getAccountGatewayUsageSearch>
           >
         ),
@@ -1985,11 +1986,15 @@ export class DashboardView extends AuthedElement {
           limit: FOLD_SESSIONS_LIMIT,
           startDate: this.getGatewayStartDate(),
         }),
-        { items: [] } as Awaited<ReturnType<typeof getAccountRuntimeSessions>>
+        { items: [] } as unknown as Awaited<
+          ReturnType<typeof getAccountRuntimeSessions>
+        >
       ),
       this.catchWith403Handling(
         getAccountAgents({ status: 'all', limit: 100 }),
-        { items: [], total: 0 } as Awaited<ReturnType<typeof getAccountAgents>>
+        { items: [], total: 0 } as unknown as Awaited<
+          ReturnType<typeof getAccountAgents>
+        >
       ),
     ]);
     this.runtimeSessions = runtimeSessions.items || [];
@@ -2276,14 +2281,14 @@ export class DashboardView extends AuthedElement {
           }),
           {
             items: [],
-          } as Awaited<ReturnType<typeof getAccountRuntimeSessions>>
+          } as unknown as Awaited<ReturnType<typeof getAccountRuntimeSessions>>
         ),
         this.catchWith403Handling(
           getAccountAgents({ status: 'all', limit: 100 }),
           {
             items: [],
             total: 0,
-          } as Awaited<ReturnType<typeof getAccountAgents>>
+          } as unknown as Awaited<ReturnType<typeof getAccountAgents>>
         ),
         this.fetchFeatures(),
       ]);
@@ -2401,7 +2406,9 @@ export class DashboardView extends AuthedElement {
   ): Promise<void> {
     const interactions = await this.catchWith403Handling(
       getAccountGatewayUsageSearch({ limit: 100, startDate: startDateStr }),
-      { items: [] } as Awaited<ReturnType<typeof getAccountGatewayUsageSearch>>
+      { items: [] } as unknown as Awaited<
+        ReturnType<typeof getAccountGatewayUsageSearch>
+      >
     );
     this.gatewayInteractions = interactions.items || [];
   }
@@ -2895,9 +2902,14 @@ export class DashboardView extends AuthedElement {
   }
 
   private getSessionDisplayTitle(
-    session: GatewayUsageBySession | RuntimeSessionSummary
+    session:
+      | GatewayUsageBySession
+      | RuntimeSessionSummary
+      | GatewayUsageSearchResultItem
   ): string {
-    return normalizeObservedSession(session).title;
+    return normalizeObservedSession(
+      session as unknown as Record<string, unknown>
+    ).title;
   }
 
   private getSessionDetailHref(
