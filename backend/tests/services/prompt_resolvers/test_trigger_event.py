@@ -421,3 +421,118 @@ class TestWorkspaceFilesRedaction:
             execution_id="exec-1",
         )
         assert await resolver.resolve("payload.run", context) == "smoke-1"
+
+
+class TestReferencedIssues:
+    """PR/MR payloads carry a parsed issue-reference hint for the reviewer."""
+
+    @pytest.mark.asyncio
+    async def test_github_pull_request(self):
+        resolver = TriggerEventResolver()
+        context = ResolverContext(
+            db=MagicMock(),
+            trigger_event_data={
+                "source": "github",
+                "payload": {
+                    "repository": {"full_name": "org/repo"},
+                    "pull_request": {
+                        "number": 45,
+                        "title": "Add widget",
+                        "body": "Closes #123",
+                        "html_url": "https://github.com/org/repo/pull/45",
+                        "head": {"ref": "123-add-widget"},
+                        "base": {"ref": "main"},
+                        "user": {"login": "dev"},
+                    },
+                },
+            },
+            flow_id="flow-1",
+            execution_id="exec-1",
+        )
+        value = await resolver.resolve(
+            "payload.object_attributes.referenced_issues", context
+        )
+        assert value == (
+            "org/repo#123 [closes, from body] https://github.com/org/repo/issues/123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_gitlab_merge_request(self):
+        resolver = TriggerEventResolver()
+        context = ResolverContext(
+            db=MagicMock(),
+            trigger_event_data={
+                "source": "gitlab",
+                "payload": {
+                    "object_kind": "merge_request",
+                    "project": {"path_with_namespace": "grp/proj"},
+                    "object_attributes": {
+                        "iid": 12,
+                        "title": "Add widget",
+                        "description": "Closes #7",
+                        "url": "https://gitlab.example.com/grp/proj/-/merge_requests/12",
+                        "source_branch": "feature/add-widget",
+                        "target_branch": "main",
+                    },
+                },
+            },
+            flow_id="flow-1",
+            execution_id="exec-1",
+        )
+        value = await resolver.resolve(
+            "payload.object_attributes.referenced_issues", context
+        )
+        assert value.startswith("grp/proj#7 [closes, from body]")
+
+    @pytest.mark.asyncio
+    async def test_pull_request_without_a_reference_says_none_detected(self):
+        resolver = TriggerEventResolver()
+        context = ResolverContext(
+            db=MagicMock(),
+            trigger_event_data={
+                "source": "github",
+                "payload": {
+                    "repository": {"full_name": "org/repo"},
+                    "pull_request": {
+                        "number": 45,
+                        "title": "Tidy the console shell",
+                        "body": "Pure refactor, no issue.",
+                        "html_url": "https://github.com/org/repo/pull/45",
+                        "head": {"ref": "chore/console-shell"},
+                        "base": {"ref": "main"},
+                        "user": {"login": "dev"},
+                    },
+                },
+            },
+            flow_id="flow-1",
+            execution_id="exec-1",
+        )
+        value = await resolver.resolve(
+            "payload.object_attributes.referenced_issues", context
+        )
+        assert value == "none detected"
+
+    @pytest.mark.asyncio
+    async def test_issue_payloads_get_no_reference_field(self):
+        """Only pull/merge requests need the hint; issue flows are untouched."""
+        resolver = TriggerEventResolver()
+        context = ResolverContext(
+            db=MagicMock(),
+            trigger_event_data={
+                "source": "github",
+                "payload": {
+                    "issue": {
+                        "number": 9,
+                        "title": "Broken search",
+                        "body": "Relates to #8",
+                        "html_url": "https://github.com/org/repo/issues/9",
+                    }
+                },
+            },
+            flow_id="flow-1",
+            execution_id="exec-1",
+        )
+        value = await resolver.resolve(
+            "payload.object_attributes.referenced_issues", context
+        )
+        assert value is None

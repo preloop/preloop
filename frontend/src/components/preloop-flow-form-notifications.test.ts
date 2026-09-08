@@ -256,15 +256,32 @@ describe('PreloopFlowForm PR-dependent sections', () => {
   });
 
   it('reveals the issue comment when an issue event is added to the trigger', async () => {
+    // Driven through the Events select the user actually operates: the form
+    // mutates `flow` in place, so the reveal only works if the handler asks
+    // for an update.
     const element = await mount(
       sampleFlow({ trigger: 'pull_request', createPullRequest: true })
     );
     expect(query(element, '[data-notifications-card]')).to.not.exist;
 
-    element.flow.trigger_event_types = ['pull_request_opened', 'issue_opened'];
-    (element as any).requestUpdate();
+    const events = Array.from(
+      element.shadowRoot!.querySelectorAll('sl-select')
+    ).find((select) => select.getAttribute('label') === 'Events') as any;
+    expect(events, 'Events select').to.exist;
+    events.value = ['pull_request_opened', 'issue_opened'];
+    events.dispatchEvent(new CustomEvent('sl-change', { bubbles: true }));
     await element.updateComplete;
+
+    expect(element.flow.trigger_event_types).to.deep.equal([
+      'pull_request_opened',
+      'issue_opened',
+    ]);
     expect(query(element, '[data-notifications-card]')).to.exist;
+
+    events.value = ['pull_request_opened'];
+    events.dispatchEvent(new CustomEvent('sl-change', { bubbles: true }));
+    await element.updateComplete;
+    expect(query(element, '[data-notifications-card]')).to.not.exist;
   });
 
   it('renders and submits a saved issue comment when it applies', async () => {

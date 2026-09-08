@@ -53,11 +53,15 @@ The `Preloop Console` application is structured around a component-based archite
 
 ### Route loading and refreshes
 
-`lit-app.ts` keeps public pages available for prerendered content and loads
-console components through `console-route-loaders.ts` only when their routes
-match. `withLazyRoutes` preserves route guards and waits for custom-element
-registration before the router renders the view. New console routes should add
-their dynamic import to this registry instead of adding an eager view import.
+The console uses the in-house router in `src/router` rather than
+`@vaadin/router`. `lit-app.ts` keeps public pages available for prerendered
+content and loads console components through `console-route-loaders.ts` only
+when their routes match. `withLazyRoutes` attaches a `Route.load()` to each
+lazy console view so the router fetches the chunk before creating the
+element. While that promise is outstanding the loading renderer shows a
+pending state; if the chunk fails it shows a failed state with a reload
+rather than a blank outlet. New console routes should add their dynamic
+import to this registry instead of adding an eager view import.
 
 Overview keeps its initial refresh guard through the deferred data wave while
 rendering the first results as before. Realtime refreshes retain at most one

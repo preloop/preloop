@@ -1,7 +1,7 @@
 # Full-repo review presets (architecture-strategy, code health, standards walk)
 
 These flow presets review a **whole repository** rather than a diff. They
-complement the diff-scoped Pull Request Reviewer preset: PR review runs
+complement the diff-scoped [Pull Request Reviewer preset](pull-request-review.md): PR review runs
 on every change and stays cheap; these run rarely (per release, on a
 schedule, or on demand), sample the repository deterministically, and
 declare exactly what they covered. Each run is a single execution that

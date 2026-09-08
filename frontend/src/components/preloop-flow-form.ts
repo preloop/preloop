@@ -2387,6 +2387,11 @@ export class PreloopFlowForm extends LitElement {
                         .value=${this.flow.trigger_event_types || []}
                         @sl-change=${(e: any) => {
                           this.flow.trigger_event_types = e.target.value;
+                          // The issue comment section is gated on these event
+                          // types. `flow` is mutated in place, so without this
+                          // the section only appears after some unrelated
+                          // update happens to re-render the form.
+                          this.requestUpdate();
                         }}
                       >
                         ${this.getEventOptions().map(

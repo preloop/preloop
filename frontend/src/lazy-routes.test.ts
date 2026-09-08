@@ -1,5 +1,5 @@
 import { expect, waitUntil } from '@open-wc/testing';
-import { Router } from '@vaadin/router';
+import { Router } from './router';
 import sinon from 'sinon';
 import { withLazyRoutes } from './lazy-routes';
 
