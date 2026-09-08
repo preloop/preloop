@@ -100,6 +100,10 @@ class WorkspaceSeedError(ValueError):
     before any agent container is started."""
 
 
+class WorkspaceSeedSizeError(WorkspaceSeedError):
+    """A ``workspace_files`` declaration exceeds the per-file or total size cap."""
+
+
 class WorkspaceSeedFile(BaseModel):
     """One validated file to materialize under ``/workspace``."""
 
@@ -153,7 +157,9 @@ def parse_workspace_files(
 
     Returns an empty list when the key is absent. Raises
     :class:`WorkspaceSeedError` on any invalid declaration so the execution
-    fails loudly before an agent is started.
+    fails loudly before an agent is started. Size-cap violations raise
+    :class:`WorkspaceSeedSizeError` so the trigger endpoints can return 413
+    without inspecting the message wording.
     """
     if not isinstance(payload, dict):
         return []
@@ -195,7 +201,7 @@ def parse_workspace_files(
         # the cap, the actual size and the overage, so a caller knows how much
         # to shed without a second round trip.
         if len(content) > MAX_SINGLE_SEED_ENCODED_BYTES:
-            raise WorkspaceSeedError(
+            raise WorkspaceSeedSizeError(
                 f"workspace_files[{index}] ({path!r}) is "
                 f"{len(content)} base64-encoded bytes, which exceeds the "
                 f"{MAX_SINGLE_SEED_ENCODED_BYTES} byte per-file cap by "
@@ -205,7 +211,7 @@ def parse_workspace_files(
             )
         total_bytes += len(content)
         if total_bytes > MAX_TOTAL_SEED_ENCODED_BYTES:
-            raise WorkspaceSeedError(
+            raise WorkspaceSeedSizeError(
                 f"workspace_files total base64-encoded size is at least "
                 f"{total_bytes} bytes, which exceeds the "
                 f"{MAX_TOTAL_SEED_ENCODED_BYTES} byte "

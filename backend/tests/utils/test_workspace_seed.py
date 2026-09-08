@@ -9,6 +9,7 @@ from preloop.utils.workspace_seed import (
     MAX_TOTAL_SEED_ENCODED_BYTES,
     WORKSPACE_FILE_PATHS_KEY,
     WorkspaceSeedError,
+    WorkspaceSeedSizeError,
     attach_workspace_file_paths,
     build_workspace_seed_shell,
     MAX_SINGLE_SEED_ENCODED_BYTES,
@@ -93,10 +94,11 @@ class TestParseWorkspaceFiles:
     )
     def test_unsafe_paths_rejected(self, path):
         """Path-traversal and other unsafe paths must be rejected."""
-        with pytest.raises(WorkspaceSeedError):
+        with pytest.raises(WorkspaceSeedError) as excinfo:
             parse_workspace_files(
                 _payload({"path": path, "content_base64": _b64(b"x")})
             )
+        assert not isinstance(excinfo.value, WorkspaceSeedSizeError)
 
     def test_nested_relative_path_allowed(self):
         files = parse_workspace_files(
@@ -149,7 +151,7 @@ class TestParseWorkspaceFiles:
         at_cap = _b64(b"x" * (MAX_SINGLE_SEED_ENCODED_BYTES // 4 * 3))
         assert len(at_cap) == MAX_SINGLE_SEED_ENCODED_BYTES
         count = MAX_TOTAL_SEED_ENCODED_BYTES // MAX_SINGLE_SEED_ENCODED_BYTES + 1
-        with pytest.raises(WorkspaceSeedError, match="total base64-encoded size"):
+        with pytest.raises(WorkspaceSeedSizeError, match="total base64-encoded size"):
             parse_workspace_files(
                 _payload(
                     *[
@@ -163,7 +165,7 @@ class TestParseWorkspaceFiles:
         """A caller must learn how much to shed without a second round trip."""
         at_cap = _b64(b"x" * (MAX_SINGLE_SEED_ENCODED_BYTES // 4 * 3))
         count = MAX_TOTAL_SEED_ENCODED_BYTES // MAX_SINGLE_SEED_ENCODED_BYTES + 1
-        with pytest.raises(WorkspaceSeedError) as excinfo:
+        with pytest.raises(WorkspaceSeedSizeError) as excinfo:
             parse_workspace_files(
                 _payload(
                     *[
@@ -182,7 +184,7 @@ class TestParseWorkspaceFiles:
         over = _b64(b"x" * MAX_SINGLE_SEED_ENCODED_BYTES)
         assert len(over) > MAX_SINGLE_SEED_ENCODED_BYTES
         assert len(over) < MAX_TOTAL_SEED_ENCODED_BYTES
-        with pytest.raises(WorkspaceSeedError) as excinfo:
+        with pytest.raises(WorkspaceSeedSizeError) as excinfo:
             parse_workspace_files(_payload({"path": "a.bin", "content_base64": over}))
         message = str(excinfo.value)
         assert "per-file cap" in message

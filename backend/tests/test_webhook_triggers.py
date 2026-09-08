@@ -806,6 +806,35 @@ class TestWorkspaceSeedBudgetAtTriggerTime:
         assert "sbom/image.spdx.json" in detail
         assert _executions_for_flow(db, flow.id) == []
 
+    def test_manual_trigger_oversized_single_file_is_413_with_no_execution(
+        self, client: TestClient, db_session: Session, test_user
+    ):
+        from preloop.utils.workspace_seed import MAX_SINGLE_SEED_ENCODED_BYTES
+
+        db = db_session
+        flow, _ = _create_webhook_flow(db, test_user, "Manual Trigger Oversized Seed")
+
+        response = client.post(
+            f"/api/v1/flows/{flow.id}/trigger",
+            json={
+                "payload": {
+                    "workspace_files": [
+                        {
+                            "path": "sbom/image.spdx.json",
+                            "content_base64": self._seed(MAX_SINGLE_SEED_ENCODED_BYTES),
+                        }
+                    ]
+                }
+            },
+        )
+
+        assert response.status_code == 413
+        detail = response.json()["detail"]
+        assert "per-file cap" in detail
+        assert str(MAX_SINGLE_SEED_ENCODED_BYTES) in detail
+        assert "sbom/image.spdx.json" in detail
+        assert _executions_for_flow(db, flow.id) == []
+
     def test_malformed_declaration_is_400_with_no_execution(
         self, db_session: Session, test_user
     ):

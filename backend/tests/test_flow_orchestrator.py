@@ -1843,7 +1843,7 @@ class TestWorkspaceSeedValidation:
     async def test_oversized_seed_fails_context_preparation(
         self, db_session: Session, test_flow: Flow, mock_nats_client
     ):
-        """Seeds above the inline cap must abort with a clear message."""
+        """Seeds above the per-file cap must abort with a clear message."""
         import base64
 
         from preloop.utils.workspace_seed import (
@@ -1862,7 +1862,7 @@ class TestWorkspaceSeedValidation:
             mock_nats_client,
             {"workspace_files": [{"path": "big.bin", "content_base64": too_big}]},
         )
-        with pytest.raises(WorkspaceSeedError, match="inline cap"):
+        with pytest.raises(WorkspaceSeedError, match="per-file cap"):
             await orchestrator._prepare_execution_context()
 
     @pytest.mark.asyncio

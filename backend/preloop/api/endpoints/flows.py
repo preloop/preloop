@@ -31,6 +31,7 @@ from preloop.utils.permissions import require_permission
 from preloop.utils.workspace_seed import (
     WORKSPACE_FILES_KEY,
     WorkspaceSeedError,
+    WorkspaceSeedSizeError,
     parse_workspace_files,
 )
 from preloop.models.crud.flow_execution_log import crud_flow_execution_log
@@ -1495,10 +1496,9 @@ def _reject_oversized_workspace_seeds(
     try:
         parse_workspace_files(payload)
     except WorkspaceSeedError as exc:
-        message = str(exc)
-        too_large = "cap" in message and "exceeds" in message
         raise HTTPException(
-            status_code=413 if too_large else 400, detail=message
+            status_code=413 if isinstance(exc, WorkspaceSeedSizeError) else 400,
+            detail=str(exc),
         ) from exc
 
 
