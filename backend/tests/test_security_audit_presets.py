@@ -223,6 +223,49 @@ class TestIncompletionEnvelope:
         assert "nothing is waived and nothing is released" in norm
 
 
+class TestUnscoredFindingsGate:
+    """Unscored database findings are gate-relevant by default.
+
+    Four Go advisories in a dogfood run had no CVSS vector, so the
+    KEV-or-CVSS gate would have passed all four silently. Any Go or Rust
+    product hits this.
+    """
+
+    GATE_PRESETS = ("SBOM Exploit Check", "Release Security Audit")
+
+    @pytest.fixture(params=GATE_PRESETS)
+    def gate_prompt(self, request):
+        return _load_preset(PRESET_FILES[request.param])["prompt_template"]
+
+    def test_default_policy_includes_unscored(self, gate_prompt):
+        norm = _norm(gate_prompt)
+        assert "gate.fail_on_unscored" in gate_prompt
+        assert "database-source finding that carries NO CVSS score at all" in norm
+        assert "Unscored is not a low score" in norm
+        assert 'reads as "screened and cleared" when it means "never scored"' in norm
+
+    def test_opt_out_is_explicit_and_disclosed(self, gate_prompt):
+        norm = _norm(gate_prompt)
+        assert "gate.fail_on_unscored: false in the payload turns it off" in norm
+        assert "the gate line must then say so" in norm
+
+    def test_unscored_failures_are_waivable(self, gate_prompt):
+        assert "An unscored gate failure is waivable like any other" in _norm(
+            gate_prompt
+        )
+
+    def test_scores_are_never_invented(self, gate_prompt):
+        norm = _norm(gate_prompt)
+        assert "never invent a score to fill the field" in norm
+        assert "a fabricated score is a worse defect than a missing one" in norm
+        assert "labeled UNSCORED wherever it appears" in norm
+
+    def test_heuristics_still_stay_out_of_the_gate(self, gate_prompt):
+        """Fix the missing-score hole without letting fuzzy matches gate."""
+        norm = _norm(gate_prompt)
+        assert "do NOT enter the severity gate" in norm
+
+
 class TestSbomVerifyPreset:
     def test_deterministic_check_catalogue(self):
         prompt = _load_preset(PRESET_FILES["SBOM Verify"])["prompt_template"]

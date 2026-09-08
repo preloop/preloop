@@ -151,13 +151,20 @@ class GatePolicy:
     """Authoritative KEV/CVSS gate policy from trigger/flow/CI config.
 
     Never parsed from agent-authored ``gate.policy`` display text. Default is
-    fail on KEV or CVSS >= 9.0. Operator override is the trigger/CI
-    ``gate.fail_on_kev`` / ``gate.fail_on_cvss_gte`` fields only; there is no
-    per-product policy table.
+    fail on KEV, on CVSS >= 9.0, or on a database-source finding carrying no
+    score at all. Operator override is the trigger/CI ``gate.fail_on_kev`` /
+    ``gate.fail_on_cvss_gte`` / ``gate.fail_on_unscored`` fields only; there
+    is no per-product policy table.
+
+    ``fail_on_unscored`` defaults to True because Go and Rust advisories
+    routinely reach OSV with no CVSS vector. With a score-only gate every one
+    of them passes silently, which reads as "screened and cleared" when it
+    means "never scored". An unscored finding is waivable like any other.
     """
 
     fail_on_kev: bool = True
     fail_on_cvss_gte: float = DEFAULT_GATE_CVSS
+    fail_on_unscored: bool = True
 
 
 DEFAULT_GATE_POLICY = GatePolicy()
@@ -226,8 +233,9 @@ def parse_gate_policy(configured: Any) -> GatePolicy:
     """Build gate policy from trustworthy operator config.
 
     Invalid, non-finite, or out-of-range CVSS values are ignored (default
-    9.0 remains). ``fail_on_kev`` must be a JSON boolean. Model-authored
-    ``gate.policy`` display strings are never consulted.
+    9.0 remains). ``fail_on_kev`` and ``fail_on_unscored`` must be JSON
+    booleans. Model-authored ``gate.policy`` display strings are never
+    consulted.
     """
     if not isinstance(configured, Mapping):
         return DEFAULT_GATE_POLICY
@@ -235,11 +243,19 @@ def parse_gate_policy(configured: Any) -> GatePolicy:
     raw_kev = configured.get("fail_on_kev")
     if type(raw_kev) is bool:
         fail_on_kev = raw_kev
+    fail_on_unscored = DEFAULT_GATE_POLICY.fail_on_unscored
+    raw_unscored = configured.get("fail_on_unscored")
+    if type(raw_unscored) is bool:
+        fail_on_unscored = raw_unscored
     cvss = DEFAULT_GATE_POLICY.fail_on_cvss_gte
     parsed = _finite_cvss(configured.get("fail_on_cvss_gte"))
     if parsed is not None:
         cvss = parsed
-    return GatePolicy(fail_on_kev=fail_on_kev, fail_on_cvss_gte=cvss)
+    return GatePolicy(
+        fail_on_kev=fail_on_kev,
+        fail_on_cvss_gte=cvss,
+        fail_on_unscored=fail_on_unscored,
+    )
 
 
 def gate_policy_from_trigger(payload: Any) -> GatePolicy:
@@ -845,6 +861,13 @@ def _check_counts_by_severity(
 def _default_gate_failures(
     findings: Sequence[Any], *, policy: GatePolicy
 ) -> list[dict[str, Any]]:
+    """Findings the configured policy fails on, before waivers.
+
+    A database-source finding with no usable CVSS score is gate-relevant by
+    default: unscored is unknown, and unknown is not a pass. Heuristic-only
+    hits still never enter the gate, so this cannot fail a release on a
+    fuzzy CPE match.
+    """
     failing: list[dict[str, Any]] = []
     for item in findings:
         if not isinstance(item, Mapping):
@@ -854,10 +877,13 @@ def _default_gate_failures(
         cvss = item.get("cvss")
         kev = item.get("kev") is True and policy.fail_on_kev
         high_cvss = False
+        scored = False
         if _is_number(cvss):
             score = float(cvss)
-            high_cvss = math.isfinite(score) and score >= policy.fail_on_cvss_gte
-        if kev or high_cvss:
+            scored = math.isfinite(score)
+            high_cvss = scored and score >= policy.fail_on_cvss_gte
+        unscored = policy.fail_on_unscored and not scored
+        if kev or high_cvss or unscored:
             finding_id = str(item.get("id") or "")
             if finding_id:
                 aliases = item.get("aliases")
@@ -963,7 +989,7 @@ def _check_gate(
         expected_passed = bool(outcome["gate_passed_after_waivers"])
         if passed is True and not expected_passed:
             failures.append(
-                f"{path}.passed is true but remaining unwaived KEV/CVSS "
+                f"{path}.passed is true but remaining unwaived KEV/CVSS/unscored "
                 f"failures {outcome['unwaived_failures']} are not covered"
             )
         if passed is False and expected_passed:
@@ -1004,13 +1030,13 @@ def _check_gate(
     else:
         if passed is True and computed:
             failures.append(
-                f"{path}.passed is true but KEV/CVSS gate failures "
+                f"{path}.passed is true but KEV/CVSS/unscored gate failures "
                 f"{computed_ids} remain"
             )
         if passed is False and not computed:
             failures.append(
                 f"{path}.passed is false but no database finding fails the "
-                "configured KEV/CVSS policy"
+                "configured KEV/CVSS/unscored policy"
             )
     return failures
 

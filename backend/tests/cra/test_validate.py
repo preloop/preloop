@@ -1372,6 +1372,127 @@ class TestAuthoritativeGatePolicy:
         assert kev_off.ok, kev_off.failures
 
 
+def _unscored_finding(
+    finding_id: str = "GO-2026-1234", *, sources: list[str] | None = None
+) -> dict[str, Any]:
+    """A database-source advisory that carries no CVSS vector."""
+    finding = _kev_finding(finding_id, severity="unknown")
+    finding["kev"] = False
+    finding["cvss"] = None
+    finding["waived"] = False
+    if sources is not None:
+        finding["sources"] = sources
+        finding["match_kind"] = "heuristic" if sources == ["nvd_cpe"] else "database"
+    return finding
+
+
+class TestUnscoredFindingsEnterTheGate:
+    """Unscored is unknown, and unknown is not a pass.
+
+    Four Go advisories reached a dogfood run with no CVSS vector. Under a
+    KEV-or-CVSS-only gate all four passed silently, so the pack read as
+    screened and cleared when it meant never scored.
+    """
+
+    def test_unscored_database_finding_fails_the_gate(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        payload = _release_with_kevs(
+            releaseaudit_result,
+            [_unscored_finding()],
+            [],
+            passed=True,
+            unwaived=[],
+        )
+        payload["vuln_scan"]["gate"]["passed_before_waivers"] = True
+        result = validate_cra_result(payload)
+        assert not result.ok
+        assert any("GO-2026-1234" in item for item in result.failures)
+
+    def test_declaring_the_failure_validates(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        payload = _release_with_kevs(
+            releaseaudit_result,
+            [_unscored_finding()],
+            [],
+            passed=False,
+            unwaived=["GO-2026-1234"],
+        )
+        payload["verdict"] = "fail"
+        result = validate_cra_result(payload)
+        assert result.ok, result.failures
+        assert result.release_denied
+
+    def test_a_human_waiver_still_clears_it(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        """Unscored failures are waivable like any other gate failure."""
+        waiver = _waiver("GO-2026-1234")
+        payload = _release_with_kevs(
+            releaseaudit_result,
+            [{**_unscored_finding(), "waived": True}],
+            [waiver],
+            passed=True,
+            unwaived=[],
+        )
+        result = validate_cra_result(payload, delivered_waivers=[waiver])
+        assert result.ok, result.failures
+
+    def test_heuristic_only_unscored_stays_out_of_the_gate(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        """A fuzzy CPE match with no score cannot fail a release."""
+        payload = _release_with_kevs(
+            releaseaudit_result,
+            [_unscored_finding("CVE-2026-9999", sources=["nvd_cpe"])],
+            [],
+            passed=True,
+            unwaived=[],
+        )
+        payload["vuln_scan"]["gate"]["passed_before_waivers"] = True
+        result = validate_cra_result(payload)
+        assert result.ok, result.failures
+
+    def test_operators_can_opt_out(self, releaseaudit_result: dict[str, Any]) -> None:
+        payload = _release_with_kevs(
+            releaseaudit_result,
+            [_unscored_finding()],
+            [],
+            passed=True,
+            unwaived=[],
+        )
+        payload["vuln_scan"]["gate"]["passed_before_waivers"] = True
+        policy = parse_gate_policy({"fail_on_unscored": False})
+        assert policy.fail_on_unscored is False
+        assert policy.fail_on_kev is True
+        assert policy.fail_on_cvss_gte == 9.0
+        result = validate_cra_result(payload, gate_policy=policy)
+        assert result.ok, result.failures
+
+    def test_opt_out_must_be_a_json_boolean(self) -> None:
+        for raw in ("false", 0, None, [], {}):
+            assert parse_gate_policy({"fail_on_unscored": raw}).fail_on_unscored is True
+
+    def test_default_policy_fails_on_unscored(self) -> None:
+        assert GatePolicy().fail_on_unscored is True
+        assert parse_gate_policy({}).fail_on_unscored is True
+
+    def test_a_scored_low_finding_still_passes(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        """This is a gate on missing scores, not on low ones."""
+        finding = _unscored_finding()
+        finding["cvss"] = 3.1
+        finding["severity"] = "low"
+        payload = _release_with_kevs(
+            releaseaudit_result, [finding], [], passed=True, unwaived=[]
+        )
+        payload["vuln_scan"]["gate"]["passed_before_waivers"] = True
+        result = validate_cra_result(payload)
+        assert result.ok, result.failures
+
+
 class TestNestedJsonAndErrorEnvelopes:
     def test_gap_register_malformed_nested_is_invalid(
         self, releaseaudit_result: dict[str, Any]

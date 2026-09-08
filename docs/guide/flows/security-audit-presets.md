@@ -549,10 +549,22 @@ JSON `{id, reason}` per selected finding id. Persist authenticates that
 stored `tool_result` / `responses` content — `status=approved` or a CVE
 mentioned in the question is not a waiver. Timeout fails closed.
 
-The severity gate is KEV or CVSS >= 9.0 unless the trigger/CI payload
-sets `gate.fail_on_kev` / `gate.fail_on_cvss_gte` (CVSS in `[0, 10]`).
-Agent `gate.policy` display text never changes the threshold. There is
-no per-product policy table.
+The severity gate is KEV, CVSS >= 9.0, or a database-source finding
+with **no CVSS score at all**, unless the trigger/CI payload sets
+`gate.fail_on_kev` / `gate.fail_on_cvss_gte` (CVSS in `[0, 10]`) /
+`gate.fail_on_unscored`. Agent `gate.policy` display text never changes
+the threshold. There is no per-product policy table.
+
+**Unscored findings are gate-relevant by default.** Go and Rust
+advisories routinely reach OSV with no CVSS vector. Under a score-only
+gate every one of them passes silently, and the pack then reads as
+"screened and cleared" when it means "never scored". Unscored failures
+are labeled `UNSCORED` on the cover and in the register, and they are
+waivable like any other gate failure. Set
+`gate.fail_on_unscored: false` in the payload (or
+`ReleasePolicy(fail_on_unscored=False)` in CI) to opt out; the gate line
+then says so. Heuristic-only findings are unaffected: they never enter
+the gate, scored or not.
 
 Heuristic sources stay labeled and never enter the severity gate.
 `pkg:generic` and `pkg:github` are not db-resolvable by purl; they may
@@ -725,7 +737,7 @@ Example payload (Release Security Audit):
   "sbom": {"paths": ["sbom/image.spdx.json"]},
   "manifests": {"license_manifest_path": "manifests/license.manifest"},
   "license_policy_path": "policy/licenses.yaml",
-  "gate": {"fail_on_kev": true, "fail_on_cvss_gte": 7.0},
+  "gate": {"fail_on_kev": true, "fail_on_cvss_gte": 7.0, "fail_on_unscored": true},
   "previous_result_path": "previous/result.json",
   "workspace_files": [
     {"path": "sbom/image.spdx.json", "content_base64": "..."},

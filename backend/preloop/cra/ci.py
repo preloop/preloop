@@ -84,13 +84,15 @@ class ReleasePolicy:
     require_coverage: bool = False
     fail_on_kev: bool = True
     fail_on_cvss_gte: float = DEFAULT_GATE_CVSS
+    fail_on_unscored: bool = True
 
     def gate_policy(self) -> GatePolicy:
-        """KEV/CVSS thresholds used for result validation.
+        """KEV/CVSS/unscored thresholds used for result validation.
 
-        Default is KEV or CVSS >= 9.0. Values come from this CI policy
-        object (and the trigger payload when present), never from
-        model-authored ``gate.policy`` display text.
+        Default is KEV, CVSS >= 9.0, or a database-source finding with no
+        score at all. Values come from this CI policy object (and the
+        trigger payload when present), never from model-authored
+        ``gate.policy`` display text.
         """
         from preloop.cra.validate import parse_gate_policy
 
@@ -98,6 +100,7 @@ class ReleasePolicy:
             {
                 "fail_on_kev": self.fail_on_kev,
                 "fail_on_cvss_gte": self.fail_on_cvss_gte,
+                "fail_on_unscored": self.fail_on_unscored,
             }
         )
 
