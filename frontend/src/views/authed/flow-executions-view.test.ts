@@ -34,6 +34,28 @@ const EXECUTIONS = [
   },
 ];
 
+/** One run with a full token aggregate, for the Tokens column group. */
+const TOKEN_EXECUTION = {
+  id: 'exec-tokens',
+  flow_id: 'flow-1',
+  flow_name: 'Nightly Sync',
+  status: 'SUCCEEDED',
+  start_time: '2026-03-09T10:00:00Z',
+  end_time: '2026-03-09T10:01:00Z',
+  estimated_cost: 0.083,
+  token_usage: {
+    prompt_tokens: 12400,
+    completion_tokens: 3100,
+    total_tokens: 15500,
+    input_tokens: 12400,
+    output_tokens: 3100,
+    cache_read_tokens: 8200,
+    cache_write_tokens: 0,
+    uncached_input_tokens: 3900,
+    cache_hit_ratio: 0.6777,
+  },
+};
+
 describe('FlowExecutionsView', () => {
   let fetchStub: sinon.SinonStub;
 
@@ -525,6 +547,23 @@ describe('FlowExecutionsView', () => {
   });
 
   describe('wave 7 columns', () => {
+    /** Checks a box in the column picker the way an operator would. */
+    async function toggleColumn(
+      el: FlowExecutionsView,
+      id: string,
+      visible: boolean
+    ) {
+      const picker = el.shadowRoot?.querySelector('column-picker');
+      const item = picker?.shadowRoot?.querySelector(
+        `sl-menu-item[data-column="${id}"]`
+      ) as HTMLElement & { checked: boolean };
+      item.checked = visible;
+      picker?.shadowRoot
+        ?.querySelector('sl-menu')
+        ?.dispatchEvent(new CustomEvent('sl-select', { detail: { item } }));
+      await el.updateComplete;
+    }
+
     async function renderRows(rows: unknown[]) {
       fetchStub = stub(rows);
       const el = (await fixture(
@@ -672,29 +711,8 @@ describe('FlowExecutionsView', () => {
       expect((started?.textContent || '').trim()).to.not.contain('2026-03-09');
     });
 
-    it('states tokens before cost, split in and out', async () => {
-      const el = await renderRows([
-        {
-          id: 'exec-tokens',
-          flow_id: 'flow-1',
-          flow_name: 'Nightly Sync',
-          status: 'SUCCEEDED',
-          start_time: '2026-03-09T10:00:00Z',
-          end_time: '2026-03-09T10:01:00Z',
-          estimated_cost: 0.083,
-          token_usage: {
-            prompt_tokens: 12400,
-            completion_tokens: 3100,
-            total_tokens: 15500,
-            input_tokens: 12400,
-            output_tokens: 3100,
-            cache_read_tokens: 8200,
-            cache_write_tokens: 0,
-            uncached_input_tokens: 3900,
-            cache_hit_ratio: 0.6777,
-          },
-        },
-      ]);
+    it('states the token total before cost, and the parts on request', async () => {
+      const el = await renderRows([TOKEN_EXECUTION]);
 
       await waitUntil(
         () => Boolean(el.shadowRoot?.querySelector('tbody token-figures')),
@@ -713,13 +731,72 @@ describe('FlowExecutionsView', () => {
       expect(tokenIndex).to.be.greaterThan(-1);
       expect(tokenIndex, 'tokens before cost').to.be.lessThan(costIndex);
 
+      // The list compares runs by their total; in, out and cached are their
+      // own columns now, so the cell states one number instead of three.
       const figures = cells[tokenIndex].querySelector('token-figures')!;
       await (figures as unknown as { updateComplete: Promise<unknown> })
         .updateComplete;
       const text = (figures.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
-      expect(text).to.contain('12.4K in');
-      expect(text).to.contain('3.1K out');
-      expect(text).to.contain('cache 68% hit');
+      expect(text).to.contain('15.5K');
+      expect(text).to.not.contain(' in');
+      expect(text).to.not.contain('cache');
+    });
+
+    it('turns the token parts on from the column picker, each sortable', async () => {
+      const el = await renderRows([TOKEN_EXECUTION]);
+      const picker = el.shadowRoot?.querySelector('column-picker');
+      expect(picker, 'the toolbar offers the columns').to.exist;
+
+      const items = Array.from(
+        picker?.shadowRoot?.querySelectorAll('sl-menu-item') || []
+      );
+      const groupLabels = Array.from(
+        picker?.shadowRoot?.querySelectorAll('sl-menu-label') || []
+      ).map((label) => (label.textContent || '').trim());
+      expect(groupLabels).to.contain('Tokens');
+      const parts = items
+        .map((item) => item.getAttribute('data-column'))
+        .filter((id) => id && id.startsWith('tokens'));
+      expect(parts).to.eql([
+        'tokens',
+        'tokens-in',
+        'tokens-out',
+        'tokens-cached',
+      ]);
+
+      const inItem = items.find(
+        (item) => item.getAttribute('data-column') === 'tokens-in'
+      )!;
+      expect(inItem.hasAttribute('checked'), 'input is off by default').to.be
+        .false;
+
+      await toggleColumn(el, 'tokens-in', true);
+
+      const headers = Array.from(
+        el.shadowRoot?.querySelectorAll('thead th') || []
+      ).map((th) => (th.textContent || '').trim());
+      expect(headers).to.contain('In');
+      const inHeader = el.shadowRoot?.querySelector(
+        '.sort-button[data-sort-key="tokens-in"]'
+      );
+      expect(inHeader, 'the part sorts on its own').to.exist;
+      expect(
+        el.shadowRoot?.querySelector('.sort-button[data-sort-key="tokens"]'),
+        'the total still sorts'
+      ).to.exist;
+    });
+
+    it('remembers which columns an operator chose', async () => {
+      const first = await renderRows([TOKEN_EXECUTION]);
+      await toggleColumn(first, 'tokens-cached', true);
+
+      // A second visit to the page, on the same browser profile.
+      fetchStub.restore();
+      const second = await renderRows([TOKEN_EXECUTION]);
+      const headers = Array.from(
+        second.shadowRoot?.querySelectorAll('thead th') || []
+      ).map((th) => (th.textContent || '').trim());
+      expect(headers).to.contain('Cached');
     });
 
     it('shows the estimated cost, dashing an unpriced run', async () => {

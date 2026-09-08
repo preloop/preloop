@@ -59,7 +59,6 @@ from preloop.services.flow_execution_notifications import (
     needs_tracker_comment,
     notify_terminal_execution,
 )
-from preloop.services.prompt_resolvers.execution import execution_console_url
 from preloop.config import settings
 from preloop.services.flow_pr_binding import (
     PR_OPENED_MARKER,
@@ -4812,10 +4811,13 @@ class FlowExecutionOrchestrator:
     async def _notify_terminal(
         self,
         status: str,
-        failure_category: Optional[str] = None,
         result: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Post configured tracker comments after a terminal status write.
+        """Post the configured tracker comment after a terminal status write.
+
+        The only comment left is "PR opened: <url>" on a successful run; the
+        failure comment was removed (a failed run is an attention item on
+        Overview, not a log tail on someone's issue).
 
         Never raises: a notification failure must not rewrite the execution
         status that was just persisted.
@@ -4847,17 +4849,10 @@ class FlowExecutionOrchestrator:
             if not notifications:
                 return
 
-            log_lines: List[str] = []
-            if self.execution_logger:
-                summary = self.execution_logger.get_agent_output_summary(tail_lines=20)
-                if summary:
-                    log_lines = summary.splitlines()
-
             tracker_client = None
-            if needs_tracker_comment(notifications, status, failure_category):
+            if needs_tracker_comment(notifications, status):
                 tracker_client = await self._get_tracker_client_for_status()
 
-            execution_id = str(self.execution_log.id)
             trigger_details = (
                 getattr(self.execution_log, "trigger_event_details", None)
                 or self.trigger_event_data
@@ -4870,13 +4865,9 @@ class FlowExecutionOrchestrator:
             await notify_terminal_execution(
                 notifications=notifications,
                 status=status,
-                failure_category=failure_category
-                or getattr(self.execution_log, "failure_category", None),
-                execution_id=execution_id,
-                execution_url=execution_console_url(execution_id),
+                execution_id=str(self.execution_log.id),
                 trigger_event_details=trigger_details,
                 result=result_payload if isinstance(result_payload, dict) else None,
-                log_lines=log_lines,
                 tracker_client=tracker_client,
             )
         except Exception:
@@ -5803,11 +5794,6 @@ class FlowExecutionOrchestrator:
             )
             await self._notify_terminal(
                 status=final_status,
-                failure_category=derive_failure_category(
-                    status=final_status,
-                    error_message=agent_result.get("error_message"),
-                    failure_analysis=agent_result.get("failure_analysis"),
-                ),
                 result=merged_result,
             )
 
@@ -5888,10 +5874,7 @@ class FlowExecutionOrchestrator:
                         estimated_cost=self.estimated_cost,
                     )
                     self._sync_runtime_session(ended_at=datetime.now(timezone.utc))
-                    await self._notify_terminal(
-                        status="FAILED",
-                        failure_category=exception_category,
-                    )
+                    await self._notify_terminal(status="FAILED")
                 except Exception as update_error:
                     logger.error(
                         f"Failed to update execution log after error: {update_error}",
