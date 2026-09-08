@@ -326,6 +326,28 @@ def _log_policy_decision_async(
         execution_id: Flow execution ID (if applicable)
         correlation_id: Correlation ID for grouping related audit events
     """
+    # Outbound webhooks share this chokepoint so every deny path reaches
+    # subscribers, including the ones that reach it through
+    # model_content_policy. Emitted before the audit branch below, which
+    # returns early when no audit plugin is installed: OSS has no audit
+    # service and would otherwise never fire policy.denied.
+    if action == "deny":
+        try:
+            from preloop.services.event_webhooks.emitters import emit_policy_denied
+
+            emit_policy_denied(
+                account_id=account_id,
+                tool_name=tool_name,
+                rule_description=rule_description,
+                condition_matched=condition_matched,
+                execution_id=execution_id,
+                user_id=user_id,
+                correlation_id=correlation_id,
+                extra_details=extra_details,
+            )
+        except Exception as exc:  # noqa: BLE001 - denial must still be logged
+            logger.debug(f"Failed to emit policy.denied webhook: {exc}")
+
     try:
         audit_service = _get_audit_service()
         if not audit_service:

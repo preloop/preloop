@@ -182,6 +182,53 @@ class ModelGatewayEventEmitter:
                         flow_id=event.get("flow_id"),
                     )
                 )
+                self._emit_budget_webhooks(usage, budget_payload)
+
+    def _emit_budget_webhooks(self, usage: ApiUsage, budget: dict) -> None:
+        """Queue budget.threshold / budget.exceeded from the gateway snapshot.
+
+        The snapshot is recomputed on every model call, so the raw flags fire
+        constantly once a limit is near. Deduplication is left to the outbox:
+        the natural key names the account, scope, limit and billing month, so
+        a month of calls over the same limit collapses to one delivery.
+
+        Never raises: billing telemetry must not fail a model call.
+        """
+        try:
+            from preloop.services.event_webhooks.emitters import emit_budget_event
+
+            hard = bool(budget.get("hard_limit_exceeded"))
+            soft = bool(budget.get("soft_limit_exceeded"))
+            if not hard and not soft:
+                return
+
+            reason = budget.get("enforcement_reason") or ""
+            scope = "flow" if reason.startswith("flow_") else "account"
+            prefix = "flow" if scope == "flow" else "account"
+            limit = budget.get(
+                f"{prefix}_limit_usd" if hard else f"{prefix}_soft_limit_usd"
+            )
+            if limit is None:
+                return
+            spend = budget.get(f"{prefix}_current_spend_usd")
+            hard_limit = budget.get(f"{prefix}_limit_usd")
+            threshold_percent = None
+            if not hard and hard_limit:
+                threshold_percent = int(round(float(limit) / float(hard_limit) * 100))
+
+            emit_budget_event(
+                self.db,
+                account_id=usage.account_id,
+                exceeded=hard,
+                scope=scope,
+                scope_id=usage.flow_execution_id if scope == "flow" else None,
+                period=datetime.now(timezone.utc).strftime("%Y-%m"),
+                limit_amount=hard_limit if hard else limit,
+                spent_amount=spend,
+                threshold_percent=threshold_percent,
+            )
+        except Exception:  # noqa: BLE001 - a webhook must not fail a model call
+            logger.debug("Failed to queue budget webhook event", exc_info=True)
 
     async def _publish_to_nats(self, event: dict) -> None:
         execution_id = event.get("execution_id")

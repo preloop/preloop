@@ -894,6 +894,9 @@ class OpenAIGatewayService:
         try:
             session.ended_at = ended_at
             self.db.add(session)
+            from preloop.services.event_webhooks.emitters import emit_session_ended
+
+            emit_session_ended(self.db, session, reason="idle")
             self.db.flush()
         except SQLAlchemyError:
             self.db.rollback()

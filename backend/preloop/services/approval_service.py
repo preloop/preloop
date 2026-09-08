@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Set
 from urllib.parse import urljoin
 
-import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from preloop.models.models import (
@@ -32,6 +31,10 @@ from preloop.models.crud.approval_bypass import (
 from preloop.models.models.approval_bypass import ApprovalBypass, ApprovalBypassMode
 from preloop.sync.services.event_bus import get_task_publisher
 from preloop.services.ai_approval_service import get_ai_approval_service
+from preloop.services.event_webhooks.events import (
+    EVENT_APPROVAL_CREATED,
+    EVENT_APPROVAL_DECIDED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -505,6 +508,40 @@ class ApprovalService:
         self.db = db
         self.base_url = base_url
 
+    # Broadcast event names that are v1 webhook events. "vote_received" and
+    # "escalated" are progress, not decisions, and have no v1 event; adding
+    # one later is additive and must not be faked by reusing these.
+    _WEBHOOK_EVENT_FOR_BROADCAST = {
+        "created": EVENT_APPROVAL_CREATED,
+        "approved": EVENT_APPROVAL_DECIDED,
+        "declined": EVENT_APPROVAL_DECIDED,
+        "expired": EVENT_APPROVAL_DECIDED,
+        "cancelled": EVENT_APPROVAL_DECIDED,
+    }
+
+    async def _enqueue_approval_webhook(
+        self, approval_request: ApprovalRequest, event_type: str
+    ) -> None:
+        """Enqueue the v1 webhook event matching a broadcast, if any.
+
+        Never raises: broadcasting must not depend on the outbox.
+        """
+        webhook_event = self._WEBHOOK_EVENT_FOR_BROADCAST.get(event_type)
+        if not webhook_event:
+            return
+        try:
+            from preloop.services.event_webhooks.emitters import (
+                emit_approval_event_async,
+            )
+
+            await emit_approval_event_async(self.db, approval_request, webhook_event)
+        except Exception:
+            logger.warning(
+                "Failed to enqueue approval webhook for %s",
+                getattr(approval_request, "id", "unknown"),
+                exc_info=True,
+            )
+
     async def _broadcast_approval_update(
         self,
         approval_request: ApprovalRequest,
@@ -518,6 +555,13 @@ class ApprovalService:
             event_type: Type of event (created, approved, declined, expired, vote_received)
             extra_data: Optional additional data to include in the broadcast
         """
+        # Outbound webhooks ride the same chokepoint as the websocket
+        # broadcast: every creation and every resolution already passes
+        # through here, so subscribers cannot silently miss a path. Enqueued
+        # first because the NATS block below returns early when the broker is
+        # down, and a missing broker is no reason to skip an integration.
+        await self._enqueue_approval_webhook(approval_request, event_type)
+
         try:
             task_publisher = await get_task_publisher()
             if not task_publisher or not task_publisher.nc:
@@ -1838,25 +1882,41 @@ class ApprovalService:
                 },
             }
 
-        # Post to webhook
+        # Hand the message to the delivery outbox instead of posting inline.
+        # Same URL, same body; now signed, retried and visible in the
+        # deliveries list. webhook_posted_at and webhook_error are stamped by
+        # the delivery worker when the POST actually succeeds or finally
+        # fails, so "posted" means posted rather than "queued".
+        from preloop.services.event_webhooks import outbox
+        from preloop.services.event_webhooks.approval_shim import (
+            sync_shim_endpoint_async,
+        )
+        from preloop.services.event_webhooks.events import EVENT_APPROVAL_CREATED
+
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    webhook_url,
-                    json=message,
-                    headers={"Content-Type": "application/json"},
-                )
-                response.raise_for_status()
-
-            # Mark as posted
-            await self.update_approval_request(
-                approval_request.id,
-                ApprovalRequestUpdate(webhook_posted_at=datetime.utcnow()),
+            endpoint = await sync_shim_endpoint_async(self.db, approval_workflow)
+            if endpoint is None:
+                raise RuntimeError("approval workflow webhook endpoint unavailable")
+            result = await outbox.enqueue_raw_delivery_async(
+                self.db,
+                endpoint=endpoint,
+                event_type=EVENT_APPROVAL_CREATED,
+                payload=message,
+                natural_key=f"approval_workflow_webhook:{approval_request.id}",
+                occurred_at=approval_request.requested_at,
+                subject_id=approval_request.id,
             )
+            await self.db.commit()
+            if result.skipped_queue_full:
+                raise RuntimeError("webhook delivery queue is full for this account")
             return True
-
         except Exception as e:
-            error_msg = f"Failed to post webhook: {str(e)}"
+            error_msg = f"Failed to queue webhook: {str(e)}"
+            logger.warning(
+                "Approval webhook could not be queued for %s: %s",
+                approval_request.id,
+                type(e).__name__,
+            )
             await self.update_approval_request(
                 approval_request.id,
                 ApprovalRequestUpdate(webhook_error=error_msg),
