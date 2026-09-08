@@ -27,7 +27,7 @@ class AdminUserCreate(UserBase):
 
     model_config = {"title": "AdminUserCreate"}
 
-    password: str = Field(..., min_length=8)
+    password: str = Field(..., min_length=8, max_length=72)
     user_source: str = Field(default="local")
     oauth_provider: Optional[str] = None
     oauth_id: Optional[str] = None
@@ -74,8 +74,8 @@ class AdminUserRoleResponse(BaseModel):
 class UserPasswordUpdate(BaseModel):
     """Schema for updating user password."""
 
-    current_password: str
-    new_password: str = Field(..., min_length=8)
+    current_password: str = Field(..., max_length=72)
+    new_password: str = Field(..., min_length=8, max_length=72)
 
 
 class AdminUserResponse(BaseModel):

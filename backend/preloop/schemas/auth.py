@@ -51,7 +51,7 @@ class AuthUserCreate(BaseModel):
 
     username: str = Field(..., min_length=3, max_length=50)
     email: EmailStr
-    password: str = Field(..., min_length=8)
+    password: str = Field(..., min_length=8, max_length=72)
     full_name: Optional[str] = None
     bootstrap_token: Optional[str] = Field(
         None,
@@ -114,7 +114,7 @@ class LoginRequest(BaseModel):
     """Model for login requests."""
 
     username: str
-    password: str
+    password: str = Field(..., max_length=72)
 
 
 class RefreshRequest(BaseModel):
@@ -139,14 +139,14 @@ class PasswordResetConfirmRequest(BaseModel):
     """Model for password reset confirmation."""
 
     token: str
-    new_password: str = Field(..., min_length=8)
+    new_password: str = Field(..., min_length=8, max_length=72)
 
 
 class PasswordChangeRequest(BaseModel):
     """Password change request schema."""
 
-    current_password: str
-    new_password: str = Field(..., min_length=8)
+    current_password: str = Field(..., max_length=72)
+    new_password: str = Field(..., min_length=8, max_length=72)
 
 
 class ApiKeyCreate(BaseModel):
