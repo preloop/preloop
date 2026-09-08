@@ -16,7 +16,7 @@ import './console-header.ts';
 import type { ConsoleHeader } from './console-header.ts';
 import { publishAttentionSummary } from '../utils/attention-summary';
 import { loadShoelaceTokens } from '../utils/test-shoelace-theme';
-import { Router } from '@vaadin/router';
+import { Router } from '../router';
 
 const USER = {
   id: 'user-1',

@@ -188,7 +188,7 @@ describe('talk-window', () => {
   });
 
   it('navigates instead of opening a window on a phone', async () => {
-    const router = await import('@vaadin/router');
+    const router = await import('../router');
     const goStub = sinon.stub(router.Router, 'go');
     sinon.stub(window, 'innerWidth').value(390);
 

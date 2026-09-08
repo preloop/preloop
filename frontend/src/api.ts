@@ -1,5 +1,5 @@
 import { LitElement } from 'lit';
-import { Router } from '@vaadin/router';
+import { Router } from './router';
 import { DEFAULT_SIMILARITY_THRESHOLD } from './config';
 import { PermissionError, permissionErrorFromResponse } from './permissions';
 import { ATTENTION_SUMMARY_STORAGE_KEY } from './utils/attention-summary';
