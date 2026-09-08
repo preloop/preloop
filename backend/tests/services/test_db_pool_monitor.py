@@ -15,6 +15,12 @@ from preloop.services.db_pool_monitor import (
 )
 
 
+@pytest.fixture(autouse=True)
+def capture_monitor_logs(monkeypatch, caplog):
+    logger = logging.getLogger("preloop.services.db_pool_monitor")
+    monkeypatch.setattr(logger, "handlers", [*logger.handlers, caplog.handler])
+
+
 def make_pool(size=8, checked_out=0, checked_in=None, overflow=0):
     pool = MagicMock()
     pool.size.return_value = size

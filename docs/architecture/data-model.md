@@ -99,3 +99,31 @@ described above. Gateway preparation still needs a separate connection-lifetime
 change before long provider streams, and the agent-control WebSocket still needs
 worker-owned per-message sessions. Those broader lifecycle changes are not implied
 by moving individual authentication calls into workers.
+
+
+## Connection-hold diagnostics
+
+Request sync and async engines enable `DB_POOL_HOLD_DIAGNOSTICS=true` by default.
+Each API and dedicated gateway process observes its own engines; the separate
+health engine is excluded. Set the flag to `false` and restart to disable listener
+installation and callsite capture. `DB_POOL_HOLD_STACKS=true` increases acquisition
+signatures from three to eight application frames; the walk stops after 64 frames,
+including SQLAlchemy greenlet parents for async callers.
+
+The existing pool monitor warning includes the five oldest active holds with
+monotonic durations and sanitized package-relative file/function/line identities.
+At most 128 active holds are retained per engine. No SQL, parameters, source lines,
+locals, credentials, account identifiers, frame objects or DBAPI connections are
+captured. Metadata is removed on checkin, invalidation, close and detach; engine
+disposal clears it and rebinds tracking to the replacement pool.
+
+A saturated pool also retains at most five completed holds that lasted at least
+five seconds and spanned saturation, for at most five minutes. This lets the next
+monitor tick report acquisition evidence when an event-loop stall hid the active
+incident. Warnings retain the existing monitor interval (30 seconds by default);
+there is no extra watchdog or per-checkout log. `DB_MONITORING_ENABLED=false` stops
+periodic monitoring; disable the diagnostics flag separately to stop collection.
+
+These signatures identify where a connection was acquired, not its current wait
+stack or a proven incident cause. Collection is bounded and best effort. Missing
+frames or untracked checkouts do not establish that a path released its connection.

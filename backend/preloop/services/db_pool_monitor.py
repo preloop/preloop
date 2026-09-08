@@ -66,8 +66,9 @@ def _snapshot(pool: Any, engine_name: str, max_overflow: int) -> Dict[str, Any]:
     }
 
 
-def collect_pool_stats() -> List[Dict[str, Any]]:
+def collect_pool_stats(*, include_holds: bool = False) -> List[Dict[str, Any]]:
     """Snapshot both engines' pools; engines not yet created are skipped."""
+    from preloop.models.db.pool_diagnostics import collect_pool_holds
     from preloop.models.db.session import (
         _env_int,
         get_async_engine_if_initialized,
@@ -80,10 +81,16 @@ def collect_pool_stats() -> List[Dict[str, Any]]:
     stats: List[Dict[str, Any]] = []
     sync_engine = get_engine_if_initialized()
     if sync_engine is not None:
-        stats.append(_snapshot(sync_engine.pool, "sync", max_overflow))
+        snapshot = _snapshot(sync_engine.pool, "sync", max_overflow)
+        if include_holds:
+            snapshot["holds"] = collect_pool_holds(sync_engine)
+        stats.append(snapshot)
     async_engine = get_async_engine_if_initialized()
     if async_engine is not None:
-        stats.append(_snapshot(async_engine.sync_engine.pool, "async", max_overflow))
+        snapshot = _snapshot(async_engine.sync_engine.pool, "async", max_overflow)
+        if include_holds:
+            snapshot["holds"] = collect_pool_holds(async_engine.sync_engine)
+        stats.append(snapshot)
     return stats
 
 
@@ -176,18 +183,25 @@ class DbPoolMonitor:
         Returns:
             The collected pool snapshots (also used by tests).
         """
-        stats = collect_pool_stats()
+        stats = collect_pool_stats(include_holds=True)
         for snapshot in stats:
             ceiling = snapshot["ceiling"]
             if ceiling <= 0:
                 continue
-            if snapshot["checked_out"] >= self.warn_ratio * ceiling:
+            holds = snapshot.get("holds")
+            recently_saturated = (
+                holds is not None and holds["recent_saturation_seconds_ago"] is not None
+            )
+            if (
+                snapshot["checked_out"] >= self.warn_ratio * ceiling
+                or recently_saturated
+            ):
                 logger.warning(
-                    "DB connection pool nearing exhaustion: engine=%s "
+                    "DB connection pool nearing exhaustion or recently saturated: engine=%s "
                     "checked_out=%d/%d (%.0f%%), overflow_in_use=%d, "
                     "checked_in=%d. Requests beyond the ceiling wait up to "
                     "pool_timeout and then fail; look for code holding a "
-                    "session across a wait. Pool status: %s",
+                    "session across a wait. Pool status: %s; acquisition_holds=%s",
                     snapshot["engine"],
                     snapshot["checked_out"],
                     ceiling,
@@ -195,6 +209,7 @@ class DbPoolMonitor:
                     snapshot["overflow_in_use"],
                     snapshot["checked_in"],
                     snapshot["status"],
+                    snapshot.get("holds"),
                 )
         return stats
 

@@ -976,6 +976,7 @@ def test_agent_control_ws_evicts_previous_connection_with_close_4000(
     # App logging configuration replaces root handlers. Capture this logger
     # directly so the eviction assertion also runs under the real app fixture.
     control_logger = logging.getLogger("preloop.api.endpoints.agent_control")
+    monkeypatch.setattr(control_logger, "propagate", False)
     monkeypatch.setattr(
         control_logger, "handlers", [*control_logger.handlers, caplog.handler]
     )
