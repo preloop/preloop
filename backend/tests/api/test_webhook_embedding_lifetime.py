@@ -1,5 +1,6 @@
 """Embedding providers must not borrow the API's database capacity."""
 
+from collections import Counter
 from typing import Any
 from uuid import uuid4
 from unittest.mock import MagicMock
@@ -78,6 +79,22 @@ def test_owned_embedding_session_releases_connection_and_persists_result(
             },
         )
         model_id = model.id
+        companion = crud_embedding_model.create(
+            db,
+            obj_in={
+                "name": f"{unique}-companion",
+                "provider": "synthetic",
+                "version": f"{unique}-companion",
+                "dimensions": 1536,
+                "is_active": True,
+            },
+        )
+        companion_id = companion.id
+        # Migrations may seed active models. The worker intentionally embeds
+        # with every active model, not only the ones created by this test.
+        expected_calls = Counter(
+            {active.name: 2 for active in crud_embedding_model.get_active(db)}
+        )
 
     calls: list[str] = []
 
@@ -96,17 +113,20 @@ def test_owned_embedding_session_releases_connection_and_persists_result(
                 _generate_webhook_embeddings(
                     dependency, {"issue_id": issue_id, "force_update": True}
                 )
-        assert calls == [unique, unique]
+        assert Counter(calls) == expected_calls
         with Session(db_engine) as db:
             embeddings = crud_issue_embedding.get_for_issue_content(
                 db, issue_id=issue_id
             )
+            assert set(embeddings) == set(expected_calls)
+            assert embeddings[f"{unique}-companion"].embedding_model_id == companion_id
             assert embeddings[unique].embedding_model_id == model_id
             assert len(embeddings[unique].embedding) == 1536
     finally:
         with Session(db_engine) as db:
             crud_account.delete(db, id=account_id)
             crud_embedding_model.delete(db, id=model_id)
+            crud_embedding_model.delete(db, id=companion_id)
 
 
 def test_connection_releasing_embedding_mode_rejects_unrelated_pending_writes() -> None:

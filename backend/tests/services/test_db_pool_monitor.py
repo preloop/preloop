@@ -19,6 +19,8 @@ from preloop.services.db_pool_monitor import (
 def capture_monitor_logs(monkeypatch, caplog):
     logger = logging.getLogger("preloop.services.db_pool_monitor")
     monkeypatch.setattr(logger, "handlers", [*logger.handlers, caplog.handler])
+    # The handler is attached directly; propagation would capture it again at root.
+    monkeypatch.setattr(logger, "propagate", False)
 
 
 def make_pool(size=8, checked_out=0, checked_in=None, overflow=0):
