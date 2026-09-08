@@ -410,14 +410,26 @@ prompt_template: |
     "ask_user" does not route on some runtimes); a routing failure is
     not an answer, it fails closed like a timeout, and you record the
     failed routing in checks.
-  - The tool result is JSON:
+  - The human's answer arrives in one of two ways. If the tool call
+    stayed in-process, the tool result is JSON:
     {"status": "answered", "answer": {"waived": [...], "author": ...,
      "date": ...}, "answer_text": "<optional note>",
      "approval_id": ..., "answered_by": ..., "answered_at": ...}.
-    Apply answer.waived directly. Do NOT parse prose, do not read
-    waivers out of answer_text or out of any comment: the array is the
-    answer. author and date are stamped by the platform, never typed
-    by the human and never authored by you. Write each entry to
+    If the execution was parked while the human decided, there is no
+    tool result for that call: the answer is in the resumed prompt as
+    the `_answers_prompt` block (it starts with
+    "RESUMED AFTER A HUMAN DECISION" and names the approval request
+    id, status, question, structured answer, answered_by and
+    answered_at). Read that block; do not wait for a tool result that
+    will not come. The approval id is the request id named there (or
+    the trailer on a tool result), otherwise the approval id the
+    answering human quoted inside the platform-delivered answer
+    itself.
+    Apply answer.waived directly (from the tool result, or from the
+    structured JSON in `_answers_prompt`). Do NOT parse prose, do not
+    read waivers out of answer_text or out of any comment: the array
+    is the answer. author and date are stamped by the platform, never
+    typed by the human and never authored by you. Write each entry to
     evidence/waivers.json as {"id", "reason" (the human's words),
     "author" (answer.author, else answered_by), "date"
     (answer.date, else the answered_at date), "approval_id"} plus any
@@ -425,9 +437,10 @@ prompt_template: |
     exactly like a file entry. An id outside the items list, or an
     entry with an empty reason, waives nothing and is recorded as
     invalid. status=approved is not itself a waiver. The approval id
-    is required and always comes from the tool result, never from you:
-    an interactive answer with no platform-reported approval id waives
-    nothing.
+    is required and always comes from the platform (tool result
+    trailer or the parked `_answers_prompt` block), never from you:
+    an interactive answer with no platform-reported approval id
+    waives nothing.
   - TIMEOUT / no answer / declined = FAIL CLOSED: no waiver, the gate
     failure stands, the verdict is unchanged, and the non-answer is
     recorded in checks. Never re-ask, never assume acceptance.
@@ -996,4 +1009,12 @@ trigger_config: null
 # component and reconciles waivers. Two hours is normal work here, and the
 # hour-long default was cutting genuine runs off mid-scan.
 timeout_seconds: 7200
+# Interactive waiver collection asks a human to accept a documented risk. That
+# is a compliance decision, not a chat prompt: the reviewer may have to check
+# reachability, read the advisory and consult the component owner. Five minutes
+# (the interactive default) burned a real run on staging 27 seconds before the
+# human answered. Three days is the window this flow gets, and the execution is
+# parked (no container, no runner, no budget spent) until the decision or the
+# expiry resumes it.
+approval_window_seconds: 259200
 is_preset: true

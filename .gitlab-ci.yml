@@ -116,6 +116,7 @@ frontend:unit-tests:
   before_script:
     - cd frontend && npm install
   script:
+    - npm run typecheck
     - npm run test
   # Run on every pipeline to match GitHub CI; catches frontend regressions from backend changes
 

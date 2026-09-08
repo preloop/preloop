@@ -1,7 +1,7 @@
 """Delivery-level idempotency key for webhook-sourced flow executions.
 
 Revision ID: 20260908_webhook_delivery_key
-Revises: 20260908_structured_answer
+Revises: 20260908_approval_park
 """
 
 from typing import Sequence, Union
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260908_webhook_delivery_key"
-down_revision: Union[str, None] = "20260908_structured_answer"
+down_revision: Union[str, None] = "20260908_approval_park"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

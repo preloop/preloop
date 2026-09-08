@@ -244,6 +244,7 @@ export class FlowView extends LitElement {
   @state() private longRunningAgents: any[] = [];
   @state() private flowExecutionPath: 'ephemeral' | 'persistent' = 'ephemeral';
   @state() private targetAgentId = '';
+  @state() private sourcePresetId?: string;
 
   @state()
   private isNew = true;
@@ -1375,8 +1376,11 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
                 Router.go(`/console/flows/${this.flowId}`);
               }
             } catch (error: any) {
-              e.target.formError =
-                error?.message || 'Failed to save flow. Please try again.';
+              const target = e.target as { formError?: string } | null;
+              if (target) {
+                target.formError =
+                  error?.message || 'Failed to save flow. Please try again.';
+              }
             }
           }}
           @flow-cancel=${() =>
@@ -2052,6 +2056,10 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
         </p>
       </div>
     `;
+  }
+
+  private openAddTrackerDialog(): void {
+    Router.go('/console/trackers');
   }
 
   renderTrackerTriggerFields() {

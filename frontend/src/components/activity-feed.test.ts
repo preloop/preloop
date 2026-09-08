@@ -513,10 +513,12 @@ describe('activity-feed', () => {
       localStorage.removeItem('accessToken');
     });
 
-    it('pages past a wall of gateway traffic to find the news', async () => {
+    it('asks for the news by name past a wall of gateway traffic', async () => {
       // The staging 03:00 bug: the newest audit page was 50 successful
       // gateway calls, which are not news, so the feed read "Nothing yet"
-      // while the audit page listed events from a minute before.
+      // while the audit page listed events from a minute before. Paging past
+      // the wall only works when the wall is thin, so the second question
+      // names the actions instead of stepping over the traffic.
       localStorage.setItem('accessToken', 'test-token');
       const { restore, urls } = stubFetch([
         gatewayNoise(AUDIT_PAGE_SIZE),
@@ -540,16 +542,18 @@ describe('activity-feed', () => {
       expect(rowText(el)[0]).to.contain('get_pull_request');
       const audit = urls.filter((url) => url.includes('/audit-logs/grouped'));
       expect(audit.length).to.be.greaterThan(1);
-      expect(audit[1]).to.contain(`skip=${AUDIT_PAGE_SIZE}`);
+      expect(audit[1]).to.not.contain('start_date=');
+      expect(audit[1]).to.contain('event_type=tool_call');
       restore();
       localStorage.removeItem('accessToken');
     });
 
-    it('asks for at most three audit pages per slice, the last two together', async () => {
-      // A busy account whose whole timeline is successful gateway calls: the
-      // fill used to walk four pages one after the other for rows that were
-      // never going to be news. Each slice still stops at three; a window
-      // that produced no rows then asks the unbounded slice the same way.
+    it('never reads the same drowned page twice', async () => {
+      // The prod bug of 2026-09-08. A gateway doing thousands of calls a day
+      // fills every unfiltered page with traffic the feed drops, and dropping
+      // the date bound asks for the very same newest groups again: six
+      // requests, three hundred groups, no rows. The newest page is read once
+      // and the rest of the fill names what it wants.
       localStorage.setItem('accessToken', 'test-token');
       const { restore, urls } = stubFetch([gatewayNoise(AUDIT_PAGE_SIZE)]);
       const el = await fixture<ActivityFeed>(
@@ -560,14 +564,71 @@ describe('activity-feed', () => {
         'the fill finishes'
       );
       const audit = urls.filter((url) => url.includes('/audit-logs/grouped'));
-      expect(audit.length).to.equal(6);
+      expect(audit.length).to.equal(4);
       expect(audit[0]).to.contain('start_date=');
-      expect(audit[1]).to.contain(`skip=${AUDIT_PAGE_SIZE}`);
-      expect(audit[2]).to.contain(`skip=${AUDIT_PAGE_SIZE * 2}`);
-      expect(audit[3]).to.not.contain('start_date=');
-      expect(audit[4]).to.contain(`skip=${AUDIT_PAGE_SIZE}`);
-      expect(audit[5]).to.contain(`skip=${AUDIT_PAGE_SIZE * 2}`);
+      expect(audit[0]).to.not.contain('event_type=');
+      // The news slice: named actions, no date bound, and its own three
+      // pages, the last two asked for together.
+      for (const url of audit.slice(1)) {
+        expect(url).to.not.contain('start_date=');
+        expect(url).to.contain('event_type=tool_call');
+        expect(url).to.not.contain('event_type=model_gateway_request');
+      }
+      expect(audit[2]).to.contain(`skip=${AUDIT_PAGE_SIZE}`);
+      expect(audit[3]).to.contain(`skip=${AUDIT_PAGE_SIZE * 2}`);
       restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('fills the rail when every unfiltered page is gateway traffic', async () => {
+      // An account doing thousands of gateway calls a day: the newest audit
+      // groups are successful `model_gateway_request`, which is not news.
+      // No unfiltered page, windowed or not, ever holds a row, so this is the
+      // case the paging fallback could not reach and the rail read
+      // "Nothing yet" under a full history.
+      localStorage.setItem('accessToken', 'test-token');
+      const original = window.fetch;
+      const urls: string[] = [];
+      const history = Array.from({ length: FEED_INITIAL_ROWS }, (_, index) =>
+        auditGroup(
+          'runtime_session_created',
+          {
+            id: `hist-${index}`,
+            resource_id: `sess-${index}`,
+            details: { runtime_principal_name: 'Hermes' },
+            timestamp: new Date(
+              Date.now() - (index + 1) * 3600000
+            ).toISOString(),
+          },
+          'created'
+        )
+      );
+      window.fetch = (async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        urls.push(url);
+        if (url.includes('/audit-logs/grouped')) {
+          // The server answers what it is asked: an unfiltered read is the
+          // newest groups, which are all traffic, however deep it pages.
+          const news = url.includes('event_type=');
+          const groups = news ? history : gatewayNoise(AUDIT_PAGE_SIZE);
+          return new Response(
+            JSON.stringify({ groups, total: 14000, skip: 0, limit: 50 }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(JSON.stringify({ users: [] }), { status: 200 });
+      }) as typeof window.fetch;
+
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(
+        () => rowText(el).length === FEED_INITIAL_ROWS,
+        'the history fills the rail under the traffic'
+      );
+      expect(rowText(el)[0]).to.contain('Hermes started a session');
+      expect(listItems(el)[0]).to.equal('earlier');
+      window.fetch = original;
       localStorage.removeItem('accessToken');
     });
 
@@ -707,9 +768,10 @@ describe('activity-feed', () => {
     });
 
     it('reads history when the last day is full of dropped traffic', async () => {
-      // The window is three full pages of successful gateway calls, which
-      // the feed drops, so `exhausted` is false. Without a zero-row fallback
-      // the card said "Nothing yet" while /console/audit listed real history.
+      // The newest page is successful gateway calls, which the feed drops, so
+      // the day produced no rows. Without a second question the card said
+      // "Nothing yet" while /console/audit listed real history. The news
+      // slice pages here because its own first pages fold to nothing too.
       localStorage.setItem('accessToken', 'test-token');
       const old = new Date(Date.now() - 40 * 3600 * 1000).toISOString();
       const { restore, urls } = stubFetch([
@@ -741,17 +803,19 @@ describe('activity-feed', () => {
       const audit = urls.filter((url) => url.includes('/audit-logs/grouped'));
       expect(audit.length).to.equal(4);
       expect(audit[0]).to.contain('start_date=');
-      expect(audit[1]).to.contain('start_date=');
-      expect(audit[2]).to.contain('start_date=');
-      expect(audit[3]).to.not.contain('start_date=');
+      // The day is read once. Everything after it is the news slice, which
+      // asks by action and pages until it has rows.
+      expect(audit[1]).to.contain('event_type=');
+      expect(audit[2]).to.contain(`skip=${AUDIT_PAGE_SIZE}`);
+      expect(audit[3]).to.contain(`skip=${AUDIT_PAGE_SIZE * 2}`);
       restore();
       localStorage.removeItem('accessToken');
     });
 
     it('fills the rail from history on a quiet account, under an Earlier line', async () => {
-      // The founder's account on 2026-09-07: nothing in the last day, a full
-      // history behind it, and a card that said "Nothing yet" until the next
-      // socket message arrived.
+      // A quiet account: nothing in the last day, a full history behind it,
+      // and a card that said "Nothing yet" until the next socket message
+      // arrived.
       localStorage.setItem('accessToken', 'test-token');
       const history = Array.from({ length: FEED_INITIAL_ROWS }, (_, index) =>
         auditGroup(

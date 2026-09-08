@@ -371,6 +371,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         publication_candidates: list[dict[str, str]] | None = None,
         items: list[dict[str, Any]] | None = None,
         input_schema: dict[str, Any] | None = None,
+        timeout_seconds: int | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
         """Request approval for an operation before executing it.
@@ -508,6 +509,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             arguments=arguments,
             workflow_id=workflow_id if workflow_id else None,
             ctx=ctx,
+            requested_timeout_seconds=timeout_seconds,
         )
 
         if not approved:
@@ -521,9 +523,11 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                     payload = _json.loads(error)
                 except ValueError:
                     payload = None
-                if (
-                    isinstance(payload, dict)
-                    and payload.get("status") == "pending_approval"
+                if isinstance(payload, dict) and payload.get("status") in (
+                    "pending_approval",
+                    # The execution is being parked: this is not a denial, and
+                    # the payload tells the agent to stop rather than poll.
+                    "parked_for_human",
                 ):
                     return error
             return f"Approval denied: {error}"
@@ -568,6 +572,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         items: list[dict[str, Any]] | None = None,
         input_schema: dict[str, Any] | None = None,
         approval_workflow: str | None = None,
+        timeout_seconds: int | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
         """Ask the human a question and wait for their answer.
@@ -663,6 +668,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             workflow_id=workflow_id if workflow_id else None,
             ctx=ctx,
             return_comment_on_approve=True,
+            requested_timeout_seconds=timeout_seconds,
         )
 
         # Approval audit trailer: the platform approval workflow captured the
@@ -699,9 +705,11 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                     payload = _json.loads(answer)
                 except ValueError:
                     payload = None
-                if (
-                    isinstance(payload, dict)
-                    and payload.get("status") == "pending_approval"
+                if isinstance(payload, dict) and payload.get("status") in (
+                    "pending_approval",
+                    # Parked: the run is suspended and will be resumed with
+                    # the answer, so this must not read as "no answer".
+                    "parked_for_human",
                 ):
                     return answer
             # Declined / cancelled / timed out — no answer was provided.

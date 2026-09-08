@@ -884,7 +884,7 @@ export class PoliciesView extends LitElement {
 
       // One row per access rule. Tools with a config but no rules keep a
       // derived row so a disabled tool or a workflow-only config still shows.
-      this._toolAccessRules = this._tools.flatMap((tool) => {
+      this._toolAccessRules = this._tools.flatMap((tool): ToolAccessRule[] => {
         const accessRules = tool.access_rules ?? [];
         if (accessRules.length > 0) {
           return accessRules.map((rule) => ({
@@ -1256,7 +1256,7 @@ export class PoliciesView extends LitElement {
       };
       if (this._editingAccessRuleId) {
         await updateAccessRule(this._editingAccessRuleId, payload);
-      } else {
+      } else if (configId) {
         await createAccessRule(configId, payload);
       }
       this.closeModelIODialog();

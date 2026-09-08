@@ -92,12 +92,11 @@ export class SessionSummaryPanel extends LitElement {
     );
     const summary = this.modelSummary || local;
     const highlights = summary.highlights || local.highlights;
-    const generatedBy =
-      summary.generated_by ||
-      ('generatedBy' in summary ? summary.generatedBy : 'local');
-    const estimatedCost =
-      summary.estimated_summary_cost ??
-      ('estimatedSummaryCost' in summary ? summary.estimatedSummaryCost : 0);
+    const rec = summary as Record<string, unknown>;
+    const generatedBy = String(rec.generated_by || rec.generatedBy || 'local');
+    const estimatedCost = Number(
+      rec.estimated_summary_cost ?? rec.estimatedSummaryCost ?? 0
+    );
 
     return html`
       <div class="panel">
@@ -114,11 +113,11 @@ export class SessionSummaryPanel extends LitElement {
           )}
         </div>
         ${
-          summary.next_action || local.nextAction
+          (rec.next_action as string | undefined) || local.nextAction
             ? html`
                 <div class="hint">
                   <strong>Next:</strong> ${
-                    summary.next_action || local.nextAction
+                    (rec.next_action as string | undefined) || local.nextAction
                   }
                 </div>
               `

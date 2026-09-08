@@ -1,0 +1,47 @@
+# gitleaks baseline: individually triaged findings from the git HISTORY scan.
+#
+# Everything here has been looked at. Nothing goes in without a note. Class
+# exclusions belong in .gitleaks.toml instead; this file is for one-offs.
+#
+# The working tree is clean without any entries in this file. All eleven
+# fingerprints below are historical commits, from before the project was
+# public and before this scanner existed. History cannot be edited without
+# rewriting every downstream clone, so they are recorded here instead.
+#
+# IMPORTANT: "baselined" is not "harmless". Four of these are credential
+# shapes with high entropy in a repository that is now public. They must be
+# treated as compromised and rotated if that has not already happened. They
+# are listed under "assume compromised" below and were reported privately
+# under SECURITY.md rather than in a public issue.
+#
+# Regenerate the fingerprint for a new finding with:
+#   gitleaks git . --config .gitleaks.toml --redact --report-format json \
+#     --report-path /tmp/gl.json && jq -r '.[].Fingerprint' /tmp/gl.json
+
+# --- assume compromised, rotate if not already done ---------------------
+# Stripe access token in the spacebridge config, 2025-08-08.
+2219fbe7795f14f1fb11a5b5704b4f5465f39857:spacebridge/config.py:stripe-access-token:155
+# OPENAI_API_KEY and SPACEBRIDGE_API_KEY pasted into a docs example,
+# 2025-04-16, present in two commits of the same day.
+fb032be5def2256ea3e5982bc20164ff23e888bb:docs/index.md:generic-api-key:213
+fb032be5def2256ea3e5982bc20164ff23e888bb:docs/index.md:generic-api-key:214
+2d7e50b1c9194ab1c046aea392a9c83d487a3846:docs/index.md:generic-api-key:213
+2d7e50b1c9194ab1c046aea392a9c83d487a3846:docs/index.md:generic-api-key:214
+
+# --- superseded defaults, no longer in the tree -------------------------
+# Hardcoded fallback API token in the manual agent test script. Removed in
+# the working tree by this change; the default is now empty and the script
+# already exits when it is unset.
+8fdb45ddc204b2b7880af359b23f097c9de01b13:scripts/test_agent_api.py:generic-api-key:34
+32227f41686e2f0e1fbeacbea64ec14c3b6d2d17:scripts/test_agent_api.py:generic-api-key:34
+# jwtSecret default in the retired helm/spacebridge chart, 2025-03-27. The
+# equivalent default in helm/preloop is replaced by this change.
+9924b0e3448437e64f70a806977cbb98d378a409:helm/spacebridge/values.yaml:generic-api-key:86
+
+# --- fixtures in trees that no longer exist -----------------------------
+# lib/ and its preloop-sync test scripts were removed long ago. Sample keys
+# in test files, same class as the .gitleaks.toml test-fixture allowlist.
+e71706cd13436b34ea22a3d4d71ac3da715d1114:lib/preloop-sync/test_search.py:generic-api-key:5
+e71706cd13436b34ea22a3d4d71ac3da715d1114:lib/preloop-sync/test_api.py:generic-api-key:6
+# Demo API token in an early frontend view under the removed lib/ tree.
+93c5b68b95da6d862a37e0e1354aa01a50e19b2e:lib/frontend/src/views/authed/issues-view.ts:generic-api-key:63

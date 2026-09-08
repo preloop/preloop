@@ -500,11 +500,38 @@ structured answer: the call carries one `items` row per unwaived gate
 failure (id, package, severity, KEV badge) and an `input_schema` with a
 `waived` array of `{id, reason}`. The console renders that as a form (a
 checkbox and a reason box per finding), so nobody types JSON, and the
-agent applies the returned array directly. `author` and `date` are
-marked `x-autofill` and stamped by the platform from the approval
-record, never typed and never model-authored. Persist authenticates that
-stored `tool_result` / `responses` content — `status=approved` or a CVE
+agent applies the returned array directly (from the in-process tool
+result, or from the parked `_answers_prompt` block after a resume).
+`author` and `date` are marked `x-autofill` and stamped by the platform
+from the approval record, never typed and never model-authored. Persist
+authenticates that stored `tool_result` / `responses` content —
+`status=approved` or a CVE
 mentioned in the question is not a waiver. Timeout fails closed.
+
+Interactive waivers wait on a human timescale. The preset sets
+`approval_window_seconds: 259200` (3 days), and while the question is
+outstanding the execution is **parked**: the container and the runner are
+released, the status is `WAITING_FOR_HUMAN`, and the flow's
+`timeout_seconds` budget is paused (waiting costs no agent time). The
+decision, from the console, mobile, the API or a public approval link,
+resumes the same agent session with the answer attached. If nobody
+answers before the window closes, the run is resumed with an explicit
+`expired` answer so the agent finishes its report with the finding
+unwaived, instead of the platform reporting a missing result.
+
+Set the window per flow (`approval_window_seconds`, seconds, from 60 up
+to the account cap, 30 days by default), or per call by passing
+`timeout_seconds` to `ask_user` / `request_approval`; the call can only
+ask for a shorter window than the flow allows. Approvers are re-notified
+through their existing notification preferences at 50 percent and 90
+percent of the window.
+
+Agents that can natively continue a session (Claude, Codex, Gemini,
+OpenCode) resume in place, with the workspace snapshot restored. An agent
+kind that cannot resume a session is restarted from the beginning with
+the decision in the trigger payload under
+`payload.answers.<request_id>`, so a flow that is expensive to restart
+should prefer a resumable harness for interactive waivers.
 
 The severity gate is KEV or CVSS >= 9.0 unless the trigger/CI payload
 sets `gate.fail_on_kev` / `gate.fail_on_cvss_gte` (CVSS in `[0, 10]`).

@@ -40,8 +40,9 @@ export class LogoComponent extends LitElement {
     window.removeEventListener('theme-change', this.handleThemeChange);
   }
 
-  private handleThemeChange = (event: CustomEvent) => {
-    this.setTheme(event.detail.theme);
+  private handleThemeChange = (event: Event) => {
+    const detail = (event as CustomEvent<{ theme: Theme }>).detail;
+    this.setTheme(detail.theme);
   };
 
   private setTheme(theme: Theme) {

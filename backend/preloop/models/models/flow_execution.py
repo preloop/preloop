@@ -171,6 +171,33 @@ class FlowExecution(Base):
     # the packed session storage and invoke the CLI resume flag. Deliberately
     # NOT exposed on the execution response schemas.
     cli_session = Column(JSONB, nullable=True)
+    # Park state (status WAITING_FOR_HUMAN). An execution that raised a
+    # question a human has not answered yet holds no container, no runner and
+    # no worker: it is parked, and the decision resumes it as a new execution
+    # that natively continues this one's agent session.
+    #
+    # park_request_id is written by the approval path (a different process
+    # from the orchestrator) and is the signal the monitor loop polls, exactly
+    # like stop_requested_at. parked_at is stamped when the orchestrator has
+    # actually released the runtime, so "requested" and "parked" stay
+    # distinguishable.
+    park_request_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    park_requested_at = Column(DateTime(timezone=True), nullable=True)
+    parked_at = Column(DateTime(timezone=True), nullable=True)
+    park_expires_at = Column(DateTime(timezone=True), nullable=True)
+    # Agent wall-clock already spent by this park chain, in seconds. Time
+    # waiting for a human is NOT in here: the flow's timeout budget pauses
+    # while parked, and a resumed execution starts with the remainder.
+    parked_compute_seconds = Column(Integer, nullable=True)
+    # The execution that continued this parked run. Written in the same
+    # transaction as that row's INSERT, so a crash cannot leave a PENDING
+    # resume without a consumed park claim (or a RESUMING claim with no child).
+    resume_execution_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("flow_execution.id"),
+        nullable=True,
+        index=True,
+    )
     error_message = Column(Text, nullable=True)
     # Coarse machine-readable reason a terminal execution did not succeed, from
     # the closed vocabulary in preloop.services.flow_failure_category (e.g.

@@ -256,7 +256,8 @@ export class IssuesDependenciesView extends LitElement {
   }
 
   private _handleProjectSelect(e: CustomEvent) {
-    this._selectedProjectId = e.target.value;
+    const target = e.target as { value?: string } | null;
+    this._selectedProjectId = target?.value ?? '';
     this._currentPage = 1;
     this._issues = [];
     this._dependencies = [];
@@ -366,7 +367,7 @@ export class IssuesDependenciesView extends LitElement {
                 <div class="dependency-info">
                   <strong
                     >${
-                      type === 'blocks' ? d.dependency_key : d.issue_key
+                      type === 'blocks' ? d.dependency_key! : d.issue_key!
                     }</strong
                   >: ${issue?.title || 'Unknown Issue'}
                   <div class="dependency-reason">
@@ -498,7 +499,7 @@ export class IssuesDependenciesView extends LitElement {
                               <sl-badge
                                 pill
                                 class="blocks-badge ${
-                                  deps.blocks.some((d) => d.comes_from_tracker)
+                                  deps!.blocks.some((d) => d.comes_from_tracker)
                                     ? 'from-tracker'
                                     : ''
                                 }"
@@ -525,7 +526,7 @@ export class IssuesDependenciesView extends LitElement {
                                                   : ''
                                             }"
                                             >#${
-                                              d.dependency_key.match(
+                                              d.dependency_key!.match(
                                                 /\d+$/
                                               )?.[0]
                                             }</span
@@ -566,7 +567,7 @@ export class IssuesDependenciesView extends LitElement {
                                                   : ''
                                             }"
                                             >#${
-                                              d.issue_key.match(/\d+$/)?.[0]
+                                              d.issue_key!.match(/\d+$/)?.[0]
                                             }</span
                                           > </sl-tooltip
                                         >${

@@ -98,6 +98,9 @@ export class AIModelDetailView extends LitElement {
   private sessions: AIModelRuntimeSessionListResponse | null = null;
 
   @state()
+  private selectedSessionId: string | null = null;
+
+  @state()
   private interactions: AIModelGatewayUsageSearchResponse | null = null;
 
   @state()
@@ -907,7 +910,8 @@ export class AIModelDetailView extends LitElement {
       ]);
       this.pricing = pricing;
       this.priceOverridesEnabled =
-        (features.features || {}).model_price_overrides === true;
+        ((features.features || {}) as Record<string, unknown>)
+          .model_price_overrides === true;
       if (!this.pricingEditOpen) {
         this.resetPriceDraft();
       }

@@ -1,0 +1,71 @@
+# gitleaks configuration for preloop/preloop.
+#
+# Run by .github/workflows/secret-scan.yml over both the working tree and the
+# full git history. There was no credential scanning here before; CodeQL and
+# Scorecard cover SAST and supply-chain posture, but neither looks for a
+# committed secret.
+#
+# Two kinds of exclusion live below and they are not interchangeable:
+#
+#   allowlists here  classes of file that cannot hold a live credential, and
+#                    placeholder shapes that are self-evidently not secrets.
+#                    Broad, stable, and reviewed as policy.
+#   .gitleaksignore  individual findings that were triaged one by one. Each
+#                    entry carries a note. Nothing goes there without one.
+#
+# Adding a path here is a policy decision. Prefer .gitleaksignore for one-offs.
+
+title = "preloop"
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Test fixtures
+# ---------------------------------------------------------------------------
+# Every hit in these trees on the first run was a fixture: forged JWTs for
+# signature-rejection tests, `sk-testsecret...` strings feeding the redaction
+# suite, `preloop-validation-N` tokens in CLI table tests.
+#
+# The tradeoff is explicit: a real credential pasted into a test file will not
+# be caught here. That is accepted because the alternative is thirty churning
+# fingerprints in .gitleaksignore, which nobody rereads. The secret-scrubbing
+# suite in backend/tests/utils/ exists precisely to hold sample secrets, so
+# the noise is structural rather than incidental.
+[[allowlists]]
+description = "Test fixtures and their sample credentials"
+paths = [
+  '''(^|/)tests?/''',
+  '''_test\.go$''',
+  '''_test\.py$''',
+  '''\.test\.ts$''',
+  '''(^|/)conftest\.py$''',
+]
+
+# ---------------------------------------------------------------------------
+# Documentation placeholders
+# ---------------------------------------------------------------------------
+# Shapes that tell the reader to substitute something. Matched on the secret
+# itself rather than on a path, so a placeholder is allowed anywhere and a
+# real key in a README is still a finding.
+[[allowlists]]
+description = "Obvious placeholders in docs and examples"
+regexTarget = "match"
+regexes = [
+  '''YOUR_[A-Z0-9_]+''',
+  '''<[a-zA-Z0-9_-]+>''',
+  '''(?i)change[-_]?this''',
+  '''(?i)replace[-_]?(me|this|with)''',
+  '''(?i)example[-_]?(key|token|secret)''',
+  '''(?i)your[-_](key|token|secret|api[-_]?key)''',
+  '''(?i)test-token-12345''',
+]
+
+# ---------------------------------------------------------------------------
+# Generated example payloads
+# ---------------------------------------------------------------------------
+# scripts/generate_example_session.py builds a fake GitHub Actions session for
+# docs and demos. Its signed log URLs use AABBCCDDEEFF... filler by design.
+[[allowlists]]
+description = "Synthetic payloads in the example-session generator"
+paths = ['''^scripts/generate_example_session\.py$''']

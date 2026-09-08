@@ -31,7 +31,9 @@ import requests
 
 # Configuration
 BASE_URL = os.getenv("PRELOOP_URL", "http://localhost:8000/api/v1")
-API_TOKEN = os.getenv("PRELOOP_TOKEN", "LJ6Eq2kpKyj6JMKoJ9VntWy6xSBIdP0UAELqAmXK")
+# No default. A hardcoded fallback token lived here and was flagged on the
+# first gitleaks run; main() already exits when this is empty.
+API_TOKEN = os.getenv("PRELOOP_TOKEN", "")
 
 # Default test prompts for each agent type
 TEST_PROMPTS = {

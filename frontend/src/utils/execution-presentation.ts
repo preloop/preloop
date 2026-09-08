@@ -42,12 +42,15 @@ export function executionStatusLabel(
 
 /**
  * One taxonomy for every execution chip: green finished, red failed, blue
- * still going, neutral for the rest (pending, cancelled, stopped). Red is
- * reserved for a run that actually broke.
+ * still going, amber waiting on a person, neutral for the rest (pending,
+ * cancelled, stopped). Red is reserved for a run that actually broke.
+ *
+ * WAITING_FOR_HUMAN is amber rather than blue on purpose: nothing is
+ * computing, and the thing that unblocks it is a person, not patience.
  */
 export function executionStatusVariant(
   status: string | null | undefined
-): 'success' | 'danger' | 'primary' | 'neutral' {
+): 'success' | 'danger' | 'primary' | 'warning' | 'neutral' {
   switch ((status || '').toUpperCase()) {
     case 'SUCCEEDED':
       return 'success';
@@ -57,10 +60,83 @@ export function executionStatusVariant(
     case 'RUNNING':
     case 'STARTING':
     case 'INITIALIZING':
+    case 'RESUMING':
       return 'primary';
+    case 'WAITING_FOR_HUMAN':
+      return 'warning';
     default:
       return 'neutral';
   }
+}
+
+/** The park projection the execution detail response carries. */
+export interface ExecutionPark {
+  request_id: string;
+  since?: string | null;
+  expires_at?: string | null;
+  waiting_for?: string | null;
+  tool_name?: string | null;
+  question?: string | null;
+}
+
+/**
+ * "Waiting for Security approvers since 14:05, expires in 2 days".
+ *
+ * One sentence, three facts: who is being waited on, how long it has been
+ * waiting, and when the window closes. A parked run holds no container, so
+ * this is deliberately a sentence and not a spinner.
+ */
+export function parkWaitingSummary(
+  park: ExecutionPark | null | undefined,
+  now: Date = new Date()
+): string {
+  if (!park) return '';
+  const who = (park.waiting_for || '').trim() || 'a human decision';
+  const parts = [`Waiting for ${who}`];
+  const since = park.since ? new Date(park.since) : null;
+  if (since && !Number.isNaN(since.getTime())) {
+    parts.push(`since ${since.toLocaleString()}`);
+  }
+  const expires = park.expires_at ? new Date(park.expires_at) : null;
+  if (expires && !Number.isNaN(expires.getTime())) {
+    const remaining = expires.getTime() - now.getTime();
+    parts.push(
+      remaining <= 0
+        ? 'window closed'
+        : `expires in ${formatApprovalWindow(Math.round(remaining / 1000))}`
+    );
+  }
+  return `${parts.join(', ')}.`;
+}
+
+/**
+ * An approval window in the units a person set it in: days, hours, minutes.
+ *
+ * Compliance windows are configured in days, so rendering 259200 seconds as
+ * "259200s" would hide the only thing the operator cares about.
+ */
+export function formatApprovalWindow(
+  seconds: number | null | undefined
+): string {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  if (!total) return '—';
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const plural = (value: number, unit: string) =>
+    `${value} ${unit}${value === 1 ? '' : 's'}`;
+  if (days) {
+    return hours
+      ? `${plural(days, 'day')} ${plural(hours, 'hour')}`
+      : plural(days, 'day');
+  }
+  if (hours) {
+    return minutes
+      ? `${plural(hours, 'hour')} ${plural(minutes, 'minute')}`
+      : plural(hours, 'hour');
+  }
+  if (minutes) return plural(minutes, 'minute');
+  return plural(total, 'second');
 }
 
 /**
@@ -315,3 +391,36 @@ export const executionModelCss = `
     white-space: nowrap;
   }
 `;
+
+/**
+ * List-row tooltip for a parked run: "Parked <when>, expires <when>".
+ *
+ * The list carries only the two timestamps (the request itself is on the
+ * detail response), so this states exactly what the row knows.
+ */
+export function parkedRowTitle(
+  execution:
+    | {
+        status?: string | null;
+        parked_at?: string | null;
+        park_expires_at?: string | null;
+      }
+    | null
+    | undefined
+): string {
+  if (!execution || execution.status !== 'WAITING_FOR_HUMAN') return '';
+  const parts: string[] = [];
+  const parked = execution.parked_at ? new Date(execution.parked_at) : null;
+  if (parked && !Number.isNaN(parked.getTime())) {
+    parts.push(`Parked ${parked.toLocaleString()}`);
+  }
+  const expires = execution.park_expires_at
+    ? new Date(execution.park_expires_at)
+    : null;
+  if (expires && !Number.isNaN(expires.getTime())) {
+    parts.push(`approval window closes ${expires.toLocaleString()}`);
+  }
+  return parts.length
+    ? `${parts.join(', ')}.`
+    : 'Waiting for a human decision.';
+}
