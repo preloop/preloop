@@ -849,6 +849,38 @@ describe('ApprovalsView', () => {
       expect(element.shadowRoot?.querySelector('list-select-checkbox')).to.not
         .exist;
     });
+
+    it('does not include a form-bearing request_approval in Select all', async () => {
+      const element = await renderList([
+        baseRequest({
+          id: 'plain',
+          tool_name: 'write_file',
+          expires_at: inMinutes(10),
+        }),
+        baseRequest({
+          id: 'form-approval',
+          tool_name: 'request_approval',
+          has_answer_form: true,
+          question_schema: {
+            type: 'object',
+            properties: {
+              waived: { type: 'array', title: 'Findings to waive' },
+            },
+            required: ['waived'],
+          },
+          expires_at: inMinutes(10),
+        }),
+      ]);
+
+      expect(
+        element.shadowRoot?.querySelectorAll('list-select-checkbox').length,
+        'only the plain request offers a row checkbox'
+      ).to.equal(1);
+      (element as any).selection.toggleAll(true);
+      await element.updateComplete;
+      await nextFrame();
+      expect((element as any).selectedIds).to.deep.equal(['plain']);
+    });
   });
 
   describe('bulk decisions', () => {

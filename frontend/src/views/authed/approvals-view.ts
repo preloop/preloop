@@ -500,16 +500,21 @@ export class ApprovalsView extends AuthedElement {
   }
 
   /**
-   * The rows a bulk decision can touch: waiting, not a question.
+   * The rows a bulk decision can touch: waiting, not a question, and not a
+   * form.
    *
-   * A question is answered, not approved in bulk, and anything already
-   * resolved or timed out has nothing left to decide. Handing only these to
-   * the controller means a row that expires while the page is open drops out
-   * of the selection by itself.
+   * A question is answered, not approved in bulk. A form-bearing
+   * `request_approval` is the same: the decision is the filled-in form, and
+   * the per-row checkbox already refuses it. Selecting it here would only
+   * strip Approve from the bulk bar and let bulk Deny deny the form as a
+   * side effect. Anything already resolved or timed out has nothing left to
+   * decide. Handing only these to the controller means a row that expires
+   * while the page is open drops out of the selection by itself.
    */
   private get selectableRequests(): ApprovalRequest[] {
-    return this.waitingRequests.filter((request) =>
-      isDecidableRequest(request, this.nowMs)
+    return this.waitingRequests.filter(
+      (request) =>
+        isDecidableRequest(request, this.nowMs) && !requestNeedsForm(request)
     );
   }
 

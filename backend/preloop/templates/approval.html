@@ -636,6 +636,9 @@
             const rowSpec = spec.items || {};
             const properties = rowSpec.properties || {};
             const idEnum = (properties.id && properties.id.enum) || [];
+            const rowIds = idEnum.length
+                ? idEnum
+                : answerItems.map((item) => item.id);
             const extraKeys = Object.keys(properties).filter(
                 (key) => key !== 'id' && !properties[key]['x-autofill']
             );
@@ -650,7 +653,7 @@
             table.appendChild(head);
 
             const body = el('tbody');
-            for (const rawId of idEnum) {
+            for (const rawId of rowIds) {
                 const id = String(rawId);
                 const item = itemById(id) || { id: id, title: id };
                 const tr = el('tr');

@@ -572,10 +572,7 @@ export class AnswerForm extends LitElement {
         ${this.renderLabel(name, field)}
         <div class="autofilled">
           <sl-icon name="shield-check"></sl-icon>
-          <span
-            >Filled in by Preloop:
-            ${shown}${kind === 'author' ? nothing : nothing}</span
-          >
+          <span>Filled in by Preloop: ${shown}</span>
         </div>
       </div>
     `;
