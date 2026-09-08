@@ -5294,6 +5294,19 @@ class FlowExecutionOrchestrator:
         context = getattr(self, "_product_evidence_context", None)
         return isinstance(context, dict) and bool(context.get("product_evidence"))
 
+    def _captured_evidence_receipt(self) -> dict[str, Any] | None:
+        """Return the evidence receipt captured in memory for this run.
+
+        ``_capture_evidence_archive`` records the pack during monitoring;
+        finalize persists that same receipt on the execution row only at the
+        end of ``run()``. ``load_evidence`` reads the row, so it reports
+        "missing" before finalize even when the pack is already captured.
+        """
+        receipt = getattr(self, "_evidence_receipt", None)
+        if isinstance(receipt, dict) and receipt.get("status"):
+            return receipt
+        return None
+
     def _attach_product_evidence_records(
         self,
         agent_result: Dict[str, Any],
@@ -5347,7 +5360,17 @@ class FlowExecutionOrchestrator:
                     execution=execution,
                 )
             except EvidenceUnavailableError as exc:
-                evidence_receipt = exc.receipt
+                # The archive for this run was captured in memory during
+                # monitoring but is persisted on the execution row only at
+                # finalize, so load_evidence reports "missing" here for a
+                # pack that exists. Trust the orchestrator's captured receipt
+                # when the row is merely not updated yet; a DB receipt that
+                # is genuinely failed or expired stays authoritative.
+                captured = self._captured_evidence_receipt()
+                if exc.code == "missing" and captured is not None:
+                    evidence_receipt = captured
+                else:
+                    evidence_receipt = exc.receipt
         artifacts = result.get("artifacts")
         dossier = build_dossier_manifest(
             execution_id=execution_id,
