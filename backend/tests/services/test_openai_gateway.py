@@ -1,6 +1,7 @@
 """Tests for the OpenAI-compatible gateway service."""
 
 import json
+import logging
 import os
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -20,6 +21,13 @@ from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.openai_gateway import OpenAIGatewayService
 from preloop.services.openai_gateway import LiteLLMModelGatewayBackend
 from preloop.services.secret_service import CredentialRefreshError
+
+
+@pytest.fixture(autouse=True)
+def capture_gateway_logs(monkeypatch, caplog):
+    logger = logging.getLogger("preloop.services.openai_gateway")
+    monkeypatch.setattr(logger, "handlers", [*logger.handlers, caplog.handler])
+    monkeypatch.setattr(logger, "propagate", False)
 
 
 def _parse_sse_payload(event: str):

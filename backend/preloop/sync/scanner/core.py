@@ -38,7 +38,7 @@ RECHECK_PROJECT_WEBHOOK_INTERVAL = POLLING_THRESHOLD * 10
 class TrackerClient:
     """Client for interacting with trackers."""
 
-    def __init__(self, tracker: Tracker):
+    def __init__(self, tracker: Tracker, *, initialize_client: bool = True) -> None:
         """Initialize the tracker client."""
         self.tracker = tracker
         self.tracker_type = (
@@ -52,6 +52,27 @@ class TrackerClient:
         )
         if hasattr(tracker, "url") and tracker.url:
             connection_details["url"] = tracker.url
+
+        if not initialize_client:
+            # Webhook payload transforms need identity and URL configuration,
+            # never API credentials, OAuth installation lookup or network auth.
+            from ..trackers.github import GitHubTracker
+            from ..trackers.gitlab import GitLabTracker
+            from ..trackers.jira import JiraTracker
+
+            if self.tracker_type == "github":
+                self.client = GitHubTracker(tracker.id, "", connection_details)
+            elif self.tracker_type == "gitlab":
+                self.client = GitLabTracker(
+                    tracker.id, "", connection_details, initialize_client=False
+                )
+            elif self.tracker_type == "jira":
+                self.client = JiraTracker(
+                    tracker.id, "", connection_details, initialize_client=False
+                )
+            else:
+                raise ValueError(f"Unsupported tracker type: {self.tracker_type}")
+            return
 
         if self.tracker_type == "github":
             from ..trackers.github import GitHubTracker

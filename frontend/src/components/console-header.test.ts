@@ -768,13 +768,11 @@ describe('console-header approval deadlines', () => {
       await Promise.resolve();
       await clock.tickAsync(0);
       await el.updateComplete;
-      if (approvalReads >= count) {
-        await Promise.resolve();
-        await clock.tickAsync(0);
-        await el.updateComplete;
-        return;
-      }
+      if (approvalReads >= count && !el['loadingPendingApprovals']) return;
     }
+    expect(approvalReads, 'approval fetch did not start').to.be.at.least(count);
+    expect(el['loadingPendingApprovals'], 'approval response did not settle').to
+      .be.false;
   }
 
   async function mount(): Promise<void> {

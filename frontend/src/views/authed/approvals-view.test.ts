@@ -7,6 +7,7 @@ import './approvals-view';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import { bulkActionButton, bulkCountText } from '../../utils/test-bulk-bar';
 import type { ApprovalsView } from './approvals-view';
+import type SlAlert from '@shoelace-style/shoelace/dist/components/alert/alert.js';
 
 describe('ApprovalsView', () => {
   let fetchStub: sinon.SinonStub;
@@ -113,12 +114,20 @@ describe('ApprovalsView', () => {
     localStorage.setItem('refreshToken', 'test-refresh-token');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     fetchStub?.restore();
     resetConfirmDialogForTests();
-    // Any alert, not just [open]: a toast raised at the end of a test can set
-    // its open attribute after this hook runs and leak into the next test.
-    document.querySelectorAll('sl-alert').forEach((a) => a.remove());
+    // toast() schedules show() on the next frame and removes itself on
+    // sl-after-hide. Finish that lifecycle before removing any leftovers;
+    // direct removal races Shoelace's own toastStack.removeChild listener.
+    await nextFrame();
+    await Promise.all(
+      [...document.querySelectorAll<SlAlert>('sl-alert')].map(async (alert) => {
+        await alert.updateComplete;
+        await alert.hide();
+        alert.remove();
+      })
+    );
     localStorage.clear();
   });
 

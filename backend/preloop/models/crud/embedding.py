@@ -1,6 +1,8 @@
 """CRUD operations for EmbeddingModel and IssueEmbedding models."""
 
 import json
+from dataclasses import dataclass
+from uuid import UUID
 from datetime import datetime, UTC
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -16,6 +18,16 @@ from ..models.tracker import Tracker
 from .base import CRUDBase
 
 from ..db.vector_types import TRUNCATED_VECTOR_SIZE
+
+
+@dataclass(frozen=True)
+class _EmbeddingModelSnapshot:
+    """Only scalar fields needed by generation and later persistence."""
+
+    id: UUID
+    name: str
+    provider: str
+    version: str
 
 
 class CRUDEmbeddingModel(CRUDBase[EmbeddingModel]):
@@ -214,6 +226,7 @@ class CRUDIssueEmbedding(CRUDBase[IssueEmbedding]):
         comment_id: Optional[str] = None,
         force_update: bool = False,
         api_key: Optional[str] = None,
+        release_connection_for_generation: bool = False,
     ) -> Dict[str, str]:
         """
         Create embeddings for an issue's content or a specific comment using all active embedding models.
@@ -226,11 +239,20 @@ class CRUDIssueEmbedding(CRUDBase[IssueEmbedding]):
             issue_id: ID of the issue to associate with the embedding
             comment_id: Optional ID of the comment to create embeddings for. If None, creates for issue content.
             force_update: Whether to update existing embeddings
-            api_key: Optional API key for embedding providers
+            api_key: Optional API key for embedding providers.
+            release_connection_for_generation: For an owned, clean session only:
+                commit each prepared unit before provider I/O. The caller must
+                not share the transaction with other application writes.
 
         Returns:
             Dictionary mapping model names to status ("created", "updated", "already_exists", "error")
         """
+        if release_connection_for_generation and (
+            db.in_transaction() or db.new or db.dirty or db.deleted
+        ):
+            raise ValueError(
+                "Connection-releasing embedding generation requires a clean owned session"
+            )
         text_to_embed: str
         source_entity_description: str
 
@@ -266,7 +288,8 @@ class CRUDIssueEmbedding(CRUDBase[IssueEmbedding]):
         )
 
         results = {}
-        for model in embedding_models:
+        for db_model in embedding_models:
+            model: Union[EmbeddingModel, _EmbeddingModelSnapshot] = db_model
             # Check if embedding already exists
             query = db.query(IssueEmbedding).filter(
                 IssueEmbedding.issue_id == issue_id,
@@ -285,6 +308,16 @@ class CRUDIssueEmbedding(CRUDBase[IssueEmbedding]):
 
             # Generate embedding vector
             try:
+                if release_connection_for_generation:
+                    # Snapshot before commit expires ORM rows. No ORM access may
+                    # occur between releasing this transaction and provider I/O.
+                    model = _EmbeddingModelSnapshot(
+                        id=model.id,
+                        name=model.name,
+                        provider=model.provider,
+                        version=model.version,
+                    )
+                    db.commit()
                 embedding_vector = self._generate_embedding_vector(
                     text=text_to_embed, model=model, api_key=api_key
                 )
@@ -348,7 +381,10 @@ class CRUDIssueEmbedding(CRUDBase[IssueEmbedding]):
         return results
 
     def _generate_embedding_vector(
-        self, text: str, model: EmbeddingModel, api_key: Optional[str] = None
+        self,
+        text: str,
+        model: Union[EmbeddingModel, _EmbeddingModelSnapshot],
+        api_key: Optional[str] = None,
     ) -> List[float]:
         """
         Generate an embedding vector for the given text using the specified model.

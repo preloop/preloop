@@ -2,7 +2,9 @@
 
 import json
 import logging
+import threading
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -135,14 +137,20 @@ def test_agent_control_ws_connects_and_updates_presence(client, db_session, test
     db_session.add(managed_agent)
     db_session.commit()
 
+    # The fixture and worker sessions share one test Connection. Snapshot IDs
+    # before the worker starts so expired ORM reads cannot nest savepoints
+    # inside its startup query and lose them when that query commits.
+    managed_agent_id = str(managed_agent.id)
+    runtime_session_id = str(runtime_session.id)
+
     with client.websocket_connect(
         f"/api/v1/agents/control/ws?token={token_body['token']}"
     ) as websocket:
         connected = websocket.receive_json()
         assert connected["type"] == "presence"
         assert connected["name"] == "connected"
-        assert connected["managed_agent_id"] == str(managed_agent.id)
-        assert connected["runtime_session_id"] == str(runtime_session.id)
+        assert connected["managed_agent_id"] == managed_agent_id
+        assert connected["runtime_session_id"] == runtime_session_id
         assert connected["session_source_type"] == "openclaw"
 
         websocket.send_json({"type": "heartbeat", "message_id": "hb-1", "payload": {}})
@@ -200,7 +208,7 @@ def test_agent_control_ws_runtime_token_can_reconnect(client, db_session, test_u
 
 
 def test_agent_control_ws_runtime_token_can_rebind_stale_agent_session(
-    client, db_session, test_user
+    client, db_session, test_user, monkeypatch
 ):
     """Re-onboarded control tokens should recover from stale agent bindings."""
     token_body = _issue_runtime_token(client, session_source_id="openclaw-rebound")
@@ -234,13 +242,36 @@ def test_agent_control_ws_runtime_token_can_rebind_stale_agent_session(
     db_session.add(managed_agent)
     db_session.commit()
 
+    managed_agent_id = str(managed_agent.id)
+    runtime_session_id = str(runtime_session.id)
+    pending_query_started = threading.Event()
+    release_pending_query = threading.Event()
+    load_pending = crud_agent_control_command.get_undelivered_for_agent
+
+    def hold_pending_query(*args: Any, **kwargs: Any) -> Any:
+        result = load_pending(*args, **kwargs)
+        pending_query_started.set()
+        assert release_pending_query.wait(5), "Greeting assertions did not finish"
+        return result
+
+    monkeypatch.setattr(
+        crud_agent_control_command, "get_undelivered_for_agent", hold_pending_query
+    )
+
     with client.websocket_connect(
         f"/api/v1/agents/control/ws?token={token_body['token']}"
     ) as websocket:
-        connected = websocket.receive_json()
-        assert connected["type"] == "presence"
-        assert connected["managed_agent_id"] == str(managed_agent.id)
-        assert connected["runtime_session_id"] == str(runtime_session.id)
+        try:
+            connected = websocket.receive_json()
+            assert pending_query_started.wait(5), "Pending-command query did not start"
+            # Force the CI interleaving: the worker has an open savepoint while
+            # these assertions run. Reloading expired fixture ORM rows here
+            # would create a nested savepoint that the worker later discards.
+            assert connected["type"] == "presence"
+            assert connected["managed_agent_id"] == managed_agent_id
+            assert connected["runtime_session_id"] == runtime_session_id
+        finally:
+            release_pending_query.set()
 
     db_session.expire_all()
     rebound_agent = crud_managed_agent.get_for_account(
@@ -970,9 +1001,16 @@ def test_agent_control_takeover_honors_start_new_session(
 
 
 def test_agent_control_ws_evicts_previous_connection_with_close_4000(
-    client, db_session, test_user, caplog
+    client, db_session, test_user, caplog, monkeypatch
 ):
     """Second WebSocket for the same agent evicts the first with close 4000."""
+    # App logging configuration replaces root handlers. Capture this logger
+    # directly so the eviction assertion also runs under the real app fixture.
+    control_logger = logging.getLogger("preloop.api.endpoints.agent_control")
+    monkeypatch.setattr(control_logger, "propagate", False)
+    monkeypatch.setattr(
+        control_logger, "handlers", [*control_logger.handlers, caplog.handler]
+    )
     token_body = _issue_runtime_token(client, session_source_id="openclaw-eviction")
     url = f"/api/v1/agents/control/ws?token={token_body['token']}"
 

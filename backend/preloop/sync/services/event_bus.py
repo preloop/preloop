@@ -140,8 +140,10 @@ class EventBus:
             return ack
         except (ErrTimeout, ErrConnectionClosed) as e:
             logger.error(
-                f"Failed to publish task '{function_name}' to NATS subject '{subject}' after multiple retries: {e}"
+                f"Failed to publish task '{function_name}' to NATS subject '{subject}': {e}"
             )
+            # Let the bounded retry decorator actually retry transient failures.
+            raise
         except Exception as e:
             logger.error(
                 f"An unexpected error occurred while publishing task '{function_name}' to NATS subject '{subject}': {e}"

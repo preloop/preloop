@@ -490,8 +490,8 @@ def get_current_user(
                     f"API key authentication successful for user: {user.username}"
                 )
                 return user  # Return the full User object
-        except HTTPException:
-            # Re-raise HTTP exceptions
+        except (HTTPException, SQLAlchemyPoolTimeout):
+            # Preserve authentication errors and transient database capacity failures
             raise
         except Exception as e:
             logger.error(f"Error in API key first-try authentication: {str(e)}")
@@ -555,7 +555,7 @@ def get_current_user(
                 )
 
             return user  # Return the full User object
-        except HTTPException:
+        except (HTTPException, SQLAlchemyPoolTimeout):
             raise
         except Exception as e:
             logger.error(f"Error getting current user from JWT: {str(e)}")
@@ -599,8 +599,8 @@ def get_current_user(
                     f"API key authentication successful for user: {user.username}"
                 )
                 return user  # Return the full User object
-            except HTTPException:
-                # Re-raise HTTP exceptions
+            except (HTTPException, SQLAlchemyPoolTimeout):
+                # Preserve authentication errors and transient database capacity failures
                 raise
             except Exception as e:
                 logger.error(f"Error authenticating with API key: {str(e)}")

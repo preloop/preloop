@@ -1,6 +1,9 @@
 from preloop.sync.config import logger
 from preloop.models.db.session import get_db_session
-from preloop.models.crud import crud_tracker
+from preloop.models.crud import crud_tracker, crud_issue_embedding
+from sqlalchemy.orm import Session
+from preloop.services.db_executor import run_db_sync
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.sync.scanner.core import scan_tracker
 from datetime import datetime
 from typing import Any, Optional, Union
@@ -154,10 +157,18 @@ def serialize_uuids(obj: Any) -> Any:
         return obj
 
 
+def _generate_webhook_embeddings(db: Session, request: dict[str, Any]) -> None:
+    """Generate embeddings in the worker's clean, short-lived session."""
+    crud_issue_embedding.create_embeddings(
+        db, **request, release_connection_for_generation=True
+    )
+
+
 async def process_webhook_event(
     tracker_id: int,
     event_type: str,
     payload: dict[str, Any],
+    embedding_requests: Optional[list[dict[str, Any]]] = None,
     **kwargs: Any,
 ) -> None:
     """
@@ -167,6 +178,21 @@ async def process_webhook_event(
     logger.info(f"Processing tracker event: {tracker_id} - {event_type}")
     logger.debug(f"Payload: {payload}")
     logger.debug(f"kwargs: {kwargs}")
+
+    # The HTTP ingress only persists issue/comment changes and publishes this
+    # task. Preserve embedding-before-flow ordering without keeping a webhook
+    # request or a database connection waiting for its provider.
+    for embedding_request in embedding_requests or []:
+        try:
+            await run_db_off_loop(
+                lambda request=embedding_request: run_db_sync(
+                    lambda db: _generate_webhook_embeddings(db, request)
+                )
+            )
+        except Exception:
+            # Webhook events have always continued to flow triggers after an
+            # inline embedding failure. Keep that behavior in the worker.
+            logger.exception("Webhook embedding generation failed; forwarding event")
 
     db = next(get_db_session())
     try:

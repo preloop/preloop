@@ -17,7 +17,7 @@ from fastapi import (
     status,
 )
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import bootstrap
@@ -881,7 +881,7 @@ async def login_json(
 
 
 @router.post("/refresh", response_model=Token)
-async def refresh_token(
+def refresh_token(
     request: RefreshRequest,
     db: Session = Depends(get_db_session),
 ) -> Dict[str, str]:
@@ -968,7 +968,7 @@ async def refresh_token(
             "token_type": "bearer",
             "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # in seconds
         }
-    except HTTPException:
+    except (HTTPException, SQLAlchemyTimeoutError):
         raise
     except Exception as e:
         logger.error("Unexpected error refreshing token: %s", e, exc_info=True)

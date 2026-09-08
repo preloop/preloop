@@ -227,7 +227,7 @@ class TestWebhooksEndpoint:
         assert response.status_code == 403
         assert response.json()["detail"] == "Invalid GitHub signature"
 
-    @patch("preloop.api.endpoints.webhooks.crud_issue_embedding")
+    @patch("preloop.models.crud.crud_issue_embedding")
     @patch("preloop.api.endpoints.webhooks.crud_issue")
     @patch("preloop.api.endpoints.webhooks.crud_project")
     @patch("preloop.api.endpoints.webhooks.TrackerClient")
@@ -292,7 +292,7 @@ class TestWebhooksEndpoint:
         response_json = response.json()
         assert response_json["status"] == "success"
         assert response_json["tracker_id"] == current_org_mock.tracker.id
-        self.mock_session.add.assert_called()
+        self.mock_session.query.return_value.filter.return_value.update.assert_called()
         self.mock_session.commit.assert_called()
 
     @patch("preloop.api.endpoints.webhooks.crud_organization")
@@ -343,7 +343,7 @@ class TestWebhooksEndpoint:
         assert response.status_code == 403
         assert response.json()["detail"] == "Invalid GitLab token"
 
-    @patch("preloop.api.endpoints.webhooks.crud_issue_embedding")
+    @patch("preloop.models.crud.crud_issue_embedding")
     @patch("preloop.api.endpoints.webhooks.crud_issue")
     @patch("preloop.api.endpoints.webhooks.crud_project")
     @patch("preloop.api.endpoints.webhooks.TrackerClient")
@@ -400,7 +400,7 @@ class TestWebhooksEndpoint:
         response_json = response.json()
         assert response_json["status"] == "success"
         assert response_json["tracker_id"] == current_org_mock.tracker.id
-        self.mock_session.add.assert_called()
+        self.mock_session.query.return_value.filter.return_value.update.assert_called()
         self.mock_session.commit.assert_called()
 
     @patch(
@@ -466,7 +466,7 @@ class TestWebhooksEndpoint:
         assert response.status_code == 400
         assert "Invalid JSON payload" in response.json()["detail"]
 
-    @patch("preloop.api.endpoints.webhooks.crud_issue_embedding")
+    @patch("preloop.models.crud.crud_issue_embedding")
     @patch("preloop.api.endpoints.webhooks.crud_issue")
     @patch("preloop.api.endpoints.webhooks.crud_project")
     @patch("preloop.api.endpoints.webhooks.TrackerClient")
@@ -695,7 +695,9 @@ async def test_receive_webhook_unsupported_tracker(
     request = AsyncMock()
     request.body = AsyncMock(return_value=b"{}")
     with pytest.raises(HTTPException):
-        await webhooks.receive_webhook("invalid", "123", request)
+        await webhooks.receive_webhook(
+            "invalid", "123", request, MagicMock(spec=Session), AsyncMock()
+        )
 
 
 @pytest.mark.asyncio
