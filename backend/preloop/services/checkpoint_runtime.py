@@ -1,6 +1,7 @@
 """Trusted orchestration integration for direct checkpoint capabilities."""
 
 import base64
+import json
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -104,7 +105,18 @@ def evidence_transport_env(context: dict[str, Any]) -> dict[str, str]:
         kind="evidence",
         operation="put",
     )
+    from preloop.cra.evidence_pack import evidence_manifest_context
+
+    # Facts the packer cannot see from inside the container: which files
+    # were seeded into the workspace and which source the caller declared.
+    # Digests and paths only, no contents.
+    manifest_context = json.dumps(
+        evidence_manifest_context(trigger, execution_id=execution_id),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return {
+        "PRELOOP_EVIDENCE_MANIFEST": manifest_context,
         "PRELOOP_EVIDENCE_URL": (
             settings.preloop_url.rstrip("/")
             + "/api/v1/flows/executions/"

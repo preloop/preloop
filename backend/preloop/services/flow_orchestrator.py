@@ -3233,6 +3233,37 @@ class FlowExecutionOrchestrator:
         self._sync_evidence_artifact_identity(stored.id, archive)
         return archive
 
+    def _describe_evidence_pack(self, archive: bytes) -> bytes:
+        """Add manifest.json to a pack that arrived without one.
+
+        The archive digest in the receipt proves the pack was not altered in
+        transit, but it says nothing about what is inside. Without a member
+        index a reader cannot tell a complete pack from one whose report was
+        truncated, and cannot reconstruct which inputs and which commit were
+        audited without the execution record (dogfood report 5.3).
+
+        This runs before the archive is stored and before its receipt is
+        minted, so the digest that is published is the digest of the bytes
+        that are kept. Packs uploaded directly by the container already
+        carry a manifest and are returned unchanged.
+        """
+        from preloop.cra.evidence_pack import (
+            ensure_pack_manifest,
+            evidence_manifest_context,
+        )
+
+        try:
+            context = evidence_manifest_context(
+                getattr(self, "trigger_event_data", None),
+                execution_id=getattr(getattr(self, "execution_log", None), "id", None),
+            )
+            return ensure_pack_manifest(archive, context=context)
+        except Exception:
+            logger.warning(
+                "Could not add manifest.json to the evidence pack", exc_info=True
+            )
+            return archive
+
     async def _capture_evidence_archive(
         self, agent_executor: Any, session_reference: str
     ) -> None:
@@ -3277,7 +3308,7 @@ class FlowExecutionOrchestrator:
                 logger.warning(f"Failed to capture evidence archive: {e}")
                 captured = None
             if isinstance(captured, (bytes, bytearray)) and captured:
-                archive = bytes(captured)
+                archive = self._describe_evidence_pack(bytes(captured))
 
         raw_transport_error = getattr(agent_executor, "evidence_transport_error", None)
         # Production sets a string; mocks (AsyncMock) auto-create truthy
