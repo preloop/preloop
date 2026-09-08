@@ -1318,6 +1318,59 @@ class TestFlowExecutionOrchestrator:
             assert bytes(persisted.evidence_archive) == archive
 
     @pytest.mark.asyncio
+    async def test_dossier_evidence_matches_captured_pack_before_persist(
+        self,
+        db_session: Session,
+        test_flow: Flow,
+        mock_nats_client,
+        event_data,
+        mock_agent_executor,
+    ):
+        """dossier_manifest.evidence must not lag the captured evidence pack.
+
+        Regression for issue #506: the dossier is built before the captured
+        archive is persisted on the execution row, so load_evidence still
+        reports "missing" at that point. The orchestrator's in-memory receipt
+        must drive the dossier so result.dossier_manifest and
+        evidence-status agree that the pack is available.
+        """
+        import hashlib
+
+        from preloop.models.models.flow_execution import FlowExecution
+
+        archive = b"\x1f\x8b" + b"fake-evidence-tar-gz"
+        mock_agent_executor.get_result_artifact = AsyncMock(
+            return_value={"status": "success"}
+        )
+        mock_agent_executor.get_evidence_archive = AsyncMock(return_value=archive)
+
+        with patch(
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
+            return_value=mock_agent_executor,
+        ):
+            orchestrator = FlowExecutionOrchestrator(
+                db=db_session,
+                flow_id=test_flow.id,
+                trigger_event_data=event_data,
+                nats_client=mock_nats_client,
+            )
+            orchestrator._product_evidence_context = {"product_evidence": True}
+            await orchestrator.run()
+
+            assert orchestrator.execution_log.status == "SUCCEEDED"
+            persisted = (
+                db_session.query(FlowExecution)
+                .filter(FlowExecution.id == orchestrator.execution_log.id)
+                .one()
+            )
+            assert bytes(persisted.evidence_archive) == archive
+            evidence = persisted.result["dossier_manifest"]["evidence"]
+            assert evidence["status"] == "available"
+            assert evidence["transport"] == "legacy"
+            assert evidence["sha256"] == hashlib.sha256(archive).hexdigest()
+            assert persisted.evidence_receipt["status"] == "available"
+
+    @pytest.mark.asyncio
     async def test_no_evidence_archive_leaves_column_null(
         self,
         db_session: Session,
