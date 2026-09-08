@@ -46,6 +46,15 @@ class TestPasswordHashing:
         assert jwt_module.verify_password("a" * 72, hashed) is True
         assert jwt_module.verify_password("b" * 80, hashed) is False
 
+    def test_multibyte_password_keeps_raw_72_byte_prefix(self):
+        """A UTF-8 character split at byte 72 must still verify (legacy passlib)."""
+        # "é" is two UTF-8 bytes, so this secret is 73 bytes and the 72-byte
+        # prefix ends on the first byte of "é".
+        password = "a" * 71 + "é"
+        hashed = jwt_module.get_password_hash(password)
+        assert jwt_module.verify_password(password, hashed) is True
+        assert len(jwt_module._bcrypt_secret(password)) == 72
+
 
 class TestCreateAccessToken:
     """Tests for token creation."""

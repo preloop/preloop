@@ -331,17 +331,15 @@ def authenticate_runtime_bearer_token(
     )
 
 
-def _bcrypt_secret(password: str) -> str:
+def _bcrypt_secret(password: str) -> bytes:
     """Return the 72-byte prefix bcrypt actually hashes.
 
-    Slices UTF-8 bytes and drops a trailing incomplete character so passlib
-    still receives a str. Hash and verify must share this so a legacy
-    over-long password still authenticates after the bcrypt 5.0.0 bump.
+    passlib accepts bytes and hashes them as-is. Returning the raw slice
+    (which may end mid-character) matches bcrypt 4.x + passlib truncation,
+    so a legacy password whose UTF-8 encoding straddles byte 72 still
+    verifies after the bcrypt 5.0.0 bump.
     """
-    encoded = password.encode("utf-8")
-    if len(encoded) <= _BCRYPT_MAX_PASSWORD_BYTES:
-        return password
-    return encoded[:_BCRYPT_MAX_PASSWORD_BYTES].decode("utf-8", "ignore")
+    return password.encode("utf-8")[:_BCRYPT_MAX_PASSWORD_BYTES]
 
 
 def get_password_hash(password: str) -> str:
