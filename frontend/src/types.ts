@@ -22,6 +22,14 @@ export interface FlowCustomCommands {
   commands?: string[];
 }
 
+/**
+ * Failure-side keys the server still parses and ignores.
+ *
+ * `comment_on_trigger_issue` used to post the failure comment and was removed;
+ * `attention_item` never did anything (failed executions always become
+ * attention items). Both are kept on the type so a flow saved before the
+ * removal still deserializes. The console never renders or submits them.
+ */
 export interface FlowFailureNotifications {
   comment_on_trigger_issue?: boolean;
   attention_item?: boolean;
@@ -31,7 +39,7 @@ export interface FlowSuccessNotifications {
   comment_on_trigger_issue?: boolean;
 }
 
-/** Per-flow terminal notifications. Null means no comments or attention items. */
+/** Per-flow terminal notifications. Null means no comments. */
 export interface FlowNotifications {
   on_failure?: FlowFailureNotifications;
   on_success?: FlowSuccessNotifications;
@@ -39,10 +47,6 @@ export interface FlowNotifications {
 
 export function defaultFlowNotifications(): FlowNotifications {
   return {
-    on_failure: {
-      comment_on_trigger_issue: false,
-      attention_item: false,
-    },
     on_success: {
       comment_on_trigger_issue: false,
     },

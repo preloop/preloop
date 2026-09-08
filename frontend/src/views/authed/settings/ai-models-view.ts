@@ -1,4 +1,4 @@
-import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
+import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { when } from 'lit/directives/when.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -858,6 +858,7 @@ export class AIModelsView extends LitElement {
           searchPlaceholder="Search models"
           toggleLabel="Models view"
           .view=${this.currentView}
+          ?selecting=${this.selection.count > 0}
           @search-change=${this.handleSearchChange}
           @view-change=${this.handleViewChange}
         >
@@ -886,6 +887,7 @@ export class AIModelsView extends LitElement {
             <sl-option value="disabled">Disabled</sl-option>
           </sl-select>
           <span slot="count">${this.resultsLabel}</span>
+          ${this.renderBulkBar()}
         </list-toolbar>
       </div>
     `;
@@ -932,7 +934,6 @@ export class AIModelsView extends LitElement {
       </div>`;
     }
     return html`
-      ${this.renderBulkBar()}
       ${
         this.effectiveView === 'cards'
           ? this.renderCardsView(models)
@@ -952,22 +953,25 @@ export class AIModelsView extends LitElement {
     ></list-select-checkbox>`;
   }
 
+  /**
+   * The bulk bar, docked in the toolbar's row: always rendered, visible only
+   * while something is selected, so picking a model never moves the list.
+   */
   private renderBulkBar() {
-    // Nothing at all at zero selected, wrapper included: an empty slot with a
-    // margin would push every collection down by 8px it never had before.
-    if (this.selection.count === 0) return nothing;
-    return html`<div class="bulk-bar-slot">
-      <list-bulk-bar
-        label="Model bulk actions"
-        .count=${this.selection.count}
-        .actions=${MODEL_BULK_ACTIONS}
-        .running=${this.selection.running}
-        .progressDone=${this.selection.progressDone}
-        .progressTotal=${this.selection.progressTotal}
-        @bulk-action=${() => void this.handleBulkDelete()}
-        @selection-clear=${() => this.selection.clear()}
-      ></list-bulk-bar>
-    </div>`;
+    return html`<list-bulk-bar
+      slot="bulk"
+      docked
+      label="Model bulk actions"
+      .count=${this.selection.count}
+      .total=${this.selection.order.length}
+      .actions=${MODEL_BULK_ACTIONS}
+      .running=${this.selection.running}
+      .progressDone=${this.selection.progressDone}
+      .progressTotal=${this.selection.progressTotal}
+      @bulk-action=${() => void this.handleBulkDelete()}
+      @selection-select-all=${() => this.selection.toggleAll(true)}
+      @selection-clear=${() => this.selection.clear()}
+    ></list-bulk-bar>`;
   }
 
   /**

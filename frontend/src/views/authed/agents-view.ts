@@ -3001,23 +3001,30 @@ export class AgentsView extends LitElement {
       }));
   }
 
+  /**
+   * The bulk bar, docked in the toolbar's row.
+   *
+   * It is always rendered, and the toolbar's `selecting` decides which of the
+   * two occupants of that row is visible. Rendering it only when something is
+   * selected is what used to push the table down by the bar's height on the
+   * first click.
+   */
   private renderBulkBar() {
-    // Nothing at all at zero selected, wrapper included: an empty slot with a
-    // margin would push every collection down by 8px it never had before.
-    if (this.selection.count === 0) return nothing;
-    return html`<div class="bulk-bar-slot">
-      <list-bulk-bar
-        label="Agent bulk actions"
-        .count=${this.selection.count}
-        .actions=${this.bulkActions}
-        .running=${this.selection.running}
-        .progressDone=${this.selection.progressDone}
-        .progressTotal=${this.selection.progressTotal}
-        @bulk-action=${(event: CustomEvent) =>
-          void this.handleBulkLifecycle(event.detail.id)}
-        @selection-clear=${() => this.selection.clear()}
-      ></list-bulk-bar>
-    </div>`;
+    return html`<list-bulk-bar
+      slot="bulk"
+      docked
+      label="Agent bulk actions"
+      .count=${this.selection.count}
+      .total=${this.selection.order.length}
+      .actions=${this.bulkActions}
+      .running=${this.selection.running}
+      .progressDone=${this.selection.progressDone}
+      .progressTotal=${this.selection.progressTotal}
+      @bulk-action=${(event: CustomEvent) =>
+        void this.handleBulkLifecycle(event.detail.id)}
+      @selection-select-all=${() => this.selection.toggleAll(true)}
+      @selection-clear=${() => this.selection.clear()}
+    ></list-bulk-bar>`;
   }
 
   /**
@@ -4656,6 +4663,7 @@ export class AgentsView extends LitElement {
             toggleLabel="Agents view"
             .view=${this.currentView}
             .views=${AGENTS_VIEW_MODES}
+            ?selecting=${this.selection.count > 0}
             @search-change=${this.handleSearchChange}
             @view-change=${this.handleViewChange}
           >
@@ -4715,6 +4723,7 @@ export class AgentsView extends LitElement {
               <sl-option value="last_7_days">Last 7 days</sl-option>
             </sl-select>
             <span slot="count">${this.resultsLabel}</span>
+            ${this.renderBulkBar()}
           </list-toolbar>
           ${
             this.error
@@ -4723,7 +4732,6 @@ export class AgentsView extends LitElement {
                 >`
               : null
           }
-          ${this.renderBulkBar()}
         </div>
 
         ${

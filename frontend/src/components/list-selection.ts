@@ -13,6 +13,8 @@ import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 
 import { confirmDialog, showToast } from './confirm-dialog';
+import './resource-actions';
+import type { ResourceAction } from './resource-actions';
 import {
   DEFAULT_FETCH_CONCURRENCY,
   mapWithConcurrency,
@@ -289,17 +291,32 @@ export interface BulkAction {
 }
 
 /**
- * The strip that appears once something is selected: "3 selected · Pause ·
- * Decommission · Clear". One hairline row, not a floating box: depth stays at
- * two and the strip reads as part of the table it sits above.
+ * The bar that takes a list's toolbar over once something is selected:
+ * "3 selected · Select all 30 · Pause · Decommission · Clear".
+ *
+ * Docked into the row a page already had (`list-bar-swap`), it is not a strip
+ * that appears: it stands in for the search and filter row, so nothing below
+ * it moves. Standing on its own (`docked` unset) it keeps its old hairline
+ * strip look and renders nothing at zero selected.
+ *
+ * The action buttons come from `resource-actions`, the same renderer the row
+ * kebab and the detail pages use, so a bulk action and a row action of the
+ * same id look and collapse the same way.
  *
  * @fires bulk-action - `{ detail: { id } }` when an action button is pressed
+ * @fires selection-select-all - when "Select all N" is pressed
  * @fires selection-clear - when Clear is pressed
  */
 @customElement('list-bulk-bar')
 export class ListBulkBar extends LitElement {
   @property({ type: Number }) count = 0;
   @property({ type: Array }) actions: BulkAction[] = [];
+  /**
+   * Rows the page is showing. When more than the selection, the bar offers
+   * "Select all N", which is the only select-all a cards view has and the one
+   * the operator can reach while the header checkbox is scrolled away.
+   */
+  @property({ type: Number }) total = 0;
   /** Id of the action currently running, if any. */
   @property({ type: String }) running: string | null = null;
   /** Items finished so far in the running action. */
@@ -308,6 +325,18 @@ export class ListBulkBar extends LitElement {
   @property({ type: Number, attribute: 'progress-total' }) progressTotal = 0;
   /** Names the bar for assistive tech: "Agent bulk actions". */
   @property({ type: String }) label = 'Bulk actions';
+  /**
+   * The bar lives inside a row the page already had (a toolbar, a table
+   * header) rather than on a strip of its own.
+   *
+   * Two things follow, and they are the same decision: the bar drops the
+   * hairlines and vertical padding that made it a strip, and it keeps its
+   * layout at zero selected instead of rendering nothing, so the row it
+   * shares is the same height whether or not anything is picked. The layer
+   * around it is what hides it; a bar that erased itself here would hand the
+   * height back and reintroduce the jump it exists to remove.
+   */
+  @property({ type: Boolean, reflect: true }) docked = false;
 
   static styles = css`
     :host {
@@ -322,6 +351,19 @@ export class ListBulkBar extends LitElement {
       padding: var(--sl-spacing-x-small) 0;
       border-top: 1px solid var(--console-hairline);
       border-bottom: 1px solid var(--console-hairline);
+    }
+    /* Docked, the row it sits in already draws whatever rules it needs. */
+    :host([docked]) .bulk-bar {
+      padding: 0;
+      border-top: none;
+      border-bottom: none;
+      flex-wrap: nowrap;
+    }
+    .status {
+      display: flex;
+      align-items: baseline;
+      gap: var(--sl-spacing-x-small);
+      white-space: nowrap;
     }
     .count {
       font-size: var(--console-text-meta);
@@ -339,17 +381,14 @@ export class ListBulkBar extends LitElement {
     .separator {
       color: var(--console-meta-color);
     }
-    .spacer {
+    .bulk-actions {
       flex: 1 1 auto;
+      min-width: 0;
     }
-    /* Destructive actions never sit next to the everyday ones. */
-    sl-button.destructive {
-      margin-left: var(--sl-spacing-large);
-    }
-    @media (max-width: 640px) {
-      sl-button.destructive {
-        margin-left: 0;
-      }
+    /* Bulk actions read left to right after the count, not right-aligned the
+       way a row's action cell does. */
+    .bulk-actions::part(container) {
+      justify-content: flex-start;
     }
   `;
 
@@ -359,54 +398,72 @@ export class ListBulkBar extends LitElement {
     );
   }
 
+  /**
+   * The bulk actions as `resource-actions` takes them.
+   *
+   * Danger is outlined and pushed away from the everyday actions here, once,
+   * instead of at every call site: a bulk Decommission is the same button as
+   * the row's Decommission.
+   */
+  private get resourceActions(): ResourceAction[] {
+    const busy = this.running !== null;
+    return this.actions.map((action) => {
+      const destructive = action.variant === 'danger';
+      return {
+        id: action.id,
+        label: action.label,
+        icon: action.icon,
+        variant: action.variant || 'default',
+        outline: destructive,
+        separated: destructive,
+        disabled: busy && this.running !== action.id,
+        loading: this.running === action.id,
+        onClick: () => this.emit('bulk-action', { id: action.id }),
+      };
+    });
+  }
+
   render() {
-    if (this.count <= 0) {
+    if (this.count <= 0 && !this.docked) {
       return nothing;
     }
     const busy = this.running !== null;
+    const showSelectAll = this.total > this.count && !busy;
     return html`
       <div class="bulk-bar" role="toolbar" aria-label=${this.label}>
-        <!-- Static text on purpose: the count changes because the operator
-             just ticked a box, and a second live region would make a run
-             announce the count over every progress tick. -->
-        <span class="count" data-testid="bulk-count"
-          >${this.count} selected</span
-        >
-        <span class="separator" aria-hidden="true">·</span>
-        ${this.actions.map((action) => {
-          const destructive = action.variant === 'danger';
-          return html`
-            <sl-button
-              size="small"
-              class=${destructive ? 'destructive' : ''}
-              data-action=${action.id}
-              variant=${action.variant || 'default'}
-              ?outline=${destructive}
-              ?disabled=${busy && this.running !== action.id}
-              ?loading=${this.running === action.id}
-              @click=${() => this.emit('bulk-action', { id: action.id })}
-            >
-              ${
-                action.icon
-                  ? html`<sl-icon slot="prefix" name=${action.icon}></sl-icon>`
-                  : nothing
-              }
-              ${action.label}
-            </sl-button>
-          `;
-        })}
-        <span class="spacer"></span>
+        <!-- One live region for the whole run: the count and, while a run is
+             in flight, how far it has got. Two regions would talk over each
+             other on every progress tick. -->
+        <span class="status" role="status" aria-live="polite">
+          <span class="count" data-testid="bulk-count"
+            >${this.count} selected</span
+          >
+          ${
+            busy && this.progressTotal > 0
+              ? html`<span class="progress" data-testid="bulk-progress"
+                  >${this.progressDone} of ${this.progressTotal}</span
+                >`
+              : nothing
+          }
+        </span>
         ${
-          busy && this.progressTotal > 0
-            ? html`<span
-                class="progress"
-                role="status"
-                aria-live="polite"
-                data-testid="bulk-progress"
-                >${this.progressDone} of ${this.progressTotal}</span
-              >`
+          showSelectAll
+            ? html`<sl-button
+                size="small"
+                variant="text"
+                data-action="select-all"
+                @click=${() => this.emit('selection-select-all')}
+              >
+                Select all ${this.total}
+              </sl-button>`
             : nothing
         }
+        <span class="separator" aria-hidden="true">·</span>
+        <resource-actions
+          class="bulk-actions"
+          size="small"
+          .actions=${this.resourceActions}
+        ></resource-actions>
         <sl-button
           size="small"
           variant="text"

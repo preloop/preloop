@@ -83,6 +83,74 @@ describe('ResourceActions', () => {
     }
   });
 
+  const talkRenderActions = () => [
+    {
+      id: 'talk',
+      label: 'Talk',
+      render: () => html`<button class="talk-button">Talk</button>`,
+    },
+    ...ACTIONS.slice(1),
+    { id: 'pause', label: 'Pause', icon: 'pause' },
+  ];
+
+  async function renderTalkActionsAtWidth(widthPx: number) {
+    const host = await fixture<HTMLElement>(html`
+      <div style=${`width: ${widthPx}px;`}>
+        <resource-actions></resource-actions>
+      </div>
+    `);
+    const el = host.querySelector('resource-actions') as ResourceActions;
+    el.actions = talkRenderActions();
+    await el.updateComplete;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await el.updateComplete;
+    return el;
+  }
+
+  it('keeps an action that brings its own element out of the overflow menu', async () => {
+    // The agent page passes Talk as a `render` action, and it is declared
+    // first, which is the first thing the width heuristic folds. A menu item
+    // built from a `render` action has neither href nor onClick, so folding it
+    // left a row that did nothing at all. Talk stays on the row instead.
+    const el = await renderTalkActionsAtWidth(420);
+
+    const menuLabels = Array.from(
+      el.shadowRoot?.querySelectorAll('sl-menu-item') ?? []
+    ).map((item) => item.textContent?.trim());
+    expect(menuLabels, 'something folded, so this is the case under test').to
+      .not.be.empty;
+    expect(menuLabels, 'no dead Talk row in the menu').to.not.include('Talk');
+    expect(
+      el.shadowRoot?.querySelector('.talk-button'),
+      'Talk keeps its place on the row'
+    ).to.exist;
+  });
+
+  it('does not clip a self-rendered action at an intermediate width', async () => {
+    // Restoring Talk after the fold, without reserving its width, overflowed
+    // `.actions-container` (overflow: hidden; flex-end) around 500-700px and
+    // clipped Talk — the leftmost item, and the button this keeps clickable.
+    const el = await renderTalkActionsAtWidth(560);
+
+    expect(
+      el.shadowRoot?.querySelector('.talk-button'),
+      'Talk keeps its place on the row'
+    ).to.exist;
+    const menuLabels = Array.from(
+      el.shadowRoot?.querySelectorAll('sl-menu-item') ?? []
+    ).map((item) => item.textContent?.trim());
+    expect(menuLabels, 'no dead Talk row in the menu').to.not.include('Talk');
+
+    const container = el.shadowRoot?.querySelector(
+      '.actions-container'
+    ) as HTMLElement;
+    expect(container, 'actions row').to.exist;
+    expect(
+      container.scrollWidth,
+      'row is not clipped by overflow:hidden'
+    ).to.be.at.most(container.clientWidth);
+  });
+
   it('keeps every action on the row when there is room', async () => {
     const { element, cleanup } = await renderInPhoneFrame<ResourceActions>({
       moduleUrl: new URL('./resource-actions.ts', import.meta.url).href,

@@ -15947,8 +15947,10 @@ components:
         comment_on_trigger_issue:
           type: boolean
           title: Comment On Trigger Issue
-          description: Post one comment on the triggering issue with status, execution
-            link, failure category, and the last 20 log lines.
+          description: Ignored since 2026-09. Used to post a failure comment with
+            a redacted log tail on the triggering issue; a failed execution is an
+            attention item on Overview instead. Kept so stored JSON and older clients
+            still parse.
           default: false
         attention_item:
           type: boolean
@@ -15959,7 +15961,14 @@ components:
           default: false
       type: object
       title: FlowFailureNotifications
-      description: What to do when an execution ends FAILED or TIMEOUT.
+      description: 'Failure-side keys, all ignored.
+
+
+        Both options were removed. The block itself is kept so a flow stored
+
+        before the removal, or a client that still sends the keys, parses instead
+
+        of failing with a 422.'
     FlowGatewayUsageSummaryResponse:
       properties:
         flow_id:
