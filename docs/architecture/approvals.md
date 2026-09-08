@@ -91,6 +91,42 @@ graph TD
 
 **Agent questions (`ask_user`).** Beyond allow/deny gating, the built-in `ask_user` MCP tool lets an agent ask the operator a question with multiple-choice `options` and/or a free-text answer, routed through the same approval workflow, notification, and audit pipeline. The question payload (`is_question`, `question`, `options`, `allow_free_text`) rides in the approval request's `tool_args` JSONB (no schema migration) and is surfaced on `ApprovalRequestResponse` as computed fields. The operator's reply is submitted via the same decision endpoints, where `ApprovalDecision` now accepts `selected_option`/`answer_text` (precedence: `answer_text` > `selected_option` > `comment`); the resulting text is returned to the agent as the tool result. Mobile/watch render options as buttons plus an answer field. When the question was resolved through a synchronous approval, `ask_user`'s return carries an approval audit trailer — `[approval_id: ...; answered_by: ...; answered_at: ...; status: ...]` — so an agent transcribing the human's decision (e.g. interactive waiver collection in the security-audit presets) can cite the governed approval record instead of asserting one. `answered_by` is resolved to the approver's email/username (raw id only as fallback); the metadata is scoped to the current `require_approval` call (cleared on entry, consumed once) so a stale approval can never be misattributed to a later question, and runs without an approval record keep the legacy return format unchanged.
 
+**Approval window and parked executions.** How long a human has is a
+setting, not a constant. `resolve_approval_window` (`services/approval_window.py`)
+picks the most specific of: the `timeout_seconds` argument passed to
+`ask_user` / `request_approval`, the running flow's `approval_window_seconds`,
+the approval workflow's `timeout_seconds`, and
+`settings.approval_default_window_seconds` (300, unchanged for interactive tool
+calls). Every candidate is clamped to at least 60 seconds and at most the
+account cap (`account.meta_data["approval_window_max_seconds"]`, which may only
+tighten the 30 day deployment ceiling), and the resulting `expires_at` follows
+it.
+
+A window measured in days cannot be waited out in a container. When a gated
+call is still undecided after `settings.approval_park_after_seconds` (90
+seconds), the tool returns a structured `parked_for_human` result and the
+execution is **parked**: `park_request_id` is written on the row, the
+orchestrator's monitor sees it, captures the evidence pack, workspace snapshot
+and CLI session, stops the executor and sets the non-terminal status
+`WAITING_FOR_HUMAN` with no `end_time`. A parked run holds no container, no
+runner and no worker, and the flow's `timeout_seconds` budget is paused
+(`parked_compute_seconds` records the agent time already spent, and the resumed
+run gets the remainder).
+
+The decision resumes it. Every resolution path funnels through
+`ApprovalService.update_approval_request`, which claims each parked execution
+with a single conditional UPDATE (so a decision that arrives twice resumes once)
+and creates a new execution carrying `_resume` plus the answer, exactly like the
+PR-comment continuation. Harnesses with native session resume (Claude, Codex,
+Gemini, OpenCode) continue the same session; others restart with the answer in
+`payload.answers.<request_id>`. No harness can inject a value as the return of a
+tool call in a session that was killed, so the answer arrives as the next turn,
+naming the request id and repeating the question. An expired window resumes the
+run with an explicit `expired` answer so the agent finishes gracefully rather
+than the platform reporting a missing result. `ExecutionMonitor` sweeps parked
+rows once a minute for expiry, for decisions whose resume dispatch was lost, and
+for the 50 percent and 90 percent window reminders.
+
 **Managed-agent linkage:** `ApprovalRequest` carries optional `managed_agent_id`, `runtime_session_id`, and `managed_agent_name` fields, populated from the runtime token context so approval surfaces can show which agent is asking. The endpoint and these identity columns are part of the open-source core. The per-agent native-tool interception adapters (Claude Code, Codex CLI, Cursor, OpenCode, OpenClaw, Hermes) and any future central per-agent/global policy UI live in Preloop Enterprise / the CLI.
 
 **Workflow resolution.** Every account gets a default approval workflow seeded at signup with the account owner as approver (a startup repair pass heals legacy defaults and seeds accounts that missed it). Operators can additionally pin a specific approval workflow per managed agent from the Console's agent detail view (Tools & Governance → Native tool approvals); the pin is stored in the agent's subject-governance config (`approval_workflow_id`) and wins over the account default when the permission-check endpoint resolves a workflow.
