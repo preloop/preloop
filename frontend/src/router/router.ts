@@ -249,6 +249,20 @@ function routableAnchor(event: MouseEvent): HTMLAnchorElement | undefined {
   return anchor;
 }
 
+/**
+ * The innermost element of a rendered chain. Levels whose route owns no
+ * element are holes, so the leaf is the last entry that is not one.
+ */
+function deepestElement(
+  elements: readonly (RoutedElement | null)[]
+): RoutedElement | undefined {
+  for (let level = elements.length - 1; level >= 0; level--) {
+    const element = elements[level];
+    if (element) return element;
+  }
+  return undefined;
+}
+
 /** Router instances that are listening, so the static `go` can reach them. */
 const activeRouters = new Set<Router>();
 
@@ -256,7 +270,13 @@ export class Router {
   #outlet: Element | null = null;
   #flat: CompiledRoute[] = [];
   #chain: Route[] = [];
-  #elements: RoutedElement[] = [];
+  /**
+   * The rendered element per chain level, `null` where the route at that level
+   * owns no element of its own. The holes are the point: `#elements[level]`
+   * and `#chain[level]` must describe the same route, or reuse compares a
+   * component-less group route against the element of a deeper route.
+   */
+  #elements: (RoutedElement | null)[] = [];
   #renderId = 0;
   #listening = false;
   #loading: LoadingRenderer | null = null;
@@ -396,7 +416,10 @@ export class Router {
     let current = start;
 
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      const outcome = await this.#renderOnce(current, renderId);
+      const outcome = await this.#renderOnce(current, renderId, {
+        mode: options.history ?? 'none',
+        start,
+      });
       // A chunk that never arrived still moved the operator: the panel in the
       // outlet is about the route they asked for, and the reload it offers can
       // only reach that route if the address bar names it. A newer navigation
@@ -412,7 +435,8 @@ export class Router {
         current = splitUrl(outcome.redirect);
         continue;
       }
-      this.#writeHistory(current, options.history ?? 'none', start);
+      // The history entry for a successful render is written inside
+      // #renderOnce, before the view is connected.
       if (outcome.location) this.#announce(outcome.location);
       return;
     }
@@ -422,7 +446,11 @@ export class Router {
   /** One resolution pass. Returns a redirect instead of following it. */
   async #renderOnce(
     target: { pathname: string; search: string; hash: string },
-    renderId: number
+    renderId: number,
+    history: {
+      mode: 'push' | 'replace' | 'none';
+      start: { pathname: string; search: string; hash: string };
+    }
   ): Promise<{
     redirect?: string;
     cancelled?: boolean;
@@ -446,7 +474,7 @@ export class Router {
     };
     const commands = this.#commands();
 
-    const leaving = this.#elements[this.#elements.length - 1];
+    const leaving = deepestElement(this.#elements);
     if (leaving?.onBeforeLeave) {
       const verdict = await leaving.onBeforeLeave(context, commands, this);
       if (isPrevent(verdict)) return { cancelled: true };
@@ -468,12 +496,15 @@ export class Router {
     // shell on every click.
     let parent: Element = outlet;
     let diverged = false;
-    const next: RoutedElement[] = [];
+    const next: (RoutedElement | null)[] = [];
     const attach: { parent: Element; element: RoutedElement }[] = [];
 
     for (let level = 0; level < hit.chain.length; level++) {
       const route = hit.chain[level];
-      if (!route) continue;
+      if (!route) {
+        next.push(null);
+        continue;
+      }
 
       let element: RoutedElement | null = null;
       if (route.action) {
@@ -513,7 +544,18 @@ export class Router {
         element = document.createElement(route.component) as RoutedElement;
       }
 
-      if (!element) continue;
+      // A route that owns no element (a group like `flows`, whose children
+      // carry the components) still occupies its level. Recording the hole
+      // keeps `#elements` indexed by chain level; dropping it would shift
+      // every deeper element up, and the next navigation would then find the
+      // leaf's element sitting where the group's is looked up and reuse it as
+      // the group: the flows section rendering inside the page it came from.
+      if (!element) {
+        // The group itself changed, so nothing below it may be reused either.
+        if (this.#chain[level] !== route) diverged = true;
+        next.push(null);
+        continue;
+      }
       if (!reusable) {
         diverged = true;
         attach.push({ parent, element });
@@ -530,7 +572,17 @@ export class Router {
       parent = element;
     }
 
-    if (!next.length) return { stale: true };
+    const rendered = deepestElement(next);
+    if (!rendered) return { stale: true };
+
+    // From here the pass is terminal: every action and guard has run and
+    // nothing can redirect any more, so the address bar can name the
+    // destination. It has to happen before the views are connected. Vaadin
+    // Router updated history before it added the new content, and console
+    // views rely on that: <approval-view> takes its request id out of
+    // `window.location.pathname` in connectedCallback, and reading the page it
+    // came from left the id empty and the fetch a 404.
+    this.#writeHistory(target, history.mode, history.start);
 
     // Attach only once every action and guard has had a chance to redirect.
     // An action on a nested route that returns `commands.redirect` must not
@@ -538,11 +590,16 @@ export class Router {
     for (const step of attach) {
       step.parent.replaceChildren(step.element);
     }
+    // A chain that ends higher than the last one leaves the old leaf attached
+    // under an element that was reused, where no `replaceChildren` reached it.
+    for (let level = next.length; level < this.#elements.length; level++) {
+      this.#elements[level]?.remove();
+    }
 
     this.#chain = hit.chain.slice(0, next.length);
     this.#elements = next;
     this.location = context;
-    next[next.length - 1]?.onAfterEnter?.(context, commands, this);
+    rendered.onAfterEnter?.(context, commands, this);
     return { location: context };
   }
 
@@ -606,7 +663,10 @@ export class Router {
   }
 
   /**
-   * Write the history entry once the destination is known.
+   * Write the history entry once the destination is known, which is before
+   * the destination's views are connected: a view that reads
+   * `window.location` in `connectedCallback` must read where it is, not where
+   * it came from.
    *
    * Only the destination is ever written, never the URL a redirect passed
    * through, so a redirect costs no back-button stop. The kind of entry is the
