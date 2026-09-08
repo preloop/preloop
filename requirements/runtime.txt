@@ -1800,9 +1800,9 @@ maxminddb==3.1.1 \
     --hash=sha256:ff15158257dcd46b3d022f7ccecbd34e90d113c3f1f5b7372b78cf4c513b9a68 \
     --hash=sha256:ff7d739fbefe2529b76dce0362a165795e369ca2d79e04882b42035ab2c16e44
     # via preloop (pyproject.toml)
-mcp==2.1.1 \
-    --hash=sha256:1c6c31c5d6471c58db76af3af8af67f46d11d01f0a59077d0a308cbdb3d3e915 \
-    --hash=sha256:50b7ba1ebbe117008ea7bdd288234043e69c20b403d6851d19661e6d431a75ef
+mcp==1.29.0 \
+    --hash=sha256:52d01f334de1868cc3bb2d6604931126a67631f99a6c5d3b82ba47290315ec36 \
+    --hash=sha256:f5a075bb611f23d6f4d080c6a1699fa62772eebc562ba9e66b306ddde1c755f7
     # via fastmcp-slim
 mdurl==0.1.2 \
     --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8 \
