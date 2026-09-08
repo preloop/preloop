@@ -269,54 +269,57 @@ export class ResourceActions extends LitElement {
     // Heuristics for fitting: a button is approx 120px on average. Gap is 12px (sl-spacing-small).
     // Dropdown toggle is ~40px.
     // If containerWidth is 0 (initial), render all or wait.
-    let visibleCount = inlineActions.length;
-    if (this.menuOnly) {
-      visibleCount = 0;
-    }
+    //
+    // An action that brings its own element (Talk) has no click handler the
+    // menu can call, so it is never folded. Its width is reserved before
+    // deciding how many of the other actions fit; restoring it after the
+    // fold used to clip it (leftmost, overflow:hidden, flex-end) at
+    // intermediate widths.
+    const alwaysVisibleActions = inlineActions.filter(
+      (action) => action.render
+    );
+    const foldableActions = inlineActions.filter((action) => !action.render);
+    let foldableVisibleCount = this.menuOnly ? 0 : foldableActions.length;
 
     const separatedMargins =
       inlineActions.filter((action) => action.separated).length *
       SEPARATED_MARGIN;
 
-    // We can do a rudimentary calculation based on container width.
     if (!this.menuOnly && this.collapseOverflow && this.containerWidth > 0) {
-      // Let's assume average button width + gap is 120px
       const estimatedTotalWidth = inlineActions.length * 120 + separatedMargins;
 
       if (
         estimatedTotalWidth > this.containerWidth &&
-        inlineActions.length > 1
+        foldableActions.length > 0
       ) {
-        // Space reserved for overflow dropdown button (~50px)
-        const availableWidthForButtons =
-          this.containerWidth - 50 - separatedMargins;
-        visibleCount = Math.max(0, Math.floor(availableWidthForButtons / 120));
+        const alwaysVisibleWidth = alwaysVisibleActions.length * 120;
+        const availableWidthForFoldable =
+          this.containerWidth - 50 - alwaysVisibleWidth - separatedMargins;
+        foldableVisibleCount = Math.max(
+          0,
+          Math.floor(availableWidthForFoldable / 120)
+        );
       }
     }
 
-    const overflowCount = inlineActions.length - visibleCount;
-    let visibleActions = inlineActions.slice(overflowCount);
-    let overflowActions = inlineActions.slice(0, overflowCount);
+    let overflowActions = foldableActions.slice(
+      0,
+      Math.max(0, foldableActions.length - foldableVisibleCount)
+    );
 
-    // If there is only 1 overflow action and it would fit in the overflow dropdown,
-    // it's sometimes better to just show it if `visibleCount` allows. But we rely on the math.
-    // However, if we drop exactly 1, the "..." button takes up space anyway.
+    // If dropping exactly 1, the "..." button takes up space anyway.
     if (
       overflowActions.length === 1 &&
       foldedActions.length === 0 &&
-      visibleCount * 120 + 120 + separatedMargins <= this.containerWidth
+      inlineActions.length * 120 + separatedMargins <= this.containerWidth
     ) {
-      visibleActions = inlineActions;
       overflowActions = [];
     }
-    // An action that brings its own element (Talk) has no click handler the
-    // menu can call, so folding it would leave a row that does nothing. It
-    // keeps its place on the row instead.
-    const customRendered = overflowActions.filter((action) => action.render);
-    if (customRendered.length > 0) {
-      overflowActions = overflowActions.filter((action) => !action.render);
-      visibleActions = [...customRendered, ...visibleActions];
-    }
+
+    const overflowSet = new Set(overflowActions);
+    const visibleActions = inlineActions.filter(
+      (action) => !overflowSet.has(action)
+    );
 
     // Destructive actions stay last in the menu, as they are on the row.
     overflowActions = [...overflowActions, ...foldedActions];

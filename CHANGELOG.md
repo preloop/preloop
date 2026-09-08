@@ -265,7 +265,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Talk stays clickable on the agent page in a narrow container**: an
   action that renders its own element has no click handler an overflow
   menu item can call, so folding it produced a menu row that did nothing.
-  Those actions now keep their place on the row while the rest fold.
+  Those actions now stay on the row, their width is reserved when the
+  rest fold, and they are not clipped by the row's hidden overflow.
 
 - **Console list bulk bar no longer shifts the table**: selecting rows
   swaps the bar into the existing toolbar instead of inserting a strip
