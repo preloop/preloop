@@ -116,6 +116,37 @@ def _hosted_runner_summary() -> ExecutionRunnerSummary:
     return ExecutionRunnerSummary(kind="hosted", name="Preloop hosted")
 
 
+class ExecutionPark(BaseModel):
+    """Why a ``WAITING_FOR_HUMAN`` execution is waiting, and until when.
+
+    Projected onto the detail response so the console can render "waiting for
+    <who> since <when>, expires <when>" without the page having to know how
+    approvals are stored. A parked run holds no container and no runner: this
+    is a governance object, not a spinner.
+    """
+
+    request_id: uuid.UUID = Field(..., description="The pending approval request")
+    since: Optional[datetime] = Field(None, description="When the execution was parked")
+    expires_at: Optional[datetime] = Field(
+        None, description="When the approval window closes"
+    )
+    waiting_for: Optional[str] = Field(
+        None,
+        description=(
+            "Who the run is waiting on: the approval workflow's name, which "
+            "is the routing decision an operator actually made."
+        ),
+    )
+    tool_name: Optional[str] = Field(
+        None, description="The gated call that raised the question"
+    )
+    question: Optional[str] = Field(
+        None, description="The question text, for ask_user requests"
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # Base Pydantic model for FlowExecution attributes
 class FlowExecutionBase(BaseModel):
     flow_id: uuid.UUID = Field(..., description="Foreign Key to Flows.id")
@@ -159,6 +190,20 @@ class FlowExecutionBase(BaseModel):
         ),
     )
     launch_requested_at: Optional[datetime] = None
+    parked_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "When this execution was parked waiting for a human decision. "
+            "Set only while status is WAITING_FOR_HUMAN and cleared when the "
+            "decision resumes it."
+        ),
+    )
+    park_expires_at: Optional[datetime] = Field(
+        None, description="When the pending approval window closes"
+    )
+    park_request_id: Optional[uuid.UUID] = Field(
+        None, description="The approval request this execution is parked on"
+    )
     stop_requested_at: Optional[datetime] = None
     stop_reason: Optional[str] = None
     stop_source: Optional[str] = None
@@ -232,6 +277,13 @@ class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
 
     # Include flow name for display purposes
     flow_name: Optional[str] = None
+    park: Optional[ExecutionPark] = Field(
+        None,
+        description=(
+            "Present while the execution is parked on a human decision "
+            "(status WAITING_FOR_HUMAN)."
+        ),
+    )
     runner: ExecutionRunner = Field(
         default_factory=_hosted_runner,
         description=(
@@ -269,6 +321,16 @@ class FlowExecutionListResponse(ExecutionModelProjection):
     created_at: datetime
     updated_at: datetime
     flow_name: Optional[str] = None
+    parked_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "When this execution was parked waiting for a human decision "
+            "(status WAITING_FOR_HUMAN). Null for every other row."
+        ),
+    )
+    park_expires_at: Optional[datetime] = Field(
+        None, description="When the pending approval window closes"
+    )
     trigger_subject: Optional[str] = Field(
         None,
         description=(

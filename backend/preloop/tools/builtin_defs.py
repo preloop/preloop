@@ -102,6 +102,16 @@ REQUEST_APPROVAL_TOOL: Dict[str, Any] = {
             },
             "items": QUESTION_ITEMS_SCHEMA,
             "input_schema": QUESTION_INPUT_SCHEMA_SCHEMA,
+            "timeout_seconds": {
+                "type": "integer",
+                "description": (
+                    "Optional decision window in seconds. Bounded by the "
+                    "flow's approval_window_seconds and the account cap. A "
+                    "window longer than the short in-process wait parks the "
+                    "execution: the run is suspended, holds no runtime, and "
+                    "resumes when the human decides or the window closes."
+                ),
+            },
             "publication_candidates": {
                 "type": "array",
                 "description": (
@@ -185,6 +195,16 @@ ASK_USER_TOOL: Dict[str, Any] = {
                 "type": "string",
                 "description": (
                     "Optional name of the approval workflow to route the question to"
+                ),
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "description": (
+                    "Optional decision window in seconds. Bounded by the "
+                    "flow's approval_window_seconds and the account cap. A "
+                    "window longer than the short in-process wait parks the "
+                    "execution: the run is suspended, holds no runtime, and "
+                    "resumes when the human decides or the window closes."
                 ),
             },
         },
