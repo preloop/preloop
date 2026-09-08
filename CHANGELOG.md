@@ -295,6 +295,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   controller-passed receipt so resume can rebind. Omitted repository
   `clone_path` now defaults to `workspace`, then `workspace-2`, matching
   isolated bind/resume. Guide: `docs/guide/flows/product-evidence.md`.
+- **`dossier_manifest.evidence` matches evidence-status for a fresh run**:
+  `_attach_product_evidence_records` builds the dossier before the terminal
+  flush persists the captured archive, so `load_evidence` saw only the empty
+  execution row and recorded a permanent "missing". It now falls back to the
+  captured availability receipt that the terminal flush stores, so the same
+  run no longer reports its evidence as both "available" (evidence-status)
+  and "missing" (dossier).
 
 - **Maintenance checkout uses frozen publication records**: `HEAD.txt` in an
   evidence archive is not release or build provenance. Recheck matches the

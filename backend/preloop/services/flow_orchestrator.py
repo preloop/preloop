@@ -5348,6 +5348,19 @@ class FlowExecutionOrchestrator:
                 )
             except EvidenceUnavailableError as exc:
                 evidence_receipt = exc.receipt
+            captured = getattr(self, "_evidence_receipt", None)
+            if (
+                isinstance(captured, dict)
+                and str(captured.get("status")) == "available"
+                and str(evidence_receipt.get("status")) != "available"
+            ):
+                # load_evidence reads the persisted execution row, but a fresh
+                # run flushes the captured archive to that row only at terminal
+                # close, after the dossier is built here. Fall back to the
+                # captured receipt the close will persist so
+                # dossier_manifest.evidence cannot permanently disagree with
+                # the evidence-status endpoint for the same run.
+                evidence_receipt = captured
         artifacts = result.get("artifacts")
         dossier = build_dossier_manifest(
             execution_id=execution_id,

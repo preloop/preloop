@@ -886,6 +886,41 @@ def test_attach_reattaches_only_controller_trusted_receipt() -> None:
     )
 
 
+def test_attach_dossier_uses_captured_receipt_before_terminal_persist() -> None:
+    """Dossier evidence must match the captured pack, not the not-yet-flushed row."""
+    from preloop.services.flow_artifacts import evidence_receipt
+
+    orchestrator = _attach_orchestrator()
+    archive = b"captured-evidence-bytes"
+    captured = evidence_receipt(
+        status="available",
+        execution_id=orchestrator.execution_log.id,
+        transport="legacy",
+        archive=archive,
+    )
+    orchestrator._evidence_archive = archive
+    orchestrator._evidence_receipt = captured
+    agent_result = {"status": "SUCCEEDED", "result": {"status": "success"}}
+    with (
+        patch(
+            "preloop.models.crud.crud_approval_request.get_multi_by_execution",
+            return_value=[],
+        ),
+        patch(
+            "preloop.services.flow_artifacts.load_evidence",
+            side_effect=EvidenceUnavailableError(
+                "missing", {"status": "missing", "kind": "evidence"}
+            ),
+        ),
+    ):
+        orchestrator._attach_product_evidence_records(agent_result)
+    evidence = agent_result["result"]["dossier_manifest"]["evidence"]
+    assert evidence["status"] == "available"
+    assert evidence["transport"] == "legacy"
+    assert evidence["sha256"] == hashlib.sha256(archive).hexdigest()
+    assert evidence["retained"] is False
+
+
 def _hosted_finish_orchestrator(
     db: Session,
     flow: Any,
