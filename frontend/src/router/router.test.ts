@@ -593,6 +593,106 @@ describe('router', () => {
     });
   });
 
+  describe('history', () => {
+    it('names the destination before the view is connected', async () => {
+      const tag = `rt-url-at-connect-${++tagSeq}`;
+      let pathAtConnect: string | undefined;
+      customElements.define(
+        tag,
+        class extends HTMLElement {
+          connectedCallback() {
+            pathAtConnect = window.location.pathname + window.location.search;
+          }
+        }
+      );
+      const from = defineTag('rt-url-at-connect-from');
+      await router.setRoutes(
+        [
+          { path: '/connect/from', component: from },
+          { path: '/connect/to/:id', component: tag },
+        ],
+        true
+      );
+      await router.render('/connect/from', { history: 'push' });
+      await router.render('/connect/to/9?tab=logs', { history: 'push' });
+      // Views read the URL when they connect: <approval-view> takes its
+      // request id from the path there. Connecting them against the page they
+      // came from is what turned an approval link into a 404.
+      expect(pathAtConnect).to.equal('/connect/to/9?tab=logs');
+    });
+
+    it('connects the view a redirect landed on against the final URL', async () => {
+      const tag = `rt-url-after-redirect-${++tagSeq}`;
+      let pathAtConnect: string | undefined;
+      customElements.define(
+        tag,
+        class extends HTMLElement {
+          connectedCallback() {
+            pathAtConnect = window.location.pathname;
+          }
+        }
+      );
+      await router.setRoutes(
+        [
+          { path: '/hopto', redirect: '/hopto/profile' },
+          { path: '/hopto/profile', component: tag },
+        ],
+        true
+      );
+      await router.render('/hopto', { history: 'push' });
+      expect(pathAtConnect).to.equal('/hopto/profile');
+      expect(window.location.pathname).to.equal('/hopto/profile');
+    });
+
+    it('leaves the URL alone when a guard cancels the navigation', async () => {
+      const leaving = `rt-url-prevented-${++tagSeq}`;
+      const next = defineTag('rt-url-prevented-next');
+      customElements.define(
+        leaving,
+        class extends HTMLElement {
+          onBeforeLeave(
+            _location: RouterLocation,
+            commands: { prevent(): unknown }
+          ) {
+            return commands.prevent();
+          }
+        }
+      );
+      await router.setRoutes(
+        [
+          { path: '/prevented/stay', component: leaving },
+          { path: '/prevented/next', component: next },
+        ],
+        true
+      );
+      await router.render('/prevented/stay', { history: 'push' });
+      await router.render('/prevented/next', { history: 'push' });
+      expect(window.location.pathname).to.equal('/prevented/stay');
+    });
+
+    it('leaves the URL alone when a newer navigation overtakes an older one', async () => {
+      const slow = defineTag('rt-url-slow');
+      const fast = defineTag('rt-url-fast');
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await router.setRoutes(
+        [
+          { path: '/race/slow', component: slow, load: () => pending },
+          { path: '/race/fast', component: fast },
+        ],
+        true
+      );
+      const overtaken = router.render('/race/slow', { history: 'push' });
+      await router.render('/race/fast', { history: 'push' });
+      release();
+      await overtaken;
+      expect(window.location.pathname).to.equal('/race/fast');
+      expect(outlet.querySelector(fast)).to.exist;
+    });
+  });
+
   describe('component loading', () => {
     it('awaits a route load() before creating the element', async () => {
       const tag = `rt-lazy-${++tagSeq}`;

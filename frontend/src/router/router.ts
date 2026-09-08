@@ -416,7 +416,10 @@ export class Router {
     let current = start;
 
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      const outcome = await this.#renderOnce(current, renderId);
+      const outcome = await this.#renderOnce(current, renderId, {
+        mode: options.history ?? 'none',
+        start,
+      });
       // A chunk that never arrived still moved the operator: the panel in the
       // outlet is about the route they asked for, and the reload it offers can
       // only reach that route if the address bar names it. A newer navigation
@@ -432,7 +435,8 @@ export class Router {
         current = splitUrl(outcome.redirect);
         continue;
       }
-      this.#writeHistory(current, options.history ?? 'none', start);
+      // The history entry for a successful render is written inside
+      // #renderOnce, before the view is connected.
       if (outcome.location) this.#announce(outcome.location);
       return;
     }
@@ -442,7 +446,11 @@ export class Router {
   /** One resolution pass. Returns a redirect instead of following it. */
   async #renderOnce(
     target: { pathname: string; search: string; hash: string },
-    renderId: number
+    renderId: number,
+    history: {
+      mode: 'push' | 'replace' | 'none';
+      start: { pathname: string; search: string; hash: string };
+    }
   ): Promise<{
     redirect?: string;
     cancelled?: boolean;
@@ -566,6 +574,15 @@ export class Router {
 
     const rendered = deepestElement(next);
     if (!rendered) return { stale: true };
+
+    // From here the pass is terminal: every action and guard has run and
+    // nothing can redirect any more, so the address bar can name the
+    // destination. It has to happen before the views are connected. Vaadin
+    // Router updated history before it added the new content, and console
+    // views rely on that: <approval-view> takes its request id out of
+    // `window.location.pathname` in connectedCallback, and reading the page it
+    // came from left the id empty and the fetch a 404.
+    this.#writeHistory(target, history.mode, history.start);
 
     // Attach only once every action and guard has had a chance to redirect.
     // An action on a nested route that returns `commands.redirect` must not
