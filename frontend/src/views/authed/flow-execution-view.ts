@@ -39,6 +39,8 @@ import {
   executionModelCss,
   executionStatusLabel,
   executionStatusVariant,
+  parkWaitingSummary,
+  type ExecutionPark,
   formatEstimatedCost,
   formatTokenCount,
   renderExecutionModel,
@@ -113,6 +115,11 @@ interface FlowExecution {
   token_usage?: GatewayTokenUsage | null;
   estimated_cost?: number;
   execution_logs?: FlowExecutionUpdate[];
+  /**
+   * Why a WAITING_FOR_HUMAN run is waiting, and until when. Present only
+   * while the run is parked on a decision.
+   */
+  park?: ExecutionPark | null;
 }
 
 interface Flow {
@@ -399,6 +406,33 @@ export class FlowExecutionView extends LitElement {
         overflow: hidden;
         overflow-wrap: anywhere;
         white-space: normal;
+      }
+      /* A parked run is waiting on a person, not broken: amber, and it says
+         who and until when rather than spinning. */
+      .waiting-line {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        margin: -4px 0 16px;
+        padding: 10px 12px;
+        border-radius: var(--sl-border-radius-medium);
+        background: var(--sl-color-warning-50);
+        border: 1px solid var(--sl-color-warning-200);
+        color: var(--sl-color-warning-800);
+        font-size: var(--console-text-body);
+      }
+      .waiting-line sl-icon {
+        flex-shrink: 0;
+        margin-top: 3px;
+      }
+      .waiting-text {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .waiting-question {
+        color: var(--sl-color-neutral-700);
+        overflow-wrap: anywhere;
       }
       .execution-tabs {
         margin-bottom: 16px;
@@ -1510,6 +1544,30 @@ export class FlowExecutionView extends LitElement {
    * deepseek)"). Otherwise the execution's first error line does, with its
    * logfmt `error.error` field lifted to the front.
    */
+  /**
+   * The one line a parked run owes the reader: who it is waiting for, since
+   * when, and when the window closes.
+   *
+   * Not a spinner. Nothing is running: the container was released and the
+   * question is with a person, possibly for days.
+   */
+  private renderWaitingLine(execution: FlowExecution) {
+    if (execution.status !== 'WAITING_FOR_HUMAN' || !execution.park) return '';
+    const summary = parkWaitingSummary(execution.park);
+    const question = execution.park.question;
+    return html`<div class="waiting-line" data-testid="waiting-line">
+      <sl-icon name="hourglass-split"></sl-icon>
+      <div class="waiting-text">
+        <span>${summary}</span>
+        ${
+          question
+            ? html`<span class="waiting-question">${question}</span>`
+            : ''
+        }
+      </div>
+    </div>`;
+  }
+
   private errorLineText(execution: FlowExecution): string {
     const failed = this.firstFailedGatewayEvent();
     if (failed) {
@@ -2898,6 +2956,7 @@ ${execution.resolved_input_prompt}</pre>
           <preloop-execution-continuation
             .execution=${execution}
           ></preloop-execution-continuation>
+          ${this.renderWaitingLine(execution)}
           ${
             errorLine
               ? html`<div

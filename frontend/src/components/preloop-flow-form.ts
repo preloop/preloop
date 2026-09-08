@@ -46,6 +46,41 @@ import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 export const FLOW_TIMEOUT_MIN_SECONDS = 60;
 export const FLOW_TIMEOUT_MAX_SECONDS = 86400;
 
+/** Matches the API `approval_window_seconds` constraint `ge=60, le=2592000`. */
+export const APPROVAL_WINDOW_MIN_SECONDS = 60;
+export const APPROVAL_WINDOW_MAX_SECONDS = 2592000;
+
+/**
+ * Approval windows are set in hours and days, not seconds.
+ *
+ * A compliance decision (a CVE waiver, a production change) is measured in
+ * working days, and asking an operator to type 259200 is asking them to make
+ * an arithmetic mistake in a governance setting.
+ */
+export const APPROVAL_WINDOW_UNITS: Array<{
+  value: 'minutes' | 'hours' | 'days';
+  label: string;
+  seconds: number;
+}> = [
+  { value: 'minutes', label: 'minutes', seconds: 60 },
+  { value: 'hours', label: 'hours', seconds: 3600 },
+  { value: 'days', label: 'days', seconds: 86400 },
+];
+
+/** Split a window into the largest whole unit that represents it exactly. */
+export function splitApprovalWindow(seconds: number | null | undefined): {
+  amount: number | null;
+  unit: 'minutes' | 'hours' | 'days';
+} {
+  const total = Number(seconds);
+  if (!Number.isFinite(total) || total <= 0) {
+    return { amount: null, unit: 'hours' };
+  }
+  if (total % 86400 === 0) return { amount: total / 86400, unit: 'days' };
+  if (total % 3600 === 0) return { amount: total / 3600, unit: 'hours' };
+  return { amount: Math.round(total / 60), unit: 'minutes' };
+}
+
 const FEEDBACK_LIMITS = {
   max_turns: {
     label: 'Maximum repair turns',
@@ -97,6 +132,21 @@ export class PreloopFlowForm extends LitElement {
         .form-grid {
           grid-template-columns: 1fr;
         }
+      }
+
+      /* Amount and unit are one setting, so they sit on one line. */
+      .approval-window-field {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: var(--sl-spacing-small);
+        align-items: end;
+      }
+
+      .approval-window-help {
+        grid-column: 1 / -1;
+        margin: calc(-1 * var(--sl-spacing-small)) 0 0;
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
       }
 
       sl-card {
@@ -196,6 +246,14 @@ export class PreloopFlowForm extends LitElement {
 
   @state()
   private triggerType: 'webhook' | 'tracker' | 'schedule' = 'webhook';
+
+  // The approval window as typed. Undefined means "not touched on this form",
+  // in which case the saved seconds are split back into an amount and a unit.
+  @state()
+  private _approvalWindowAmount?: number | null;
+
+  @state()
+  private _approvalWindowUnit?: 'minutes' | 'hours' | 'days';
 
   @state()
   private flowExecutionPath: 'ephemeral' | 'persistent' = 'ephemeral';
@@ -544,6 +602,56 @@ export class PreloopFlowForm extends LitElement {
     }
   }
 
+  /** The approval window as the operator typed it: an amount and a unit. */
+  private get approvalWindowAmount(): number | null {
+    if (this._approvalWindowAmount !== undefined) {
+      return this._approvalWindowAmount;
+    }
+    return splitApprovalWindow(
+      this.flow.approval_window_seconds as number | null | undefined
+    ).amount;
+  }
+
+  private get approvalWindowUnit(): 'minutes' | 'hours' | 'days' {
+    if (this._approvalWindowUnit !== undefined) {
+      return this._approvalWindowUnit;
+    }
+    return splitApprovalWindow(
+      this.flow.approval_window_seconds as number | null | undefined
+    ).unit;
+  }
+
+  /** Seconds to send, or null to clear the override and use the default. */
+  private composedApprovalWindowSeconds(): number | null {
+    const amount = this.approvalWindowAmount;
+    if (amount == null || !Number.isFinite(amount) || amount <= 0) return null;
+    const unit = APPROVAL_WINDOW_UNITS.find(
+      (candidate) => candidate.value === this.approvalWindowUnit
+    );
+    return Math.round(amount * (unit?.seconds ?? 3600));
+  }
+
+  private handleApprovalWindowAmountChange = (e: Event) => {
+    const target = e.target as HTMLInputElement;
+    const raw = target.value;
+    this._approvalWindowAmount = raw === '' ? null : Number(raw);
+    this.flow = {
+      ...this.flow,
+      approval_window_seconds: this.composedApprovalWindowSeconds(),
+    };
+    this.requestUpdate();
+  };
+
+  private handleApprovalWindowUnitChange = (e: Event) => {
+    const target = e.target as HTMLInputElement;
+    this._approvalWindowUnit = target.value as 'minutes' | 'hours' | 'days';
+    this.flow = {
+      ...this.flow,
+      approval_window_seconds: this.composedApprovalWindowSeconds(),
+    };
+    this.requestUpdate();
+  };
+
   private handleInputChange(field: keyof Flow, e: Event) {
     const target = e.target as HTMLInputElement | HTMLTextAreaElement;
     let value: string | number | null = target.value;
@@ -788,6 +896,19 @@ export class PreloopFlowForm extends LitElement {
       return;
     }
 
+    const approvalWindowSeconds = this.composedApprovalWindowSeconds();
+    if (
+      approvalWindowSeconds !== null &&
+      (!Number.isInteger(approvalWindowSeconds) ||
+        approvalWindowSeconds < APPROVAL_WINDOW_MIN_SECONDS ||
+        approvalWindowSeconds > APPROVAL_WINDOW_MAX_SECONDS)
+    ) {
+      this.formError =
+        'Approval window must be between 1 minute and 30 days, or blank for ' +
+        'the deployment default.';
+      return;
+    }
+
     this.isSaving = true;
     try {
       const payload: any = {
@@ -814,6 +935,7 @@ export class PreloopFlowForm extends LitElement {
         notifications: this.composedNotifications(),
         // Explicit null clears a saved override and restores the deployment default.
         timeout_seconds: timeoutSeconds,
+        approval_window_seconds: approvalWindowSeconds,
         max_iterations: this.flow.max_iterations || undefined,
         max_budget: this.flow.max_budget || undefined,
         is_enabled: this.flow.is_enabled ?? true,
@@ -2637,6 +2759,47 @@ export class PreloopFlowForm extends LitElement {
               .value=${this.flow.timeout_seconds == null ? '' : String(this.flow.timeout_seconds)}
               @sl-input=${(e: Event) => this.handleInputChange('timeout_seconds', e)}
             ></sl-input>
+
+            <!-- The approval window is the other half of the timeout: how
+                 long a human has to answer a question this flow asks. While
+                 the question is outstanding the run is parked, so this time
+                 does not spend the execution timeout above. -->
+            <div class="approval-window-field">
+              <sl-input
+                type="number"
+                name="approval_window_amount"
+                label="Approval window"
+                min="1"
+                step="1"
+                placeholder="Default (5 minutes)"
+                .value=${
+                  this.approvalWindowAmount == null
+                    ? ''
+                    : String(this.approvalWindowAmount)
+                }
+                @sl-input=${this.handleApprovalWindowAmountChange}
+              ></sl-input>
+              <sl-select
+                name="approval_window_unit"
+                label="Unit"
+                .value=${this.approvalWindowUnit}
+                @sl-change=${this.handleApprovalWindowUnitChange}
+              >
+                ${APPROVAL_WINDOW_UNITS.map(
+                  (unit) =>
+                    html`<sl-option value=${unit.value}
+                      >${unit.label}</sl-option
+                    >`
+                )}
+              </sl-select>
+            </div>
+            <p class="approval-window-help">
+              How long a human has to answer a question or approval this flow
+              raises (1 minute to 30 days). While the question is outstanding
+              the execution is parked: no container, no runner, and the
+              execution timeout above is paused. Leave blank for the deployment
+              default of 5 minutes.
+            </p>
 
             <sl-input
               type="number"
