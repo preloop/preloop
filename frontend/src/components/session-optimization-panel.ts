@@ -1307,7 +1307,7 @@ export class SessionOptimizationPanel extends LitElement {
     );
     const sessionCost = Number(
       this.optimization?.analyzed_scope_estimated_cost ??
-        this.session?.estimated_cost ??
+        this.session?.estimatedCost ??
         0
     );
     const costLabel =
@@ -1334,9 +1334,9 @@ export class SessionOptimizationPanel extends LitElement {
     const opt = this.optimization;
     const scopeCost = opt?.analyzed_scope_estimated_cost;
     const scopeTokens = opt?.analyzed_scope_total_tokens;
-    const before = Number((scopeCost ?? this.session.estimated_cost ?? 0) || 0);
+    const before = Number((scopeCost ?? this.session.estimatedCost ?? 0) || 0);
     const beforeTokens = Number(
-      (scopeTokens ?? this.session.token_usage?.total_tokens ?? 0) || 0
+      (scopeTokens ?? this.session.tokenUsage?.total_tokens ?? 0) || 0
     );
     const rawUsd = suggestions.reduce(
       (sum, s) => sum + Number(s.expectedSavingsUsd || 0),

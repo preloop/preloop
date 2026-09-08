@@ -819,7 +819,11 @@ export class ToolsView extends LitElement {
     return tools;
   }
 
-  private _getToolKey(tool: Tool): string {
+  private _getToolKey(tool: {
+    name: string;
+    source: string;
+    source_id?: string | null;
+  }): string {
     return `${tool.name}-${tool.source}-${tool.source_id || 'none'}`;
   }
 

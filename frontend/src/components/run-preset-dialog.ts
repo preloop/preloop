@@ -38,7 +38,8 @@ export class RunPresetDialog extends LitElement {
   @state() private flowName = '';
   @state() private flowId = '';
   @state() private issueKey = '';
-  @state() private role: 'implementer' | 'reviewer' | 'triage' = 'implementer';
+  @state() private presetRole: 'implementer' | 'reviewer' | 'triage' =
+    'implementer';
   @state() private modelAlert = false;
   @state() private errorMessage = '';
 
@@ -71,7 +72,7 @@ export class RunPresetDialog extends LitElement {
   async start(options: RunPresetDialogOptions): Promise<void> {
     this.options = options;
     this.issueKey = options.issueKey;
-    this.role = options.role || 'implementer';
+    this.presetRole = options.role || 'implementer';
     this.modelAlert = false;
     this.errorMessage = '';
     this.flowName = '';
@@ -135,10 +136,10 @@ export class RunPresetDialog extends LitElement {
 
   private titleText(): string {
     if (this.mode === 'create') {
-      if (this.role === 'reviewer') {
+      if (this.presetRole === 'reviewer') {
         return 'Create the reviewer flow?';
       }
-      if (this.role === 'triage') {
+      if (this.presetRole === 'triage') {
         return 'Create the triage flow?';
       }
       return 'Create the implementer flow?';

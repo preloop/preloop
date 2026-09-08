@@ -153,6 +153,7 @@ export interface AIModel {
   credentials_backend_type?: string | null;
   api_endpoint?: string;
   model_identifier: string;
+  alias?: string;
   meta_data?: Record<string, unknown> | null;
   is_default?: boolean;
   created_at: string;
@@ -1454,6 +1455,7 @@ export interface Issue {
   url: string;
   labels?: string[] | null;
   assignee?: string | null;
+  meta_data?: { url?: string } | Record<string, unknown> | null;
 }
 
 export interface IssueListItem {

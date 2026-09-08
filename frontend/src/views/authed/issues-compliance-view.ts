@@ -306,7 +306,7 @@ export class IssuesComplianceView extends LitElement {
     this._currentPage = Number(params.get('page')) || 1;
     const status = params.get('status');
     if (status && ['opened', 'closed', 'all'].includes(status)) {
-      this._selectedStatus = status;
+      this._selectedStatus = status as 'opened' | 'closed' | 'all';
     }
   }
 

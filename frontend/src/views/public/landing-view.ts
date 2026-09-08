@@ -1237,7 +1237,7 @@ export class LandingView extends LitElement {
                             <iframe
                               class="hero-video-frame"
                               src=${this._heroVideoEmbedUrl}
-                              title="${this._brandName || 'Preloop'} product tour video"
+                              title="${getBrandConfig().name || 'Preloop'} product tour video"
                               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                               referrerpolicy="strict-origin-when-cross-origin"
                               allowfullscreen

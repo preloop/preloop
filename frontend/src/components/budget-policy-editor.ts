@@ -10,11 +10,15 @@ import {
   getAIModels,
   getAccountAgents,
   getTeams,
-  AIModel,
-  ManagedAgentSummary,
   fetchWithAuth,
 } from '../api.js';
-import type { User, UserListResponse, Team } from '../types.js';
+import type {
+  User,
+  UserListResponse,
+  Team,
+  AIModel,
+  ManagedAgentSummary,
+} from '../types.js';
 import { budgetTrackStyles, renderBudgetTrack } from '../styles/budget-track';
 import './notify-recipients-field.ts';
 import type { NotifyRecipientsValue } from './notify-recipients-field.ts';
