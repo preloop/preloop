@@ -512,6 +512,11 @@ class FlowExecutionOrchestrator:
         self._evidence_archive: Optional[bytes] = None
         self._evidence_receipt: Optional[Dict[str, Any]] = None
         self._evidence_artifact_id: Optional[str] = None
+        # (provenance, publication) the last dossier was built from, so the
+        # terminal path can rebuild it after the evidence receipt is attached.
+        self._product_dossier_inputs: Optional[tuple[Any, Optional[Dict[str, Any]]]] = (
+            None
+        )
         # tar.gz of /workspace captured before the runtime is torn down, so a
         # run that failed before pushing can be downloaded or resumed.
         self._workspace_snapshot: Optional[bytes] = None
@@ -5319,6 +5324,10 @@ class FlowExecutionOrchestrator:
             agent_result, provenance=provenance, publication=publication
         ):
             return
+        # Remember the inputs so the terminal path can rebuild this manifest
+        # once the evidence receipt is attached; see
+        # _refresh_product_dossier_after_evidence.
+        self._product_dossier_inputs = (provenance, publication)
         raw_result = strip_control_plane_result(dict(agent_result.get("result") or {}))
         result = dict(raw_result)
         if provenance is not None:
@@ -5366,6 +5375,44 @@ class FlowExecutionOrchestrator:
             # the complete trusted receipt, not the redacted dossier copy.
             result["trusted_publication"] = publication
         agent_result["result"] = result
+
+    def _refresh_product_dossier_after_evidence(
+        self, agent_result: Dict[str, Any]
+    ) -> None:
+        """Rebuild the dossier once the evidence receipt is durably attached.
+
+        The first pass runs inside ``_finish_isolated_publication``, which is
+        called before the terminal block writes ``evidence_receipt`` and
+        ``evidence_archive`` onto the execution row. The ``load_evidence``
+        probe in :meth:`_attach_product_evidence_records` therefore reads a
+        row that has no evidence yet and stamps ``status: missing``,
+        ``retained: false`` on a run that did retain its pack, while
+        ``evidence-status`` for the same execution reports the archive as
+        available with a digest (preloop/preloop#506). ``dossier_manifest``
+        is the field a compliance reader is most likely to trust, so it must
+        not be the one that is wrong.
+
+        Rebuilding here re-reads the receipt from the same source the
+        endpoint reads. Every other part of the manifest is a pure function
+        of the stashed inputs and the agent result, so only ``evidence`` and
+        ``generated_at`` change.
+        """
+        inputs = getattr(self, "_product_dossier_inputs", None)
+        if inputs is None or not isinstance(agent_result, dict):
+            return
+        provenance, publication = inputs
+        try:
+            self._attach_product_evidence_records(
+                agent_result, provenance=provenance, publication=publication
+            )
+        except Exception:
+            # The pre-persist dossier is still attached. Keeping a stale
+            # evidence block beats failing an execution that has already
+            # finished its work.
+            logger.warning(
+                "Could not refresh the dossier manifest after evidence persistence",
+                exc_info=True,
+            )
 
     async def _finish_isolated_publication(self, agent_result: Dict[str, Any]) -> None:
         """Run trusted publication after runtime cleanup; failure changes status."""
@@ -5706,6 +5753,13 @@ class FlowExecutionOrchestrator:
                         )
                     except Exception:
                         self.db.rollback()
+
+                # The dossier reports evidence availability, and the pass
+                # that built it ran before the receipt above existed. Rebuild
+                # it now so dossier_manifest.evidence agrees with the
+                # evidence-status endpoint, including when the persist above
+                # failed and the receipt says so.
+                self._refresh_product_dossier_after_evidence(agent_result)
 
             # The wrapper opens PRs with a raw curl whose response never
             # reaches Python; bind it here, before the refresh below, so the
