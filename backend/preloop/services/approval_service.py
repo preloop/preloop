@@ -829,9 +829,10 @@ class ApprovalService:
         Awaited rather than fired and forgotten: a decision that does not
         restart the run is exactly the failure this whole change exists to
         remove. Never raises, and the park sweep retries what fails here.
+        Lookup is by ``park_request_id`` (the approval request id), not by
+        ``ApprovalRequest.execution_id``, which is a different optional field
+        and is not what the parked row is keyed on.
         """
-        if not getattr(approval_request, "execution_id", None):
-            return
         try:
             from preloop.services.approval_park import resume_parked_executions
 

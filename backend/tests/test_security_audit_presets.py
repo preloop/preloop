@@ -686,10 +686,14 @@ class TestReleaseAuditWaivers:
         )
         assert "TIMEOUT / no answer / declined = FAIL CLOSED" in norm
         assert "Never re-ask, never assume acceptance" in norm
-        # The approval record is the identity capture.
+        # The approval record is the identity capture. Parked resumes deliver
+        # it on the `_answers_prompt` block, not only as an ask_user trailer.
+        assert "_answers_prompt" in prompt
+        assert "RESUMED AFTER A HUMAN DECISION" in prompt
         assert (
-            "The approval id is required and always comes from the tool "
-            "result, never from you" in norm
+            "The approval id is required and always comes from the "
+            "platform (tool result trailer or the parked `_answers_prompt` "
+            "block), never from you" in norm
         )
         assert (
             "an interactive answer with no platform-reported approval id "

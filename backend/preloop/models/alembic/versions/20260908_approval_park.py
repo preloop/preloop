@@ -50,6 +50,10 @@ def upgrade() -> None:
         "flow_execution",
         sa.Column("parked_compute_seconds", sa.Integer(), nullable=True),
     )
+    op.add_column(
+        "flow_execution",
+        sa.Column("resume_execution_id", postgresql.UUID(as_uuid=True), nullable=True),
+    )
     # The expiry sweep and the resume-on-decision lookup both query by
     # park_request_id; the sweep additionally scans parked rows by expiry.
     op.create_index(
@@ -63,12 +67,31 @@ def upgrade() -> None:
         ["park_expires_at"],
         postgresql_where=sa.text("status = 'WAITING_FOR_HUMAN'"),
     )
+    op.create_index(
+        "ix_flow_execution_resume_execution_id",
+        "flow_execution",
+        ["resume_execution_id"],
+    )
+    op.create_foreign_key(
+        "fk_flow_execution_resume_execution_id",
+        "flow_execution",
+        "flow_execution",
+        ["resume_execution_id"],
+        ["id"],
+    )
 
 
 def downgrade() -> None:
     """Drop park state. Parked executions become plain rows with no runner."""
+    op.drop_constraint(
+        "fk_flow_execution_resume_execution_id",
+        "flow_execution",
+        type_="foreignkey",
+    )
+    op.drop_index("ix_flow_execution_resume_execution_id", table_name="flow_execution")
     op.drop_index("ix_flow_execution_park_expires_at", table_name="flow_execution")
     op.drop_index("ix_flow_execution_park_request_id", table_name="flow_execution")
+    op.drop_column("flow_execution", "resume_execution_id")
     op.drop_column("flow_execution", "parked_compute_seconds")
     op.drop_column("flow_execution", "park_expires_at")
     op.drop_column("flow_execution", "parked_at")

@@ -46,6 +46,10 @@ logger = logging.getLogger(__name__)
 #: Execution status for a run that is alive but holds no runtime.
 WAITING_FOR_HUMAN = "WAITING_FOR_HUMAN"
 
+#: Transient claim while the resume execution is being created. A crash here
+#: is recovered by the parked sweep after the ordinary claim lease expires.
+RESUMING = "RESUMING"
+
 #: Reserved key on the trigger payload holding the answers this run resumes
 #: with, mirroring ``_resume`` / ``_feedback``.
 ANSWERS_KEY = "_answers"
@@ -347,15 +351,27 @@ async def resume_parked_executions(
 
 
 def _release_claim(db: Any, execution_id: Any) -> None:
-    """Return a claimed row to WAITING_FOR_HUMAN so the sweep can retry it."""
+    """Return a claimed row to WAITING_FOR_HUMAN so the sweep can retry it.
+
+    Never releases a claim that already has a resume execution committed:
+    that PENDING row is the resume, and releasing would let the sweep start
+    a second one.
+    """
     from preloop.models import models
 
     try:
         db.query(models.FlowExecution).filter(
             models.FlowExecution.id == execution_id,
-            models.FlowExecution.status == "RESUMING",
+            models.FlowExecution.status == RESUMING,
+            models.FlowExecution.resume_execution_id.is_(None),
         ).update(
-            {models.FlowExecution.status: WAITING_FOR_HUMAN}, synchronize_session=False
+            {
+                models.FlowExecution.status: WAITING_FOR_HUMAN,
+                models.FlowExecution.orchestrator_worker_id: None,
+                models.FlowExecution.orchestrator_claimed_at: None,
+                models.FlowExecution.orchestrator_heartbeat_at: None,
+            },
+            synchronize_session=False,
         )
         db.commit()
     except Exception:
@@ -365,7 +381,13 @@ def _release_claim(db: Any, execution_id: Any) -> None:
 async def _start_resume_execution(
     db: Any, flow: Any, parked: Any, details: Dict[str, Any]
 ) -> Any:
-    """Create and dispatch the execution that continues a parked run."""
+    """Create and dispatch the execution that continues a parked run.
+
+    The park claim is marked consumed in the same transaction as the PENDING
+    insert. Dispatch happens after commit: a failed dispatch must not roll
+    that write back or release the claim, or the next sweep would start a
+    second resume.
+    """
     from preloop.models.crud import crud_flow_execution
     from preloop.models.schemas.flow_execution import FlowExecutionCreate
     from preloop.services.flow_execution_dispatcher import (
@@ -387,31 +409,59 @@ async def _start_resume_execution(
             trigger_event_details=details,
         ),
     )
-    db.commit()
-    db.refresh(execution)
-    crud_flow_execution.add_log_entry(
+    if not crud_flow_execution.mark_park_resumed(
         db,
         execution_id=parked.id,
-        log_data={
-            "type": "milestone",
-            "message": (
-                f"Resumed after a human decision; continued as execution {execution.id}"
-            ),
-            "metadata": {
-                "milestone": "execution_resumed",
-                "resume_execution_id": str(execution.id),
-                "approval_request_id": str(parked.park_request_id),
-                "native_resume": bool(details.get("_resume", {}).get("cli_session")),
+        resume_execution_id=execution.id,
+        commit=False,
+    ):
+        db.rollback()
+        raise RuntimeError(
+            f"Parked execution {parked.id} was not a live RESUMING claim; "
+            "refusing to leave an unlinked resume execution"
+        )
+    db.commit()
+    db.refresh(execution)
+    try:
+        crud_flow_execution.append_log(
+            db,
+            execution_id=parked.id,
+            log_data={
+                "type": "milestone",
+                "message": (
+                    f"Resumed after a human decision; continued as execution {execution.id}"
+                ),
+                "metadata": {
+                    "milestone": "execution_resumed",
+                    "resume_execution_id": str(execution.id),
+                    "approval_request_id": str(parked.park_request_id),
+                    "native_resume": bool(
+                        details.get("_resume", {}).get("cli_session")
+                    ),
+                },
             },
-        },
-    )
-    if flow_execution_worker_enabled():
-        await dispatch_execute(execution.id)
-    else:
-        from preloop.services.flow_trigger_service import FlowTriggerService
+        )
+    except Exception:
+        logger.exception(
+            "Could not log the resume of parked execution %s as %s",
+            parked.id,
+            execution.id,
+        )
+    try:
+        if flow_execution_worker_enabled():
+            await dispatch_execute(execution.id)
+        else:
+            from preloop.services.flow_trigger_service import FlowTriggerService
 
-        await FlowTriggerService(db)._start_flow_execution(
-            flow, details, None, precreated_execution=execution
+            await FlowTriggerService(db)._start_flow_execution(
+                flow, details, None, precreated_execution=execution
+            )
+    except Exception:
+        logger.exception(
+            "Failed to dispatch the resume of parked execution %s as %s; "
+            "the PENDING execution is committed and will not be created again",
+            parked.id,
+            execution.id,
         )
     logger.info(
         "Parked execution %s resumed as %s (native_resume=%s)",
@@ -425,15 +475,19 @@ async def _start_resume_execution(
 async def sweep_parked_executions(now: Optional[datetime] = None) -> Dict[str, int]:
     """Release parked executions whose window closed or whose answer landed.
 
-    Three jobs, one pass over the parked rows:
+    One pass over parked rows, after reclaiming stale RESUMING claims:
 
     * an expired window marks the request expired and resumes the run with an
       explicit ``expired`` answer, so the agent finishes gracefully instead of
       the platform inventing ``cra_result_missing``;
-    * a request that was decided while the resume dispatch failed is retried,
+    * a request that was decided while the resume create failed is retried,
       so one lost message cannot strand a run forever;
     * a still-pending request that has burned 50 or 90 percent of its window
       re-notifies its approvers through their existing preferences.
+    * a RESUMING claim whose lease expired with no resume execution is
+      returned to WAITING_FOR_HUMAN and retried (crash between claim and
+      create). Consumed claims are not reclaimed, so a failed dispatch after
+      the PENDING insert cannot start a second run.
     """
     from preloop.models.crud import crud_flow_execution
     from preloop.models.db.session import get_session_factory
@@ -445,6 +499,7 @@ async def sweep_parked_executions(now: Optional[datetime] = None) -> Dict[str, i
     decided_ids: List[uuid.UUID] = []
     reminders: List[tuple] = []
     with session_factory() as db:
+        crud_flow_execution.reclaim_stale_resuming_claims(db, now=moment)
         parked_rows = crud_flow_execution.get_by_statuses(
             db, statuses=[WAITING_FOR_HUMAN]
         )

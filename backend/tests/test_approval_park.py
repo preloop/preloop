@@ -458,6 +458,47 @@ class TestStatusTransitions:
         )
         assert (first, second) == (True, False)
         assert "WAITING_FOR_HUMAN" in db.filters[0]
+        assert "resume_execution_id IS NULL" in db.filters[0]
+        assert "RESUMING" in db.updates[0].values()
+
+    def test_stale_resuming_claims_are_reclaimed_by_lease(self):
+        db = _FakeDB(rowcounts=[1])
+        count = self.crud.reclaim_stale_resuming_claims(
+            db, now=datetime.now(UTC), stale_after_seconds=120
+        )
+        assert count == 1
+        clause = db.filters[0]
+        assert "RESUMING" in clause
+        assert "resume_execution_id IS NULL" in clause
+        assert "WAITING_FOR_HUMAN" in db.updates[0].values()
+
+    def test_reclaim_makes_a_stranded_claim_claimable_again(self):
+        db = _FakeDB(rowcounts=[1, 1])
+        execution_id, request_id = uuid.uuid4(), uuid.uuid4()
+        assert (
+            self.crud.reclaim_stale_resuming_claims(
+                db, now=datetime.now(UTC), stale_after_seconds=1
+            )
+            == 1
+        )
+        assert (
+            self.crud.claim_parked_for_resume(
+                db, execution_id=execution_id, approval_request_id=request_id
+            )
+            is True
+        )
+
+    def test_mark_park_resumed_consumes_the_claim(self):
+        db = _FakeDB(rowcounts=[1])
+        resume_id = uuid.uuid4()
+        assert (
+            self.crud.mark_park_resumed(
+                db, execution_id=uuid.uuid4(), resume_execution_id=resume_id
+            )
+            is True
+        )
+        assert "RESUMING" in db.filters[0]
+        assert resume_id in db.updates[0].values()
 
 
 class _SessionFactory:
@@ -555,8 +596,8 @@ class TestResumeOnDecision:
         details = resume_env.started.await_args.args[3]
         assert "do not assume approval" in details["_answers_prompt"]
 
-    async def test_a_failed_dispatch_releases_the_claim(self, resume_env, monkeypatch):
-        resume_env.started.side_effect = RuntimeError("nats down")
+    async def test_a_failed_create_releases_the_claim(self, resume_env, monkeypatch):
+        resume_env.started.side_effect = RuntimeError("insert failed")
         released = MagicMock()
         monkeypatch.setattr(approval_park, "_release_claim", released)
         assert (
@@ -566,6 +607,204 @@ class TestResumeOnDecision:
             == []
         )
         released.assert_called_once()
+
+    async def test_dispatch_failure_after_create_does_not_release(self, monkeypatch):
+        """PENDING insert committed: do not release, or the sweep double-runs."""
+        from preloop.models import crud as crud_pkg
+
+        parked = _parked_row()
+        created = SimpleNamespace(id=uuid.uuid4())
+        crud_exec = MagicMock()
+        crud_exec.create.return_value = created
+        crud_exec.mark_park_resumed.return_value = True
+        monkeypatch.setattr(crud_pkg, "crud_flow_execution", crud_exec)
+        monkeypatch.setattr(
+            "preloop.services.model_routing.prepare_execution_routing",
+            lambda db, flow, details, **kwargs: details,
+        )
+        monkeypatch.setattr(
+            "preloop.services.flow_execution_dispatcher.flow_execution_worker_enabled",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "preloop.services.flow_execution_dispatcher.dispatch_execute",
+            AsyncMock(side_effect=RuntimeError("nats down")),
+        )
+        released = MagicMock()
+        monkeypatch.setattr(approval_park, "_release_claim", released)
+        new_id = await approval_park._start_resume_execution(
+            MagicMock(),
+            SimpleNamespace(id=parked.flow_id),
+            parked,
+            {"_resume": {"execution_id": str(parked.id)}},
+        )
+        assert new_id == created.id
+        crud_exec.mark_park_resumed.assert_called_once()
+        released.assert_not_called()
+
+
+class _ParkStore:
+    """In-memory parked row used by resume + sweep recovery tests."""
+
+    def __init__(self, parked):
+        self.parked = parked
+        self.parked.status = "WAITING_FOR_HUMAN"
+        self.parked.resume_execution_id = None
+        self.parked.orchestrator_heartbeat_at = None
+        self.created: list = []
+
+    def reclaim_stale_resuming_claims(self, db, *, now, stale_after_seconds=None):
+        from preloop.config import settings
+
+        stale_after = (
+            stale_after_seconds
+            if stale_after_seconds is not None
+            else int(settings.flow_execution_claim_stale_seconds)
+        )
+        if self.parked.status != "RESUMING" or self.parked.resume_execution_id:
+            return 0
+        heartbeat = self.parked.orchestrator_heartbeat_at
+        stale_before = now - timedelta(seconds=max(1, stale_after))
+        if heartbeat is not None and heartbeat >= stale_before:
+            return 0
+        self.parked.status = "WAITING_FOR_HUMAN"
+        self.parked.orchestrator_heartbeat_at = None
+        return 1
+
+    def get_by_statuses(self, db, statuses, account_id=None):
+        return [self.parked] if self.parked.status in statuses else []
+
+    def list_parked_for_request(self, db, *, approval_request_id):
+        if (
+            self.parked.status == "WAITING_FOR_HUMAN"
+            and self.parked.park_request_id == approval_request_id
+        ):
+            return [self.parked]
+        return []
+
+    def claim_parked_for_resume(self, db, *, execution_id, approval_request_id):
+        if (
+            self.parked.id == execution_id
+            and self.parked.park_request_id == approval_request_id
+            and self.parked.status == "WAITING_FOR_HUMAN"
+            and self.parked.resume_execution_id is None
+        ):
+            self.parked.status = "RESUMING"
+            self.parked.orchestrator_heartbeat_at = datetime.now(UTC)
+            return True
+        return False
+
+    def mark_park_resumed(self, db, *, execution_id, resume_execution_id, commit=True):
+        if (
+            self.parked.id == execution_id
+            and self.parked.status == "RESUMING"
+            and self.parked.resume_execution_id is None
+        ):
+            self.parked.resume_execution_id = resume_execution_id
+            return True
+        return False
+
+
+@pytest.fixture
+def park_recovery(monkeypatch):
+    """Wire an in-memory parked row through resume and sweep."""
+    from preloop.models import crud as crud_pkg
+    from preloop.models.db import session as session_module
+
+    parked = _parked_row()
+    store = _ParkStore(parked)
+    db = MagicMock()
+    monkeypatch.setattr(
+        session_module, "get_session_factory", lambda: _SessionFactory(db)
+    )
+    request = SimpleNamespace(
+        id=parked.park_request_id,
+        status="approved",
+        tool_name="ask_user",
+        tool_args={"question": "Waive CVE-2026-1234?"},
+        approver_comment="waived",
+        responses=[{"user_id": "u-1"}],
+        resolved_at=datetime(2026, 9, 8, 0, 50, 8, tzinfo=UTC),
+    )
+    monkeypatch.setattr(approval_park, "_load_request", lambda _db, _id: request)
+    monkeypatch.setattr(crud_pkg, "crud_flow_execution", store)
+    crud_flow = MagicMock()
+    crud_flow.get.return_value = SimpleNamespace(id=parked.flow_id, name="audit")
+    monkeypatch.setattr(crud_pkg, "crud_flow", crud_flow)
+
+    async def start(_db, _flow, row, _details):
+        new_id = uuid.uuid4()
+        store.mark_park_resumed(
+            _db, execution_id=row.id, resume_execution_id=new_id, commit=False
+        )
+        store.created.append(new_id)
+        return new_id
+
+    monkeypatch.setattr(approval_park, "_start_resume_execution", start)
+    return SimpleNamespace(store=store, parked=parked, request=request)
+
+
+@pytest.mark.asyncio
+class TestParkResumeRecovery:
+    """Crash between claim and create, and dispatch failure after insert."""
+
+    async def test_stale_resuming_claim_is_reclaimed_and_resumed(self, park_recovery):
+        """Claim into RESUMING, crash (no create), sweep starts the resume."""
+        store = park_recovery.store
+        parked = park_recovery.parked
+        assert store.claim_parked_for_resume(
+            MagicMock(),
+            execution_id=parked.id,
+            approval_request_id=parked.park_request_id,
+        )
+        assert parked.status == "RESUMING"
+        assert store.created == []
+        parked.orchestrator_heartbeat_at = datetime.now(UTC) - timedelta(seconds=180)
+        counts = await approval_park.sweep_parked_executions(now=datetime.now(UTC))
+        assert len(store.created) == 1
+        assert parked.resume_execution_id == store.created[0]
+        assert counts["resumed"] == 1
+
+    async def test_dispatch_failure_after_pending_insert_does_not_double_run(
+        self, park_recovery, monkeypatch
+    ):
+        """Create committed, dispatch failed: sweep must not start a second run."""
+        store = park_recovery.store
+        parked = park_recovery.parked
+        assert store.claim_parked_for_resume(
+            MagicMock(),
+            execution_id=parked.id,
+            approval_request_id=parked.park_request_id,
+        )
+        first_id = uuid.uuid4()
+        store.mark_park_resumed(
+            MagicMock(), execution_id=parked.id, resume_execution_id=first_id
+        )
+        store.created.append(first_id)
+        parked.orchestrator_heartbeat_at = datetime.now(UTC) - timedelta(seconds=180)
+
+        async def must_not_create(*_args, **_kwargs):
+            raise AssertionError("sweep created a second resume execution")
+
+        monkeypatch.setattr(approval_park, "_start_resume_execution", must_not_create)
+        counts = await approval_park.sweep_parked_executions(now=datetime.now(UTC))
+        assert store.created == [first_id]
+        assert parked.resume_execution_id == first_id
+        assert parked.status == "RESUMING"
+        assert counts["resumed"] == 0
+
+    async def test_fresh_resuming_claim_is_not_stolen(self, park_recovery):
+        store = park_recovery.store
+        parked = park_recovery.parked
+        store.claim_parked_for_resume(
+            MagicMock(),
+            execution_id=parked.id,
+            approval_request_id=parked.park_request_id,
+        )
+        counts = await approval_park.sweep_parked_executions(now=datetime.now(UTC))
+        assert store.created == []
+        assert parked.status == "RESUMING"
+        assert counts["resumed"] == 0
 
 
 class TestBudgetPause:
@@ -783,6 +1022,7 @@ class TestMigration:
         assert ("flow_execution", "parked_at") in added
         assert ("flow_execution", "park_expires_at") in added
         assert ("flow_execution", "parked_compute_seconds") in added
+        assert ("flow_execution", "resume_execution_id") in added
 
     def test_downgrade_removes_everything_it_added(self, monkeypatch):
         module = self._module()
@@ -808,7 +1048,7 @@ class TestParkAfterShortWait:
 
         db = MagicMock()
         monkeypatch.setattr(
-            "preloop.models.db.session.get_session_factory", lambda: (lambda: db)
+            "preloop.models.db.session.get_session_factory", lambda: lambda: db
         )
         monkeypatch.setattr(
             "preloop.api.loop_safety.run_db_off_loop",
@@ -831,9 +1071,7 @@ class TestParkAfterShortWait:
         """The human answered a question whose run already died: no park."""
         from preloop.services import approval_helper
 
-        monkeypatch.setattr(
-            "preloop.models.db.session.get_session_factory", lambda: MagicMock()
-        )
+        monkeypatch.setattr("preloop.models.db.session.get_session_factory", MagicMock)
         monkeypatch.setattr(
             "preloop.api.loop_safety.run_db_off_loop",
             AsyncMock(side_effect=lambda fn: fn()),
@@ -851,9 +1089,7 @@ class TestParkAfterShortWait:
     async def test_a_park_failure_never_breaks_the_approval(self, monkeypatch):
         from preloop.services import approval_helper
 
-        monkeypatch.setattr(
-            "preloop.models.db.session.get_session_factory", lambda: MagicMock()
-        )
+        monkeypatch.setattr("preloop.models.db.session.get_session_factory", MagicMock)
         monkeypatch.setattr(
             "preloop.api.loop_safety.run_db_off_loop",
             AsyncMock(side_effect=RuntimeError("db gone")),
@@ -892,3 +1128,24 @@ class TestParkRequestGuard:
         assert approval_park.park_enabled() is False
         monkeypatch.setattr(settings, "approval_park_after_seconds", 90)
         assert approval_park.park_enabled() is True
+
+
+@pytest.mark.asyncio
+class TestReleaseParkedExecutions:
+    """Resume is keyed on park_request_id, not ApprovalRequest.execution_id."""
+
+    async def test_release_looks_up_by_request_id_when_execution_id_is_missing(
+        self, monkeypatch
+    ):
+        from preloop.services.approval_service import ApprovalService
+
+        service = object.__new__(ApprovalService)
+        resumed = AsyncMock(return_value=["exec-2"])
+        monkeypatch.setattr(
+            "preloop.services.approval_park.resume_parked_executions", resumed
+        )
+        request_id = uuid.uuid4()
+        await service._release_parked_executions(
+            SimpleNamespace(id=request_id, execution_id=None)
+        )
+        resumed.assert_awaited_once_with(request_id)

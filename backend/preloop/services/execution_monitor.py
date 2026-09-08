@@ -98,8 +98,9 @@ class ExecutionMonitor:
         callback lost its race with a restart the run would sit there forever.
         This sweep expires closed windows (resuming the agent with an expired
         answer so it can finish gracefully instead of the platform reporting a
-        missing result), retries decided-but-unresumed rows, and sends the
-        50 percent and 90 percent window reminders.
+        missing result), reclaims stale RESUMING claims whose resume was never
+        created, retries decided-but-unresumed rows, and sends the 50 percent
+        and 90 percent window reminders.
         """
         from preloop.services.approval_park import (
             park_enabled,

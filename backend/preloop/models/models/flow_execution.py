@@ -189,6 +189,15 @@ class FlowExecution(Base):
     # waiting for a human is NOT in here: the flow's timeout budget pauses
     # while parked, and a resumed execution starts with the remainder.
     parked_compute_seconds = Column(Integer, nullable=True)
+    # The execution that continued this parked run. Written in the same
+    # transaction as that row's INSERT, so a crash cannot leave a PENDING
+    # resume without a consumed park claim (or a RESUMING claim with no child).
+    resume_execution_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("flow_execution.id"),
+        nullable=True,
+        index=True,
+    )
     error_message = Column(Text, nullable=True)
     # Coarse machine-readable reason a terminal execution did not succeed, from
     # the closed vocabulary in preloop.services.flow_failure_category (e.g.

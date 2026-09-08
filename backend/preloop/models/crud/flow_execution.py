@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import ColumnElement, and_, or_
@@ -1061,6 +1061,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
     # (decision path, exactly once).
 
     WAITING_FOR_HUMAN_STATUS = "WAITING_FOR_HUMAN"
+    RESUMING_STATUS = "RESUMING"
 
     def request_park(
         self,
@@ -1154,21 +1155,107 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         expiry sweep racing a late approval). The conditional update is the
         whole idempotency story: the second caller claims zero rows and does
         nothing.
+
+        The heartbeat is the lease: if this process dies before the resume
+        execution is committed, ``reclaim_stale_resuming_claims`` returns the
+        row to WAITING_FOR_HUMAN after the same stale timeout other claims
+        use.
         """
+        now = datetime.now(timezone.utc)
         count = (
             db.query(models.FlowExecution)
             .filter(
                 models.FlowExecution.id == execution_id,
                 models.FlowExecution.status == self.WAITING_FOR_HUMAN_STATUS,
                 models.FlowExecution.park_request_id == approval_request_id,
+                models.FlowExecution.resume_execution_id.is_(None),
             )
             .update(
-                {models.FlowExecution.status: "RESUMING"},
+                {
+                    models.FlowExecution.status: self.RESUMING_STATUS,
+                    models.FlowExecution.orchestrator_claimed_at: now,
+                    models.FlowExecution.orchestrator_heartbeat_at: now,
+                },
                 synchronize_session=False,
             )
         )
         db.commit()
         return bool(count)
+
+    def mark_park_resumed(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        resume_execution_id: Any,
+        commit: bool = True,
+    ) -> bool:
+        """Link a RESUMING park claim to the resume execution just flushed.
+
+        After this write the claim is consumed: a later dispatch failure
+        must not release it, and the sweep must not create a second resume.
+        """
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.status == self.RESUMING_STATUS,
+                models.FlowExecution.resume_execution_id.is_(None),
+            )
+            .update(
+                {models.FlowExecution.resume_execution_id: resume_execution_id},
+                synchronize_session=False,
+            )
+        )
+        if commit:
+            db.commit()
+        return bool(count)
+
+    def reclaim_stale_resuming_claims(
+        self,
+        db: Session,
+        *,
+        now: datetime,
+        stale_after_seconds: Optional[int] = None,
+    ) -> int:
+        """Return stranded RESUMING claims whose lease has expired.
+
+        A crash between ``claim_parked_for_resume`` and committing the resume
+        execution leaves status RESUMING with no child. No other sweep looks
+        at that status. Same stale window as orchestrator worker claims.
+        Consumed claims (``resume_execution_id`` set) are left alone so a
+        failed dispatch cannot double-run.
+        """
+        from preloop.config import settings
+
+        stale_after = (
+            stale_after_seconds
+            if stale_after_seconds is not None
+            else int(settings.flow_execution_claim_stale_seconds)
+        )
+        stale_before = now - timedelta(seconds=max(1, stale_after))
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.status == self.RESUMING_STATUS,
+                models.FlowExecution.resume_execution_id.is_(None),
+                or_(
+                    models.FlowExecution.orchestrator_heartbeat_at.is_(None),
+                    models.FlowExecution.orchestrator_heartbeat_at < stale_before,
+                ),
+            )
+            .update(
+                {
+                    models.FlowExecution.status: self.WAITING_FOR_HUMAN_STATUS,
+                    models.FlowExecution.orchestrator_worker_id: None,
+                    models.FlowExecution.orchestrator_claimed_at: None,
+                    models.FlowExecution.orchestrator_heartbeat_at: None,
+                },
+                synchronize_session=False,
+            )
+        )
+        db.commit()
+        return int(count or 0)
 
     def list_parked_for_request(
         self, db: Session, *, approval_request_id: Any
