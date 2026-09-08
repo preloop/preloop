@@ -114,7 +114,7 @@ export class SingleIssueDetailView extends LitElement {
           issue.description,
           () =>
             html`<div class="issue-description">
-              ${unsafeHTML(DOMPurify.sanitize(this.issue.description ?? ''))}
+              ${unsafeHTML(DOMPurify.sanitize(this.issue!.description ?? ''))}
             </div>`,
           () =>
             html`<sl-alert variant="primary" open>

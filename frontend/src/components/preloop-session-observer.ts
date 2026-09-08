@@ -1137,6 +1137,8 @@ export class PreloopSessionObserver extends LitElement {
         soft_limit_usd: null,
         notify_on_soft: false,
         notify_on_hard: true,
+        notification_user_ids: null,
+        notification_team_ids: null,
         notification_emails: null,
       });
       this.budgetDialogResult = 'Budget created for this agent.';

@@ -1,4 +1,7 @@
 {
+  // TypeScript 7 dropped the tsserver binary; editors bundle their own
+  // language server. CI typechecks with `npm run typecheck` (`tsc --noEmit`).
+  // Test files are compiled by web-test-runner (esbuild), not this gate.
   "compilerOptions": {
     "target": "ES2020",
     "module": "ES2020",
@@ -13,6 +16,6 @@
     "types": ["vite/client", "mocha", "sinon", "chai"],
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "src/**/*.test.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
 }
