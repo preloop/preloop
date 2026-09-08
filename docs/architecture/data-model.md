@@ -94,11 +94,31 @@ Monitor lock waiters, transaction age, pool checkout pressure, and event-loop
 latency separately from CPU and memory. Increasing a pool cannot resolve a lock
 cycle.
 
-These changes cover the admission, authentication, summary, and refresh paths
-described above. Gateway preparation still needs a separate connection-lifetime
-change before long provider streams, and the agent-control WebSocket still needs
-worker-owned per-message sessions. Those broader lifecycle changes are not implied
-by moving individual authentication calls into workers.
+HTTP model gateway generation routes explicitly own their database session.
+OpenAI Chat/Responses, Anthropic Messages and Gemini generation release each
+preparation transaction before ordinary provider calls, stream reads, retry
+backoffs, policy detector work and approval waits. Model/auth scalar values and
+credential relationships are materialized before detachment. Preparation writes
+are committed rather than silently discarded. Later policy and usage work opens
+fresh transactions; accounting always closes its transaction in cleanup. Internal
+replay/optimization callers default to caller-owned sessions and retain their
+existing transaction contract; they must manage their own external-I/O boundary.
+
+OAuth refresh remains an intentional exception: single-use token rotation holds
+its secret-row lock across the existing bounded 30-second refresh HTTP call and
+commits the rotated grant before releasing. It runs in the gateway worker using
+the same session, so this does not reserve an additional request connection.
+Removing the lock would allow concurrent refreshes to invalidate the grant.
+
+A nested runtime summary preserves its caller's usage/session scalar values
+across its own provider wait. Summary schema introspection reuses the session's
+current checkout instead of attempting to reserve a second pool connection.
+Stream teardown closes the source iterator and flushes deferred bookkeeping in
+a cancellation-protected worker, including ASGI 2.3 immediate disconnect after
+the final body. It drains any active synchronous stream pull before closing the
+iterator; cancellation can therefore wait for the existing upstream read timeout.
+The terminal body is still sent before deferred success accounting. Gemini closes
+its nested stream explicitly so partial usage is recorded before request cleanup.
 
 
 ## Connection-hold diagnostics

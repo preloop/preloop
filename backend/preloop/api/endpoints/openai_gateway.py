@@ -122,6 +122,7 @@ def create_chat_completion(
         db,
         auth_context,
         budget_enforcer=budget_enforcer,
+        owns_db_session=True,
         client_session_id=x_preloop_session_id
         or native_session_id_from_headers(request.headers, auth_context=auth_context),
     )
@@ -156,6 +157,7 @@ def create_response(
         db,
         auth_context,
         budget_enforcer=budget_enforcer,
+        owns_db_session=True,
         client_session_id=x_preloop_session_id
         or native_session_id_from_headers(request.headers, auth_context=auth_context),
     )

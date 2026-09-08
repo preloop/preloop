@@ -533,7 +533,12 @@ def test_stream_generate_content_streams_gemini_sse(app, client, db_session, tes
     }
     db_session.expire_all()
     rows = (
-        db_session.query(ApiUsage).filter(ApiUsage.action_type == "model_gateway").all()
+        db_session.query(ApiUsage)
+        .filter(
+            ApiUsage.action_type == "model_gateway",
+            ApiUsage.account_id == test_user.account_id,
+        )
+        .all()
     )
     assert len(rows) == 1
     assert rows[0].status_code == 200
