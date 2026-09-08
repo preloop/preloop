@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -150,9 +150,3 @@ class WebhookCatalogue(BaseModel):
     tolerance_seconds: int
     max_attempts: int
     retry_delays_seconds: List[int]
-
-
-class WebhookPayloadEcho(BaseModel):
-    """Envelope preview, used by docs and the console help text."""
-
-    envelope: dict[str, Any]

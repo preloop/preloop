@@ -302,6 +302,10 @@ def test_webhook_endpoint(
     path, which is the thing this change removed.
     """
     endpoint = _get_owned(db, account.id, endpoint_id)
+    # A shim row only ever carries the legacy approval body, so a v1 test
+    # envelope posted there would tell the operator nothing about the
+    # deliveries that endpoint actually gets.
+    _reject_shim_edit(endpoint, "Test")
     result = outbox.enqueue_event(
         db,
         account_id=account.id,

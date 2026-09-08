@@ -207,9 +207,11 @@ def test_shim_endpoints_are_read_only(client, db_session, test_user):
 
     patched = client.patch(f"{BASE}/endpoints/{row.id}", json={"active": False})
     deleted = client.delete(f"{BASE}/endpoints/{row.id}")
+    tested = client.post(f"{BASE}/endpoints/{row.id}/test")
 
     assert patched.status_code == 400
     assert deleted.status_code == 400
+    assert tested.status_code == 400
     assert "approval workflow" in patched.json()["detail"]
     # Still listed, so the operator can see it failing.
     assert len(client.get(f"{BASE}/endpoints").json()) == 1
