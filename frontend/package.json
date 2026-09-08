@@ -57,7 +57,7 @@
     "@playwright/test": "^1.63.0",
     "@types/marked": "^5.0.2",
     "@types/mocha": "^10.0.10",
-    "@types/sinon": "^17.0.4",
+    "@types/sinon": "^22.0.0",
     "@web/dev-server-esbuild": "^1.0.4",
     "@web/test-runner": "^0.20.0",
     "@web/test-runner-commands": "^0.9.0",
@@ -67,7 +67,7 @@
     "js-yaml": "^4.3.2",
     "lint-staged": "^15.2.7",
     "prettier": "^3.9.6",
-    "sinon": "^21.0.0",
+    "sinon": "^22.1.0",
     "typescript": "^7.0.2",
     "vite": "^7.3.5",
     "vite-plugin-css-injected-by-js": "^4.0.1"
