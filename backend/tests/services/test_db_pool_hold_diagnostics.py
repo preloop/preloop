@@ -24,6 +24,8 @@ def capture_monitor_logs(
 ) -> None:
     logger = logging.getLogger("preloop.services.db_pool_monitor")
     monkeypatch.setattr(logger, "handlers", [*logger.handlers, caplog.handler])
+    # The handler is attached directly; propagation would capture it again at root.
+    monkeypatch.setattr(logger, "propagate", False)
 
 
 @pytest.fixture
@@ -75,7 +77,7 @@ async def test_delayed_provider_keeps_acquisition_evidence(engine: Engine) -> No
     await asyncio.sleep(0)
     assert diagnostics.collect_pool_holds(engine)["tracked"] == 1
     provider_can_finish.set()
-    await provider
+    assert await provider is None
     assert diagnostics.collect_pool_holds(engine)["tracked"] == 0
 
 

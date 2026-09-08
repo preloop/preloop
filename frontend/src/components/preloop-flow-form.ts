@@ -17,6 +17,7 @@ import type { Flow } from '../types';
 import { defaultFlowNotifications } from '../types';
 import { getAgentControlState } from '../utils/agent-control';
 import { getTrackerEventOptions } from '../constants/tracker-event-types';
+import { triggerIsAboutIssue } from '../utils/flow-trigger-subject';
 import consoleStyles from '../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../styles/console-dialog';
 import './add-tracker-modal';
@@ -140,6 +141,16 @@ export class PreloopFlowForm extends LitElement {
 
       .notifications-help {
         margin: 0 0 var(--sl-spacing-medium) 0;
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+      }
+
+      /* Help line under a checkbox that gates a section below it. Shoelace
+         gives sl-input a help-text slot but not sl-checkbox, so this matches
+         the same register: small, meta ink, indented under the label. */
+      .checkbox-help {
+        margin: var(--sl-spacing-2x-small) 0 var(--sl-spacing-medium)
+          calc(var(--sl-toggle-size-medium) + var(--sl-spacing-small));
         color: var(--sl-color-neutral-600);
         font-size: var(--sl-font-size-small);
       }
@@ -694,20 +705,67 @@ export class PreloopFlowForm extends LitElement {
     this.requestUpdate();
   }
 
-  private handleNotificationToggle(
-    group: 'on_failure' | 'on_success',
-    field: 'comment_on_trigger_issue',
-    checked: boolean
-  ) {
+  private handleSuccessCommentToggle(checked: boolean) {
     const current = this.flow.notifications || defaultFlowNotifications();
     this.flow.notifications = {
       ...current,
-      [group]: {
-        ...(current[group] || {}),
-        [field]: checked,
+      on_success: {
+        ...(current.on_success || {}),
+        comment_on_trigger_issue: checked,
       },
     };
     this.requestUpdate();
+  }
+
+  /**
+   * True when this flow opens a pull or merge request itself on commit.
+   *
+   * Gates the PR-dependent sections. An unchecked "create a pull or merge
+   * request" with a stale `create_pull_request: true` underneath (git cloning
+   * turned off after the fact) does not count: nothing would be pushed.
+   */
+  private get opensPullRequest(): boolean {
+    const git = this.flow?.git_clone_config;
+    return Boolean(git?.enabled && git?.create_pull_request);
+  }
+
+  /** True when the configured trigger names an issue to comment on. */
+  private get triggerIsIssue(): boolean {
+    return triggerIsAboutIssue(
+      this.triggerType,
+      this.flow?.trigger_event_types
+    );
+  }
+
+  /**
+   * True when "comment on the triggering issue when a PR is opened" applies:
+   * the flow has to open the PR and the run has to have an issue behind it.
+   */
+  private get showsIssueCommentOption(): boolean {
+    return this.opensPullRequest && this.triggerIsIssue;
+  }
+
+  /**
+   * Notifications as submitted.
+   *
+   * `on_failure` is never sent: the failure comment option was removed and the
+   * server ignores the key, so a save drops it from the stored blob instead of
+   * carrying a setting no form can show. `on_success` is submitted exactly as
+   * stored, including while its section is hidden: the form never turns a
+   * hidden option on, and it must not turn one off either, because a flow can
+   * also open its pull request through the MCP `create_pull_request` tool,
+   * which records the same `pr_url` the comment is built from. Hiding a
+   * control is a visibility decision; silently rewriting saved behaviour on
+   * the next unrelated save is not.
+   */
+  private composedNotifications(): Record<string, unknown> {
+    const saved = this.flow.notifications || defaultFlowNotifications();
+    return {
+      on_success: {
+        comment_on_trigger_issue:
+          saved.on_success?.comment_on_trigger_issue === true,
+      },
+    };
   }
 
   private async handleFormSubmit(e: Event) {
@@ -753,7 +811,7 @@ export class PreloopFlowForm extends LitElement {
             ? this.flow.schedule_config || defaultScheduleConfig()
             : null,
         git_clone_config: this.flow.git_clone_config || { enabled: false },
-        notifications: this.flow.notifications || defaultFlowNotifications(),
+        notifications: this.composedNotifications(),
         // Explicit null clears a saved override and restores the deployment default.
         timeout_seconds: timeoutSeconds,
         max_iterations: this.flow.max_iterations || undefined,
@@ -1034,7 +1092,11 @@ export class PreloopFlowForm extends LitElement {
           ? this.targetAgentId
           : undefined;
     }
-    if (config.feedback !== undefined) {
+    // Only the visible editor validates and normalizes. With the section
+    // hidden (the flow does not open a PR itself) the saved feedback config is
+    // passed through byte for byte, so an old flow cannot be blocked at save
+    // time by a limit nobody can see or edit on this form.
+    if (config.feedback !== undefined && this.opensPullRequest) {
       config.feedback = this.validatedFeedback();
     }
     const rules = this.normalizedRoutingRules();
@@ -2500,69 +2562,63 @@ export class PreloopFlowForm extends LitElement {
                       }}
                     ></sl-input>
 
-                    <sl-checkbox
-                      .checked=${
-                        this.flow.git_clone_config?.create_pull_request || false
-                      }
-                      @sl-change=${(e: any) => {
-                        this.flow.git_clone_config = {
-                          ...this.flow.git_clone_config,
-                          create_pull_request: e.target.checked,
-                        };
-                      }}
-                      style="align-self: center;"
-                    >
-                      Create a pull or merge request on commit
-                    </sl-checkbox>
+                    <div style="grid-column: 1 / -1;">
+                      <sl-checkbox
+                        data-git="create_pull_request"
+                        .checked=${
+                          this.flow.git_clone_config?.create_pull_request ||
+                          false
+                        }
+                        @sl-change=${(e: any) => {
+                          this.flow.git_clone_config = {
+                            ...this.flow.git_clone_config,
+                            create_pull_request: e.target.checked,
+                          };
+                          this.requestUpdate();
+                        }}
+                      >
+                        Create a pull or merge request on commit
+                      </sl-checkbox>
+                      <p class="checkbox-help" data-pr-options-hint>
+                        Enables PR review and CI follow-up, and the issue
+                        comment when an issue event triggers this flow.
+                      </p>
+                    </div>
                   </div>
                 `
               : nothing
           }
         </sl-card>
 
-        ${this.renderFeedbackControls()}
-
-        <sl-card>
-          <div slot="header" class="card-header-title">
-            <sl-icon name="bell"></sl-icon> Notifications
-          </div>
-          <p class="notifications-help">
-            Tell someone when this flow finishes. Comments go on the issue or
-            pull request that triggered the run. Failed executions always appear
-            on Overview.
-          </p>
-          <sl-checkbox
-            data-notification="on_failure_comment"
-            .checked=${
-              this.flow.notifications?.on_failure?.comment_on_trigger_issue ||
-              false
-            }
-            @sl-change=${(e: any) =>
-              this.handleNotificationToggle(
-                'on_failure',
-                'comment_on_trigger_issue',
-                e.target.checked
-              )}
-            style="margin-bottom: var(--sl-spacing-small);"
-          >
-            Comment on the triggering issue when this flow fails
-          </sl-checkbox>
-          <sl-checkbox
-            data-notification="on_success_comment"
-            .checked=${
-              this.flow.notifications?.on_success?.comment_on_trigger_issue ||
-              false
-            }
-            @sl-change=${(e: any) =>
-              this.handleNotificationToggle(
-                'on_success',
-                'comment_on_trigger_issue',
-                e.target.checked
-              )}
-          >
-            Comment on the triggering issue when a pull request is opened
-          </sl-checkbox>
-        </sl-card>
+        ${this.opensPullRequest ? this.renderFeedbackControls() : nothing}
+        ${
+          this.showsIssueCommentOption
+            ? html`
+                <sl-card data-notifications-card>
+                  <div slot="header" class="card-header-title">
+                    <sl-icon name="bell"></sl-icon> Notifications
+                  </div>
+                  <p class="notifications-help">
+                    Tell someone when this flow opens a pull request. The
+                    comment goes on the issue that triggered the run. Failed
+                    executions always appear on Overview.
+                  </p>
+                  <sl-checkbox
+                    data-notification="on_success_comment"
+                    .checked=${
+                      this.flow.notifications?.on_success
+                        ?.comment_on_trigger_issue || false
+                    }
+                    @sl-change=${(e: any) =>
+                      this.handleSuccessCommentToggle(e.target.checked)}
+                  >
+                    Comment on the triggering issue when a pull request is
+                    opened
+                  </sl-checkbox>
+                </sl-card>
+              `
+            : nothing
+        }
 
         <sl-card>
           <div slot="header" class="card-header-title">

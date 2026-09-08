@@ -78,9 +78,10 @@ async def test_webhook_progress_survives_provider_wait_and_cancellation_drain(
         release.set()
         if cancel:
             with pytest.raises(asyncio.CancelledError):
-                await task
+                result = await task
+                pytest.fail(f"cancelled webhook task returned {result!r}")
         else:
-            await task
+            assert await task is None
     assert msg.ack.await_count == int(not cancel)
     assert msg.nak.await_count == int(cancel)
     ticks = msg.in_progress.await_count

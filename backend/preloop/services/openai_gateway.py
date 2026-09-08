@@ -703,6 +703,10 @@ def _session_id_from_openai_payload(
 class OpenAIGatewayService:
     """Service for Preloop's OpenAI-compatible gateway."""
 
+    # __new__ construction (tests, factories) skips __init__. Default keeps
+    # release_db_for_wait from crashing on a missing attribute.
+    _owns_db_session: bool = False
+
     def __init__(
         self,
         db: Session,

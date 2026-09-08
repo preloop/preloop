@@ -82,7 +82,8 @@ async def test_webhook_pool_checkout_keeps_loop_responsive(monkeypatch: Any) -> 
         finally:
             release.set()
             with pytest.raises(HTTPException) as error:
-                await task
+                result = await task
+                pytest.fail(f"webhook checkout returned {result!r}")
             assert error.value.status_code == 404
 
 

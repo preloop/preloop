@@ -48,7 +48,8 @@ async def _webhook_progress(msg: Any) -> AsyncIterator[None]:
     finally:
         heartbeat.cancel()
         with suppress(asyncio.CancelledError):
-            await heartbeat
+            if await heartbeat is not None:
+                logger.debug("webhook progress heartbeat finished with a result")
 
 
 class PreloopSyncNatsWorker:
