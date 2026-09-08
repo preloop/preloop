@@ -162,24 +162,66 @@ export const FEED_CAP = 30;
  */
 export const FEED_INITIAL_ROWS = 20;
 /**
- * The audit timeline is mostly traffic, so the fill pages through it.
+ * How many groups one read of the audit timeline asks for.
  *
- * On an account doing 14k gateway calls a day, every one of the newest 40
- * audit groups can be a successful `model_gateway_request`, which is not
- * news and never becomes a row. That is what emptied the feed on staging at
- * 03:00 while `/console/audit` was listing events from a minute before. So
- * the fill asks for a page, keeps what is news, and asks for the next page
- * until it has enough rows or it runs out of patience.
+ * The timeline is mostly traffic. On an account doing 14k gateway calls a
+ * day, every one of the newest 40 audit groups can be a successful
+ * `model_gateway_request`, which is not news and never becomes a row. That is
+ * what emptied the feed on staging at 03:00 while `/console/audit` was listing
+ * events from a minute before. Fifty is enough for the newest page to hold the
+ * news on an account that is not drowning in traffic; the one that is gets
+ * {@link AUDIT_NEWS_ACTIONS} instead of a deeper page.
  */
 export const AUDIT_PAGE_SIZE = 50;
 /**
- * Three pages, and only the first one is on its own: page 0 decides whether
- * more are needed, and pages 1 and 2 are then asked for together rather than
- * one after the other. A fourth page was two more round trips for rows that
- * were already off the bottom of a 20-row rail.
+ * How many pages of the news slice the fill will walk.
+ *
+ * Three, and only the first one is on its own: page 0 decides whether more are
+ * needed, and pages 1 and 2 are then asked for together rather than one after
+ * the other. A fourth page was two more round trips for rows that were already
+ * off the bottom of a 20-row rail. It walks at all only because fifty groups
+ * of news can still fold to a handful of rows.
  */
 export const AUDIT_MAX_PAGES = 3;
 const AUDIT_WINDOW_HOURS = 24;
+/**
+ * The audit actions the fill names when the newest page is all traffic.
+ *
+ * Paging cannot get past a busy gateway. `GET /audit-logs/grouped` has no
+ * "everything except" filter, so an unfiltered read answers with the newest
+ * primary events whatever they are, and on an account doing thousands of
+ * gateway calls a day that is effectively all successful
+ * `model_gateway_request`, which is not news and never becomes a row. Three
+ * pages is 150 groups, about nine minutes of that traffic; dropping the date
+ * bound reads the same newest 150 groups again, so the unbounded slice cannot
+ * help either. Naming the actions is the only question the server can answer
+ * in one round trip.
+ *
+ * The list mirrors the primary actions of
+ * `AuditLogCRUD.get_grouped_by_correlation` (backend/preloop/models/crud/
+ * audit_log.py) minus `model_gateway_request` and `runtime_session_updated`.
+ * The grouped API filters `event_type` by action only — no status clause —
+ * so naming `model_gateway_request` would drown the slice in successful
+ * calls. Failed and `budget_denied` gateway requests are news the feed
+ * knows how to draw, but they stay out of reach of this named slice by
+ * design: there is no status-aware action filter that can ask for those
+ * without also returning success traffic. `runtime_session_updated` (a
+ * session still going) is not an event. It is a filter, not the feed's
+ * vocabulary: the unfiltered page is still read first, so an action the
+ * server starts writing before this list hears about it is still on the
+ * rail whenever it is among the newest fifty groups, and always on the
+ * socket.
+ */
+export const AUDIT_NEWS_ACTIONS = [
+  'tool_call',
+  'authentication',
+  'configuration_change',
+  'permission_check',
+  'role_assigned',
+  'role_removed',
+  'runtime_session_created',
+  'runtime_session_ended',
+] as const;
 /** How long the feed waits for a host that says it is fetching the users. */
 const HOST_USERS_WAIT_MS = 1500;
 
@@ -1691,7 +1733,7 @@ export class ActivityFeed extends LitElement {
   }
 
   /**
-   * Names for `... by dimo`. Unavailable to non-admins, and that is fine.
+   * Names for `... by alice`. Unavailable to non-admins, and that is fine.
    *
    * Never throws and never stores anything but an array: the actor's name is
    * a nicety, and a lookup that fails, 403s or answers in a shape nobody
@@ -1734,12 +1776,14 @@ export class ActivityFeed extends LitElement {
   /** One page of the audit timeline, or null when it cannot be read. */
   private async fetchAuditPage(
     skip: number,
-    since: string | null
+    since: string | null,
+    actions?: readonly string[]
   ): Promise<AuditGroupLike[] | null> {
     const params = new URLSearchParams();
     params.set('limit', String(AUDIT_PAGE_SIZE));
     if (skip) params.set('skip', String(skip));
     if (since) params.set('start_date', since);
+    for (const action of actions ?? []) params.append('event_type', action);
     const response = await fetchWithAuth(
       `/api/v1/audit-logs/grouped?${params}`
     );
@@ -1774,50 +1818,39 @@ export class ActivityFeed extends LitElement {
   }
 
   /**
-   * Fill `into` from one slice of the audit timeline, paging while it is short.
+   * Fill `into` from the news slice: the newest events of the actions that
+   * always have something to say, whenever they happened.
    *
-   * `since` bounds the slice (null asks for the newest events whenever they
-   * happened). Page 0 decides whether the rest are needed. When they are,
-   * they are asked for together instead of one after the other, and there
-   * are two of them: a fourth page was two more round trips for rows that
-   * were already off the bottom of the rail.
-   *
-   * Returns whether the timeline was readable at all (a 403 is `false`, and
-   * that is the no-audit-access path) and whether this slice ran out of
-   * groups before it filled the rail, which is what decides if there is any
-   * point asking for an older slice.
+   * This is the read that cannot be drowned. It is asked for only when the
+   * newest day did not fill the rail, because on most accounts that day is
+   * the answer and this is the more expensive query of the two (no date
+   * bound). Page 0 decides whether the rest are needed; a page of fifty
+   * groups can still fold down to two rows when one agent calls one tool
+   * fifty times, so pages 1 and 2 are then asked for together rather than one
+   * after the other. A fourth page was two more round trips for rows that
+   * were already off the bottom of a 20-row rail.
    */
-  private async fillFrom(
-    since: string | null,
-    into: FeedEvent[],
-    page0?: AuditGroupLike[] | null
-  ): Promise<{ read: boolean; exhausted: boolean }> {
-    const firstPage =
-      page0 === undefined ? await this.fetchAuditPage(0, since) : page0;
-    if (firstPage === null) return { read: false, exhausted: false };
+  private async fillNews(into: FeedEvent[]): Promise<void> {
+    const firstPage = await this.fetchAuditPage(0, null, AUDIT_NEWS_ACTIONS);
+    if (firstPage === null) return;
     this.rowsFrom(firstPage, into);
-    if (firstPage.length < AUDIT_PAGE_SIZE) {
-      return { read: true, exhausted: true };
-    }
-    if (foldRows(into).length >= FEED_INITIAL_ROWS) {
-      return { read: true, exhausted: false };
-    }
+    if (firstPage.length < AUDIT_PAGE_SIZE) return;
+    if (foldRows(into).length >= FEED_INITIAL_ROWS) return;
     const more = await Promise.all(
       Array.from({ length: AUDIT_MAX_PAGES - 1 }, (_, index) =>
-        this.fetchAuditPage((index + 1) * AUDIT_PAGE_SIZE, since)
+        this.fetchAuditPage(
+          (index + 1) * AUDIT_PAGE_SIZE,
+          null,
+          AUDIT_NEWS_ACTIONS
+        )
       )
     );
-    let exhausted = false;
     for (const groups of more) {
       if (groups === null) break;
       if (foldRows(into).length >= FEED_INITIAL_ROWS) break;
       this.rowsFrom(groups, into);
-      if (groups.length < AUDIT_PAGE_SIZE) {
-        exhausted = true;
-        break;
-      }
+      if (groups.length < AUDIT_PAGE_SIZE) break;
     }
-    return { read: true, exhausted };
   }
 
   private async loadInitial(): Promise<void> {
@@ -1838,19 +1871,20 @@ export class ActivityFeed extends LitElement {
         this.usersReady,
         new Promise((resolve) => setTimeout(resolve, 2000)),
       ]);
-      const { read, exhausted } = await this.fillFrom(since, events, firstPage);
-      // A quiet account has little or nothing in the last day and still has a
-      // history. Rather than say "Nothing yet" to an account that worked
-      // yesterday, ask again for the newest events whenever they happened.
-      // A day that is full of dropped traffic (successful gateway calls) is
-      // the same empty rail with the same history behind it: `exhausted` is
-      // false because the window still has groups, but the feed has no rows,
-      // so the unwindowed read has to run. Skip it only when the window
-      // already produced news: that account's day is the news, and history
-      // with no lower bound is the expensive read of the two.
-      const rows = foldRows(events).length;
-      if (read && rows < FEED_INITIAL_ROWS && (exhausted || rows === 0)) {
-        await this.fillFrom(null, events);
+      // A 403 is the no-audit-access path: nothing was read, and there is no
+      // second question worth asking.
+      if (firstPage !== null) {
+        this.rowsFrom(firstPage, events);
+        // A quiet account has little or nothing in the last day and still has
+        // a history; a busy one has a day of gateway traffic the feed drops
+        // and the same history behind it. Both read "Nothing yet" off the
+        // newest page, and for both the answer is the same question: the
+        // newest events that are news, whenever they happened. It is asked by
+        // name rather than by paging, because paging past a gateway doing
+        // thousands of calls a day is not a walk that terminates.
+        if (foldRows(events).length < FEED_INITIAL_ROWS) {
+          await this.fillNews(events);
+        }
       }
       // Rows read here are history by definition: the socket had nothing to
       // do with them, and the divider says so.

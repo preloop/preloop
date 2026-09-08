@@ -99,4 +99,9 @@ git_clone_config:
           reason: Unknown impact must not publish on an empty required list.
           scope: unknown
 timeout_seconds: 5400
+# This flow does not call approval tools (a human decides later through the
+# platform approval record). The window is set anyway so that any question it
+# does raise waits on a human timescale rather than a five minute one, and the
+# run parks instead of burning its budget while nobody is looking.
+approval_window_seconds: 259200
 is_preset: true

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import ColumnElement, and_, or_
@@ -258,6 +258,19 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         db.flush()  # Use flush instead of commit to stay in transaction
 
+        # Orchestrator, stop, and cancel finish a resume child through this
+        # path rather than apply_runner_completion. Close the parked parent
+        # so it does not stay RESUMING after the child is terminal.
+        terminal_status = update_data.get("status")
+        if terminal_status in self.PARK_PARENT_CLOSE_STATUSES:
+            self.close_parked_parent_for_resume(
+                db,
+                resume_execution_id=db_obj.id,
+                status=terminal_status,
+                end_time=getattr(db_obj, "end_time", None),
+                commit=False,
+            )
+
         # Debug logging after flush
         if "tool_calls_count" in update_data or "total_tokens" in update_data:
             logger.debug(
@@ -349,7 +362,18 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             payload["error_message"] = error
         if result is not None:
             payload["result"] = result
-        return self.update(db, db_obj=db_obj, obj_in=FlowExecutionUpdate(**payload))
+        updated = self.update(db, db_obj=db_obj, obj_in=FlowExecutionUpdate(**payload))
+        # A parked parent stays RESUMING until this child finishes; copy the
+        # terminal status so the console does not keep a blue "Resuming" chip.
+        # Prefer the payload timestamp when update() did not apply end_time.
+        self.close_parked_parent_for_resume(
+            db,
+            resume_execution_id=updated.id,
+            status=status,
+            end_time=getattr(updated, "end_time", None) or payload["end_time"],
+            commit=False,
+        )
+        return updated
 
     def set_workspace_snapshot(
         self, db: Session, *, db_obj: FlowExecution, archive: Optional[bytes]
@@ -1053,6 +1077,281 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db.commit()
         return bool(count)
 
+    # --- Park / resume on a human decision ---------------------------------
+    #
+    # The approval path and the orchestrator run in different processes, so
+    # the park handshake is three durable steps on this row: request (approval
+    # path), confirm (orchestrator, once the runtime is released), claim
+    # (decision path, exactly once).
+
+    WAITING_FOR_HUMAN_STATUS = "WAITING_FOR_HUMAN"
+    RESUMING_STATUS = "RESUMING"
+    PARK_PARENT_CLOSE_STATUSES = frozenset(
+        {"SUCCEEDED", "FAILED", "STOPPED", "CANCELLED"}
+    )
+
+    def request_park(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        approval_request_id: Any,
+        expires_at: Optional[datetime] = None,
+        commit: bool = True,
+    ) -> bool:
+        """Ask the orchestrator to park this execution on an approval.
+
+        Only a live execution can be parked; a run that already finished
+        (the human answered a question its agent had abandoned) must not be
+        resurrected into a park. Returns True when the request was recorded.
+        """
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.status.in_(self.ACTIVE_ORCHESTRATOR_STATUSES),
+                models.FlowExecution.park_request_id.is_(None),
+            )
+            .update(
+                {
+                    models.FlowExecution.park_request_id: approval_request_id,
+                    models.FlowExecution.park_requested_at: datetime.now(timezone.utc),
+                    models.FlowExecution.park_expires_at: expires_at,
+                },
+                synchronize_session=False,
+            )
+        )
+        if commit:
+            db.commit()
+        return bool(count)
+
+    def get_park_request(self, db: Session, *, execution_id: Any) -> Optional[dict]:
+        """Read park intent fresh on each monitor poll (see get_stop_request)."""
+        row = (
+            db.query(
+                models.FlowExecution.park_request_id,
+                models.FlowExecution.park_requested_at,
+                models.FlowExecution.park_expires_at,
+                models.FlowExecution.parked_at,
+            )
+            .filter(models.FlowExecution.id == execution_id)
+            .first()
+        )
+        if row is None or row.park_request_id is None:
+            return None
+        return {
+            "request_id": row.park_request_id,
+            "requested_at": row.park_requested_at,
+            "expires_at": row.park_expires_at,
+            "parked_at": row.parked_at,
+        }
+
+    def confirm_park(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        compute_seconds: int,
+        commit: bool = True,
+    ) -> None:
+        """Record that the runtime is released and the run is genuinely parked.
+
+        ``compute_seconds`` is the agent wall clock this park chain has spent
+        so far. Human waiting time is never added to it, which is what makes
+        the flow's timeout budget pause while parked.
+        """
+        db.query(models.FlowExecution).filter(
+            models.FlowExecution.id == execution_id,
+        ).update(
+            {
+                models.FlowExecution.status: self.WAITING_FOR_HUMAN_STATUS,
+                models.FlowExecution.parked_at: datetime.now(timezone.utc),
+                models.FlowExecution.parked_compute_seconds: max(0, compute_seconds),
+            },
+            synchronize_session=False,
+        )
+        if commit:
+            db.commit()
+
+    def claim_parked_for_resume(
+        self, db: Session, *, execution_id: Any, approval_request_id: Any
+    ) -> bool:
+        """Claim a parked execution for exactly one resume.
+
+        A decision can arrive twice (console and mobile, a retried webhook, an
+        expiry sweep racing a late approval). The conditional update is the
+        whole idempotency story: the second caller claims zero rows and does
+        nothing.
+
+        The heartbeat is the lease: if this process dies before the resume
+        execution is committed, ``reclaim_stale_resuming_claims`` returns the
+        row to WAITING_FOR_HUMAN after the same stale timeout other claims
+        use.
+        """
+        now = datetime.now(timezone.utc)
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.status == self.WAITING_FOR_HUMAN_STATUS,
+                models.FlowExecution.park_request_id == approval_request_id,
+                models.FlowExecution.resume_execution_id.is_(None),
+            )
+            .update(
+                {
+                    models.FlowExecution.status: self.RESUMING_STATUS,
+                    models.FlowExecution.orchestrator_claimed_at: now,
+                    models.FlowExecution.orchestrator_heartbeat_at: now,
+                },
+                synchronize_session=False,
+            )
+        )
+        db.commit()
+        return bool(count)
+
+    def mark_park_resumed(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        resume_execution_id: Any,
+        commit: bool = True,
+    ) -> bool:
+        """Link a RESUMING park claim to the resume execution just flushed.
+
+        After this write the claim is consumed: a later dispatch failure
+        must not release it, and the sweep must not create a second resume.
+        """
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.status == self.RESUMING_STATUS,
+                models.FlowExecution.resume_execution_id.is_(None),
+            )
+            .update(
+                {models.FlowExecution.resume_execution_id: resume_execution_id},
+                synchronize_session=False,
+            )
+        )
+        if commit:
+            db.commit()
+        return bool(count)
+
+    def close_parked_parent_for_resume(
+        self,
+        db: Session,
+        *,
+        resume_execution_id: Any,
+        status: str,
+        end_time: Optional[datetime] = None,
+        commit: bool = False,
+    ) -> int:
+        """Mark the parked parent terminal once its resume child finishes.
+
+        Matches rows whose ``resume_execution_id`` is this child and whose
+        status is still ``RESUMING``. Crash-stranded claims (RESUMING with
+        no child) are left for ``reclaim_stale_resuming_claims``.
+        """
+        if status not in self.PARK_PARENT_CLOSE_STATUSES:
+            return 0
+        if resume_execution_id is None:
+            return 0
+        closed_at = end_time or datetime.now(timezone.utc)
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.resume_execution_id == resume_execution_id,
+                models.FlowExecution.status == self.RESUMING_STATUS,
+                models.FlowExecution.resume_execution_id.isnot(None),
+            )
+            .update(
+                {
+                    models.FlowExecution.status: status,
+                    models.FlowExecution.end_time: closed_at,
+                },
+                synchronize_session=False,
+            )
+        )
+        if commit:
+            db.commit()
+        return count
+
+    def reclaim_stale_resuming_claims(
+        self,
+        db: Session,
+        *,
+        now: datetime,
+        stale_after_seconds: Optional[int] = None,
+    ) -> int:
+        """Return stranded RESUMING claims whose lease has expired.
+
+        A crash between ``claim_parked_for_resume`` and committing the resume
+        execution leaves status RESUMING with no child. No other sweep looks
+        at that status. Same stale window as orchestrator worker claims.
+        Consumed claims (``resume_execution_id`` set) are left alone so a
+        failed dispatch cannot double-run.
+        """
+        from preloop.config import settings
+
+        stale_after = (
+            stale_after_seconds
+            if stale_after_seconds is not None
+            else int(settings.flow_execution_claim_stale_seconds)
+        )
+        stale_before = now - timedelta(seconds=max(1, stale_after))
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.status == self.RESUMING_STATUS,
+                models.FlowExecution.resume_execution_id.is_(None),
+                or_(
+                    models.FlowExecution.orchestrator_heartbeat_at.is_(None),
+                    models.FlowExecution.orchestrator_heartbeat_at < stale_before,
+                ),
+            )
+            .update(
+                {
+                    models.FlowExecution.status: self.WAITING_FOR_HUMAN_STATUS,
+                    models.FlowExecution.orchestrator_worker_id: None,
+                    models.FlowExecution.orchestrator_claimed_at: None,
+                    models.FlowExecution.orchestrator_heartbeat_at: None,
+                },
+                synchronize_session=False,
+            )
+        )
+        db.commit()
+        return int(count or 0)
+
+    def list_parked_for_request(
+        self, db: Session, *, approval_request_id: Any
+    ) -> List[FlowExecution]:
+        """Every execution parked on one approval request."""
+        return (
+            db.query(FlowExecution)
+            .filter(
+                FlowExecution.park_request_id == approval_request_id,
+                FlowExecution.status == self.WAITING_FOR_HUMAN_STATUS,
+            )
+            .all()
+        )
+
+    def list_parked_expired(
+        self, db: Session, *, now: datetime, limit: int = 50
+    ) -> List[FlowExecution]:
+        """Parked executions whose approval window has closed."""
+        return (
+            db.query(FlowExecution)
+            .filter(
+                FlowExecution.status == self.WAITING_FOR_HUMAN_STATUS,
+                FlowExecution.park_expires_at.isnot(None),
+                FlowExecution.park_expires_at <= now,
+            )
+            .order_by(FlowExecution.park_expires_at.asc())
+            .limit(limit)
+            .all()
+        )
+
     def get_stop_request(self, db: Session, *, execution_id: Any) -> Optional[dict]:
         """Read intent fresh on each monitor poll, independent of halt caching."""
         row = (
@@ -1118,7 +1417,16 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             runner.halt_requested = True
         elif str(execution.agent_session_reference or "").startswith("runner:queued:"):
             execution.status = "STOPPED"
+            stopped_at = datetime.now(timezone.utc)
+            execution.end_time = stopped_at
             self.confirm_stop(db, execution_id=execution_id, commit=False)
+            self.close_parked_parent_for_resume(
+                db,
+                resume_execution_id=execution_id,
+                status="STOPPED",
+                end_time=stopped_at,
+                commit=False,
+            )
         db.commit()
 
     @staticmethod

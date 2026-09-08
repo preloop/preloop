@@ -219,14 +219,58 @@ const TRACKER = {
   created_at: '2026-09-01T10:00:00Z',
 };
 
+/**
+ * A busy gateway account's audit timeline, as the server answers it.
+ *
+ * On an account doing thousands of gateway calls a day, the newest groups
+ * are all successful `model_gateway_request`, which the activity feed drops.
+ * Every unfiltered read is that traffic however deep it pages, so the history
+ * is reachable only by a read that names the actions it wants.
+ */
+const GATEWAY_TRAFFIC = Array.from({ length: 50 }, (_, index) => ({
+  correlation_id: null,
+  outcome: 'success',
+  primary_event: {
+    id: `gw-${index}`,
+    user_id: null,
+    action: 'model_gateway_request',
+    resource_id: 'claude-sonnet',
+    status: 'success',
+    details: { model_alias: 'claude-sonnet', status_code: 200 },
+    timestamp: new Date(Date.now() - index * 1000).toISOString(),
+  },
+}));
+const AUDIT_HISTORY = Array.from({ length: 20 }, (_, index) => ({
+  correlation_id: null,
+  outcome: 'created',
+  primary_event: {
+    id: `hist-${index}`,
+    user_id: null,
+    action: 'runtime_session_created',
+    resource_id: `sess-${index}`,
+    status: 'created',
+    details: { runtime_principal_name: 'Hermes' },
+    timestamp: new Date(Date.now() - (index + 1) * 3600000).toISOString(),
+  },
+}));
+
 /** One stub for every view the matrix visits. Shapes, not fidelity. */
 function stubbedBody(url: string): unknown {
-  const path = new URL(url, window.location.origin).pathname;
+  const parsed = new URL(url, window.location.origin);
+  const path = parsed.pathname;
+  if (path.endsWith('/api/v1/audit-logs/grouped')) {
+    return {
+      groups: parsed.searchParams.has('event_type')
+        ? AUDIT_HISTORY
+        : GATEWAY_TRAFFIC,
+      total: 14000,
+    };
+  }
   if (path.endsWith('/api/v1/features')) return { features: {}, plugins: [] };
   if (path.endsWith('/api/v1/auth/users/me')) {
     return {
-      username: 'founder',
-      email: 'founder@example.com',
+      username: 'operator',
+      email: 'operator@example.com',
       email_verified: true,
       permissions: null,
       is_superuser: true,
@@ -473,6 +517,34 @@ describe('console route transitions', () => {
     expect(view.requestId).to.equal('appr-1');
   });
 
+  it('fills the Overview activity feed on the way into it', async () => {
+    // The prod report of 2026-09-08: the Overview's Activity box was empty on
+    // every load. The view is lazy now, so the feed is created by the router
+    // hook after its chunk resolves; this walks that whole path, from a link
+    // click to the rows on the card, against a timeline whose newest groups
+    // are all gateway traffic the feed drops.
+    clickLink('/console/agents');
+    await assertLanded(BY_PATH.get('/console/agents')!, 'leave the overview');
+    clickLink('/console');
+    await assertLanded(BY_PATH.get('/console')!, 'return to the overview');
+
+    const view = deepest() as HTMLElement;
+    const feed = () =>
+      view.shadowRoot?.querySelector('activity-feed') as HTMLElement | null;
+    await waitUntil(() => Boolean(feed()), 'the Overview renders a feed', {
+      timeout: 10000,
+    });
+    await waitUntil(
+      () => (feed()?.shadowRoot?.querySelectorAll('.row').length ?? 0) > 0,
+      'the feed has history rows on first paint, not "Nothing yet"',
+      { timeout: 10000 }
+    );
+    expect(
+      feed()!.shadowRoot!.querySelector('.row')!.textContent,
+      'the row is the history under the traffic'
+    ).to.contain('Hermes');
+  });
+
   it('follows every "Back to ..." link and breadcrumb a section renders', async () => {
     const clicked: string[] = [];
     for (const entry of MATRIX) {
@@ -492,9 +564,8 @@ describe('console route transitions', () => {
         await assertLanded(entry, `return to ${entry.path}`);
       }
     }
-    // The founder's report was that these do nothing. If a view stops
-    // rendering one, this test quietly stops covering it, so the count is
-    // part of the assertion.
+    // These used to do nothing. If a view stops rendering one, this test
+    // quietly stops covering it, so the count is part of the assertion.
     expect(
       clicked.length,
       `section exit links exercised: ${clicked.join(', ')}`
