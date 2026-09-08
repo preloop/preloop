@@ -189,6 +189,16 @@ class FlowExecution(Base):
         index=True,
     )  # Links to the original execution this is a retry of
 
+    # Delivery-level idempotency key of the webhook delivery that created this
+    # execution: "delivery:<X-GitHub-Delivery / X-Gitlab-Event-UUID>", or
+    # "content:<sha256 prefix>" for tracker sources that send no delivery id.
+    # Written only when a webhook-sourced event creates a NEW execution (never
+    # for retries, matrix cells, manual or scheduled triggers), so a
+    # redelivered message cannot create a second row: a partial unique index
+    # on (flow_id, webhook_delivery_key) covers the "delivery:" form.
+    # See preloop.services.webhook_delivery_dedupe.
+    webhook_delivery_key = Column(String(200), nullable=True)
+
     # Batch/matrix fan-out: executions created from one matrix trigger share a
     # batch_id so the whole batch can be listed and rolled up as a unit.
     batch_id = Column(UUID(as_uuid=True), nullable=True, index=True)
