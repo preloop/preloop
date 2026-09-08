@@ -1,6 +1,6 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { Router } from '@vaadin/router';
+import { Router } from '../../router';
 import { post, getFeatures } from '../../api';
 import { formStyles } from '../../styles/form-styles';
 import { getBrandConfig } from '../../brand-config';

@@ -1,6 +1,6 @@
 import { expect } from '@open-wc/testing';
 import sinon from 'sinon';
-import { Router } from '@vaadin/router';
+import { Router } from './router';
 import {
   fetchWithAuth,
   AuthedElement,

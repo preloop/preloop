@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
-import { Router } from '@vaadin/router';
+import { Router } from '../router';
 import { fetchWithAuth } from '../api.js';
 import { formatLocalDateTime, formatRelativeTime } from '../utils/date';
 import {

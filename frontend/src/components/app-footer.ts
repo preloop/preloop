@@ -1,6 +1,5 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { router } from '../router';
 import { getBrandConfig, hasBrandConfig, isSaaS } from '../brand-config';
 import { getFeatures } from '../api';
 import './logo-component';
@@ -139,15 +138,6 @@ export class AppFooter extends LitElement {
       return '';
     }
     return (getBrandConfig().legal_disclaimer || '').trim();
-  }
-
-  handleLinkClick(event: MouseEvent) {
-    event.preventDefault();
-    const target = event.target as HTMLAnchorElement;
-    const path = target.getAttribute('href');
-    if (path) {
-      router.navigate(path);
-    }
   }
 
   render() {

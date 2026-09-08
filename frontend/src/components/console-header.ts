@@ -13,7 +13,7 @@ import './talking-indicator';
 import './theme-switcher.ts';
 import './user-avatar.ts';
 import * as api from '../api';
-import { Router } from '@vaadin/router';
+import { Router } from '../router';
 import {
   ConnectionState,
   unifiedWebSocketManager,

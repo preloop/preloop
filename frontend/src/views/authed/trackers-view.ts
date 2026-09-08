@@ -1,6 +1,6 @@
 import { LitElement, html, unsafeCSS } from 'lit';
 import { customElement, state, query } from 'lit/decorators.js';
-import { Router } from '@vaadin/router';
+import { Router } from '../../router';
 import '../../components/tracker-list.ts';
 import '../../components/add-tracker-modal.ts';
 import '../../components/unlocked-tools-review-dialog.ts';
