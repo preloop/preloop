@@ -45,6 +45,7 @@ from datetime import datetime, timedelta, UTC
 from typing import Any, Dict, Optional
 
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from preloop.models.models.flow_execution import FlowExecution
@@ -54,9 +55,11 @@ logger = logging.getLogger(__name__)
 DELIVERY_PREFIX = "delivery:"
 CONTENT_PREFIX = "content:"
 
-# A provider delivery id is globally unique, so the only bound needed on the
-# lookup is one that keeps the index scan small.
-DELIVERY_WINDOW_DAYS = 7
+# Partial unique index on (flow_id, webhook_delivery_key) WHERE key LIKE
+# 'delivery:%'. Lookup for those keys is unbounded to match the index, so a
+# replay days later still finds the winner.
+DELIVERY_UNIQUE_INDEX = "uq_flow_execution_webhook_delivery"
+UNIQUE_VIOLATION_PGCODE = "23505"
 # A content fingerprint is NOT unique over time: it is the identity of the
 # event, not of the delivery. Only treat a repeat as a duplicate while it can
 # still plausibly be a redelivery of the same message (JetStream `ack_wait` is
@@ -179,18 +182,39 @@ def is_delivery_key(delivery_key: Optional[str]) -> bool:
     return bool(delivery_key and delivery_key.startswith(DELIVERY_PREFIX))
 
 
-def _window_start(delivery_key: str, now: Optional[datetime] = None) -> datetime:
-    """Oldest execution start time this key may match, as naive UTC.
+def is_delivery_key_conflict(exc: BaseException) -> bool:
+    """True when ``exc`` is the partial unique index on ``delivery:`` keys.
+
+    Other integrity failures (NOT NULL, FK, a different unique index) must
+    not be treated as a delivery collision.
+    """
+    if not isinstance(exc, IntegrityError):
+        return False
+    orig = getattr(exc, "orig", None)
+    diag = getattr(orig, "diag", None)
+    constraint = getattr(diag, "constraint_name", None)
+    if constraint == DELIVERY_UNIQUE_INDEX:
+        return True
+    message = str(orig if orig is not None else exc)
+    if DELIVERY_UNIQUE_INDEX in message:
+        return True
+    pgcode = getattr(orig, "pgcode", None)
+    if pgcode == UNIQUE_VIOLATION_PGCODE and "webhook_delivery_key" in message:
+        return True
+    return "UNIQUE constraint failed" in message and "webhook_delivery_key" in message
+
+
+def _content_window_start(now: Optional[datetime] = None) -> datetime:
+    """Oldest execution start time a content fingerprint may match, as naive UTC.
 
     ``FlowExecution.start_time`` is a naive column holding UTC wall time, so
     the bound has to be naive too or Postgres compares against the session
-    time zone.
+    time zone. ``delivery:`` keys are not windowed: the unique index is
+    unbounded, and a replay must still find the winner.
     """
     current = now or datetime.now(UTC)
     if current.tzinfo is not None:
         current = current.astimezone(UTC).replace(tzinfo=None)
-    if is_delivery_key(delivery_key):
-        return current - timedelta(days=DELIVERY_WINDOW_DAYS)
     return current - timedelta(seconds=CONTENT_WINDOW_SECONDS)
 
 
@@ -208,6 +232,9 @@ def find_execution_for_delivery(
     only carry the delivery id inside ``trigger_event_details`` (written
     before the column existed, or by paths that precreate the row), which is
     what makes the guard work across the very deploy that introduces it.
+
+    ``delivery:`` lookups are unbounded so they match the unique index.
+    Content fingerprints stay inside ``CONTENT_WINDOW_SECONDS``.
     """
     if not delivery_key:
         return None
@@ -222,13 +249,10 @@ def find_execution_for_delivery(
             FlowExecution.trigger_event_details["delivery_id"].astext == delivery_id
         )
 
-    return (
-        db.query(FlowExecution)
-        .filter(
-            FlowExecution.flow_id == flow_uuid,
-            FlowExecution.start_time >= _window_start(delivery_key, now),
-            or_(*conditions),
-        )
-        .order_by(FlowExecution.start_time.asc())
-        .first()
+    query = db.query(FlowExecution).filter(
+        FlowExecution.flow_id == flow_uuid,
+        or_(*conditions),
     )
+    if not is_delivery_key(delivery_key):
+        query = query.filter(FlowExecution.start_time >= _content_window_start(now))
+    return query.order_by(FlowExecution.start_time.asc()).first()

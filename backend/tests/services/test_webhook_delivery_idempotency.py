@@ -19,6 +19,7 @@ import threading
 import uuid
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -33,9 +34,12 @@ from preloop.services.flow_trigger_service import FlowTriggerService
 from preloop.services.webhook_delivery_dedupe import (
     CONTENT_PREFIX,
     DELIVERY_PREFIX,
+    DELIVERY_UNIQUE_INDEX,
+    UNIQUE_VIOLATION_PGCODE,
     content_fingerprint,
     delivery_key_for_event,
     find_execution_for_delivery,
+    is_delivery_key_conflict,
 )
 
 MIGRATION_PATH = (
@@ -327,6 +331,211 @@ def test_legacy_row_with_the_id_only_in_jsonb_is_still_found(
         db_session, flow_id=flow.id, delivery_key=f"{DELIVERY_PREFIX}{DELIVERY_ID}"
     )
     assert found is not None and found.id == legacy.id
+
+
+def test_delivery_key_lookup_matches_the_unbounded_unique_index(
+    db_session: Session, flow: models.Flow
+) -> None:
+    """A delivery: replay after the old 7-day window must still find the winner."""
+    key = f"{DELIVERY_PREFIX}{DELIVERY_ID}"
+    old = models.FlowExecution(
+        flow_id=flow.id,
+        status="SUCCEEDED",
+        webhook_delivery_key=key,
+        start_time=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=30),
+    )
+    db_session.add(old)
+    db_session.flush()
+
+    found = find_execution_for_delivery(db_session, flow_id=flow.id, delivery_key=key)
+    assert found is not None and found.id == old.id
+
+
+def test_is_delivery_key_conflict_ignores_other_integrity_errors() -> None:
+    unique = IntegrityError("INSERT", {}, Exception("dup"))
+    unique.orig = SimpleNamespace(
+        pgcode=UNIQUE_VIOLATION_PGCODE,
+        diag=SimpleNamespace(constraint_name=DELIVERY_UNIQUE_INDEX),
+    )
+    assert is_delivery_key_conflict(unique)
+
+    fk = IntegrityError("INSERT", {}, Exception("fk"))
+    fk.orig = SimpleNamespace(
+        pgcode="23503",
+        diag=SimpleNamespace(constraint_name="fk_flow_execution_flow_id"),
+    )
+    assert not is_delivery_key_conflict(fk)
+
+    other_unique = IntegrityError("INSERT", {}, Exception("other"))
+    other_unique.orig = SimpleNamespace(
+        pgcode=UNIQUE_VIOLATION_PGCODE,
+        diag=SimpleNamespace(constraint_name="uq_something_else"),
+    )
+    assert not is_delivery_key_conflict(other_unique)
+
+
+@pytest.mark.asyncio
+async def test_unrelated_integrity_error_is_not_treated_as_a_delivery_collision(
+    db_session: Session, flow: models.Flow, test_user
+) -> None:
+    """A coincidental row with the same delivery key must not swallow FK errors."""
+    event = github_label_event(account_id=str(test_user.account_id))
+    key = f"{DELIVERY_PREFIX}{DELIVERY_ID}"
+    db_session.add(
+        models.FlowExecution(
+            flow_id=flow.id,
+            status="PENDING",
+            webhook_delivery_key=key,
+            trigger_event_details=dict(event),
+        )
+    )
+    db_session.flush()
+
+    orig = SimpleNamespace(
+        pgcode="23503",
+        diag=SimpleNamespace(constraint_name="fk_flow_execution_flow_id"),
+    )
+    error = IntegrityError("INSERT", {}, orig)
+    error.orig = orig
+    service = FlowTriggerService(db_session)
+    with (
+        patch(
+            "preloop.services.flow_trigger_service.get_nats_client",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("preloop.services.flow_trigger_service.asyncio.create_task"),
+        patch.object(db_session, "commit", side_effect=error),
+    ):
+        with pytest.raises(IntegrityError) as raised:
+            await service._start_flow_execution(
+                flow=flow, event_data=dict(event), nats_client=None
+            )
+    assert raised.value is error
+
+
+@pytest.mark.asyncio
+async def test_redelivered_lifecycle_pickup_creates_exactly_one_execution(
+    db_session: Session, monkeypatch
+) -> None:
+    """Issue-implementation pickups precreate the row with a NULL column.
+
+    The delivery id lives only in ``trigger_event_details`` JSONB. Driving
+    ``process_event`` twice must still yield one execution.
+    """
+    from preloop.models.crud import (
+        crud_account,
+        crud_issue,
+        crud_organization,
+        crud_project,
+        crud_tracker,
+    )
+    from preloop.models.crud.base import CRUDBase
+    from preloop.services.issue_lifecycle import IssueLifecycleService
+    from preloop.services.issue_lifecycle_provider import GitHubLifecycleProvider
+    from tests.services.test_issue_lifecycle import (
+        Capabilities,
+        FakeGitHub,
+        REPO,
+        contract_for,
+    )
+
+    account = crud_account.create(
+        db_session, obj_in={"organization_name": "Pickup tenant", "is_active": True}
+    )
+    tracker = crud_tracker.create(
+        db_session,
+        obj_in={
+            "name": "Pickup tracker",
+            "tracker_type": "github",
+            "account_id": account.id,
+            "api_key": "fake-local-only",
+        },
+    )
+    organization = crud_organization.create(
+        db_session,
+        obj_in={
+            "name": "example",
+            "identifier": "example",
+            "tracker_id": tracker.id,
+        },
+    )
+    project = crud_project.create(
+        db_session,
+        obj_in={
+            "name": "project",
+            "identifier": REPO,
+            "organization_id": organization.id,
+        },
+    )
+    issue = crud_issue.create(
+        db_session,
+        obj_in={
+            "title": "Save preferences",
+            "description": "Persist user preferences across sessions.",
+            "status": "open",
+            "external_id": "1001",
+            "key": f"{REPO}#1",
+            "project_id": project.id,
+            "tracker_id": tracker.id,
+        },
+    )
+    implementer = CRUDBase(models.Flow).create(
+        db_session,
+        obj_in={
+            "name": "Implementation",
+            "account_id": account.id,
+            "agent_type": "codex",
+            "agent_config": {},
+            "prompt_template": "Implement",
+            "is_enabled": True,
+            "allowed_mcp_servers": [],
+            "allowed_mcp_tools": [],
+            "trigger_event_source": "github",
+            "trigger_event_types": ["issue_labeled"],
+        },
+    )
+    policy = {
+        "ready_enabled": True,
+        "ready_label": "agent-ready",
+        "implementation_flow_id": str(implementer.id),
+    }
+    crud_project.update(
+        db_session, db_obj=project, obj_in={"settings": {"issue_lifecycle": policy}}
+    )
+    transport = FakeGitHub()
+    service = IssueLifecycleService(
+        db_session,
+        account_id=account.id,
+        issue=issue,
+        provider=GitHubLifecycleProvider(transport, REPO),
+        capabilities=Capabilities(),
+        policy=policy,
+    )
+    monkeypatch.setattr(
+        "preloop.services.issue_lifecycle_runtime.build_lifecycle_service",
+        AsyncMock(return_value=service),
+    )
+    contract = await contract_for(service)
+    await service.refine(contract)
+    assert (await service.ready(contract.issue_revision))["state"] == "ready"
+
+    event = github_label_event(
+        account_id=str(account.id),
+        tracker_id=str(tracker.id),
+        issue_number=1,
+    )
+    event["payload"]["issue"]["id"] = 1001
+    event["payload"]["repository"]["full_name"] = REPO
+    event["project_id"] = str(project.id)
+
+    trigger = FlowTriggerService(db_session)
+    await deliver(trigger, implementer, event)
+    await deliver(trigger, implementer, event)
+
+    rows = executions_for(db_session, implementer.id)
+    assert len(rows) == 1
+    assert rows[0].webhook_delivery_key is None
+    assert rows[0].trigger_event_details["delivery_id"] == DELIVERY_ID
 
 
 @pytest.mark.asyncio

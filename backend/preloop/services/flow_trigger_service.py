@@ -29,6 +29,7 @@ from preloop.sync.services.event_bus import get_nats_client
 from preloop.services.webhook_delivery_dedupe import (
     delivery_key_for_event,
     find_execution_for_delivery,
+    is_delivery_key_conflict,
 )
 from preloop.utils.workspace_seed import attach_workspace_file_paths
 from preloop.models.db.session import get_session_factory
@@ -779,19 +780,18 @@ class FlowTriggerService:
                 if delivery_key:
                     execution.webhook_delivery_key = delivery_key
                 self.db.commit()
-            except IntegrityError:
+            except IntegrityError as e:
                 # Lost a race with another worker holding the same redelivered
                 # message: the partial unique index on
                 # (flow_id, webhook_delivery_key) refused the second row.
                 # Return the row that won; dispatching again is what created
-                # duplicate pull requests in the first place.
+                # duplicate pull requests in the first place. Other integrity
+                # failures (NOT NULL, FK, a different unique index) re-raise.
                 self.db.rollback()
-                existing = (
-                    find_execution_for_delivery(
-                        self.db, flow_id=flow.id, delivery_key=delivery_key
-                    )
-                    if delivery_key
-                    else None
+                if not delivery_key or not is_delivery_key_conflict(e):
+                    raise
+                existing = find_execution_for_delivery(
+                    self.db, flow_id=flow.id, delivery_key=delivery_key
                 )
                 if existing is None:
                     raise
