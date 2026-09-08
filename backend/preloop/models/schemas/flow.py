@@ -662,6 +662,20 @@ class FlowBase(BaseModel):
             "category, and the failure message names the budget that expired."
         ),
     )
+    approval_window_seconds: Optional[int] = Field(
+        default=None,
+        ge=60,
+        le=2592000,
+        description=(
+            "How long a human has to answer an approval or question raised by "
+            "an execution of this flow, in seconds (60s to 30 days). Leave "
+            "unset to use the approval workflow's timeout, then the "
+            "deployment default (300s). While the request is outstanding the "
+            "execution is parked (WAITING_FOR_HUMAN): it holds no container "
+            "and no runner, and the decision resumes it, so a window measured "
+            "in days costs calendar time only."
+        ),
+    )
     notifications: Optional[FlowNotifications] = Field(
         default=None,
         description=(

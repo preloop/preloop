@@ -764,8 +764,56 @@ def read_flow_execution(
     # Same for tool calls and cost: the page hydrates its strip from this row
     # before /metrics answers, and the number must not change under the user.
     project_execution_totals(db, [execution])
+    _project_execution_park(db, execution)
 
     return execution
+
+
+def _project_execution_park(db: Session, execution: Any) -> None:
+    """Attach why a parked execution is waiting, and until when.
+
+    Read-time projection: the park columns on the execution say which request
+    it is blocked on, and the request says who is being waited on and what was
+    asked. The console renders "waiting for <who> since <when>, expires
+    <when>" from this without knowing how approvals are stored.
+    """
+    import logging
+
+    from preloop.models.schemas.flow_execution import ExecutionPark
+    from preloop.services.approval_park import WAITING_FOR_HUMAN
+
+    execution.park = None
+    if str(getattr(execution, "status", "")) != WAITING_FOR_HUMAN:
+        return
+    request_id = getattr(execution, "park_request_id", None)
+    if request_id is None:
+        return
+    waiting_for = None
+    tool_name = None
+    question = None
+    try:
+        from preloop.models.models.approval_request import ApprovalRequest
+
+        request = db.get(ApprovalRequest, request_id)
+        if request is not None:
+            tool_name = getattr(request, "tool_name", None)
+            tool_args = getattr(request, "tool_args", None) or {}
+            if isinstance(tool_args, dict):
+                question = tool_args.get("question") or tool_args.get("reason")
+            workflow = getattr(request, "approval_workflow", None)
+            waiting_for = getattr(workflow, "name", None)
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "Could not load the approval behind a parked execution", exc_info=True
+        )
+    execution.park = ExecutionPark(
+        request_id=request_id,
+        since=getattr(execution, "parked_at", None),
+        expires_at=getattr(execution, "park_expires_at", None),
+        waiting_for=waiting_for,
+        tool_name=tool_name,
+        question=str(question)[:2000] if question else None,
+    )
 
 
 @router.get(

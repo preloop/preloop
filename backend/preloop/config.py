@@ -10,6 +10,96 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
+# Public JWT signing-key strings shipped as helm/docs/compose defaults.
+# Using any of them in production lets anyone forge access tokens. Compared
+# case-insensitively with hyphens and underscores stripped so
+# CHANGE_THIS_IN_PRODUCTION matches change-this-in-production.
+_PLACEHOLDER_JWT_SECRETS = frozenset(
+    {
+        "changethisinproduction",
+        "developmentsecretkeydonotuseinproduction",
+        "replaceme",
+        "replacethis",
+        "replacethisinproduction",
+        "yourjwtsecret",
+        "yoursecrethere",
+        "changeme",
+    }
+)
+_PLACEHOLDER_JWT_SECRET_MARKERS = (
+    "changethis",
+    "donotuseinproduction",
+)
+_PLACEHOLDER_SIGNING_KEY_ADVISORY = (
+    "the configured signing key is a published placeholder. Anyone "
+    "who can read the Helm chart or this repository can forge access "
+    "tokens. Set a unique value with `openssl rand -hex 32` and pass it "
+    "as environment.jwtSecret."
+)
+
+
+def _normalize_jwt_secret(secret: str) -> str:
+    """Lowercase ``secret`` and drop hyphen/underscore so placeholder shapes match."""
+    return "".join(ch for ch in secret.strip().lower() if ch not in "-_")
+
+
+def is_placeholder_jwt_secret(secret: str) -> bool:
+    """Return True if ``secret`` is a known public JWT signing-key placeholder.
+
+    Args:
+        secret: Candidate JWT signing key.
+
+    Returns:
+        True when the value is a documented placeholder, not a real secret.
+    """
+    normalized = _normalize_jwt_secret(secret)
+    if not normalized:
+        return False
+    if normalized in _PLACEHOLDER_JWT_SECRETS:
+        return True
+    return any(marker in normalized for marker in _PLACEHOLDER_JWT_SECRET_MARKERS)
+
+
+def _log_insecure_placeholder_jwt_banner() -> None:
+    """Emit the CRITICAL placeholder-JWT banner without the signing key.
+
+    The text is a string literal (not a SECRET-named constant) so CodeQL
+    py/clear-text-logging does not treat the banner as a credential.
+    """
+    logger.critical(
+        "============================================================\n"
+        "INSECURE JWT CONFIGURATION: the configured signing key is a "
+        "published placeholder. Anyone who can read the Helm chart or this "
+        "repository can forge access tokens. Set a unique value with "
+        "`openssl rand -hex 32` and pass it as environment.jwtSecret.\n"
+        "============================================================"
+    )
+
+
+def warn_or_reject_placeholder_jwt_secret(secret: str, *, environment: str) -> None:
+    """Reject placeholder JWT secrets in production; warn loudly otherwise.
+
+    Helm ``jwtSecret`` stays optional so ``helm template`` and existing
+    upgrades still render. ENVIRONMENT=production already fails closed when
+    SECRET_KEY is missing; the same gate rejects these public placeholders.
+    Development, test, and unset ENVIRONMENT (the chart default) log a
+    CRITICAL banner instead of refusing to start.
+
+    Args:
+        secret: Configured JWT signing key.
+        environment: Value of ENVIRONMENT (defaults to development).
+
+    Raises:
+        ValueError: Placeholder secret while ``environment`` is production.
+    """
+    if not is_placeholder_jwt_secret(secret):
+        return
+    if environment.strip().lower() == "production":
+        raise ValueError(_PLACEHOLDER_SIGNING_KEY_ADVISORY)
+    # Log a canned banner in a helper that does not take the signing key, so
+    # the key never reaches a logging sink (CodeQL py/clear-text-logging).
+    _log_insecure_placeholder_jwt_banner()
+
 
 def _load_release_version(
     default: str = "0.8.0", version_file: Path | None = None
@@ -520,6 +610,33 @@ class Settings(BaseSettings):
         3600,
         description="Maximum wall-clock time to wait for one flow execution before failing it",
     )
+    approval_default_window_seconds: int = Field(
+        300,
+        description=(
+            "How long a human has to decide an approval when nothing more "
+            "specific applies. Interactive tool calls keep the historical 5 "
+            "minutes; a flow that needs a compliance timescale sets "
+            "approval_window_seconds on the flow instead of moving this."
+        ),
+    )
+    approval_max_window_seconds: int = Field(
+        2592000,
+        description=(
+            "Deployment ceiling for any approval window (30 days). An account "
+            "may lower it via meta_data.approval_window_max_seconds. Nothing "
+            "raises it: a request that never expires is a governance object "
+            "nobody ever closes."
+        ),
+    )
+    approval_park_after_seconds: int = Field(
+        90,
+        description=(
+            "How long a gated tool call waits in-process before the flow "
+            "execution is parked (WAITING_FOR_HUMAN), the container released "
+            "and the run resumed on the decision. Below this, waiting in "
+            "place is cheaper than a park/resume round trip."
+        ),
+    )
     flow_execution_max_attempts: int = Field(
         2,
         description=(
@@ -742,14 +859,15 @@ class Settings(BaseSettings):
             logger.warning(f"DATABASE_URL not set, using default: {database_url}")
 
         secret_key = os.getenv("SECRET_KEY")
+        env = os.getenv("ENVIRONMENT", "development")
         if not secret_key:
-            env = os.getenv("ENVIRONMENT", "development")
             if env == "production":
                 raise ValueError(
                     "SECRET_KEY environment variable is required in production"
                 )
             secret_key = "development_secret_key_do_not_use_in_production"
             logger.warning("SECRET_KEY not set, using default development key")
+        warn_or_reject_placeholder_jwt_secret(secret_key, environment=env)
 
         # Create database settings
         database = DatabaseSettings(
@@ -859,7 +977,7 @@ class Settings(BaseSettings):
 
         return cls(
             app_name=os.getenv("APP_NAME", "Preloop"),
-            environment=os.getenv("ENVIRONMENT", "development"),
+            environment=env,
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             product_team_email=os.getenv("PRODUCT_TEAM_EMAIL", ""),
             nats_url=os.getenv("NATS_URL", "nats://localhost:4222"),
@@ -895,6 +1013,15 @@ class Settings(BaseSettings):
             ),
             flow_execution_max_wait_seconds=int(
                 os.getenv("FLOW_EXECUTION_MAX_WAIT_SECONDS", "3600")
+            ),
+            approval_default_window_seconds=int(
+                os.getenv("APPROVAL_DEFAULT_WINDOW_SECONDS", "300")
+            ),
+            approval_max_window_seconds=int(
+                os.getenv("APPROVAL_MAX_WINDOW_SECONDS", "2592000")
+            ),
+            approval_park_after_seconds=int(
+                os.getenv("APPROVAL_PARK_AFTER_SECONDS", "90")
             ),
             flow_execution_max_attempts=int(
                 os.getenv("FLOW_EXECUTION_MAX_ATTEMPTS", "2")

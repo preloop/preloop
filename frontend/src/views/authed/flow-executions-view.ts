@@ -33,6 +33,7 @@ import {
   executionStatusLabel,
   executionStatusVariant,
   formatEstimatedCost,
+  parkedRowTitle,
   renderExecutionModel,
   renderExecutionRunnerKind,
   shouldShowRunnerKind,
@@ -103,6 +104,9 @@ interface FlowExecution {
   provider_name?: string | null;
   models_used?: ExecutionModelUsage[] | null;
   runner?: ExecutionRunner | null;
+  /** When a WAITING_FOR_HUMAN row was parked, and when its window closes. */
+  parked_at?: string | null;
+  park_expires_at?: string | null;
 }
 
 /** How often the elapsed time of running rows is recomputed. */
@@ -1285,6 +1289,9 @@ export class FlowExecutionsView extends AuthedElement {
   private renderStatusCell(exec: FlowExecution) {
     const isLive = RUNNING_STATUSES.has(exec.status);
     const variant = executionStatusVariant(exec.status);
+    // A parked row is a status, not an activity: no live dot, and the chip
+    // carries when the approval window closes rather than a running clock.
+    const waitingTitle = parkedRowTitle(exec);
     return html`
       <div class="status-cell">
         ${
@@ -1300,6 +1307,10 @@ export class FlowExecutionsView extends AuthedElement {
           class="chip ${variant === 'danger' ? 'solid' : ''}"
           pill
           variant=${variant}
+          title=${waitingTitle || nothing}
+          data-testid=${
+            exec.status === 'WAITING_FOR_HUMAN' ? 'waiting-chip' : nothing
+          }
           >${executionStatusLabel(exec.status)}</sl-badge
         >
         <!-- "Failed" says that it broke; the category says what broke, which

@@ -117,6 +117,11 @@ logger = logging.getLogger(__name__)
 # token must keep working.
 TERMINAL_EXECUTION_STATUSES = frozenset({"SUCCEEDED", "FAILED", "STOPPED", "CANCELLED"})
 
+# A run parked on a human decision is not terminal (it will resume) but it is
+# over for THIS worker: the container is gone, the runner is released and the
+# runtime token must be retired, because the resume mints its own.
+WAITING_FOR_HUMAN_STATUS = "WAITING_FOR_HUMAN"
+
 # Sentinel string that agents print when completing successfully.
 FLOW_SUCCESS_SENTINEL = "FLOW_EXECUTION_SUCCESS"
 
@@ -413,9 +418,23 @@ class TimeoutBudget:
 
     seconds: int
     source: str
+    #: Agent wall clock already spent by this execution's park chain. Time
+    #: spent waiting for a human is never in here: the budget pauses while
+    #: parked, so a 2 hour flow gets 2 hours of agent time however many days
+    #: the approval took.
+    consumed_seconds: int = 0
 
     def timeout_message(self) -> str:
         """Operator-facing failure message naming the budget that expired."""
+        if self.consumed_seconds:
+            return (
+                f"Execution timed out after {self.seconds} seconds, the "
+                f"remainder of this flow's timeout budget after "
+                f"{self.consumed_seconds} seconds already spent before it was "
+                "parked for a human decision (waiting for the human did not "
+                "count). Raise timeout_seconds on the flow if the work "
+                "genuinely needs longer."
+            )
         if self.source == "flow":
             return (
                 f"Execution timed out after {self.seconds} seconds "
@@ -1245,6 +1264,14 @@ class FlowExecutionOrchestrator:
         if isinstance(feedback_prompt, str):
             resolved_prompt += "\n\n" + feedback_prompt
 
+        # A run resumed after a human decision reads the answer here. No
+        # harness lets us inject a value as the return of a tool call in a
+        # session that was killed, so the answer arrives as the next turn,
+        # naming the request it answers. Bounded, and framed as data.
+        answers_prompt = (self.trigger_event_data or {}).get("_answers_prompt")
+        if isinstance(answers_prompt, str) and answers_prompt.strip():
+            resolved_prompt += "\n\n" + answers_prompt[:8000]
+
         # Resume runs always learn to inspect rebase-conflict.txt, because
         # the rebase happens after this prompt is resolved. Keep this before
         # the success-confirmation instruction, which must stay last.
@@ -1445,7 +1472,10 @@ class FlowExecutionOrchestrator:
             return False
         if row is None:
             return False
-        return str(row.status).upper() in TERMINAL_EXECUTION_STATUSES
+        status = str(row.status).upper()
+        return (
+            status in TERMINAL_EXECUTION_STATUSES or status == WAITING_FOR_HUMAN_STATUS
+        )
 
     def _revoke_execution_runtime_tokens(self) -> int:
         """Revoke every runtime token minted for this execution."""
@@ -4202,7 +4232,9 @@ class FlowExecutionOrchestrator:
         )
         configured = getattr(self.flow, "timeout_seconds", None)
         if configured is None:
-            return TimeoutBudget(seconds=default_seconds, source="default")
+            return self._budget_after_park(
+                TimeoutBudget(seconds=default_seconds, source="default")
+            )
         try:
             seconds = int(configured)
         except (TypeError, ValueError):
@@ -4210,7 +4242,9 @@ class FlowExecutionOrchestrator:
                 f"Flow {getattr(self.flow, 'id', None)} has a non-numeric "
                 f"timeout_seconds ({configured!r}); using the default budget"
             )
-            return TimeoutBudget(seconds=default_seconds, source="default")
+            return self._budget_after_park(
+                TimeoutBudget(seconds=default_seconds, source="default")
+            )
         clamped = max(FLOW_TIMEOUT_SECONDS_MIN, min(FLOW_TIMEOUT_SECONDS_MAX, seconds))
         if clamped != seconds:
             logger.warning(
@@ -4218,7 +4252,35 @@ class FlowExecutionOrchestrator:
                 f"{seconds} is outside [{FLOW_TIMEOUT_SECONDS_MIN}, "
                 f"{FLOW_TIMEOUT_SECONDS_MAX}]; clamped to {clamped}"
             )
-        return TimeoutBudget(seconds=clamped, source="flow")
+        return self._budget_after_park(TimeoutBudget(seconds=clamped, source="flow"))
+
+    def _chain_consumed_seconds(self) -> int:
+        """Agent wall clock already spent by the park chain this run continues."""
+        from preloop.services.approval_park import consumed_seconds_from_details
+
+        return consumed_seconds_from_details(self.trigger_event_data)
+
+    def _budget_after_park(self, budget: TimeoutBudget) -> TimeoutBudget:
+        """Charge a resumed run only the remainder of its flow's budget.
+
+        Without this, every park would hand the run a fresh full budget and a
+        flow could be resumed indefinitely. With it, the budget pauses while
+        parked and resumes where it stopped.
+        """
+        consumed = self._chain_consumed_seconds()
+        if consumed <= 0:
+            return budget
+        remaining = max(FLOW_TIMEOUT_SECONDS_MIN, budget.seconds - consumed)
+        logger.info(
+            "Resumed execution budget: %ss of %ss remain after %ss spent "
+            "before the park",
+            remaining,
+            budget.seconds,
+            consumed,
+        )
+        return TimeoutBudget(
+            seconds=remaining, source=budget.source, consumed_seconds=consumed
+        )
 
     async def _monitor_agent_execution(
         self, session_reference: str, agent_executor: Any
@@ -4322,6 +4384,70 @@ class FlowExecutionOrchestrator:
                     await asyncio.sleep(poll_interval)
                     elapsed += poll_interval
                     continue
+
+                # Parked on a human decision: the approval path recorded a
+                # park request on this row because the question will not be
+                # answered on a container's timescale. Release the runtime and
+                # hand the run to the resume path; nothing here fails.
+                park_request = crud_flow_execution.get_park_request(
+                    self.db,
+                    execution_id=self.execution_log.id,
+                )
+                if park_request and park_request.get("parked_at") is None:
+                    logger.info(
+                        "Parking execution %s on approval %s (expires %s)",
+                        self.execution_log.id,
+                        park_request["request_id"],
+                        park_request.get("expires_at"),
+                    )
+                    self.execution_logger.log_milestone(
+                        "execution_parked",
+                        {
+                            "approval_request_id": str(park_request["request_id"]),
+                            "expires_at": (
+                                park_request["expires_at"].isoformat()
+                                if park_request.get("expires_at")
+                                else None
+                            ),
+                            "elapsed": elapsed,
+                        },
+                    )
+                    # Capture BEFORE stopping: the result artifact call also
+                    # captures the evidence pack, the workspace snapshot and
+                    # the packed CLI session, which are exactly what the
+                    # resume restores.
+                    result_artifact = await self._capture_result_artifact(
+                        agent_executor, session_reference
+                    )
+                    try:
+                        await agent_executor.stop(session_reference)
+                    except Exception:
+                        logger.warning(
+                            "Could not stop the runtime for parked execution %s",
+                            self.execution_log.id,
+                            exc_info=True,
+                        )
+                    await self._publish_update(
+                        "execution_parked",
+                        {
+                            "approval_request_id": str(park_request["request_id"]),
+                            "elapsed": elapsed,
+                        },
+                    )
+                    return {
+                        "status": WAITING_FOR_HUMAN_STATUS,
+                        "output_summary": None,
+                        "error_message": None,
+                        "actions_taken": self.execution_logger.get_actions_taken(),
+                        "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                        "result": result_artifact,
+                        "park": {
+                            "approval_request_id": str(park_request["request_id"]),
+                            "compute_seconds": (
+                                self._chain_consumed_seconds() + int(elapsed)
+                            ),
+                        },
+                    }
 
                 # Check if user requested stop
                 if self._stop_requested.is_set():
@@ -4862,6 +4988,56 @@ class FlowExecutionOrchestrator:
 
         logger.debug(f"Execution log updated: status={status}")
 
+    async def _finalize_park(
+        self,
+        *,
+        agent_result: Dict[str, Any],
+        output_summary: Optional[str],
+        merged_result: Optional[Dict[str, Any]],
+    ) -> None:
+        """Persist a parked execution and release its runtime.
+
+        A parked run is alive, not finished: it keeps its start_time, gets no
+        end_time, no failure category and no terminal notification. What it
+        does get is the checkpoint the resume needs (result artifact,
+        workspace snapshot and CLI session were already captured before the
+        executor was stopped) plus the park bookkeeping the decision path
+        claims against.
+        """
+        park = agent_result.get("park") or {}
+        await self._update_execution_log(
+            status=WAITING_FOR_HUMAN_STATUS,
+            model_output_summary=output_summary,
+            failure_category=None,
+            actions_taken_summary=agent_result.get("actions_taken"),
+            mcp_usage_logs=agent_result.get("mcp_usage_logs"),
+            result=merged_result,
+            tool_calls_count=self.tool_calls_count,
+            total_tokens=self.total_tokens,
+            estimated_cost=self.estimated_cost,
+        )
+        # The container is gone; the runtime token must not stay live for
+        # however many days the approval takes.
+        self._sync_runtime_session(ended_at=datetime.now(timezone.utc))
+        try:
+            crud_flow_execution.confirm_park(
+                self.db,
+                execution_id=str(self.execution_log.id),
+                compute_seconds=int(park.get("compute_seconds") or 0),
+            )
+        except Exception:
+            logger.exception(
+                "Could not confirm the park of execution %s; the sweep will retry",
+                self.execution_log.id,
+            )
+        logger.info(
+            "Flow execution %s parked on approval request %s (%ss of agent "
+            "time spent so far)",
+            self.execution_log.id,
+            park.get("approval_request_id"),
+            park.get("compute_seconds"),
+        )
+
     async def _notify_terminal(
         self,
         status: str,
@@ -5348,6 +5524,19 @@ class FlowExecutionOrchestrator:
         context = getattr(self, "_product_evidence_context", None)
         return isinstance(context, dict) and bool(context.get("product_evidence"))
 
+    def _captured_evidence_receipt(self) -> dict[str, Any] | None:
+        """Return the evidence receipt captured in memory for this run.
+
+        ``_capture_evidence_archive`` records the pack during monitoring;
+        finalize persists that same receipt on the execution row only at the
+        end of ``run()``. ``load_evidence`` reads the row, so it reports
+        "missing" before finalize even when the pack is already captured.
+        """
+        receipt = getattr(self, "_evidence_receipt", None)
+        if isinstance(receipt, dict) and receipt.get("status"):
+            return receipt
+        return None
+
     def _attach_product_evidence_records(
         self,
         agent_result: Dict[str, Any],
@@ -5405,7 +5594,17 @@ class FlowExecutionOrchestrator:
                     execution=execution,
                 )
             except EvidenceUnavailableError as exc:
-                evidence_receipt = exc.receipt
+                # The archive for this run was captured in memory during
+                # monitoring but is persisted on the execution row only at
+                # finalize, so load_evidence reports "missing" here for a
+                # pack that exists. Trust the orchestrator's captured receipt
+                # when the row is merely not updated yet; a DB receipt that
+                # is genuinely failed or expired stays authoritative.
+                captured = self._captured_evidence_receipt()
+                if exc.code == "missing" and captured is not None:
+                    evidence_receipt = captured
+                else:
+                    evidence_receipt = exc.receipt
         artifacts = result.get("artifacts")
         dossier = build_dossier_manifest(
             execution_id=execution_id,
@@ -5465,6 +5664,11 @@ class FlowExecutionOrchestrator:
 
     async def _finish_isolated_publication(self, agent_result: Dict[str, Any]) -> None:
         """Run trusted publication after runtime cleanup; failure changes status."""
+        if agent_result.get("status") == WAITING_FOR_HUMAN_STATUS:
+            # A parked run is mid-flight: publishing its work now would ship
+            # exactly the change the human has not approved yet. The resumed
+            # execution publishes when it finishes.
+            return
         if not self._product_evidence_opt_in(agent_result):
             return
         reported_result = agent_result.get("result")
@@ -5857,6 +6061,18 @@ class FlowExecutionOrchestrator:
                     "source": "sandbox_log",
                     "authenticated": False,
                 }
+
+            # Parked on a human decision: not terminal, so no end_time, no
+            # commit status, no terminal notification and no queued follow-up.
+            # The runtime is released (the container is gone) and the row
+            # records what the decision needs to resume it.
+            if final_status == WAITING_FOR_HUMAN_STATUS:
+                await self._finalize_park(
+                    agent_result=agent_result,
+                    output_summary=output_summary,
+                    merged_result=merged_result,
+                )
+                return
 
             await self._update_execution_log(
                 status=final_status,

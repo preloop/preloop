@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CRA `dossier_manifest.evidence` no longer reports a run's evidence pack as
+  `missing` while `evidence-status` reports it `available`. The dossier is
+  built before finalize persists the captured pack, so `load_evidence` sees a
+  stale row; the orchestrator's in-memory captured receipt (the same receipt
+  finalize stores) now fills that window, and a genuinely failed or expired
+  DB receipt stays authoritative.
 - The flow form only offers PR-dependent options where they apply. PR review
   and CI follow-up render when "Create a pull request on commit" is checked,
   and the success comment on the triggering issue also requires a tracker
@@ -61,6 +67,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Approval windows on a human timescale, with parked executions**: an
+  approval or question can now stay open for hours or days instead of the
+  fixed 5 minutes. `approval_window_seconds` is a per-flow setting (flow form
+  takes an amount plus minutes/hours/days) that overrides the workflow
+  default, and `ask_user`/`request_approval` accept an optional
+  `timeout_seconds` bounded by that window; an account can only tighten the
+  cap through `meta_data.approval_window_max_seconds`. When the window is
+  longer than the in-process wait (90 s by default,
+  `APPROVAL_PARK_AFTER_SECONDS`), the tool returns a `parked_for_human`
+  result instead of burning the window: the execution moves to the new
+  non-terminal `WAITING_FOR_HUMAN` status and the container and runner are
+  released. The decision (console, mobile, API or public link) enqueues a
+  resume that restarts the same agent session through the existing `_resume`
+  continuation path with the answer injected, and an expired window resumes
+  with an "expired" answer so the agent finishes instead of failing with
+  `cra_result_missing`. The per-flow `timeout_seconds` budget is paused while
+  parked (only compute time counts), the resume claim is a single conditional
+  UPDATE so a duplicate decision is harmless, and reminders re-notify at 50
+  and 90 percent of the window. Executions list and execution page show
+  "waiting for <who>, since <when>, expires <when>". Presets 006 and 014 set
+  a 3 day window for interactive waiver collection.
 - **CRA runtime result.json contracts and fail-closed CI gate**: versioned
   validation for presets 004–007 at the hosted and private-runner persist
   boundary, contradiction reconciliation, and `python -m preloop.cra.ci`.

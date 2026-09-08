@@ -166,4 +166,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert sweep_cursor.down_revision == "20260907_sm_pending_item"
     structured_answer = script.get_revision("20260908_structured_answer")
     assert structured_answer.down_revision == "20260907_sm_sweep_cursor"
-    assert script.get_heads() == ["20260908_structured_answer"]
+    approval_park = script.get_revision("20260908_approval_park")
+    assert approval_park.down_revision == "20260908_structured_answer"
+    assert script.get_heads() == ["20260908_approval_park"]

@@ -381,6 +381,14 @@ class TestReleaseSecurityAuditPreset:
         data = _load_preset(PRESET_FILES["Release Security Audit"])
         assert "schedule" in data["description"].lower()
 
+    def test_interactive_waiver_window_is_three_days(self):
+        """Interactive waiver collection asks a human for a decision that can
+        take days. A 5 minute window guarantees the run dies waiting."""
+        data = _load_preset(PRESET_FILES["Release Security Audit"])
+        assert data["approval_window_seconds"] == 3 * 24 * 60 * 60
+        # The window only helps if it outlives the run's own compute budget.
+        assert data["approval_window_seconds"] > data["timeout_seconds"]
+
 
 class TestReleaseAuditEvidenceStorage:
     """Multi-repo product mode: hybrid evidence storage (per-repo stubs +
@@ -826,10 +834,14 @@ class TestReleaseAuditWaivers:
         )
         assert "TIMEOUT / no answer / declined = FAIL CLOSED" in norm
         assert "Never re-ask, never assume acceptance" in norm
-        # The approval record is the identity capture.
+        # The approval record is the identity capture. Parked resumes deliver
+        # it on the `_answers_prompt` block, not only as an ask_user trailer.
+        assert "_answers_prompt" in prompt
+        assert "RESUMED AFTER A HUMAN DECISION" in prompt
         assert (
-            "The approval id is required and always comes from the tool "
-            "result, never from you" in norm
+            "The approval id is required and always comes from the "
+            "platform (tool result trailer or the parked `_answers_prompt` "
+            "block), never from you" in norm
         )
         assert (
             "an interactive answer with no platform-reported approval id "
