@@ -9,6 +9,11 @@ The delivery log is the operational surface: an integrator who is not
 receiving events needs to see whether the event was queued, how many attempts
 it took and what the receiver answered, without asking for a server log.
 
+Every handler here is a plain ``def``. They all hold a synchronous session,
+and FastAPI dispatches sync handlers on the anyio threadpool, so a wait for a
+pool connection blocks a worker thread rather than the event loop
+(``tests/api/test_event_loop_pool_wait.py`` ratchets that count).
+
 Permissions reuse ``view_policies`` / ``manage_policies``. A webhook endpoint
 is a governance egress control and sits beside policies in the console; a
 brand new permission would need seeding in the RBAC role matrix, which is not
@@ -139,7 +144,7 @@ def _reject_shim_edit(endpoint: WebhookEndpoint, verb: str) -> None:
 
 @router.get("/catalogue", response_model=WebhookCatalogue)
 @require_permission(VIEW_PERMISSION)
-async def get_webhook_catalogue(
+def get_webhook_catalogue(
     account: Annotated[Account, Depends(get_account_for_user)],
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
@@ -162,7 +167,7 @@ async def get_webhook_catalogue(
 
 @router.get("/endpoints", response_model=List[WebhookEndpointRead])
 @require_permission(VIEW_PERMISSION)
-async def list_webhook_endpoints(
+def list_webhook_endpoints(
     account: Annotated[Account, Depends(get_account_for_user)],
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
@@ -190,7 +195,7 @@ async def list_webhook_endpoints(
     status_code=status.HTTP_201_CREATED,
 )
 @require_permission(MANAGE_PERMISSION)
-async def create_webhook_endpoint(
+def create_webhook_endpoint(
     payload: WebhookEndpointCreate,
     account: Annotated[Account, Depends(get_account_for_user)],
     current_user: User = Depends(get_current_active_user),
@@ -238,7 +243,7 @@ async def create_webhook_endpoint(
 
 @router.patch("/endpoints/{endpoint_id}", response_model=WebhookEndpointRead)
 @require_permission(MANAGE_PERMISSION)
-async def update_webhook_endpoint(
+def update_webhook_endpoint(
     endpoint_id: UUID,
     payload: WebhookEndpointUpdate,
     account: Annotated[Account, Depends(get_account_for_user)],
@@ -267,7 +272,7 @@ async def update_webhook_endpoint(
 
 @router.delete("/endpoints/{endpoint_id}", status_code=status.HTTP_204_NO_CONTENT)
 @require_permission(MANAGE_PERMISSION)
-async def delete_webhook_endpoint(
+def delete_webhook_endpoint(
     endpoint_id: UUID,
     account: Annotated[Account, Depends(get_account_for_user)],
     current_user: User = Depends(get_current_active_user),
@@ -283,7 +288,7 @@ async def delete_webhook_endpoint(
 
 @router.post("/endpoints/{endpoint_id}/test", response_model=WebhookTestSendResult)
 @require_permission(MANAGE_PERMISSION)
-async def test_webhook_endpoint(
+def test_webhook_endpoint(
     endpoint_id: UUID,
     account: Annotated[Account, Depends(get_account_for_user)],
     current_user: User = Depends(get_current_active_user),
@@ -323,7 +328,7 @@ async def test_webhook_endpoint(
 
 @router.get("/deliveries/dead-letter", response_model=List[WebhookDeliveryRead])
 @require_permission(VIEW_PERMISSION)
-async def list_dead_letter_deliveries(
+def list_dead_letter_deliveries(
     account: Annotated[Account, Depends(get_account_for_user)],
     limit: int = Query(50, ge=1, le=200),
     current_user: User = Depends(get_current_active_user),
@@ -348,7 +353,7 @@ async def list_dead_letter_deliveries(
 
 @router.get("/deliveries", response_model=List[WebhookDeliveryRead])
 @require_permission(VIEW_PERMISSION)
-async def list_webhook_deliveries(
+def list_webhook_deliveries(
     account: Annotated[Account, Depends(get_account_for_user)],
     endpoint_id: Optional[UUID] = Query(None),
     delivery_status: Optional[str] = Query(
@@ -378,7 +383,7 @@ async def list_webhook_deliveries(
 
 @router.post("/deliveries/{event_id}/replay", response_model=WebhookReplayResult)
 @require_permission(MANAGE_PERMISSION)
-async def replay_webhook_event(
+def replay_webhook_event(
     event_id: UUID,
     account: Annotated[Account, Depends(get_account_for_user)],
     current_user: User = Depends(get_current_active_user),
