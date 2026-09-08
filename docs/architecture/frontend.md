@@ -45,6 +45,7 @@ graph TD
 The `Preloop Console` application is structured around a component-based architecture.
 
 *   **`src/components/`**: This directory contains all the custom Lit components that make up the application. Each component is typically defined in its own file (e.g., `tracker-list.ts`) and may have a corresponding test file (e.g., `tracker-list.test.ts`).
+*   **`src/table/`**: Shared headless list-table layer (`@tanstack/table-core`) used by console lists (executions first).
 *   **`src/api.ts`**: A dedicated module for handling communication with the Preloop REST API. It encapsulates fetch logic, authentication, and data transformation.
 *   **`index.html`**: The main entry point for the application.
 *   **`vite.config.ts`**: Configuration for the Vite build tool.

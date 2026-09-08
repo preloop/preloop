@@ -50,6 +50,22 @@ import '../../components/resource-actions.ts';
 import '../../components/list-toolbar.ts';
 import '../../components/time-range-select.ts';
 import '../../components/token-figures.ts';
+import {
+  ListTable,
+  listTableStyles,
+  renderListCells,
+  renderListHeaders,
+} from '../../table';
+import type { ListColumn } from '../../table';
+import '../../table/column-picker';
+import {
+  cacheSplitOf,
+  formatCacheHitRate,
+  formatTokenCount,
+  inputTokensOf,
+  outputTokensOf,
+  totalTokensOf,
+} from '../../components/token-figures';
 import type { ResourceAction } from '../../components/resource-actions';
 import { actionsFor } from '../../actions';
 
@@ -110,23 +126,14 @@ const RANGE_OPTIONS: Array<{
   { value: 'all', label: 'All', days: 0 },
 ];
 
-/** Columns the page can sort the rows it holds by. */
-type ExecutionSortKey =
-  | 'flow'
-  | 'subject'
-  | 'status'
-  | 'started'
-  | 'duration'
-  | 'model'
-  | 'tools'
-  | 'tokens'
-  | 'cost';
-
 @customElement('flow-executions-view')
 export class FlowExecutionsView extends AuthedElement {
   static styles = [
     reducedMotionStyles,
     unsafeCSS(consoleStyles),
+    // The sortable header button and the resize handle come from the table
+    // layer now, so every list that adopts it gets one recipe.
+    listTableStyles,
     unsafeCSS(executionSubjectCss),
     unsafeCSS(executionModelCss),
     css`
@@ -140,39 +147,15 @@ export class FlowExecutionsView extends AuthedElement {
       /* Fixed layout, because content-driven widths made this table 1250px
          wide inside a 1125px wrapper at 1440: the cost column and the kebab
          were off-screen behind a scrollbar that only appeared on hover. The
-         widths below are the ones the columns actually need; Subject takes
-         whatever is left and ellipsises. */
+         widths are declared per column in EXECUTION_COLUMNS and set on the
+         cell, so a drag can change them; Subject declares none and takes
+         whatever is left. */
       table {
         width: 100%;
         border-collapse: collapse;
         min-width: 960px;
         table-layout: fixed;
         font-size: var(--console-text-body);
-      }
-      th.col-flow {
-        width: 176px;
-      }
-      th.col-status {
-        width: 96px;
-      }
-      th.col-started {
-        width: 76px;
-      }
-      th.col-duration {
-        width: 72px;
-      }
-      th.col-model {
-        width: 150px;
-      }
-      th.col-tools {
-        width: 64px;
-      }
-      /* Tokens lead the money pair, so they get the width they need. */
-      th.col-tokens {
-        width: 170px;
-      }
-      th.col-cost {
-        width: 60px;
       }
       /* A cell grid draws a box around every value in the table (wave 4).
          Rows are separated by a hairline and nothing else, and the header is
@@ -191,45 +174,6 @@ export class FlowExecutionsView extends AuthedElement {
         font-weight: var(--sl-font-weight-semibold);
         font-size: var(--console-text-meta);
         white-space: nowrap;
-      }
-      /* The uppercase sortable eyebrow the Flows list uses, so the two
-         tables carry one header recipe. The button is the whole cell, so the
-         hit area is the label, not the six pixels of the caret. */
-      th.sortable {
-        padding: 0;
-      }
-      .sort-button {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-        width: 100%;
-        background: none;
-        border: none;
-        cursor: pointer;
-        font: inherit;
-        font-weight: var(--sl-font-weight-semibold);
-        font-size: var(--sl-font-size-x-small);
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        color: var(--sl-color-neutral-600);
-        padding: 8px;
-      }
-      th.numeric .sort-button {
-        justify-content: flex-end;
-      }
-      .sort-button:hover,
-      .sort-button:focus-visible {
-        color: var(--sl-color-neutral-900);
-      }
-      th.active .sort-button {
-        color: var(--sl-color-neutral-900);
-      }
-      .sort-caret {
-        font-size: 0.75em;
-        opacity: 0.55;
-      }
-      th.active .sort-caret {
-        opacity: 1;
       }
       tbody tr:last-child td {
         border-bottom: none;
@@ -453,15 +397,19 @@ export class FlowExecutionsView extends AuthedElement {
   private accountDefaultPool: string | null = null;
 
   /**
-   * Which column the header sorts on, or null for the order the server sent
-   * (newest first). A page is a window on a larger set, so the list does not
-   * silently reorder it until someone asks it to.
+   * The list's table model: which columns exist, which are on, in what order,
+   * how wide, and how the page in view is sorted.
+   *
+   * The page holds no sort state of its own any more. A page is a window on a
+   * larger set, so the model starts with no sort at all (the order the server
+   * sent, newest first) and only reorders when a header is clicked; the column
+   * layout is remembered per operator, the sort is not.
    */
-  @state()
-  private sortKey: ExecutionSortKey | null = null;
-
-  @state()
-  private sortDirection: 'asc' | 'desc' = 'desc';
+  private readonly table = new ListTable<FlowExecution>(this, {
+    listId: 'flow-executions',
+    getRowId: (execution) => execution.id,
+    columns: this.buildColumns(),
+  });
 
   private searchDebounceId?: number;
 
@@ -657,18 +605,22 @@ export class FlowExecutionsView extends AuthedElement {
 
   /** The page's rows in the order the header says they are in. */
   get paginatedExecutions(): FlowExecution[] {
-    const rows = [...this.filteredExecutions];
-    const key = this.sortKey;
-    if (!key) return rows;
-    const direction = this.sortDirection === 'asc' ? 1 : -1;
-    return rows.sort((a, b) => direction * this.compareExecutions(a, b, key));
+    // `filteredExecutions` hands back the same array until a fetch replaces
+    // it, and the setter compares by reference, so handing it over on every
+    // read costs nothing and there is no second place that can forget to.
+    this.table.data = this.filteredExecutions;
+    return this.table.rows;
   }
 
-  private compareExecutions(
-    a: FlowExecution,
-    b: FlowExecution,
-    key: ExecutionSortKey
-  ): number {
+  /**
+   * The columns of the executions list, in their declared order.
+   *
+   * Widths are declared here rather than in CSS because they are model state
+   * now: a drag on a header writes one back, and the cell takes whichever the
+   * operator is owed. Subject declares none on purpose, so it absorbs what the
+   * fixed columns leave over inside the fixed table layout.
+   */
+  private buildColumns(): Array<ListColumn<FlowExecution>> {
     const text = (value: string | null | undefined) => (value || '').trim();
     const startedAt = (row: FlowExecution) =>
       parseUTCDate(row.start_time).getTime() || 0;
@@ -679,40 +631,164 @@ export class FlowExecutionsView extends AuthedElement {
       const start = startedAt(row);
       return start ? end - start : 0;
     };
-    switch (key) {
-      case 'flow':
-        return text(a.flow_name).localeCompare(text(b.flow_name));
-      case 'subject':
-        return text(a.trigger_subject).localeCompare(text(b.trigger_subject));
-      case 'status':
-        return text(a.status).localeCompare(text(b.status));
-      case 'duration':
-        return durationOf(a) - durationOf(b);
-      case 'model':
-        return text(a.model_alias).localeCompare(text(b.model_alias));
-      case 'tools':
-        return (a.tool_calls_count || 0) - (b.tool_calls_count || 0);
-      case 'tokens':
-        return (
-          Number(a.token_usage?.total_tokens || 0) -
-          Number(b.token_usage?.total_tokens || 0)
-        );
-      case 'cost':
-        return (a.estimated_cost || 0) - (b.estimated_cost || 0);
-      case 'started':
-      default:
-        return startedAt(a) - startedAt(b);
-    }
-  }
-
-  /** First click sorts descending, because recent and expensive lead. */
-  private toggleSort(key: ExecutionSortKey): void {
-    if (this.sortKey === key) {
-      this.sortDirection = this.sortDirection === 'asc' ? 'desc' : 'asc';
-      return;
-    }
-    this.sortKey = key;
-    this.sortDirection = 'desc';
+    const tokenCell = (
+      row: FlowExecution,
+      count: (usage: GatewayTokenUsage | null) => number
+    ) => {
+      const usage = row.token_usage || null;
+      if (!usage) return '\u2014';
+      return formatTokenCount(count(usage));
+    };
+    return [
+      {
+        id: 'flow',
+        header: 'Flow',
+        width: 176,
+        // A list of runs with no flow to attribute them to is a list of
+        // nothing, so this column cannot be switched off.
+        hideable: false,
+        cellClass: 'flow-cell',
+        value: (row) => text(row.flow_name),
+        cell: (row) => html`
+          <a class="row-link" href=${this.executionUrl(row)}
+            >${row.flow_name || 'Unnamed flow'}</a
+          >
+          <!-- Where it ran, only when that is news: see
+               shouldShowRunnerKind. -->
+          ${
+            shouldShowRunnerKind(row.runner, this.accountDefaultPool)
+              ? renderExecutionRunnerKind(row.runner)
+              : nothing
+          }
+        `,
+      },
+      {
+        id: 'subject',
+        header: 'Subject',
+        // No width and no resize handle: this is the column that takes what
+        // the others leave, which is how the table fits its wrapper.
+        resizable: false,
+        hideable: false,
+        cellClass: 'subject-cell',
+        value: (row) => text(row.trigger_subject),
+        cell: (row) => renderExecutionSubject(row),
+      },
+      {
+        id: 'status',
+        header: 'Status',
+        width: 96,
+        value: (row) => text(row.status),
+        cell: (row) => this.renderStatusCell(row),
+      },
+      {
+        id: 'started',
+        header: 'Started',
+        width: 76,
+        sort: 'number',
+        cellClass: 'started-cell',
+        value: (row) => startedAt(row),
+        cellTitle: (row) => formatUTCDateTime(row.start_time),
+        cell: (row) => formatRelativeTime(row.start_time),
+      },
+      {
+        id: 'duration',
+        header: 'Duration',
+        width: 72,
+        sort: 'number',
+        cellClass: 'duration-cell',
+        value: (row) => durationOf(row),
+        cell: (row) => executionDurationText(row, this.durationNow) || '\u2014',
+      },
+      {
+        id: 'model',
+        header: 'Model',
+        width: 150,
+        cellClass: 'model-cell',
+        value: (row) => text(row.model_alias),
+        // No provider column here, so the alias prints once: the cell used to
+        // read "deepseek/deepseek-v4-pro deepseek".
+        cell: (row) => renderExecutionModel(row, { aliasOnly: true }),
+      },
+      {
+        id: 'tools',
+        header: 'Tool calls',
+        width: 64,
+        numeric: true,
+        sort: 'number',
+        value: (row) => row.tool_calls_count || 0,
+        cell: (row) => (row.tool_calls_count || 0).toLocaleString(),
+      },
+      // Tokens is a composite column: the total is what a list needs to
+      // compare runs, and the parts it is made of are one checkbox away, each
+      // sortable on its own. Total-only in the list matches what the agents
+      // and flows tables settled on.
+      {
+        id: 'tokens',
+        header: 'Tokens',
+        pickerLabel: 'Total',
+        group: 'Tokens',
+        width: 92,
+        numeric: true,
+        sort: 'number',
+        value: (row) => totalTokensOf(row.token_usage),
+        cell: (row) =>
+          html`<token-figures
+            total-only
+            .usage=${row.token_usage || null}
+          ></token-figures>`,
+      },
+      {
+        id: 'tokens-in',
+        header: 'In',
+        pickerLabel: 'Input',
+        group: 'Tokens',
+        width: 72,
+        numeric: true,
+        sort: 'number',
+        visible: false,
+        value: (row) => inputTokensOf(row.token_usage),
+        cell: (row) => tokenCell(row, inputTokensOf),
+      },
+      {
+        id: 'tokens-out',
+        header: 'Out',
+        pickerLabel: 'Output',
+        group: 'Tokens',
+        width: 72,
+        numeric: true,
+        sort: 'number',
+        visible: false,
+        value: (row) => outputTokensOf(row.token_usage),
+        cell: (row) => tokenCell(row, outputTokensOf),
+      },
+      {
+        id: 'tokens-cached',
+        header: 'Cached',
+        pickerLabel: 'Cached',
+        group: 'Tokens',
+        width: 84,
+        numeric: true,
+        sort: 'number',
+        visible: false,
+        // Unknown is not zero: a provider that reports no cache fields has
+        // not told us that nothing hit, so the cell says nothing.
+        value: (row) => cacheSplitOf(row.token_usage)?.hit ?? 0,
+        cellTitle: (row) => {
+          const rate = formatCacheHitRate(cacheSplitOf(row.token_usage)?.ratio);
+          return rate ? `${rate} cache hit rate` : undefined;
+        },
+        cell: (row) => this.renderCachedCell(row),
+      },
+      {
+        id: 'cost',
+        header: '$ est.',
+        width: 60,
+        numeric: true,
+        sort: 'number',
+        value: (row) => row.estimated_cost || 0,
+        cell: (row) => formatEstimatedCost(row.estimated_cost),
+      },
+    ];
   }
 
   setStatusFilter(status: string) {
@@ -1051,6 +1127,18 @@ export class FlowExecutionsView extends AuthedElement {
           <sl-icon name="arrow-clockwise"></sl-icon>
           Refresh
         </sl-button>
+
+        <!-- Which columns the table shows sits with the filters that decide
+             which rows it shows, not in a header cell: the header row is the
+             table's own vocabulary and a control in it would be read as a
+             tenth column. -->
+        <column-picker
+          .columns=${this.table.pickerColumns}
+          ?can-reset=${this.table.hasColumnChanges}
+          @column-toggle=${(event: CustomEvent) =>
+            this.table.setVisible(event.detail.id, event.detail.visible)}
+          @columns-reset=${() => this.table.resetColumns()}
+        ></column-picker>
         <span slot="count">${this.resultsLabel}</span>
       </list-toolbar>
     `;
@@ -1103,49 +1191,6 @@ export class FlowExecutionsView extends AuthedElement {
     `;
   }
 
-  private renderSortableHeader(
-    key: ExecutionSortKey,
-    label: string,
-    columnClass: string,
-    numeric = false
-  ) {
-    const active = this.sortKey === key;
-    const ariaSort = active
-      ? this.sortDirection === 'asc'
-        ? 'ascending'
-        : 'descending'
-      : 'none';
-    return html`
-      <th
-        class="${columnClass} sortable ${numeric ? 'numeric' : ''} ${
-          active ? 'active' : ''
-        }"
-        aria-sort=${ariaSort}
-        scope="col"
-      >
-        <button
-          type="button"
-          class="sort-button"
-          data-sort-key=${key}
-          title="Sorts the executions on this page"
-          @click=${() => this.toggleSort(key)}
-        >
-          <span>${label}</span>
-          <sl-icon
-            class="sort-caret"
-            name=${
-              active
-                ? this.sortDirection === 'asc'
-                  ? 'caret-up-fill'
-                  : 'caret-down-fill'
-                : 'chevron-expand'
-            }
-          ></sl-icon>
-        </button>
-      </th>
-    `;
-  }
-
   render() {
     return html`
       <view-header headerText="Flow executions" width="wide"></view-header>
@@ -1167,50 +1212,7 @@ export class FlowExecutionsView extends AuthedElement {
                     <table>
                       <thead>
                         <tr>
-                          ${this.renderSortableHeader('flow', 'Flow', 'col-flow')}
-                          ${this.renderSortableHeader(
-                            'subject',
-                            'Subject',
-                            'col-subject'
-                          )}
-                          ${this.renderSortableHeader(
-                            'status',
-                            'Status',
-                            'col-status'
-                          )}
-                          ${this.renderSortableHeader(
-                            'started',
-                            'Started',
-                            'col-started'
-                          )}
-                          ${this.renderSortableHeader(
-                            'duration',
-                            'Duration',
-                            'col-duration'
-                          )}
-                          ${this.renderSortableHeader(
-                            'model',
-                            'Model',
-                            'col-model'
-                          )}
-                          ${this.renderSortableHeader(
-                            'tools',
-                            'Tool calls',
-                            'col-tools',
-                            true
-                          )}
-                          ${this.renderSortableHeader(
-                            'tokens',
-                            'Tokens',
-                            'col-tokens',
-                            true
-                          )}
-                          ${this.renderSortableHeader(
-                            'cost',
-                            '$ est.',
-                            'col-cost',
-                            true
-                          )}
+                          ${renderListHeaders(this.table)}
                           <th class="actions-cell"></th>
                         </tr>
                       </thead>
@@ -1257,67 +1259,12 @@ export class FlowExecutionsView extends AuthedElement {
   }
 
   private renderRow(exec: FlowExecution) {
-    const isLive = RUNNING_STATUSES.has(exec.status);
-    const variant = executionStatusVariant(exec.status);
     return html`
       <tr
         class="execution-row"
         @click=${(event: MouseEvent) => this.handleRowClick(event, exec)}
       >
-        <td class="flow-cell">
-          <a class="row-link" href=${this.executionUrl(exec)}
-            >${exec.flow_name || 'Unnamed flow'}</a
-          >
-          <!-- Where it ran, only when that is news: see
-               shouldShowRunnerKind. -->
-          ${
-            shouldShowRunnerKind(exec.runner, this.accountDefaultPool)
-              ? renderExecutionRunnerKind(exec.runner)
-              : nothing
-          }
-        </td>
-        <td class="subject-cell">${renderExecutionSubject(exec)}</td>
-        <td>
-          <div class="status-cell">
-            ${
-              isLive
-                ? html`<div
-                    class="status-indicator ${
-                      exec.status === 'PENDING' ? 'pending' : 'running'
-                    }"
-                  ></div>`
-                : ''
-            }
-            <sl-badge
-              class="chip ${variant === 'danger' ? 'solid' : ''}"
-              pill
-              variant=${variant}
-              >${executionStatusLabel(exec.status)}</sl-badge
-            >
-            <!-- "Failed" says that it broke; the category says what broke,
-                 which is the difference between a provider hiccup and a flow
-                 that never confirms it finished. -->
-            ${renderFailureCategoryChip(exec.failure_category)}
-          </div>
-        </td>
-        <td class="started-cell" title=${formatUTCDateTime(exec.start_time)}>
-          ${formatRelativeTime(exec.start_time)}
-        </td>
-        <td class="duration-cell">
-          ${executionDurationText(exec, this.durationNow) || '—'}
-        </td>
-        <!-- No provider column here, so the alias prints once: the cell used
-             to read "deepseek/deepseek-v4-pro deepseek". -->
-        <td class="model-cell">
-          ${renderExecutionModel(exec, { aliasOnly: true })}
-        </td>
-        <td class="numeric">
-          ${(exec.tool_calls_count || 0).toLocaleString()}
-        </td>
-        <td class="numeric">
-          <token-figures .usage=${exec.token_usage || null}></token-figures>
-        </td>
-        <td class="numeric">${formatEstimatedCost(exec.estimated_cost)}</td>
+        ${renderListCells(this.table, exec)}
         <td class="actions-cell">
           <div
             class="row-actions"
@@ -1332,6 +1279,48 @@ export class FlowExecutionsView extends AuthedElement {
         </td>
       </tr>
     `;
+  }
+
+  /** The status chip, the live dot, and what kind of failure it was. */
+  private renderStatusCell(exec: FlowExecution) {
+    const isLive = RUNNING_STATUSES.has(exec.status);
+    const variant = executionStatusVariant(exec.status);
+    return html`
+      <div class="status-cell">
+        ${
+          isLive
+            ? html`<div
+                class="status-indicator ${
+                  exec.status === 'PENDING' ? 'pending' : 'running'
+                }"
+              ></div>`
+            : ''
+        }
+        <sl-badge
+          class="chip ${variant === 'danger' ? 'solid' : ''}"
+          pill
+          variant=${variant}
+          >${executionStatusLabel(exec.status)}</sl-badge
+        >
+        <!-- "Failed" says that it broke; the category says what broke, which
+             is the difference between a provider hiccup and a flow that never
+             confirms it finished. -->
+        ${renderFailureCategoryChip(exec.failure_category)}
+      </div>
+    `;
+  }
+
+  /**
+   * Cache reads, with the hit rate on the cell's `title`.
+   *
+   * The count is what sorts and what compares between runs; the rate is the
+   * sentence about it, and it belongs where the rest of the token detail
+   * already keeps its exact figures.
+   */
+  private renderCachedCell(exec: FlowExecution) {
+    const split = cacheSplitOf(exec.token_usage || null);
+    if (!split) return '\u2014';
+    return formatTokenCount(split.hit);
   }
 
   /** Kept for callers and tests from earlier waves. */
