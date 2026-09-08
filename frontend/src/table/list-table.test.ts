@@ -1,4 +1,4 @@
-import { html, fixture, expect } from '@open-wc/testing';
+import { aTimeout, html, fixture, expect } from '@open-wc/testing';
 import { LitElement } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { ListTable } from './list-table';
@@ -387,6 +387,40 @@ describe('column-picker', () => {
     );
 
     expect(toggles).to.eql([{ id: 'cached', visible: true }]);
+  });
+
+  it('stays open across checkboxes and closes when reset is chosen', async () => {
+    const el = (await fixture(html`
+      <column-picker
+        can-reset
+        .columns=${[
+          { id: 'tokens', label: 'Total', visible: true, hideable: true },
+          { id: 'cached', label: 'Cached', visible: false, hideable: true },
+        ]}
+      ></column-picker>
+    `)) as ColumnPicker;
+    await el.updateComplete;
+    const dropdown = el.shadowRoot!.querySelector(
+      'sl-dropdown'
+    ) as HTMLElement & {
+      open: boolean;
+      show: () => Promise<void>;
+    };
+    await dropdown.show();
+
+    // Turning columns on is a series of choices, not one command, so the
+    // menu has to survive the first checkbox.
+    (
+      el.shadowRoot!.querySelector(
+        'sl-menu-item[data-column="cached"]'
+      ) as HTMLElement
+    ).click();
+    await aTimeout(50);
+    expect(dropdown.open, 'a checkbox leaves the menu open').to.be.true;
+
+    (el.shadowRoot!.querySelector('.reset-columns') as HTMLElement).click();
+    await aTimeout(50);
+    expect(dropdown.open, 'reset ends the exchange').to.be.false;
   });
 
   it('asks for a reset only when it is offered', async () => {

@@ -67,7 +67,11 @@ export class ColumnPicker extends LitElement {
   render() {
     const groups = this.grouped();
     return html`
-      <sl-dropdown hoist placement="bottom-end">
+      <!-- Checking a box is not choosing a command: an operator turning three
+           token columns on would otherwise reopen the menu three times,
+           because Shoelace closes a dropdown on every selection. Reset is the
+           one entry that ends the exchange, so it closes the menu itself. -->
+      <sl-dropdown hoist stay-open-on-select placement="bottom-end">
         <sl-button slot="trigger" size="small" caret>
           <sl-icon slot="prefix" name="layout-three-columns"></sl-icon>
           ${this.label}
@@ -109,6 +113,13 @@ export class ColumnPicker extends LitElement {
     `;
   }
 
+  /** Shuts the menu, for the entry that is done when it is chosen. */
+  private close(): void {
+    const dropdown = this.renderRoot.querySelector('sl-dropdown') as
+      (HTMLElement & { hide?: () => void }) | null;
+    dropdown?.hide?.();
+  }
+
   /** Ungrouped columns first, in declaration order, then each group once. */
   private grouped(): Array<{ name?: string; items: ColumnPickerItem[] }> {
     const ungrouped = this.columns.filter((column) => !column.group);
@@ -131,6 +142,7 @@ export class ColumnPicker extends LitElement {
     if (!item) return;
     const value = item.getAttribute('value');
     if (value === '__reset__') {
+      this.close();
       this.dispatchEvent(
         new CustomEvent('columns-reset', { bubbles: true, composed: true })
       );
