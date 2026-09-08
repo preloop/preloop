@@ -663,7 +663,10 @@ export class Router {
   }
 
   /**
-   * Write the history entry once the destination is known.
+   * Write the history entry once the destination is known, which is before
+   * the destination's views are connected: a view that reads
+   * `window.location` in `connectedCallback` must read where it is, not where
+   * it came from.
    *
    * Only the destination is ever written, never the URL a redirect passed
    * through, so a redirect costs no back-button stop. The kind of entry is the
