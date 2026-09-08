@@ -190,13 +190,14 @@ def _scan_keywords(
 ) -> None:
     for match in pattern.finditer(text):
         position = match.end()
-        while match is not None:
-            jira = match.group("jira")
+        chain = match
+        while chain is not None:
+            jira = chain.group("jira")
             if jira:
                 _add(found, key=jira, kind=kind, source=source, url=None)
             else:
-                path = match.group("path") or repo_path
-                number = match.group("number")
+                path = chain.group("path") or repo_path
+                number = chain.group("number")
                 if path:
                     _add(
                         found,
@@ -206,9 +207,9 @@ def _scan_keywords(
                         url=_issue_url(host, path, number, platform),
                     )
             # "Closes #12, #13 and #14": the keyword governs the whole list.
-            match = _CHAIN_RE.match(text, position)
-            if match is not None:
-                position = match.end()
+            chain = _CHAIN_RE.match(text, position)
+            if chain is not None:
+                position = chain.end()
 
 
 def extract_issue_references(
