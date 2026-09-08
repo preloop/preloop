@@ -63,6 +63,67 @@ _LOW_VALUE_LINE_RES = (
     re.compile(r"error occurred[:\s]*$", re.IGNORECASE),
 )
 
+# Lines that are program *source* rather than program *output*.
+#
+# ``error_message`` is client-visible over the flow-execution API, and the
+# selection heuristics below pick a window of neighbouring log lines around
+# whatever looked most like a failure. Agent containers routinely print source
+# text (a checked-out repository being audited, a stack renderer that includes
+# source context, a shell that echoes a heredoc), so a window can capture code
+# that has nothing to do with the failure and does not belong in a client
+# response. These shapes are dropped before any window is chosen, and again in
+# ``_finalize`` as a second pass over everything surfaced.
+#
+# The cost of a false positive is one dropped line of a multi-line message; the
+# cost of a false negative is disclosure. The patterns lean towards dropping.
+_SOURCE_CONTEXT_RES = (
+    # Python traceback frame headers.
+    re.compile(r'^\s*File\s+"[^"]*",\s+line\s+\d+', re.IGNORECASE),
+    # Column markers a stack renderer draws under the offending expression.
+    re.compile(r"^\s*[\^~]{2,}\s*$"),
+    # Comment-only lines: never runtime output, frequently internal prose.
+    re.compile(r"^\s*(?:#|//)"),
+    # A bare bracket closing a statement that spanned several lines.
+    re.compile(r"^\s*[)\]}][,;:]?\s*$"),
+    # The rest fire only on an *indented* line. A statement at column zero is
+    # log output ("return code 3 from the packaging step"); the same words
+    # inside a block are source. Indentation is the cheapest signal that
+    # separates the two, and stack frames ("  at Fetch.onAborted (...)") do
+    # not match any of these shapes, so transport stacks still survive.
+    re.compile(
+        r"^\s+(?:if|elif|else|for|while|try|except|finally|with|raise|return|"
+        r"yield|def|class|import|from|assert|pass|del|global|nonlocal|lambda|"
+        r"async|await|func|var|let|const|public|private|protected|switch|case)"
+        r"\b"
+    ),
+    # An indented decorator.
+    re.compile(r"^\s+@\w"),
+    # An indented assignment, keyword argument, or argument-list continuation:
+    # "x = f(a)", "status_code=500", "db_sync, approval_request_id=...".
+    re.compile(r"^\s+[\w.\[\]\"']+\s*[,=](?!=)"),
+    # An indented call statement: "db_sync.expire_all()".
+    re.compile(r"^\s+[\w.]+\("),
+)
+
+# What replaces a message that was entirely source context. It names the place
+# the full detail is kept, which is the log, per SECURITY.md.
+GENERIC_FAILURE_MESSAGE = (
+    "The agent run failed without a recognisable error message. "
+    "See the execution logs for details."
+)
+
+
+def _is_source_context(line: str) -> bool:
+    """True when a log line is program source rather than program output."""
+    return any(pattern.search(line) for pattern in _SOURCE_CONTEXT_RES)
+
+
+def _strip_source_context(text: str) -> str:
+    """Drop source-code lines from text that is about to be surfaced."""
+    kept = [line for line in text.split("\n") if not _is_source_context(line)]
+    return "\n".join(kept).strip()
+
+
 # Lines where an agent CLI reports one failed attempt of its internal retry
 # loop. Deliberately generic: any "attempt N ... fail" phrasing, so this is not
 # tied to one provider or one CLI's wording.
@@ -230,8 +291,15 @@ def _is_low_value(line: str) -> bool:
 
 
 def _finalize(message: str) -> str:
-    """Scrub secrets and cap length on anything surfaced to a user."""
-    return (scrub_secrets(message.strip()) or "")[:MAX_SURFACED_MESSAGE_CHARS]
+    """Make text safe to store on ``error_message`` and show to a client.
+
+    Three passes, in order: drop source-code lines, scrub credentials, cap the
+    length. The source pass is here rather than only at the selection site so
+    that every path out of this module is covered, including the generated
+    sentences, which can embed provider text.
+    """
+    stripped = _strip_source_context(message)
+    return (scrub_secrets(stripped) or "")[:MAX_SURFACED_MESSAGE_CHARS]
 
 
 @dataclass(frozen=True)
@@ -337,8 +405,18 @@ def _fallback_message(lines: list[str]) -> str:
     Priority: explicit ``ERROR:`` lines, then exceptions/tracebacks, then any
     error-shaped line, then the log tail. Unlike the original implementation,
     lines that carry no information (``[object Object]``, bare ``status: NNN``,
-    HTML error pages, stray braces) are never selected as the answer.
+    HTML error pages, stray braces) are never selected as the answer, and
+    lines that are program source are removed before a window is chosen, so a
+    window can neither start on nor spill into code.
+
+    ``raise `` used to be one of the exception markers. It is not a marker of
+    runtime output at all: it only ever matches a source line, which is how a
+    window of unrelated code reached a client-visible field. Real stacks are
+    still found by ``traceback`` and ``exception:``.
     """
+    lines = [line for line in lines if not _is_source_context(line)]
+    if not lines:
+        return GENERIC_FAILURE_MESSAGE
 
     def window(index: int, before: int, after: int) -> str:
         start = max(0, index - before)
@@ -351,7 +429,7 @@ def _fallback_message(lines: list[str]) -> str:
 
     for index in range(len(lines) - 1, -1, -1):
         lowered = lines[index].lower()
-        if any(marker in lowered for marker in ("traceback", "exception:", "raise ")):
+        if any(marker in lowered for marker in ("traceback", "exception:")):
             return window(index, 0, 10)
 
     for index in range(len(lines) - 1, -1, -1):
@@ -428,6 +506,10 @@ def _scan_setup_failure(logs_text: str) -> Optional[AgentFailureAnalysis]:
     detail = ""
     for line in reversed(_content_lines(logs_text)):
         if SETUP_FAILED_MARKER in line or line.startswith("Setup commands failed"):
+            continue
+        # A source line inlined here would survive ``_finalize``, which drops
+        # whole lines and cannot see code embedded after a prefix.
+        if _is_source_context(line):
             continue
         detail = line.strip()
         break

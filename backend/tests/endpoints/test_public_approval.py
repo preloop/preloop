@@ -1,11 +1,13 @@
 """Tests for public approval API endpoints (token-based, no auth required)."""
 
+import logging
 import uuid
 from datetime import datetime, timedelta, UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
+from preloop.api.endpoints.public_approval import DECISION_FAILED_DETAIL
 from preloop.models.crud import crud_approval_workflow
 from preloop.models.models.approval_request import ApprovalRequest
 from preloop.models.models.tool_configuration import ToolConfiguration
@@ -238,6 +240,150 @@ class TestPublicApprovalDecide:
                     e for e in data["history"] if e["event_type"] == "notification_sent"
                 )
                 assert "1 recipient" in notified["detail"]
+
+
+class TestPublicApprovalDecideDoesNotLeakInternals:
+    """The decision endpoint authenticates with a link token only.
+
+    Nothing in a response body may vary with the internal cause of a failure,
+    and nothing the caller sends may be reflected back. Operators read the
+    cause in the logs.
+    """
+
+    def _pending_request(self, db_session, test_user, token: str) -> ApprovalRequest:
+        workflow = crud_approval_workflow.create(
+            db_session,
+            obj_in=ApprovalWorkflowCreate(name="Test WF", approval_type="manual"),
+            account_id=str(test_user.account_id),
+        )
+        db_session.flush()
+
+        tool_config = ToolConfiguration(
+            tool_name="test_tool",
+            tool_source="builtin",
+            account_id=test_user.account_id,
+            approval_workflow_id=workflow.id,
+        )
+        db_session.add(tool_config)
+        db_session.flush()
+
+        approval_request = ApprovalRequest(
+            account_id=test_user.account_id,
+            tool_configuration_id=tool_config.id,
+            approval_workflow_id=workflow.id,
+            execution_id="exec-1",
+            tool_name="test_tool",
+            tool_args={},
+            status="pending",
+            requested_at=datetime.now(UTC),
+            approval_token=token,
+        )
+        db_session.add(approval_request)
+        db_session.flush()
+        return approval_request
+
+    def test_invalid_action_is_not_reflected_back(
+        self, client: TestClient, db_session, test_user
+    ):
+        """The submitted action must not appear in the response body."""
+        approval_request = self._pending_request(
+            db_session, test_user, "no-reflect-token"
+        )
+        payload = "<img src=x onerror=alert(1)>"
+
+        response = client.post(
+            f"/approval/{approval_request.id}/decide",
+            params={"token": "no-reflect-token"},
+            json={"action": payload, "comment": None},
+        )
+
+        assert response.status_code == 400
+        assert payload not in response.text
+        assert response.json()["detail"] == (
+            "Invalid action. Expected 'approve' or 'decline'."
+        )
+
+    def test_service_exception_yields_a_fixed_sentence(
+        self, client: TestClient, db_session, test_user
+    ):
+        """An internal failure returns one fixed sentence, and logs the rest."""
+        approval_request = self._pending_request(db_session, test_user, "boom-token")
+        secret = (
+            'relation "approval_request" does not exist at '
+            "/app/preloop/services/approval_service.py line 981"
+        )
+
+        # The module logger does not propagate to the root under the JSON
+        # formatter, so caplog sees nothing. Attach a handler directly.
+        records: list[logging.LogRecord] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        handler = _Capture()
+        module_logger = logging.getLogger("preloop.api.endpoints.public_approval")
+        module_logger.addHandler(handler)
+        try:
+            with patch(
+                "preloop.api.endpoints.public_approval.get_async_db_session"
+            ) as mock_get_session:
+                mock_session = AsyncMock()
+                mock_get_session.return_value.__aenter__.return_value = mock_session
+
+                with patch(
+                    "preloop.api.endpoints.public_approval.ApprovalService"
+                ) as mock_service_cls:
+                    mock_service = AsyncMock()
+                    mock_service.approve_request = AsyncMock(
+                        side_effect=RuntimeError(secret)
+                    )
+                    mock_service_cls.return_value = mock_service
+
+                    response = client.post(
+                        f"/approval/{approval_request.id}/decide",
+                        params={"token": "boom-token"},
+                        json={"action": "approve", "comment": None},
+                    )
+        finally:
+            module_logger.removeHandler(handler)
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == DECISION_FAILED_DETAIL
+        assert secret not in response.text
+        assert "approval_service.py" not in response.text
+
+        logged = [record for record in records if record.exc_info]
+        assert logged, "the failure must be logged with its traceback"
+        assert str(logged[-1].exc_info[1]) == secret
+
+    def test_missing_updated_request_yields_the_same_sentence(
+        self, client: TestClient, db_session, test_user
+    ):
+        """A None from the service is indistinguishable from any other failure."""
+        approval_request = self._pending_request(db_session, test_user, "none-token")
+
+        with patch(
+            "preloop.api.endpoints.public_approval.get_async_db_session"
+        ) as mock_get_session:
+            mock_session = AsyncMock()
+            mock_get_session.return_value.__aenter__.return_value = mock_session
+
+            with patch(
+                "preloop.api.endpoints.public_approval.ApprovalService"
+            ) as mock_service_cls:
+                mock_service = AsyncMock()
+                mock_service.approve_request = AsyncMock(return_value=None)
+                mock_service_cls.return_value = mock_service
+
+                response = client.post(
+                    f"/approval/{approval_request.id}/decide",
+                    params={"token": "none-token"},
+                    json={"action": "approve", "comment": None},
+                )
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == DECISION_FAILED_DETAIL
 
 
 class TestPublicApprovalPage:

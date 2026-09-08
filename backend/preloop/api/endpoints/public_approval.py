@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/approval", tags=["public-approval"])
 
+# One fixed sentence for every internal failure on the decision path. The
+# endpoint authenticates with a link token only, so the response body must not
+# vary with the internal cause. Operators read the cause in the logs.
+DECISION_FAILED_DETAIL = (
+    "The approval decision could not be recorded. Please retry, "
+    "or contact the person who sent you this link."
+)
+
 
 class ApprovalDecisionRequest(BaseModel):
     """Request to approve or decline."""
@@ -186,31 +194,58 @@ async def decide_approval_request_public(
             detail=f"Approval request already {approval_request.status}",
         )
 
+    if decision.action not in ("approve", "decline"):
+        # The submitted action is not echoed back. This endpoint is
+        # unauthenticated, so nothing the caller sends should reappear in a
+        # response body.
+        logger.warning(
+            "Invalid action on approval request %s: %r", request_id, decision.action
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid action. Expected 'approve' or 'decline'.",
+        )
+
     # Process decision using approval service (async)
     async with get_async_db_session() as db_async:
         approval_service = ApprovalService(
             db_async, ""
         )  # base_url not needed for this operation
 
-        if decision.action == "approve":
-            logger.info(f"Approving request {request_id}")
-            updated_request = await approval_service.approve_request(
-                request_id, decision.comment, channel="token link"
+        try:
+            if decision.action == "approve":
+                logger.info(f"Approving request {request_id}")
+                updated_request = await approval_service.approve_request(
+                    request_id, decision.comment, channel="token link"
+                )
+            else:
+                logger.info(f"Declining request {request_id}")
+                updated_request = await approval_service.decline_request(
+                    request_id, decision.comment, channel="token link"
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            # The full exception, with its traceback, goes to the log. The
+            # client gets a fixed sentence: this endpoint is reachable with
+            # only a token, and internal failure text can carry database
+            # identifiers, file paths and source context.
+            logger.exception(
+                "Failed to record %s decision for approval request %s",
+                decision.action,
+                request_id,
             )
-        elif decision.action == "decline":
-            logger.info(f"Declining request {request_id}")
-            updated_request = await approval_service.decline_request(
-                request_id, decision.comment, channel="token link"
-            )
-        else:
             raise HTTPException(
-                status_code=400, detail=f"Invalid action: {decision.action}"
-            )
+                status_code=500, detail=DECISION_FAILED_DETAIL
+            ) from None
 
         if not updated_request:
-            raise HTTPException(
-                status_code=500, detail="Failed to update approval request"
+            logger.error(
+                "Approval service returned no request after %s of %s",
+                decision.action,
+                request_id,
             )
+            raise HTTPException(status_code=500, detail=DECISION_FAILED_DETAIL)
 
         # Re-query the timeline so the token page keeps Workflow History
         # after a decision instead of replacing it with the default [].

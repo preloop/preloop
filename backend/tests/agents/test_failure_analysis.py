@@ -7,7 +7,11 @@ runtime stringified an error object instead of serialising it.
 """
 
 from preloop.agents.container import ContainerAgentExecutor
-from preloop.agents.failure_analysis import analyze_agent_failure
+from preloop.agents.failure_analysis import (
+    GENERIC_FAILURE_MESSAGE,
+    analyze_agent_failure,
+)
+from preloop.utils.workspace_snapshot import SETUP_FAILED_MARKER
 from preloop.services.upstream_errors import (
     ERROR_CLASS_UPSTREAM_AUTH,
     ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
@@ -404,3 +408,114 @@ def test_raw_incomplete_chunked_read_is_transient() -> None:
         "sending complete message body (incomplete chunked read)"
     )
     assert analysis.transient is True
+
+
+class TestSourceContextNeverReachesClients:
+    """``error_message`` is client-visible; program source must not reach it.
+
+    Observed in the CRA dogfood run: a preset audited a checkout of the
+    backend, the container log therefore contained backend source, and the
+    fallback extractor selected a window anchored on a ``raise`` line. Fourteen
+    consecutive lines of server source, including an internal comment, were
+    stored on the execution and served over the flow-execution API.
+    """
+
+    SOURCE_BLOCK = [
+        "        else:",
+        "            raise HTTPException(",
+        '                status_code=400, detail=f"Invalid action: {decision.action}"',
+        "            )",
+        "",
+        "        if not updated_request:",
+        "            raise HTTPException(",
+        '                status_code=500, detail="Failed to update approval request"',
+        "            )",
+        "",
+        "        # Re-query the timeline so the token page keeps Workflow History",
+        "        # after a decision instead of replacing it with the default [].",
+        "        db_sync.expire_all()",
+        "        history = crud_approval_event.get_by_request(",
+        "            db_sync, approval_request_id=updated_request.id",
+        "        )",
+    ]
+
+    def test_raise_window_no_longer_surfaces_source(self):
+        """The exact incident shape: source printed by the agent, then a failure."""
+        logs = "\n".join(
+            ["Reading backend/preloop/api/endpoints/public_approval.py"]
+            + self.SOURCE_BLOCK
+            + ["Agent gave up waiting for the approval decision."]
+        )
+
+        message = analyze_agent_failure(logs).message
+
+        assert "raise HTTPException" not in message
+        assert "Re-query the timeline" not in message
+        assert "db_sync.expire_all" not in message
+        assert "crud_approval_event" not in message
+
+    def test_source_only_log_yields_a_generic_sentence(self):
+        """When every candidate line is source, say nothing rather than leak."""
+        message = analyze_agent_failure("\n".join(self.SOURCE_BLOCK)).message
+
+        assert message == GENERIC_FAILURE_MESSAGE
+
+    def test_python_traceback_keeps_the_exception_drops_the_frames(self):
+        """A real traceback still names the error, without file paths or code."""
+        logs = "\n".join(
+            [
+                "Traceback (most recent call last):",
+                '  File "/app/preloop/services/approval_service.py", line 981, in approve_request',
+                "    updated = await self._persist(request_id)",
+                "              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+                "ValueError: approval request has no workflow",
+            ]
+        )
+
+        message = analyze_agent_failure(logs).message
+
+        assert "ValueError: approval request has no workflow" in message
+        assert "approval_service.py" not in message
+        assert "self._persist" not in message
+        assert "^^^" not in message
+
+    def test_error_prefixed_line_still_wins_and_stays_clean(self):
+        """The primary extraction path is unchanged for genuine output."""
+        logs = "\n".join(
+            ["Starting agent run"]
+            + self.SOURCE_BLOCK
+            + ["ERROR: The requested tool is not permitted by policy."]
+        )
+
+        message = analyze_agent_failure(logs).message
+
+        assert "ERROR: The requested tool is not permitted by policy." in message
+        assert "raise HTTPException" not in message
+
+    def test_setup_failure_detail_is_not_a_source_line(self):
+        """The setup-failure path inlines its detail, so it filters separately."""
+        logs = "\n".join(
+            ["Running setup commands"]
+            + self.SOURCE_BLOCK
+            + [f"{SETUP_FAILED_MARKER} exit=2"]
+        )
+
+        message = analyze_agent_failure(logs).message
+
+        assert message.startswith("Setup commands failed (exit 2)")
+        assert "raise HTTPException" not in message
+        assert "Re-query the timeline" not in message
+
+    def test_top_level_output_starting_with_a_keyword_is_kept(self):
+        """The source filter is anchored on indentation, so output survives."""
+        logs = "\n".join(
+            [
+                "Running the build",
+                "return code 3 from the packaging step",
+                "ERROR: build failed",
+            ]
+        )
+
+        message = analyze_agent_failure(logs).message
+
+        assert "return code 3 from the packaging step" in message
