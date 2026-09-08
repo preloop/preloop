@@ -365,11 +365,12 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         updated = self.update(db, db_obj=db_obj, obj_in=FlowExecutionUpdate(**payload))
         # A parked parent stays RESUMING until this child finishes; copy the
         # terminal status so the console does not keep a blue "Resuming" chip.
+        # Prefer the payload timestamp when update() did not apply end_time.
         self.close_parked_parent_for_resume(
             db,
             resume_execution_id=updated.id,
             status=status,
-            end_time=updated.end_time,
+            end_time=getattr(updated, "end_time", None) or payload["end_time"],
             commit=False,
         )
         return updated
