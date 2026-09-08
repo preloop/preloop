@@ -3,12 +3,13 @@
 import json
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
+from preloop.config import settings
 from preloop.models.models.webhook_endpoint import (
     DELIVERY_DEAD,
     DELIVERY_DELIVERED,
@@ -149,6 +150,67 @@ def test_claim_batch_dead_letters_a_row_whose_endpoint_vanished(
     assert worker.claim_batch(db_session) == []
     monkeypatch.undo()
     assert db_session.query(WebhookDelivery).one().status == DELIVERY_DEAD
+
+
+def test_claim_batch_parks_circuit_open_rows_until_cooldown(
+    db_session, account, make_endpoint
+):
+    endpoint, _ = make_endpoint()
+    opened = datetime(2026, 9, 8, 12, 0, 0)
+    endpoint.circuit_opened_at = opened
+    cooldown = timedelta(seconds=settings.webhook_circuit_cooldown_seconds)
+    delivery = _enqueue(db_session, account)
+    delivery.next_attempt_at = opened
+    db_session.flush()
+
+    mid_cooldown = opened + cooldown / 2
+    assert worker.claim_batch(db_session, now=mid_cooldown) == []
+    db_session.refresh(delivery)
+    assert delivery.claimed_at is None
+    assert delivery.status == DELIVERY_PENDING
+    assert delivery.next_attempt_at == opened + cooldown
+    # Parked past the poll interval: the next pass must not reclaim it.
+    assert worker.claim_batch(db_session, now=mid_cooldown) == []
+
+
+def test_claim_batch_probes_only_one_delivery_per_open_circuit(
+    db_session, account, make_endpoint
+):
+    endpoint, _ = make_endpoint()
+    opened = datetime(2026, 9, 8, 12, 0, 0)
+    cooldown = timedelta(seconds=settings.webhook_circuit_cooldown_seconds)
+    probe_at = opened + cooldown
+    endpoint.circuit_opened_at = opened
+    for i in range(3):
+        outbox.enqueue_event(
+            db_session,
+            account_id=account.id,
+            event_type=EVENT_APPROVAL_CREATED,
+            data={"approval_request_id": str(i)},
+            natural_key=f"probe-{i}",
+        )
+    db_session.flush()
+    for row in (
+        db_session.query(WebhookDelivery)
+        .filter(WebhookDelivery.account_id == account.id)
+        .all()
+    ):
+        row.next_attempt_at = probe_at
+    db_session.flush()
+
+    prepared = worker.claim_batch(db_session, now=probe_at)
+
+    assert len(prepared) == 1
+    rows = (
+        db_session.query(WebhookDelivery)
+        .filter(WebhookDelivery.account_id == account.id)
+        .all()
+    )
+    still_claimed = [row for row in rows if row.claimed_at is not None]
+    released = [row for row in rows if row.claimed_at is None]
+    assert len(still_claimed) == 1
+    assert len(released) == 2
+    assert still_claimed[0].id == prepared[0].delivery_id
 
 
 # --- posting ---------------------------------------------------------------

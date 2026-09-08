@@ -4856,8 +4856,11 @@ class FlowExecutionOrchestrator:
             # Emitted before the tracker-notification work below, which
             # returns early when the flow has no notifications configured.
             # A webhook subscriber asked for every finish, not just the
-            # finishes that also comment on a ticket.
-            self._emit_execution_finished_webhook(status, failure_category)
+            # finishes that also comment on a ticket. Callers persist
+            # failure_category on the execution log before this runs.
+            self._emit_execution_finished_webhook(
+                status, getattr(self.execution_log, "failure_category", None)
+            )
             try:
                 from preloop.services.issue_lifecycle_runtime import (
                     lifecycle_execution_finished,

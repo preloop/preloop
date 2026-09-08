@@ -94,12 +94,28 @@ def retry_delay_seconds(
     return base * source.uniform(JITTER_MIN, JITTER_MAX)
 
 
+def circuit_probe_at(endpoint: WebhookEndpoint) -> Optional[datetime]:
+    """When an open circuit may be probed, or None if the breaker is closed.
+
+    Args:
+        endpoint: The endpoint row.
+
+    Returns:
+        ``circuit_opened_at + cooldown``, or None when the circuit is closed.
+    """
+    opened = _naive(endpoint.circuit_opened_at)
+    if opened is None:
+        return None
+    return opened + timedelta(seconds=settings.webhook_circuit_cooldown_seconds)
+
+
 def endpoint_is_deliverable(endpoint: WebhookEndpoint, now: datetime) -> bool:
     """Whether an endpoint may be attempted right now.
 
     Inactive endpoints never are. An open circuit blocks attempts until the
     cooldown elapses, after which exactly one probe is allowed through (the
-    breaker stays "open" until that probe succeeds).
+    breaker stays "open" until that probe succeeds). The one-probe limit is
+    enforced by the worker per pass, not here.
 
     Args:
         endpoint: The endpoint row.
@@ -110,11 +126,10 @@ def endpoint_is_deliverable(endpoint: WebhookEndpoint, now: datetime) -> bool:
     """
     if not endpoint.active:
         return False
-    opened = _naive(endpoint.circuit_opened_at)
-    if opened is None:
+    probe_at = circuit_probe_at(endpoint)
+    if probe_at is None:
         return True
-    cooldown = timedelta(seconds=settings.webhook_circuit_cooldown_seconds)
-    return now >= opened + cooldown
+    return now >= probe_at
 
 
 def _truncate_error(message: str) -> str:

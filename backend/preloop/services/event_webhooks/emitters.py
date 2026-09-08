@@ -350,13 +350,17 @@ def emit_budget_event(
     threshold_percent: Optional[int] = None,
     currency: str = "USD",
     occurred_at: Optional[datetime] = None,
-) -> None:
+) -> outbox.EnqueueResult:
     """Enqueue a budget event in the caller's transaction.
 
     The natural key covers the budget and the period but not the spend, so a
     spend that keeps climbing past a limit produces one event per period
     rather than one per model call. That is the difference between a useful
     alert and a pager loop.
+
+    Returns:
+        What the outbox inserted, so callers that cannot join a later commit
+        (the model gateway) can commit the row themselves.
     """
     event_type = EVENT_BUDGET_EXCEEDED if exceeded else EVENT_BUDGET_THRESHOLD
     key_parts = [
@@ -368,7 +372,7 @@ def emit_budget_event(
         str(limit_amount),
         str(threshold_percent or ""),
     ]
-    outbox.enqueue_event(
+    return outbox.enqueue_event(
         db,
         account_id=account_id,
         event_type=event_type,

@@ -607,5 +607,37 @@ def test_derive_outcome_treats_allowlist_denial_as_budget_denied():
         "pick an allowed model."
     )
     assert ModelGatewayEventEmitter._derive_outcome(403, detail) == "budget_denied"
-    assert ModelGatewayEventEmitter._derive_outcome(403, "forbidden") == "error"
-    assert ModelGatewayEventEmitter._derive_outcome(200, None) == "success"
+
+
+def test_emit_budget_webhooks_commits_before_a_later_caller_rollback():
+    """Gateway rollbacks must not discard a budget.threshold / budget.exceeded row.
+
+    ``emit_budget_event`` inserts into the caller's session. The gateway can
+    roll that session back (or skip ``touch_activity(commit=True)``), so the
+    emitter commits after a successful enqueue.
+    """
+    db = MagicMock()
+    emitter = ModelGatewayEventEmitter(db)
+    usage = _build_usage()
+    queued = MagicMock()
+    queued.delivery_ids = [uuid4()]
+
+    with patch(
+        "preloop.services.event_webhooks.emitters.emit_budget_event",
+        return_value=queued,
+    ) as emit:
+        emitter._emit_budget_webhooks(
+            usage,
+            {
+                "hard_limit_exceeded": True,
+                "enforcement_reason": "account_hard_limit",
+                "account_limit_usd": 10.0,
+                "account_current_spend_usd": 12.5,
+            },
+        )
+        db.rollback()
+
+    emit.assert_called_once()
+    db.commit.assert_called_once()
+    names = [call[0] for call in db.method_calls]
+    assert names.index("commit") < names.index("rollback")

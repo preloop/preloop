@@ -291,6 +291,45 @@ def test_budget_exceeded_envelope(db_session, account, make_endpoint):
     assert data["threshold_percent"] is None
 
 
+def test_gateway_budget_webhook_survives_caller_rollback(
+    db_session, account, make_endpoint
+):
+    """``_emit_budget_webhooks`` commits, so a later rollback cannot drop it."""
+    from preloop.models.models.api_usage import ApiUsage
+    from preloop.services.model_gateway_events import ModelGatewayEventEmitter
+
+    make_endpoint()
+    usage = ApiUsage(
+        endpoint="/openai/v1/responses",
+        method="POST",
+        status_code=200,
+        duration=0.1,
+        account_id=account.id,
+        estimated_cost=12.5,
+    )
+    usage.id = uuid.uuid4()
+    emitter = ModelGatewayEventEmitter(db_session)
+
+    emitter._emit_budget_webhooks(
+        usage,
+        {
+            "hard_limit_exceeded": True,
+            "enforcement_reason": "account_hard_limit",
+            "account_limit_usd": 10.0,
+            "account_current_spend_usd": 12.5,
+        },
+    )
+    db_session.rollback()
+
+    rows = (
+        db_session.query(WebhookDelivery)
+        .filter(WebhookDelivery.account_id == account.id)
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].event_type == EVENT_BUDGET_EXCEEDED
+
+
 def test_flow_execution_finished_envelope(db_session, account, make_endpoint):
     make_endpoint()
     execution = SimpleNamespace(

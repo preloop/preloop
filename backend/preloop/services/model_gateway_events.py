@@ -216,7 +216,7 @@ class ModelGatewayEventEmitter:
             if not hard and hard_limit:
                 threshold_percent = int(round(float(limit) / float(hard_limit) * 100))
 
-            emit_budget_event(
+            result = emit_budget_event(
                 self.db,
                 account_id=usage.account_id,
                 exceeded=hard,
@@ -227,6 +227,11 @@ class ModelGatewayEventEmitter:
                 spent_amount=spend,
                 threshold_percent=threshold_percent,
             )
+            # Gateway callers can roll this session back (or skip the
+            # activity-touch commit when there is no runtime session). The
+            # outbox row must not ride that rollback.
+            if result.delivery_ids:
+                self.db.commit()
         except Exception:  # noqa: BLE001 - a webhook must not fail a model call
             logger.debug("Failed to queue budget webhook event", exc_info=True)
 

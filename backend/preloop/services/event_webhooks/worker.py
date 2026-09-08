@@ -181,7 +181,10 @@ def claim_batch(db, *, now: Optional[datetime] = None) -> list[PreparedDelivery]
     """Claim due rows and prepare them for sending.
 
     Rows whose endpoint is inactive or circuit-open are released back to the
-    queue (their claim is cleared) rather than attempted.
+    queue (their claim is cleared) rather than attempted. An open circuit
+    that has not reached its cooldown is parked at ``opened + cooldown`` so
+    the next poll does not reclaim it. After cooldown, at most one probe
+    per endpoint is prepared in this pass.
 
     Args:
         db: Worker-owned session.
@@ -193,6 +196,7 @@ def claim_batch(db, *, now: Optional[datetime] = None) -> list[PreparedDelivery]
     moment = now or outbox._utcnow()
     claimed = outbox.claim_due_deliveries(db, now=moment)
     prepared: list[PreparedDelivery] = []
+    probing: set[Any] = set()
     for delivery in claimed:
         endpoint = db.get(WebhookEndpoint, delivery.endpoint_id)
         if endpoint is None:
@@ -202,8 +206,17 @@ def claim_batch(db, *, now: Optional[datetime] = None) -> list[PreparedDelivery]
             continue
         if not outbox.endpoint_is_deliverable(endpoint, moment):
             delivery.claimed_at = None
+            probe_at = outbox.circuit_probe_at(endpoint)
+            if probe_at is not None:
+                delivery.next_attempt_at = probe_at
             db.add(delivery)
             continue
+        if endpoint.circuit_opened_at is not None:
+            if endpoint.id in probing:
+                delivery.claimed_at = None
+                db.add(delivery)
+                continue
+            probing.add(endpoint.id)
         item = prepare_claimed(delivery, endpoint)
         if item is None:
             outbox.record_attempt(

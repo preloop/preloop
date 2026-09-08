@@ -310,6 +310,12 @@ def test_open_circuit_allows_a_probe_after_the_cooldown(
     cooldown = timedelta(seconds=settings.webhook_circuit_cooldown_seconds)
     assert outbox.endpoint_is_deliverable(endpoint, now + cooldown / 2) is False
     assert outbox.endpoint_is_deliverable(endpoint, now + cooldown) is True
+    assert outbox.circuit_probe_at(endpoint) == now + cooldown
+
+
+def test_closed_circuit_has_no_probe_time(db_session, account, make_endpoint):
+    endpoint, _ = make_endpoint()
+    assert outbox.circuit_probe_at(endpoint) is None
 
 
 def test_inactive_endpoint_is_never_deliverable(db_session, account, make_endpoint):
