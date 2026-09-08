@@ -4571,6 +4571,11 @@ export function buildApprovalDecisionBody(
   if (options.answer_text != null && options.answer_text !== '') {
     body.answer_text = options.answer_text;
   }
+  // The filled-in form. Sent only when there is one, so a plain approve keeps
+  // producing byte-for-byte the payload older backends already accept.
+  if (options.answer != null) {
+    body.answer = options.answer;
+  }
   return body;
 }
 

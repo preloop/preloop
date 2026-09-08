@@ -805,6 +805,52 @@ describe('ApprovalsView', () => {
       expect(element.shadowRoot?.textContent).to.contain('Details');
     });
   });
+  describe('a request that carries an answer form', () => {
+    const formRequest = (overrides: Record<string, unknown> = {}) =>
+      questionRequest({
+        question: 'Which findings do you waive?',
+        question_items: [
+          { id: 'CVE-1', title: 'curl 8.4.0' },
+          { id: 'CVE-2', title: 'requests 2.31.0' },
+          { id: 'CVE-3', title: 'urllib3 2.0.7' },
+          { id: 'CVE-4', title: 'jinja2 3.1.2' },
+        ],
+        question_schema: {
+          type: 'object',
+          properties: {
+            waived: { type: 'array', title: 'Findings to waive' },
+          },
+          required: ['waived'],
+        },
+        has_answer_form: true,
+        ...overrides,
+      });
+
+    it('says how big the job is instead of showing the form in a row', async () => {
+      const element = await renderList([formRequest()]);
+
+      const summary = element.shadowRoot?.querySelector('.form-summary');
+      expect(summary, 'expected a form summary line').to.exist;
+      expect(summary?.textContent).to.contain('4 items to pick from');
+      expect(summary?.textContent).to.contain('1 field to fill in');
+      expect(summary?.querySelector('a')?.getAttribute('href')).to.equal(
+        '/console/approval/ar-1'
+      );
+      // The inline panel would offer an answer box for a question that needs
+      // a form, which is the shortcut this feature exists to remove.
+      expect(element.shadowRoot?.querySelector('question-answer-panel')).to.not
+        .exist;
+    });
+
+    it('offers no row Approve and cannot be picked for a bulk decision', async () => {
+      const element = await renderList([formRequest()]);
+
+      expect(element.shadowRoot?.querySelector('.row-approve')).to.not.exist;
+      expect(element.shadowRoot?.querySelector('list-select-checkbox')).to.not
+        .exist;
+    });
+  });
+
   describe('bulk decisions', () => {
     function rows(element: ApprovalsView) {
       return Array.from(
