@@ -17,10 +17,15 @@ def mock_db():
 
     The delivery-idempotency guard queries the session directly, so the
     default answer for "has this delivery already produced an execution" has
-    to be "no" instead of a truthy MagicMock.
+    to be "no" instead of a truthy MagicMock. Content-key lookups add a
+    second ``filter()`` for the 900s window; keep that extra chain returning
+    None too, or ``first()`` is a truthy MagicMock and every content-keyed
+    event looks already processed.
     """
     db = MagicMock(spec=Session)
-    db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+    filtered = db.query.return_value.filter.return_value
+    filtered.filter.return_value = filtered
+    filtered.order_by.return_value.first.return_value = None
     return db
 
 
