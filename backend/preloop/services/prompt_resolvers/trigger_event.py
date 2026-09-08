@@ -3,6 +3,12 @@
 import logging
 from typing import Any, Dict, Optional
 
+from preloop.services.issue_references import (
+    NO_REFERENCES,
+    format_issue_references,
+    references_from_trigger_payload,
+)
+
 from .base import PromptResolver, ResolverContext
 
 logger = logging.getLogger(__name__)
@@ -62,6 +68,36 @@ def _alias_object_attribute_ids(attrs: Dict[str, Any]) -> None:
         attrs["number"] = iid
     if iid is None and number is not None:
         attrs["iid"] = number
+
+
+def _attach_referenced_issues(
+    payload: Dict[str, Any], attrs: Dict[str, Any], source: str
+) -> None:
+    """Add ``object_attributes.referenced_issues`` for pull/merge requests.
+
+    Neither GitHub nor GitLab hands the reviewer a linked-issue relation on
+    the PR read, so the Pull Request Reviewer preset needs the references
+    parsed off the PR body, title, and branch. Parsing here (deterministic,
+    unit-tested) beats asking the model to run regexes in its head, and the
+    resulting identifiers are exactly what the ``get_issue`` tool accepts.
+    """
+    if not isinstance(attrs, dict) or attrs.get("referenced_issues"):
+        return
+    is_pull_request = (
+        "pull_request" in payload
+        or payload.get("object_kind") == "merge_request"
+        or bool(attrs.get("source_branch"))
+    )
+    if not is_pull_request:
+        return
+    try:
+        refs = references_from_trigger_payload(payload, attrs, source)
+        attrs["referenced_issues"] = format_issue_references(refs)
+    except Exception:  # pragma: no cover - never fail prompt resolution
+        logger.warning(
+            "Failed to parse issue references from PR payload", exc_info=True
+        )
+        attrs["referenced_issues"] = NO_REFERENCES
 
 
 def _lift_gitlab_noteable_ids(payload: Dict[str, Any], attrs: Dict[str, Any]) -> None:
@@ -136,6 +172,7 @@ class TriggerEventResolver(PromptResolver):
                 _lift_gitlab_noteable_ids(payload, attrs)
                 _alias_object_attribute_ids(attrs)
                 _enrich_object_attributes(payload, attrs)
+                _attach_referenced_issues(payload, attrs, source)
             return normalized
 
         # For GitHub, create object_attributes from pull_request or issue
@@ -157,6 +194,7 @@ class TriggerEventResolver(PromptResolver):
                     "iid": pr.get("number"),  # GitLab uses iid
                 }
                 payload["object_attributes"] = object_attributes
+                _attach_referenced_issues(payload, object_attributes, source)
                 self.logger.debug(
                     f"Normalized GitHub PR to object_attributes: {object_attributes.get('title')}"
                 )
