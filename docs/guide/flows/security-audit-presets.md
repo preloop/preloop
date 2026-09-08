@@ -34,7 +34,7 @@ Every `result.json` and every markdown evidence file carries this line:
 
 | Preset | What it does | result.json schema |
 | --- | --- | --- |
-| SBOM Verify | Format validity, NTIA / CRA Annex I Part II minimum elements, completeness vs delivered build manifests, license flags | `preloop.cra.sbomaudit/v1` |
+| SBOM Verify | Format validity, NTIA / CRA Annex I Part II minimum elements, completeness vs delivered build manifests, license flags, provenance consistency | `preloop.cra.sbomaudit/v1` |
 | SBOM Exploit Check | Components to CVEs via OSV.dev, known-exploited flags via CISA KEV, per-source screening matrix, severity gate | `preloop.cra.vulnscan/v1` |
 | Release Security Audit | Both of the above in one execution, plus drift vs a previous run's `result.json`, optional [gap register](#preloopcrareleaseauditv1-release-security-audit) and [multi-repo evidence storage](#evidence-storage-architecture-multi-repo-products) | `preloop.cra.releaseaudit/v1` |
 | [Component Due Diligence Record](#component-due-diligence-record) | Agent legwork on one integrated component; a human carries the risk decision via approval; the record can land in a compliance repo | `preloop.cra.duediligence/v1` |
@@ -146,12 +146,25 @@ Envelope plus:
 }
 ```
 
-Verdict: `fail` = invalid SBOM or minimum elements absent (missing inputs
-entirely also yields `fail`); `pass_with_findings` = valid but findings
-exist (coverage gaps, license flags, skipped cross-checks); `pass` =
-clean. Build cross-checks are marked `skipped` when no build manifests
-were delivered. `delta` is **always `null`** in this standalone preset;
-only the Release Security Audit computes drift.
+Verdict: `fail` = invalid SBOM, minimum elements absent, or a declared
+SBOM digest that does not match the parsed file (missing inputs entirely
+also yields `fail`); `pass_with_findings` = valid but findings exist
+(coverage gaps, license flags, skipped cross-checks, provenance
+contradictions); `pass` = clean. Build cross-checks are marked `skipped`
+when no build manifests were delivered. `delta` is **always `null`** in
+this standalone preset; only the Release Security Audit computes drift.
+
+**Provenance consistency.** `checks[]` always carries a
+`provenance_consistency` entry, passed or skipped. It compares what the
+caller declared (generator, SBOM sha256, build ref, any "unmodified tool
+output" claim) against what the file says: creator/tool metadata, the
+digest of the bytes actually parsed, and machine-checkable signs of
+post-processing such as byte-identical duplicate components or
+dependency references with no matching `bom-ref`. A contradiction is a
+finding about the declaration, recorded separately from findings about
+the SBOM's content. Callers who reshape an SBOM before delivering it
+(to fit a size limit, for instance) get told, instead of getting an
+audit of the reshaped file that reads as an audit of their build.
 
 This schema has no top-level `status` field. Completion is the
 `verdict`. Artifacts: `audit_report` (`evidence/audit-report.md`),

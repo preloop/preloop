@@ -161,13 +161,48 @@ class TestSbomVerifyPreset:
             "COVERAGE QUALITY",
             "BUILD CROSS-CHECK",
             "LICENSE FLAGS",
+            "PROVENANCE CONSISTENCY",
         ]:
             assert marker in prompt
         # Missing build evidence must be reported as skipped, not guessed.
         assert "skipped: no build evidence delivered" in prompt
 
+    def test_provenance_consistency_tests_the_declaration(self):
+        """The caller's prose is a claim; the artefact decides.
+
+        A run whose SBOM was reshaped in transit produced two headline
+        findings that were artefacts of the reshaping, because the flow
+        trusted the caller's "as the tool emitted it" statement. The
+        check compares the declaration against the file.
+        """
+        prompt = _load_preset(PRESET_FILES["SBOM Verify"])["prompt_template"]
+        norm = _norm(prompt)
+        assert "PROVENANCE CONSISTENCY" in prompt
+        assert "provenance_consistency" in prompt
+        # The four comparisons, each machine-checkable from the file.
+        assert "creationInfo.creators" in prompt
+        assert "metadata.tools" in prompt
+        assert "sha256 of the file you actually parsed" in norm
+        assert "duplicate component objects" in norm
+        assert "no matching bom-ref" in norm
+        # Counting discipline: occurrences and distinct targets differ.
+        assert "the number of distinct targets" in norm
+        # An absent declaration is skipped, never a pass.
+        assert "skipped: no provenance declared" in prompt
+        assert "an absent declaration is not a passing one" in norm
+
+    def test_provenance_contradiction_moves_the_verdict(self):
+        """A contradicted declaration cannot read as a clean pass."""
+        prompt = _load_preset(PRESET_FILES["SBOM Verify"])["prompt_template"]
+        norm = _norm(prompt)
+        assert 'ALWAYS carries an entry named "provenance_consistency"' in norm
+        assert "provenance contradictions" in norm
+        assert "declared SBOM digest that does not match the file you parsed" in norm
+        # The cover, not just the register, has to say it.
+        assert "provenance consistency found a contradiction" in norm
+
     def test_cover_adapted_to_sbom_checks(self):
-        """BOX 1 lists the five deterministic checks; honesty rail holds."""
+        """BOX 1 lists the deterministic checks; honesty rail holds."""
         prompt = _load_preset(PRESET_FILES["SBOM Verify"])["prompt_template"]
         norm = _norm(prompt)
         assert "MUST OPEN" in prompt
