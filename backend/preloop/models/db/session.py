@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import Session, sessionmaker
 
+from .pool_diagnostics import install_pool_hold_diagnostics
 from .vector_types import check_pgvector_extension, install_pgvector_extension
 
 # Global engine instance to be reused across the application
@@ -129,6 +130,7 @@ def get_engine(database_url: Optional[str] = None):
             echo=False,  # Set to True for SQL query debugging
         )
 
+        install_pool_hold_diagnostics(engine)
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
 
@@ -257,6 +259,7 @@ def get_async_engine(database_url: Optional[str] = None) -> AsyncEngine:
             echo=False,  # Set to True for SQL query debugging
         )
 
+        install_pool_hold_diagnostics(engine.sync_engine)
         logger.debug(f"Connected to async database using {url}")
         _async_engine = engine
         return _async_engine

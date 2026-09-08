@@ -550,8 +550,14 @@ Waivers are human-authored inputs (`waivers.json` / `waivers.yaml` in
 the seed, or payload `waivers`). The agent never authors a waiver. An
 entry missing `id`, `reason`, `author`, or `date` is invalid and waives
 nothing. Interactive collection (`waiver_collection: "interactive"`)
-uses the built-in `ask_user` channel once, batched; the human answer is
-JSON `{id, reason}` per selected finding id. Persist authenticates that
+uses the built-in `ask_user` channel once, batched, and asks for a
+structured answer: the call carries one `items` row per unwaived gate
+failure (id, package, severity, KEV badge) and an `input_schema` with a
+`waived` array of `{id, reason}`. The console renders that as a form (a
+checkbox and a reason box per finding), so nobody types JSON, and the
+agent applies the returned array directly. `author` and `date` are
+marked `x-autofill` and stamped by the platform from the approval
+record, never typed and never model-authored. Persist authenticates that
 stored `tool_result` / `responses` content — `status=approved` or a CVE
 mentioned in the question is not a waiver. Timeout fails closed.
 

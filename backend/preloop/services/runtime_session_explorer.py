@@ -228,59 +228,26 @@ class RuntimeSessionExplorerService:
 
     @staticmethod
     def _run_title_generation(*, account_id: str, session_ids: list[str]) -> None:
-        """Generate titles for the given sessions in a fresh DB session.
+        """Submit titles without retaining the request for provider work.
 
-        Runs as a FastAPI background task *after* the request DB session has
-        been closed, so it must NOT reuse the request's session. It opens its
-        own session from the app session factory and always closes it. Each
-        title is generated through the EE billing plugin via the plugin service
-        registry (so the OSS path carries no hard EE import); the per-session
-        daily cap and best-effort guards live inside that service. Any failure
-        is swallowed so a background title call never surfaces to the user.
-
-        Args:
-            account_id: Owning account id.
-            session_ids: Bounded list of runtime session ids to title.
+        FastAPI request-scoped dependencies outlive response background tasks.
+        This callback therefore only performs nonblocking scheduler admission;
+        the optional plugin owns worker capacity and its DB session lifecycle.
+        Older plugins without a scheduler skip automatic titles safely.
         """
         if not session_ids:
             return
         try:
             from preloop.plugins.base import get_plugin_manager
 
-            generate_title = get_plugin_manager().get_service("session_title_service")
+            schedule = get_plugin_manager().get_service("session_title_scheduler")
+            if schedule is not None:
+                schedule(account_id=account_id, session_ids=session_ids)
         except Exception:
-            logger.debug(
-                "Session title service unavailable; skipping background titles",
+            logger.info(
+                "Background title scheduling failed; skipping optional work",
                 exc_info=True,
             )
-            return
-        if generate_title is None:
-            return
-
-        from preloop.models.db.session import get_session_factory
-
-        db = get_session_factory()()
-        try:
-            for session_id in session_ids:
-                try:
-                    generate_title(
-                        db,
-                        account_id=account_id,
-                        runtime_session_id=session_id,
-                    )
-                except Exception:
-                    logger.info(
-                        "Background session title generation raised; "
-                        "leaving session untitled",
-                        exc_info=True,
-                    )
-        finally:
-            try:
-                db.close()
-            except Exception:
-                logger.debug(
-                    "Closing background title DB session failed", exc_info=True
-                )
 
     @staticmethod
     def _session_needs_title(row: dict) -> bool:

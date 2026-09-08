@@ -26,6 +26,7 @@ import { unifiedWebSocketManager } from './services/unified-websocket-manager';
 import { activityTracker } from './services/activity-tracker';
 import { recordPathChange } from './services/web-analytics';
 import { captureAttribution } from './services/attribution';
+import { LOCATION_CHANGED } from './router';
 
 function applyTheme(theme: Theme) {
   const darkTheme = 'sl-theme-dark';
@@ -74,8 +75,8 @@ captureAttribution();
 // Initialize activity tracking
 activityTracker.initializeAutoTracking();
 
-// Track page views on route changes
-// Vaadin Router fires 'vaadin-router-location-changed' event on navigation
+// Track page views on route changes.
+// The router fires LOCATION_CHANGED after every resolved navigation.
 let lastTrackedPath: string | null = null;
 
 function trackCurrentPage() {
@@ -96,7 +97,7 @@ function trackCurrentPage() {
 trackCurrentPage();
 
 // Listen for route changes
-window.addEventListener('vaadin-router-location-changed', () => {
+window.addEventListener(LOCATION_CHANGED, () => {
   trackCurrentPage();
 });
 

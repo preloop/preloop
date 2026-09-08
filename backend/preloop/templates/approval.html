@@ -155,6 +155,107 @@
             color: #6b7280;
         }
 
+        .question-text {
+            font-size: 1.05rem;
+            line-height: 1.5;
+            margin: 0 0 1rem 0;
+        }
+
+        .answer-form {
+            margin-bottom: 1.5rem;
+        }
+
+        .answer-field {
+            margin-bottom: 1.25rem;
+        }
+
+        .answer-field-label {
+            font-weight: 600;
+            font-size: 0.9rem;
+            margin-bottom: 0.35rem;
+        }
+
+        .answer-field-help {
+            font-size: 0.8rem;
+            color: #6b7280;
+            margin-bottom: 0.5rem;
+        }
+
+        .item-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+
+        .item-table th,
+        .item-table td {
+            text-align: left;
+            padding: 0.5rem;
+            border-bottom: 1px solid #e5e7eb;
+            vertical-align: top;
+        }
+
+        .item-title {
+            font-weight: 600;
+        }
+
+        .item-meta {
+            font-size: 0.8rem;
+            color: #6b7280;
+        }
+
+        .item-badge {
+            display: inline-block;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            padding: 0.05rem 0.35rem;
+            border-radius: 0.25rem;
+            background: #f3f4f6;
+            margin-right: 0.25rem;
+        }
+
+        .field-error {
+            color: #b91c1c;
+            font-size: 0.8rem;
+            margin-top: 0.25rem;
+        }
+
+        .row-hint {
+            font-size: 0.8rem;
+            color: #6b7280;
+        }
+
+        .autofilled {
+            font-size: 0.85rem;
+            color: #6b7280;
+        }
+
+        @media (max-width: 520px) {
+
+            .item-table,
+            .item-table tbody,
+            .item-table tr,
+            .item-table td {
+                display: block;
+                width: 100%;
+            }
+
+            .item-table thead {
+                display: none;
+            }
+
+            .item-table tr {
+                border-bottom: 1px solid #e5e7eb;
+                padding: 0.5rem 0;
+            }
+
+            .item-table td {
+                border-bottom: none;
+                padding: 0.25rem 0;
+            }
+        }
+
         .timeline-comment {
             margin: 0.35rem 0 0 0;
             padding: 0.5rem;
@@ -225,6 +326,20 @@
                     <sl-alert variant="warning" open>
                         <sl-icon slot="icon" name="clock-history"></sl-icon>
                         <strong>Expired:</strong> no response within the window
+                    </sl-alert>
+                </div>
+
+                <div class="info-item" id="question-section" style="display: none; margin-bottom: 1.5rem;">
+                    <div class="info-label">Agent question</div>
+                    <p class="question-text" id="question-text"></p>
+                </div>
+
+                <div class="answer-form" id="answer-form" style="display: none;"></div>
+
+                <div id="form-error" style="display: none; margin-bottom: 1rem;">
+                    <sl-alert variant="danger" open>
+                        <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+                        <span id="form-error-message"></span>
                     </sl-alert>
                 </div>
 
@@ -311,6 +426,16 @@
                 document.getElementById('summary').textContent = approvalData.summary;
             }
 
+            // A question reads as a question, and its form is drawn from the
+            // schema the agent sent rather than left to the comment box.
+            if (approvalData.question) {
+                document.getElementById('question-section').style.display = 'block';
+                document.getElementById('question-text').textContent = approvalData.question;
+            }
+            answerSchema = approvalData.question_schema || null;
+            answerItems = approvalData.question_items || [];
+            renderAnswerForm();
+
             // Show reasoning if available
             if (approvalData.agent_reasoning) {
                 document.getElementById('reasoning-section').style.display = 'block';
@@ -327,6 +452,7 @@
             if (['approved', 'declined', 'expired', 'cancelled'].includes(approvalData.status)) {
                 document.getElementById('actions').style.display = 'none';
                 document.getElementById('comment-section').style.display = 'none';
+                document.getElementById('answer-form').style.display = 'none';
                 const resolvedMessages = {
                     approved: 'This approval request has already been approved.',
                     declined: 'This approval request has already been declined.',
@@ -391,9 +517,366 @@
             }
         }
 
+        // ── The answer form ─────────────────────────────────────────────
+        // A question can carry the shape of its answer (input_schema) and the
+        // rows it is about (items). The token page draws the same form the
+        // console draws: a link in an email is not a reason to make somebody
+        // type JSON into a comment box.
+        let answerSchema = null;
+        let answerItems = [];
+        let answerValue = {};
+
+        function hasAnswerForm() {
+            return Boolean(answerSchema && Object.keys(answerSchema.properties || {}).length);
+        }
+
+        function labelFor(name, spec) {
+            if (spec && spec.title) return spec.title;
+            const words = String(name).replace(/[_-]+/g, ' ').trim();
+            return words.charAt(0).toUpperCase() + words.slice(1);
+        }
+
+        function itemById(id) {
+            return answerItems.find((item) => String(item.id) === String(id)) || null;
+        }
+
+        function el(tag, className, text) {
+            const node = document.createElement(tag);
+            if (className) node.className = className;
+            if (text !== undefined && text !== null) node.textContent = text;
+            return node;
+        }
+
+        function fieldShell(name, spec) {
+            const wrap = el('div', 'answer-field');
+            wrap.dataset.field = name;
+            wrap.appendChild(el('div', 'answer-field-label', labelFor(name, spec)));
+            if (spec.description) {
+                wrap.appendChild(el('div', 'answer-field-help', spec.description));
+            }
+            return wrap;
+        }
+
+        function errorSlot(path) {
+            const node = el('div', 'field-error');
+            node.dataset.errorFor = path;
+            node.style.display = 'none';
+            return node;
+        }
+
+        // One item, described the way a human reads it: what it is, how bad,
+        // and any badges the agent attached (KEV, for instance).
+        function itemCell(item) {
+            const cell = el('td');
+            cell.appendChild(el('div', 'item-title', item.title || item.id));
+            const meta = [];
+            if (item.severity) meta.push(item.severity);
+            if (item.id && item.title) meta.push(item.id);
+            if (meta.length) cell.appendChild(el('div', 'item-meta', meta.join(' · ')));
+            if (Array.isArray(item.badges) && item.badges.length) {
+                const badges = el('div');
+                for (const badge of item.badges) badges.appendChild(el('span', 'item-badge', badge));
+                cell.appendChild(badges);
+            }
+            if (item.description) cell.appendChild(el('div', 'item-meta', item.description));
+            return cell;
+        }
+
+        function scalarControl(spec, value, onChange) {
+            if (spec.type === 'boolean') {
+                const sw = document.createElement('sl-switch');
+                sw.checked = value === true;
+                sw.addEventListener('sl-change', (e) => onChange(e.target.checked));
+                return sw;
+            }
+            if (Array.isArray(spec.enum) && spec.enum.length) {
+                const select = document.createElement('sl-select');
+                select.value = value === undefined || value === null ? '' : String(value);
+                for (const choice of spec.enum) {
+                    const option = document.createElement('sl-option');
+                    option.value = String(choice);
+                    option.textContent = String(choice);
+                    select.appendChild(option);
+                }
+                select.addEventListener('sl-change', (e) => onChange(e.target.value));
+                return select;
+            }
+            if (spec.format === 'textarea') {
+                const area = document.createElement('sl-textarea');
+                area.rows = 2;
+                area.value = value === undefined || value === null ? '' : String(value);
+                area.addEventListener('sl-input', (e) => onChange(e.target.value));
+                return area;
+            }
+            const input = document.createElement('sl-input');
+            if (spec.type === 'number' || spec.type === 'integer') input.type = 'number';
+            else if (spec.format === 'date') input.type = 'date';
+            else if (spec.format === 'date-time') input.type = 'datetime-local';
+            else if (spec.format === 'email') input.type = 'email';
+            input.value = value === undefined || value === null ? '' : String(value);
+            input.addEventListener('sl-input', (e) => {
+                const raw = e.target.value;
+                if (spec.type === 'number' || spec.type === 'integer') {
+                    onChange(raw === '' ? undefined : Number(raw));
+                } else {
+                    onChange(raw);
+                }
+            });
+            return input;
+        }
+
+        function rowsOf(name) {
+            const rows = answerValue[name];
+            return Array.isArray(rows) ? rows : [];
+        }
+
+        // An array of {id, ...} over the question's items: one checkbox per
+        // row, and the row's own fields (the reason) once it is picked.
+        function renderRowTable(name, spec) {
+            const rowSpec = spec.items || {};
+            const properties = rowSpec.properties || {};
+            const idEnum = (properties.id && properties.id.enum) || [];
+            const rowIds = idEnum.length
+                ? idEnum
+                : answerItems.map((item) => item.id);
+            const extraKeys = Object.keys(properties).filter(
+                (key) => key !== 'id' && !properties[key]['x-autofill']
+            );
+            const wrap = fieldShell(name, spec);
+            const table = el('table', 'item-table');
+            const head = el('thead');
+            const headRow = el('tr');
+            headRow.appendChild(el('th', null, 'Pick'));
+            headRow.appendChild(el('th', null, 'Item'));
+            if (extraKeys.length) headRow.appendChild(el('th', null, extraKeys.length === 1 ? labelFor(extraKeys[0], properties[extraKeys[0]]) : 'Details'));
+            head.appendChild(headRow);
+            table.appendChild(head);
+
+            const body = el('tbody');
+            for (const rawId of rowIds) {
+                const id = String(rawId);
+                const item = itemById(id) || { id: id, title: id };
+                const tr = el('tr');
+                tr.dataset.itemId = id;
+
+                const pick = el('td');
+                const box = document.createElement('sl-checkbox');
+                box.checked = rowsOf(name).some((row) => String(row.id) === id);
+                box.addEventListener('sl-change', (e) => {
+                    const current = rowsOf(name);
+                    if (e.target.checked) {
+                        if (!current.some((row) => String(row.id) === id)) {
+                            answerValue[name] = current.concat([{ id: id }]);
+                        }
+                    } else {
+                        answerValue[name] = current.filter((row) => String(row.id) !== id);
+                    }
+                    renderAnswerForm();
+                });
+                pick.appendChild(box);
+                tr.appendChild(pick);
+                tr.appendChild(itemCell(item));
+
+                if (extraKeys.length) {
+                    const cell = el('td');
+                    const index = rowsOf(name).findIndex((row) => String(row.id) === id);
+                    if (index < 0) {
+                        cell.appendChild(el('div', 'row-hint', 'Pick this row to fill it in'));
+                    } else {
+                        for (const key of extraKeys) {
+                            const path = name + '[' + index + '].' + key;
+                            const holder = el('div');
+                            holder.appendChild(el('div', 'answer-field-help', labelFor(key, properties[key])));
+                            holder.appendChild(scalarControl(properties[key], rowsOf(name)[index][key], (next) => {
+                                answerValue[name] = rowsOf(name).map((row) =>
+                                    String(row.id) === id ? Object.assign({}, row, { [key]: next }) : row
+                                );
+                            }));
+                            holder.appendChild(errorSlot(path));
+                            cell.appendChild(holder);
+                        }
+                    }
+                    tr.appendChild(cell);
+                }
+                body.appendChild(tr);
+            }
+            table.appendChild(body);
+            wrap.appendChild(table);
+            wrap.appendChild(errorSlot(name));
+            return wrap;
+        }
+
+        // A plain multi-select over ids: checkboxes, no per-row fields.
+        function renderIdChecklist(name, spec) {
+            const wrap = fieldShell(name, spec);
+            const choices = (spec.items && spec.items.enum) || [];
+            for (const rawId of choices) {
+                const id = String(rawId);
+                const item = itemById(id);
+                const box = document.createElement('sl-checkbox');
+                box.style.display = 'block';
+                box.textContent = item && item.title ? item.title + ' (' + id + ')' : id;
+                box.checked = (answerValue[name] || []).map(String).includes(id);
+                box.addEventListener('sl-change', (e) => {
+                    const current = (answerValue[name] || []).map(String);
+                    answerValue[name] = e.target.checked
+                        ? current.concat([id])
+                        : current.filter((value) => value !== id);
+                });
+                wrap.appendChild(box);
+            }
+            wrap.appendChild(errorSlot(name));
+            return wrap;
+        }
+
+        function renderGroup(name, spec) {
+            const wrap = fieldShell(name, spec);
+            const properties = spec.properties || {};
+            for (const key of Object.keys(properties)) {
+                const child = properties[key];
+                const path = name + '.' + key;
+                const holder = el('div', 'answer-field');
+                holder.appendChild(el('div', 'answer-field-help', labelFor(key, child)));
+                if (child['x-autofill']) {
+                    holder.appendChild(el('div', 'autofilled', 'Filled in by Preloop'));
+                } else {
+                    holder.appendChild(scalarControl(child, (answerValue[name] || {})[key], (next) => {
+                        answerValue[name] = Object.assign({}, answerValue[name] || {}, { [key]: next });
+                    }));
+                    holder.appendChild(errorSlot(path));
+                }
+                wrap.appendChild(holder);
+            }
+            return wrap;
+        }
+
+        function renderAnswerForm() {
+            const host = document.getElementById('answer-form');
+            if (!hasAnswerForm()) {
+                host.style.display = 'none';
+                return;
+            }
+            host.style.display = 'block';
+            host.innerHTML = '';
+            const properties = answerSchema.properties || {};
+            for (const name of Object.keys(properties)) {
+                const spec = properties[name];
+                if (spec['x-autofill']) {
+                    const note = fieldShell(name, spec);
+                    note.appendChild(el('div', 'autofilled', 'Filled in by Preloop when you decide'));
+                    host.appendChild(note);
+                } else if (spec.type === 'array' && spec.items && spec.items.type === 'object') {
+                    host.appendChild(renderRowTable(name, spec));
+                } else if (spec.type === 'array') {
+                    host.appendChild(renderIdChecklist(name, spec));
+                } else if (spec.type === 'object') {
+                    host.appendChild(renderGroup(name, spec));
+                } else {
+                    const wrap = fieldShell(name, spec);
+                    wrap.appendChild(scalarControl(spec, answerValue[name], (next) => {
+                        answerValue[name] = next;
+                    }));
+                    wrap.appendChild(errorSlot(name));
+                    host.appendChild(wrap);
+                }
+            }
+        }
+
+        function isEmpty(value) {
+            if (value === undefined || value === null) return true;
+            if (typeof value === 'string') return value.trim() === '';
+            if (Array.isArray(value)) return value.length === 0;
+            return false;
+        }
+
+        // The same rules the server enforces, checked here first so a missing
+        // reason costs a keystroke and not a round trip.
+        function validateAnswer() {
+            const errors = [];
+            const properties = answerSchema.properties || {};
+            const required = answerSchema.required || [];
+            for (const name of Object.keys(properties)) {
+                const spec = properties[name];
+                if (spec['x-autofill']) continue;
+                const value = answerValue[name];
+                if (required.includes(name) && isEmpty(value)) {
+                    errors.push({ path: name, message: 'This field is required' });
+                    continue;
+                }
+                if (spec.type === 'array' && Array.isArray(value)) {
+                    if (spec.minItems && value.length < spec.minItems) {
+                        errors.push({ path: name, message: 'Pick at least ' + spec.minItems });
+                    }
+                    const rowSpec = spec.items || {};
+                    const rowRequired = rowSpec.required || [];
+                    value.forEach((row, index) => {
+                        if (typeof row !== 'object' || row === null) return;
+                        for (const key of rowRequired) {
+                            if (key === 'id') continue;
+                            if (isEmpty(row[key])) {
+                                errors.push({
+                                    path: name + '[' + index + '].' + key,
+                                    message: 'This field is required'
+                                });
+                            }
+                        }
+                    });
+                }
+            }
+            return errors;
+        }
+
+        function showAnswerErrors(errors) {
+            for (const node of document.querySelectorAll('[data-error-for]')) {
+                node.style.display = 'none';
+                node.textContent = '';
+            }
+            let unplaced = [];
+            for (const error of errors || []) {
+                const node = document.querySelector('[data-error-for="' + error.path + '"]');
+                if (node) {
+                    node.textContent = error.message;
+                    node.style.display = 'block';
+                } else {
+                    unplaced.push((error.path ? error.path + ': ' : '') + error.message);
+                }
+            }
+            const banner = document.getElementById('form-error');
+            if (!errors || !errors.length) {
+                banner.style.display = 'none';
+                return;
+            }
+            document.getElementById('form-error-message').textContent =
+                unplaced.length ? unplaced.join('; ') : 'Fill in the highlighted fields before approving.';
+            banner.style.display = 'block';
+        }
+
+        // x-autofill fields never leave the browser: the server stamps them.
+        function answerPayload() {
+            const properties = answerSchema.properties || {};
+            const payload = {};
+            for (const name of Object.keys(properties)) {
+                if (properties[name]['x-autofill']) continue;
+                if (answerValue[name] !== undefined) payload[name] = answerValue[name];
+            }
+            return payload;
+        }
+
         async function submitDecision(action) {
             const comment = document.getElementById('comment').value;
             const btn = document.getElementById(`${action}-btn`);
+
+            const body = { action, comment: comment || null };
+            if (action === 'approve' && hasAnswerForm()) {
+                const errors = validateAnswer();
+                if (errors.length) {
+                    showAnswerErrors(errors);
+                    return;
+                }
+                showAnswerErrors([]);
+                body.answer = answerPayload();
+            }
+
             btn.loading = true;
 
             try {
@@ -402,13 +885,20 @@
                     {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ action, comment: comment || null })
+                        body: JSON.stringify(body)
                     }
                 );
 
                 if (!response.ok) {
                     const error = await response.json();
-                    throw new Error(error.detail || 'Failed to submit decision');
+                    const detail = error.detail;
+                    // 422: the server names the exact fields it refused, so
+                    // put each message back on its own field.
+                    if (detail && typeof detail === 'object' && Array.isArray(detail.errors)) {
+                        showAnswerErrors(detail.errors);
+                        return;
+                    }
+                    throw new Error(typeof detail === 'string' ? detail : 'Failed to submit decision');
                 }
 
                 const result = await response.json();
@@ -419,6 +909,7 @@
                 );
                 document.getElementById('actions').style.display = 'none';
                 document.getElementById('comment-section').style.display = 'none';
+                document.getElementById('answer-form').style.display = 'none';
 
                 // Update status
                 approvalData.status = result.status;

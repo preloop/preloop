@@ -1,5 +1,5 @@
 import { LitElement } from 'lit';
-import { Router } from '@vaadin/router';
+import { Router } from './router';
 import { DEFAULT_SIMILARITY_THRESHOLD } from './config';
 import { PermissionError, permissionErrorFromResponse } from './permissions';
 import { ATTENTION_SUMMARY_STORAGE_KEY } from './utils/attention-summary';
@@ -4570,6 +4570,11 @@ export function buildApprovalDecisionBody(
   }
   if (options.answer_text != null && options.answer_text !== '') {
     body.answer_text = options.answer_text;
+  }
+  // The filled-in form. Sent only when there is one, so a plain approve keeps
+  // producing byte-for-byte the payload older backends already accept.
+  if (options.answer != null) {
+    body.answer = options.answer;
   }
   return body;
 }

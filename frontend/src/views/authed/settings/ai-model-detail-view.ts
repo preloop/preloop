@@ -1,6 +1,6 @@
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { Router } from '@vaadin/router';
+import { Router } from '../../../router';
 
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';

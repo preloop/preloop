@@ -8237,13 +8237,10 @@ paths:
       tags:
       - Webhooks
       summary: Receive Webhook
-      description: 'Receive webhook events from external trackers (GitHub, GitLab,
-        Jira).
+      description: 'Receive tracker webhooks and queue event processing.
 
 
-        Parses the payload to identify the organization and updates its
-
-        last_webhook_update timestamp.'
+        Return HTTP 503 when task publication is not acknowledged.'
       operationId: receive_webhook_api_v1_private_webhooks__tracker_type___organization_id__post
       parameters:
       - name: tracker_type
@@ -12647,6 +12644,15 @@ components:
           - type: 'null'
           title: Answer Text
           description: 'For ask_user questions: a free-text answer the user typed'
+        answer:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Answer
+          description: 'For questions carrying an input_schema: the filled form, as
+            JSON. Validated against that schema server-side; x-autofill fields (author,
+            date) are stamped by the platform and anything sent for them is ignored.'
       type: object
       required:
       - approved
@@ -12806,6 +12812,12 @@ components:
           - type: string
           - type: 'null'
           title: Approver Comment
+        structured_answer:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Structured Answer
         webhook_posted_at:
           anyOf:
           - type: string
@@ -12946,6 +12958,43 @@ components:
           title: Allow Free Text
           description: Whether the user may type a free-text answer (default True).
           readOnly: true
+        question_items:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Question Items
+          description: 'Rows the question is about, e.g. one per unwaived finding.
+
+
+            Each row is {id, title, description?, severity?, badges?, href?}. The
+
+            console renders them as a table with a checkbox per row, so a human
+
+            picks findings instead of transcribing ids. Empty for every question
+
+            that has no rows, which surfaces render as before.'
+          readOnly: true
+        question_schema:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Question Schema
+          description: 'The answer form, in the subset documented in question_schema.py.
+
+
+            None means there is no form and the legacy options + free-text path
+
+            applies. Present on questions AND on approvals whose decision needs
+
+            structured input (request_approval also accepts input_schema).'
+          readOnly: true
+        has_answer_form:
+          type: boolean
+          title: Has Answer Form
+          description: True when this request must be decided through a form.
+          readOnly: true
       type: object
       required:
       - tool_name
@@ -12968,6 +13017,9 @@ components:
       - question
       - question_options
       - allow_free_text
+      - question_items
+      - question_schema
+      - has_answer_form
       title: ApprovalRequestResponse
       description: Schema for approval request response.
     ApprovalSessionSummary:

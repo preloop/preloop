@@ -50,6 +50,10 @@ from preloop.models.crud import (
     crud_runtime_session_activity,
 )
 from preloop.models.crud.runtime_session import IDLE_GENERATION_INFIX
+from preloop.models.db.gateway_session import (
+    has_runtime_session_summary_columns,
+    release_gateway_session,
+)
 from preloop.services.codex_tool_compat import (
     unwrap_freeform_arguments,
     custom_tool_call_output,
@@ -699,6 +703,10 @@ def _session_id_from_openai_payload(
 class OpenAIGatewayService:
     """Service for Preloop's OpenAI-compatible gateway."""
 
+    # __new__ construction (tests, factories) skips __init__. Default keeps
+    # release_db_for_wait from crashing on a missing attribute.
+    _owns_db_session: bool = False
+
     def __init__(
         self,
         db: Session,
@@ -707,9 +715,23 @@ class OpenAIGatewayService:
         budget_enforcer: Optional[Any] = None,
         client_session_id: Optional[str] = None,
         skip_runtime_session_resolution: bool = False,
+        owns_db_session: bool = False,
     ) -> None:
         self.db = db
         self.auth_context = auth_context
+        self._owns_db_session = owns_db_session
+        self._wait_model: Optional[AIModel] = None
+        self._wait_preserve: tuple[Any, ...] = ()
+        if owns_db_session:
+            # Only HTTP request-owned sessions can end a transaction here.
+            # Internal replay/optimization callers retain their own boundary.
+            self.db.expire_on_commit = False
+            self.auth_context = ModelGatewayAuthContext(
+                token=auth_context.token,
+                user=auth_context.user,
+                api_key=auth_context.api_key,
+                oauth_access_token=auth_context.oauth_access_token,
+            )
         self.upstream_backend = upstream_backend or get_model_gateway_backend()
         self.budget_enforcer = budget_enforcer
         # Per-run session id supplied by the client (X-Preloop-Session-Id, or
@@ -774,6 +796,35 @@ class OpenAIGatewayService:
         # (``GatewayStreamingResponse.on_complete``). None when the generator
         # is still mid-stream or recording already ran.
         self._deferred_stream_record: Optional[Callable[[], None]] = None
+
+    def release_db_for_wait(self, ai_model: Optional[AIModel] = None) -> None:
+        """Release an owned request transaction before external or stream waits.
+
+        The same Session starts a fresh transaction on the next CRUD operation.
+        Retained model/auth objects are fully loaded detached snapshots, so
+        rendering a chunk cannot reacquire a connection by implicit ORM I/O.
+        Caller-owned internal sessions are deliberately unaffected.
+
+        Sole production caller of ``release_gateway_session``. Invoke only after
+        HTTP request preparation (or after persisted accounting) so any pending
+        state is that request's unit of work, never an unrelated mid-request
+        transaction. Provider waits, streams, retries, approval holds, and
+        accounting cleanup all share this boundary.
+        """
+        if not self._owns_db_session:
+            return
+        if ai_model is not None:
+            self._wait_model = ai_model
+        release_gateway_session(
+            self.db,
+            preserve=(
+                self._wait_model,
+                self.auth_context.user,
+                self.auth_context.api_key,
+                self.auth_context.oauth_access_token,
+                *self._wait_preserve,
+            ),
+        )
 
     def _begin_request_accounting(self) -> None:
         """Re-arm per-request counters at the start of a gateway request.
@@ -3452,6 +3503,8 @@ class OpenAIGatewayService:
         # Reset per request (mirrors _build_completion_kwargs) so an errored
         # resolution never leaves a stale value on the usage row.
         self._last_upstream_credential_type = None
+        if self._owns_db_session:
+            ai_model = self._reattach_for_recording(ai_model)
         try:
             resolved = get_secret_service().resolve_ai_model_credentials(
                 ai_model,
@@ -3946,6 +3999,7 @@ class OpenAIGatewayService:
             headers=headers,
             method="POST",
         )
+        self.release_db_for_wait(ai_model)
         try:
             with urllib_request.urlopen(req, timeout=600) as response:
                 self._capture_rate_limit_headers(getattr(response, "headers", None))
@@ -4738,6 +4792,8 @@ class OpenAIGatewayService:
         if (ai_model.provider_name or "").strip().lower() != "anthropic":
             return None
         self._last_upstream_credential_type = None
+        if self._owns_db_session:
+            ai_model = self._reattach_for_recording(ai_model)
         try:
             resolved = get_secret_service().resolve_ai_model_credentials(
                 ai_model,
@@ -5063,6 +5119,7 @@ class OpenAIGatewayService:
         Raises:
             ModelGatewayAPIError: On transport failure or upstream >=400.
         """
+        self.release_db_for_wait()
         try:
             response = _anthropic_passthrough_http_client().post(
                 url,
@@ -5119,6 +5176,7 @@ class OpenAIGatewayService:
         Raises:
             ModelGatewayAPIError: On transport failure or upstream >=400.
         """
+        self.release_db_for_wait()
         client = _anthropic_passthrough_http_client()
         try:
             request = client.build_request("POST", url, headers=headers, json=body)
@@ -5372,6 +5430,8 @@ class OpenAIGatewayService:
             ModelGatewayAPIError: When no usable API-key credential exists.
         """
         self._last_upstream_credential_type = None
+        if self._owns_db_session:
+            ai_model = self._reattach_for_recording(ai_model)
         try:
             resolved = get_secret_service().resolve_ai_model_credentials(
                 ai_model,
@@ -5595,6 +5655,7 @@ class OpenAIGatewayService:
         url, headers, body = self._prepare_openai_responses_passthrough(
             ai_model, payload, stream=False
         )
+        self.release_db_for_wait(ai_model)
 
         def _attempt() -> Optional[Dict[str, Any]]:
             try:
@@ -5659,6 +5720,7 @@ class OpenAIGatewayService:
         url, headers, body = self._prepare_openai_responses_passthrough(
             ai_model, payload, stream=True
         )
+        self.release_db_for_wait(ai_model)
 
         def _attempt() -> Optional[httpx.Response]:
             client = _openai_passthrough_http_client(ai_model)
@@ -5919,6 +5981,8 @@ class OpenAIGatewayService:
         # Reset per request so a prior request's value never leaks if
         # resolution below raises before the credential type is determined.
         self._last_upstream_credential_type = None
+        if self._owns_db_session:
+            ai_model = self._reattach_for_recording(ai_model)
         try:
             resolved_credentials = get_secret_service().resolve_ai_model_credentials(
                 ai_model,
@@ -6129,6 +6193,7 @@ class OpenAIGatewayService:
                     delay,
                     exc,
                 )
+                self.release_db_for_wait(ai_model)
                 _sleep_before_upstream_retry(delay)
         assert last_exc is not None
         self._capture_rate_limit_headers(headers_from_exception(last_exc))
@@ -6169,6 +6234,7 @@ class OpenAIGatewayService:
         )
 
         def _invoke() -> Any:
+            self.release_db_for_wait(ai_model)
             return self.upstream_backend.completion(**kwargs)
 
         if retry_transient:
@@ -7939,6 +8005,15 @@ class OpenAIGatewayService:
             )
         except Exception as exc:
             self._rollback_activity_recording(exc, context="gateway usage recording")
+        finally:
+            if self._owns_db_session:
+                try:
+                    self.release_db_for_wait(ai_model)
+                except Exception as exc:
+                    self._rollback_activity_recording(
+                        exc, context="gateway accounting cleanup"
+                    )
+                    self.db.close()
 
     def _reattach_for_recording(self, instance: Any) -> Any:
         """Return an attached equivalent of a possibly-detached ORM instance.
@@ -8451,6 +8526,8 @@ class OpenAIGatewayService:
         if default_model is None:
             return
 
+        previous_preserve = self._wait_preserve
+        self._wait_preserve = (*previous_preserve, runtime_session, usage)
         try:
             summary = self._generate_runtime_session_summary(
                 summary_model=default_model,
@@ -8472,6 +8549,8 @@ class OpenAIGatewayService:
                 exc_info=True,
             )
             return
+        finally:
+            self._wait_preserve = previous_preserve
 
         if not summary:
             return
@@ -8513,16 +8592,9 @@ class OpenAIGatewayService:
     def _runtime_session_summary_columns_available(self) -> bool:
         """Return whether the runtime session summary migration has been applied."""
         try:
-            bind = self.db.get_bind()
-            if bind is None:
-                return False
-            columns = {
-                column["name"]
-                for column in inspect(bind).get_columns("runtime_session")
-            }
+            return has_runtime_session_summary_columns(self.db)
         except Exception:
             return False
-        return {"summary", "summary_updated_at"}.issubset(columns)
 
     def _generate_runtime_session_summary(
         self,

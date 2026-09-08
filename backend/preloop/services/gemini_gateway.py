@@ -27,6 +27,7 @@ class GeminiGatewayService(OpenAIGatewayService):
         auth_context: ModelGatewayAuthContext,
         client_session_id: Optional[str] = None,
         budget_enforcer: Optional[Any] = None,
+        owns_db_session: bool = False,
     ) -> None:
         # Forward the budget enforcer so Gemini traffic is subject to the same
         # account/flow budget policy enforcement as the OpenAI/Anthropic
@@ -36,6 +37,7 @@ class GeminiGatewayService(OpenAIGatewayService):
             auth_context,
             client_session_id=client_session_id,
             budget_enforcer=budget_enforcer,
+            owns_db_session=owns_db_session,
         )
 
     def list_models(self) -> Dict[str, Any]:
@@ -173,7 +175,15 @@ class GeminiGatewayService(OpenAIGatewayService):
         # got around to it — by which point the request's database session can
         # already be closed and the usage row is lost. Hand the inner stream to
         # the observer so it is closed deterministically.
-        return ObservedGatewayStream(event_stream(), closes=(upstream_events,))
+        def closing_event_stream() -> Iterator[str]:
+            try:
+                yield from event_stream()
+            finally:
+                close = getattr(upstream_events, "close", None)
+                if close is not None:
+                    close()
+
+        return ObservedGatewayStream(closing_event_stream(), closes=(upstream_events,))
 
     def _translate_generate_content_request(
         self, model_name: str, payload: Dict[str, Any]

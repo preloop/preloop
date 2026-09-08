@@ -28,6 +28,19 @@ export function isApprovalQuestion(request: ApprovalRequest): boolean {
   return request.is_question === true;
 }
 
+/**
+ * True when the request carries an answer form (`question_schema`).
+ *
+ * Such a request cannot be decided from a row or in bulk: the decision is the
+ * filled-in form, and one shared comment cannot fill four different forms.
+ * The row links to the page that can, and the server refuses the shortcut.
+ */
+export function requestNeedsForm(request: ApprovalRequest): boolean {
+  if (request.has_answer_form === true) return true;
+  const schema = request.question_schema;
+  return Boolean(schema && Object.keys(schema.properties ?? {}).length > 0);
+}
+
 /** Pending, unexpired and not a question: the requests a person can decide. */
 export function isDecidableRequest(
   request: ApprovalRequest,
@@ -58,7 +71,8 @@ export function approvalActions(
         variant: 'success',
         loading: busy,
         disabled: busy,
-        available: (item) => isDecidableRequest(item, now),
+        available: (item) =>
+          isDecidableRequest(item, now) && !requestNeedsForm(item),
         onClick: ctx.onApprove ? () => ctx.onApprove!(request) : undefined,
       },
       // Denying stops the agent, so it confirms first (DESIGN.md).
@@ -77,7 +91,11 @@ export function approvalActions(
             id: 'details',
             // A waiting request is opened to decide it, a settled one to read
             // it, and the link says which.
-            label: isUnexpiredPendingRequest(request, now) ? 'Details' : 'View',
+            label: !isUnexpiredPendingRequest(request, now)
+              ? 'View'
+              : requestNeedsForm(request)
+                ? 'Open to answer'
+                : 'Details',
             href: approvalDetailUrl(request),
           }
         : null,

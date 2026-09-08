@@ -8,6 +8,7 @@ import {
   updateAgentGovernance,
 } from '../../api';
 import type {
+  AnswerFieldError,
   ApprovalDecisionOptions,
   ApprovalRequest,
   SubjectGovernanceConfig,
@@ -31,11 +32,14 @@ import {
 import { isDecidableRequest } from '../../actions/approval-actions';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import { formatRelativeTime } from '../../utils/date';
+import { formatAnswerValue } from '../../utils/question-form';
 import {
   normalizeScopedToolRules,
   serializeScopedToolRules,
 } from '../../utils/scoped-governance';
 import '../../components/question-answer-panel';
+import '../../components/answer-form';
+import type { AnswerForm } from '../../components/answer-form';
 import '../../components/approval-rule-context-block';
 import '../../components/attribution-line';
 import '../../components/args-diff';
@@ -138,6 +142,14 @@ export class ApprovalView extends AuthedElement {
   /** True once the profile fetch has settled, whatever it returned. */
   @state()
   private permissionsLoaded = false;
+
+  /**
+   * The identity the platform will stamp into `x-autofill: author` fields.
+   * Shown so the operator can see what will be recorded; it is never an input
+   * and the value that lands is the server's, not this one.
+   */
+  @state()
+  private decisionAuthor = '';
 
   /**
    * True while the deny confirmation is on screen. The decision keys listen on
@@ -302,6 +314,35 @@ export class ApprovalView extends AuthedElement {
 
       /* The decision travels with the page: whatever the operator has scrolled
        to, the bar with the countdown and the two buttons is on screen. */
+      .answer-list {
+        display: grid;
+        grid-template-columns: minmax(8rem, 12rem) 1fr;
+        gap: 0.375rem 1rem;
+        margin: 0;
+      }
+
+      .answer-list dt {
+        font-size: var(--console-text-meta, 13px);
+        color: var(--sl-color-neutral-600);
+      }
+
+      .answer-list dd {
+        margin: 0;
+        font-size: var(--console-text-body, 14px);
+        color: var(--sl-color-neutral-900);
+      }
+
+      @media (max-width: 520px) {
+        .answer-list {
+          grid-template-columns: 1fr;
+          gap: 0.125rem;
+        }
+
+        .answer-list dd {
+          margin-bottom: 0.5rem;
+        }
+      }
+
       .decision-bar {
         position: sticky;
         bottom: 0;
@@ -511,6 +552,7 @@ export class ApprovalView extends AuthedElement {
       // Keep the null: on OSS and DISABLE_RBAC the endpoint returns no
       // permissions array at all, and `[]` would read as "allowed nothing".
       this.permissions = profile?.permissions ?? null;
+      this.decisionAuthor = profile?.email || profile?.username || '';
     } catch {
       this.permissions = null;
     } finally {
@@ -746,6 +788,11 @@ export class ApprovalView extends AuthedElement {
     if (options.answer_text) {
       body.answer_text = options.answer_text;
     }
+    // The filled-in form, validated again server-side. Sent only when one
+    // exists, so a plain approve keeps the payload it always had.
+    if (options.answer) {
+      body.answer = options.answer;
+    }
 
     // Public-token rendering (viewer outside the account): the decision goes
     // through the token endpoint, which authorizes exactly this request.
@@ -762,6 +809,7 @@ export class ApprovalView extends AuthedElement {
             body: JSON.stringify({
               action: action === 'approve' ? 'approve' : 'decline',
               comment: options.comment || null,
+              ...(options.answer ? { answer: options.answer } : {}),
             }),
           }
         );
@@ -805,8 +853,8 @@ export class ApprovalView extends AuthedElement {
       );
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || `Failed to ${action} request`);
+        const error = await response.json().catch(() => ({}));
+        throw new Error(this.decisionErrorMessage(error, action));
       }
 
       const updated = await response.json();
@@ -828,6 +876,34 @@ export class ApprovalView extends AuthedElement {
     } finally {
       this.submitting = false;
     }
+  }
+
+  /**
+   * Turn a rejected decision into a sentence, and put a form rejection on the
+   * fields it names. The server validates the answer again (it is the one
+   * that decides), so its complaints have to reach the same fields the
+   * client-side check would have marked.
+   */
+  private decisionErrorMessage(
+    error: { detail?: unknown },
+    action: 'approve' | 'decline'
+  ): string {
+    const detail = error?.detail;
+    if (detail && typeof detail === 'object') {
+      const structured = detail as {
+        message?: string;
+        errors?: AnswerFieldError[];
+      };
+      if (Array.isArray(structured.errors)) {
+        this.activeForm?.setServerErrors(structured.errors);
+        const first = structured.errors[0];
+        const where = first?.path ? `${first.path}: ` : '';
+        return `${structured.message || 'The answer does not fit this form'} (${where}${first?.message ?? ''})`;
+      }
+      if (structured.message) return structured.message;
+    }
+    if (typeof detail === 'string' && detail) return detail;
+    return `Failed to ${action} request`;
   }
 
   /**
@@ -853,10 +929,36 @@ export class ApprovalView extends AuthedElement {
     }
   }
 
+  /**
+   * The form on a tool approval that asks for data (not a question: those
+   * render their form inside the question panel).
+   */
+  private get decisionForm(): AnswerForm | null {
+    return (
+      (this.shadowRoot?.querySelector('answer-form.decision-form') as
+        AnswerForm | undefined) ?? null
+    );
+  }
+
+  /** Whatever form is on screen, so a 422 lands on the field that earned it. */
+  private get activeForm(): AnswerForm | null {
+    const inQuestion = this.shadowRoot
+      ?.querySelector('question-answer-panel')
+      ?.shadowRoot?.querySelector('answer-form') as AnswerForm | undefined;
+    return this.decisionForm ?? inQuestion ?? null;
+  }
+
   private async handleApprove() {
+    const form = this.decisionForm;
+    if (form && !form.validate()) {
+      // Approving with an empty required field would record a decision the
+      // agent cannot act on, so the click does nothing but point at the gap.
+      showToast('Fill in the form before approving.', 'warning');
+      return;
+    }
     await this.submitDecision(
       'approve',
-      { comment: this.comment },
+      { comment: this.comment, answer: form ? form.answer : null },
       'Request approved.'
     );
   }
@@ -890,12 +992,14 @@ export class ApprovalView extends AuthedElement {
 
   /** An answered question is submitted as an approve with the answer attached. */
   private async handleQuestionAnswer(e: CustomEvent<QuestionAnswerDetail>) {
-    const { selectedOption, answerText } = e.detail;
+    const { selectedOption, answerText, answer, comment } = e.detail;
     await this.submitDecision(
       'approve',
       {
         selected_option: selectedOption ?? null,
         answer_text: answerText ?? null,
+        answer: answer ?? null,
+        comment: comment ?? this.comment,
       },
       'Answer sent to the agent.'
     );
@@ -1163,6 +1267,9 @@ export class ApprovalView extends AuthedElement {
                     .question=${this.questionText}
                     .options=${request.question_options ?? []}
                     .allowFreeText=${request.allow_free_text === true}
+                    .inputSchema=${request.question_schema ?? null}
+                    .items=${request.question_items ?? []}
+                    .author=${this.decisionAuthor}
                     .submitting=${this.submitting}
                     @question-answer=${this.handleQuestionAnswer}
                     @question-dismiss=${this.handleQuestionDismiss}
@@ -1267,6 +1374,23 @@ export class ApprovalView extends AuthedElement {
               `
             : ''
         }
+        ${
+          !isQuestion && isPending && request.question_schema
+            ? html`
+                <div class="content-section">
+                  <h2>What this decision needs</h2>
+                  <answer-form
+                    class="decision-form"
+                    .schema=${request.question_schema}
+                    .items=${request.question_items ?? []}
+                    .author=${this.decisionAuthor}
+                    .disabled=${this.submitting}
+                  ></answer-form>
+                </div>
+              `
+            : ''
+        }
+        ${this.renderRecordedAnswer(request)}
         ${isResolved ? this.renderResolvedHeader(request) : ''}
 
         <div class="metadata">
@@ -1285,6 +1409,31 @@ export class ApprovalView extends AuthedElement {
           ? this.renderDecisionBar(request, countdown, expiringSoon)
           : ''
       }
+    `;
+  }
+
+  /**
+   * The answer somebody already gave, as fields rather than as a JSON blob.
+   *
+   * The agent acts on the JSON; a person reading the record afterwards needs
+   * the same facts in a shape they can scan.
+   */
+  private renderRecordedAnswer(request: ApprovalRequest) {
+    const answer = request.structured_answer;
+    if (!answer || Object.keys(answer).length === 0) return '';
+    const properties = request.question_schema?.properties ?? {};
+    return html`
+      <div class="content-section recorded-answer">
+        <h2>Answer</h2>
+        <dl class="answer-list">
+          ${Object.entries(answer).map(
+            ([name, value]) => html`
+              <dt>${properties[name]?.title || name.replace(/_/g, ' ')}</dt>
+              <dd>${formatAnswerValue(value)}</dd>
+            `
+          )}
+        </dl>
+      </div>
     `;
   }
 

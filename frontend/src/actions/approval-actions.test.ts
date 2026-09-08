@@ -1,6 +1,10 @@
 import { expect } from '@open-wc/testing';
 import type { ApprovalRequest } from '../types';
-import { approvalActions, isDecidableRequest } from './approval-actions';
+import {
+  approvalActions,
+  isDecidableRequest,
+  requestNeedsForm,
+} from './approval-actions';
 import { actionIds, intersectActions } from './registry';
 
 const NOW = Date.parse('2026-09-07T12:00:00Z');
@@ -84,6 +88,36 @@ describe('approvalActions', () => {
     expect(isDecidableRequest(makeRequest({ expires_at: null }), NOW)).to.equal(
       true
     );
+  });
+
+  describe('a request that carries an answer form', () => {
+    const withForm = makeRequest({
+      question_schema: {
+        type: 'object',
+        properties: { waived: { type: 'array' } },
+        required: ['waived'],
+      },
+    });
+
+    it('is recognised from the schema, and from the server flag alone', () => {
+      expect(requestNeedsForm(withForm)).to.be.true;
+      expect(requestNeedsForm(makeRequest({ has_answer_form: true }))).to.be
+        .true;
+      expect(requestNeedsForm(makeRequest())).to.be.false;
+    });
+
+    it('offers no Approve button, because a row cannot fill a form', () => {
+      expect(actionIds(approvalActions(withForm, ctx))).to.deep.equal([
+        'deny',
+        'details',
+      ]);
+    });
+
+    it('says what the link is for', () => {
+      expect(
+        approvalActions(withForm, ctx).find((a) => a.id === 'details')!.label
+      ).to.equal('Open to answer');
+    });
   });
 
   it('offers a waiting and a decided request only the link', () => {

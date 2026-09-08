@@ -16,6 +16,11 @@ from preloop.models.models.approval_event import ApprovalEvent
 from preloop.models.models.approval_request import ApprovalRequest
 from preloop.models.schemas.approval_request import ApprovalEventPublic
 from preloop.services.approval_service import ApprovalService
+from preloop.services.question_schema import (
+    AnswerValidationError,
+    prepare_answer,
+    question_form,
+)
 from preloop.utils.redaction import redact_dict
 
 logger = logging.getLogger(__name__)
@@ -36,6 +41,10 @@ class ApprovalDecisionRequest(BaseModel):
 
     action: str  # "approve" or "decline"
     comment: Optional[str] = None
+    # The filled form, for a question that carries an input_schema. Validated
+    # against that schema exactly as on the authenticated path: a token link
+    # is a different door into the same decision, not a looser one.
+    answer: Optional[dict] = None
 
 
 class ApprovalRequestPublic(BaseModel):
@@ -45,11 +54,26 @@ class ApprovalRequestPublic(BaseModel):
     tool_name: str
     tool_args: dict
     agent_reasoning: Optional[str]
+    summary: Optional[str] = None
     status: str
     requested_at: str
     expires_at: Optional[str]
     resolved_at: Optional[str] = None
     history: List[ApprovalEventPublic] = Field(default_factory=list)
+    # The question surface, mirrored from tool_args so the token page renders
+    # the same form as the console. Nothing here is account data: it is what
+    # the agent asked, which the holder of the link is being asked to answer.
+    is_question: bool = False
+    question: Optional[str] = None
+    question_options: List[str] = Field(default_factory=list)
+    allow_free_text: bool = True
+    question_items: List[dict] = Field(default_factory=list)
+    question_schema: Optional[dict] = None
+
+
+def _text_or_none(value: object) -> Optional[str]:
+    """Return a string field, ignoring non-string mocks and Nones."""
+    return value if isinstance(value, str) and value else None
 
 
 def _iso_or_none(value: object) -> Optional[str]:
@@ -71,11 +95,27 @@ def _to_public_request(
     approval_request: ApprovalRequest, events: Sequence[ApprovalEvent]
 ) -> ApprovalRequestPublic:
     """Build the token-page payload, redacting secrets and identities."""
+    tool_args = approval_request.tool_args or {}
+    schema, items = question_form(tool_args)
+    options = tool_args.get("options") if isinstance(tool_args, dict) else None
     return ApprovalRequestPublic(
         id=str(approval_request.id),
         tool_name=approval_request.tool_name,
-        tool_args=redact_dict(approval_request.tool_args or {}),
+        tool_args=redact_dict(tool_args),
         agent_reasoning=approval_request.agent_reasoning,
+        summary=_text_or_none(getattr(approval_request, "summary", None)),
+        is_question=bool(isinstance(tool_args, dict) and tool_args.get("is_question")),
+        question=_text_or_none(
+            tool_args.get("question") if isinstance(tool_args, dict) else None
+        ),
+        question_options=[str(option) for option in options or []],
+        allow_free_text=(
+            bool(tool_args.get("allow_free_text", True))
+            if isinstance(tool_args, dict)
+            else True
+        ),
+        question_items=items,
+        question_schema=schema,
         status=approval_request.status,
         requested_at=_iso_or_none(approval_request.requested_at) or "",
         expires_at=_iso_or_none(approval_request.expires_at),
@@ -215,8 +255,28 @@ async def decide_approval_request_public(
         try:
             if decision.action == "approve":
                 logger.info(f"Approving request {request_id}")
+                # The same validation the console path runs. A token link proves
+                # someone was sent here, not who they are, so an x-autofill author
+                # stays empty rather than being invented: the agent then sees an
+                # answer with no author and can fail closed on it.
+                try:
+                    answer, summary = prepare_answer(
+                        approval_request.tool_args, decision.answer, author=None
+                    )
+                except AnswerValidationError as invalid:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "message": "The answer does not fit this question's form",
+                            "errors": invalid.errors,
+                        },
+                    ) from None
+                comment = (
+                    "; ".join(part for part in (summary, decision.comment) if part)
+                    or decision.comment
+                )
                 updated_request = await approval_service.approve_request(
-                    request_id, decision.comment, channel="token link"
+                    request_id, comment, channel="token link", structured_answer=answer
                 )
             else:
                 logger.info(f"Declining request {request_id}")
