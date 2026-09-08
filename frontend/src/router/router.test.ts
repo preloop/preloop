@@ -469,6 +469,130 @@ describe('router', () => {
     });
   });
 
+  // The console groups its flows (and trackers, and issues) under a parent
+  // route that has children but no component of its own. That group occupies a
+  // level in the chain while owning no element, which is what #499 got wrong.
+  describe('component-less group routes', () => {
+    /** `/console/flows` and its children, as the console declares them. */
+    const groupRoutes = (tags: {
+      shell: string;
+      list: string;
+      create: string;
+      detail: string;
+      execution: string;
+    }) => [
+      {
+        path: '/console',
+        component: tags.shell,
+        children: [
+          {
+            path: 'flows',
+            children: [
+              { path: '', component: tags.list },
+              { path: 'new', component: tags.create },
+              {
+                path: 'executions/:executionId',
+                component: tags.execution,
+              },
+              { path: ':flowId', component: tags.detail },
+            ],
+          },
+        ],
+      },
+    ];
+
+    it('does not reuse a leaf element as the group it sits under', async () => {
+      const tags = {
+        shell: defineTag('rt-group-shell'),
+        list: defineTag('rt-group-list'),
+        create: defineTag('rt-group-create'),
+        detail: defineTag('rt-group-detail'),
+        execution: defineTag('rt-group-execution'),
+      };
+      await router.setRoutes(groupRoutes(tags), true);
+
+      await router.render('/console/flows/executions/e1');
+      expect(outlet.querySelector(`${tags.shell} > ${tags.execution}`)).to
+        .exist;
+
+      // Back to the list: the execution view must go, not become the group.
+      await router.render('/console/flows');
+      expect(outlet.querySelector(`${tags.shell} > ${tags.list}`)).to.exist;
+      expect(outlet.querySelector(tags.execution)).to.equal(null);
+
+      // And down again: the list must go, not host the execution view.
+      await router.render('/console/flows/executions/e1');
+      expect(outlet.querySelector(`${tags.shell} > ${tags.execution}`)).to
+        .exist;
+      expect(outlet.querySelector(tags.list)).to.equal(null);
+    });
+
+    it('does not hand a sibling route location to the view it left', async () => {
+      const detail = `rt-group-params-detail-${++tagSeq}`;
+      const seen: (string | undefined)[] = [];
+      customElements.define(
+        detail,
+        class extends HTMLElement {
+          onBeforeEnter(location: RouterLocation) {
+            seen.push(location.params.flowId);
+          }
+        }
+      );
+      const tags = {
+        shell: defineTag('rt-group-params-shell'),
+        list: defineTag('rt-group-params-list'),
+        create: defineTag('rt-group-params-create'),
+        detail,
+        execution: defineTag('rt-group-params-execution'),
+      };
+      await router.setRoutes(groupRoutes(tags), true);
+
+      await router.render('/console/flows/f1');
+      await router.render('/console/flows/executions/e1');
+
+      // The flow page must not be re-entered with the execution's params:
+      // that is how <flow-view> lost its flowId and drew the create form.
+      expect(seen).to.deep.equal(['f1']);
+      expect(outlet.querySelector(detail)).to.equal(null);
+      expect(outlet.querySelector(`${tags.shell} > ${tags.execution}`)).to
+        .exist;
+    });
+
+    it('keeps two routes that share a component apart inside a group', async () => {
+      const tags = {
+        shell: defineTag('rt-group-share-shell'),
+        list: defineTag('rt-group-share-list'),
+        create: defineTag('rt-group-share-view'),
+        detail: defineTag('rt-group-share-view-detail'),
+        execution: defineTag('rt-group-share-execution'),
+      };
+      // `new` and `:flowId` are one component in the console. Reuse across
+      // them is fine; hosting one inside the other is not.
+      const routes = groupRoutes({ ...tags, detail: tags.create });
+      await router.setRoutes(routes, true);
+
+      await router.render('/console/flows/f1');
+      await router.render('/console/flows/new');
+      expect(outlet.querySelector(`${tags.shell} > ${tags.create}`)).to.exist;
+      expect(outlet.querySelectorAll(tags.create).length).to.equal(1);
+    });
+
+    it('keeps the shell alive while the group changes underneath it', async () => {
+      const tags = {
+        shell: defineTag('rt-group-keep-shell'),
+        list: defineTag('rt-group-keep-list'),
+        create: defineTag('rt-group-keep-create'),
+        detail: defineTag('rt-group-keep-detail'),
+        execution: defineTag('rt-group-keep-execution'),
+      };
+      await router.setRoutes(groupRoutes(tags), true);
+      await router.render('/console/flows');
+      const shellElement = outlet.querySelector(tags.shell);
+      await router.render('/console/flows/executions/e1');
+      expect(outlet.querySelector(tags.shell)).to.equal(shellElement);
+    });
+  });
+
   describe('component loading', () => {
     it('awaits a route load() before creating the element', async () => {
       const tag = `rt-lazy-${++tagSeq}`;
