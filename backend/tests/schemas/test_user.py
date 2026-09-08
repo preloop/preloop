@@ -118,6 +118,14 @@ class TestUserPasswordUpdate:
                 new_password="a" * 73,
             )
 
+    def test_current_password_may_exceed_bcrypt_limit(self):
+        """current_password is a submitted secret, not a new one; do not 422 it."""
+        data = UserPasswordUpdate(
+            current_password="a" * 80,
+            new_password="newpass123",
+        )
+        assert data.current_password == "a" * 80
+
 
 class TestAdminUserResponse:
     """Test AdminUserResponse schema."""

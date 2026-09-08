@@ -42,6 +42,9 @@ MAX_SESSION_DAYS = int(os.getenv("MAX_SESSION_DAYS", "30"))
 
 # Password context for hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# bcrypt 5.0.0 raises ValueError above 72 bytes. passlib used to truncate
+# silently, so hashes for longer secrets only cover that prefix.
+_BCRYPT_MAX_PASSWORD_BYTES = 72
 
 # OAuth2 for token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
@@ -328,6 +331,19 @@ def authenticate_runtime_bearer_token(
     )
 
 
+def _bcrypt_secret(password: str) -> str:
+    """Return the 72-byte prefix bcrypt actually hashes.
+
+    Slices UTF-8 bytes and drops a trailing incomplete character so passlib
+    still receives a str. Hash and verify must share this so a legacy
+    over-long password still authenticates after the bcrypt 5.0.0 bump.
+    """
+    encoded = password.encode("utf-8")
+    if len(encoded) <= _BCRYPT_MAX_PASSWORD_BYTES:
+        return password
+    return encoded[:_BCRYPT_MAX_PASSWORD_BYTES].decode("utf-8", "ignore")
+
+
 def get_password_hash(password: str) -> str:
     """Hash a password.
 
@@ -337,7 +353,7 @@ def get_password_hash(password: str) -> str:
     Returns:
         Hashed password.
     """
-    return pwd_context.hash(password)
+    return pwd_context.hash(_bcrypt_secret(password))
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -350,7 +366,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     Returns:
         True if the password matches the hash, False otherwise.
     """
-    return pwd_context.verify(plain_password, hashed_password)
+    return pwd_context.verify(_bcrypt_secret(plain_password), hashed_password)
 
 
 def create_access_token(

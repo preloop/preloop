@@ -114,7 +114,10 @@ class LoginRequest(BaseModel):
     """Model for login requests."""
 
     username: str
-    password: str = Field(..., max_length=72)
+    # No max_length: a schema cap would 422 existing accounts whose password
+    # is longer than 72 characters. verify_password uses bcrypt's 72-byte
+    # prefix, which is how passlib hashed those secrets before bcrypt 5.
+    password: str
 
 
 class RefreshRequest(BaseModel):
@@ -145,7 +148,7 @@ class PasswordResetConfirmRequest(BaseModel):
 class PasswordChangeRequest(BaseModel):
     """Password change request schema."""
 
-    current_password: str = Field(..., max_length=72)
+    current_password: str
     new_password: str = Field(..., min_length=8, max_length=72)
 
 

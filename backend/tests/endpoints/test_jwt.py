@@ -38,6 +38,14 @@ class TestPasswordHashing:
 
         assert jwt_module.verify_password(wrong_password, hashed) is False
 
+    def test_overlong_password_hashes_and_verifies(self):
+        """bcrypt 5.0.0 would raise above 72 bytes; the prefix still verifies."""
+        long_password = "a" * 80
+        hashed = jwt_module.get_password_hash(long_password)
+        assert jwt_module.verify_password(long_password, hashed) is True
+        assert jwt_module.verify_password("a" * 72, hashed) is True
+        assert jwt_module.verify_password("b" * 80, hashed) is False
+
 
 class TestCreateAccessToken:
     """Tests for token creation."""

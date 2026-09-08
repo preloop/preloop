@@ -282,10 +282,10 @@ class TestLoginRequest:
         assert request.username == "testuser"
         assert request.password == "password123"
 
-    def test_password_max_length_validation(self):
-        """Login passwords longer than bcrypt's 72-byte limit are rejected."""
-        with pytest.raises(ValidationError):
-            LoginRequest(username="testuser", password="a" * 73)
+    def test_overlong_password_is_accepted(self):
+        """Login must accept secrets longer than 72 chars so bcrypt 5 cannot lock accounts out."""
+        request = LoginRequest(username="testuser", password="a" * 80)
+        assert request.password == "a" * 80
 
 
 class TestRefreshRequest:
@@ -367,6 +367,14 @@ class TestPasswordChangeRequest:
 
         assert request.current_password == "oldpassword123"
         assert request.new_password == "newpassword123"
+
+    def test_current_password_may_exceed_bcrypt_limit(self):
+        """current_password is a submitted secret; do not 422 over-long values."""
+        request = PasswordChangeRequest(
+            current_password="a" * 80,
+            new_password="newpassword123",
+        )
+        assert request.current_password == "a" * 80
 
     def test_new_password_length_validation(self):
         """Test new password length validation."""

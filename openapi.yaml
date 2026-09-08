@@ -17895,7 +17895,6 @@ components:
           title: Username
         password:
           type: string
-          maxLength: 72
           title: Password
       type: object
       required:
@@ -19616,7 +19615,6 @@ components:
       properties:
         current_password:
           type: string
-          maxLength: 72
           title: Current Password
         new_password:
           type: string
