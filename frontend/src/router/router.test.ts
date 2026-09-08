@@ -104,6 +104,21 @@ describe('router', () => {
       expect(seen?.searchParams.get('q')).to.equal('x');
     });
 
+    it('treats malformed percent-encoding as unmatched, not a throw', async () => {
+      const tagged = defineTag('rt-bad-enc');
+      const missing = defineTag('rt-bad-enc-missing');
+      await router.setRoutes(
+        [
+          { path: '/agents/:agentId', component: tagged },
+          { path: '(.*)', component: missing },
+        ],
+        true
+      );
+      await router.render('/agents/%zz');
+      expect(outlet.querySelector(missing)).to.exist;
+      expect(outlet.querySelector(tagged)).to.equal(null);
+    });
+
     it('matches routes in declaration order so (.*) stays a fallback', async () => {
       const real = defineTag('rt-real');
       const missing = defineTag('rt-missing');
@@ -184,6 +199,72 @@ describe('router', () => {
       );
       await router.render('/settings');
       expect(outlet.querySelector(target)).to.exist;
+    });
+
+    it('connects a nested shell once when a child route redirects', async () => {
+      const shell = `rt-nested-redir-shell-${++tagSeq}`;
+      let connects = 0;
+      customElements.define(
+        shell,
+        class extends HTMLElement {
+          connectedCallback() {
+            connects += 1;
+          }
+        }
+      );
+      const profile = defineTag('rt-nested-redir-profile');
+      await router.setRoutes(
+        [
+          {
+            path: '/console',
+            component: shell,
+            children: [
+              { path: 'settings', redirect: '/console/settings/profile' },
+              { path: 'settings/profile', component: profile },
+            ],
+          },
+        ],
+        true
+      );
+      await router.render('/console/settings');
+      expect(outlet.querySelector(`${shell} > ${profile}`)).to.exist;
+      expect(connects).to.equal(1);
+    });
+
+    it('does not mount ancestors when a nested action redirects', async () => {
+      const shell = `rt-action-redir-shell-${++tagSeq}`;
+      let connects = 0;
+      customElements.define(
+        shell,
+        class extends HTMLElement {
+          connectedCallback() {
+            connects += 1;
+          }
+        }
+      );
+      const target = defineTag('rt-action-redir-target');
+      await router.setRoutes(
+        [
+          {
+            path: '/console',
+            component: shell,
+            children: [
+              {
+                path: 'runners',
+                action: (
+                  _context: RouterLocation,
+                  commands: { redirect(path: string): unknown }
+                ) => commands.redirect('/console/settings/runners'),
+              },
+              { path: 'settings/runners', component: target },
+            ],
+          },
+        ],
+        true
+      );
+      await router.render('/console/runners');
+      expect(outlet.querySelector(`${shell} > ${target}`)).to.exist;
+      expect(connects).to.equal(1);
     });
 
     it('gives a redirected click one stop, and Back is where it was clicked', async () => {
@@ -520,6 +601,45 @@ describe('router', () => {
       expect(outlet.querySelector(fast)).to.exist;
       expect(outlet.querySelector(slow)).to.equal(null);
     });
+
+    it('does not paint a stale load failure over a newer view', async () => {
+      const slow = defineTag('rt-stale-fail');
+      const fast = defineTag('rt-stale-fail-fast');
+      let rejectSlow!: (error: Error) => void;
+      const pending = new Promise<void>((_resolve, reject) => {
+        rejectSlow = reject;
+      });
+      const load = sinon.spy(() => pending);
+      router.setLoadingRenderer({
+        pending: () => () => undefined,
+        failed: ({ parent }) => {
+          const node = document.createElement('span');
+          node.className = 'failed';
+          parent.replaceChildren(node);
+        },
+      });
+      await router.setRoutes(
+        [
+          { path: '/stale-fail', component: slow, load },
+          { path: '/stale-ok', component: fast },
+        ],
+        true
+      );
+      const first = router.render('/stale-fail');
+      await waitUntil(() => load.called);
+      await router.render('/stale-ok');
+      expect(outlet.querySelector(fast)).to.exist;
+      const errorStub = sinon.stub(console, 'error');
+      try {
+        rejectSlow(new Error('chunk unavailable'));
+        await first;
+      } finally {
+        errorStub.restore();
+      }
+      expect(outlet.querySelector(fast)).to.exist;
+      expect(outlet.querySelector('.failed')).to.equal(null);
+      expect(outlet.querySelector(slow)).to.equal(null);
+    });
   });
 
   describe('anchor interception', () => {
@@ -633,6 +753,32 @@ describe('router', () => {
       void router.render('/legacy');
       const event = (await fired) as CustomEvent<{ location: RouterLocation }>;
       expect(event.detail.location.pathname).to.equal('/legacy');
+    });
+
+    it('Router.go does not fire a window popstate', async () => {
+      const first = defineTag('rt-nopop-a');
+      const second = defineTag('rt-nopop-b');
+      await router.setRoutes(
+        [
+          { path: '/nopop-a', component: first },
+          { path: '/nopop-b', component: second },
+        ],
+        true
+      );
+      await router.render('/nopop-a', { history: 'push' });
+      let pops = 0;
+      const onPop = () => {
+        pops += 1;
+      };
+      window.addEventListener('popstate', onPop);
+      try {
+        expect(Router.go('/nopop-b')).to.equal(true);
+        await waitUntil(() => !!outlet.querySelector(second));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(pops).to.equal(0);
+      } finally {
+        window.removeEventListener('popstate', onPop);
+      }
     });
 
     it('urlForPath substitutes params and returns an in-app pathname', () => {

@@ -124,9 +124,6 @@ interface CompiledRoute {
 /** Nested redirects are a configuration bug, not a state to recover from. */
 const MAX_REDIRECTS = 8;
 
-/** History entries this router wrote itself; see `dispatchIgnoredPopstate`. */
-const IGNORED_POPSTATE = 'preloop-router-ignore';
-
 /** Fired after every successful navigation. */
 export const LOCATION_CHANGED = 'preloop-router-location-changed';
 
@@ -344,9 +341,21 @@ export class Router {
       const found = candidate.pattern.exec(normalized);
       if (!found) continue;
       const params: Record<string, string> = {};
-      candidate.keys.forEach((key, index) => {
-        params[key] = decodeURIComponent(found[index + 1] ?? '');
-      });
+      let decoded = true;
+      for (let index = 0; index < candidate.keys.length; index++) {
+        const key = candidate.keys[index];
+        if (!key) continue;
+        const raw = found[index + 1] ?? '';
+        try {
+          params[key] = decodeURIComponent(raw);
+        } catch {
+          // `%zz` is not encoding. Skip this candidate so a catch-all can
+          // render not-found instead of match() rejecting the navigation.
+          decoded = false;
+          break;
+        }
+      }
+      if (!decoded) continue;
       return { chain: candidate.chain, params };
     }
     return null;
@@ -409,7 +418,8 @@ export class Router {
     failed?: boolean;
     location?: RouterLocation;
   }> {
-    if (!this.#outlet) return { stale: true };
+    const outlet = this.#outlet;
+    if (!outlet) return { stale: true };
     const hit = this.match(target.pathname);
     if (!hit) return { stale: true };
 
@@ -432,18 +442,26 @@ export class Router {
       if (renderId !== this.#renderId) return { stale: true };
     }
 
+    // A nested `{ redirect }` is known before any ancestor is created. Follow
+    // it here so `/console/settings` never mounts <console-shell> only to
+    // throw it away on the hop to `/console/settings/profile`.
+    for (const route of hit.chain) {
+      if (route.redirect) return { redirect: route.redirect };
+    }
+
     // Walk the chain outermost first, reusing an ancestor whose route and tag
     // are unchanged. Reuse is what keeps <console-shell> (its nav state, its
     // feature fetches, its websocket subscriptions) alive across in-console
     // navigation; a router that replaces the outlet wholesale rebuilds the
     // shell on every click.
-    let parent: Element = this.#outlet;
+    let parent: Element = outlet;
     let diverged = false;
     const next: RoutedElement[] = [];
+    const attach: { parent: Element; element: RoutedElement }[] = [];
 
     for (let level = 0; level < hit.chain.length; level++) {
       const route = hit.chain[level];
-      if (route.redirect) return { redirect: route.redirect };
+      if (!route) continue;
 
       let element: RoutedElement | null = null;
       if (route.action) {
@@ -463,19 +481,31 @@ export class Router {
           this.#elements[level]?.localName === route.component);
 
       if (reusable) {
-        element = this.#elements[level];
+        element = this.#elements[level] ?? null;
       } else if (!element && route.component) {
-        const chunk = await this.#loadComponent(route, target, {
-          parent,
-          atOutlet: parent === this.#outlet,
-        });
+        // Ancestors stay detached until this pass is known terminal, so a
+        // pending/failed slot has to paint on a connected node. The outlet
+        // is the fallback when `parent` is a shell we have not attached yet.
+        const slotParent = parent.isConnected ? parent : outlet;
+        const chunk = await this.#loadComponent(
+          route,
+          target,
+          {
+            parent: slotParent,
+            atOutlet: slotParent === this.#outlet,
+          },
+          renderId
+        );
         if (chunk === 'failed') return { failed: true };
         if (renderId !== this.#renderId) return { stale: true };
         element = document.createElement(route.component) as RoutedElement;
       }
 
       if (!element) continue;
-      if (!reusable) diverged = true;
+      if (!reusable) {
+        diverged = true;
+        attach.push({ parent, element });
+      }
 
       element.location = context;
       if (element.onBeforeEnter) {
@@ -484,12 +514,18 @@ export class Router {
         if (isRedirect(verdict)) return { redirect: verdict.redirect };
         if (isPrevent(verdict)) return { cancelled: true };
       }
-      if (!reusable) parent.replaceChildren(element);
       next.push(element);
       parent = element;
     }
 
     if (!next.length) return { stale: true };
+
+    // Attach only once every action and guard has had a chance to redirect.
+    // An action on a nested route that returns `commands.redirect` must not
+    // have already connected its ancestors.
+    for (const step of attach) {
+      step.parent.replaceChildren(step.element);
+    }
 
     this.#chain = hit.chain.slice(0, next.length);
     this.#elements = next;
@@ -505,7 +541,8 @@ export class Router {
   async #loadComponent(
     route: Route,
     target: { pathname: string; search: string; hash: string },
-    slot: LoadingSlot
+    slot: LoadingSlot,
+    renderId: number
   ): Promise<'ok' | 'failed'> {
     if (!route.load) return 'ok';
     const pending = this.#loaded.get(route) ?? route.load();
@@ -522,7 +559,9 @@ export class Router {
       this.#loaded.delete(route);
       console.error('Failed to load route module', target.pathname, error);
       // Without a renderer there is nothing to show, so the caller gets the
-      // error instead of a silently empty outlet.
+      // error instead of a silently empty outlet. A navigation that has
+      // already been superseded must not paint over the view that replaced it.
+      if (renderId !== this.#renderId) return 'failed';
       if (!this.#loading) throw error;
       stopPending?.();
       this.#loading.failed(slot, error);
@@ -548,6 +587,13 @@ export class Router {
    * navigation's, not the redirect's: a click still adds one, or Back would
    * skip the page the click was made on, and a first render still replaces
    * one, because there is nothing behind it to keep.
+   *
+   * History writes are silent: `pushState`/`replaceState` do not fire
+   * `popstate`, and this router does not synthesize one. Issues views listen
+   * to `popstate` to refetch; a synthetic event after every in-app navigation
+   * would double-fetch. Analytics and the shell already listen for
+   * {@link LOCATION_CHANGED}, which `#announce` fires after a successful
+   * render. Real back/forward still delivers a genuine `popstate`.
    */
   #writeHistory(
     final: { pathname: string; search: string; hash: string },
@@ -558,9 +604,9 @@ export class Router {
     const redirected =
       final.pathname !== start.pathname || final.search !== start.search;
     // A render that landed where it was asked to has nothing to write: the URL
-    // is already right for popstate, and on first load an action may have
-    // rewritten it deliberately (the /console OAuth handler strips the token
-    // fragment). Restoring the requested URL there would put the tokens back.
+    // is already right, and on first load an action may have rewritten it
+    // deliberately (the /console OAuth handler strips the token fragment).
+    // Restoring the requested URL there would put the tokens back.
     if (mode === 'replace' && !redirected) return;
     const same =
       window.location.pathname === final.pathname &&
@@ -572,19 +618,6 @@ export class Router {
       null,
       '',
       url
-    );
-    this.#dispatchIgnoredPopstate();
-  }
-
-  /**
-   * Tell the page the URL moved. `main.ts` counts page views on `popstate` as
-   * well as on the location-changed event, and `pushState` fires neither, so
-   * the synthetic event keeps analytics whole. The marker state stops our own
-   * popstate listener from resolving the same URL a second time.
-   */
-  #dispatchIgnoredPopstate(): void {
-    window.dispatchEvent(
-      new PopStateEvent('popstate', { state: IGNORED_POPSTATE })
     );
   }
 
@@ -612,8 +645,7 @@ export class Router {
     document.removeEventListener('click', this.#onClick);
   }
 
-  #onPopstate = (event: PopStateEvent): void => {
-    if (event.state === IGNORED_POPSTATE) return;
+  #onPopstate = (): void => {
     const { pathname, search, hash } = window.location;
     void this.render({ pathname, search, hash }, { history: 'none' });
   };
