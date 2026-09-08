@@ -45,6 +45,18 @@ class TestGitHubForms:
         assert refs[0].kind == KIND_CLOSES
         assert refs[0].url == "https://github.com/org/repo/issues/123"
 
+    def test_keyword_governs_a_whole_list(self):
+        refs = extract_issue_references(description="Closes #12, #13 and #14", **GITHUB)
+        assert keys(refs) == ["org/repo#12", "org/repo#13", "org/repo#14"]
+        assert {ref.kind for ref in refs} == {KIND_CLOSES}
+
+    def test_markdown_linked_reference(self):
+        refs = extract_issue_references(
+            description="Closes [#12](https://github.com/org/repo/issues/12)", **GITHUB
+        )
+        assert keys(refs) == ["org/repo#12"]
+        assert refs[0].kind == KIND_CLOSES
+
     def test_cross_repo_reference(self):
         refs = extract_issue_references(description="Fixes other-org/other#7", **GITHUB)
         assert keys(refs) == ["other-org/other#7"]

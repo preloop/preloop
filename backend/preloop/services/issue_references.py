@@ -77,13 +77,20 @@ def _keyword_pattern(keywords: Iterable[str]) -> re.Pattern[str]:
         sorted((re.escape(k) for k in keywords), key=len, reverse=True)
     )
     return re.compile(
-        rf"(?<![A-Za-z0-9])(?:{alternatives})\b\s*:?\s+{_KEYWORD_TARGET}",
+        # The optional "[" catches "Closes [#12](url)", a common body form.
+        rf"(?<![A-Za-z0-9])(?:{alternatives})\b\s*:?\s+\[?{_KEYWORD_TARGET}",
         re.IGNORECASE,
     )
 
 
 _CLOSING_RE = _keyword_pattern(_CLOSING_KEYWORDS)
 _REFERENCE_RE = _keyword_pattern(_REFERENCE_KEYWORDS)
+
+# Continuation of a keyword list: "Closes #12, #13 and #14".
+_CHAIN_RE = re.compile(
+    rf"\s*(?:,|and|&|\+)\s*{_KEYWORD_TARGET}",
+    re.IGNORECASE,
+)
 
 # Bare "#123" or "org/repo#123" with no keyword in front of it.
 _BARE_RE = re.compile(
@@ -182,21 +189,26 @@ def _scan_keywords(
     found: List[IssueReference],
 ) -> None:
     for match in pattern.finditer(text):
-        jira = match.group("jira")
-        if jira:
-            _add(found, key=jira, kind=kind, source=source, url=None)
-            continue
-        path = match.group("path") or repo_path
-        number = match.group("number")
-        if not path:
-            continue
-        _add(
-            found,
-            key=f"{path}#{number}",
-            kind=kind,
-            source=source,
-            url=_issue_url(host, path, number, platform),
-        )
+        position = match.end()
+        while match is not None:
+            jira = match.group("jira")
+            if jira:
+                _add(found, key=jira, kind=kind, source=source, url=None)
+            else:
+                path = match.group("path") or repo_path
+                number = match.group("number")
+                if path:
+                    _add(
+                        found,
+                        key=f"{path}#{number}",
+                        kind=kind,
+                        source=source,
+                        url=_issue_url(host, path, number, platform),
+                    )
+            # "Closes #12, #13 and #14": the keyword governs the whole list.
+            match = _CHAIN_RE.match(text, position)
+            if match is not None:
+                position = match.end()
 
 
 def extract_issue_references(
