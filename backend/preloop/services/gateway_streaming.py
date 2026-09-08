@@ -71,6 +71,13 @@ class GatewayStreamingResponse(StreamingResponse):
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Stream the body; on ASGI 2.3 start the iterator before disconnect listen.
 
+        Backported from Starlette 1.6.0 ``StreamingResponse.__call__``, plus
+        an explicit ``anyio.lowlevel.checkpoint()`` so the body iterator is
+        scheduled before ``listen_for_disconnect``. Reconcile this override
+        on the next Starlette upgrade: drop it if upstream already
+        checkpoints, and update the import if
+        ``create_collapsing_task_group`` moves.
+
         Starlette parks ``listen_for_disconnect`` on ``receive()`` for spec
         <2.4. httpx's ASGI transport, once the request body is consumed, waits
         for the final ``more_body=False`` frame before returning disconnect.
