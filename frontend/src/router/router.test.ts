@@ -186,19 +186,29 @@ describe('router', () => {
       expect(outlet.querySelector(target)).to.exist;
     });
 
-    it('leaves no history stop on a redirect, so Back does not bounce', async () => {
+    it('gives a redirected click one stop, and Back is where it was clicked', async () => {
+      const origin = defineTag('rt-history-origin');
       const target = defineTag('rt-history-target');
       await router.setRoutes(
         [
+          { path: '/hop/from', component: origin },
           { path: '/hop', redirect: '/hop/landed' },
           { path: '/hop/landed', component: target },
         ],
         true
       );
-      const before = window.history.length;
+      await router.render('/hop/from', { history: 'push' });
       await router.render('/hop', { history: 'push' });
       expect(window.location.pathname).to.equal('/hop/landed');
-      expect(window.history.length).to.equal(before);
+
+      // The URL the redirect passed through never gets a stop of its own, so
+      // one Back is the page the link was clicked on: no bounce forward, and
+      // no page swallowed either.
+      window.history.back();
+      await waitUntil(() => !!outlet.querySelector(origin), 'back re-renders', {
+        timeout: 2000,
+      });
+      expect(window.location.pathname).to.equal('/hop/from');
     });
   });
 
@@ -435,6 +445,39 @@ describe('router', () => {
       expect(load.calledTwice).to.equal(true);
       expect(outlet.querySelector(tag)).to.exist;
       expect(slots).to.deep.equal([true, true]);
+    });
+
+    it('puts the URL on the route that failed, so a reload retries it', async () => {
+      const from = defineTag('rt-fail-url-from');
+      const tag = defineTag('rt-fail-url');
+      const load = sinon.stub().rejects(new Error('chunk unavailable'));
+      router.setLoadingRenderer({
+        pending: () => () => undefined,
+        failed: ({ parent }) => {
+          const node = document.createElement('span');
+          node.className = 'failed';
+          parent.replaceChildren(node);
+        },
+      });
+      await router.setRoutes(
+        [
+          { path: '/fail-url/from', component: from },
+          { path: '/fail-url/to', component: tag, load },
+        ],
+        true
+      );
+      await router.render('/fail-url/from', { history: 'push' });
+      const errorStub = sinon.stub(console, 'error');
+      try {
+        await router.render('/fail-url/to', { history: 'push' });
+      } finally {
+        errorStub.restore();
+      }
+      // The panel offers a reload, and the panel is about /fail-url/to. A URL
+      // left on the previous route would reload the page the operator had
+      // already left.
+      expect(outlet.querySelector('.failed')).to.exist;
+      expect(window.location.pathname).to.equal('/fail-url/to');
     });
 
     it('loads a module once and reuses it on the next visit', async () => {

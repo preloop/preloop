@@ -376,6 +376,16 @@ export class Router {
 
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       const outcome = await this.#renderOnce(current, renderId);
+      // A chunk that never arrived still moved the operator: the panel in the
+      // outlet is about the route they asked for, and the reload it offers can
+      // only reach that route if the address bar names it. A newer navigation
+      // that has since started owns the URL, so a late failure keeps quiet.
+      if (outcome.failed) {
+        if (renderId === this.#renderId) {
+          this.#writeHistory(current, options.history ?? 'none', start);
+        }
+        return;
+      }
       if (outcome.stale || outcome.cancelled) return;
       if (outcome.redirect) {
         current = splitUrl(outcome.redirect);
@@ -396,6 +406,7 @@ export class Router {
     redirect?: string;
     cancelled?: boolean;
     stale?: boolean;
+    failed?: boolean;
     location?: RouterLocation;
   }> {
     if (!this.#outlet) return { stale: true };
@@ -458,7 +469,7 @@ export class Router {
           parent,
           atOutlet: parent === this.#outlet,
         });
-        if (chunk === 'failed') return { stale: true };
+        if (chunk === 'failed') return { failed: true };
         if (renderId !== this.#renderId) return { stale: true };
         element = document.createElement(route.component) as RoutedElement;
       }
@@ -530,8 +541,13 @@ export class Router {
   }
 
   /**
-   * Write the history entry once the destination is known. A redirect
-   * replaces the entry the navigation started from instead of adding one.
+   * Write the history entry once the destination is known.
+   *
+   * Only the destination is ever written, never the URL a redirect passed
+   * through, so a redirect costs no back-button stop. The kind of entry is the
+   * navigation's, not the redirect's: a click still adds one, or Back would
+   * skip the page the click was made on, and a first render still replaces
+   * one, because there is nothing behind it to keep.
    */
   #writeHistory(
     final: { pathname: string; search: string; hash: string },
@@ -552,7 +568,11 @@ export class Router {
       window.location.hash === final.hash;
     if (same) return;
     const url = final.pathname + final.search + final.hash;
-    window.history[redirected ? 'replaceState' : 'pushState'](null, '', url);
+    window.history[mode === 'push' ? 'pushState' : 'replaceState'](
+      null,
+      '',
+      url
+    );
     this.#dispatchIgnoredPopstate();
   }
 
