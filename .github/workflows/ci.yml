@@ -52,6 +52,7 @@ jobs:
       plugins: ${{ steps.out.outputs.plugins }}
       helm: ${{ steps.out.outputs.helm }}
       workflow: ${{ steps.out.outputs.workflow }}
+      requirements: ${{ steps.out.outputs.requirements }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: github.event_name == 'pull_request'
@@ -85,6 +86,12 @@ jobs:
               - 'scripts/helm-render-check.sh'
             workflow:
               - '.github/workflows/ci.yml'
+            # Anything that can change what a hash-pinned lock resolves to.
+            requirements:
+              - 'requirements/**'
+              - '.github/requirements/**'
+              - 'pyproject.toml'
+              - 'Dockerfile'
 
       - name: Set job outputs
         id: out
@@ -96,6 +103,7 @@ jobs:
           PLUGINS: ${{ steps.filter.outputs.plugins }}
           HELM: ${{ steps.filter.outputs.helm }}
           WORKFLOW: ${{ steps.filter.outputs.workflow }}
+          REQUIREMENTS: ${{ steps.filter.outputs.requirements }}
         run: |
           if [ "$EVENT" != "pull_request" ] || [ "$WORKFLOW" = "true" ]; then
             echo "backend=true" >> "$GITHUB_OUTPUT"
@@ -104,6 +112,7 @@ jobs:
             echo "plugins=true" >> "$GITHUB_OUTPUT"
             echo "helm=true" >> "$GITHUB_OUTPUT"
             echo "workflow=true" >> "$GITHUB_OUTPUT"
+            echo "requirements=true" >> "$GITHUB_OUTPUT"
           else
             echo "backend=${BACKEND:-false}" >> "$GITHUB_OUTPUT"
             echo "frontend=${FRONTEND:-false}" >> "$GITHUB_OUTPUT"
@@ -111,7 +120,70 @@ jobs:
             echo "plugins=${PLUGINS:-false}" >> "$GITHUB_OUTPUT"
             echo "helm=${HELM:-false}" >> "$GITHUB_OUTPUT"
             echo "workflow=false" >> "$GITHUB_OUTPUT"
+            echo "requirements=${REQUIREMENTS:-false}" >> "$GITHUB_OUTPUT"
           fi
+
+  # ==========================================================================
+  # Requirements resolve (guard)
+  # ==========================================================================
+  # Every hash-pinned lock in the repo, asked one question: can pip resolve
+  # you? Nothing is installed and nothing is built.
+  #
+  # This exists because requirements/runtime.txt is installed by no job that
+  # runs on a pull request. "Build & Push Docker Images" is the only consumer
+  # in CI and it is `if: github.event_name != 'pull_request'` (a multi-arch
+  # QEMU build, too slow to gate a PR on). The backend shards install
+  # .github/requirements/app-dev.txt, a different lock. So dependabot PR #537
+  # merged with an all-green CI and a runtime.txt that pip cannot resolve
+  # (pydantic 2.13.5 next to pydantic-core 2.48.0; pydantic pins
+  # pydantic-core==2.46.5), and main's Docker and Release builds went red.
+  #
+  # `--report /dev/null` lets pip use PEP 658 index metadata for resolution
+  # instead of downloading every wheel body, and `--require-hashes` is what
+  # Dockerfile:28-29 and scripts/generate_sbom.sh use, so this checks the same
+  # thing those do. Measured cold-cache locally: 47s for all ten lock files.
+  requirements-resolve:
+    name: Requirements Resolve
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.requirements == 'true'
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-resolve-${{ hashFiles('requirements/*.txt', '.github/requirements/*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-resolve-
+
+      - name: Resolve every hash-pinned lock
+        run: |
+          set -u
+          failed=0
+          for f in requirements/*.txt .github/requirements/*.txt; do
+            echo "::group::$f"
+            if python -m pip install \
+                 --require-hashes \
+                 --dry-run \
+                 --ignore-installed \
+                 --report /dev/null \
+                 -r "$f"; then
+              echo "ok: $f"
+            else
+              echo "::error file=$f::$f does not resolve with --require-hashes"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$failed"
 
   # ==========================================================================
   # Backend Tests
@@ -638,6 +710,7 @@ jobs:
       - changes
       - lint
       - helm-lint
+      - requirements-resolve
       - test-backend
       - test-backend-coverage
       - test-frontend
@@ -649,6 +722,7 @@ jobs:
           CHANGES: ${{ needs.changes.result }}
           LINT: ${{ needs.lint.result }}
           HELM: ${{ needs.helm-lint.result }}
+          REQRESOLVE: ${{ needs.requirements-resolve.result }}
           BACKEND: ${{ needs.test-backend.result }}
           COVERAGE: ${{ needs.test-backend-coverage.result }}
           FRONTEND: ${{ needs.test-frontend.result }}
@@ -671,6 +745,7 @@ jobs:
           check changes "$CHANGES"
           check lint "$LINT"
           check helm-lint "$HELM"
+          check requirements-resolve "$REQRESOLVE"
           check test-backend "$BACKEND"
           check test-backend-coverage "$COVERAGE"
           check test-frontend "$FRONTEND"
