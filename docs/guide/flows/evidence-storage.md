@@ -36,6 +36,13 @@ The capability names one account, flow, thread, execution, kind and
 operation. It is not a storage credential. Agent containers never receive
 `SECURITY__ENCRYPTION_KEY`.
 
+`/api/v1/flows/executions/{id}/artifacts` is that transport and nothing
+else. An account bearer token, however privileged, is refused with `401`
+and a body naming the operator endpoints instead
+(`.../evidence`, `.../evidence-status`), and the pair is deliberately absent
+from `openapi.yaml`: it is not a read path for people or SDKs. Undocumented
+is not disabled, the runner still calls it.
+
 Private Docker completions report the final evidence PUT as top-level
 `evidence_upload` (`uploaded`, `failed`, or `absent`) next to `result`.
 That field is runner bootstrap metadata and is emitted even when
