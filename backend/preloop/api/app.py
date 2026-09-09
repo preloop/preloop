@@ -27,6 +27,7 @@ from starlette.websockets import WebSocketState
 
 from preloop import __version__
 from fastapi.encoders import jsonable_encoder
+from preloop.config import settings
 from preloop.api.auth import auth_router, get_current_active_user
 from preloop.api.endpoints import (
     account,
