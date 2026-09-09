@@ -65,6 +65,7 @@ from preloop.services.flow_continuation_adoption import (
 from preloop.services.flow_artifacts import (
     EvidenceUnavailableError,
     load_evidence,
+    integrity_state,
     public_evidence_status,
 )
 
@@ -950,8 +951,17 @@ def get_flow_execution_evidence(
         "Cache-Control": "no-store",
         "X-Preloop-Evidence-Status": str(receipt.get("status") or "available"),
         "X-Preloop-Evidence-Kind": "evidence",
+        # The same three-state word the status endpoint reports, so the
+        # header and the poll cannot describe one pack differently.
         "X-Preloop-Evidence-Integrity": (
             "verified" if receipt.get("integrity_verified") else "unverified"
+        ),
+        "X-Preloop-Evidence-Integrity-State": str(
+            receipt.get("integrity")
+            or integrity_state(
+                verified=bool(receipt.get("integrity_verified")),
+                error=receipt.get("error"),
+            )
         ),
     }
     if digest:

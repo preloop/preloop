@@ -107,9 +107,29 @@ and records `availability=expired`. It does not cross account rows.
 
 `GET /api/v1/flows/executions/{id}/evidence-status` and the `evidence`
 object on `GET /api/v1/flows/executions/{id}/result` report **persisted**
-availability from `flow_execution.evidence_receipt` (account-scoped,
-no decrypt, no archive hash). Status polls are not an integrity proof.
-`integrity_verified` is always false on those endpoints.
+availability from `flow_execution.evidence_receipt` (account-scoped).
+A poll on a direct-transport pack does not decrypt anything, so it is not
+an integrity proof for that pack.
+
+Both endpoints carry three integrity fields:
+
+| Field | Meaning |
+| --- | --- |
+| `integrity` | `verified`, `not_checked`, or `failed` |
+| `integrity_note` | The same thing in one plain sentence |
+| `integrity_verified` | Legacy boolean, true only for `verified` |
+
+`not_checked` is the answer for the direct transport: nobody read the
+ciphertext, and the digest is confirmed on download. It does not mean the
+pack is suspect. `failed` means the archive was read and its sha256 did not
+match the recorded digest; the status flips to `failed` and `observed_sha256`
+carries what was actually found.
+
+On the legacy transport the compressed archive sits in the same row as the
+receipt, so the poll hashes it and answers `verified` or `failed` rather than
+declining to look. Before this, a legacy pack whose download returned
+`X-Preloop-Evidence-Integrity: verified` was reported by the status endpoint
+as `integrity_verified: false`, which reads as a corrupt pack.
 
 | `status` | HTTP on download | Meaning |
 | --- | --- | --- |
@@ -130,9 +150,10 @@ download. Fail-result runs retain evidence the same way as pass runs.
 `GET /api/v1/flows/executions/{id}/evidence` decrypts, re-checks the
 digest, and returns `X-Preloop-Evidence-SHA256`,
 `X-Preloop-Evidence-Kind: evidence`, and
-`X-Preloop-Evidence-Integrity: verified`. Legacy column bytes are still
-served when no durable artifact exists. Other accounts and executions
-are refused.
+`X-Preloop-Evidence-Integrity: verified`, plus
+`X-Preloop-Evidence-Integrity-State` carrying the same three-state word as
+the status endpoint. Legacy column bytes are still served when no durable
+artifact exists. Other accounts and executions are refused.
 
 A local `/tmp/preloop-evidence-reference.json` marker is not proof of
 upload. The server verifies capability scope (account, flow, thread,
