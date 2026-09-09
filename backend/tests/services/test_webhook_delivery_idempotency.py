@@ -15,8 +15,8 @@ the migration's up/down.
 
 import asyncio
 import importlib.util
-import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from types import SimpleNamespace
@@ -193,6 +193,28 @@ def executions_for(db: Session, flow_id) -> list[models.FlowExecution]:
     )
 
 
+@contextmanager
+def without_in_process_run():
+    """Skip the in-process orchestrator without touching asyncio.create_task.
+
+    flow_trigger_service binds the asyncio module, so patching create_task
+    there replaces the process-global function. Two threads doing that at
+    once can leak a MagicMock; later run_db_off_loop calls then return
+    immediately, fail, and hang.
+    """
+    with (
+        patch(
+            "preloop.services.flow_execution_dispatcher.flow_execution_worker_enabled",
+            return_value=True,
+        ),
+        patch(
+            "preloop.services.flow_execution_dispatcher.dispatch_execute",
+            new_callable=AsyncMock,
+        ),
+    ):
+        yield
+
+
 async def deliver(service: FlowTriggerService, flow: models.Flow, event: dict) -> None:
     """Run ``process_event`` with dispatch stubbed out, as the worker would."""
     with (
@@ -204,7 +226,7 @@ async def deliver(service: FlowTriggerService, flow: models.Flow, event: dict) -
             "preloop.services.flow_trigger_service.get_nats_client",
             new=AsyncMock(return_value=None),
         ),
-        patch("preloop.services.flow_trigger_service.asyncio.create_task"),
+        without_in_process_run(),
     ):
         await service.process_event(dict(event))
 
@@ -403,7 +425,7 @@ async def test_unrelated_integrity_error_is_not_treated_as_a_delivery_collision(
             "preloop.services.flow_trigger_service.get_nats_client",
             new=AsyncMock(return_value=None),
         ),
-        patch("preloop.services.flow_trigger_service.asyncio.create_task"),
+        without_in_process_run(),
         patch.object(db_session, "commit", side_effect=error),
     ):
         with pytest.raises(IntegrityError) as raised:
@@ -553,7 +575,7 @@ async def test_a_retry_of_the_same_delivery_is_still_allowed(
             "preloop.services.flow_trigger_service.get_nats_client",
             new=AsyncMock(return_value=None),
         ),
-        patch("preloop.services.flow_trigger_service.asyncio.create_task"),
+        without_in_process_run(),
     ):
         retry = await service._start_flow_execution(
             flow=flow,
@@ -626,7 +648,8 @@ def test_unique_index_is_scoped_to_the_flow_and_to_delivery_keys(
     assert len(executions_for(db_session, flow.id)) == 3
 
 
-def test_two_concurrent_sessions_create_exactly_one_execution(
+@pytest.mark.asyncio
+async def test_two_concurrent_sessions_create_exactly_one_execution(
     db_engine, db_session: Session, test_user
 ) -> None:
     """Two pods holding the same redelivered message, on real connections.
@@ -665,39 +688,30 @@ def test_two_concurrent_sessions_create_exactly_one_execution(
         flow_id = row.id
 
         event = github_label_event(account_id=str(account_id))
-        barrier = threading.Barrier(2)
-        results: list[object] = []
+        started = asyncio.Barrier(2)
 
-        def worker() -> None:
+        async def worker() -> object:
             session = Session(bind=db_engine)
             try:
                 service = FlowTriggerService(session)
                 flow_row = session.get(models.Flow, flow_id)
-                barrier.wait(timeout=10)
+                await started.wait()
                 with (
                     patch(
                         "preloop.services.flow_trigger_service.get_nats_client",
                         new=AsyncMock(return_value=None),
                     ),
-                    patch("preloop.services.flow_trigger_service.asyncio.create_task"),
+                    without_in_process_run(),
                 ):
-                    results.append(
-                        asyncio.run(
-                            service._start_flow_execution(
-                                flow=flow_row,
-                                event_data=dict(event),
-                                nats_client=None,
-                            )
-                        )
+                    return await service._start_flow_execution(
+                        flow=flow_row,
+                        event_data=dict(event),
+                        nats_client=None,
                     )
             finally:
                 session.close()
 
-        threads = [threading.Thread(target=worker) for _ in range(2)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=60)
+        results = await asyncio.gather(worker(), worker())
 
         check = Session(bind=db_engine)
         try:
