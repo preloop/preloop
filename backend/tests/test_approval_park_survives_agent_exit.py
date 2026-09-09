@@ -149,6 +149,23 @@ class TestAsyncWorkflowParks:
             is None
         )
 
+    async def test_the_interactive_default_still_polls(self):
+        """Below the line the async path is untouched, so this stays additive.
+
+        should_park is true at 300s (the park threshold is 90s), but agent
+        side polling can cover the interactive default and the shipped
+        pending_approval contract is fine there. Only a window widened past
+        that default, which is what a compliance decision needs, parks.
+        """
+        from preloop.services import approval_helper
+        from preloop.config import settings
+
+        default = int(settings.approval_default_window_seconds)
+        assert approval_helper._beyond_async_polling(default) is False
+        assert approval_helper._beyond_async_polling(default - 1) is False
+        assert approval_helper._beyond_async_polling(default + 1) is True
+        assert approval_helper._beyond_async_polling(259200) is True
+
     async def test_the_async_branch_reaches_the_park_helper(self, monkeypatch):
         """Regression guard for the defect itself.
 

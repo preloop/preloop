@@ -192,6 +192,25 @@ async def _park_execution(
         return False
 
 
+def _beyond_async_polling(window_seconds: int) -> bool:
+    """True when agent-side polling is no longer a way to wait out a window.
+
+    An async workflow answers a gated call with polling instructions: poll
+    ``get_approval_status`` every N seconds for up to the window. That is a
+    fair contract for an interactive tool call, which is what
+    ``approval_default_window_seconds`` describes, and it is not a contract
+    at all for a compliance decision measured in days. The same line already
+    exists in approval_window.py's own words: five minutes is a reasonable
+    default for an interactive tool call and a nonsense default for a
+    compliance decision.
+
+    Past that line the run parks instead. Below it the async path is
+    unchanged, which keeps park/resume additive rather than replacing a
+    shipped behaviour on every account that uses the default workflow.
+    """
+    return int(window_seconds) > int(settings.approval_default_window_seconds)
+
+
 async def _park_and_build_payload(
     *,
     execution_id: Any,
@@ -797,20 +816,22 @@ async def require_approval(
                     # resume. The workflow was the account's default one, so
                     # this was default behaviour, not a misconfiguration.
                     #
-                    # Park before answering. A window short enough to be
-                    # answered in place (should_park) keeps the old polling
-                    # payload untouched.
-                    parked_payload = await _park_and_build_payload(
-                        execution_id=caller.execution_id,
-                        approval_request_id=approval_request_id,
-                        expires_at=approval_request_expires_at,
-                        window_seconds=workflow_timeout_seconds,
-                        tool_name=tool_name,
-                        arguments=arguments,
-                        base_url=base_url,
-                    )
-                    if parked_payload is not None:
-                        return (False, parked_payload)
+                    # Park before answering, but only for a window that
+                    # agent-side polling cannot cover. A window within the
+                    # interactive default keeps the polling payload exactly as
+                    # it shipped, so this stays additive.
+                    if _beyond_async_polling(workflow_timeout_seconds):
+                        parked_payload = await _park_and_build_payload(
+                            execution_id=caller.execution_id,
+                            approval_request_id=approval_request_id,
+                            expires_at=approval_request_expires_at,
+                            window_seconds=workflow_timeout_seconds,
+                            tool_name=tool_name,
+                            arguments=arguments,
+                            base_url=base_url,
+                        )
+                        if parked_payload is not None:
+                            return (False, parked_payload)
 
                     logger.info(
                         f"Async approval enabled for workflow '{workflow_name}' - "
