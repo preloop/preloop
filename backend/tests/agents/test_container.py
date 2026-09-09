@@ -789,9 +789,48 @@ class TestWorkspaceSeedCommands:
         assert "w0=/workspace" in result
         assert "__pl_seed fixtures/input.json" in result
         assert "base64 -d" in result
-        assert content in result
+        # Content is referenced by environment variable, never inlined: the
+        # launch command is one execve string capped at MAX_ARG_STRLEN, and
+        # inlining made the seed budget share 128 KiB with the rendered
+        # prompt (preloop/preloop#505).
+        assert content not in result
+        assert '"$PRELOOP_WORKSPACE_SEED_0"' in result
         # Runtime symlink-containment guard travels with the block.
         assert "cd -P" in result
+
+    def test_seed_content_travels_in_the_environment(self, container_executor):
+        """The env carries what the command no longer does."""
+        import base64
+
+        content = base64.b64encode(b'{"fixture": true}').decode("ascii")
+        context = self._context(
+            [{"path": "fixtures/input.json", "content_base64": content}]
+        )
+        env = container_executor._apply_git_credential_env({}, context)
+        assert env["PRELOOP_WORKSPACE_SEED_0"] == content
+
+    def test_no_seed_env_when_nothing_is_declared(self, container_executor):
+        context = {
+            "flow_id": "123",
+            "execution_id": "456",
+            "trigger_event_data": {"payload": {"x": 1}},
+        }
+        env = container_executor._apply_git_credential_env({}, context)
+        assert not [key for key in env if key.startswith("PRELOOP_WORKSPACE_SEED_")]
+
+    def test_command_size_does_not_grow_with_seed_size(self, container_executor):
+        """The regression that made a 128 KiB budget shared with the prompt."""
+        import base64
+
+        small = base64.b64encode(b"x").decode("ascii")
+        large = base64.b64encode(b"x" * (64 * 1024)).decode("ascii")
+        small_cmd = container_executor._prepare_init_commands(
+            self._context([{"path": "a.bin", "content_base64": small}])
+        )
+        large_cmd = container_executor._prepare_init_commands(
+            self._context([{"path": "a.bin", "content_base64": large}])
+        )
+        assert small_cmd == large_cmd
 
     def test_seed_commands_run_after_custom_setup_ordering(self, container_executor):
         """Seeds are written before custom commands so they can be consumed."""

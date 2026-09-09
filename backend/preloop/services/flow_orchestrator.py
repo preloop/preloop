@@ -531,6 +531,11 @@ class FlowExecutionOrchestrator:
         self._evidence_archive: Optional[bytes] = None
         self._evidence_receipt: Optional[Dict[str, Any]] = None
         self._evidence_artifact_id: Optional[str] = None
+        # (provenance, publication) the last dossier was built from, so the
+        # terminal path can rebuild it after the evidence receipt is attached.
+        self._product_dossier_inputs: Optional[tuple[Any, Optional[Dict[str, Any]]]] = (
+            None
+        )
         # tar.gz of /workspace captured before the runtime is torn down, so a
         # run that failed before pushing can be downloaded or resumed.
         self._workspace_snapshot: Optional[bytes] = None
@@ -3080,6 +3085,23 @@ class FlowExecutionOrchestrator:
             return resolved
         return None
 
+    def _cra_execution_runner(self) -> Optional[Dict[str, Any]]:
+        """Where this execution ran, derived from the row the same way the API does.
+
+        The agent cannot know this, so the persist boundary stamps it into
+        ``result.runner`` rather than storing the agent's null placeholder.
+        """
+        from preloop.services.runner_service import derive_execution_runner
+
+        execution = getattr(self, "execution_log", None)
+        if execution is None:
+            return None
+        reference = getattr(execution, "agent_session_reference", None)
+        return derive_execution_runner(
+            runner_id=getattr(execution, "runner_id", None),
+            agent_session_reference=reference if isinstance(reference, str) else None,
+        )
+
     def _persist_cra_result_boundary(
         self, artifact: Optional[Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:
@@ -3101,6 +3123,7 @@ class FlowExecutionOrchestrator:
             trigger_payload=getattr(self, "trigger_event_data", None),
             platform_approvals=approvals,
             authority=authority,
+            execution_runner=self._cra_execution_runner(),
         )
         self._cra_persist_decision = decision
         persisted = decision.artifact
@@ -3258,6 +3281,37 @@ class FlowExecutionOrchestrator:
         self._sync_evidence_artifact_identity(stored.id, archive)
         return archive
 
+    def _describe_evidence_pack(self, archive: bytes) -> bytes:
+        """Add manifest.json to a pack that arrived without one.
+
+        The archive digest in the receipt proves the pack was not altered in
+        transit, but it says nothing about what is inside. Without a member
+        index a reader cannot tell a complete pack from one whose report was
+        truncated, and cannot reconstruct which inputs and which commit were
+        audited without the execution record (dogfood report 5.3).
+
+        This runs before the archive is stored and before its receipt is
+        minted, so the digest that is published is the digest of the bytes
+        that are kept. Packs uploaded directly by the container already
+        carry a manifest and are returned unchanged.
+        """
+        from preloop.cra.evidence_pack import (
+            ensure_pack_manifest,
+            evidence_manifest_context,
+        )
+
+        try:
+            context = evidence_manifest_context(
+                getattr(self, "trigger_event_data", None),
+                execution_id=getattr(getattr(self, "execution_log", None), "id", None),
+            )
+            return ensure_pack_manifest(archive, context=context)
+        except Exception:
+            logger.warning(
+                "Could not add manifest.json to the evidence pack", exc_info=True
+            )
+            return archive
+
     async def _capture_evidence_archive(
         self, agent_executor: Any, session_reference: str
     ) -> None:
@@ -3302,7 +3356,7 @@ class FlowExecutionOrchestrator:
                 logger.warning(f"Failed to capture evidence archive: {e}")
                 captured = None
             if isinstance(captured, (bytes, bytearray)) and captured:
-                archive = bytes(captured)
+                archive = self._describe_evidence_pack(bytes(captured))
 
         raw_transport_error = getattr(agent_executor, "evidence_transport_error", None)
         # Production sets a string; mocks (AsyncMock) auto-create truthy
@@ -4934,6 +4988,34 @@ class FlowExecutionOrchestrator:
 
         logger.debug(f"Execution log updated: status={status}")
 
+    def _emit_execution_finished_webhook(
+        self, status: str, failure_category: Optional[str]
+    ) -> None:
+        """Queue flow.execution.finished for account webhook subscribers.
+
+        Never raises: a webhook must not rewrite a terminal status.
+        """
+        try:
+            from preloop.services.event_webhooks.emitters import (
+                emit_flow_execution_finished,
+            )
+
+            emit_flow_execution_finished(
+                self.db,
+                self.execution_log,
+                self.flow,
+                status=status,
+                failure_category=failure_category
+                or getattr(self.execution_log, "failure_category", None),
+            )
+            self.db.commit()
+        except Exception:
+            logger.warning(
+                "Failed to queue flow.execution.finished webhook for %s",
+                getattr(self.execution_log, "id", "unknown"),
+                exc_info=True,
+            )
+
     async def _finalize_park(
         self,
         *,
@@ -5001,6 +5083,14 @@ class FlowExecutionOrchestrator:
         try:
             if not self.flow or not self.execution_log:
                 return
+            # Emitted before the tracker-notification work below, which
+            # returns early when the flow has no notifications configured.
+            # A webhook subscriber asked for every finish, not just the
+            # finishes that also comment on a ticket. Callers persist
+            # failure_category on the execution log before this runs.
+            self._emit_execution_finished_webhook(
+                status, getattr(self.execution_log, "failure_category", None)
+            )
             try:
                 from preloop.services.issue_lifecycle_runtime import (
                     lifecycle_execution_finished,
@@ -5508,6 +5598,10 @@ class FlowExecutionOrchestrator:
             agent_result, provenance=provenance, publication=publication
         ):
             return
+        # Remember the inputs so the terminal path can rebuild this manifest
+        # once the evidence receipt is attached; see
+        # _refresh_product_dossier_after_evidence.
+        self._product_dossier_inputs = (provenance, publication)
         raw_result = strip_control_plane_result(dict(agent_result.get("result") or {}))
         result = dict(raw_result)
         if provenance is not None:
@@ -5565,6 +5659,44 @@ class FlowExecutionOrchestrator:
             # the complete trusted receipt, not the redacted dossier copy.
             result["trusted_publication"] = publication
         agent_result["result"] = result
+
+    def _refresh_product_dossier_after_evidence(
+        self, agent_result: Dict[str, Any]
+    ) -> None:
+        """Rebuild the dossier once the evidence receipt is durably attached.
+
+        The first pass runs inside ``_finish_isolated_publication``, which is
+        called before the terminal block writes ``evidence_receipt`` and
+        ``evidence_archive`` onto the execution row. The ``load_evidence``
+        probe in :meth:`_attach_product_evidence_records` therefore reads a
+        row that has no evidence yet and stamps ``status: missing``,
+        ``retained: false`` on a run that did retain its pack, while
+        ``evidence-status`` for the same execution reports the archive as
+        available with a digest (preloop/preloop#506). ``dossier_manifest``
+        is the field a compliance reader is most likely to trust, so it must
+        not be the one that is wrong.
+
+        Rebuilding here re-reads the receipt from the same source the
+        endpoint reads. Every other part of the manifest is a pure function
+        of the stashed inputs and the agent result, so only ``evidence`` and
+        ``generated_at`` change.
+        """
+        inputs = getattr(self, "_product_dossier_inputs", None)
+        if inputs is None or not isinstance(agent_result, dict):
+            return
+        provenance, publication = inputs
+        try:
+            self._attach_product_evidence_records(
+                agent_result, provenance=provenance, publication=publication
+            )
+        except Exception:
+            # The pre-persist dossier is still attached. Keeping a stale
+            # evidence block beats failing an execution that has already
+            # finished its work.
+            logger.warning(
+                "Could not refresh the dossier manifest after evidence persistence",
+                exc_info=True,
+            )
 
     async def _finish_isolated_publication(self, agent_result: Dict[str, Any]) -> None:
         """Run trusted publication after runtime cleanup; failure changes status."""
@@ -5910,6 +6042,13 @@ class FlowExecutionOrchestrator:
                         )
                     except Exception:
                         self.db.rollback()
+
+                # The dossier reports evidence availability, and the pass
+                # that built it ran before the receipt above existed. Rebuild
+                # it now so dossier_manifest.evidence agrees with the
+                # evidence-status endpoint, including when the persist above
+                # failed and the receipt says so.
+                self._refresh_product_dossier_after_evidence(agent_result)
 
             # The wrapper opens PRs with a raw curl whose response never
             # reaches Python; bind it here, before the refresh below, so the

@@ -47,6 +47,7 @@ from preloop.utils.secret_scrubbing import scrub_secret_lines, scrub_secrets
 from preloop.utils.workspace_seed import (
     build_workspace_seed_shell,
     parse_workspace_files,
+    workspace_seed_env_from_payload,
 )
 from preloop.utils.workspace_snapshot import (
     WORKSPACE_SNAPSHOT_PATH,
@@ -3066,6 +3067,11 @@ class ContainerAgentExecutor(AgentExecutor):
                 raise ValueError("Write API tokens cannot enter an isolated agent")
         env.update(execution_context.get("checkpoint_env") or {})
         env.update(execution_context.get("evidence_env") or {})
+        # Workspace seeds travel in the environment, not in the launch
+        # command: the command is one execve string capped at MAX_ARG_STRLEN
+        # (128 KiB) and shared with the rendered prompt. See
+        # preloop/preloop#505 and preloop.utils.workspace_seed.
+        env.update(self._workspace_seed_env(execution_context))
         if self.environment_profile:
             from preloop.services.flow_environment import profile_env
 
@@ -3210,6 +3216,23 @@ class ContainerAgentExecutor(AgentExecutor):
             return " && ".join(command.rstrip() for command in commands)
         return ""
 
+    @staticmethod
+    def _workspace_seed_payload(
+        execution_context: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """The trigger payload the seed declaration lives on, if any."""
+        trigger_data = execution_context.get("trigger_event_data") or {}
+        if not isinstance(trigger_data, dict):
+            return None
+        payload = trigger_data.get("payload")
+        return payload if isinstance(payload, dict) else None
+
+    def _workspace_seed_env(self, execution_context: Dict[str, Any]) -> Dict[str, str]:
+        """Per-seed environment variables carrying the base64 contents."""
+        return workspace_seed_env_from_payload(
+            self._workspace_seed_payload(execution_context)
+        )
+
     def _prepare_workspace_seed_commands(
         self, execution_context: Dict[str, Any]
     ) -> str:
@@ -3219,11 +3242,7 @@ class ContainerAgentExecutor(AgentExecutor):
         the execution otherwise); re-parsing here is a defense-in-depth guard
         that raises rather than materializing an unvalidated path.
         """
-        trigger_data = execution_context.get("trigger_event_data") or {}
-        payload = (
-            trigger_data.get("payload") if isinstance(trigger_data, dict) else None
-        )
-        seeds = parse_workspace_files(payload)
+        seeds = parse_workspace_files(self._workspace_seed_payload(execution_context))
         if not seeds:
             return ""
         self.logger.info(

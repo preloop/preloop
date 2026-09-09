@@ -975,6 +975,171 @@ def test_attach_reattaches_only_controller_trusted_receipt() -> None:
     )
 
 
+MISSING_RECEIPT = {"status": "missing", "kind": "evidence"}
+AVAILABLE_RECEIPT = {
+    "kind": "evidence",
+    "status": "available",
+    "sha256": "b" * 64,
+    "digest": "b" * 64,
+    "artifact_id": _evidence_uuid(),
+    "transport": "direct",
+    "retention_hours": 168,
+    "integrity_verified": True,
+}
+
+
+def _dossier_evidence(agent_result: dict[str, Any]) -> dict[str, Any]:
+    return agent_result["result"]["dossier_manifest"]["evidence"]
+
+
+def _attach_with_evidence(
+    orchestrator: FlowExecutionOrchestrator,
+    agent_result: dict[str, Any],
+    load: Any,
+    *,
+    refresh: bool = False,
+) -> None:
+    """Run one dossier pass with a stubbed evidence lookup."""
+    with (
+        patch(
+            "preloop.models.crud.crud_approval_request.get_multi_by_execution",
+            return_value=[],
+        ),
+        patch("preloop.services.flow_artifacts.load_evidence", **load),
+    ):
+        if refresh:
+            orchestrator._refresh_product_dossier_after_evidence(agent_result)
+        else:
+            orchestrator._attach_product_evidence_records(agent_result)
+
+
+def test_dossier_evidence_is_rebuilt_once_the_receipt_is_attached() -> None:
+    """The pre-persist pass cannot see the receipt; the refresh must (#506)."""
+    orchestrator = _attach_orchestrator()
+    agent_result = {"status": "SUCCEEDED", "result": {"status": "success"}}
+    _attach_with_evidence(
+        orchestrator,
+        agent_result,
+        {"side_effect": EvidenceUnavailableError("missing", dict(MISSING_RECEIPT))},
+    )
+    before = dict(agent_result["result"]["dossier_manifest"])
+    assert before["evidence"]["status"] == "missing"
+    assert before["evidence"]["retained"] is False
+
+    _attach_with_evidence(
+        orchestrator,
+        agent_result,
+        {"return_value": (b"pack", dict(AVAILABLE_RECEIPT))},
+        refresh=True,
+    )
+    after = agent_result["result"]["dossier_manifest"]
+    assert after["evidence"]["status"] == "available"
+    assert after["evidence"]["retained"] is True
+    assert after["evidence"]["sha256"] == "b" * 64
+    # Only the evidence block moves: the identity digests are a pure
+    # function of the same inputs, so a reader can still match them.
+    assert after["digests"] == before["digests"]
+    assert after["result"] == before["result"]
+
+
+def test_dossier_refresh_reports_a_failed_persist_honestly() -> None:
+    orchestrator = _attach_orchestrator()
+    agent_result = {"status": "SUCCEEDED", "result": {"status": "success"}}
+    _attach_with_evidence(
+        orchestrator,
+        agent_result,
+        {"return_value": (b"pack", dict(AVAILABLE_RECEIPT))},
+    )
+    assert _dossier_evidence(agent_result)["retained"] is True
+
+    _attach_with_evidence(
+        orchestrator,
+        agent_result,
+        {
+            "side_effect": EvidenceUnavailableError(
+                "failed", {"status": "failed", "kind": "evidence", "sha256": None}
+            )
+        },
+        refresh=True,
+    )
+    evidence = _dossier_evidence(agent_result)
+    assert evidence["status"] == "failed"
+    assert evidence["retained"] is False
+
+
+def test_dossier_refresh_is_a_noop_when_no_dossier_was_built() -> None:
+    orchestrator = _attach_orchestrator()
+    orchestrator._product_evidence_context = {}
+    orchestrator.trigger_event_data = None
+    agent_result = {"status": "SUCCEEDED", "result": {"status": "success"}}
+    with patch("preloop.services.flow_artifacts.load_evidence") as load:
+        orchestrator._refresh_product_dossier_after_evidence(agent_result)
+    load.assert_not_called()
+    assert "dossier_manifest" not in agent_result["result"]
+
+
+def test_dossier_refresh_failure_keeps_the_pre_persist_manifest() -> None:
+    orchestrator = _attach_orchestrator()
+    agent_result = {"status": "SUCCEEDED", "result": {"status": "success"}}
+    _attach_with_evidence(
+        orchestrator,
+        agent_result,
+        {"side_effect": EvidenceUnavailableError("missing", dict(MISSING_RECEIPT))},
+    )
+    before = dict(agent_result["result"]["dossier_manifest"])
+
+    _attach_with_evidence(
+        orchestrator,
+        agent_result,
+        {"side_effect": RuntimeError("evidence lookup exploded")},
+        refresh=True,
+    )
+    assert agent_result["result"]["dossier_manifest"] == before
+
+
+def test_dossier_refresh_keeps_the_controller_publication_receipt() -> None:
+    orchestrator = _attach_orchestrator()
+    receipt = {
+        "url": "https://github.com/example/project/pull/1",
+        "head_sha": "a" * 40,
+        "repository_url": PROJECT,
+        "complete": True,
+    }
+    agent_result = {"status": "SUCCEEDED", "result": {"status": "success"}}
+    with (
+        patch(
+            "preloop.models.crud.crud_approval_request.get_multi_by_execution",
+            return_value=[],
+        ),
+        patch(
+            "preloop.services.flow_artifacts.load_evidence",
+            side_effect=EvidenceUnavailableError("missing", dict(MISSING_RECEIPT)),
+        ),
+    ):
+        orchestrator._attach_product_evidence_records(agent_result, publication=receipt)
+
+    _attach_with_evidence(
+        orchestrator,
+        agent_result,
+        {"return_value": (b"pack", dict(AVAILABLE_RECEIPT))},
+        refresh=True,
+    )
+    assert agent_result["result"]["trusted_publication"] == receipt
+    manifest = agent_result["result"]["dossier_manifest"]
+    assert manifest["publication"]["url"] == receipt["url"]
+    assert manifest["evidence"]["retained"] is True
+
+
+def test_run_refreshes_the_dossier_after_persisting_evidence() -> None:
+    """Order guard: the bug was a dossier built before the receipt existed."""
+    import inspect
+
+    source = inspect.getsource(FlowExecutionOrchestrator.run)
+    persist = source.index("set_evidence_receipt")
+    refresh = source.index("_refresh_product_dossier_after_evidence")
+    assert persist < refresh
+
+
 def _hosted_finish_orchestrator(
     db: Session,
     flow: Any,

@@ -975,82 +975,113 @@ class TestDeclineRequest:
 
 
 class TestPostWebhookNotification:
-    """Test post_webhook_notification method."""
+    """The approval workflow's own webhook_url, now queued instead of posted.
 
-    @patch("preloop.services.approval_service.httpx.AsyncClient")
+    The body is unchanged; what changed is that it goes into the delivery
+    outbox (signed, retried, dead-lettered) rather than out on a single
+    inline POST with a 10 second timeout and no retry.
+    """
+
+    @staticmethod
+    def _queue(monkeypatch, *, endpoint=MagicMock(), skipped_queue_full=0):
+        """Patch the outbox and capture what would be queued."""
+        from preloop.services.event_webhooks import approval_shim, outbox
+
+        captured = {}
+
+        async def fake_sync(db, workflow):
+            captured["workflow"] = workflow
+            return endpoint
+
+        async def fake_enqueue(db, **kwargs):
+            captured.update(kwargs)
+            return outbox.EnqueueResult(
+                event_id=uuid.uuid4(),
+                delivery_ids=[uuid.uuid4()] if not skipped_queue_full else [],
+                endpoints_matched=1,
+                skipped_queue_full=skipped_queue_full,
+            )
+
+        monkeypatch.setattr(approval_shim, "sync_shim_endpoint_async", fake_sync)
+        monkeypatch.setattr(outbox, "enqueue_raw_delivery_async", fake_enqueue)
+        return captured
+
     async def test_post_webhook_slack_success(
         self,
-        mock_client_class,
+        monkeypatch,
         approval_service,
         sample_approval_request,
         sample_approval_workflow,
     ):
-        """Test posting webhook notification to Slack."""
-        # Mock httpx client
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
-        mock_client_class.return_value.__aenter__.return_value = mock_client
+        """A Slack-shaped message is queued for delivery."""
+        captured = self._queue(monkeypatch)
 
-        # Mock update_approval_request
         with patch.object(approval_service, "update_approval_request") as mock_update:
             result = await approval_service.post_webhook_notification(
                 sample_approval_request, sample_approval_workflow
             )
 
-            assert result is True
-            assert mock_client.post.called
-            # Verify webhook was marked as posted
-            assert mock_update.called
+        assert result is True
+        assert "attachments" in captured["payload"]
+        assert captured["subject_id"] == sample_approval_request.id
+        # webhook_posted_at is stamped by the worker on real delivery, not here.
+        assert not mock_update.called
 
-    @patch("preloop.services.approval_service.httpx.AsyncClient")
     async def test_post_webhook_mattermost_success(
         self,
-        mock_client_class,
+        monkeypatch,
         approval_service,
         sample_approval_request,
         sample_approval_workflow,
     ):
-        """Test posting webhook notification to Mattermost."""
+        """Mattermost uses the same attachment shape as Slack."""
         sample_approval_workflow.approval_type = "mattermost"
+        captured = self._queue(monkeypatch)
 
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
-        mock_client_class.return_value.__aenter__.return_value = mock_client
+        result = await approval_service.post_webhook_notification(
+            sample_approval_request, sample_approval_workflow
+        )
 
-        with patch.object(approval_service, "update_approval_request"):
-            result = await approval_service.post_webhook_notification(
-                sample_approval_request, sample_approval_workflow
-            )
+        assert result is True
+        assert "attachments" in captured["payload"]
 
-            assert result is True
-
-    @patch("preloop.services.approval_service.httpx.AsyncClient")
     async def test_post_webhook_generic_success(
         self,
-        mock_client_class,
+        monkeypatch,
         approval_service,
         sample_approval_request,
         sample_approval_workflow,
     ):
-        """Test posting webhook notification to generic webhook."""
+        """The generic body keeps its historical top-level keys."""
         sample_approval_workflow.approval_type = "webhook"
+        captured = self._queue(monkeypatch)
 
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
-        mock_client_class.return_value.__aenter__.return_value = mock_client
+        result = await approval_service.post_webhook_notification(
+            sample_approval_request, sample_approval_workflow
+        )
 
-        with patch.object(approval_service, "update_approval_request"):
-            result = await approval_service.post_webhook_notification(
-                sample_approval_request, sample_approval_workflow
-            )
+        assert result is True
+        assert captured["payload"]["type"] == "approval_request"
+        assert captured["payload"]["request_id"] == str(sample_approval_request.id)
 
-            assert result is True
+    async def test_the_queued_key_is_stable_per_approval(
+        self,
+        monkeypatch,
+        approval_service,
+        sample_approval_request,
+        sample_approval_workflow,
+    ):
+        """Idempotency key names the approval, so a repeat queues nothing new."""
+        captured = self._queue(monkeypatch)
+
+        await approval_service.post_webhook_notification(
+            sample_approval_request, sample_approval_workflow
+        )
+
+        assert (
+            captured["natural_key"]
+            == f"approval_workflow_webhook:{sample_approval_request.id}"
+        )
 
     async def test_post_webhook_no_webhook_url(
         self, approval_service, sample_approval_request, sample_approval_workflow
@@ -1083,36 +1114,46 @@ class TestPostWebhookNotification:
 
             assert result is False
 
-    @patch("preloop.services.approval_service.httpx.AsyncClient")
-    async def test_post_webhook_http_error(
+    async def test_post_webhook_queue_failure_records_an_error(
         self,
-        mock_client_class,
+        monkeypatch,
         approval_service,
         sample_approval_request,
         sample_approval_workflow,
     ):
-        """Test posting webhook when HTTP error occurs."""
-        # Mock httpx client to raise error
-        mock_client = AsyncMock()
-        mock_client.post.side_effect = Exception("Connection failed")
-        mock_client_class.return_value.__aenter__.return_value = mock_client
+        """A queue that refuses the row is reported on the approval."""
+        self._queue(monkeypatch, skipped_queue_full=1)
 
         with patch.object(approval_service, "update_approval_request") as mock_update:
             result = await approval_service.post_webhook_notification(
                 sample_approval_request, sample_approval_workflow
             )
 
-            assert result is False
-            # Verify error was recorded
-            assert mock_update.called
-            call_args = mock_update.call_args
-            update = call_args[0][1]
-            assert "webhook_error" in update.model_dump(exclude_unset=True)
+        assert result is False
+        update = mock_update.call_args[0][1]
+        assert "webhook_error" in update.model_dump(exclude_unset=True)
 
-    @patch("preloop.services.approval_service.httpx.AsyncClient")
+    async def test_post_webhook_without_an_endpoint_records_an_error(
+        self,
+        monkeypatch,
+        approval_service,
+        sample_approval_request,
+        sample_approval_workflow,
+    ):
+        """A shim endpoint that cannot be created is not silently dropped."""
+        self._queue(monkeypatch, endpoint=None)
+
+        with patch.object(approval_service, "update_approval_request") as mock_update:
+            result = await approval_service.post_webhook_notification(
+                sample_approval_request, sample_approval_workflow
+            )
+
+        assert result is False
+        assert mock_update.called
+
     async def test_post_webhook_chat_message_offers_one_review_link(
         self,
-        mock_client_class,
+        monkeypatch,
         approval_service,
         sample_approval_request,
         sample_approval_workflow,
@@ -1122,19 +1163,14 @@ class TestPostWebhookNotification:
         All three links used to point at the same tokenized approval page, so
         "Approve" opened a page instead of approving. One honest link now.
         """
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
-        mock_client_class.return_value.__aenter__.return_value = mock_client
+        captured = self._queue(monkeypatch)
 
-        with patch.object(approval_service, "update_approval_request"):
-            result = await approval_service.post_webhook_notification(
-                sample_approval_request, sample_approval_workflow
-            )
+        result = await approval_service.post_webhook_notification(
+            sample_approval_request, sample_approval_workflow
+        )
 
         assert result is True
-        message = mock_client.post.call_args[1]["json"]
+        message = captured["payload"]
         review_url = (
             f"https://app.test.com/console/approval/{sample_approval_request.id}"
             f"?token={sample_approval_request.approval_token}"
@@ -1150,29 +1186,22 @@ class TestPostWebhookNotification:
         assert [action["text"] for action in actions] == ["Review"]
         assert actions[0]["url"] == review_url
 
-    @patch("preloop.services.approval_service.httpx.AsyncClient")
     async def test_post_webhook_generic_payload_review_action_and_deprecated_aliases(
         self,
-        mock_client_class,
+        monkeypatch,
         approval_service,
         sample_approval_request,
         sample_approval_workflow,
     ):
         """The generic payload names the link "review" and keeps the old keys."""
         sample_approval_workflow.approval_type = "webhook"
+        captured = self._queue(monkeypatch)
 
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
-        mock_client_class.return_value.__aenter__.return_value = mock_client
+        await approval_service.post_webhook_notification(
+            sample_approval_request, sample_approval_workflow
+        )
 
-        with patch.object(approval_service, "update_approval_request"):
-            await approval_service.post_webhook_notification(
-                sample_approval_request, sample_approval_workflow
-            )
-
-        actions = mock_client.post.call_args[1]["json"]["actions"]
+        actions = captured["payload"]["actions"]
         review_url = (
             f"/console/approval/{sample_approval_request.id}"
             f"?token={sample_approval_request.approval_token}"
@@ -1183,40 +1212,31 @@ class TestPostWebhookNotification:
         assert set(actions) == {"review", "approve", "decline", "view"}
         assert len(set(actions.values())) == 1
 
-    @patch("preloop.services.approval_service.httpx.AsyncClient")
     async def test_post_webhook_with_agent_reasoning(
         self,
-        mock_client_class,
+        monkeypatch,
         approval_service,
         sample_approval_request,
         sample_approval_workflow,
     ):
         """Test posting webhook with agent reasoning included."""
         sample_approval_request.agent_reasoning = "Need to update critical issue"
+        captured = self._queue(monkeypatch)
 
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
-        mock_client_class.return_value.__aenter__.return_value = mock_client
+        result = await approval_service.post_webhook_notification(
+            sample_approval_request, sample_approval_workflow
+        )
 
-        with patch.object(approval_service, "update_approval_request"):
-            result = await approval_service.post_webhook_notification(
-                sample_approval_request, sample_approval_workflow
-            )
-
-            assert result is True
-            # Verify reasoning was included in the message
-            call_args = mock_client.post.call_args
-            message = call_args[1]["json"]
-            # For Slack/Mattermost, reasoning should be in attachments fields
-            assert "attachments" in message
-            assert len(message["attachments"]) > 0
-            fields = message["attachments"][0].get("fields", [])
-            reasoning_fields = [
-                f for f in fields if "Agent Reasoning" in f.get("title", "")
-            ]
-            assert len(reasoning_fields) > 0
+        assert result is True
+        message = captured["payload"]
+        # For Slack/Mattermost, reasoning should be in attachments fields
+        assert "attachments" in message
+        assert len(message["attachments"]) > 0
+        fields = message["attachments"][0].get("fields", [])
+        reasoning_fields = [
+            f for f in fields if "Agent Reasoning" in f.get("title", "")
+        ]
+        assert len(reasoning_fields) > 0
 
 
 class TestSendNotifications:

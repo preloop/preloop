@@ -108,6 +108,50 @@ def test_valid_fail_verdict_is_execution_completed(
     assert decision.artifact == payload
 
 
+def test_incompletion_envelope_is_persisted_intact_and_fails_the_run() -> None:
+    """The reason survives as the result, not buried under result.raw.
+
+    A graceful "I could not finish" used to be wrapped as
+    cra_result_missing with the agent's text under raw. It is now stored
+    as written, and the execution still fails.
+    """
+    payload = {
+        "schema": "preloop.cra.releaseaudit/v1",
+        "flow": "release-security-audit",
+        "run_at": "2026-09-08T10:15:00Z",
+        "regime_profile": "cra",
+        "verdict": "error",
+        "incomplete": {
+            "reason": "The interactive waiver approval did not resolve in time.",
+            "stage": "PHASE 2 waiver collection",
+        },
+        "disclaimer": (
+            "Machine-generated evidence for conformity assessment support. "
+            "Not a conformity assessment, certification, or legal advice."
+        ),
+    }
+    decision = apply_cra_persist_boundary(payload)
+    assert not decision.invalid
+    assert decision.artifact == payload
+    assert "error" not in decision.artifact
+    assert decision.validation.incomplete
+    assert not decision.validation.execution_completed
+    assert decision.validation.release_denied
+    assert decision.fail_closed_status == "FAILED"
+
+
+def test_bare_failure_object_still_fails_closed() -> None:
+    """The pre-fix shape stays a contract violation: it carries no schema."""
+    payload = {"status": "failure", "reason": "waiver never arrived"}
+    decision = apply_cra_persist_boundary(
+        payload, expected_schema="preloop.cra.releaseaudit/v1"
+    )
+    assert decision.invalid
+    assert decision.fail_closed_status == "FAILED"
+    assert decision.artifact is not None
+    assert decision.artifact.get("raw") == payload
+
+
 def test_trigger_waivers_key_absent_is_none() -> None:
     assert delivered_waivers_from_trigger({"release_ref": "v1"}) is None
 
@@ -387,6 +431,36 @@ def test_invalid_cra_keeps_original_failure_and_contract_diagnostics(
     assert contract in error
 
 
+@pytest.mark.parametrize(
+    "runner_error",
+    [
+        "exec /opt/entrypoint.sh: argument list too long",
+        "Failed to start agent Job: ImagePullBackOff",
+    ],
+)
+def test_runner_failure_stands_alone_without_contract_diagnostics(
+    vulnscan_result: dict[str, Any], runner_error: str
+) -> None:
+    """A runner that never started the container is the whole cause.
+
+    "no result.json was persisted" is a consequence of the container not
+    running. Concatenating the two sent operators to debug the preset or the
+    model when the answer was in the first clause (preloop/preloop#505,
+    dogfood report 4.2).
+    """
+    payload = clone(vulnscan_result)
+    del payload["gate"]
+    decision = apply_cra_persist_boundary(payload)
+    assert decision.invalid
+
+    status, error = apply_cra_fail_closed_completion("FAILED", runner_error, decision)
+
+    assert status == "FAILED"
+    assert error == runner_error
+    assert "failed contract validation" not in error
+    assert "cra_result_missing" not in (error or "")
+
+
 def test_invalid_cra_without_original_error_is_contract_only(
     vulnscan_result: dict[str, Any],
 ) -> None:
@@ -396,3 +470,155 @@ def test_invalid_cra_without_original_error_is_contract_only(
     status, error = apply_cra_fail_closed_completion("SUCCEEDED", None, decision)
     assert status == "FAILED"
     assert error == cra_fail_closed_error_message(decision)
+
+
+class TestRunnerIdentityStamp:
+    """result.runner is a control-plane fact, not an agent claim.
+
+    Every preset tells the agent to write {"kind": null, "id": null}
+    because it cannot see which runner leased its job, and every stored
+    result said exactly that even though the execution row knew
+    (dogfood report 7, ranked fix 14).
+    """
+
+    def test_hosted_execution_is_stamped(
+        self, sbomaudit_result: dict[str, Any]
+    ) -> None:
+        payload = clone(sbomaudit_result)
+        assert payload["runner"] == {"kind": None, "id": None}
+        decision = apply_cra_persist_boundary(
+            payload,
+            execution_runner={
+                "kind": "hosted",
+                "id": None,
+                "name": "Preloop hosted",
+                "pool": None,
+            },
+        )
+        assert not decision.invalid
+        assert decision.artifact is not None
+        assert decision.artifact["runner"] == {
+            "kind": "hosted",
+            "id": None,
+            "attested_by": "control_plane",
+        }
+
+    def test_private_runner_becomes_self_hosted_with_its_id(
+        self, vulnscan_result: dict[str, Any]
+    ) -> None:
+        """The console says "private"; the CRA envelope says "self_hosted"."""
+        runner_id = "7b7f0f7c-2a3f-4f2c-9a3a-0b3d5f6a1c22"
+        decision = apply_cra_persist_boundary(
+            clone(vulnscan_result),
+            execution_runner={
+                "kind": "private",
+                "id": runner_id,
+                "name": "build-box",
+                "pool": "eu-linux",
+            },
+        )
+        assert not decision.invalid
+        assert decision.artifact is not None
+        assert decision.artifact["runner"] == {
+            "kind": "self_hosted",
+            "id": runner_id,
+            "pool": "eu-linux",
+            "attested_by": "control_plane",
+        }
+
+    def test_display_name_is_not_stamped_as_evidence(
+        self, sbomaudit_result: dict[str, Any]
+    ) -> None:
+        """A fallback display name is a placeholder, not a proven fact."""
+        decision = apply_cra_persist_boundary(
+            clone(sbomaudit_result),
+            execution_runner={"kind": "private", "id": None, "name": "Private runner"},
+        )
+        assert decision.artifact is not None
+        assert "name" not in decision.artifact["runner"]
+
+    def test_agent_claim_does_not_survive_the_stamp(
+        self, sbomaudit_result: dict[str, Any]
+    ) -> None:
+        payload = clone(sbomaudit_result)
+        payload["runner"] = {
+            "kind": "self_hosted",
+            "id": "made-up",
+            "name": "build-box",
+            "pool": "guessed-pool",
+            "image": "ghcr.io/example/audit:1",
+        }
+        decision = apply_cra_persist_boundary(
+            payload, execution_runner={"kind": "hosted", "id": None, "pool": None}
+        )
+        assert decision.artifact is not None
+        assert decision.artifact["runner"] == {
+            "kind": "hosted",
+            "id": None,
+            "attested_by": "control_plane",
+        }
+
+    def test_unknown_runner_kind_leaves_the_field_alone(
+        self, sbomaudit_result: dict[str, Any]
+    ) -> None:
+        decision = apply_cra_persist_boundary(
+            clone(sbomaudit_result), execution_runner={"kind": "somewhere-else"}
+        )
+        assert decision.artifact is not None
+        assert decision.artifact["runner"] == {"kind": None, "id": None}
+
+    def test_absent_runner_record_leaves_the_field_alone(
+        self, sbomaudit_result: dict[str, Any]
+    ) -> None:
+        decision = apply_cra_persist_boundary(clone(sbomaudit_result))
+        assert decision.artifact is not None
+        assert decision.artifact["runner"] == {"kind": None, "id": None}
+
+    def test_non_cra_json_is_never_stamped(self) -> None:
+        payload = {"status": "success", "summary": "ok"}
+        decision = apply_cra_persist_boundary(
+            payload, execution_runner={"kind": "hosted", "id": None}
+        )
+        assert decision.artifact == payload
+
+    def test_capture_error_object_is_not_stamped(self) -> None:
+        payload: dict[str, Any] = {
+            "error": MISSING_ERROR,
+            "raw": {"schema": "preloop.cra.sbomaudit/v1"},
+        }
+        decision = apply_cra_persist_boundary(payload)
+        assert decision.artifact is not None
+        assert "runner" not in decision.artifact
+
+    def test_incompletion_envelope_carries_the_stamp(self) -> None:
+        """A run that stopped early still says where it ran."""
+        payload = {
+            "schema": "preloop.cra.sbomaudit/v1",
+            "flow": "sbom-verify",
+            "run_at": "2026-09-08T10:15:00Z",
+            "regime_profile": "cra",
+            "verdict": "error",
+            "incomplete": {"reason": "No SBOM was delivered.", "stage": None},
+            "disclaimer": (
+                "Machine-generated evidence for conformity assessment support. "
+                "Not a conformity assessment, certification, or legal advice."
+            ),
+        }
+        decision = apply_cra_persist_boundary(
+            payload, execution_runner={"kind": "hosted", "id": None}
+        )
+        assert not decision.invalid
+        assert decision.validation.incomplete
+        assert decision.artifact is not None
+        assert decision.artifact["runner"]["kind"] == "hosted"
+
+    def test_stamped_runner_kind_passes_validation(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        """The stamp uses the envelope's vocabulary, so it cannot fail the contract."""
+        decision = apply_cra_persist_boundary(
+            clone(releaseaudit_result),
+            execution_runner={"kind": "private", "id": "abc"},
+        )
+        assert not decision.invalid
+        assert decision.validation.execution_completed

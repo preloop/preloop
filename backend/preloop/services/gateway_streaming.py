@@ -13,12 +13,15 @@ also closes the source iterator and flushes any already-stashed record.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterable, AsyncIterator, Iterator
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Iterator
+from functools import partial
 from typing import Any, Callable, Mapping, Optional
 
-from anyio import CancelScope
+import anyio
+from starlette._utils import create_collapsing_task_group
+from starlette.requests import ClientDisconnect
 from starlette.responses import StreamingResponse
-from starlette.types import Send
+from starlette.types import Receive, Scope, Send
 
 from preloop.api.loop_safety import run_db_off_loop
 
@@ -65,6 +68,49 @@ class GatewayStreamingResponse(StreamingResponse):
             self._gateway_content = iter(content)
             self.body_iterator = _iterate_gateway_stream(self._gateway_content)
 
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Stream the body; on ASGI 2.3 start the iterator before disconnect listen.
+
+        Backported from Starlette 1.6.0 ``StreamingResponse.__call__``, plus
+        an explicit ``anyio.lowlevel.checkpoint()`` so the body iterator is
+        scheduled before ``listen_for_disconnect``. Reconcile this override
+        on the next Starlette upgrade: drop it if upstream already
+        checkpoints, and update the import if
+        ``create_collapsing_task_group`` moves.
+
+        Starlette parks ``listen_for_disconnect`` on ``receive()`` for spec
+        <2.4. httpx's ASGI transport, once the request body is consumed, waits
+        for the final ``more_body=False`` frame before returning disconnect.
+        Nested Gemini translators open on the first body pull, so starting
+        that listener first can starve the worker that opens the provider
+        stream. Checkpoint so the body iterator is scheduled first.
+        """
+        if scope["type"] == "websocket":
+            await super().__call__(scope, receive, send)
+            return
+
+        spec_version = tuple(
+            map(int, scope.get("asgi", {}).get("spec_version", "2.0").split("."))
+        )
+        if spec_version >= (2, 4):
+            try:
+                await self.stream_response(send)
+            except OSError:
+                raise ClientDisconnect()
+        else:
+            async with create_collapsing_task_group() as task_group:
+
+                async def wrap(func: Callable[[], Awaitable[None]]) -> None:
+                    await func()
+                    task_group.cancel_scope.cancel()
+
+                task_group.start_soon(wrap, partial(self.stream_response, send))
+                await anyio.lowlevel.checkpoint()
+                await wrap(partial(self.listen_for_disconnect, receive))
+
+        if self.background is not None:
+            await self.background()
+
     async def stream_response(self, send: Send) -> None:
         """Send the SSE body, then run deferred usage recording."""
         try:
@@ -93,7 +139,7 @@ class GatewayStreamingResponse(StreamingResponse):
                     # Closing the source iterator deterministically invokes
                     # observer abort accounting on incomplete streams. Every
                     # in-flight pull has drained before this cleanup runs.
-                    with CancelScope(shield=True):
+                    with anyio.CancelScope(shield=True):
                         await run_db_off_loop(close_and_record)
                 except Exception:  # noqa: BLE001 - body is already on the wire
                     logger.warning(

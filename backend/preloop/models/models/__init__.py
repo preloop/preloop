@@ -24,6 +24,7 @@ from .flow_execution_log import FlowExecutionLog
 from .gateway_usage_search_document import GatewayUsageSearchDocument
 from .webauthn_credential import WebAuthnCredential
 from .webhook import Webhook
+from .webhook_endpoint import WebhookDelivery, WebhookEndpoint
 from .tracker_scope_rule import TrackerScopeRule
 from .issue_compliance_result import IssueComplianceResult
 from .plan import Plan, Subscription, MonthlyUsage
@@ -129,6 +130,8 @@ __all__ = [
     "GatewayUsageSearchDocument",
     "WebAuthnCredential",
     "Webhook",
+    "WebhookDelivery",
+    "WebhookEndpoint",
     "TrackerScopeRule",
     "IssueComplianceResult",
     "Plan",

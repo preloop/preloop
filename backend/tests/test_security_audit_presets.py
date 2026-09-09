@@ -152,6 +152,120 @@ class TestSecurityAuditPresetInvariants:
             assert box in prompt, f"missing cover box: {box}"
 
 
+class TestIncompletionEnvelope:
+    """A run that cannot finish reports why, in the schema.
+
+    A release audit whose interactive waiver question went unanswered
+    wrote {"status": "failure", "reason": "..."}. Correct behaviour,
+    discarded: no schema, so the platform recorded cra_result_missing
+    and kept the text only under result.raw.
+    """
+
+    INCOMPLETE_PRESETS = {
+        "SBOM Verify": ("preloop.cra.sbomaudit/v1", "sbom-verify"),
+        "Release Security Audit": (
+            "preloop.cra.releaseaudit/v1",
+            "release-security-audit",
+        ),
+    }
+
+    @pytest.fixture(params=sorted(INCOMPLETE_PRESETS))
+    def incomplete_preset(self, request):
+        name = request.param
+        return name, _load_preset(PRESET_FILES[name])["prompt_template"]
+
+    def test_envelope_is_specified(self, incomplete_preset):
+        name, prompt = incomplete_preset
+        schema_id, flow = self.INCOMPLETE_PRESETS[name]
+        norm = _norm(prompt)
+        assert "IF THE AUDIT CANNOT FINISH" in prompt
+        assert "INCOMPLETION ENVELOPE" in prompt
+        # Identity, so the platform can bind it to this flow's contract.
+        assert f'"schema": "{schema_id}"' in norm
+        assert f'"flow": "{flow}"' in norm
+        assert '"regime_profile": "cra"' in norm
+        assert '"verdict": "error"' in norm
+        assert '"incomplete": {' in norm
+        assert '"reason": "<what stopped the run' in norm
+        assert '"stage"' in prompt
+        assert DISCLAIMER in prompt
+
+    def test_the_discarded_shape_is_named(self, incomplete_preset):
+        """Name the exact object that was thrown away, so it is not written."""
+        _, prompt = incomplete_preset
+        norm = _norm(prompt)
+        assert '{"status": "failure", "reason": "..."}' in norm
+        assert "it carries no schema" in norm
+        assert "your explanation is discarded" in norm
+
+    def test_no_invented_body(self, incomplete_preset):
+        """An unfinished run may not fabricate the sections it never ran."""
+        name, prompt = incomplete_preset
+        norm = _norm(prompt)
+        assert "You may NOT add the audit body" in norm
+        assert "claimed work is validated in full" in norm
+        forbidden = {
+            "SBOM Verify": "source, valid, minimum_elements, coverage",
+            "Release Security Audit": "sbom_audit, vuln_scan, drift",
+        }[name]
+        assert forbidden in norm
+
+    def test_incompletion_never_reads_as_a_release(self, incomplete_preset):
+        _, prompt = incomplete_preset
+        norm = _norm(prompt)
+        assert "fails the execution, and never reads it as a release" in norm
+        assert "is itself a compliance-relevant fact" in norm
+
+    def test_release_audit_keeps_failing_closed_on_waivers(self):
+        prompt = _load_preset(PRESET_FILES["Release Security Audit"])["prompt_template"]
+        norm = _norm(prompt)
+        assert "A timed-out waiver question is still FAIL CLOSED" in norm
+        assert "nothing is waived and nothing is released" in norm
+
+
+class TestUnscoredFindingsGate:
+    """Unscored database findings are gate-relevant by default.
+
+    Four Go advisories in a dogfood run had no CVSS vector, so the
+    KEV-or-CVSS gate would have passed all four silently. Any Go or Rust
+    product hits this.
+    """
+
+    GATE_PRESETS = ("SBOM Exploit Check", "Release Security Audit")
+
+    @pytest.fixture(params=GATE_PRESETS)
+    def gate_prompt(self, request):
+        return _load_preset(PRESET_FILES[request.param])["prompt_template"]
+
+    def test_default_policy_includes_unscored(self, gate_prompt):
+        norm = _norm(gate_prompt)
+        assert "gate.fail_on_unscored" in gate_prompt
+        assert "database-source finding that carries NO CVSS score at all" in norm
+        assert "Unscored is not a low score" in norm
+        assert 'reads as "screened and cleared" when it means "never scored"' in norm
+
+    def test_opt_out_is_explicit_and_disclosed(self, gate_prompt):
+        norm = _norm(gate_prompt)
+        assert "gate.fail_on_unscored: false in the payload turns it off" in norm
+        assert "the gate line must then say so" in norm
+
+    def test_unscored_failures_are_waivable(self, gate_prompt):
+        assert "An unscored gate failure is waivable like any other" in _norm(
+            gate_prompt
+        )
+
+    def test_scores_are_never_invented(self, gate_prompt):
+        norm = _norm(gate_prompt)
+        assert "never invent a score to fill the field" in norm
+        assert "a fabricated score is a worse defect than a missing one" in norm
+        assert "labeled UNSCORED wherever it appears" in norm
+
+    def test_heuristics_still_stay_out_of_the_gate(self, gate_prompt):
+        """Fix the missing-score hole without letting fuzzy matches gate."""
+        norm = _norm(gate_prompt)
+        assert "do NOT enter the severity gate" in norm
+
+
 class TestSbomVerifyPreset:
     def test_deterministic_check_catalogue(self):
         prompt = _load_preset(PRESET_FILES["SBOM Verify"])["prompt_template"]
@@ -161,13 +275,48 @@ class TestSbomVerifyPreset:
             "COVERAGE QUALITY",
             "BUILD CROSS-CHECK",
             "LICENSE FLAGS",
+            "PROVENANCE CONSISTENCY",
         ]:
             assert marker in prompt
         # Missing build evidence must be reported as skipped, not guessed.
         assert "skipped: no build evidence delivered" in prompt
 
+    def test_provenance_consistency_tests_the_declaration(self):
+        """The caller's prose is a claim; the artefact decides.
+
+        A run whose SBOM was reshaped in transit produced two headline
+        findings that were artefacts of the reshaping, because the flow
+        trusted the caller's "as the tool emitted it" statement. The
+        check compares the declaration against the file.
+        """
+        prompt = _load_preset(PRESET_FILES["SBOM Verify"])["prompt_template"]
+        norm = _norm(prompt)
+        assert "PROVENANCE CONSISTENCY" in prompt
+        assert "provenance_consistency" in prompt
+        # The four comparisons, each machine-checkable from the file.
+        assert "creationInfo.creators" in prompt
+        assert "metadata.tools" in prompt
+        assert "sha256 of the file you actually parsed" in norm
+        assert "duplicate component objects" in norm
+        assert "no matching bom-ref" in norm
+        # Counting discipline: occurrences and distinct targets differ.
+        assert "the number of distinct targets" in norm
+        # An absent declaration is skipped, never a pass.
+        assert "skipped: no provenance declared" in prompt
+        assert "an absent declaration is not a passing one" in norm
+
+    def test_provenance_contradiction_moves_the_verdict(self):
+        """A contradicted declaration cannot read as a clean pass."""
+        prompt = _load_preset(PRESET_FILES["SBOM Verify"])["prompt_template"]
+        norm = _norm(prompt)
+        assert 'ALWAYS carries an entry named "provenance_consistency"' in norm
+        assert "provenance contradictions" in norm
+        assert "declared SBOM digest that does not match the file you parsed" in norm
+        # The cover, not just the register, has to say it.
+        assert "provenance consistency found a contradiction" in norm
+
     def test_cover_adapted_to_sbom_checks(self):
-        """BOX 1 lists the five deterministic checks; honesty rail holds."""
+        """BOX 1 lists the deterministic checks; honesty rail holds."""
         prompt = _load_preset(PRESET_FILES["SBOM Verify"])["prompt_template"]
         norm = _norm(prompt)
         assert "MUST OPEN" in prompt

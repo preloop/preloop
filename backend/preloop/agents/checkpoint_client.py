@@ -24,6 +24,21 @@ MAX_EVIDENCE_MEMBERS = 100_000
 RESULT_JSON_MAX_BYTES = 256 * 1024
 _READ_CHUNK = 65536
 
+# Self-description member written into every evidence pack. Kept in sync
+# with preloop.cra.evidence_pack (this file cannot import it: it is
+# installed alone inside agent containers). The control plane verifies the
+# document this produces, so the shape is a contract, not a convention.
+PACK_MANIFEST_NAME = "manifest.json"
+PACK_MANIFEST_SCHEMA = "preloop.cra.evidence_manifest/v1"
+PACK_MANIFEST_NOTE = (
+    "sha256 values cover the members of this archive as packed and the "
+    "inputs as delivered to the run. Source commits are declared by the "
+    "caller, not attested by the platform."
+)
+# Facts the control plane knows and the container does not: which files
+# were seeded into the workspace and which source the caller declared.
+PACK_MANIFEST_ENV = "PRELOOP_EVIDENCE_MANIFEST"
+
 EXCLUDED = {
     "node_modules",
     ".venv",
@@ -221,6 +236,45 @@ def _read_bounded(path: Path, *, expected: os.stat_result, limit: int) -> bytes:
         os.close(fd)
 
 
+def _canonical_json(value):
+    """UTF-8 JSON with sorted keys and no insignificant whitespace."""
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
+    ).encode("utf-8")
+
+
+def _manifest_context() -> dict:
+    """Read the control-plane facts for the manifest; {} when unavailable."""
+    raw = os.environ.get(PACK_MANIFEST_ENV)
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _pack_manifest(members: list) -> bytes:
+    """Build manifest.json for the members just written."""
+    ordered = sorted(members, key=lambda item: item["name"])
+    context = _manifest_context()
+    inputs = context.get("inputs")
+    source = context.get("source")
+    return _canonical_json(
+        {
+            "schema": PACK_MANIFEST_SCHEMA,
+            "execution_id": context.get("execution_id"),
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "members": ordered,
+            "members_digest": hashlib.sha256(_canonical_json(ordered)).hexdigest(),
+            "inputs": inputs if isinstance(inputs, list) else [],
+            "source": source if isinstance(source, dict) else {},
+            "note": PACK_MANIFEST_NOTE,
+        }
+    )
+
+
 def pack_evidence(root: Path, *, max_bytes: int, max_expanded_bytes: int) -> bytes:
     """Pack /workspace/evidence and result.json with the same member rules as storage.
 
@@ -249,7 +303,9 @@ def pack_evidence(root: Path, *, max_bytes: int, max_expanded_bytes: int) -> byt
         oversized: str,
     ) -> None:
         nonlocal expanded
-        if len(pending) >= MAX_EVIDENCE_MEMBERS:
+        # One slot is reserved for manifest.json, which is written last and
+        # counts against the same server-side member cap.
+        if len(pending) >= MAX_EVIDENCE_MEMBERS - 1:
             raise ValueError("evidence_invalid_members")
         name = _posix_member_name(relative)
         st = _lstat_regular(path)
@@ -293,6 +349,7 @@ def pack_evidence(root: Path, *, max_bytes: int, max_expanded_bytes: int) -> byt
     if not pending:
         raise ValueError("evidence_empty")
     buffer = io.BytesIO()
+    members: list = []
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
         for path, relative, st, limit, oversized in pending:
             try:
@@ -305,8 +362,25 @@ def pack_evidence(root: Path, *, max_bytes: int, max_expanded_bytes: int) -> byt
             info.size = len(data)
             info.mode = st.st_mode & 0o777
             archive.addfile(info, io.BytesIO(data))
+            members.append(
+                {
+                    "name": relative,
+                    "size_bytes": len(data),
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                }
+            )
             if buffer.tell() > max_bytes:
                 raise ValueError("evidence_oversized")
+        # Written last so the pack describes exactly what it carries: the
+        # digests above are of the bytes that were actually packed.
+        manifest = _pack_manifest(members)
+        info = tarfile.TarInfo(PACK_MANIFEST_NAME)
+        info.size = len(manifest)
+        info.mode = 0o600
+        info.mtime = 0
+        archive.addfile(info, io.BytesIO(manifest))
+        if buffer.tell() > max_bytes:
+            raise ValueError("evidence_oversized")
     body = buffer.getvalue()
     if not body or len(body) > max_bytes:
         raise ValueError("evidence_oversized" if body else "evidence_empty")

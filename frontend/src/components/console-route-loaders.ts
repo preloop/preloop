@@ -24,6 +24,7 @@ export const consoleRouteLoaders = {
     import('../views/authed/settings/ai-model-detail-view'),
   'profile-view': () => import('../views/authed/settings/profile-view'),
   'security-view': () => import('../views/authed/settings/security-view'),
+  'webhooks-view': () => import('../views/authed/settings/webhooks-view'),
   'appearance-view': () => import('../views/authed/settings/appearance-view'),
   'account-view': () => import('../views/authed/settings/account-view'),
   'user-management-view': () =>

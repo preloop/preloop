@@ -69,6 +69,15 @@ class TestAdminUserCreate:
                 password="password123",
             )
 
+    def test_password_max_length_raises(self):
+        """Passwords longer than bcrypt's 72-byte limit are rejected."""
+        with pytest.raises(ValueError):
+            AdminUserCreate(
+                username="adminuser",
+                email="admin@example.com",
+                password="a" * 73,
+            )
+
 
 class TestAdminUserUpdate:
     """Test AdminUserUpdate schema."""
@@ -100,6 +109,22 @@ class TestUserPasswordUpdate:
                 current_password="old",
                 new_password="short",
             )
+
+    def test_new_password_max_length(self):
+        """New passwords longer than bcrypt's 72-byte limit are rejected."""
+        with pytest.raises(ValueError):
+            UserPasswordUpdate(
+                current_password="oldpass",
+                new_password="a" * 73,
+            )
+
+    def test_current_password_may_exceed_bcrypt_limit(self):
+        """current_password is a submitted secret, not a new one; do not 422 it."""
+        data = UserPasswordUpdate(
+            current_password="a" * 80,
+            new_password="newpass123",
+        )
+        assert data.current_password == "a" * 80
 
 
 class TestAdminUserResponse:

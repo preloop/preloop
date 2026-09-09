@@ -104,6 +104,7 @@ from preloop.services.agent_control_presence import control_heartbeat_is_fresh
 from preloop.services.account_governance_cache import (
     invalidate_account_governance_cache,
 )
+from preloop.services.event_webhooks.emitters import emit_session_ended
 from preloop.services.cache_accounting import (
     build_request_cache_accounting,
     summarize_session_cache,
@@ -2899,6 +2900,9 @@ async def update_account_runtime_session(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Runtime session not found"
         )
+
+    emit_session_ended(db, updated, reason="operator")
+    db.commit()
 
     crud_api_key.deactivate_runtime_keys_for_session(
         db,

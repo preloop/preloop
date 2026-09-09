@@ -550,6 +550,78 @@ class Settings(BaseSettings):
     )
     flow_environment_profiles_file: str = ""
 
+    # Outbound event webhooks (docs/guide/webhooks.md). Every default is
+    # usable as-is; a deployment only tunes these when a receiver is slow or
+    # an account produces a lot of events.
+    webhook_delivery_enabled: bool = Field(
+        True,
+        description=(
+            "Run the outbound webhook delivery worker. Off means events are "
+            "still recorded in the outbox but nothing is posted."
+        ),
+    )
+    webhook_delivery_poll_seconds: int = Field(
+        5,
+        ge=1,
+        description="Seconds between outbox polls by the delivery worker.",
+    )
+    webhook_delivery_batch_size: int = Field(
+        50,
+        ge=1,
+        description="Maximum deliveries claimed per worker pass.",
+    )
+    webhook_delivery_concurrency: int = Field(
+        8,
+        ge=1,
+        description="Maximum concurrent outbound POSTs per worker pass.",
+    )
+    webhook_delivery_timeout_seconds: float = Field(
+        10.0,
+        gt=0,
+        description="HTTP timeout for one outbound webhook attempt.",
+    )
+    webhook_max_pending_per_account: int = Field(
+        10000,
+        ge=1,
+        description=(
+            "Bound on undelivered rows per account. Enqueue is refused past "
+            "this point (logged, and stamped on the endpoint) so a dead "
+            "receiver cannot grow the outbox without limit."
+        ),
+    )
+    webhook_circuit_failure_threshold: int = Field(
+        10,
+        ge=1,
+        description=(
+            "Consecutive failed attempts that open an endpoint's circuit "
+            "breaker. While open the endpoint is not attempted."
+        ),
+    )
+    webhook_circuit_cooldown_seconds: int = Field(
+        900,
+        ge=1,
+        description=(
+            "How long an open circuit stays open before one probe delivery "
+            "is allowed through."
+        ),
+    )
+    webhook_delivery_retention_days: int = Field(
+        14,
+        ge=1,
+        description=(
+            "How long delivered and dead-lettered rows are kept before the "
+            "worker purges them."
+        ),
+    )
+    webhook_block_private_targets: bool = Field(
+        False,
+        description=(
+            "Refuse webhook URLs that resolve to loopback, link-local or "
+            "private address space. Off by default because self-hosted "
+            "deployments legitimately post to internal collectors."
+        ),
+    )
+
     workspace_snapshot_max_bytes: int = Field(
         512 * 1024 * 1024,
         description=(

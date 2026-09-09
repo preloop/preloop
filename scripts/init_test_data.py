@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 
-from passlib.context import CryptContext
+import bcrypt
 from sqlalchemy.exc import SQLAlchemyError
 
 from preloop.models.crud import crud_role, crud_user, crud_user_role
@@ -22,9 +22,6 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 async def create_test_data():
@@ -60,7 +57,9 @@ async def create_test_data():
                     "account_id": account.id,
                     "username": "admin",
                     "email": "admin@preloop.ai",
-                    "hashed_password": pwd_context.hash("admin"),
+                    "hashed_password": bcrypt.hashpw(b"admin", bcrypt.gensalt()).decode(
+                        "ascii"
+                    ),
                     "full_name": "Admin User",
                     "is_active": True,
                     "email_verified": True,

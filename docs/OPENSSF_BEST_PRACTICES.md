@@ -58,7 +58,7 @@ UNMET (honest gap, action listed).
 | Criterion | Status | Evidence / gap |
 |---|---|---|
 | Developers know secure design basics | MET | Security-focused product (policy engine, approvals, audit); ARCHITECTURE.md documents trust boundaries |
-| Crypto: published protocols only, no custom crypto | MET | Standard TLS, JWT, bcrypt via passlib (pyproject.toml); no homegrown crypto |
+| Crypto: published protocols only, no custom crypto | MET | Standard TLS, JWT, bcrypt (pyproject.toml); no homegrown crypto |
 | Crypto: FLOSS implementations | MET | Python/Go standard ecosystem libraries |
 | Secure delivery of releases | MET | HTTPS GitHub Releases; `SHA256SUMS` asset ships with every release; VirusTotal scan links appended to release notes for Windows binaries |
 | Signed releases | PARTIAL | Checksums yes; Authenticode via SignPath is wired in [release.yml](../.github/workflows/release.yml) but PENDING SignPath approval/secrets ([docs/windows-code-signing.md](./windows-code-signing.md)). No GPG/Sigstore signing of tarballs yet. Action: enable SignPath, consider Sigstore cosign for archives. |

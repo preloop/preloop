@@ -18,6 +18,39 @@ from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.services.openai_gateway import OpenAIGatewayService
 
 
+class _GeminiClosingStream:
+    """Gemini SSE iterator that always closes the inner responses stream.
+
+    The translator is a generator wrapped around the shared responses stream.
+    Closing a never-started generator runs no ``finally``, so ASGI 2.3
+    disconnect teardown would otherwise leave the inner stream (and its
+    request-owned DB session) until GC. Closing both handles here is
+    idempotent with :class:`ObservedGatewayStream`.
+    """
+
+    __slots__ = ("_upstream", "_events", "_closed")
+
+    def __init__(self, upstream_events: Iterator[str], events: Iterator[str]) -> None:
+        self._upstream = upstream_events
+        self._events = events
+        self._closed = False
+
+    def __iter__(self) -> "_GeminiClosingStream":
+        return self
+
+    def __next__(self) -> str:
+        return next(self._events)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for resource in (self._events, self._upstream):
+            closer = getattr(resource, "close", None)
+            if closer is not None:
+                closer()
+
+
 class GeminiGatewayService(OpenAIGatewayService):
     """Translate Gemini REST requests onto the shared gateway backend."""
 
@@ -167,23 +200,16 @@ class GeminiGatewayService(OpenAIGatewayService):
                 )
             yield self._sse_event(final_payload)
 
-        # The Gemini stream is a translating generator wrapped around the
-        # shared responses stream, which owns the usage accounting. Closing
-        # this outer generator does not close the inner one (and if this outer
-        # generator was never started, closing it runs no code at all), so the
-        # inner stream would only be torn down whenever the garbage collector
-        # got around to it — by which point the request's database session can
-        # already be closed and the usage row is lost. Hand the inner stream to
-        # the observer so it is closed deterministically.
-        def closing_event_stream() -> Iterator[str]:
-            try:
-                yield from event_stream()
-            finally:
-                close = getattr(upstream_events, "close", None)
-                if close is not None:
-                    close()
-
-        return ObservedGatewayStream(closing_event_stream(), closes=(upstream_events,))
+        # The translator is a generator wrapped around the shared responses
+        # stream, which owns usage accounting. Closing a never-started
+        # generator runs no ``finally``, so ASGI 2.3 disconnect teardown would
+        # otherwise leave the inner stream until GC — after the request
+        # session may already be gone. The closing iterator always closes the
+        # inner handle; the observer still records an unconsumed stream.
+        return ObservedGatewayStream(
+            _GeminiClosingStream(upstream_events, event_stream()),
+            closes=(upstream_events,),
+        )
 
     def _translate_generate_content_request(
         self, model_name: str, payload: Dict[str, Any]

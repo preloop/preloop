@@ -11,23 +11,21 @@ import re
 import uuid
 from typing import Any, Dict, Optional
 
-from sqlalchemy.orm import Session
-
 from preloop.models.crud import (
     crud_account,
     crud_approval_workflow,
-    crud_tool_configuration,
     crud_tool_access_rule,
+    crud_tool_configuration,
 )
 from preloop.models.crud.account import get_meta_data_async
 from preloop.models.crud.approval_workflow import (
     get_default_approval_workflow_async,
 )
+from preloop.models.crud.tool_access_rule import get_multi_by_config_async
 from preloop.models.crud.tool_configuration import (
     get_tool_config_by_id_async,
     get_tool_config_by_tool_name_async,
 )
-from preloop.models.crud.tool_access_rule import get_multi_by_config_async
 from preloop.services.approval_rule_context import (
     SOURCE_RULE_EVALUATION_ERROR,
     SOURCE_SUBJECT_SCOPED_RULE,
@@ -35,10 +33,12 @@ from preloop.services.approval_rule_context import (
     SOURCE_TOOL_DEFAULT_WORKFLOW,
     build_rule_context,
 )
+from preloop.services.db_executor import submit_off_loop
 from preloop.services.subject_governance import (
     get_scoped_tool_rules,
     is_tool_enabled_for_subject,
 )
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -326,6 +326,38 @@ def _log_policy_decision_async(
         execution_id: Flow execution ID (if applicable)
         correlation_id: Correlation ID for grouping related audit events
     """
+    # Outbound webhooks share this chokepoint so every deny path reaches
+    # subscribers, including the ones that reach it through
+    # model_content_policy. Emitted before the audit branch below, which
+    # returns early when no audit plugin is installed: OSS has no audit
+    # service and would otherwise never fire policy.denied.
+    if action == "deny":
+        # Do not enqueue on this thread: enqueue_event_detached opens a
+        # session and runs select + count + insert + commit, which would
+        # stall the deny path (and the event loop on the async evaluator).
+        emit_kwargs = {
+            "account_id": account_id,
+            "tool_name": tool_name,
+            "rule_description": rule_description,
+            "condition_matched": condition_matched,
+            "execution_id": execution_id,
+            "user_id": user_id,
+            "correlation_id": correlation_id,
+            "extra_details": dict(extra_details) if extra_details else None,
+        }
+
+        def _emit_policy_denied() -> None:
+            try:
+                from preloop.services.event_webhooks.emitters import (
+                    emit_policy_denied,
+                )
+
+                emit_policy_denied(**emit_kwargs)
+            except Exception as exc:  # noqa: BLE001 - denial must still return
+                logger.debug("Failed to emit policy.denied webhook: %s", exc)
+
+        submit_off_loop(_emit_policy_denied)
+
     try:
         audit_service = _get_audit_service()
         if not audit_service:
