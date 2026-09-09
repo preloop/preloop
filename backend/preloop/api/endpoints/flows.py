@@ -1567,6 +1567,91 @@ def _reject_oversized_workspace_seeds(
         ) from exc
 
 
+# Top-level trigger keys the platform writes itself. A manual trigger that
+# sets one is rejected rather than merged: every one of them is read later as
+# trusted control state, not as data. ``_resume`` and ``_answers`` steer the
+# park/resume handshake (approval_park.py), ``_answers_prompt`` and
+# ``_feedback_prompt`` are concatenated into the agent prompt, ``_ci_failure``
+# carries CI feedback, and ``_workspace_file_paths`` / ``_subject`` are audit
+# stamps a caller must not be able to author.
+#
+# This list is deliberately not "every key FlowCreate does not define". The
+# body is documented as free-form template data: flow_orchestrator.py:1252
+# resolves ``{{name}}`` through ``_simple_resolve`` (line 1531) straight off
+# the top level of trigger_event_data, so rejecting unknown top-level keys
+# would break the documented way to pass template variables. Reserved keys are
+# the ones where a caller can actually forge platform state, so those are the
+# ones that get a 4xx.
+#
+# ``_matrix`` and ``_model_routing`` are deliberately absent: they are also
+# reserved, but they already have a stripped-and-recomputed contract with
+# tests of its own (test_model_routing.py::TestRoutingEndpointTrust), and
+# neutralizing a key is a fine answer when the platform recomputes the value
+# from trusted state. The keys below have no such recomputation. A forged
+# ``_resume.source_branch`` reaches container.py:3417 and decides which branch
+# the agent clones and pushes to, so it is refused rather than carried.
+RESERVED_TRIGGER_KEYS = frozenset(
+    {
+        "_resume",
+        "_answers",
+        "_answers_prompt",
+        "_feedback_prompt",
+        "_ci_failure",
+        "_workspace_file_paths",
+        "_subject",
+    }
+)
+
+
+def _reject_invalid_product_provenance(
+    trigger_event_data: Optional[Dict[str, Any]],
+) -> None:
+    """Validate ``product_provenance`` before an execution row exists.
+
+    A mapping the platform will always refuse is a bad request, not a failed
+    run. Validating it only in the orchestrator meant the caller paid an
+    execution to receive a validation message, and the flow's history carried
+    a FAILED row for something no agent ever attempted (staging execution
+    42b9d159, 0 tokens). Same treatment as the workspace-seed budget check
+    directly below: 400 at the trigger, nothing created.
+
+    Only the body-decided half runs here. Whether the declared SHAs match the
+    checkout the run actually got is a runtime fact, so it stays in the
+    orchestrator where the facts are.
+    """
+    from preloop.services.product_provenance import (
+        ProductProvenanceError,
+        extract_product_provenance_payload,
+        validate_mapping_shape,
+    )
+
+    try:
+        mapping = extract_product_provenance_payload(trigger_event_data)
+        if mapping is not None:
+            validate_mapping_shape(mapping)
+    except ProductProvenanceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _reject_reserved_trigger_keys(
+    trigger_event_data: Optional[Dict[str, Any]],
+) -> None:
+    """Reject a manual trigger body that forges platform-internal keys."""
+    if not isinstance(trigger_event_data, dict):
+        return
+    present = sorted(RESERVED_TRIGGER_KEYS.intersection(trigger_event_data))
+    if not present:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Trigger body sets reserved key(s) {', '.join(present)}, which "
+            "the platform writes itself. Remove them; flow inputs go in "
+            "'payload' (see docs/guide/flows/security-audit-presets.md)."
+        ),
+    )
+
+
 def _validate_matrix(
     db: Session, matrix: Any, account_id: uuid.UUID
 ) -> List[Dict[str, Any]]:
@@ -1664,7 +1749,9 @@ async def trigger_flow_execution(
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
 
+    _reject_reserved_trigger_keys(trigger_event_data)
     _reject_oversized_workspace_seeds(trigger_event_data)
+    _reject_invalid_product_provenance(trigger_event_data)
 
     # Pop the reserved matrix key so it never leaks into template variables.
     matrix = None
