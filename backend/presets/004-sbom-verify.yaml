@@ -209,6 +209,12 @@ prompt_template: |
     digest that does not match the file you parsed. Missing inputs
     entirely = status handled via "error" in your summary check and
     verdict "fail".
+  - This preset does not screen for vulnerabilities. There is no
+    severity gate here and therefore no VEX suppression: a delivered
+    VEX statement changes nothing about an SBOM verification, and a
+    finding in this run is about the document, never about
+    exploitability. Say so in BOX 2 rather than implying the run looked
+    for advisories and found none. Run preset 005 or 006 for that.
   - "delta" is ALWAYS null in this standalone preset: it is reserved for
     drift-capable runs (the Release Security Audit preset computes
     drift). Do not attempt to populate it here.

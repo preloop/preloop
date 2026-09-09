@@ -96,6 +96,23 @@ FINDING_SEVERITIES: FrozenSet[str] = frozenset(
     {"critical", "high", "medium", "low", "unknown"}
 )
 MATCH_KINDS: FrozenSet[str] = frozenset({"database", "heuristic"})
+
+# VEX statuses that can take a finding out of the severity gate population,
+# and only with a machine-readable justification next to them. "affected"
+# and "under_investigation" are statements that the finding stands, so they
+# never suppress; a bare "not_affected" with no justification is an
+# assertion rather than evidence and does not suppress either. Applied
+# BEFORE the gate so a supplier's own VEX cannot be the thing that raises a
+# danger approval (round 2 CRA rerun, P5).
+VEX_SUPPRESSING_STATUSES: FrozenSet[str] = frozenset(
+    {"not_affected", "fixed", "false_positive"}
+)
+VEX_NON_SUPPRESSING_STATUSES: FrozenSet[str] = frozenset(
+    {"affected", "under_investigation"}
+)
+# Why the gate would have failed on a suppressed finding. Recorded so the
+# suppression can be audited against the policy it displaced.
+VEX_SUPPRESSION_REASONS: FrozenSet[str] = frozenset({"kev", "cvss", "unscored"})
 SOURCE_KINDS: FrozenSet[str] = frozenset({"database", "heuristic"})
 SOURCE_MATRIX_KEYS: tuple[str, ...] = (
     "osv_purl",

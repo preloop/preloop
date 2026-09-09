@@ -337,10 +337,42 @@ prompt_template: |
     version and DB snapshot date.
   - If egress is unavailable, report the vulnerability phase as "error:
     sources unreachable" — never fabricate findings or their absence.
-  Apply VEX suppressions (echoed, never silently dropped) and the
-  severity gate. A database-source finding with cvss null fails the gate
-  unless the payload turned that off; record it as an unscored failure,
-  not as a scored one, and never invent a score to fill the field.
+  VEX APPLICATION COMES BEFORE THE GATE (deterministic; order matters).
+  A delivered VEX statement is machine-readable evidence about THIS
+  product, so it is subtracted from the gate population BEFORE the
+  severity policy runs, not annotated onto a failure afterwards. Steps,
+  in this order:
+  - For every finding, resolve its VEX status from the delivered
+    statements. Record it on the finding as vex_status, together with
+    vex_statement_id (the statement's own id, e.g. the OpenVEX
+    statement "@id" or the document "@id" plus index) and
+    vex_justification (the statement's machine-readable justification,
+    e.g. vulnerable_code_not_present, verbatim).
+  - A finding is VEX-SUPPRESSED when vex_status is not_affected,
+    fixed or false_positive AND a non-empty vex_justification is
+    present. not_affected with no justification suppresses NOTHING:
+    an unjustified assertion is not evidence, and it stays in the gate
+    population. affected and under_investigation never suppress.
+  - VEX-suppressed findings do NOT enter the severity gate. They stay
+    in findings with their vex_status, and every one of them that the
+    policy WOULD have failed on is listed in vuln_scan.gate.
+    vex_suppressed as
+    {"id", "vex_status", "vex_statement_id", "vex_justification",
+     "would_have_failed": "kev" | "cvss" | "unscored"}
+    with the statement id and justification quoted verbatim.
+  - A VEX-suppressed finding is never escalated to a human. It is not a
+    gate failure, so it is not a waiver candidate and it must not appear
+    in an ask_user question. Suppression is a cheaper, quieter outcome
+    than a danger approval, and that is the whole point: authoring VEX
+    has to reduce interrupts or nobody will author it.
+  - Suppression is echoed, never silent. audit-report.md carries a VEX
+    SUPPRESSIONS section naming each suppressed finding, the statement
+    id and the justification, so a reader sees exactly which advisories
+    were cleared and on whose authority.
+  Then apply the severity gate to what is left. A database-source
+  finding with cvss null fails the gate unless the payload turned that
+  off; record it as an unscored failure, not as a scored one, and never
+  invent a score to fill the field.
 
   WAIVER APPLICATION (deterministic; the gate is the only thing a
   waiver reconfigures). After computing the severity-gate failures,
@@ -390,6 +422,9 @@ prompt_template: |
     make EXACTLY ONE ask_user call for them all, batched, and ask for
     a STRUCTURED answer. Never one call per finding, never a second
     round, and never ask a human to type JSON into free text.
+    VEX-suppressed findings are not gate failures: they never appear in
+    items, and a run whose only advisory is VEX-suppressed asks nothing
+    at all.
     Pass every unwaived finding family as one row in items:
     {"id": "<exact finding id>", "title": "<package> <version>",
      "description": "<advisory summary; fix version if known>",
@@ -716,7 +751,14 @@ prompt_template: |
       source whose negative control came back blind, skipped
       cross-checks, absent baselines, and everything gap-register.md
       lists as not checkable from the repository alone.
-      WAIVERS (mandatory cover section, right after the three boxes).
+      VEX SUPPRESSIONS (mandatory cover section, right after the three
+      boxes and before WAIVERS). List EVERY VEX-suppressed finding:
+      the finding id, the statement id, the justification verbatim, and
+      what the gate would have failed on (kev, cvss or unscored). If
+      none: "No VEX statement suppressed a gate failure." A reader must
+      be able to see which advisories were cleared on a supplier's own
+      say-so, and a suppression that is not on the cover did not happen.
+      WAIVERS (mandatory cover section, right after VEX SUPPRESSIONS).
       List EVERY applied waiver — id, waived finding, reason, author,
       date, approval id when present — echoed verbatim, plus invalid
       and unmatched entries. If none: "No waivers were delivered or
@@ -894,13 +936,14 @@ prompt_template: |
           "screened_by_no_source": <int>
         }
       },
-      "findings": [ { "id": "...", "pkg": "...", "version": "...", "severity": "...", "cvss": <n|null>, "epss": <n|null>, "kev": true|false, "fix_version": "<or null>", "vex_status": "<or null>", "sources": [ "osv_purl" | "osv_git" | "nvd_cpe" | "osv_distro" ], "match_kind": "database" | "heuristic", "waived": true|false, "aliases": [ "<other ids for the same advisory>" ] | null } ],
+      "findings": [ { "id": "...", "pkg": "...", "version": "...", "severity": "...", "cvss": <n|null>, "epss": <n|null>, "kev": true|false, "fix_version": "<or null>", "vex_status": "<or null>", "vex_statement_id": "<the statement's own id, or null>", "vex_justification": "<the statement's machine-readable justification, verbatim, or null>", "sources": [ "osv_purl" | "osv_git" | "nvd_cpe" | "osv_distro" ], "match_kind": "database" | "heuristic", "waived": true|false, "aliases": [ "<other ids for the same advisory>" ] | null } ],
       "counts_by_severity": { "critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0 },
       "art14_candidates": [ "<CVE ids of KEV-listed findings>" ],
       "gate": {
         "policy": "<the policy applied>",
         "passed": true|false,
         "passed_before_waivers": true|false,
+        "vex_suppressed": [ { "id": "<finding id>", "vex_status": "not_affected" | "fixed" | "false_positive", "vex_statement_id": "<statement id, verbatim>", "vex_justification": "<justification, verbatim>", "would_have_failed": "kev" | "cvss" | "unscored" } ],
         "waivers_applied": [ { "id": "...", "reason": "<verbatim>", "author": "...", "date": "...", "approval_id": "<or null>" } ],
         "unwaived_failures": [ "<finding ids>" ],
         "waivers_invalid": [ "<why each rejected entry waives nothing>" ],
@@ -968,6 +1011,13 @@ prompt_template: |
   - Heuristic sources (nvd_cpe, osv_distro) are labeled as such
     everywhere they surface and never enter the severity gate or count
     a component as matchable; only database sources do.
+  - VEX is applied BEFORE the gate, never after. A finding with
+    vex_status not_affected|fixed|false_positive AND a non-empty
+    vex_justification is subtracted from the gate population and listed
+    in gate.vex_suppressed with its statement id and justification
+    quoted verbatim. It is not a gate failure, so it is not waivable
+    and it is never put to a human. A vex_status with no justification
+    suppresses nothing.
   - An unscored database-source finding (cvss null) is a gate failure
     under the default policy, and it is labeled UNSCORED wherever it
     appears: the gate line on the cover, gate.unwaived_failures, and

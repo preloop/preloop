@@ -754,6 +754,77 @@ class TestUpstreamResolutionEnrichment:
         )
 
 
+class TestVexBeforeTheGate:
+    """VEX is subtracted from the gate population, not annotated after it.
+
+    A round 2 CRA rerun escalated GO-2026-5932 to a danger approval even
+    though the delivered VEX said not_affected. Suppression has to happen
+    before the severity policy runs, or authoring VEX costs interrupts
+    instead of saving them.
+    """
+
+    @pytest.fixture
+    def prompt(self):
+        return _load_preset(PRESET_FILES["Release Security Audit"])["prompt_template"]
+
+    def test_order_is_stated_as_vex_then_gate(self, prompt):
+        norm = _norm(prompt)
+        assert "VEX APPLICATION COMES BEFORE THE GATE" in norm
+        assert "subtracted from the gate population BEFORE the severity policy" in norm
+        assert "VEX is applied BEFORE the gate, never after" in norm
+
+    def test_suppression_requires_a_justification(self, prompt):
+        norm = _norm(prompt)
+        assert (
+            "vex_status is not_affected, fixed or false_positive AND a "
+            "non-empty vex_justification is present" in norm
+        )
+        assert "not_affected with no justification suppresses NOTHING" in norm
+        assert "affected and under_investigation never suppress" in norm
+
+    def test_suppressed_findings_leave_the_gate_population(self, prompt):
+        norm = _norm(prompt)
+        assert "VEX-suppressed findings do NOT enter the severity gate" in norm
+
+    def test_gate_records_the_statement_id_and_justification(self, prompt):
+        norm = _norm(prompt)
+        assert "vuln_scan.gate. vex_suppressed" in norm or (
+            "vuln_scan.gate.vex_suppressed" in norm
+        )
+        for field in (
+            '"vex_status": "not_affected" | "fixed" | "false_positive"',
+            '"vex_statement_id": "<statement id, verbatim>"',
+            '"vex_justification": "<justification, verbatim>"',
+            '"would_have_failed": "kev" | "cvss" | "unscored"',
+        ):
+            assert field in prompt, f"missing vex_suppressed field {field}"
+
+    def test_findings_carry_the_statement_fields(self, prompt):
+        assert '"vex_statement_id": "<the statement\'s own id, or null>"' in prompt
+        assert '"vex_justification":' in prompt
+
+    def test_suppressed_findings_are_never_escalated(self, prompt):
+        norm = _norm(prompt)
+        assert "A VEX-suppressed finding is never escalated to a human" in norm
+        assert "must not appear in an ask_user question" in norm
+        assert "a run whose only advisory is VEX-suppressed asks nothing at all" in norm
+
+    def test_suppression_is_echoed_on_the_report_cover(self, prompt):
+        norm = _norm(prompt)
+        assert "VEX SUPPRESSIONS (mandatory cover section" in norm
+        assert "the finding id, the statement id, the justification verbatim" in norm
+        assert '"No VEX statement suppressed a gate failure."' in norm
+        assert "a suppression that is not on the cover did not happen" in norm
+
+    def test_sbom_verify_states_it_does_not_apply_vex(self):
+        """004 verifies an SBOM and never screens vulnerabilities, so it has
+        no gate for VEX to act on. Say so rather than leaving it ambiguous."""
+        prompt = _load_preset(PRESET_FILES["SBOM Verify"])["prompt_template"]
+        norm = _norm(prompt)
+        assert "does not screen for vulnerabilities" in norm
+        assert "no severity gate" in norm and "no VEX suppression" in norm
+
+
 class TestReleaseAuditWaivers:
     """Waivers: the governed alternative to verdict upgrades. Human-authored
     inputs, deterministic application, verbatim echo, fail-closed defaults."""

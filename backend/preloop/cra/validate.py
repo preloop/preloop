@@ -51,6 +51,8 @@ from preloop.cra.schemas import (
     SOURCE_KINDS,
     SOURCE_MATRIX_KEYS,
     UNSUPPORTED_ERROR,
+    VEX_NON_SUPPRESSING_STATUSES,
+    VEX_SUPPRESSING_STATUSES,
     VULNSCAN_REQUIRED,
     VULNSCAN_STATUSES,
     expected_cra_schema_from_prompt,
@@ -776,8 +778,44 @@ def _check_inventory(
     return failures, advisories
 
 
+def vex_suppression(finding: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """Return the VEX statement that takes this finding out of the gate.
+
+    A statement suppresses only when its status is one the OpenVEX/CycloneDX
+    vocabularies use to say "this product is not affected"
+    (:data:`VEX_SUPPRESSING_STATUSES`) *and* it carries a non-empty
+    justification. ``affected`` and ``under_investigation`` never suppress,
+    and neither does a bare ``not_affected`` with nothing behind it: an
+    unjustified assertion is not machine-readable evidence.
+
+    Args:
+        finding: One entry from ``vuln_scan.findings``.
+
+    Returns:
+        ``{"vex_status", "vex_statement_id", "vex_justification"}`` when the
+        finding is suppressed, otherwise ``None``.
+    """
+    status = finding.get("vex_status")
+    if not isinstance(status, str):
+        return None
+    normalized = status.strip().lower()
+    if normalized not in VEX_SUPPRESSING_STATUSES:
+        return None
+    justification = finding.get("vex_justification")
+    if not isinstance(justification, str) or not justification.strip():
+        return None
+    statement_id = finding.get("vex_statement_id")
+    return {
+        "vex_status": normalized,
+        "vex_statement_id": (
+            statement_id.strip() if isinstance(statement_id, str) else None
+        ),
+        "vex_justification": justification.strip(),
+    }
+
+
 def _finding_enters_gate(finding: Mapping[str, Any]) -> bool:
-    if finding.get("vex_status"):
+    if vex_suppression(finding) is not None:
         return False
     match_kind = finding.get("match_kind")
     sources = finding.get("sources") or []
@@ -819,6 +857,20 @@ def _check_finding(item: Any, *, path: str, allow_waived: bool) -> list[str]:
     match_kind = item.get("match_kind")
     if not json_in(match_kind, MATCH_KINDS):
         failures.append(f"{path}.match_kind must be database|heuristic")
+    vex_status = item.get("vex_status")
+    if vex_status is not None and not isinstance(vex_status, str):
+        failures.append(f"{path}.vex_status must be a string or null")
+    elif isinstance(vex_status, str) and vex_status.strip():
+        normalized = vex_status.strip().lower()
+        known = VEX_SUPPRESSING_STATUSES | VEX_NON_SUPPRESSING_STATUSES
+        if normalized not in known:
+            failures.append(
+                f"{path}.vex_status must be one of {sorted(known)}, got {vex_status!r}"
+            )
+    for key in ("vex_statement_id", "vex_justification"):
+        value = item.get(key)
+        if value is not None and not isinstance(value, str):
+            failures.append(f"{path}.{key} must be a string or null")
     if allow_waived and "waived" in item and not _is_bool(item.get("waived")):
         failures.append(
             f"{path}.waived must be a boolean, not {type(item.get('waived')).__name__}"
@@ -858,6 +910,31 @@ def _check_counts_by_severity(
     return failures
 
 
+def _policy_failure_reason(
+    finding: Mapping[str, Any], *, policy: GatePolicy
+) -> Optional[str]:
+    """Why the configured policy fails on this finding, ignoring VEX.
+
+    Returns ``"kev"``, ``"cvss"`` or ``"unscored"``, or ``None`` when the
+    policy has nothing to say about it. KEV wins over CVSS, and CVSS over
+    unscored, so the recorded reason is the strongest one.
+    """
+    cvss = finding.get("cvss")
+    scored = False
+    high_cvss = False
+    if _is_number(cvss):
+        score = float(cvss)
+        scored = math.isfinite(score)
+        high_cvss = scored and score >= policy.fail_on_cvss_gte
+    if finding.get("kev") is True and policy.fail_on_kev:
+        return "kev"
+    if high_cvss:
+        return "cvss"
+    if policy.fail_on_unscored and not scored:
+        return "unscored"
+    return None
+
+
 def _default_gate_failures(
     findings: Sequence[Any], *, policy: GatePolicy
 ) -> list[dict[str, Any]]:
@@ -866,7 +943,8 @@ def _default_gate_failures(
     A database-source finding with no usable CVSS score is gate-relevant by
     default: unscored is unknown, and unknown is not a pass. Heuristic-only
     hits still never enter the gate, so this cannot fail a release on a
-    fuzzy CPE match.
+    fuzzy CPE match. VEX-suppressed findings are out of the population
+    before the policy runs (see :func:`vex_suppression`).
     """
     failing: list[dict[str, Any]] = []
     for item in findings:
@@ -874,26 +952,124 @@ def _default_gate_failures(
             continue
         if not _finding_enters_gate(item):
             continue
-        cvss = item.get("cvss")
-        kev = item.get("kev") is True and policy.fail_on_kev
-        high_cvss = False
-        scored = False
-        if _is_number(cvss):
-            score = float(cvss)
-            scored = math.isfinite(score)
-            high_cvss = scored and score >= policy.fail_on_cvss_gte
-        unscored = policy.fail_on_unscored and not scored
-        if kev or high_cvss or unscored:
-            finding_id = str(item.get("id") or "")
-            if finding_id:
-                aliases = item.get("aliases")
-                failing.append(
-                    {
-                        "id": finding_id,
-                        "aliases": aliases if isinstance(aliases, list) else [],
-                    }
-                )
+        if _policy_failure_reason(item, policy=policy) is None:
+            continue
+        finding_id = str(item.get("id") or "")
+        if finding_id:
+            aliases = item.get("aliases")
+            failing.append(
+                {
+                    "id": finding_id,
+                    "aliases": aliases if isinstance(aliases, list) else [],
+                }
+            )
     return failing
+
+
+def _expected_vex_suppressed(
+    findings: Sequence[Any], *, policy: GatePolicy
+) -> dict[str, dict[str, Any]]:
+    """Findings the gate would have failed on but a VEX statement cleared.
+
+    Only findings that would otherwise have entered the gate *and* failed
+    the configured policy belong here: a VEX statement on a finding the
+    policy never cared about suppressed nothing and does not need a record.
+    """
+    suppressed: dict[str, dict[str, Any]] = {}
+    for item in findings:
+        if not isinstance(item, Mapping):
+            continue
+        statement = vex_suppression(item)
+        if statement is None:
+            continue
+        match_kind = item.get("match_kind")
+        sources = item.get("sources") or []
+        if match_kind == "heuristic":
+            continue
+        if (
+            isinstance(sources, list)
+            and sources
+            and all(json_in(src, HEURISTIC_SOURCES) for src in sources)
+        ):
+            continue
+        reason = _policy_failure_reason(item, policy=policy)
+        if reason is None:
+            continue
+        finding_id = str(item.get("id") or "")
+        if not finding_id:
+            continue
+        suppressed[finding_id] = {**statement, "would_have_failed": reason}
+    return suppressed
+
+
+def _check_vex_suppressed(
+    gate: Mapping[str, Any],
+    findings: Sequence[Any],
+    *,
+    path: str,
+    policy: GatePolicy,
+) -> list[str]:
+    """Reconcile ``gate.vex_suppressed`` with the delivered findings.
+
+    The list is derived, not asserted: every gate failure a VEX statement
+    displaced has to be on it, with the statement id and the justification
+    the finding carries, and nothing else may be. A suppression that is not
+    recorded is a silent one, which is the failure mode this block exists
+    to prevent.
+    """
+    failures: list[str] = []
+    expected = _expected_vex_suppressed(findings, policy=policy)
+    raw = gate.get("vex_suppressed")
+    if raw is None:
+        if expected:
+            failures.append(
+                f"{path}.vex_suppressed is missing but VEX statements "
+                f"suppressed gate failures {sorted(expected)}"
+            )
+        return failures
+    if not isinstance(raw, list):
+        return [f"{path}.vex_suppressed must be a list"]
+    submitted: dict[str, Mapping[str, Any]] = {}
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, Mapping):
+            failures.append(f"{path}.vex_suppressed[{idx}] must be an object")
+            continue
+        entry_id = entry.get("id")
+        if not isinstance(entry_id, str) or not entry_id:
+            failures.append(
+                f"{path}.vex_suppressed[{idx}].id must be a non-empty string"
+            )
+            continue
+        submitted[entry_id] = entry
+    if set(submitted) != set(expected):
+        failures.append(
+            f"{path}.vex_suppressed ids {sorted(submitted)} != deterministic "
+            f"set {sorted(expected)}"
+        )
+    for entry_id, entry in submitted.items():
+        want = expected.get(entry_id)
+        if want is None:
+            continue
+        for key in ("vex_status", "vex_justification", "would_have_failed"):
+            got = entry.get(key)
+            if isinstance(got, str):
+                got = got.strip()
+                if key == "vex_status":
+                    got = got.lower()
+            if got != want[key]:
+                failures.append(
+                    f"{path}.vex_suppressed[{entry_id}].{key} is {entry.get(key)!r} "
+                    f"but the finding says {want[key]!r}"
+                )
+        statement_id = entry.get("vex_statement_id")
+        statement_id = statement_id.strip() if isinstance(statement_id, str) else None
+        if statement_id != want["vex_statement_id"]:
+            failures.append(
+                f"{path}.vex_suppressed[{entry_id}].vex_statement_id is "
+                f"{entry.get('vex_statement_id')!r} but the finding says "
+                f"{want['vex_statement_id']!r}"
+            )
+    return failures
 
 
 def _gate_failure_ids(items: Sequence[Mapping[str, Any]]) -> list[str]:
@@ -939,6 +1115,10 @@ def _check_gate(
         failures.append(f"{path}.policy must be a non-empty string")
     computed = _default_gate_failures(findings, policy=gate_policy)
     computed_ids = _gate_failure_ids(computed)
+    if release_fields:
+        failures.extend(
+            _check_vex_suppressed(gate, findings, path=path, policy=gate_policy)
+        )
     applied_raw = gate.get("waivers_applied")
     if "waivers_applied" in gate and not isinstance(applied_raw, list):
         failures.append(f"{path}.waivers_applied must be a list")
