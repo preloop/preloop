@@ -405,6 +405,48 @@ prompt_template: |
   - NO MODEL-AUTHORED WAIVERS, EVER. You transcribe and apply; you do
     not decide, draft, suggest wording for, or default any waiver.
 
+  ARTICLE 14 REPORTING (vuln_scan.reporting). From 11 September 2026 a
+  manufacturer must report an actively exploited vulnerability in its
+  product: an early warning within 24 hours of becoming aware, a
+  notification within 72 hours, a final report within 14 days. A list
+  of KEV ids does not answer that question and carries no clock, so
+  fill the reporting block on EVERY run of this preset. Rules:
+  - One candidate per finding that is actively exploited: KEV-listed,
+    or marked exploited by a vendor advisory you actually read. Record
+    which in exploited_evidence. Never write "kev" for something you
+    did not find in the catalogue you fetched.
+  - affected.value is the product determination, and it is separate
+    from the advisory. A delivered VEX not_affected (with its
+    justification) makes it false with source "vex". Reachability or
+    call-path analysis you actually performed makes it true or false
+    with source "reachability". A database match on a vulnerable
+    version, with nothing contradicting it, makes it true with source
+    "reachability" only if you checked; otherwise "undetermined" with
+    source "unknown". Guessing here is the one thing that turns this
+    block into a liability.
+  - reportable is exactly actively_exploited AND affected.value true.
+    Nothing else sets it, and a waiver never clears it: waiving a gate
+    failure is a release decision, not a reporting determination.
+  - discovered_at is when the organisation became aware, so it is the
+    EARLIEST timestamp available: if the drift baseline already carried
+    this id, use the baseline's run_at, not this run's. A re-run never
+    restarts the clock. Record it in UTC, ISO 8601, with a Z suffix.
+  - deadlines are arithmetic on discovered_at, all three measured from
+    that same instant, never chained: +24h, +72h, +14d, in UTC.
+  - status starts at "none" unless the payload or a delivered file says
+    otherwise. Use "out_of_scope" only with a status_reason naming why
+    the obligation does not apply (for example: the component ships
+    only in an internal tool). Preloop does not file reports and has no
+    connection to the ENISA single reporting platform: this block tells
+    a human the clock is running, and the filing stays with them.
+  - assessment must be "undetermined", NOT
+    "no_reportable_vulnerability", whenever the KEV fetch failed
+    (kev_snapshot_date null), the scan did not complete, or any
+    candidate's affected.value is undetermined. Silence must not read
+    as "nothing to report". "no_reportable_vulnerability" is only for a
+    completed scan where every candidate was determined not affected or
+    not exploited. not_a_legal_determination is always true.
+
   WAIVER COLLECTION (only when the payload says
   waiver_collection: "interactive"). This flow's allowed_mcp_tools
   carries exactly two read-only platform tools: the
@@ -751,8 +793,26 @@ prompt_template: |
       source whose negative control came back blind, skipped
       cross-checks, absent baselines, and everything gap-register.md
       lists as not checkable from the repository alone.
-      VEX SUPPRESSIONS (mandatory cover section, right after the three
-      boxes and before WAIVERS). List EVERY VEX-suppressed finding:
+      ARTICLE 14 REPORTING BOX (mandatory, immediately after BOX 2 and
+      before VEX SUPPRESSIONS, because a deadline outranks a finding
+      list). It opens with one sentence, always in the same place:
+      "Reportable under CRA Article 14? No / Candidate, see reporting /
+      Undetermined, scan incomplete. Not legal advice." Then, if
+      vuln_scan.reporting.candidates is non-empty, one block per
+      candidate in plain words a duty officer can act on: the id, why
+      it counts as actively exploited, whether the product is affected
+      and what settled that, and the clock spelled out as dates and
+      times, for example "clock started 2026-09-11 09:14 UTC (first
+      seen in the previous run, not today): early warning due
+      2026-09-12 09:14 UTC, notification due 2026-09-14 09:14 UTC,
+      final report due 2026-09-25 09:14 UTC." Say plainly that Preloop
+      does not file anything and that the submission is the
+      manufacturer's, made outside this tool. If the assessment is
+      undetermined, the box says why in one sentence (KEV fetch failed,
+      scan incomplete, or affectedness not established) and does not
+      round it down to "nothing to report".
+      VEX SUPPRESSIONS (mandatory cover section, right after the
+      Article 14 box and before WAIVERS). List EVERY VEX-suppressed finding:
       the finding id, the statement id, the justification verbatim, and
       what the gate would have failed on (kev, cvss or unscored). If
       none: "No VEX statement suppressed a gate failure." A reader must
@@ -939,6 +999,25 @@ prompt_template: |
       "findings": [ { "id": "...", "pkg": "...", "version": "...", "severity": "...", "cvss": <n|null>, "epss": <n|null>, "kev": true|false, "fix_version": "<or null>", "vex_status": "<or null>", "vex_statement_id": "<the statement's own id, or null>", "vex_justification": "<the statement's machine-readable justification, verbatim, or null>", "sources": [ "osv_purl" | "osv_git" | "nvd_cpe" | "osv_distro" ], "match_kind": "database" | "heuristic", "waived": true|false, "aliases": [ "<other ids for the same advisory>" ] | null } ],
       "counts_by_severity": { "critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0 },
       "art14_candidates": [ "<CVE ids of KEV-listed findings>" ],
+      "reporting": {
+        "assessment": "no_reportable_vulnerability" | "reportable_candidate" | "undetermined",
+        "basis": "<one sentence naming the evidence, e.g. 'KEV snapshot 2026-09-02, component present at the vulnerable version, no VEX statement' or 'KEV hit cleared by OpenVEX not_affected/vulnerable_code_not_present'>",
+        "kev_snapshot_date": "<the catalogue dateReleased you used, or null if the fetch failed>",
+        "kev_source_url": "<the URL actually fetched, or null>",
+        "candidates": [
+          { "id": "<CVE or advisory id>",
+            "actively_exploited": true|false,
+            "exploited_evidence": "kev" | "vendor_advisory" | "none",
+            "affected": { "value": true|false|"undetermined", "source": "vex" | "reachability" | "manual" | "unknown", "detail": "<what settled it, verbatim where quoted>" },
+            "vex_status": "<or null>",
+            "reportable": true|false,
+            "discovered_at": "<ISO 8601 UTC, the EARLIEST time this vulnerability was seen: the drift baseline's timestamp if it is already there, otherwise this run>",
+            "deadlines": { "early_warning_24h": "<ISO 8601 UTC>", "notification_72h": "<ISO 8601 UTC>", "final_report_14d": "<ISO 8601 UTC>" },
+            "status": "none" | "drafted" | "submitted" | "out_of_scope",
+            "status_reason": "<required when status is out_of_scope, else omit>" }
+        ],
+        "not_a_legal_determination": true
+      },
       "gate": {
         "policy": "<the policy applied>",
         "passed": true|false,

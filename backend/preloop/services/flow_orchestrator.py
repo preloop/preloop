@@ -4997,6 +4997,7 @@ class FlowExecutionOrchestrator:
         """
         try:
             from preloop.services.event_webhooks.emitters import (
+                emit_cra_reportable_vulnerabilities,
                 emit_flow_execution_finished,
             )
 
@@ -5008,6 +5009,10 @@ class FlowExecutionOrchestrator:
                 failure_category=failure_category
                 or getattr(self.execution_log, "failure_category", None),
             )
+            # CRA Article 14 candidates ride the same commit. A 24 hour
+            # deadline that only exists inside an evidence pack nobody opened
+            # is not a notification.
+            emit_cra_reportable_vulnerabilities(self.db, self.execution_log, self.flow)
             self.db.commit()
         except Exception:
             logger.warning(

@@ -12,6 +12,12 @@ from preloop.cra.persist import (
     load_platform_approvals,
     resolve_persist_authority,
 )
+from preloop.cra.reporting import (
+    article14_deadlines,
+    earliest_discovery,
+    kev_finding_ids,
+    reportable_candidates,
+)
 from preloop.cra.schemas import (
     CRA_RESULT_SCHEMAS,
     SCHEMA_DUEDILIGENCE_V1,
@@ -45,16 +51,20 @@ __all__ = [
     "SCHEMA_SBOMAUDIT_V1",
     "SCHEMA_VULNSCAN_V1",
     "apply_cra_fail_closed_completion",
+    "article14_deadlines",
     "apply_cra_persist_boundary",
     "assert_cra_result",
     "cra_fail_closed_completion_error",
     "cra_fail_closed_error_message",
     "delivered_waivers_from_trigger",
+    "earliest_discovery",
     "evaluate_release",
     "expected_cra_schema_from_prompt",
     "is_incomplete_envelope",
+    "kev_finding_ids",
     "load_platform_approvals",
     "resolve_persist_authority",
+    "reportable_candidates",
     "result_claims_authority",
     "run_cra_ci",
     "validate_cra_result",

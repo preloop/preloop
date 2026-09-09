@@ -41,6 +41,14 @@
   ],
   "delta": null,
   "verdict": "pass_with_findings",
+  "reporting": {
+    "assessment": "undetermined",
+    "basis": "SBOM verification does not screen for vulnerabilities; run preset 005 or 006",
+    "kev_snapshot_date": null,
+    "kev_source_url": null,
+    "candidates": [],
+    "not_a_legal_determination": true
+  },
   "checks": [
     {
       "name": "format_validity",

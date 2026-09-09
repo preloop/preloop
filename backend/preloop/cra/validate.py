@@ -15,7 +15,22 @@ from collections.abc import Set
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Optional, Sequence
 
+from preloop.cra.reporting import (
+    deadline_mismatches,
+    kev_finding_ids,
+    parse_timestamp,
+)
 from preloop.cra.schemas import (
+    ART14_AFFECTED_SOURCES,
+    ART14_ASSESSMENTS,
+    ART14_DEADLINE_KEYS,
+    ART14_EXPLOITED_EVIDENCE,
+    ART14_NONE,
+    ART14_REPORTABLE,
+    ART14_REPORTING_FIELD,
+    ART14_STATUS_NEEDS_REASON,
+    ART14_STATUSES,
+    ART14_UNDETERMINED,
     AUDIT_INCOMPLETE_VERDICT,
     AUDIT_VERDICTS,
     DATABASE_SOURCES,
@@ -1072,6 +1087,217 @@ def _check_vex_suppressed(
     return failures
 
 
+def _check_reporting_candidate(
+    item: Any, *, path: str, scan_completed: bool
+) -> tuple[list[str], Optional[str]]:
+    """Validate one Article 14 candidate and return its reportability.
+
+    Returns:
+        ``(failures, state)`` where ``state`` is ``"reportable"``,
+        ``"cleared"`` or ``"undetermined"``, and ``None`` when the entry was
+        too malformed to classify.
+    """
+    if not isinstance(item, Mapping):
+        return [f"{path} must be an object"], None
+    failures: list[str] = []
+    candidate_id = item.get("id")
+    if not isinstance(candidate_id, str) or not candidate_id.strip():
+        failures.append(f"{path}.id must be a non-empty string")
+    exploited = item.get("actively_exploited")
+    if not _is_bool(exploited):
+        failures.append(f"{path}.actively_exploited must be a boolean")
+    evidence = item.get("exploited_evidence")
+    if not json_in(evidence, ART14_EXPLOITED_EVIDENCE):
+        failures.append(
+            f"{path}.exploited_evidence must be one of "
+            f"{sorted(ART14_EXPLOITED_EVIDENCE)}, got {evidence!r}"
+        )
+    if exploited is True and evidence == "none":
+        failures.append(
+            f"{path} claims active exploitation with exploited_evidence 'none': "
+            "name the evidence or set actively_exploited to false"
+        )
+    affected = item.get("affected")
+    affected_value: Any = None
+    if not isinstance(affected, Mapping):
+        failures.append(
+            f"{path}.affected must be an object with value, source and detail"
+        )
+    else:
+        affected_value = affected.get("value")
+        if not (_is_bool(affected_value) or affected_value == ART14_UNDETERMINED):
+            failures.append(
+                f"{path}.affected.value must be true, false or 'undetermined', "
+                f"got {affected_value!r}"
+            )
+            affected_value = None
+        source = affected.get("source")
+        if not json_in(source, ART14_AFFECTED_SOURCES):
+            failures.append(
+                f"{path}.affected.source must be one of "
+                f"{sorted(ART14_AFFECTED_SOURCES)}, got {source!r}"
+            )
+        elif source == "unknown" and _is_bool(affected_value):
+            failures.append(
+                f"{path}.affected.source is 'unknown' but value is "
+                f"{affected_value!r}: an unsourced call is undetermined"
+            )
+        detail = affected.get("detail")
+        if detail is not None and not isinstance(detail, str):
+            failures.append(f"{path}.affected.detail must be a string or null")
+    reportable = item.get("reportable")
+    if not _is_bool(reportable):
+        failures.append(f"{path}.reportable must be a boolean")
+    elif _is_bool(exploited) and affected_value is not None:
+        expected = exploited is True and affected_value is True
+        if reportable is not expected:
+            failures.append(
+                f"{path}.reportable is {reportable!r} but "
+                f"actively_exploited={exploited!r} and affected.value="
+                f"{affected_value!r} give {expected!r}"
+            )
+    discovered_at = item.get("discovered_at")
+    parsed = parse_timestamp(discovered_at)
+    if parsed is None:
+        failures.append(
+            f"{path}.discovered_at must be an ISO 8601 timestamp, got {discovered_at!r}"
+        )
+    else:
+        deadlines = item.get("deadlines")
+        if not isinstance(deadlines, Mapping):
+            failures.append(
+                f"{path}.deadlines must be an object with "
+                f"{', '.join(ART14_DEADLINE_KEYS)}"
+            )
+        else:
+            for key, got, want in deadline_mismatches(discovered_at, deadlines):
+                failures.append(
+                    f"{path}.deadlines.{key} is {got!r} but 24h/72h/14d from "
+                    f"discovered_at is {want!r}"
+                )
+    status = item.get("status")
+    if not json_in(status, ART14_STATUSES):
+        failures.append(
+            f"{path}.status must be one of {sorted(ART14_STATUSES)}, got {status!r}"
+        )
+    elif status == ART14_STATUS_NEEDS_REASON:
+        reason = item.get("status_reason")
+        if not isinstance(reason, str) or not reason.strip():
+            failures.append(
+                f"{path}.status_reason is required when status is "
+                f"'{ART14_STATUS_NEEDS_REASON}'"
+            )
+    if not _is_bool(exploited) or affected_value is None:
+        return failures, None
+    if not scan_completed:
+        return failures, ART14_UNDETERMINED
+    if exploited is not True:
+        return failures, "cleared"
+    if affected_value is True:
+        return failures, "reportable"
+    if affected_value is False:
+        return failures, "cleared"
+    return failures, ART14_UNDETERMINED
+
+
+def _check_reporting(
+    body: Mapping[str, Any],
+    findings: Sequence[Any],
+    *,
+    path: str,
+    scan_completed: bool,
+) -> list[str]:
+    """Validate the Article 14 ``reporting`` block against the findings.
+
+    The block is required whenever a KEV-listed finding exists: that is the
+    case where an operator most needs to know whether a clock is running,
+    and it is exactly the case where an absent block reads as "nothing to
+    report". ``assessment`` is derived from the candidates rather than
+    trusted, and it must be ``undetermined`` whenever the KEV snapshot is
+    missing or the scan did not complete.
+    """
+    reporting = body.get(ART14_REPORTING_FIELD)
+    kev_ids = kev_finding_ids(findings)
+    if reporting is None:
+        if kev_ids:
+            return [
+                f"{path}.{ART14_REPORTING_FIELD} is required when KEV-listed "
+                f"findings exist ({sorted(set(kev_ids))}): an absent block "
+                "reads as 'nothing to report'"
+            ]
+        return []
+    if not isinstance(reporting, Mapping):
+        return [f"{path}.{ART14_REPORTING_FIELD} must be an object"]
+    rpath = f"{path}.{ART14_REPORTING_FIELD}"
+    failures: list[str] = []
+    assessment = reporting.get("assessment")
+    if not json_in(assessment, ART14_ASSESSMENTS):
+        failures.append(
+            f"{rpath}.assessment must be one of {sorted(ART14_ASSESSMENTS)}, "
+            f"got {assessment!r}"
+        )
+    basis = reporting.get("basis")
+    if not isinstance(basis, str) or not basis.strip():
+        failures.append(f"{rpath}.basis must be a non-empty string naming the evidence")
+    snapshot = reporting.get("kev_snapshot_date")
+    if snapshot is not None and not isinstance(snapshot, str):
+        failures.append(f"{rpath}.kev_snapshot_date must be a string or null")
+    source_url = reporting.get("kev_source_url")
+    if source_url is not None and not isinstance(source_url, str):
+        failures.append(f"{rpath}.kev_source_url must be a string or null")
+    if reporting.get("not_a_legal_determination") is not True:
+        failures.append(f"{rpath}.not_a_legal_determination must be true")
+    candidates = reporting.get("candidates")
+    states: list[Optional[str]] = []
+    seen: set[str] = set()
+    if not isinstance(candidates, list):
+        failures.append(f"{rpath}.candidates must be a list")
+        candidates = []
+    else:
+        for idx, item in enumerate(candidates):
+            item_fail, state = _check_reporting_candidate(
+                item,
+                path=f"{rpath}.candidates[{idx}]",
+                scan_completed=scan_completed,
+            )
+            failures.extend(item_fail)
+            states.append(state)
+            if isinstance(item, Mapping) and isinstance(item.get("id"), str):
+                seen.add(item["id"])
+    missing = [item for item in dict.fromkeys(kev_ids) if item not in seen]
+    if missing:
+        failures.append(
+            f"{rpath}.candidates is missing KEV-listed findings {missing}: "
+            "every KEV hit is a candidate until the run says why it is not"
+        )
+    if not json_in(assessment, ART14_ASSESSMENTS):
+        return failures
+    undetermined_required = not scan_completed or not (
+        isinstance(snapshot, str) and snapshot.strip()
+    )
+    if undetermined_required:
+        if assessment != ART14_UNDETERMINED:
+            failures.append(
+                f"{rpath}.assessment must be '{ART14_UNDETERMINED}' when the "
+                "scan did not complete or the KEV snapshot is unknown, got "
+                f"{assessment!r}: silence is not 'nothing to report'"
+            )
+        return failures
+    if None in states:
+        return failures
+    if "reportable" in states:
+        expected = ART14_REPORTABLE
+    elif ART14_UNDETERMINED in states:
+        expected = ART14_UNDETERMINED
+    else:
+        expected = ART14_NONE
+    if assessment != expected:
+        failures.append(
+            f"{rpath}.assessment is {assessment!r} but the candidates give {expected!r}"
+        )
+    return failures
+
+
 def _gate_failure_ids(items: Sequence[Mapping[str, Any]]) -> list[str]:
     return [str(item.get("id") or "") for item in items if item.get("id")]
 
@@ -1583,6 +1809,7 @@ def _validate_vuln_body(
     platform_approvals: Optional[Sequence[PlatformApproval]],
     authority: AuthorityMode = AUTHORITY_OFFLINE,
     gate_policy: GatePolicy = DEFAULT_GATE_POLICY,
+    scan_completed: bool = True,
 ) -> tuple[list[str], list[str]]:
     failures: list[str] = []
     advisories: list[str] = []
@@ -1628,6 +1855,14 @@ def _validate_vuln_body(
     if not isinstance(candidates, list):
         failures.append(f"{path}.art14_candidates must be a list")
     failures.extend(
+        _check_reporting(
+            obj,
+            findings if isinstance(findings, list) else [],
+            path=path,
+            scan_completed=scan_completed,
+        )
+    )
+    failures.extend(
         _check_gate(
             obj.get("gate"),
             findings if isinstance(findings, list) else [],
@@ -1642,6 +1877,44 @@ def _validate_vuln_body(
     return failures, advisories
 
 
+def _check_sbomaudit_reporting(obj: Mapping[str, Any], *, path: str) -> list[str]:
+    """An SBOM verification may only ever say "I did not ask that question".
+
+    Preset 004 never screens for vulnerabilities, so any Article 14 answer
+    other than ``undetermined`` would be manufactured. The block is optional
+    for compatibility with results written before it existed, and strict
+    when it is there.
+    """
+    reporting = obj.get(ART14_REPORTING_FIELD)
+    if reporting is None:
+        return []
+    rpath = f"{path}.{ART14_REPORTING_FIELD}"
+    if not isinstance(reporting, Mapping):
+        return [f"{rpath} must be an object"]
+    failures: list[str] = []
+    assessment = reporting.get("assessment")
+    if assessment != ART14_UNDETERMINED:
+        failures.append(
+            f"{rpath}.assessment must be '{ART14_UNDETERMINED}' in an SBOM "
+            f"verification, got {assessment!r}: this preset does not screen "
+            "for vulnerabilities"
+        )
+    basis = reporting.get("basis")
+    if not isinstance(basis, str) or not basis.strip():
+        failures.append(f"{rpath}.basis must be a non-empty string")
+    candidates = reporting.get("candidates")
+    if candidates not in (None, []) and not (
+        isinstance(candidates, list) and not candidates
+    ):
+        failures.append(
+            f"{rpath}.candidates must be empty: an SBOM verification has no "
+            "exploitation evidence to nominate candidates from"
+        )
+    if reporting.get("not_a_legal_determination") is not True:
+        failures.append(f"{rpath}.not_a_legal_determination must be true")
+    return failures
+
+
 def _validate_sbomaudit(
     obj: Mapping[str, Any],
 ) -> tuple[list[str], list[str], bool, bool]:
@@ -1651,6 +1924,7 @@ def _validate_sbomaudit(
         obj, path="result", require_delta_null=True
     )
     failures.extend(body_fail)
+    failures.extend(_check_sbomaudit_reporting(obj, path="result"))
     verdict = obj.get("verdict")
     incomplete = verdict == AUDIT_INCOMPLETE_VERDICT
     completed = json_in(verdict, AUDIT_VERDICTS)
@@ -1680,6 +1954,7 @@ def _validate_vulnscan(
         platform_approvals=platform_approvals,
         authority=authority,
         gate_policy=gate_policy,
+        scan_completed=status == "success",
     )
     failures.extend(body_fail)
     incomplete = status == "error"
@@ -1774,6 +2049,9 @@ def _validate_releaseaudit(
             platform_approvals=platform_approvals,
             authority=authority,
             gate_policy=gate_policy,
+            # A release audit that reached a real verdict ran its scan; an
+            # "error" verdict did not, and its reporting block must say so.
+            scan_completed=json_in(obj.get("verdict"), AUDIT_VERDICTS),
         )
         failures.extend(vuln_fail)
         advisories.extend(vuln_adv)

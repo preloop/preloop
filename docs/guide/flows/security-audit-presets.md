@@ -291,6 +291,34 @@ Envelope plus:
     "unknown": 1
   },
   "art14_candidates": ["CVE-..."],
+  "reporting": {
+    "assessment": "no_reportable_vulnerability | reportable_candidate | undetermined",
+    "basis": "KEV snapshot 2026-09-10; component present at the vulnerable version",
+    "kev_snapshot_date": "2026-09-10",
+    "kev_source_url": "https://www.cisa.gov/.../known_exploited_vulnerabilities.json",
+    "candidates": [
+      {
+        "id": "CVE-...",
+        "actively_exploited": true,
+        "exploited_evidence": "kev | vendor_advisory | none",
+        "affected": {
+          "value": "true | false | undetermined",
+          "source": "vex | reachability | manual | unknown",
+          "detail": "<what settled it>"
+        },
+        "vex_status": null,
+        "reportable": true,
+        "discovered_at": "2026-09-11T09:14:00Z",
+        "deadlines": {
+          "early_warning_24h": "2026-09-12T09:14:00Z",
+          "notification_72h": "2026-09-14T09:14:00Z",
+          "final_report_14d": "2026-09-25T09:14:00Z"
+        },
+        "status": "none | drafted | submitted | out_of_scope"
+      }
+    ],
+    "not_a_legal_determination": true
+  },
   "gate": {"policy": "fail on KEV or CVSS >= 9.0 (default)", "passed": false},
   "new_since_last_run": null
 }
@@ -315,7 +343,9 @@ applied to the gate but always echoed in `findings` with `vex_status`.
 
 `art14_candidates` lists KEV-listed CVE ids as a prioritisation signal
 for a human. It is not a report, and Preloop does not file Article 14
-notifications.
+notifications. `reporting` is the block that turns that list into an
+answer with a clock: see
+[CRA Article 14 reporting](#cra-article-14-reporting).
 
 If a source's negative control comes back empty, that source is blind
 (`method_blind: true`). Empty results from a blind source mean nothing.
@@ -436,10 +466,27 @@ and waiver fields on the gate.
       "unknown": 0
     },
     "art14_candidates": [],
+    "reporting": {
+      "assessment": "no_reportable_vulnerability | reportable_candidate | undetermined",
+      "basis": "<one sentence naming the evidence>",
+      "kev_snapshot_date": "2026-09-10",
+      "kev_source_url": "<the URL actually fetched>",
+      "candidates": [],
+      "not_a_legal_determination": true
+    },
     "gate": {
       "policy": "<the policy applied>",
       "passed": true,
       "passed_before_waivers": true,
+      "vex_suppressed": [
+        {
+          "id": "<finding id>",
+          "vex_status": "not_affected | fixed | false_positive",
+          "vex_statement_id": "<statement id, verbatim>",
+          "vex_justification": "<justification, verbatim>",
+          "would_have_failed": "kev | cvss | unscored"
+        }
+      ],
       "waivers_applied": [
         {
           "id": "...",
@@ -928,6 +975,134 @@ re-delivers the *last released* SBOM (plus the previous `result.json`
 for drift). Each run produces a dated evidence pack; the run-over-run
 trail is the auditable record.
 
+## CRA Article 14 reporting
+
+From 11 September 2026 a manufacturer must report an **actively exploited
+vulnerability in its product**: an early warning within 24 hours of becoming
+aware, a vulnerability notification within 72 hours, and a final report within
+14 days. A list of KEV-listed CVE ids does not answer that question, and it
+carries no clock. The `reporting` block does both.
+
+**Preloop does not file anything.** There is no submission client for the
+ENISA single reporting platform and none is planned here: the filing decision
+and the filing itself stay with the manufacturer, who signs it. What the
+platform does is tell you, in one place and in one sentence, that a clock is
+running and when it stops.
+
+### The block
+
+`reporting` lives next to `art14_candidates`: at the top level in
+`preloop.cra.vulnscan/v1`, under `vuln_scan` in `preloop.cra.releaseaudit/v1`.
+
+| Field | Meaning |
+| --- | --- |
+| `assessment` | `no_reportable_vulnerability`, `reportable_candidate` or `undetermined` |
+| `basis` | One sentence naming the evidence that decided it |
+| `kev_snapshot_date` | The `dateReleased` of the KEV catalogue actually fetched, or `null` when the fetch failed |
+| `kev_source_url` | The URL actually fetched (cisa.gov or the `cisagov/kev-data` mirror) |
+| `candidates[]` | One entry per actively exploited vulnerability |
+| `not_a_legal_determination` | Always `true` |
+
+Per candidate:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | CVE or advisory id |
+| `actively_exploited` | Exploitation evidence exists |
+| `exploited_evidence` | `kev`, `vendor_advisory` or `none`: what the run actually read |
+| `affected` | `{value, source, detail}`: the **product** determination, `true` / `false` / `"undetermined"`, sourced from `vex`, `reachability`, `manual` or `unknown` |
+| `vex_status` | The VEX status on the finding, when there is one |
+| `reportable` | Exactly `actively_exploited AND affected.value == true` |
+| `discovered_at` | When the organisation became aware, in UTC |
+| `deadlines` | `early_warning_24h`, `notification_72h`, `final_report_14d` |
+| `status` | `none`, `drafted`, `submitted` or `out_of_scope` (with `status_reason`) |
+
+### Rules the validator enforces
+
+- The block is **required** whenever any finding is KEV-listed, and every
+  KEV-listed finding must appear as a candidate. An absent block reads as
+  "nothing to report", which is the failure this exists to prevent.
+- `reportable` is derived, not asserted. A candidate that claims
+  `reportable: true` with `affected.value: false` is rejected.
+- `actively_exploited: true` with `exploited_evidence: "none"` is rejected:
+  name the evidence or do not make the claim.
+- An `affected.value` of `true` or `false` with `source: "unknown"` is
+  rejected. An unsourced call is `"undetermined"`.
+- `assessment` must be `undetermined` whenever the KEV fetch failed
+  (`kev_snapshot_date: null`), the scan did not complete, or any candidate's
+  affectedness is undetermined. It may only be `no_reportable_vulnerability`
+  when every candidate was determined not affected or not exploited.
+- The three deadlines must equal `discovered_at + 24h / + 72h / + 14d`, all
+  measured from the same instant, in UTC (one second of serialization drift is
+  tolerated). Chained or hand-written deadlines are rejected.
+
+### The clock starts once
+
+`discovered_at` is the **earliest** time the vulnerability was seen, not the
+time of the run that reported it. When the drift baseline already carried the
+id, the baseline's timestamp is used. A nightly re-audit therefore never
+restarts a 24 hour clock, and a deadline that has already passed keeps reading
+as passed.
+
+### VEX is what clears a report
+
+A delivered VEX statement of `not_affected` with a justification (for example
+`vulnerable_code_not_present`) sets `affected.value` to `false` with
+`source: "vex"`, which makes the candidate non-reportable and, on its own,
+takes the finding out of the severity gate (recorded in `gate.vex_suppressed`
+with the statement id and the justification). This is the one determination
+that most often distinguishes "on KEV" from "reportable".
+
+A **waiver never clears a report**. Waiving a gate failure is a release
+decision by a named human; it says nothing about whether the product is
+affected by an exploited vulnerability.
+
+### SBOM Verify says "undetermined", loudly
+
+`preloop.cra.sbomaudit/v1` carries the same block hard-coded to:
+
+```json
+{
+  "assessment": "undetermined",
+  "basis": "SBOM verification does not screen for vulnerabilities; run preset 005 or 006",
+  "kev_snapshot_date": null,
+  "kev_source_url": null,
+  "candidates": [],
+  "not_a_legal_determination": true
+}
+```
+
+Any other assessment is rejected, and candidates must be empty. An operator
+who runs only SBOM Verify must be able to see that the question has not been
+asked, which is not the same as the answer being no.
+
+### In the audit report
+
+`evidence/audit-report.md` opens the Article 14 box immediately after "What we
+did NOT check", before the VEX and waiver sections, with one sentence in the
+same place every time:
+
+> Reportable under CRA Article 14? No / Candidate, see `reporting` /
+> Undetermined, scan incomplete. Not legal advice.
+
+Each candidate is then written out in plain words with the clock as dates and
+times, so a duty officer reading the cover page can act without parsing JSON.
+
+### The webhook
+
+When a candidate is `reportable`, the platform emits
+`cra.reportable_vulnerability` through
+[outbound event webhooks](../webhooks.md), one event per candidate, with the
+deadlines the run computed. The event id is deterministic on
+(execution, CVE), so a redelivery or a re-emit is the same event and
+receivers deduplicate on `X-Preloop-Event-Id`. `occurred_at` is
+`discovered_at`, not the send time: the envelope timestamp and the clock in
+the payload agree.
+
+The payload carries `not_a_legal_determination: true` and
+`filing_is_manufacturer_responsibility: true`. Routing it into a ticket queue
+automates a notification, never a filing.
+
 ## Honest limits
 
 - Verification is bounded by delivered build evidence: these flows
@@ -936,7 +1111,10 @@ trail is the auditable record.
 - No Declaration of Conformity, CE marking decision, "compliant"
   verdict, legal product classification, or Article 14 filing. Evidence
   in, human assessment out. Preloop does not file CRA Article 14
-  reports.
+  reports and has no client for the ENISA single reporting platform.
+  The `reporting` block states a reportability *candidate* and the
+  deadlines that follow from it; deciding to file, and filing, are the
+  manufacturer's.
 - `result.json` is persisted by the platform, and the evidence pack is
   captured as a size-capped tar.gz served by
   `GET /api/v1/flows/executions/{id}/evidence`. Long-horizon retention

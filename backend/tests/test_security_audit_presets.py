@@ -754,6 +754,97 @@ class TestUpstreamResolutionEnrichment:
         )
 
 
+class TestArticle14Reporting:
+    """The judgement and the clock, in every preset that can hold them.
+
+    The obligation applies from 11 September 2026. Before this, a run
+    produced art14_candidates (a list of KEV ids) and no deadline anywhere,
+    so an operator could not ask "do I have to file something in the next
+    24 hours".
+    """
+
+    SCREENING_PRESETS = ("SBOM Exploit Check", "Release Security Audit")
+
+    @pytest.fixture(params=SCREENING_PRESETS)
+    def screening_prompt(self, request):
+        return _load_preset(PRESET_FILES[request.param])["prompt_template"]
+
+    def test_contract_carries_the_reporting_block(self, screening_prompt):
+        for field in (
+            '"assessment": "no_reportable_vulnerability" | "reportable_candidate" | "undetermined"',
+            '"exploited_evidence": "kev" | "vendor_advisory" | "none"',
+            '"reportable": true|false',
+            '"status": "none" | "drafted" | "submitted" | "out_of_scope"',
+            '"not_a_legal_determination": true',
+        ):
+            assert field in screening_prompt, f"missing reporting field {field}"
+
+    def test_all_three_deadlines_are_declared(self, screening_prompt):
+        for key in ("early_warning_24h", "notification_72h", "final_report_14d"):
+            assert key in screening_prompt, f"missing deadline {key}"
+
+    def test_reportable_is_derived_not_asserted(self, screening_prompt):
+        norm = _norm(screening_prompt)
+        assert (
+            "reportable is exactly actively_exploited AND affected.value true" in norm
+        )
+
+    def test_affected_call_must_name_its_source(self, screening_prompt):
+        norm = _norm(screening_prompt)
+        assert 'makes it false with source "vex"' in norm
+        assert '"undetermined" with source "unknown"' in norm
+
+    def test_silence_is_not_nothing_to_report(self, screening_prompt):
+        norm = _norm(screening_prompt)
+        assert (
+            'assessment must be "undetermined"' in norm
+            or 'assessment must be "undetermined", NOT' in norm
+        )
+        assert 'silence must not read as "nothing to report"' in norm.lower()
+
+    def test_no_submission_client_is_claimed(self, screening_prompt):
+        norm = _norm(screening_prompt)
+        assert "Preloop does not file anything" in norm
+        assert "ENISA single reporting platform" in norm
+
+    def test_report_states_the_answer_in_one_sentence(self, screening_prompt):
+        norm = _norm(screening_prompt)
+        assert "ARTICLE 14 REPORTING BOX (mandatory" in norm
+        assert (
+            "Reportable under CRA Article 14? No / Candidate, see reporting / "
+            "Undetermined, scan incomplete. Not legal advice." in norm
+        )
+
+    def test_release_audit_clock_starts_at_first_awareness(self):
+        prompt = _load_preset(PRESET_FILES["Release Security Audit"])["prompt_template"]
+        norm = _norm(prompt)
+        assert "use the baseline's run_at, not this run's" in norm
+        assert "A re-run never restarts the clock" in norm
+        assert "+24h, +72h, +14d, in UTC" in norm
+
+    def test_release_audit_waiver_does_not_clear_a_report(self):
+        prompt = _load_preset(PRESET_FILES["Release Security Audit"])["prompt_template"]
+        norm = _norm(prompt)
+        assert (
+            "a waiver never clears it: waiving a gate failure is a release "
+            "decision, not a reporting determination" in norm
+        )
+
+    def test_sbom_verify_refuses_the_question_explicitly(self):
+        prompt = _load_preset(PRESET_FILES["SBOM Verify"])["prompt_template"]
+        norm = _norm(prompt)
+        assert '"assessment": "undetermined"' in prompt
+        assert (
+            '"basis": "SBOM verification does not screen for vulnerabilities; '
+            'run preset 005 or 006"' in prompt
+        )
+        assert "Never write any other assessment here" in norm
+        assert (
+            "Reportable under CRA Article 14? Undetermined: this run does not "
+            "screen for vulnerabilities." in norm
+        )
+
+
 class TestVexBeforeTheGate:
     """VEX is subtracted from the gate population, not annotated after it.
 

@@ -336,6 +336,9 @@ class TestWaivedFindings:
         payload["vuln_scan"]["gate"]["passed_before_waivers"] = False
         payload["vuln_scan"]["gate"]["waivers_applied"] = [waiver]
         payload["verdict"] = "pass_with_findings"
+        # A waiver is a release decision. It does not answer Article 14, so
+        # the KEV finding still needs a reporting candidate.
+        _with_reporting(payload)
         result = validate_cra_result(payload, delivered_waivers=[waiver])
         assert result.ok, result.failures
 
@@ -899,6 +902,115 @@ def _kev_finding(
     }
 
 
+DISCOVERED_AT = "2026-08-20T12:00:00Z"
+# 24 h, 72 h and 14 d from DISCOVERED_AT, written out rather than computed
+# so the test data does not agree with the implementation by construction.
+DEADLINES = {
+    "early_warning_24h": "2026-08-21T12:00:00Z",
+    "notification_72h": "2026-08-23T12:00:00Z",
+    "final_report_14d": "2026-09-03T12:00:00Z",
+}
+
+
+def _art14_candidate(
+    finding_id: str,
+    *,
+    affected: Any = True,
+    source: str = "reachability",
+    vex_status: str | None = None,
+    exploited: bool = True,
+    evidence: str = "kev",
+    status: str = "none",
+    status_reason: str | None = None,
+    discovered_at: str = DISCOVERED_AT,
+    deadlines: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "id": finding_id,
+        "actively_exploited": exploited,
+        "exploited_evidence": evidence,
+        "affected": {
+            "value": affected,
+            "source": source,
+            "detail": "component present at the vulnerable version",
+        },
+        "vex_status": vex_status,
+        "reportable": exploited is True and affected is True,
+        "discovered_at": discovered_at,
+        "deadlines": dict(deadlines if deadlines is not None else DEADLINES),
+        "status": status,
+    }
+    if status_reason is not None:
+        entry["status_reason"] = status_reason
+    return entry
+
+
+def _reporting(
+    candidates: list[dict[str, Any]],
+    *,
+    assessment: str | None = None,
+    kev_snapshot_date: str | None = "2026-08-19",
+    basis: str = "KEV catalogue snapshot 2026-08-19; product affected",
+) -> dict[str, Any]:
+    """A valid Article 14 reporting block for the given candidates."""
+    if assessment is None:
+        if any(item["reportable"] for item in candidates):
+            assessment = "reportable_candidate"
+        elif any(item["affected"]["value"] == "undetermined" for item in candidates):
+            assessment = "undetermined"
+        else:
+            assessment = "no_reportable_vulnerability"
+    return {
+        "assessment": assessment,
+        "basis": basis,
+        "kev_snapshot_date": kev_snapshot_date,
+        "kev_source_url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+        "candidates": candidates,
+        "not_a_legal_determination": True,
+    }
+
+
+def _with_reporting(payload: dict[str, Any]) -> dict[str, Any]:
+    """Attach a reporting block covering every KEV finding in the payload.
+
+    The affected call follows the finding: a justified VEX statement clears
+    it, a heuristic-only match cannot settle it, and a database match on a
+    vulnerable version stands.
+    """
+    body = payload["vuln_scan"] if "vuln_scan" in payload else payload
+    candidates: list[dict[str, Any]] = []
+    for item in body.get("findings", []):
+        if item.get("kev") is not True:
+            continue
+        vex_status = item.get("vex_status")
+        if vex_status in {"not_affected", "fixed", "false_positive"} and item.get(
+            "vex_justification"
+        ):
+            candidates.append(
+                _art14_candidate(
+                    str(item.get("id")),
+                    affected=False,
+                    source="vex",
+                    vex_status=vex_status,
+                )
+            )
+        elif item.get("match_kind") == "heuristic":
+            candidates.append(
+                _art14_candidate(
+                    str(item.get("id")),
+                    affected="undetermined",
+                    source="unknown",
+                    vex_status=vex_status,
+                )
+            )
+        else:
+            candidates.append(
+                _art14_candidate(str(item.get("id")), vex_status=vex_status)
+            )
+    body["reporting"] = _reporting(candidates)
+    return payload
+
+
 def _vex_finding(
     finding_id: str = "CVE-2024-0001",
     *,
@@ -952,7 +1064,7 @@ def _release_with_vex(
     if suppressed is not None:
         gate["vex_suppressed"] = suppressed
     out["verdict"] = "pass_with_findings" if findings else "pass"
-    return out
+    return _with_reporting(out)
 
 
 def _waiver(
@@ -996,7 +1108,7 @@ def _release_with_kevs(
     if unwaived is not None:
         out["vuln_scan"]["gate"]["unwaived_failures"] = unwaived
     out["verdict"] = "pass_with_findings"
-    return out
+    return _with_reporting(out)
 
 
 class TestUnhashableJsonMembership:
