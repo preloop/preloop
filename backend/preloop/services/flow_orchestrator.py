@@ -100,6 +100,7 @@ from preloop.utils.repo_urls import repo_url_log_location, tracker_host_kind
 from preloop.utils.workspace_seed import (
     attach_workspace_file_paths,
     parse_workspace_files,
+    workspace_seed_payload,
 )
 from preloop.utils.secret_scrubbing import scrub_secrets
 from preloop.services.account_realtime import (
@@ -2115,9 +2116,7 @@ class FlowExecutionOrchestrator:
         # than inside the container. Raises WorkspaceSeedError -> run() marks
         # the execution FAILED with that message.
         workspace_files = parse_workspace_files(
-            self.trigger_event_data.get("payload")
-            if isinstance(self.trigger_event_data, dict)
-            else None
+            workspace_seed_payload(self.trigger_event_data)
         )
         if workspace_files:
             logger.info(

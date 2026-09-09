@@ -261,13 +261,30 @@ def evidence_manifest_context(
     in the environment, the control plane calls it directly when it repacks
     a legacy archive.
     """
+    from preloop.utils.workspace_seed import (
+        WorkspaceSeedError,
+        workspace_seed_payload,
+    )
+
     payload: Any = None
     if isinstance(trigger_event_data, Mapping):
         nested = trigger_event_data.get("payload")
         payload = nested if isinstance(nested, dict) else dict(trigger_event_data)
+    # Seeds are looked up wherever the caller declared them, so the manifest
+    # digests the files the run was actually given. Reading only the nested
+    # payload would leave "inputs" empty for a body that puts workspace_files
+    # beside payload, which is exactly the evidence a reviewer needs.
+    try:
+        seed_container = workspace_seed_payload(
+            dict(trigger_event_data)
+            if isinstance(trigger_event_data, Mapping)
+            else None
+        )
+    except WorkspaceSeedError:
+        seed_container = None
     return {
         "execution_id": str(execution_id) if execution_id is not None else None,
-        "inputs": _manifest_inputs(payload),
+        "inputs": _manifest_inputs(seed_container),
         "source": _manifest_source(payload),
     }
 

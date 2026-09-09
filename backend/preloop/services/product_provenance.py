@@ -19,9 +19,17 @@ from preloop.utils.workspace_seed import (
     WorkspaceSeedError,
     WorkspaceSeedFile,
     parse_workspace_files,
+    workspace_seed_payload,
 )
 
 PRODUCT_PROVENANCE_SCHEMA = "preloop.cra.product_provenance/v1"
+# Key on the trigger body carrying the mapping, accepted inside ``payload``
+# or beside it (the same rule as ``workspace_files``, its usual neighbour).
+PRODUCT_PROVENANCE_KEY = "product_provenance"
+# Where the accepted body shape is written down. Every contract error names
+# it, because the round-2 dogfood run showed that a message stating what is
+# wrong without stating what is right costs a whole execution to act on.
+PRODUCT_PROVENANCE_DOC = "docs/guide/flows/product-evidence.md"
 _GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _RELEASE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+/-]{0,127}$")
@@ -216,13 +224,24 @@ def parse_sbom_digest(value: Any) -> str:
 def extract_product_provenance_payload(
     trigger_event_data: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Read optional mapping from a trigger payload. Missing is legacy mode."""
+    """Read optional mapping from a trigger payload. Missing is legacy mode.
+
+    The top-level fallback used to fire only when ``payload`` was absent or
+    not a mapping, so the shape design partners actually send,
+    ``{"payload": {...}, "product_provenance": {...}}``, was ignored: the
+    nested payload existed, so the top level was never consulted. The rule is
+    now the same one :func:`workspace_seed_payload` applies to its sibling
+    key: inside ``payload`` first, then beside it.
+    """
     if not isinstance(trigger_event_data, Mapping):
         return None
     payload = trigger_event_data.get("payload")
-    if not isinstance(payload, Mapping):
-        payload = trigger_event_data
-    mapping = payload.get("product_provenance")
+    if not isinstance(payload, Mapping) or PRODUCT_PROVENANCE_KEY not in payload:
+        if PRODUCT_PROVENANCE_KEY in trigger_event_data:
+            payload = trigger_event_data
+        elif not isinstance(payload, Mapping):
+            payload = trigger_event_data
+    mapping = payload.get(PRODUCT_PROVENANCE_KEY)
     if mapping is None:
         return None
     if not isinstance(mapping, dict):
@@ -238,10 +257,8 @@ def facts_from_workspace_files(
     """Hash a supplied workspace seed file when the mapping names one."""
     if not isinstance(trigger_event_data, Mapping):
         return None, None
-    payload = trigger_event_data.get("payload")
-    if not isinstance(payload, Mapping):
-        payload = trigger_event_data
     try:
+        payload = workspace_seed_payload(dict(trigger_event_data))
         files = parse_workspace_files(dict(payload) if payload else None)
     except WorkspaceSeedError:
         return None, None

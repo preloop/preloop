@@ -33,6 +33,7 @@ from preloop.utils.workspace_seed import (
     WorkspaceSeedError,
     WorkspaceSeedSizeError,
     parse_workspace_files,
+    workspace_seed_payload,
 )
 from preloop.models.crud.flow_execution_log import crud_flow_execution_log
 from preloop.services.runner_service import (
@@ -1546,14 +1547,19 @@ def _reject_oversized_workspace_seeds(
     413 rather than 400 for the size caps: the request is well formed, it is
     the payload that is too large, and 413 is what a client library retries
     with a smaller body.
+
+    The lookup is ``workspace_seed_payload``, shared with every other reader,
+    so a declaration beside ``payload`` is validated here instead of being
+    accepted with 200 and then seeding nothing (preloop/preloop#509).
     """
-    if not isinstance(trigger_event_data, dict):
-        return
-    payload = trigger_event_data.get("payload")
-    if not isinstance(payload, dict) or WORKSPACE_FILES_KEY not in payload:
+    try:
+        container = workspace_seed_payload(trigger_event_data)
+    except WorkspaceSeedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not isinstance(container, dict) or WORKSPACE_FILES_KEY not in container:
         return
     try:
-        parse_workspace_files(payload)
+        parse_workspace_files(container)
     except WorkspaceSeedError as exc:
         raise HTTPException(
             status_code=413 if isinstance(exc, WorkspaceSeedSizeError) else 400,
