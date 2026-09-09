@@ -311,6 +311,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An approval that should park the run no longer ends it**: when the
+  routing approval workflow had `async_approval_enabled` set (the shipped
+  "Default Approval Workflow" does), `require_approval` returned its
+  `pending_approval` payload before it reached the park handshake, so no
+  window length could park the execution. The agent got an answerless
+  result, wrote its incompletion envelope and exited, and the run was
+  completed and failed closed while a human still held the question. Both
+  paths now go through one `_park_and_build_payload` helper, so the
+  decision to park is made in a single place. The monitor loop also
+  re-checks for a park request in its terminal branch: the park is written
+  by another process and observed on a 5 second poll, so an agent that
+  exits inside that window used to be finalized first. A parked run is no
+  longer fail-closed by the CRA persist boundary, since a park is not a
+  release. Observed on staging execution
+  `e42c6086-f637-4d18-be09-2395c4d488ca`, approval
+  `6a7cd2dc-a9f8-4fa5-9870-b834f5bc1db2`: the waiver was answered 2 minutes
+  20 seconds after the run had already been marked FAILED, against a 3 day
+  window.
+
+- **The failure message names the field that classified the run**: a
+  result artifact rejected on its `verdict` reported `status=None`, which
+  named a key the CRA incompletion envelope does not carry. The override
+  now reports the field that actually decided, and records it on the
+  milestone as `signal_field` / `signal_value`.
+
+- **Preset sync no longer drops fields on existing presets**:
+  `scripts/sync_flow_presets.py` updated existing global presets from a
+  hand-maintained dict that omitted `approval_window_seconds`,
+  `timeout_seconds`, `runner_pool`, `custom_commands`, `webhook_config`
+  and `schedule_config`, and its change detection compared only 8 fields,
+  so a preset whose only change was one of those was reported up to date.
+  Create and update now derive from the same `FlowCreate`, and drift is
+  computed over every field a preset can set. Effect: the 3 day approval
+  window that presets 006 and 014 declare reaches the flow row instead of
+  falling back to the 300 second default. A preset key that no schema
+  claims is now logged rather than silently ignored.
+
 - **Talk stays clickable on the agent page in a narrow container**: an
   action that renders its own element has no click handler an overflow
   menu item can call, so folding it produced a menu row that did nothing.

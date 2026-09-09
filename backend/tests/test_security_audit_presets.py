@@ -818,6 +818,27 @@ class TestReleaseAuditWaivers:
         ):
             assert field in prompt, f"missing gate field: {field}"
 
+    def test_the_waiver_call_names_its_own_window(self, prompt):
+        """The window must not depend on the flow row alone.
+
+        Round 2 (P3): the presets sync dropped approval_window_seconds, so
+        this preset's declared 3 days never reached the flow row and
+        resolve_approval_window fell back to the 300 second deployment
+        default. The tool argument is the first source that function
+        consults, so naming it here survives a stale or hand-cloned row.
+        """
+        norm = _norm(prompt)
+        assert "Pass timeout_seconds: 259200 (3 days) on that same call" in norm
+        assert str(self.THREE_DAYS) in prompt
+
+    THREE_DAYS = 259200
+
+    def test_the_declared_window_matches_the_flow_field(self):
+        """The tool argument and the flow field say the same thing."""
+        preset = _load_preset(PRESET_FILES["Release Security Audit"])
+        assert preset["approval_window_seconds"] == self.THREE_DAYS
+        assert f"timeout_seconds: {self.THREE_DAYS}" in preset["prompt_template"]
+
     def test_interactive_collection_is_batched_and_fail_closed(self, prompt):
         norm = _norm(prompt)
         assert 'waiver_collection: "interactive"' in norm
