@@ -151,6 +151,24 @@ sections may not: a document that reports findings, a gate, or a
 decision is claiming work, and claimed work is validated in full,
 waiver authenticity included.
 
+One exception, on Release Security Audit only: `drift`. Drift is
+measured before the gate and before any waiver question, so a run that
+dies waiting for a human has usually finished it. A release audit that
+wrote `evidence/drift-report.md` and left `drift` null told a human
+reader that 16 components had disappeared and told every machine reader
+that nothing had changed. The rule now runs both ways and applies to
+finished audits too:
+
+- `artifacts.drift_report` names a file, so `drift` must be an object;
+- `drift` is an object, so `artifacts.drift_report` must name the file;
+- the block is validated in full, including `baseline.schema`. Drift
+  against an unidentified baseline is not drift.
+
+An empty `new_vulns` list means "compared, nothing new". When the
+baseline carries no vulnerability findings at all, say so in the report
+and leave the lists empty: no baseline is not a clean baseline, and the
+envelope's `verdict: "error"` already denies the release.
+
 The platform stores the envelope as the result, **fails** the execution,
 and denies the release with `run did not complete: <reason>`. Before
 this, a graceful failure with no `schema` field was recorded as
@@ -569,7 +587,9 @@ and waiver fields on the gate.
 }
 ```
 
-`drift` is `null` when no previous `result.json` was delivered.
+`drift` is `null` when no previous `result.json` was delivered, and only
+then: when a drift report exists in the evidence pack, the block must
+carry what it states (see [Incompletion envelope](#incompletion-envelope)).
 `gap_register` is `null` when no repository was attached. `evidence_storage`
 is `null` when product mode was skipped (no checkouts).
 
@@ -777,6 +797,47 @@ renamed before the result is saved. Reading the raw JSON, you will see:
 `runner` is a fact about the platform, not about the audit: it does not
 enter any verdict or gate. `container_termination` is the field to read
 first when a run has no audit body.
+
+## When the platform corrects a verdict
+
+The verdict is derivable from the audit's own fields: an SBOM whose
+minimum elements failed is a `fail`, coverage below 100 percent is at
+least `pass_with_findings`, a failed severity gate is a `fail`. A run
+that measures everything correctly and then writes the wrong label used
+to be discarded whole, `cra_result_invalid`, evidence pack and all.
+
+The persist boundary now rewrites the label and records what it did:
+
+```json
+"verdict": "fail",
+"verdict_corrected": [
+  {
+    "path": "result.verdict",
+    "submitted": "pass_with_findings",
+    "corrected": "fail",
+    "reason": "valid=True, minimum_elements.passed=False",
+    "corrected_by": "platform_contract_validator"
+  }
+]
+```
+
+Two limits make this safe to rely on:
+
+- **Only the label moves.** `valid`, `minimum_elements`, `coverage`,
+  `license_flags`, the findings and the gate are exactly as the agent
+  wrote them. The platform re-derives a word, never a measurement.
+- **Only upwards.** A correction may make the verdict more severe and
+  never less. `pass` to `pass_with_findings` and anything to `fail` are
+  applied; `fail` to `pass` is refused and the result still fails
+  closed, because that direction is the platform clearing a release it
+  was handed as denied.
+
+The corrected result is then re-validated in full. If anything else in
+the contract is also wrong, the run fails closed exactly as before, with
+the raw document under `result.raw`. Presets are not told about this:
+the contract still requires the agent to write the correct verdict, and
+the repair exists so one enum does not cost a complete, digest-verified
+audit.
 
 ## CI runbook
 

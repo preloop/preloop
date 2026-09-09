@@ -46,6 +46,7 @@ from preloop.cra.schemas import (
     GATE_CVSS_MIN,
     HEURISTIC_SOURCES,
     INCOMPLETE_ALLOWED,
+    INCOMPLETE_DRIFT_SCHEMAS,
     INCOMPLETE_FIELD,
     INCOMPLETE_REQUIRED,
     INCOMPLETE_SIGNALS,
@@ -396,9 +397,17 @@ def is_incomplete_envelope(obj: Any) -> bool:
     return set(obj) <= INCOMPLETE_ALLOWED
 
 
-def _check_incomplete_optional(obj: Mapping[str, Any], *, path: str) -> list[str]:
+def _check_incomplete_optional(
+    obj: Mapping[str, Any], *, path: str, schema_id: Optional[str] = None
+) -> list[str]:
     """Type-check the context fields an interrupted run may still carry."""
     failures: list[str] = []
+    if "drift" in obj:
+        if not json_in(schema_id, INCOMPLETE_DRIFT_SCHEMAS):
+            failures.append(f"{path}.drift is not part of {schema_id}")
+        elif obj.get("drift") is not None:
+            failures.extend(_check_drift(obj.get("drift"), path=f"{path}.drift"))
+    failures.extend(_check_drift_evidence(obj, path=path))
     git = obj.get("git")
     if git is not None and not isinstance(git, Mapping):
         failures.append(f"{path}.git must be an object or null")
@@ -470,7 +479,7 @@ def _validate_incomplete_envelope(
             f"{path}.status is not part of {schema_id}; completion is the verdict"
         )
     failures.extend(_check_disclaimer(obj, path=path))
-    failures.extend(_check_incomplete_optional(obj, path=path))
+    failures.extend(_check_incomplete_optional(obj, path=path, schema_id=schema_id))
     return failures
 
 
@@ -2017,6 +2026,91 @@ def _reconcile_release_verdict(
     return failures
 
 
+def _check_string_list(value: Any, *, path: str) -> list[str]:
+    if not isinstance(value, list):
+        return [f"{path} must be a list"]
+    return [
+        f"{path}[{idx}] must be a non-empty string"
+        for idx, item in enumerate(value)
+        if not isinstance(item, str) or not item.strip()
+    ]
+
+
+def _check_drift_evidence(obj: Mapping[str, Any], *, path: str) -> list[str]:
+    """The drift block and the drift report must state the same fact.
+
+    Round 2's release audit wrote ``evidence/drift-report.md``, named it under
+    ``artifacts``, and left ``drift`` null. A consumer reading the envelope saw
+    no drift; a human reading the pack saw a full drift analysis. Either both
+    exist or neither does.
+    """
+    artifacts = obj.get("artifacts")
+    report = artifacts.get("drift_report") if isinstance(artifacts, Mapping) else None
+    has_report = isinstance(report, str) and bool(report.strip())
+    drift = obj.get("drift")
+    failures: list[str] = []
+    if isinstance(drift, Mapping) and not has_report:
+        failures.append(
+            f"{path}.artifacts.drift_report must name the report behind {path}.drift"
+        )
+    if has_report and drift is None:
+        failures.append(
+            f"{path}.drift must carry what the drift report states; "
+            f"{report} was written and the machine-readable field is null"
+        )
+    return failures
+
+
+def _check_drift(value: Any, *, path: str) -> list[str]:
+    """Validate the drift block, in full, wherever it appears.
+
+    Drift used to be type-checked as "an object or null" and nothing more,
+    which is why a run could write a complete drift report to the evidence
+    pack and leave the machine-readable field null without anyone noticing
+    (round 2 CRA rerun, P7). A field a consumer reads as "no drift" has to be
+    the same fact the report states, so the block is now checked like the
+    rest of the audit.
+    """
+    if not isinstance(value, Mapping):
+        return [f"{path} must be an object or null"]
+    failures: list[str] = []
+
+    baseline = value.get("baseline")
+    if not isinstance(baseline, Mapping):
+        failures.append(f"{path}.baseline must be an object naming what was compared")
+    else:
+        for key in ("schema", "run_at", "build_ref"):
+            item = baseline.get(key)
+            if item is not None and not isinstance(item, str):
+                failures.append(f"{path}.baseline.{key} must be a string or null")
+        if (
+            not isinstance(baseline.get("schema"), str)
+            or not baseline["schema"].strip()
+        ):
+            failures.append(
+                f"{path}.baseline.schema must name the baseline's schema; "
+                "drift against an unidentified baseline is not drift"
+            )
+
+    changes = value.get("sbom_changes")
+    if not isinstance(changes, Mapping):
+        failures.append(f"{path}.sbom_changes must be an object")
+    else:
+        for key in ("added", "removed", "upgraded", "license_changes"):
+            if key in changes and not isinstance(changes.get(key), list):
+                failures.append(f"{path}.sbom_changes.{key} must be a list")
+
+    for key in ("new_vulns", "resolved_vulns", "new_kev", "gate_transitions"):
+        if key in value:
+            failures.extend(_check_string_list(value.get(key), path=f"{path}.{key}"))
+
+    if not _is_bool(value.get("alert")):
+        failures.append(
+            f"{path}.alert must be a boolean, not {type(value.get('alert')).__name__}"
+        )
+    return failures
+
+
 def _validate_releaseaudit(
     obj: Mapping[str, Any],
     *,
@@ -2056,8 +2150,9 @@ def _validate_releaseaudit(
         failures.extend(vuln_fail)
         advisories.extend(vuln_adv)
     drift = obj.get("drift")
-    if drift is not None and not isinstance(drift, Mapping):
-        failures.append("result.drift must be an object or null")
+    if drift is not None:
+        failures.extend(_check_drift(drift, path="result.drift"))
+    failures.extend(_check_drift_evidence(obj, path="result"))
     gap = obj.get("gap_register")
     if gap is not None:
         try:

@@ -128,7 +128,28 @@
       "waivers_unmatched": []
     }
   },
-  "drift": null,
+  "drift": {
+    "baseline": {
+      "schema": "preloop.cra.releaseaudit/v1",
+      "run_at": "2026-08-01T09:00:00Z",
+      "build_ref": "v1.2.2"
+    },
+    "sbom_changes": {
+      "added": [
+        "example-lib@1.4.0"
+      ],
+      "removed": [],
+      "upgraded": [
+        "example-core 1.2.0 -> 1.3.0"
+      ],
+      "license_changes": []
+    },
+    "new_vulns": [],
+    "resolved_vulns": [],
+    "new_kev": [],
+    "gate_transitions": [],
+    "alert": false
+  },
   "verdict": "pass_with_findings",
   "gap_register": null,
   "evidence_storage": null,

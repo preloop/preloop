@@ -66,6 +66,14 @@ INCOMPLETE_REQUIRED: tuple[str, ...] = (
 # Optional context an interrupted run may still know. Audit body sections
 # are deliberately absent: a document that carries findings, a gate, or a
 # decision is claiming work, and claimed work is validated in full.
+#
+# "drift" is the one exception, and only for a release audit. Drift is a
+# self-contained comparison against the previous run that finishes before the
+# gate and the waiver question the run then dies on; round 2 wrote the whole
+# analysis to evidence/drift-report.md and left the field null, so a consumer
+# reading the envelope saw no drift at all. It is admitted on the same terms
+# as any other claim: validated in full, and only when the report it
+# summarizes is named under artifacts.
 INCOMPLETE_OPTIONAL: tuple[str, ...] = (
     "git",
     "tool_versions",
@@ -76,7 +84,10 @@ INCOMPLETE_OPTIONAL: tuple[str, ...] = (
     "artifacts",
     "status",
     "verdict",
+    "drift",
 )
+# Schemas whose incompletion envelope may carry the drift block.
+INCOMPLETE_DRIFT_SCHEMAS: FrozenSet[str] = frozenset({SCHEMA_RELEASEAUDIT_V1})
 INCOMPLETE_ALLOWED: FrozenSet[str] = frozenset(
     INCOMPLETE_REQUIRED + INCOMPLETE_OPTIONAL
 )

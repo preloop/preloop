@@ -202,13 +202,33 @@ class TestIncompletionEnvelope:
         """An unfinished run may not fabricate the sections it never ran."""
         name, prompt = incomplete_preset
         norm = _norm(prompt)
-        assert "You may NOT add the audit body" in norm
         assert "claimed work is validated in full" in norm
-        forbidden = {
-            "SBOM Verify": "source, valid, minimum_elements, coverage",
-            "Release Security Audit": "sbom_audit, vuln_scan, drift",
+        opening, forbidden = {
+            "SBOM Verify": (
+                "You may NOT add the audit body",
+                "source, valid, minimum_elements, coverage",
+            ),
+            "Release Security Audit": (
+                "You may NOT add the rest of the audit body",
+                "sbom_audit, vuln_scan, gap_register, evidence_storage",
+            ),
         }[name]
+        assert opening in norm
         assert forbidden in norm
+
+    def test_measured_drift_survives_an_unfinished_run(self):
+        """Drift finishes before the gate, so the envelope may carry it.
+
+        Round 2 wrote a full drift report and a null drift field, which reads
+        to a consumer as "no drift" (P7).
+        """
+        prompt = _load_preset(PRESET_FILES["Release Security Audit"])["prompt_template"]
+        norm = _norm(prompt)
+        assert "You MAY also add" in norm
+        assert '"drift" when PHASE 3 actually ran' in norm
+        assert "artifacts.drift_report naming it" in norm
+        assert "DRIFT IS WRITTEN TWICE OR NOT AT ALL" in norm
+        assert "no baseline is not a clean baseline" in norm
 
     def test_incompletion_never_reads_as_a_release(self, incomplete_preset):
         _, prompt = incomplete_preset

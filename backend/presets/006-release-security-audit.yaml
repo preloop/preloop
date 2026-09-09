@@ -543,6 +543,17 @@ prompt_template: |
   - Gate transitions: pass -> fail (or reverse).
   Set drift.alert = true if there are new KEV hits, new critical/high
   findings, or a pass -> fail transition.
+  DRIFT IS WRITTEN TWICE OR NOT AT ALL. If you write
+  evidence/drift-report.md you MUST also fill the "drift" object, and
+  vice versa: a report a human can read next to a null field a machine
+  reads as "no drift" is the same run telling two stories. This holds
+  even when the run cannot finish: drift is measured before the gate
+  and before any waiver question, so an incompletion envelope that
+  names a drift report carries the drift block too. Name the baseline's
+  schema in drift.baseline.schema. If the baseline is an SBOM audit
+  with no vulnerability findings, say so and leave the vulnerability
+  lists empty rather than reporting zero new vulnerabilities: no
+  baseline is not a clean baseline.
 
   ═══════════════════════════════════════════════════════════
   PHASE 3.5: CRA GAP REGISTER (WHEN A REPOSITORY IS PRESENT)
@@ -1156,12 +1167,16 @@ prompt_template: |
   }
 
   You MAY add git, tool_versions, inputs_declared, runner, checks,
-  assessments and artifacts when you have them. You may NOT add the
-  audit body (sbom_audit, vuln_scan, drift, gap_register,
-  evidence_storage): a document that reports a gate or findings is
-  claiming work, and claimed work is validated in full, waiver
-  authenticity included. A timed-out waiver question is still FAIL
-  CLOSED: nothing is waived and nothing is released. The platform
+  assessments and artifacts when you have them. You MAY also add
+  "drift" when PHASE 3 actually ran and evidence/drift-report.md
+  exists, with artifacts.drift_report naming it: drift finishes before
+  the gate, and a measured comparison that only exists in prose is a
+  result nobody can consume. You may NOT add the rest of the audit body
+  (sbom_audit, vuln_scan, gap_register, evidence_storage): a document
+  that reports a gate or findings is claiming work, and claimed work is
+  validated in full, waiver authenticity included. The drift block you
+  do add is validated in full for the same reason. A timed-out waiver
+  question is still FAIL CLOSED: nothing is waived and nothing is released. The platform
   stores this envelope as a first-class result, fails the execution,
   and never reads it as a release. "The audit could not be completed
   because a required human decision did not arrive" is itself a
