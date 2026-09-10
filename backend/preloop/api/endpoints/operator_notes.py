@@ -59,9 +59,9 @@ router = APIRouter()
 #: someone else's run.
 CONTROL_PERMISSION = "control_managed_agent"
 
-#: One author, one agent, one hour. Bursts are how a note channel turns into
-#: a firehose nobody reads, and every push design that shipped before ours
-#: needed this.
+#: One author, one agent (or one session when the target has no agent), one
+#: hour. Bursts are how a note channel turns into a firehose nobody reads,
+#: and every push design that shipped before ours needed this.
 NOTE_RATE_LIMIT_PER_HOUR = 20
 
 
@@ -203,23 +203,23 @@ def _create_note(
     )
 
     now = datetime.now(timezone.utc)
-    if managed_agent_id is not None:
-        recent = crud_agent_control_command.count_recent_notes_by_author(
-            db,
-            account_id=account_id,
-            managed_agent_id=managed_agent_id,
-            created_by_user_id=current_user.id,
-            since=(now - timedelta(hours=1)).replace(tzinfo=None),
+    recent = crud_agent_control_command.count_recent_notes_by_author(
+        db,
+        account_id=account_id,
+        managed_agent_id=managed_agent_id,
+        runtime_session_id=(runtime_session_id if managed_agent_id is None else None),
+        created_by_user_id=current_user.id,
+        since=(now - timedelta(hours=1)).replace(tzinfo=None),
+    )
+    if recent >= NOTE_RATE_LIMIT_PER_HOUR:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Rate limit reached: {NOTE_RATE_LIMIT_PER_HOUR} notes per "
+                "hour per agent or session. Steering this often usually "
+                "means restarting with a better prompt."
+            ),
         )
-        if recent >= NOTE_RATE_LIMIT_PER_HOUR:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=(
-                    f"Rate limit reached: {NOTE_RATE_LIMIT_PER_HOUR} notes per "
-                    "hour per agent. Steering an agent this often usually "
-                    "means restarting it with a better prompt."
-                ),
-            )
 
     note_id = operator_notes.new_note_id()
     author_display = (
@@ -324,6 +324,7 @@ def list_operator_notes(
     db: Session = Depends(get_db_session),
 ) -> OperatorNoteList:
     """List notes for one agent, session or execution, newest first."""
+    ensure_permission_in_oss(db, current_user, CONTROL_PERMISSION)
     account_id = str(current_user.account_id)
 
     def _load() -> list[Any]:

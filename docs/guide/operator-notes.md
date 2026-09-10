@@ -91,9 +91,11 @@ label and the note ids are the same ones the gateway path delivers.
 The second hook route is `POST /api/v1/agents/notes/pending`. It authenticates
 with the managed-agent runtime bearer token and returns the claimed notes three
 ways at once: the raw envelopes, the rendered block, and a ready
-`notifications/claude/channel` event. Call it from the hook or bridge process,
-never from the model. Claiming is the delivery: what it returns is marked
-delivered, audited and evented before it leaves.
+`notifications/claude/channel` event. `channel` is one of `hook`,
+`claude_channel` or `claude_message`; `gateway` is recorded only by the
+gateway path. Call it from the hook or bridge process, never from the model.
+Claiming is the delivery: what it returns is marked delivered, audited and
+evented before it leaves.
 
 | Harness | What fires | How to pick the note up |
 | --- | --- | --- |
@@ -194,18 +196,20 @@ delivery state either way and resend deliberately.
 
 ## Who can send, and what is recorded
 
-Sending takes `control_managed_agent`, the same permission that lets the caller
-stop the agent. If you can kill it, you can steer it; if you cannot kill it,
-you cannot put words in its context. Account owners and superusers hold it
-implicitly. Viewers get 403 with the required permission named, on Enterprise
-and on the open-source build alike.
+Sending, listing and cancelling take `control_managed_agent`, the same
+permission that lets the caller stop the agent. If you can kill it, you can
+steer it and see the notes; if you cannot kill it, you cannot put words in
+its context or read them. Account owners and superusers hold it implicitly.
+Viewers get 403 with the required permission named, on Enterprise and on the
+open-source build alike.
 
 A note never crosses an account. Every target is resolved with an
 account-scoped query, so an id from another account is a 404 and can never
 become a delivery, and the candidate query used at delivery time is itself
 bounded by the account.
 
-Limits: 4096 characters per note, 20 notes per author per agent per hour. Note
+Limits: 4096 characters per note, 20 notes per author per agent per hour
+(or per session, when the target has no managed agent). Note
 bodies are stored in the clear, exactly as approval comments are, because both
 are operator text that has to be readable in the audit trail and in the
 timeline. Do not put secrets in a note; use the credential store.

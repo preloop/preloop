@@ -301,3 +301,39 @@ def test_count_recent_notes_by_author_scopes_to_author_and_window(
         )
         == 0
     )
+
+
+def test_count_recent_notes_by_author_scopes_to_a_session_without_an_agent(
+    db_session, create_account, create_user
+) -> None:
+    """A credential-backed session still has a rate-limit key."""
+    account = create_account()
+    author = create_user(account=account)
+    session = _session(db_session, account.id)
+    other = _session(db_session, account.id)
+    _note(
+        db_session,
+        account,
+        None,
+        runtime_session_id=session.id,
+        created_by_user_id=author.id,
+    )
+    _note(
+        db_session,
+        account,
+        None,
+        runtime_session_id=other.id,
+        created_by_user_id=author.id,
+    )
+
+    since = (datetime.now(UTC) - timedelta(hours=1)).replace(tzinfo=None)
+    assert (
+        crud_agent_control_command.count_recent_notes_by_author(
+            db_session,
+            account_id=account.id,
+            runtime_session_id=session.id,
+            created_by_user_id=author.id,
+            since=since,
+        )
+        == 1
+    )

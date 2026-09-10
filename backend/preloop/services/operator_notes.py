@@ -475,7 +475,8 @@ def deliver_gateway_notes(
         db.rollback()
         logger.warning("Operator note delivery failed (store)", exc_info=True)
         return []
-    except Exception:  # pragma: no cover - defensive, never fail a model call
+    except Exception:
+        db.rollback()
         logger.warning("Operator note delivery failed", exc_info=True)
         return []
 

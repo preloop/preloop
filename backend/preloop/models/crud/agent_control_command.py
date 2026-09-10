@@ -490,19 +490,29 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
         db: Session,
         *,
         account_id: Union[uuid.UUID, str],
-        managed_agent_id: Union[uuid.UUID, str],
         created_by_user_id: Union[uuid.UUID, str],
         since: datetime,
+        managed_agent_id: Optional[Union[uuid.UUID, str]] = None,
+        runtime_session_id: Optional[Union[uuid.UUID, str]] = None,
     ) -> int:
-        """Count one author's recent notes to one agent (rate limiting)."""
-        return int(
-            db.query(AgentControlCommand)
-            .filter(
-                AgentControlCommand.account_id == account_id,
-                AgentControlCommand.managed_agent_id == managed_agent_id,
-                AgentControlCommand.created_by_user_id == created_by_user_id,
-                AgentControlCommand.kind == "note",
-                AgentControlCommand.created_at >= since,
-            )
-            .count()
+        """Count one author's recent notes to one agent or session.
+
+        Agent scope is the default rate-limit key. When the target has no
+        managed agent (a flow execution on an account credential), the count
+        is per session so that path is not unlimited.
+        """
+        query = db.query(AgentControlCommand).filter(
+            AgentControlCommand.account_id == account_id,
+            AgentControlCommand.created_by_user_id == created_by_user_id,
+            AgentControlCommand.kind == "note",
+            AgentControlCommand.created_at >= since,
         )
+        if managed_agent_id is not None:
+            query = query.filter(
+                AgentControlCommand.managed_agent_id == managed_agent_id
+            )
+        elif runtime_session_id is not None:
+            query = query.filter(
+                AgentControlCommand.runtime_session_id == runtime_session_id
+            )
+        return int(query.count())

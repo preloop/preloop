@@ -427,6 +427,38 @@ def test_a_store_failure_never_fails_the_model_call(
     assert len(payload["messages"]) == 1
 
 
+def test_a_non_store_failure_does_not_keep_a_dirty_claim(
+    db_session, account, agent, runtime_session, monkeypatch
+) -> None:
+    """A failed claim must not survive into a later gateway commit."""
+    note = _send(db_session, account, agent, runtime_session)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("timeline writer exploded")
+
+    monkeypatch.setattr(operator_notes, "_record_delivery", _boom)
+    payload = {"messages": [{"role": "user", "content": "a"}]}
+
+    assert (
+        _deliver(
+            db_session,
+            account,
+            agent,
+            runtime_session,
+            protocol=operator_notes.PROTOCOL_OPENAI_CHAT,
+            payload=payload,
+            key="messages",
+        )
+        == []
+    )
+    db_session.commit()
+    db_session.refresh(note)
+    assert note.status == "pending"
+    assert note.delivered_at is None
+    assert note.delivery_channel is None
+    assert len(payload["messages"]) == 1
+
+
 # --- the label the model reads ---------------------------------------------
 
 

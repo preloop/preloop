@@ -207,6 +207,42 @@ def test_rate_limit_stops_one_author_flooding_one_agent(client, agent, monkeypat
     assert "Rate limit reached" in response.json()["detail"]
 
 
+def test_rate_limit_covers_a_session_with_no_managed_agent(
+    client, db_session, test_user, monkeypatch
+):
+    """A flow session on an account credential is still rate-limited."""
+    session = RuntimeSession(
+        id=uuid4(),
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id="credential-flow",
+        started_at=datetime.now(UTC),
+    )
+    db_session.add(session)
+    db_session.flush()
+    monkeypatch.setattr(
+        "preloop.api.endpoints.operator_notes.NOTE_RATE_LIMIT_PER_HOUR", 3
+    )
+    for index in range(3):
+        assert (
+            client.post(
+                NOTES_URL,
+                json={
+                    "runtime_session_id": str(session.id),
+                    "text": f"note {index}",
+                },
+            ).status_code
+            == 201
+        )
+
+    response = client.post(
+        NOTES_URL,
+        json={"runtime_session_id": str(session.id), "text": "more"},
+    )
+    assert response.status_code == 429
+    assert "Rate limit reached" in response.json()["detail"]
+
+
 def test_sending_is_audited_and_evented(client, db_session, test_user, agent):
     """The human decision is recorded before the author is told it worked."""
     secret = generate_secret()
@@ -322,6 +358,40 @@ def test_sending_requires_the_agent_control_permission(db_session, test_viewer_u
     )
 
 
+def test_listing_requires_the_agent_control_permission(db_session, test_viewer_user):
+    """A viewer cannot read notes on OSS either, where the decorator is a no-op."""
+    viewer_agent = crud_managed_agent.create_custom_agent(
+        db_session,
+        account_id=test_viewer_user.account_id,
+        display_name="Their Worker",
+        commit=True,
+    )
+    crud_agent_control_command.create_note(
+        db_session,
+        account_id=test_viewer_user.account_id,
+        managed_agent_id=viewer_agent.id,
+        runtime_session_id=None,
+        note_id=operator_notes.new_note_id(),
+        body="Do not leak this.",
+        envelope={"kind": "message"},
+        author_display="Owner",
+        author_auth_method="jwt",
+        created_by_user_id=None,
+        expires_at=None,
+    )
+    app: FastAPI = create_app()
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
+
+    with TestClient(app) as viewer_client:
+        response = viewer_client.get(
+            NOTES_URL, params={"agent_id": str(viewer_agent.id)}
+        )
+
+    assert response.status_code == 403
+    assert "control_managed_agent" in response.json()["detail"]
+
+
 # --- the hook pull ----------------------------------------------------------
 
 
@@ -388,6 +458,17 @@ def test_hook_pull_delivers_pending_notes_once(client, db_session, test_user):
 
 def test_hook_pull_requires_a_runtime_bearer(client):
     assert client.post(PENDING_URL, json={"channel": "hook"}).status_code == 401
+
+
+def test_hook_pull_rejects_the_gateway_channel(client):
+    """Gateway delivery is stamped by the gateway, never by a harness pull."""
+    token = _issue_runtime_token(client)
+    response = client.post(
+        PENDING_URL,
+        json={"channel": "gateway"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 422
 
 
 def test_permission_check_carries_a_pending_note(client, db_session, test_user):

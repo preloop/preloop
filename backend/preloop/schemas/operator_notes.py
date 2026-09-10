@@ -12,6 +12,9 @@ OperatorNoteState = Literal[
     "pending", "delivered", "acknowledged", "cancelled", "expired", "failed"
 ]
 OperatorNoteChannel = Literal["gateway", "hook", "claude_channel", "claude_message"]
+# Harness pull only. ``gateway`` is stamped by the gateway path itself; a hook
+# must not be able to mislabel a delivery as a turn-boundary inject.
+OperatorNotePullChannel = Literal["hook", "claude_channel", "claude_message"]
 
 
 class OperatorNoteCreate(BaseModel):
@@ -97,8 +100,12 @@ class OperatorNotePendingRequest(BaseModel):
     by the model: an agent must not spend tokens deciding to check.
     """
 
-    channel: OperatorNoteChannel = Field(
-        "hook", description="Which transport is about to carry the note."
+    channel: OperatorNotePullChannel = Field(
+        "hook",
+        description=(
+            "Which harness transport is about to carry the note. Gateway "
+            "delivery is recorded by the gateway itself, never by this pull."
+        ),
     )
     session_id: Optional[str] = Field(
         None, description="Harness session id, for logging only."
