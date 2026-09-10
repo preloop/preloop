@@ -24,6 +24,7 @@ from preloop.api.loop_safety import run_db_off_loop
 from preloop.config import settings
 from preloop.models.crud import crud_api_key, crud_runtime_session
 from preloop.models.db.session import get_session_factory
+from preloop.services import operator_notes
 from preloop.services.agent_permission_service import request_agent_permission
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,31 @@ def _resolve_permission_identity(token: str) -> PermissionIdentity:
         )
 
 
+def _claim_operator_note(identity: PermissionIdentity) -> Optional[str]:
+    """Claim this session's pending operator notes for the hook channel.
+
+    Never raises: a note is a bonus on this route, and a store problem must
+    not turn a permission check into a denied tool call.
+    """
+    try:
+        with get_session_factory()() as db:
+            notes = operator_notes.claim_pending_notes(
+                db,
+                account_id=identity.account_id,
+                managed_agent_id=str(identity.managed_agent_id),
+                runtime_session_id=(
+                    str(identity.runtime_session_id)
+                    if identity.runtime_session_id
+                    else None
+                ),
+                channel=operator_notes.CHANNEL_HOOK,
+            )
+            return operator_notes.render_notes_block(notes) if notes else None
+    except Exception:
+        logger.warning("Operator note claim failed on permission check", exc_info=True)
+        return None
+
+
 def _permission_check_base_url() -> str:
     """Resolve the public Preloop base URL used in approval notifications."""
     base_url = (settings.preloop_url or "").strip().rstrip("/")
@@ -126,6 +152,16 @@ class AgentPermissionCheckResponse(BaseModel):
     decision: str = Field(..., description="'allow' or 'deny'")
     reason: str = ""
     request_id: Optional[str] = None
+    operator_note: Optional[str] = Field(
+        None,
+        description=(
+            "A pending operator note, rendered for the model, to surface as "
+            "additional context alongside this decision. Null when there is "
+            "none, which is almost always: the PreToolUse call the agent was "
+            "making anyway carries the note, so a note costs no extra round "
+            "trip and no note costs nothing at all."
+        ),
+    )
     timed_out: bool = Field(
         False,
         description=(
@@ -167,6 +203,11 @@ async def agent_permission_check(
     if payload.source and payload.source.strip():
         tool_input["_preloop_source"] = payload.source.strip()
 
+    # Claimed before the approval wait, in its own short-lived session, so no
+    # connection is held while a human decides. Delivery is recorded here even
+    # if the tool call is then denied: the agent read the note either way.
+    operator_note = await run_db_off_loop(lambda: _claim_operator_note(identity))
+
     decision, reason, request_id, timed_out = await request_agent_permission(
         base_url=_permission_check_base_url(),
         account_id=identity.account_id,
@@ -182,5 +223,9 @@ async def agent_permission_check(
         client_decision=payload.client_decision,
     )
     return AgentPermissionCheckResponse(
-        decision=decision, reason=reason, request_id=request_id, timed_out=timed_out
+        decision=decision,
+        reason=reason,
+        request_id=request_id,
+        timed_out=timed_out,
+        operator_note=operator_note,
     )
