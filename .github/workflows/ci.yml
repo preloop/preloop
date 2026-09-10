@@ -421,8 +421,30 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Read the Playwright version
+        id: playwright
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+        run: |
+          # The runner image preconfigures Google's chrome-stable apt source, which this job
+          # never uses. Its index intermittently fails with "Hash Sum mismatch" and takes
+          # "playwright install --with-deps" down with it (main and five PRs on 2026-09-09).
+          # Drop that source, then retry the install, which is a no-op for cached browsers.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list /etc/apt/sources.list.d/google.list
+          for attempt in 1 2 3; do
+            npx playwright install --with-deps chromium && exit 0
+            echo "playwright install failed (attempt $attempt), retrying in 15s"
+            sleep 15
+          done
+          echo "playwright install failed after 3 attempts" >&2
+          exit 1
 
       - name: Run tests
         run: npm run test
