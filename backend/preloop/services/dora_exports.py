@@ -1635,6 +1635,7 @@ def audit_dora_export(
     is that a successful download can then exist with no audit row.
     """
     period = export.manifest.get("period") or {}
+    body = served_body(export)
     try:
         crud_audit_log.log_action(
             db,
@@ -1650,9 +1651,9 @@ def audit_dora_export(
                 "total_rows": len(export.rows),
                 "period_start": period.get("start"),
                 "period_end": period.get("end"),
-                "body_sha256": export.sha256,
+                "body_sha256": hashlib.sha256(body).hexdigest(),
                 "members_digest": export.manifest.get("members_digest"),
-                "size_bytes": len(export.body),
+                "size_bytes": len(body),
             },
         )
     except Exception:
@@ -1668,3 +1669,15 @@ def json_envelope(export: DoraExport) -> dict[str, Any]:
     with the same helper the evidence pack uses.
     """
     return {"manifest": export.manifest, "rows": export.rows}
+
+
+def served_body(export: DoraExport) -> bytes:
+    """The bytes handed to the caller: CSV, or the JSON envelope around rows.
+
+    The member digest still covers ``export.body`` (CSV file or JSON rows).
+    JSON wraps those rows in ``json_envelope``, so the served digest and the
+    audit ``body_sha256`` must hash this return value, not ``export.body``.
+    """
+    if export.export_format == FORMAT_CSV:
+        return export.body
+    return canonical_manifest_json(json_envelope(export))

@@ -117,6 +117,20 @@ class TestAssetRegisterEndpoint:
         assert row.details["body_sha256"]
         assert row.details["total_rows"] >= 1
 
+    def test_json_audit_records_the_served_envelope_digest(
+        self, client, db_session, estate
+    ):
+        response = client.get(ASSET_URL, params={"format": "json"})
+        assert response.status_code == 200
+        row = (
+            db_session.query(models.AuditLog)
+            .filter(models.AuditLog.action == "dora_asset_register_export")
+            .one()
+        )
+        assert row.details["format"] == "json"
+        assert row.details["body_sha256"] == response.headers["X-Preloop-Export-Sha256"]
+        assert row.details["size_bytes"] == len(response.content)
+
 
 class TestIncidentCandidatesEndpoint:
     def test_period_can_be_given_as_plain_dates(self, client, estate):

@@ -33,7 +33,7 @@ from preloop.services.dora_exports import (
     audit_dora_export,
     build_asset_register,
     build_incident_candidates,
-    json_envelope,
+    served_body,
 )
 
 logger = logging.getLogger(__name__)
@@ -126,13 +126,7 @@ def _respond(export: DoraExport) -> Response:
     bytes that were hashed) for a verifier that wants all of it.
     """
     manifest = export.manifest
-    if export.export_format == "csv":
-        body = export.body
-    else:
-        # JSON serves the {manifest, rows} envelope; the member digest still
-        # covers ``rows`` alone. The header must hash the bytes actually sent
-        # or the CLI's local recompute warns on every JSON export.
-        body = canonical_manifest_json(json_envelope(export))
+    body = served_body(export)
     headers = {
         "Content-Disposition": f'attachment; filename="{export.filename}"',
         "X-Preloop-Export-Sha256": hashlib.sha256(body).hexdigest(),
