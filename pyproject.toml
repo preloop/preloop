@@ -70,7 +70,7 @@ dependencies = [
     "stripe>=12.4.0",
     "maxminddb>=2.6.0",  # Local GeoIP lookups (EE growth plugin; no IPs leave the server)
     "user-agents>=2.2.0",  # User-agent parsing for analytics enrichment (EE growth plugin)
-    "fastmcp>=3.2.0,<4.0.0",  # v4 requires mcp>=2, which dropped streamablehttp_client
+    "fastmcp>=3.2.0,<5.0.0",  # v4 requires mcp>=2, which dropped streamablehttp_client
     "aiodocker>=0.21.0", # Added for agent container execution
     "kubernetes_asyncio>=30.5.0", # Added for Kubernetes agent execution
     "cel-python>=0.1.0", # Added for CEL expression evaluation in approval rules
