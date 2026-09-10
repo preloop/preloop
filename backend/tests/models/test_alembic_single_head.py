@@ -174,4 +174,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert delivery_key.down_revision == "20260908_event_webhooks"
     retention = script.get_revision("20260910_retention_hold")
     assert retention.down_revision == "20260908_webhook_delivery_key"
-    assert script.get_heads() == ["20260910_retention_hold"]
+    audit_chain = script.get_revision("20260910_audit_chain")
+    assert audit_chain.down_revision == "20260910_retention_hold"
+    assert script.get_heads() == ["20260910_audit_chain"]
