@@ -294,18 +294,18 @@ def _create_note(
     tags=["Operator Notes"],
 )
 @require_permission(CONTROL_PERMISSION)
-async def create_operator_note(
+# Declared ``def`` rather than ``async def`` on purpose, here and on the two
+# routes below: they hold a synchronous ``Session``, and FastAPI runs sync
+# handlers on the threadpool, so a pool checkout here can never block the event
+# loop the liveness probe shares (``tests/api/test_event_loop_pool_wait.py``).
+def create_operator_note(
     request: Request,
     payload: OperatorNoteCreate,
     current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> OperatorNoteResponse:
     """Send a note to a running agent, delivered at its next turn boundary."""
-    note = await run_db_off_loop(
-        lambda: _create_note(
-            db, request=request, current_user=current_user, payload=payload
-        )
-    )
+    note = _create_note(db, request=request, current_user=current_user, payload=payload)
     return _to_response(note)
 
 
@@ -315,7 +315,7 @@ async def create_operator_note(
     tags=["Operator Notes"],
 )
 @require_permission(CONTROL_PERMISSION)
-async def list_operator_notes(
+def list_operator_notes(
     agent_id: Optional[UUID] = Query(None),
     runtime_session_id: Optional[UUID] = Query(None),
     execution_id: Optional[UUID] = Query(None),
@@ -348,8 +348,7 @@ async def list_operator_notes(
             limit=limit,
         )
 
-    notes = await run_db_off_loop(_load)
-    return OperatorNoteList(notes=[_to_response(note) for note in notes])
+    return OperatorNoteList(notes=[_to_response(note) for note in _load()])
 
 
 @router.post(
@@ -358,7 +357,7 @@ async def list_operator_notes(
     tags=["Operator Notes"],
 )
 @require_permission(CONTROL_PERMISSION)
-async def cancel_operator_note(
+def cancel_operator_note(
     note_id: str,
     current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
@@ -384,7 +383,7 @@ async def cancel_operator_note(
             )
         return note
 
-    return _to_response(await run_db_off_loop(_cancel))
+    return _to_response(_cancel())
 
 
 def _claim_for_hook(

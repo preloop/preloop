@@ -172,4 +172,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert event_webhooks.down_revision == "20260908_approval_park"
     delivery_key = script.get_revision("20260908_webhook_delivery_key")
     assert delivery_key.down_revision == "20260908_event_webhooks"
-    assert script.get_heads() == ["20260908_webhook_delivery_key"]
+    operator_notes = script.get_revision("20260910_operator_notes")
+    assert operator_notes.down_revision == "20260908_webhook_delivery_key"
+    assert script.get_heads() == ["20260910_operator_notes"]
