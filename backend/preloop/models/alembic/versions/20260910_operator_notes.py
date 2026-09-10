@@ -1,7 +1,7 @@
 """Operator notes on the agent-control store.
 
 Revision ID: 20260910_operator_notes
-Revises: 20260908_webhook_delivery_key
+Revises: 20260910_audit_chain
 """
 
 from typing import Sequence, Union
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260910_operator_notes"
-down_revision: Union[str, None] = "20260908_webhook_delivery_key"
+down_revision: Union[str, None] = "20260910_audit_chain"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

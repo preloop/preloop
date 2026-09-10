@@ -46,15 +46,20 @@ class TestPersistExecutionLog:
         log_data = {"message": "Step completed", "level": "INFO"}
 
         mock_queue = MagicMock()
+        mock_queue.put = AsyncMock()
         mock_get_queue.return_value = mock_queue
 
         await persist_execution_log(execution_id, log_data)
 
         # Verify queue was called
-        mock_queue.put_nowait.assert_called_once_with((execution_id, log_data))
+        mock_queue.put.assert_awaited_once()
+        queued_id, queued_data = mock_queue.put.call_args.args[0]
+        assert queued_id == execution_id
+        assert queued_data["message"] == log_data["message"]
+        assert uuid.UUID(queued_data["_persistence_id"])
 
     @patch("preloop.services.websocket_manager.get_db")
-    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    @patch("preloop.models.crud.crud_flow_execution_log.append_logs")
     def test_sync_batch_insert_logs_success(self, mock_append, mock_get_db):
         """Test the synchronous batch insertion function."""
         execution_id = "exec_123"
@@ -63,19 +68,16 @@ class TestPersistExecutionLog:
 
         # Mock database session
         mock_db = MagicMock()
-        mock_get_db.return_value = iter([mock_db])
+        mock_get_db.return_value = (db for db in [mock_db])
 
         _sync_batch_insert_logs(batch)
 
-        # Verify CRUD append_log was called with commit=False
-        mock_append.assert_called_once_with(
-            mock_db, execution_id=execution_id, log_data=log_data, commit=False
-        )
-        assert mock_db.commit.called
+        # Verify the whole batch is delegated to one CRUD transaction.
+        mock_append.assert_called_once_with(mock_db, batch)
         assert mock_db.close.called
 
     @patch("preloop.services.websocket_manager.get_db")
-    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    @patch("preloop.models.crud.crud_flow_execution_log.append_logs")
     def test_sync_batch_insert_logs_with_complex_data(self, mock_append, mock_get_db):
         """Test batch persisting execution log with complex data."""
         execution_id = "exec_456"
@@ -87,21 +89,18 @@ class TestPersistExecutionLog:
         batch = [(execution_id, log_data)]
 
         mock_db = MagicMock()
-        mock_get_db.return_value = iter([mock_db])
+        mock_get_db.return_value = (db for db in [mock_db])
 
         _sync_batch_insert_logs(batch)
 
         # Verify CRUD was called with the complex data dict
-        mock_append.assert_called_once_with(
-            mock_db, execution_id=execution_id, log_data=log_data, commit=False
-        )
-        assert mock_db.commit.called
+        mock_append.assert_called_once_with(mock_db, batch)
         assert mock_db.close.called
 
     @patch("preloop.services.websocket_manager.notify_admins")
     @patch("preloop.services.websocket_manager.get_db")
     @patch("preloop.services.websocket_manager.logger")
-    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    @patch("preloop.models.crud.crud_flow_execution_log.append_logs")
     def test_sync_batch_insert_logs_database_error(
         self, mock_append, mock_logger, mock_get_db, mock_notify
     ):
@@ -117,7 +116,7 @@ class TestPersistExecutionLog:
 
         # Mock CRUD to raise exception
         mock_db = MagicMock()
-        mock_get_db.return_value = iter([mock_db])
+        mock_get_db.return_value = (db for db in [mock_db])
         mock_append.side_effect = Exception("Database error")
 
         _sync_batch_insert_logs(batch)
@@ -134,10 +133,10 @@ class TestPersistExecutionLog:
     def test_sync_batch_insert_logs_closes_db_on_success(self, mock_get_db):
         """Test that database is closed even on success."""
         mock_db = MagicMock()
-        mock_get_db.return_value = iter([mock_db])
+        mock_get_db.return_value = (db for db in [mock_db])
         batch = [("exec_id", {"message": "test"})]
 
-        with patch("preloop.models.crud.crud_flow_execution.append_log"):
+        with patch("preloop.models.crud.crud_flow_execution_log.append_logs"):
             _sync_batch_insert_logs(batch)
 
         assert mock_db.close.called
@@ -157,11 +156,11 @@ class TestSyncBatchInsertLogsRetry:
             yield sleep
 
     @patch("preloop.services.websocket_manager.get_db")
-    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    @patch("preloop.models.crud.crud_flow_execution_log.append_logs")
     def test_retries_pool_timeout_then_succeeds(self, mock_append, mock_get_db):
         """A transient QueuePool timeout is retried and the batch is saved."""
         mock_db = MagicMock()
-        mock_get_db.side_effect = lambda: iter([mock_db])
+        mock_get_db.side_effect = lambda: (db for db in [mock_db])
         # Fail once with the exact error seen in production, then succeed.
         mock_append.side_effect = [
             SQLAlchemyTimeoutError("QueuePool limit of size 3 overflow 7 reached"),
@@ -170,32 +169,31 @@ class TestSyncBatchInsertLogsRetry:
 
         assert _sync_batch_insert_logs([("exec_1", {"message": "hi"})]) is True
         assert mock_append.call_count == 2
-        assert mock_db.commit.called
 
     @patch("preloop.services.websocket_manager.notify_admins")
     @patch("preloop.services.websocket_manager.get_db")
-    @patch("preloop.models.crud.crud_flow_execution.append_log")
-    def test_drops_only_after_max_attempts(
+    @patch("preloop.models.crud.crud_flow_execution_log.append_logs")
+    def test_transient_failure_returns_to_worker_after_max_attempts(
         self, mock_append, mock_get_db, mock_notify, _no_sleep
     ):
-        """Persistent failure drops the batch, but only after all attempts."""
+        """Persistent failure is retained by the worker, without a loss alert."""
         mock_db = MagicMock()
-        mock_get_db.side_effect = lambda: iter([mock_db])
+        mock_get_db.side_effect = lambda: (db for db in [mock_db])
         mock_append.side_effect = SQLAlchemyTimeoutError("QueuePool limit reached")
 
-        assert _sync_batch_insert_logs([("exec_1", {"message": "hi"})]) is False
+        with pytest.raises(SQLAlchemyTimeoutError):
+            _sync_batch_insert_logs([("exec_1", {"message": "hi"})])
         assert mock_append.call_count == LOG_PERSIST_MAX_ATTEMPTS
-        # Operator is still told about real data loss.
-        assert mock_notify.called
+        mock_notify.assert_not_called()
         # Exponential backoff between attempts: 0.5s then 1.0s.
         assert [c.args[0] for c in _no_sleep.call_args_list] == [0.5, 1.0]
 
     @patch("preloop.services.websocket_manager.get_db")
-    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    @patch("preloop.models.crud.crud_flow_execution_log.append_logs")
     def test_retries_operational_error(self, mock_append, mock_get_db):
         """Dropped connections (OperationalError) are also transient."""
         mock_db = MagicMock()
-        mock_get_db.side_effect = lambda: iter([mock_db])
+        mock_get_db.side_effect = lambda: (db for db in [mock_db])
         mock_append.side_effect = [
             OperationalError("SELECT 1", {}, Exception("server closed connection")),
             None,
@@ -206,13 +204,13 @@ class TestSyncBatchInsertLogsRetry:
 
     @patch("preloop.services.websocket_manager.notify_admins")
     @patch("preloop.services.websocket_manager.get_db")
-    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    @patch("preloop.models.crud.crud_flow_execution_log.append_logs")
     def test_non_retryable_error_fails_fast(
         self, mock_append, mock_get_db, mock_notify, _no_sleep
     ):
         """Programming errors are not retried - no point hammering the DB."""
         mock_db = MagicMock()
-        mock_get_db.side_effect = lambda: iter([mock_db])
+        mock_get_db.side_effect = lambda: (db for db in [mock_db])
         mock_append.side_effect = ValueError("bad log payload")
 
         assert _sync_batch_insert_logs([("exec_1", {"message": "hi"})]) is False
@@ -221,11 +219,11 @@ class TestSyncBatchInsertLogsRetry:
         assert mock_notify.called
 
     @patch("preloop.services.websocket_manager.get_db")
-    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    @patch("preloop.models.crud.crud_flow_execution_log.append_logs")
     def test_failed_attempt_rolls_back(self, mock_append, mock_get_db):
         """A failed batch must not leave a dirty transaction on the pool."""
         mock_db = MagicMock()
-        mock_get_db.side_effect = lambda: iter([mock_db])
+        mock_get_db.side_effect = lambda: (db for db in [mock_db])
         mock_append.side_effect = [SQLAlchemyTimeoutError("pool"), None]
 
         _sync_batch_insert_logs([("exec_1", {"message": "hi"})])
@@ -243,7 +241,7 @@ class TestSyncBatchInsertLogsRetry:
     @patch("preloop.services.websocket_manager.get_db")
     @patch("preloop.services.websocket_manager.logger")
     @patch("preloop.models.crud.crud_flow_execution.existing_ids")
-    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    @patch("preloop.models.crud.crud_flow_execution_log.append_logs")
     def test_fk_violation_for_deleted_execution_drops_quietly(
         self, mock_append, mock_existing, mock_logger, mock_get_db, mock_notify
     ):
@@ -257,7 +255,7 @@ class TestSyncBatchInsertLogsRetry:
         """
         execution_id = str(uuid.uuid4())
         mock_db = MagicMock()
-        mock_get_db.side_effect = lambda: iter([mock_db])
+        mock_get_db.side_effect = lambda: (db for db in [mock_db])
         mock_append.side_effect = _fk_violation()
         mock_existing.return_value = set()  # execution row is gone
 
@@ -284,7 +282,7 @@ class TestSyncBatchInsertLogsRetry:
     @patch("preloop.services.websocket_manager.get_db")
     @patch("preloop.services.websocket_manager.logger")
     @patch("preloop.models.crud.crud_flow_execution.existing_ids")
-    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    @patch("preloop.models.crud.crud_flow_execution_log.append_logs")
     def test_fk_violation_mixed_batch_persists_survivors(
         self, mock_append, mock_existing, mock_logger, mock_get_db, mock_notify
     ):
@@ -292,7 +290,7 @@ class TestSyncBatchInsertLogsRetry:
         live_id = str(uuid.uuid4())
         orphan_id = str(uuid.uuid4())
         mock_db = MagicMock()
-        mock_get_db.side_effect = lambda: iter([mock_db])
+        mock_get_db.side_effect = lambda: (db for db in [mock_db])
         # First write attempt fails on the orphan; retry succeeds.
         mock_append.side_effect = [_fk_violation(), None]
         mock_existing.return_value = {live_id}
@@ -307,8 +305,8 @@ class TestSyncBatchInsertLogsRetry:
         assert result is True
         # Retry only wrote the surviving entry.
         last_call = mock_append.call_args_list[-1]
-        assert last_call.kwargs["execution_id"] == live_id
-        assert mock_db.commit.called
+        assert last_call.args[1][0][0] == live_id
+        assert len(last_call.args[1]) == 1
         # Single warning for the orphan, no alert.
         assert mock_logger.warning.call_count == 1
         assert not mock_notify.called
@@ -317,14 +315,14 @@ class TestSyncBatchInsertLogsRetry:
     @patch("preloop.services.websocket_manager.get_db")
     @patch("preloop.services.websocket_manager.logger")
     @patch("preloop.models.crud.crud_flow_execution.existing_ids")
-    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    @patch("preloop.models.crud.crud_flow_execution_log.append_logs")
     def test_fk_violation_with_live_executions_is_loud(
         self, mock_append, mock_existing, mock_logger, mock_get_db, mock_notify
     ):
         """An FK violation while every execution exists is NOT the orphan case."""
         execution_id = str(uuid.uuid4())
         mock_db = MagicMock()
-        mock_get_db.side_effect = lambda: iter([mock_db])
+        mock_get_db.side_effect = lambda: (db for db in [mock_db])
         mock_append.side_effect = _fk_violation()
         mock_existing.return_value = {execution_id}  # rows all exist
 
@@ -339,7 +337,7 @@ class TestSyncBatchInsertLogsRetry:
     @patch("preloop.services.websocket_manager.notify_admins")
     @patch("preloop.services.websocket_manager.get_db")
     @patch("preloop.models.crud.crud_flow_execution.existing_ids")
-    @patch("preloop.models.crud.crud_flow_execution.append_log")
+    @patch("preloop.models.crud.crud_flow_execution_log.append_logs")
     def test_fk_violation_existence_checked_only_once(
         self, mock_append, mock_existing, mock_get_db, mock_notify
     ):
@@ -347,7 +345,7 @@ class TestSyncBatchInsertLogsRetry:
         live_id = str(uuid.uuid4())
         orphan_id = str(uuid.uuid4())
         mock_db = MagicMock()
-        mock_get_db.side_effect = lambda: iter([mock_db])
+        mock_get_db.side_effect = lambda: (db for db in [mock_db])
         # Survivor hits an FK violation again on the retry.
         mock_append.side_effect = [_fk_violation(), _fk_violation()]
         mock_existing.return_value = {live_id}

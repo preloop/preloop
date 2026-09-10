@@ -23,6 +23,10 @@ EVENT_BUDGET_EXCEEDED = "budget.exceeded"
 EVENT_FLOW_EXECUTION_FINISHED = "flow.execution.finished"
 EVENT_AGENT_NOTE_SENT = "agent.note_sent"
 EVENT_AGENT_NOTE_DELIVERED = "agent.note_delivered"
+# CRA Article 14: a run found an actively exploited vulnerability that its
+# own evidence says affects the product. One event per candidate, because
+# each one carries its own clock.
+EVENT_CRA_REPORTABLE_VULNERABILITY = "cra.reportable_vulnerability"
 
 # Everything an endpoint may subscribe to.
 EVENT_TYPES_V1: tuple[str, ...] = (
@@ -35,6 +39,7 @@ EVENT_TYPES_V1: tuple[str, ...] = (
     EVENT_FLOW_EXECUTION_FINISHED,
     EVENT_AGENT_NOTE_SENT,
     EVENT_AGENT_NOTE_DELIVERED,
+    EVENT_CRA_REPORTABLE_VULNERABILITY,
 )
 
 # One line per event, rendered in the console's create form and in the
@@ -60,6 +65,11 @@ EVENT_TYPE_DESCRIPTIONS: dict[str, str] = {
     EVENT_AGENT_NOTE_DELIVERED: (
         "An operator note reached an agent, with the channel that carried "
         "it and the turn it landed on."
+    ),
+    EVENT_CRA_REPORTABLE_VULNERABILITY: (
+        "A CRA audit found an actively exploited vulnerability affecting the "
+        "product, with the Article 14 24h/72h/14d deadlines. Preloop does "
+        "not file the report."
     ),
 }
 

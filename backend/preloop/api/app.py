@@ -37,6 +37,7 @@ from preloop.api.endpoints import (
     anthropic_gateway,
     audio,
     approval_bypass,
+    audit_chain,
     approval_requests,
     comments,
     cost,
@@ -54,6 +55,7 @@ from preloop.api.endpoints import (
     projects,
     public_approval,
     pull_requests,
+    retention,
     roles,
     search as search_router,
     security_maintenance,
@@ -366,6 +368,43 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.info("Skipping optimization job sweeper for %s role.", service_role)
 
+    # Start the retention purge sweeper (skip in testing mode). Off the
+    # request path by construction, and it sleeps before its first pass rather
+    # than deleting on boot: a crash loop must not turn into a delete loop.
+    # Disabled unless RETENTION_PURGE_ENABLED is set, so an upgrade never
+    # silently starts removing audit history.
+    retention_purge_sweeper = None
+    if not is_testing and is_api_role and settings.retention_purge_enabled:
+        from preloop.services.retention_purge import get_retention_purge_sweeper
+
+        retention_purge_sweeper = get_retention_purge_sweeper()
+        await retention_purge_sweeper.start()
+        logger.info("Retention purge sweeper started.")
+    else:
+        logger.info(
+            "Retention purge sweeper not started (enabled=%s, role=%s).",
+            settings.retention_purge_enabled,
+            service_role,
+        )
+
+    # Start the audit chain sealer (skip in testing mode). It chains audit
+    # rows written since the last pass. Off the request path on purpose: the
+    # alternative is a per-account lock held for the duration of every audited
+    # action. See preloop.services.audit_chain for why (issue #558).
+    audit_chain_sealer = None
+    if not is_testing and is_api_role and settings.audit_chain_enabled:
+        from preloop.services.audit_chain import get_audit_chain_sealer
+
+        audit_chain_sealer = get_audit_chain_sealer()
+        await audit_chain_sealer.start()
+        logger.info("Audit chain sealer started.")
+    else:
+        logger.info(
+            "Audit chain sealer not started (enabled=%s, role=%s).",
+            settings.audit_chain_enabled,
+            service_role,
+        )
+
     # Start the webhook delivery worker (skip in testing mode). Outbound
     # deliveries never run on the request path; this drains the outbox.
     webhook_delivery_worker = None
@@ -577,6 +616,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("Webhook delivery worker stopped.")
         except Exception as e:
             logger.error(f"Error stopping webhook delivery worker: {e}", exc_info=True)
+
+    # Stop the audit chain sealer. Rows it did not reach stay unsealed and are
+    # picked up by the next process; the chain is append only, so an
+    # interrupted pass costs nothing but lag.
+    if not is_testing and audit_chain_sealer:
+        try:
+            await audit_chain_sealer.stop()
+            logger.info("Audit chain sealer stopped.")
+        except Exception as e:
+            logger.error(f"Error stopping audit chain sealer: {e}", exc_info=True)
+
+    # Stop the retention purge sweeper. A pass in flight finishes its current
+    # batch and stops at the next check; batches are small on purpose so this
+    # is a short wait, and a half-done purge is simply resumed next pass.
+    if not is_testing and retention_purge_sweeper:
+        try:
+            await retention_purge_sweeper.stop()
+            logger.info("Retention purge sweeper stopped.")
+        except Exception as e:
+            logger.error(f"Error stopping retention purge sweeper: {e}", exc_info=True)
 
     # Stop the optimization-job sweeper and abandon in-flight optimization
     # jobs (skip in testing mode). shutdown(wait=False) on purpose: a model
@@ -1018,6 +1077,21 @@ def create_app() -> FastAPI:
         )
         app.include_router(
             event_webhooks.router,
+            prefix="/api/v1",
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            retention.router,
+            prefix="/api/v1",
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            audit_chain.router,
+            prefix="/api/v1",
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            audit_chain.signing_router,
             prefix="/api/v1",
             dependencies=[Depends(get_current_active_user)],
         )

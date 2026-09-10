@@ -192,6 +192,72 @@ async def _park_execution(
         return False
 
 
+def _beyond_async_polling(window_seconds: int) -> bool:
+    """True when agent-side polling is no longer a way to wait out a window.
+
+    An async workflow answers a gated call with polling instructions: poll
+    ``get_approval_status`` every N seconds for up to the window. That is a
+    fair contract for an interactive tool call, which is what
+    ``approval_default_window_seconds`` describes, and it is not a contract
+    at all for a compliance decision measured in days. The same line already
+    exists in approval_window.py's own words: five minutes is a reasonable
+    default for an interactive tool call and a nonsense default for a
+    compliance decision.
+
+    Past that line the run parks instead. Below it the async path is
+    unchanged, which keeps park/resume additive rather than replacing a
+    shipped behaviour on every account that uses the default workflow.
+    """
+    return int(window_seconds) > int(settings.approval_default_window_seconds)
+
+
+async def _park_and_build_payload(
+    *,
+    execution_id: Any,
+    approval_request_id: Any,
+    expires_at: Any,
+    window_seconds: int,
+    tool_name: str,
+    arguments: Any,
+    base_url: str,
+) -> Optional[str]:
+    """Park the calling execution on this approval, and return the payload.
+
+    The single place that decides whether a park is possible, so the
+    synchronous poll loop and the async-approval early return cannot drift
+    apart. Returns None when the run cannot park (no execution behind the
+    call, a window short enough to answer in place, or a row that is no
+    longer live), in which case the caller keeps its previous behaviour.
+    """
+    from preloop.services.approval_window import should_park
+
+    if not execution_id or not should_park(int(window_seconds)):
+        return None
+    if not await _park_execution(
+        execution_id=execution_id,
+        approval_request_id=approval_request_id,
+        expires_at=expires_at,
+    ):
+        return None
+
+    from preloop.services.approval_park import park_pending_payload
+    from preloop.services.ask_user_inband import approval_console_url
+
+    logger.info(
+        "Execution %s parked on approval %s (window %ss)",
+        execution_id,
+        approval_request_id,
+        window_seconds,
+    )
+    return park_pending_payload(
+        request_id=approval_request_id,
+        tool_name=tool_name,
+        expires_at=expires_at,
+        console_url=approval_console_url(base_url, approval_request_id),
+        question=arguments.get("question") if isinstance(arguments, dict) else None,
+    )
+
+
 async def _deliver_question_in_band(
     *,
     tool_name: str,
@@ -605,10 +671,7 @@ async def require_approval(
             # expires_at is what a human is actually racing. Precedence: the
             # tool's own timeout_seconds, this flow's approval_window_seconds,
             # the workflow timeout, the deployment default; capped per account.
-            from preloop.services.approval_window import (
-                resolve_approval_window,
-                should_park,
-            )
+            from preloop.services.approval_window import resolve_approval_window
 
             window_flow = await _flow_for_execution(db, caller.execution_id)
             window = resolve_approval_window(
@@ -736,6 +799,39 @@ async def require_approval(
                 # Check if async approval mode is enabled
                 if workflow_async_enabled:
                     import json
+
+                    # An async workflow returns here, roughly seventy lines
+                    # before the poll loop where the park handshake lives, so
+                    # on an async workflow the park was simply unreachable:
+                    # park_request_id was never written and the orchestrator
+                    # monitor had nothing to observe. The run then held a
+                    # container and polled until its own timeout killed it,
+                    # which is the exact cost #510 exists to remove.
+                    #
+                    # Staging execution e42c6086-f637-4d18-be09-2395c4d488ca
+                    # (preset 006, approval 6a7cd2dc-a9f8-4fa5-9870-b834f5bc1db2)
+                    # died this way: ask_user returned in 528 ms against a
+                    # three day window, the run was marked FAILED at 16:52:05Z,
+                    # and the human approved at 16:54:25Z with nothing left to
+                    # resume. The workflow was the account's default one, so
+                    # this was default behaviour, not a misconfiguration.
+                    #
+                    # Park before answering, but only for a window that
+                    # agent-side polling cannot cover. A window within the
+                    # interactive default keeps the polling payload exactly as
+                    # it shipped, so this stays additive.
+                    if _beyond_async_polling(workflow_timeout_seconds):
+                        parked_payload = await _park_and_build_payload(
+                            execution_id=caller.execution_id,
+                            approval_request_id=approval_request_id,
+                            expires_at=approval_request_expires_at,
+                            window_seconds=workflow_timeout_seconds,
+                            tool_name=tool_name,
+                            arguments=arguments,
+                            base_url=base_url,
+                        )
+                        if parked_payload is not None:
+                            return (False, parked_payload)
 
                     logger.info(
                         f"Async approval enabled for workflow '{workflow_name}' - "
@@ -986,44 +1082,18 @@ async def require_approval(
                     # tool returns a structured pending result, the
                     # orchestrator releases the runtime, and the decision (or
                     # the expiry) resumes the same agent session.
-                    if (
-                        caller.execution_id
-                        and should_park(window.seconds)
-                        and elapsed >= int(settings.approval_park_after_seconds)
-                    ):
-                        parked = await _park_execution(
+                    if elapsed >= int(settings.approval_park_after_seconds):
+                        parked_payload = await _park_and_build_payload(
                             execution_id=caller.execution_id,
                             approval_request_id=approval_request_id,
                             expires_at=approval_request_expires_at,
+                            window_seconds=window.seconds,
+                            tool_name=tool_name,
+                            arguments=arguments,
+                            base_url=base_url,
                         )
-                        if parked:
-                            from preloop.services.approval_park import (
-                                park_pending_payload,
-                            )
-                            from preloop.services.ask_user_inband import (
-                                approval_console_url,
-                            )
-
-                            logger.info(
-                                "Execution %s parked on approval %s (window %ss)",
-                                caller.execution_id,
-                                approval_request_id,
-                                window.seconds,
-                            )
-                            return (
-                                False,
-                                park_pending_payload(
-                                    request_id=approval_request_id,
-                                    tool_name=tool_name,
-                                    expires_at=approval_request_expires_at,
-                                    console_url=approval_console_url(
-                                        base_url, approval_request_id
-                                    ),
-                                    question=arguments.get("question")
-                                    if isinstance(arguments, dict)
-                                    else None,
-                                ),
-                            )
+                        if parked_payload is not None:
+                            return (False, parked_payload)
 
                     # Check if initial timeout expired
                     if elapsed >= timeout_seconds and not escalation_triggered:
