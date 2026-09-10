@@ -7,6 +7,7 @@ evidence-pack schemas are not execution ``result.json`` documents.
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 from typing import FrozenSet, Mapping, Optional
 
 SCHEMA_SBOMAUDIT_V1 = "preloop.cra.sbomaudit/v1"
@@ -65,6 +66,14 @@ INCOMPLETE_REQUIRED: tuple[str, ...] = (
 # Optional context an interrupted run may still know. Audit body sections
 # are deliberately absent: a document that carries findings, a gate, or a
 # decision is claiming work, and claimed work is validated in full.
+#
+# "drift" is the one exception, and only for a release audit. Drift is a
+# self-contained comparison against the previous run that finishes before the
+# gate and the waiver question the run then dies on; round 2 wrote the whole
+# analysis to evidence/drift-report.md and left the field null, so a consumer
+# reading the envelope saw no drift at all. It is admitted on the same terms
+# as any other claim: validated in full, and only when the report it
+# summarizes is named under artifacts.
 INCOMPLETE_OPTIONAL: tuple[str, ...] = (
     "git",
     "tool_versions",
@@ -75,7 +84,10 @@ INCOMPLETE_OPTIONAL: tuple[str, ...] = (
     "artifacts",
     "status",
     "verdict",
+    "drift",
 )
+# Schemas whose incompletion envelope may carry the drift block.
+INCOMPLETE_DRIFT_SCHEMAS: FrozenSet[str] = frozenset({SCHEMA_RELEASEAUDIT_V1})
 INCOMPLETE_ALLOWED: FrozenSet[str] = frozenset(
     INCOMPLETE_REQUIRED + INCOMPLETE_OPTIONAL
 )
@@ -96,6 +108,65 @@ FINDING_SEVERITIES: FrozenSet[str] = frozenset(
     {"critical", "high", "medium", "low", "unknown"}
 )
 MATCH_KINDS: FrozenSet[str] = frozenset({"database", "heuristic"})
+
+# VEX statuses that can take a finding out of the severity gate population,
+# and only with a machine-readable justification next to them. "affected"
+# and "under_investigation" are statements that the finding stands, so they
+# never suppress; a bare "not_affected" with no justification is an
+# assertion rather than evidence and does not suppress either. Applied
+# BEFORE the gate so a supplier's own VEX cannot be the thing that raises a
+# danger approval (round 2 CRA rerun, P5).
+VEX_SUPPRESSING_STATUSES: FrozenSet[str] = frozenset(
+    {"not_affected", "fixed", "false_positive"}
+)
+VEX_NON_SUPPRESSING_STATUSES: FrozenSet[str] = frozenset(
+    {"affected", "under_investigation"}
+)
+# Why the gate would have failed on a suppressed finding. Recorded so the
+# suppression can be audited against the policy it displaced.
+VEX_SUPPRESSION_REASONS: FrozenSet[str] = frozenset({"kev", "cvss", "unscored"})
+# --- CRA Article 14 reporting -------------------------------------------
+# The obligation (report an actively exploited vulnerability: early warning
+# in 24 h, notification in 72 h, final report in 14 d) applies from
+# 11 September 2026. The result contract carries the judgement and the
+# clock; it never files anything and it is not a legal determination.
+ART14_EARLY_WARNING = timedelta(hours=24)
+ART14_NOTIFICATION = timedelta(hours=72)
+ART14_FINAL_REPORT = timedelta(days=14)
+ART14_DEADLINE_KEYS: tuple[str, ...] = (
+    "early_warning_24h",
+    "notification_72h",
+    "final_report_14d",
+)
+# "undetermined" is not a synonym for "nothing to report". It is the
+# required answer whenever the KEV fetch failed or the scan did not
+# complete, so silence cannot read as safety.
+ART14_ASSESSMENTS: FrozenSet[str] = frozenset(
+    {"no_reportable_vulnerability", "reportable_candidate", "undetermined"}
+)
+ART14_UNDETERMINED = "undetermined"
+ART14_REPORTABLE = "reportable_candidate"
+ART14_NONE = "no_reportable_vulnerability"
+# What the run actually read to call a vulnerability exploited. "none"
+# means no exploitation evidence was found, not that none exists.
+ART14_EXPLOITED_EVIDENCE: FrozenSet[str] = frozenset({"kev", "vendor_advisory", "none"})
+# Where the affected/not-affected call came from. Unknown keeps the
+# candidate undetermined rather than quietly clearing it.
+ART14_AFFECTED_SOURCES: FrozenSet[str] = frozenset(
+    {"vex", "reachability", "manual", "unknown"}
+)
+ART14_AFFECTED_VALUES: FrozenSet[str] = frozenset({"undetermined"})
+# Where the manufacturer is in the filing workflow. Preloop tracks the
+# state; it does not submit to the ENISA single reporting platform.
+ART14_STATUSES: FrozenSet[str] = frozenset(
+    {"none", "drafted", "submitted", "out_of_scope"}
+)
+ART14_STATUS_NEEDS_REASON = "out_of_scope"
+ART14_REPORTING_FIELD = "reporting"
+ART14_BASIS_004 = (
+    "SBOM verification does not screen for vulnerabilities; run preset 005 or 006"
+)
+
 SOURCE_KINDS: FrozenSet[str] = frozenset({"database", "heuristic"})
 SOURCE_MATRIX_KEYS: tuple[str, ...] = (
     "osv_purl",

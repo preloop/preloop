@@ -5,10 +5,20 @@ from unittest.mock import MagicMock
 from uuid import uuid4
 from datetime import datetime, timezone
 
-from preloop.models.crud import crud_api_usage, crud_flow, crud_flow_execution
+from preloop.models.crud import (
+    crud_api_usage,
+    crud_flow,
+    crud_flow_execution,
+    crud_flow_execution_log,
+    crud_runtime_session,
+    crud_runtime_session_activity,
+)
 from preloop.models.schemas.flow import FlowCreate
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
-from preloop.services.execution_metrics import ExecutionMetricsService
+from preloop.services.execution_metrics import (
+    ExecutionMetricsService,
+    get_execution_totals,
+)
 
 
 @pytest.fixture
@@ -499,3 +509,120 @@ def test_get_execution_metrics_falls_back_to_log_parsing_without_gateway_usage(
     assert metrics["estimated_cost"] is None
     assert metrics["has_pricing"] is False
     assert metrics["unpriced_tokens"] == 1234
+
+
+def _runtime_tool_call(db_session, test_user, execution, *, tool_name):
+    """One tool call as the Preloop MCP server recorded it."""
+    session = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="flow_execution",
+        session_source_id=str(execution.id),
+        session_reference=f"metrics-{execution.id}",
+        last_activity_at=datetime.now(timezone.utc),
+    )
+    crud_runtime_session_activity.log_tool_call(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        flow_execution_id=execution.id,
+        server_name="preloop",
+        tool_name=tool_name,
+        status="success",
+        commit=False,
+    )
+    db_session.flush()
+
+
+def _metrics_flow(db_session, test_user, name):
+    return crud_flow.create(
+        db=db_session,
+        flow_in=FlowCreate(
+            name=name,
+            prompt_template="Test",
+            trigger_event_source="github",
+            trigger_event_types=["test"],
+            agent_type="codex",
+            agent_config={},
+            allowed_mcp_servers=[],
+            allowed_mcp_tools=[],
+            account_id=test_user.account_id,
+        ),
+        account_id=test_user.account_id,
+    )
+
+
+def test_metrics_count_the_mcp_calls_the_server_recorded(db_session, test_user):
+    """An MCP call the log parser missed is still a tool call.
+
+    The CRA rerun's release audit called preloop/ask_user and
+    preloop/resolve_sbom_upstreams and the metrics endpoint reported 0 tool
+    calls, because it read only the parsed agent output. The MCP server had
+    the calls in its own activity table the whole time.
+    """
+    flow = _metrics_flow(db_session, test_user, "Activity Metrics Flow")
+    execution = crud_flow_execution.create(
+        db_session,
+        FlowExecutionCreate(flow_id=flow.id, status="SUCCEEDED"),
+    )
+    execution.tool_calls_count = 0
+    db_session.flush()
+
+    _runtime_tool_call(db_session, test_user, execution, tool_name="ask_user")
+
+    metrics = ExecutionMetricsService(db_session).get_execution_metrics(
+        str(execution.id)
+    )
+
+    assert metrics["tool_calls"] == 1
+
+
+def test_metrics_count_one_mcp_call_and_one_shell_tool(db_session, test_user):
+    """One MCP call plus one shell tool is two, on the page and in the list."""
+    flow = _metrics_flow(db_session, test_user, "Mixed Tool Metrics Flow")
+    execution = crud_flow_execution.create(
+        db_session,
+        FlowExecutionCreate(
+            flow_id=flow.id,
+            status="SUCCEEDED",
+            mcp_usage_logs=[{"server_name": "preloop", "tool_name": "ask_user"}],
+        ),
+    )
+    execution.tool_calls_count = 0
+    db_session.flush()
+
+    # The shell tool the agent ran, normalized out of the log blob.
+    crud_flow_execution_log.append_log(
+        db_session,
+        str(execution.id),
+        {"type": "tool_call", "message": "shell: sha256sum evidence.tar.gz"},
+        commit=False,
+    )
+    # The MCP call, recorded a second time by the server that served it. It is
+    # the same call, so it must not be counted twice.
+    _runtime_tool_call(db_session, test_user, execution, tool_name="ask_user")
+
+    metrics = ExecutionMetricsService(db_session).get_execution_metrics(
+        str(execution.id)
+    )
+    totals = get_execution_totals(db_session, [execution.id])
+
+    assert metrics["tool_calls"] == 2
+    assert totals[str(execution.id)]["tool_calls"] == 2
+
+
+def test_metrics_do_not_fall_below_the_stored_rollup(db_session, test_user):
+    """The rollup the orchestrator wrote is a floor, never a ceiling."""
+    flow = _metrics_flow(db_session, test_user, "Rollup Floor Flow")
+    execution = crud_flow_execution.create(
+        db_session,
+        FlowExecutionCreate(flow_id=flow.id, status="SUCCEEDED"),
+    )
+    execution.tool_calls_count = 7
+    db_session.flush()
+
+    metrics = ExecutionMetricsService(db_session).get_execution_metrics(
+        str(execution.id)
+    )
+
+    assert metrics["tool_calls"] == 7

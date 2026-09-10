@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **CRA VEX suppressions are applied before the severity gate, not after it**:
+  preset 006 asked for VEX and the gate in one breath, so a run could escalate
+  a finding to a human and then annotate it as `not_affected`, which made
+  authoring VEX cost an approval interrupt instead of saving one. Order is now
+  stated and deterministic, and `gate.vex_suppressed` must equal the set the
+  body implies, field for field. A status only suppresses with a non-empty
+  justification beside it: a bare `not_affected` stays in the gate, where
+  before it was dropped from the gate silently. `affected` and
+  `under_investigation` never suppress.
 - bcrypt 5.0.0 raises on secrets longer than 72 bytes instead of truncating.
   New passwords stay capped at 72 characters. Login and `current_password`
   do not: hashing and verify use bcrypt's 72-byte prefix so existing longer
@@ -72,6 +81,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CRA Article 14 reporting: the judgement and the clock**: presets 005 and
+  006 now emit a `reporting` block instead of a bare `art14_candidates` list of
+  KEV CVE ids. KEV membership says a vulnerability is exploited somewhere, not
+  that this product is affected, and it carries no deadline. The block records
+  `actively_exploited` (from named exploitation evidence), `affected` (from VEX
+  or reachability, with the source named, `undetermined` when neither
+  answered), `reportable` (exactly `actively_exploited AND affected is True`)
+  and the three Article 14 deadlines computed in UTC from a single
+  `discovered_at`: early warning at 24 hours, notification at 72 hours, final
+  report at 14 days. The validator forces `undetermined` when the KEV fetch
+  failed or the scan did not complete, so silence is not read as safety. The
+  audit report cover prints an ARTICLE 14 REPORTING BOX and the new
+  `cra.reportable_vulnerability` webhook event fires once per candidate,
+  idempotent on (execution, cve). The obligation applies from 11 September
+  2026. Preloop computes the judgement and the clock and does not file: there
+  is no ENISA submission client, the payload carries
+  `not_a_legal_determination` and `filing_is_manufacturer_responsibility`, and
+  the filing decision stays with the manufacturer.
 - **Record retention, legal hold and period export**: an account now states
   how long it keeps each class of record (audit rows, approvals, evidence
   pack records, runtime sessions, usage) in days, with a floor of 183 days
@@ -365,6 +392,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`tool_calls_count` was 0 on runs that used MCP tools**: the log parser
+  matched three phrasings the runner never prints, so nothing incremented the
+  counter, and the execution page read only agent-derived logs while the
+  executions list also counted runtime session activity, so the two could
+  disagree. The parser now matches the runner's own `mcp: <server>/<tool>
+  started` marker (the started form only, so a call counts once) and the
+  metrics take the largest of parsed logs, recorded activity and the stored
+  rollup. Largest and not sum: a call is usually recorded twice, once by the
+  agent and once by the server that served it.
+- **A derivable CRA verdict label is corrected instead of discarding the
+  audit**: a run that measured everything correctly but wrote
+  `pass_with_findings` next to its own `minimum_elements.passed: false` was
+  rejected whole as `cra_result_invalid`. The persist boundary now retries once
+  with the verdict the body implies. Only the label moves, every measurement is
+  persisted as submitted, the correction is escalation only (`fail` is never
+  softened), the corrected document is re-validated in full so a second defect
+  still fails closed, an incomplete run is never repaired, and the body records
+  `verdict_corrected` with the submitted value and the reason.
+- **A drift report and a null `drift` field can no longer both be true**: a
+  release audit that completed its drift comparison and then stopped at a
+  waiver question emitted an incompletion envelope with `drift: null` next to
+  `artifacts.drift_report` naming a real file, which reads as no drift at all.
+  `drift` is now allowed on the envelope for the release audit schema only, it
+  is validated in full there, and a named report and a populated field imply
+  each other in both directions. The verdict stays `error`, so the release is
+  still denied.
+- **`evidence-status` reported `integrity_verified: false` on packs that
+  verify**: the field promised an integrity judgement and delivered "this
+  endpoint did not look". It is now a three-state `integrity` (`verified`,
+  `not_checked`, `failed`) plus an `integrity_note`, with the boolean kept for
+  compatibility and true only for `verified`. On the legacy transport the poll
+  hashes the archive it already has and answers `failed` with the observed
+  digest on a mismatch, rather than letting the download be the first place
+  anyone finds out. The direct transport answers `not_checked`, because a poll
+  does not decrypt ciphertext, and `GET .../evidence` repeats the same word in
+  `X-Preloop-Evidence-Integrity-State`.
+- **`GET /flows/executions/{id}/artifacts` 401 explains itself**: that route
+  pair is the runner's artifact transport and only ever accepts a minted
+  `flow-artifact` capability, but `openapi.yaml` published it under
+  `bearerAuth` as though an operator could call it, and the refusal was one
+  word. Both routes are dropped from the published schema (no generated client
+  or frontend referenced them) and the 401 now names the error code and the
+  audience, sends a `WWW-Authenticate: Bearer realm="flow-artifact"` challenge
+  and points at `GET .../evidence` and `.../evidence-status`. The reply names
+  no execution and no artifact, and the route still answers 401 rather than
+  404: undocumented is not disabled.
 - **An approval that should park the run no longer ends it**: when the
   routing approval workflow had `async_approval_enabled` set (the shipped
   "Default Approval Workflow" does), `require_approval` returned its
