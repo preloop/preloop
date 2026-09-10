@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import secrets
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -173,6 +174,39 @@ class TestEveryReaderUsesThatRule:
         source = evidence_manifest_context(body)["source"]
         assert source["status"] == "declared"
 
+    def test_prompt_redaction_finds_seeds_beside_payload(self):
+        from preloop.services.prompt_resolvers.trigger_event import TriggerEventResolver
+
+        body = {
+            "payload": {"title": "x"},
+            WORKSPACE_FILES_KEY: [SEED],
+        }
+        redacted = TriggerEventResolver._redact_workspace_files(dict(body))
+        blob = redacted[WORKSPACE_FILES_KEY][0]["content_base64"]
+        assert SEED["content_base64"] not in blob
+        assert "omitted" in blob
+
+    def test_security_maintenance_pins_a_mapping_beside_payload(self):
+        from preloop.services.security_maintenance_refs import _execution_checkout_pins
+
+        mapping = _seed_only_mapping(
+            repositories=[
+                {
+                    "remote": "https://github.com/example/firmware.git",
+                    "sha": "a" * 40,
+                    "clone_path": "firmware",
+                }
+            ]
+        )
+        execution = SimpleNamespace(
+            trigger_event_details={
+                "payload": {"title": "x"},
+                "product_provenance": mapping,
+            }
+        )
+        _, pins = _execution_checkout_pins(execution)
+        assert pins["https://github.com/example/firmware.git"] == "a" * 40
+
     def test_provenance_hashes_the_seed_it_names(self):
         from preloop.services.product_provenance import facts_from_workspace_files
 
@@ -281,6 +315,46 @@ class TestErrorsNameTheSchemaTheKeyAndTheDoc:
                     "release": {"identifier": ""},
                 },
                 "release.identifier",
+            ),
+            (
+                _seed_only_mapping(
+                    repositories=[
+                        {
+                            "remote": "http://github.com/example/firmware.git",
+                            "sha": "a" * 40,
+                            "clone_path": "firmware",
+                        }
+                    ]
+                ),
+                "repositories.remote",
+            ),
+            (
+                _seed_only_mapping(
+                    repositories=[
+                        {
+                            "remote": "https://github.com/example/firmware.git",
+                            "sha": "not-a-sha",
+                            "clone_path": "firmware",
+                        }
+                    ]
+                ),
+                "repositories.sha",
+            ),
+            (
+                _seed_only_mapping(
+                    repositories=[
+                        {
+                            "remote": "https://github.com/example/firmware.git",
+                            "sha": "a" * 40,
+                            "clone_path": "not a slug",
+                        }
+                    ]
+                ),
+                "repositories.clone_path",
+            ),
+            (
+                _seed_only_mapping(sbom={"digest": "a" * 40, "path": SEED["path"]}),
+                "sbom.digest",
             ),
         ],
     )
@@ -391,7 +465,7 @@ class TestTheEndpointRefusesBeforeAnExecutionExists:
             agent_config={"sandbox_type": "exec", "max_iterations": 9},
             trigger_event_source="webhook",
             trigger_event_types=["webhook"],
-            webhook_config=WebhookConfig(webhook_secret="seed-webhook-secret"),
+            webhook_config=WebhookConfig(webhook_secret=secrets.token_urlsafe(32)),
             account_id=test_user.account_id,
             is_enabled=True,
         )

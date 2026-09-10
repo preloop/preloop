@@ -78,6 +78,19 @@ def _contract_error(
     )
 
 
+def _as_contract(exc: ProductProvenanceError, key: str) -> ProductProvenanceError:
+    """Re-wrap a bare mapping error so it names schema, key and doc.
+
+    Sub-validators (``normalize_repository_url``, ``clone_path_slug``,
+    ``_require_git_sha``) are also used against runtime facts, so they raise
+    a short message. Shape validation catches them here and adds the
+    contract suffix the trigger returns to the caller.
+    """
+    if PRODUCT_PROVENANCE_DOC in str(exc):
+        return exc
+    return _contract_error(str(exc), key, error_class=type(exc))
+
+
 @dataclass(frozen=True)
 class ProvenanceRepository:
     """One constituent repository in a product mapping."""
@@ -231,13 +244,17 @@ def sha256_digest(data: bytes) -> str:
 def parse_sbom_digest(value: Any) -> str:
     """Require an explicit SHA-256 digest, never a truncated or git SHA."""
     if not isinstance(value, str) or not value.strip():
-        raise ProductProvenanceError("SBOM digest is required in product mapping")
+        raise _contract_error(
+            "SBOM digest is required in product mapping", "sbom.digest"
+        )
     raw = value.strip().lower()
     if raw.startswith("sha256:"):
         raw = raw[7:]
     if not _SHA256.fullmatch(raw):
-        raise MismatchedProductMappingError(
-            "SBOM digest must be sha256:<64 hex>; git SHAs are not SBOM digests"
+        raise _contract_error(
+            "SBOM digest must be sha256:<64 hex>; git SHAs are not SBOM digests",
+            "sbom.digest",
+            error_class=MismatchedProductMappingError,
         )
     return f"sha256:{raw}"
 
@@ -465,30 +482,45 @@ def _parse_mapping_repositories(
                 "product mapping 'repositories' entries must be objects",
                 "repositories",
             )
-        remote = normalize_repository_url(
-            str(row.get("remote") or row.get("repository_url") or "")
-        )
-        sha = _require_git_sha(
-            row.get("sha") or row.get("commit") or row.get("head_sha")
-        )
-        path = clone_path_slug(str(row.get("clone_path") or row.get("path") or ""))
+        try:
+            remote = normalize_repository_url(
+                str(row.get("remote") or row.get("repository_url") or "")
+            )
+        except ProductProvenanceError as exc:
+            raise _as_contract(exc, "repositories.remote") from exc
+        try:
+            sha = _require_git_sha(
+                row.get("sha") or row.get("commit") or row.get("head_sha")
+            )
+        except ProductProvenanceError as exc:
+            raise _as_contract(exc, "repositories.sha") from exc
+        try:
+            path = clone_path_slug(str(row.get("clone_path") or row.get("path") or ""))
+        except ProductProvenanceError as exc:
+            raise _as_contract(exc, "repositories.clone_path") from exc
         role = str(row.get("role") or "code").strip().lower()
         if role not in _ROLES:
             raise _contract_error(
                 "repository role must be code or compliance", "repositories.role"
             )
         if remote in seen_remote:
-            raise DuplicateProductMappingError(
-                "product mapping lists the same remote more than once"
+            raise _contract_error(
+                "product mapping lists the same remote more than once",
+                "repositories",
+                error_class=DuplicateProductMappingError,
             )
         if path in seen_path:
-            raise DuplicateProductMappingError(
-                "product mapping lists the same clone_path more than once"
+            raise _contract_error(
+                "product mapping lists the same clone_path more than once",
+                "repositories",
+                error_class=DuplicateProductMappingError,
             )
         pair = (remote, sha)
         if pair in seen_pair:
-            raise DuplicateProductMappingError(
-                "product mapping repeats the same remote+SHA pair"
+            raise _contract_error(
+                "product mapping repeats the same remote+SHA pair",
+                "repositories",
+                error_class=DuplicateProductMappingError,
             )
         seen_remote.add(remote)
         seen_path.add(path)
@@ -497,8 +529,10 @@ def _parse_mapping_repositories(
             compliance += 1
         parsed.append({"remote": remote, "sha": sha, "clone_path": path, "role": role})
     if compliance > 1:
-        raise AmbiguousProductMappingError(
-            "product mapping names more than one compliance repository"
+        raise _contract_error(
+            "product mapping names more than one compliance repository",
+            "repositories.role",
+            error_class=AmbiguousProductMappingError,
         )
     return parsed
 

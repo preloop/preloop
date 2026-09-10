@@ -634,7 +634,15 @@ def _execution_checkout_pins(
             if _hex40(value):
                 envelope_sha = str(value).lower()
                 break
-    mapping = payload.get("product_provenance")
+    from preloop.services.product_provenance import (
+        ProductProvenanceError,
+        extract_product_provenance_payload,
+    )
+
+    try:
+        mapping = extract_product_provenance_payload(details)
+    except ProductProvenanceError:
+        mapping = None
     pins: dict[str, str] = {}
     if isinstance(mapping, dict):
         rows = mapping.get("repositories")
