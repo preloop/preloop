@@ -2,6 +2,7 @@
   "name": "preloop",
   "version": "0.15.0",
   "description": "Preloop console frontend",
+  "type": "module",
   "main": "src/main.ts",
   "overrides": {
     "static-eval": "^2.1.0",
@@ -70,7 +71,7 @@
     "sinon": "^22.1.0",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
-    "vite-plugin-css-injected-by-js": "^4.0.1"
+    "vite-plugin-css-injected-by-js": "^5.0.2"
   },
   "lint-staged": {
     "src/**/*.ts": "prettier --write"
