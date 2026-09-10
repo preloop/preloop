@@ -333,8 +333,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The failure message names the field that classified the run**: a
   result artifact rejected on its `verdict` reported `status=None`, which
   named a key the CRA incompletion envelope does not carry. The override
-  now reports the field that actually decided, and records it on the
-  milestone as `signal_field` / `signal_value`.
+  now reports the field that actually decided on both the terminal exit
+  and the sentinel-grace path, and records it on the milestone as
+  `signal_field` / `signal_value`.
 
 - **Preset sync no longer drops fields on existing presets**:
   `scripts/sync_flow_presets.py` updated existing global presets from a

@@ -4839,6 +4839,12 @@ class FlowExecutionOrchestrator:
                             # failure in result.json wins over the sentinel.
                             assert result_artifact is not None
                             artifact_status = result_artifact.get("status")
+                            # Name the field that classified this, not always
+                            # "status": a CRA incompletion envelope has no status
+                            # key and is classified on verdict.
+                            signal_field, signal_value = _artifact_failure_signal(
+                                result_artifact
+                            )
                             # Container may still be in post-exec; fetch the
                             # result so _retry_decision sees exit_code instead
                             # of treating it as unknown.
@@ -4847,6 +4853,8 @@ class FlowExecutionOrchestrator:
                                 "result_artifact_failure_override",
                                 {
                                     "artifact_status": artifact_status,
+                                    "signal_field": signal_field,
+                                    "signal_value": signal_value,
                                     "sentinel_seen": True,
                                     "exit_code": result.exit_code,
                                 },
@@ -4855,8 +4863,8 @@ class FlowExecutionOrchestrator:
                                 "status": "FAILED",
                                 "error_message": (
                                     "Agent reported an explicit failure in "
-                                    "result.json (status="
-                                    f"{artifact_status!r})."
+                                    "result.json "
+                                    f"({signal_field}={signal_value!r})."
                                 ),
                                 "actions_taken": self.execution_logger.get_actions_taken(),
                                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),

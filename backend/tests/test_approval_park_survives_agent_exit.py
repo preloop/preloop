@@ -356,6 +356,24 @@ class TestFailureMessageNamesTheFieldThatDecided:
 
         assert _result_artifact_confirmation(STAGING_INCOMPLETION_ENVELOPE) == "failure"
 
+    def test_the_sentinel_grace_path_names_the_field_too(self):
+        """The still-running grace path used to print status=None."""
+        import inspect
+
+        from preloop.services import flow_orchestrator as module
+
+        source = inspect.getsource(
+            module.FlowExecutionOrchestrator._monitor_agent_execution
+        )
+        grace_at = source.index("sentinel_grace_period_expired")
+        grace_slice = source[grace_at:]
+        assert "_artifact_failure_signal" in grace_slice, (
+            "the sentinel-grace override must name the field that classified "
+            "the artifact, or a CRA incompletion envelope still reports "
+            "status=None"
+        )
+        assert "result.json (status=" not in grace_slice
+
 
 @pytest.mark.asyncio
 class TestTheWholeHandshakeOnAFastExit:
