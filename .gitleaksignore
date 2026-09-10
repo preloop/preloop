@@ -45,3 +45,10 @@ e71706cd13436b34ea22a3d4d71ac3da715d1114:lib/preloop-sync/test_search.py:generic
 e71706cd13436b34ea22a3d4d71ac3da715d1114:lib/preloop-sync/test_api.py:generic-api-key:6
 # Demo API token in an early frontend view under the removed lib/ tree.
 93c5b68b95da6d862a37e0e1354aa01a50e19b2e:lib/frontend/src/views/authed/issues-view.ts:generic-api-key:63
+
+# --- false positive on a sibling ref the history scan also walks ---------
+# Secret Scan uses fetch-depth: 0, so gitleaks git walks every remote branch.
+# feat/tamper-evident-records has a dataclass field typed Ed25519PrivateKey
+# that generic-api-key treats as a credential. Working tree on this PR is
+# clean; this fingerprint is only so the history scan can pass.
+480bd991973f8a921d902b0dd3a401e6e11d3724:backend/preloop/services/record_signing.py:generic-api-key:84
