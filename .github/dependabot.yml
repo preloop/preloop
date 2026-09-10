@@ -85,6 +85,14 @@ updates:
       - backend
     commit-message:
       prefix: "chore(deps)"
+    # mcp 2.x removed streamablehttp_client (replaced by streamable_http_client
+    # plus httpx2). mcp_client_pool and the integration test client still import
+    # the 1.x name, so pyproject.toml stays at mcp<2 until that migration.
+    # Ignore majors so Dependabot does not keep proposing mcp<3.
+    ignore:
+      - dependency-name: mcp
+        update-types:
+          - version-update:semver-major
     # Group order matters: dependabot assigns a dependency to the first group
     # whose patterns match, so the lockstep families have to come before the
     # catch-all pip-minor-patch group.
