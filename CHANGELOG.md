@@ -392,6 +392,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`workspace_files` beside `payload` is no longer silently ignored**: a
+  manual trigger body shaped `{"payload": {...}, "workspace_files": [...]}`
+  was accepted with 200, stored on the execution, and seeded nothing,
+  because every reader looked only inside `payload` while the neighbouring
+  `product_provenance` key had a top-level fallback. Both keys now use one
+  lookup: inside `payload` first, then beside it. Declaring `workspace_files`
+  in both places is a 400 rather than a silent winner. The same lookup now
+  feeds the container seed environment, the trigger-time budget check, the
+  `_workspace_file_paths` audit stamp and the evidence pack manifest, so a
+  run's manifest digests the files it was actually given and records the
+  declared source wherever `product_provenance` sat in the body.
+
+- **A `product_provenance` mapping is usable on SBOM-only flows**:
+  `repositories[]` was mandatory, so a flow with `git_clone_config: null`
+  (preset 004) had no accepted body at all: omitting the list was rejected as
+  incomplete and supplying it was rejected as unauthorized. `repositories` is
+  now optional when `sbom.digest` identifies the product, and a mapping with
+  neither is still refused. Naming a repository the flow does not clone is
+  unchanged, still refused.
+
+- **A malformed product mapping no longer consumes an execution**: shape
+  validation (schema, identity, `repositories[]`, SBOM digest and path) runs
+  at the trigger (manual and webhook) and answers 400, the way the
+  workspace-seed budget check already did, instead of creating an execution
+  that immediately fails.
+  Contract errors name the schema, the offending key and
+  `docs/guide/flows/product-evidence.md`. Fact-dependent checks (declared SHA
+  versus observed checkout, declared digest versus supplied bytes) still run
+  during the execution, where the facts are.
+
+- **The manual trigger refuses reserved keys instead of carrying them**:
+  `_resume`, `_answers`, `_answers_prompt`, `_feedback_prompt`, `_ci_failure`,
+  `_workspace_file_paths` and `_subject` are platform-written control state,
+  and a forged `_resume.source_branch` reached the agent and decided which
+  branch it cloned and pushed to. They now get a 400 naming the key. Other
+  top-level keys stay free-form and usable as template variables. `_matrix`
+  and `_model_routing` keep their existing stripped-and-recomputed contract.
 - **`tool_calls_count` was 0 on runs that used MCP tools**: the log parser
   matched three phrasings the runner never prints, so nothing incremented the
   counter, and the execution page read only agent-derived logs while the
