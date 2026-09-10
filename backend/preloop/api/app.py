@@ -41,6 +41,7 @@ from preloop.api.endpoints import (
     comments,
     cost,
     event_webhooks,
+    exports,
     features,
     gemini_gateway,
     health,
@@ -1012,6 +1013,11 @@ def create_app() -> FastAPI:
         )
         app.include_router(
             kill_switch.router,
+            prefix="/api/v1",
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            exports.router,
             prefix="/api/v1",
             dependencies=[Depends(get_current_active_user)],
         )
