@@ -9,6 +9,7 @@ from sqlalchemy import select
 from preloop.config import settings
 from preloop.models import models
 from preloop.models.models.audit_log import AuditLog
+from preloop.services import audit_chain
 from preloop.services import retention_purge as purge
 from preloop.services.legal_hold import place_hold
 from preloop.services.retention_policy import CLASS_AUDIT
@@ -471,3 +472,47 @@ def test_a_dry_run_audits_under_its_own_action(db_session, account, monkeypatch)
         .all()
     )
     assert rows
+
+
+# --- the chain floor -------------------------------------------------------
+
+
+def test_purging_audit_rows_raises_the_chain_floor(db_session, test_user, account):
+    """A retention purge must not read as tampering (#558)."""
+    old = [_audit_row(db_session, account.id, age_days=500) for _ in range(3)]
+    recent = _audit_row(db_session, account.id, age_days=1)
+    audit_chain.seal_account(
+        db_session,
+        account_id=account.id,
+        now=datetime.now(UTC) + timedelta(hours=1),
+        lag=timedelta(0),
+    )
+    db_session.commit()
+    highest_purged = max(row.chain_seq for row in old)
+    assert recent.chain_seq > highest_purged
+
+    purge.run_retention_purge(db_session, account_ids=[account.id], ignore_window=True)
+
+    state = audit_chain.get_state(db_session, account_id=account.id, create=False)
+    assert state.pruned_below_seq >= highest_purged
+    report = audit_chain.verify_chain(db_session, account_id=account.id)
+    assert report["status"] == "ok"
+    assert report["start_seq"] > highest_purged
+
+
+def test_a_purge_that_removes_nothing_leaves_the_floor_where_it_was(
+    db_session, test_user, account
+):
+    _audit_row(db_session, account.id, age_days=1)
+    audit_chain.seal_account(
+        db_session,
+        account_id=account.id,
+        now=datetime.now(UTC) + timedelta(hours=1),
+        lag=timedelta(0),
+    )
+    db_session.commit()
+
+    purge.run_retention_purge(db_session, account_ids=[account.id], ignore_window=True)
+
+    state = audit_chain.get_state(db_session, account_id=account.id, create=False)
+    assert int(state.pruned_below_seq) == 0

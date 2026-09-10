@@ -399,6 +399,66 @@ def test_uploaded_evidence_discoverable_via_execution_apis(
     assert download.headers["x-preloop-evidence-sha256"] == payload["sha256"]
 
 
+def test_an_uploaded_evidence_pack_is_signed_at_capture(
+    db_session, scope, test_user
+) -> None:
+    """The receipt carries a signature a holder of the pack can check (#558)."""
+    import base64
+    import hashlib
+
+    from preloop.api.auth import get_current_active_user
+    from preloop.api.endpoints import flows as flow_endpoints
+    from preloop.services import record_signing
+
+    body = _evidence_body()
+    token = mint_artifact_capability(**scope, kind="evidence", operation="put")
+    app = FastAPI()
+    app.include_router(router)
+    app.include_router(flow_endpoints.router)
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    app.dependency_overrides[get_current_active_user] = lambda: test_user
+    client = TestClient(app)
+    uploaded = client.put(
+        f"/flows/executions/{scope['execution_id']}/artifacts",
+        headers={"Authorization": "Bearer " + token},
+        content=body,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    reference = uploaded.json()
+    execution = db_session.get(models.FlowExecution, scope["execution_id"])
+    _apply_private_runner_completion(
+        db_session,
+        execution,
+        scope,
+        _private_complete_message("SUCCEEDED", evidence_upload="uploaded"),
+    )
+    db_session.refresh(execution)
+
+    payload = client.get(f"/flows/executions/{execution.id}/evidence-status").json()
+    signature = payload["signature"]
+    assert signature["payload_type"] == record_signing.PAYLOAD_EVIDENCE_PACK
+    assert payload["signing_key_id"] == signature["key_id"]
+
+    # What the signature covers is rebuildable from the bytes you downloaded.
+    download = client.get(f"/flows/executions/{execution.id}/evidence")
+    assert download.headers["x-preloop-signing-key-id"] == signature["key_id"]
+    assert signature["payload"]["archive_sha256"] == (
+        hashlib.sha256(download.content).hexdigest()
+    )
+    assert signature["payload"]["artifact_id"] == str(reference["artifact_id"])
+
+    key = record_signing.get_key_by_id(
+        db_session, account_id=scope["account_id"], key_id=signature["key_id"]
+    )
+    assert record_signing.verify_signature_document(
+        signature,
+        public_key=key.public_key,
+        payload_type=record_signing.PAYLOAD_EVIDENCE_PACK,
+        digest=record_signing.digest_of(signature["payload"]),
+    )
+    assert base64.b64decode(signature["signature"])
+
+
 def _private_complete_message(
     run_status: str, *, evidence_upload: str, result: dict | None = None
 ) -> dict:
