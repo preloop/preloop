@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -1059,3 +1060,85 @@ class TestEvidencePackManifest:
             fileobj=io.BytesIO(_evidence_archive(tmp_path)), mode="r:gz"
         ) as tar:
             assert PACK_MANIFEST_NAME in tar.getnames()
+
+
+def test_legacy_status_verifies_the_bytes_it_already_has() -> None:
+    """A pack whose integrity verifies three ways must not report unverified.
+
+    Round 2's evidence-status said integrity_verified: false, manifest_sha256:
+    null on both runs, while the download of the same pack returned
+    x-preloop-evidence-integrity: verified and a matching sha256 (P8).
+    """
+    archive = b"legacy evidence pack"
+    digest = hashlib.sha256(archive).hexdigest()
+    execution = SimpleNamespace(
+        id=uuid4(),
+        evidence_receipt={
+            "status": "available",
+            "kind": "evidence",
+            "transport": "legacy",
+        },
+        evidence_archive=archive,
+    )
+
+    status = public_evidence_status(execution)
+
+    assert status["status"] == "available"
+    assert status["integrity_verified"] is True
+    assert status["integrity"] == "verified"
+    assert status["sha256"] == digest
+    assert status["digest"] == digest
+
+
+def test_legacy_status_without_a_receipt_still_verifies() -> None:
+    archive = b"legacy evidence pack"
+    execution = SimpleNamespace(
+        id=uuid4(), evidence_receipt=None, evidence_archive=archive
+    )
+
+    status = public_evidence_status(execution)
+
+    assert status["integrity"] == "verified"
+    assert status["sha256"] == hashlib.sha256(archive).hexdigest()
+
+
+def test_legacy_status_reports_a_real_mismatch_as_failed() -> None:
+    """Verified and unchecked are not the only two outcomes."""
+    execution = SimpleNamespace(
+        id=uuid4(),
+        evidence_receipt={
+            "status": "available",
+            "kind": "evidence",
+            "transport": "legacy",
+            "sha256": "0" * 64,
+        },
+        evidence_archive=b"legacy evidence pack",
+    )
+
+    status = public_evidence_status(execution)
+
+    assert status["status"] == "failed"
+    assert status["integrity"] == "failed"
+    assert status["integrity_verified"] is False
+    assert status["error"] == "artifact_digest_mismatch"
+
+
+def test_direct_status_says_not_checked_rather_than_unverified() -> None:
+    """No bytes were read, so no claim is made about them either way."""
+    execution = SimpleNamespace(
+        id=uuid4(),
+        evidence_receipt={
+            "status": "available",
+            "kind": "evidence",
+            "transport": "direct",
+            "sha256": "a" * 64,
+        },
+        evidence_archive=None,
+    )
+
+    status = public_evidence_status(execution)
+
+    assert status["integrity_verified"] is False
+    assert status["integrity"] == "not_checked"
+    assert "verified on download" in status["integrity_note"]
+    assert status["sha256"] == "a" * 64

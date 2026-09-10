@@ -1,6 +1,14 @@
 """Encrypted hosted recovery artifacts, isolated by account, flow and thread."""
 
-from sqlalchemy import Column, DateTime, ForeignKey, LargeBinary, String
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    LargeBinary,
+    String,
+    false as sa_false,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from .base import Base
@@ -36,3 +44,10 @@ class FlowArtifact(Base):
     expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
     lease_until = Column(DateTime(timezone=True), nullable=True)
     availability = Column(String(20), nullable=False, default="available")
+    # Derived legal-hold enforcement flag (see models/legal_hold.py). While
+    # true the janitor leaves the ciphertext alone past expires_at and the
+    # retention purge leaves the row alone: a held pack must still be
+    # downloadable, so the hold blocks payload expiry, not just deletion.
+    legal_hold = Column(
+        Boolean, nullable=False, server_default=sa_false(), default=False, index=True
+    )

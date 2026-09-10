@@ -59,6 +59,84 @@ logger.info(f"Loading presets from: {[str(d) for d in PRESETS_DIRS]}")
 logger.info(f"Found {len(FLOW_PRESETS)} preset definitions")
 
 
+# Fields the sync owns rather than the preset author. The catalog is global
+# (no account), is never armed (a preset is cloned before it runs), and its
+# trigger source is bound when a clone is instantiated, not here.
+PRESET_FORCED_FIELDS = {
+    "is_preset": True,
+    "is_enabled": False,
+    "trigger_event_source": None,
+}
+
+# Set by the platform on derived flows, never by a preset definition, so the
+# update path must not write them back over a preset row.
+PRESET_UNMANAGED_FIELDS = frozenset(
+    {
+        "account_id",
+        "source_preset_id",
+        "source_prompt_hash",
+        "source_tools_hash",
+        "prompt_customized",
+        "tools_customized",
+        "preset_update_available",
+    }
+)
+
+
+def build_preset_flow_create(preset_def: dict) -> schemas.FlowCreate:
+    """Validate one preset definition into the FlowCreate a preset row is built from.
+
+    Both the create and the update path go through here, so the set of fields
+    a preset can set is stated once. It used to be stated twice: the create
+    path passed the whole definition to FlowCreate while the update path
+    copied a hand-maintained dict, and that dict had fallen six fields behind
+    (approval_window_seconds, timeout_seconds, runner_pool, custom_commands,
+    webhook_config, schedule_config). Presets 006 and 014 declare
+    approval_window_seconds: 259200 and already existed on staging, so they
+    only ever took the update path and reported None, which put every
+    approval they raise back on the 300 second default.
+    """
+    preset_data = {k: v for k, v in preset_def.items() if k not in PRESET_FORCED_FIELDS}
+    preset_data.pop("account_id", None)
+    unknown = sorted(set(preset_data) - set(schemas.FlowCreate.model_fields))
+    if unknown:
+        # Not fatal: a deploy should not fall over a spare key. Loud, though,
+        # because a key that no schema claims is a preset that does not do
+        # what its YAML says.
+        logger.warning(
+            "  Preset '%s' declares %s, which FlowCreate does not define; ignored",
+            preset_def.get("name"),
+            ", ".join(unknown),
+        )
+    preset_data.update(PRESET_FORCED_FIELDS)
+    return schemas.FlowCreate(**preset_data)
+
+
+def preset_row_fields(preset_def: dict) -> dict:
+    """The column values an existing global preset row has to be set to.
+
+    Derived from the same FlowCreate as the create path, minus the fields the
+    platform owns, so a field cannot land on a new preset and miss an
+    existing one.
+    """
+    fields = build_preset_flow_create(preset_def).model_dump()
+    for field in PRESET_UNMANAGED_FIELDS:
+        fields.pop(field, None)
+    return fields
+
+
+def preset_drift(existing_flow: Flow, row_fields: dict) -> List[str]:
+    """Names of the fields on which the stored preset differs from its definition."""
+    drifted = [
+        field
+        for field, value in row_fields.items()
+        if hasattr(existing_flow, field) and getattr(existing_flow, field) != value
+    ]
+    if existing_flow.account_id is not None:
+        drifted.append("account_id (should be NULL)")
+    return drifted
+
+
 def sync_global_presets(db: Session, dry_run: bool = False) -> int:
     """
     Sync global flow presets (account_id=None).
@@ -87,71 +165,24 @@ def sync_global_presets(db: Session, dry_run: bool = False) -> int:
         existing_flow = existing_by_name.get(preset_name)
 
         if existing_flow:
-            # Check if preset needs updating
-            needs_update = False
-            update_fields = []
+            # Compare against every field the preset definition owns, not a
+            # subset: a preset whose only change is approval_window_seconds
+            # used to be reported as up to date and never written.
+            row_fields = preset_row_fields(preset_def)
+            update_fields = preset_drift(existing_flow, row_fields)
 
-            # Compare key fields that might have changed
-            if existing_flow.description != preset_def.get("description"):
-                needs_update = True
-                update_fields.append("description")
-            if existing_flow.icon != preset_def.get("icon"):
-                needs_update = True
-                update_fields.append("icon")
-            if existing_flow.prompt_template != preset_def.get("prompt_template"):
-                needs_update = True
-                update_fields.append("prompt_template")
-            if existing_flow.agent_type != preset_def.get("agent_type"):
-                needs_update = True
-                update_fields.append("agent_type")
-            if existing_flow.agent_config != preset_def.get("agent_config"):
-                needs_update = True
-                update_fields.append("agent_config")
-            if existing_flow.allowed_mcp_tools != preset_def.get("allowed_mcp_tools"):
-                needs_update = True
-                update_fields.append("allowed_mcp_tools")
-            if existing_flow.git_clone_config != preset_def.get("git_clone_config"):
-                needs_update = True
-                update_fields.append("git_clone_config")
-            if existing_flow.notifications != preset_def.get("notifications"):
-                needs_update = True
-                update_fields.append("notifications")
-
-            # Check if preset incorrectly has an account_id (should be None)
             if existing_flow.account_id is not None:
-                needs_update = True
-                update_fields.append("account_id (should be NULL)")
                 logger.warning(
                     f"  Global preset '{preset_name}' has account_id={existing_flow.account_id}, will be fixed"
                 )
 
-            if needs_update:
+            if update_fields:
                 logger.info(
                     f"  Updating global preset '{preset_name}' (fields: {', '.join(update_fields)})"
                 )
                 if not dry_run:
-                    # Update the preset - set account_id to None explicitly
-                    update_data = {
-                        "name": preset_name,
-                        "description": preset_def.get("description"),
-                        "icon": preset_def.get("icon"),
-                        "prompt_template": preset_def.get("prompt_template"),
-                        "agent_type": preset_def.get("agent_type"),
-                        "agent_config": preset_def.get("agent_config"),
-                        "allowed_mcp_servers": preset_def.get(
-                            "allowed_mcp_servers", []
-                        ),
-                        "allowed_mcp_tools": preset_def.get("allowed_mcp_tools", []),
-                        "git_clone_config": preset_def.get("git_clone_config"),
-                        "notifications": preset_def.get("notifications"),
-                        "trigger_event_source": preset_def.get("trigger_event_source"),
-                        "trigger_event_type": preset_def.get("trigger_event_type"),
-                        "trigger_config": preset_def.get("trigger_config"),
-                        "is_preset": True,
-                        "is_enabled": False,  # Global presets are always disabled
-                    }
                     # Update directly to ensure account_id stays NULL
-                    for field, value in update_data.items():
+                    for field, value in row_fields.items():
                         if hasattr(existing_flow, field):
                             setattr(existing_flow, field, value)
                     existing_flow.account_id = None  # Ensure it's NULL
@@ -164,16 +195,11 @@ def sync_global_presets(db: Session, dry_run: bool = False) -> int:
             # Create new global preset
             logger.info(f"  Creating new global preset '{preset_name}'")
             if not dry_run:
-                # Prepare preset data
-                preset_data = preset_def.copy()
-                preset_data.pop("account_id", None)  # Ensure no account_id
-                preset_data["trigger_event_source"] = None
-                preset_data["trigger_event_type"] = preset_def.get("trigger_event_type")
-                preset_data["is_preset"] = True
-                preset_data["is_enabled"] = False
-
-                flow_create = schemas.FlowCreate(**preset_data)
-                crud_flow.create(db=db, flow_in=flow_create, account_id=None)
+                crud_flow.create(
+                    db=db,
+                    flow_in=build_preset_flow_create(preset_def),
+                    account_id=None,
+                )
             changes_count += 1
 
     logger.info(f"Total global preset changes: {changes_count}")

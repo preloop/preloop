@@ -22,6 +22,7 @@ from preloop.cra.schemas import (
     expected_cra_schema_from_prompt,
     is_cra_schema_id,
 )
+from preloop.cra.repair import corrections_summary, verdict_corrections
 from preloop.cra.validate import (
     AUTHORITY_OFFLINE,
     AUTHORITY_REQUIRED,
@@ -294,17 +295,21 @@ def apply_cra_persist_boundary(
 
     waivers = delivered_waivers_from_trigger(trigger_payload)
     policy = gate_policy_from_trigger(trigger_payload)
-    validation = validate_cra_result(
-        payload,
-        expected_schema=expected,
-        prompt=prompt,
-        delivered_waivers=waivers,
-        platform_approvals=platform_approvals,
-        previous_gap_register=previous_gap_register,
-        require_coverage=require_coverage,
-        authority=authority,
-        gate_policy=policy,
-    )
+
+    def _validate(candidate: Any) -> CraValidationResult:
+        return validate_cra_result(
+            candidate,
+            expected_schema=expected,
+            prompt=prompt,
+            delivered_waivers=waivers,
+            platform_approvals=platform_approvals,
+            previous_gap_register=previous_gap_register,
+            require_coverage=require_coverage,
+            authority=authority,
+            gate_policy=policy,
+        )
+
+    validation = _validate(payload)
     if validation.skipped:
         persisted: Optional[dict[str, Any]]
         if payload is None:
@@ -325,8 +330,30 @@ def apply_cra_persist_boundary(
             )
         return CraPersistDecision(artifact=persisted, validation=validation)
 
+    # A complete audit whose only defect is a verdict label the platform can
+    # derive is corrected and recorded, not discarded (dogfood round 2, P6).
+    # The correction is re-validated in full: it is allowed to save the run
+    # only if the whole contract then passes.
+    reported = validation
+    candidate, corrections = verdict_corrections(payload)
+    if corrections:
+        revalidated = _validate(candidate)
+        if revalidated.ok:
+            revalidated.advisories.append(
+                f"verdict corrected by the platform: {corrections_summary(corrections)}"
+            )
+            logger.warning(
+                "CRA result %s verdict corrected at persist: %s",
+                revalidated.schema_id,
+                corrections_summary(corrections),
+            )
+            return CraPersistDecision(artifact=candidate, validation=revalidated)
+        # The label moved; report what still fails on the corrected copy so
+        # the operator is not sent after a verdict the platform already fixed.
+        reported = revalidated
+
     error = UNSUPPORTED_ERROR
-    safe_failures = failure_strings(validation.failures)
+    safe_failures = failure_strings(reported.failures)
     joined = " ".join(safe_failures).lower()
     if any("no result.json" in item or "no schema" in item for item in safe_failures):
         error = MISSING_ERROR
@@ -334,9 +361,9 @@ def apply_cra_persist_boundary(
         error = UNSUPPORTED_ERROR
     else:
         error = INVALID_ERROR
-    wrapped = wrap_invalid_cra_result(payload, validation.failures, error=error)
+    wrapped = wrap_invalid_cra_result(payload, reported.failures, error=error)
     logger.warning("CRA persist failed closed: %s", wrapped.get("detail"))
-    return CraPersistDecision(artifact=wrapped, validation=validation)
+    return CraPersistDecision(artifact=wrapped, validation=reported)
 
 
 def cra_fail_closed_error_message(decision: CraPersistDecision) -> str:

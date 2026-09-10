@@ -91,7 +91,9 @@ the shared encrypted artifact API (`kind=evidence`); Kubernetes logs carry
 status markers only. `GET .../result` and `GET .../evidence-status` report the
 persisted receipt (`kind=evidence`) without decrypt; download verifies digest
 and tenancy and reports `available` / `missing` / `expired` / `failed`
-distinctly. See
+distinctly. Packs are signed at capture with the account Ed25519 key; the
+signature lives beside the archive so the content-addressed digest does not
+change. See
 [evidence-storage.md](../guide/flows/evidence-storage.md). This is operational
 retention, not object-lock.
 

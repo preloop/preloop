@@ -202,13 +202,33 @@ class TestIncompletionEnvelope:
         """An unfinished run may not fabricate the sections it never ran."""
         name, prompt = incomplete_preset
         norm = _norm(prompt)
-        assert "You may NOT add the audit body" in norm
         assert "claimed work is validated in full" in norm
-        forbidden = {
-            "SBOM Verify": "source, valid, minimum_elements, coverage",
-            "Release Security Audit": "sbom_audit, vuln_scan, drift",
+        opening, forbidden = {
+            "SBOM Verify": (
+                "You may NOT add the audit body",
+                "source, valid, minimum_elements, coverage",
+            ),
+            "Release Security Audit": (
+                "You may NOT add the rest of the audit body",
+                "sbom_audit, vuln_scan, gap_register, evidence_storage",
+            ),
         }[name]
+        assert opening in norm
         assert forbidden in norm
+
+    def test_measured_drift_survives_an_unfinished_run(self):
+        """Drift finishes before the gate, so the envelope may carry it.
+
+        Round 2 wrote a full drift report and a null drift field, which reads
+        to a consumer as "no drift" (P7).
+        """
+        prompt = _load_preset(PRESET_FILES["Release Security Audit"])["prompt_template"]
+        norm = _norm(prompt)
+        assert "You MAY also add" in norm
+        assert '"drift" when PHASE 3 actually ran' in norm
+        assert "artifacts.drift_report naming it" in norm
+        assert "DRIFT IS WRITTEN TWICE OR NOT AT ALL" in norm
+        assert "no baseline is not a clean baseline" in norm
 
     def test_incompletion_never_reads_as_a_release(self, incomplete_preset):
         _, prompt = incomplete_preset
@@ -754,6 +774,168 @@ class TestUpstreamResolutionEnrichment:
         )
 
 
+class TestArticle14Reporting:
+    """The judgement and the clock, in every preset that can hold them.
+
+    The obligation applies from 11 September 2026. Before this, a run
+    produced art14_candidates (a list of KEV ids) and no deadline anywhere,
+    so an operator could not ask "do I have to file something in the next
+    24 hours".
+    """
+
+    SCREENING_PRESETS = ("SBOM Exploit Check", "Release Security Audit")
+
+    @pytest.fixture(params=SCREENING_PRESETS)
+    def screening_prompt(self, request):
+        return _load_preset(PRESET_FILES[request.param])["prompt_template"]
+
+    def test_contract_carries_the_reporting_block(self, screening_prompt):
+        for field in (
+            '"assessment": "no_reportable_vulnerability" | "reportable_candidate" | "undetermined"',
+            '"exploited_evidence": "kev" | "vendor_advisory" | "none"',
+            '"reportable": true|false',
+            '"status": "none" | "drafted" | "submitted" | "out_of_scope"',
+            '"not_a_legal_determination": true',
+        ):
+            assert field in screening_prompt, f"missing reporting field {field}"
+
+    def test_all_three_deadlines_are_declared(self, screening_prompt):
+        for key in ("early_warning_24h", "notification_72h", "final_report_14d"):
+            assert key in screening_prompt, f"missing deadline {key}"
+
+    def test_reportable_is_derived_not_asserted(self, screening_prompt):
+        norm = _norm(screening_prompt)
+        assert (
+            "reportable is exactly actively_exploited AND affected.value true" in norm
+        )
+
+    def test_affected_call_must_name_its_source(self, screening_prompt):
+        norm = _norm(screening_prompt)
+        assert 'makes it false with source "vex"' in norm
+        assert '"undetermined" with source "unknown"' in norm
+
+    def test_silence_is_not_nothing_to_report(self, screening_prompt):
+        norm = _norm(screening_prompt)
+        assert (
+            'assessment must be "undetermined"' in norm
+            or 'assessment must be "undetermined", NOT' in norm
+        )
+        assert 'silence must not read as "nothing to report"' in norm.lower()
+
+    def test_no_submission_client_is_claimed(self, screening_prompt):
+        norm = _norm(screening_prompt)
+        assert "Preloop does not file anything" in norm
+        assert "ENISA single reporting platform" in norm
+
+    def test_report_states_the_answer_in_one_sentence(self, screening_prompt):
+        norm = _norm(screening_prompt)
+        assert "ARTICLE 14 REPORTING BOX (mandatory" in norm
+        assert (
+            "Reportable under CRA Article 14? No / Candidate, see reporting / "
+            "Undetermined, scan incomplete. Not legal advice." in norm
+        )
+
+    def test_release_audit_clock_starts_at_first_awareness(self):
+        prompt = _load_preset(PRESET_FILES["Release Security Audit"])["prompt_template"]
+        norm = _norm(prompt)
+        assert "use the baseline's run_at, not this run's" in norm
+        assert "A re-run never restarts the clock" in norm
+        assert "+24h, +72h, +14d, in UTC" in norm
+
+    def test_release_audit_waiver_does_not_clear_a_report(self):
+        prompt = _load_preset(PRESET_FILES["Release Security Audit"])["prompt_template"]
+        norm = _norm(prompt)
+        assert (
+            "a waiver never clears it: waiving a gate failure is a release "
+            "decision, not a reporting determination" in norm
+        )
+
+    def test_sbom_verify_refuses_the_question_explicitly(self):
+        prompt = _load_preset(PRESET_FILES["SBOM Verify"])["prompt_template"]
+        norm = _norm(prompt)
+        assert '"assessment": "undetermined"' in prompt
+        assert (
+            '"basis": "SBOM verification does not screen for vulnerabilities; '
+            'run preset 005 or 006"' in prompt
+        )
+        assert "Never write any other assessment here" in norm
+        assert (
+            "Reportable under CRA Article 14? Undetermined: this run does not "
+            "screen for vulnerabilities." in norm
+        )
+
+
+class TestVexBeforeTheGate:
+    """VEX is subtracted from the gate population, not annotated after it.
+
+    A round 2 CRA rerun escalated GO-2026-5932 to a danger approval even
+    though the delivered VEX said not_affected. Suppression has to happen
+    before the severity policy runs, or authoring VEX costs interrupts
+    instead of saving them.
+    """
+
+    @pytest.fixture
+    def prompt(self):
+        return _load_preset(PRESET_FILES["Release Security Audit"])["prompt_template"]
+
+    def test_order_is_stated_as_vex_then_gate(self, prompt):
+        norm = _norm(prompt)
+        assert "VEX APPLICATION COMES BEFORE THE GATE" in norm
+        assert "subtracted from the gate population BEFORE the severity policy" in norm
+        assert "VEX is applied BEFORE the gate, never after" in norm
+
+    def test_suppression_requires_a_justification(self, prompt):
+        norm = _norm(prompt)
+        assert (
+            "vex_status is not_affected, fixed or false_positive AND a "
+            "non-empty vex_justification is present" in norm
+        )
+        assert "not_affected with no justification suppresses NOTHING" in norm
+        assert "affected and under_investigation never suppress" in norm
+
+    def test_suppressed_findings_leave_the_gate_population(self, prompt):
+        norm = _norm(prompt)
+        assert "VEX-suppressed findings do NOT enter the severity gate" in norm
+
+    def test_gate_records_the_statement_id_and_justification(self, prompt):
+        norm = _norm(prompt)
+        assert "vuln_scan.gate. vex_suppressed" in norm or (
+            "vuln_scan.gate.vex_suppressed" in norm
+        )
+        for field in (
+            '"vex_status": "not_affected" | "fixed" | "false_positive"',
+            '"vex_statement_id": "<statement id, verbatim>"',
+            '"vex_justification": "<justification, verbatim>"',
+            '"would_have_failed": "kev" | "cvss" | "unscored"',
+        ):
+            assert field in prompt, f"missing vex_suppressed field {field}"
+
+    def test_findings_carry_the_statement_fields(self, prompt):
+        assert '"vex_statement_id": "<the statement\'s own id, or null>"' in prompt
+        assert '"vex_justification":' in prompt
+
+    def test_suppressed_findings_are_never_escalated(self, prompt):
+        norm = _norm(prompt)
+        assert "A VEX-suppressed finding is never escalated to a human" in norm
+        assert "must not appear in an ask_user question" in norm
+        assert "a run whose only advisory is VEX-suppressed asks nothing at all" in norm
+
+    def test_suppression_is_echoed_on_the_report_cover(self, prompt):
+        norm = _norm(prompt)
+        assert "VEX SUPPRESSIONS (mandatory cover section" in norm
+        assert "the finding id, the statement id, the justification verbatim" in norm
+        assert '"No VEX statement suppressed a gate failure."' in norm
+        assert "a suppression that is not on the cover did not happen" in norm
+
+    def test_sbom_verify_states_it_does_not_apply_vex(self):
+        """004 verifies an SBOM and never screens vulnerabilities, so it has
+        no gate for VEX to act on. Say so rather than leaving it ambiguous."""
+        prompt = _load_preset(PRESET_FILES["SBOM Verify"])["prompt_template"]
+        norm = _norm(prompt)
+        assert "does not screen for vulnerabilities" in norm
+        assert "no severity gate" in norm and "no VEX suppression" in norm
+
+
 class TestReleaseAuditWaivers:
     """Waivers: the governed alternative to verdict upgrades. Human-authored
     inputs, deterministic application, verbatim echo, fail-closed defaults."""
@@ -817,6 +999,27 @@ class TestReleaseAuditWaivers:
             '"waivers_unmatched"',
         ):
             assert field in prompt, f"missing gate field: {field}"
+
+    def test_the_waiver_call_names_its_own_window(self, prompt):
+        """The window must not depend on the flow row alone.
+
+        Round 2 (P3): the presets sync dropped approval_window_seconds, so
+        this preset's declared 3 days never reached the flow row and
+        resolve_approval_window fell back to the 300 second deployment
+        default. The tool argument is the first source that function
+        consults, so naming it here survives a stale or hand-cloned row.
+        """
+        norm = _norm(prompt)
+        assert "Pass timeout_seconds: 259200 (3 days) on that same call" in norm
+        assert str(self.THREE_DAYS) in prompt
+
+    THREE_DAYS = 259200
+
+    def test_the_declared_window_matches_the_flow_field(self):
+        """The tool argument and the flow field say the same thing."""
+        preset = _load_preset(PRESET_FILES["Release Security Audit"])
+        assert preset["approval_window_seconds"] == self.THREE_DAYS
+        assert f"timeout_seconds: {self.THREE_DAYS}" in preset["prompt_template"]
 
     def test_interactive_collection_is_batched_and_fail_closed(self, prompt):
         norm = _norm(prompt)
