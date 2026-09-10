@@ -154,3 +154,9 @@ Production smoke tests are designed to perform a quick, high-level check to ensu
 ### Schedule
 
 Smoke tests are run on a schedule (e.g., every hour) and are configured to send notifications if the tests fail.
+
+## CI test reuse
+
+A CHANGELOG-only follow-up can reuse verified recent successful suites when all
+other effective merge-tree inputs match. See [CI test reuse](docs/ci-test-reuse.md)
+for trust checks, limitations, and how to force fresh tests.

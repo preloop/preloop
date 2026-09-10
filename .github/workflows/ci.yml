@@ -23,6 +23,8 @@ on:
   # in-flight branch rather than main — silently ran no checks at all, so they
   # looked clean because nothing had examined them.
   pull_request:
+  # Manual runs force fresh tests and never publish images.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
@@ -43,7 +45,11 @@ jobs:
   # ==========================================================================
 
   changes:
-    name: Detect changed paths
+    name: Detect changed paths [merge ${{ github.sha }}]
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     runs-on: ubuntu-latest
     outputs:
       backend: ${{ steps.out.outputs.backend }}
@@ -53,9 +59,32 @@ jobs:
       helm: ${{ steps.out.outputs.helm }}
       workflow: ${{ steps.out.outputs.workflow }}
       requirements: ${{ steps.out.outputs.requirements }}
+      fingerprint: ${{ steps.reuse.outputs.fingerprint }}
+      reuse_backend: ${{ steps.reuse.outputs.reuse_backend }}
+      reuse_frontend: ${{ steps.reuse.outputs.reuse_frontend }}
+      reuse_plugins: ${{ steps.reuse.outputs.reuse_plugins }}
+      reuse_cli: ${{ steps.reuse.outputs.reuse_cli }}
+      evidence_backend: ${{ steps.reuse.outputs.evidence_backend }}
+      evidence_frontend: ${{ steps.reuse.outputs.evidence_frontend }}
+      evidence_plugins: ${{ steps.reuse.outputs.evidence_plugins }}
+      evidence_cli: ${{ steps.reuse.outputs.evidence_cli }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify checkout ${{ github.sha }}
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Find successful identical-input tests
+        id: reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRELOOP_DISABLE_TELEMETRY: "true"
+        run: python3 -I scripts/ci/reuse_tests.py
 
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         if: github.event_name == 'pull_request'
@@ -86,6 +115,14 @@ jobs:
               - 'scripts/helm-render-check.sh'
             workflow:
               - '.github/workflows/ci.yml'
+              - 'scripts/**'
+              - 'tests/**'
+              - 'conftest.py'
+              - 'pytest.ini'
+              - '.test_durations'
+              - 'VERSION'
+              - 'openapi.yaml'
+              - '.pre-commit-config.yaml'
             # Anything that can change what a hash-pinned lock resolves to.
             requirements:
               - 'requirements/**'
@@ -252,10 +289,10 @@ jobs:
   # coverage floor is applied after shards are combined -- a single shard
   # only sees part of the tree.
   test-backend:
-    name: Backend Tests (${{ matrix.group }}/8)
+    name: Backend Tests (${{ matrix.group }}/8) [inputs ${{ needs.changes.outputs.fingerprint }}]
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.backend == 'true'
+    if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.reuse_backend != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -284,6 +321,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -334,12 +374,15 @@ jobs:
           path: test-results.xml
 
   test-backend-coverage:
-    name: Backend Coverage
+    name: Backend Coverage [inputs ${{ needs.changes.outputs.fingerprint }}]
     runs-on: ubuntu-latest
     needs: [changes, test-backend]
-    if: needs.changes.outputs.backend == 'true'
+    if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.reuse_backend != 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -394,16 +437,19 @@ jobs:
   # ==========================================================================
 
   test-frontend:
-    name: Frontend Tests
+    name: Frontend Tests [inputs ${{ needs.changes.outputs.fingerprint }}]
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.frontend == 'true'
+    if: needs.changes.outputs.frontend == 'true' && needs.changes.outputs.reuse_frontend != 'true'
     defaults:
       run:
         working-directory: frontend
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -454,13 +500,16 @@ jobs:
   # ==========================================================================
 
   test-runtime-plugins:
-    name: Runtime Plugin Tests
+    name: Runtime Plugin Tests [inputs ${{ needs.changes.outputs.fingerprint }}]
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.plugins == 'true'
+    if: needs.changes.outputs.plugins == 'true' && needs.changes.outputs.reuse_plugins != 'true'
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -551,11 +600,11 @@ jobs:
   #      comment in cli/internal/cmd/testsupport_test.go.
 
   test-cli-windows:
-    name: CLI Tests (Windows)
+    name: CLI Tests (Windows) [inputs ${{ needs.changes.outputs.fingerprint }}]
     runs-on: windows-latest
     continue-on-error: true
     needs: changes
-    if: needs.changes.outputs.cli == 'true'
+    if: needs.changes.outputs.cli == 'true' && needs.changes.outputs.reuse_cli != 'true'
 
     defaults:
       run:
@@ -563,6 +612,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -636,7 +688,7 @@ jobs:
     runs-on: ubuntu-latest
     # PRs do not build images: this job is a multi-arch QEMU build that does
     # not push, and release.yml already publishes from main/tags.
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'push'
     needs: [lint, test-backend-coverage, test-frontend, test-runtime-plugins]
     permissions:
       contents: read
@@ -750,6 +802,15 @@ jobs:
           FRONTEND: ${{ needs.test-frontend.result }}
           PLUGINS: ${{ needs.test-runtime-plugins.result }}
           CLIVULN: ${{ needs.cli-vuln-scan.result }}
+          EXPECT_BACKEND: ${{ needs.changes.outputs.backend }}
+          EXPECT_FRONTEND: ${{ needs.changes.outputs.frontend }}
+          EXPECT_PLUGINS: ${{ needs.changes.outputs.plugins }}
+          REUSE_BACKEND: ${{ needs.changes.outputs.reuse_backend }}
+          REUSE_FRONTEND: ${{ needs.changes.outputs.reuse_frontend }}
+          REUSE_PLUGINS: ${{ needs.changes.outputs.reuse_plugins }}
+          EVIDENCE_BACKEND: ${{ needs.changes.outputs.evidence_backend }}
+          EVIDENCE_FRONTEND: ${{ needs.changes.outputs.evidence_frontend }}
+          EVIDENCE_PLUGINS: ${{ needs.changes.outputs.evidence_plugins }}
         run: |
           failed=0
           check() {
@@ -773,4 +834,21 @@ jobs:
           check test-frontend "$FRONTEND"
           check test-runtime-plugins "$PLUGINS"
           check cli-vuln-scan "$CLIVULN"
+          require_tests() {
+            name="$1"; result="$2"; expected="$3"; reused="$4"; evidence="$5"
+            if [ "$result" = "skipped" ] && [ "$expected" = "true" ]; then
+              if [ "$reused" != "true" ] || [ -z "$evidence" ]; then
+                echo "::error::$name skipped without verified prior successful tests"
+                failed=1
+              else
+                echo "- $name: reused successful tests from $evidence" >> "$GITHUB_STEP_SUMMARY"
+              fi
+            else
+              echo "- $name: $result (required by paths: $expected)" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+          require_tests backend "$BACKEND" "$EXPECT_BACKEND" "$REUSE_BACKEND" "$EVIDENCE_BACKEND"
+          require_tests coverage "$COVERAGE" "$EXPECT_BACKEND" "$REUSE_BACKEND" "$EVIDENCE_BACKEND"
+          require_tests frontend "$FRONTEND" "$EXPECT_FRONTEND" "$REUSE_FRONTEND" "$EVIDENCE_FRONTEND"
+          require_tests plugins "$PLUGINS" "$EXPECT_PLUGINS" "$REUSE_PLUGINS" "$EVIDENCE_PLUGINS"
           exit "$failed"
