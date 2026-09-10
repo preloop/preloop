@@ -1,6 +1,6 @@
 # Security Considerations
 
-Auth, tenancy, redaction, and secret custody are platform concerns, not agent self-reporting. This chapter covers the security checklist, redaction policy, secret service, security-screen scoring, and `preloop.security`.
+Auth, tenancy, redaction, and secret custody are platform concerns, not agent self-reporting. This chapter covers the security checklist, redaction policy, secret service, the tamper-evident audit chain and record signatures, security-screen scoring, and `preloop.security`.
 
 ## Security Screen Scoring (QM Proxy Contract)
 *   **Purpose:** Let external agent platforms delegate content security screening to Preloop through a documented HTTP contract, starting with QM's `securityScreen: { backend: "proxy" }` deployment option.
@@ -21,6 +21,13 @@ Auth, tenancy, redaction, and secret custody are platform concerns, not agent se
 *   **Git Guard:** `git_guard.py` allow-lists metadata-only git invocations so no historical blob contents can be dumped into logs or transcripts. It has no production callers yet; it is the enforcement half of the planned follow-up that wires `validate_gap_register` into result ingestion.
 *   **Waiver Inputs:** `waivers.py` deterministically factors human-authored waiver entries (`{id, reason, author, date}`, plus optional scope/expiry/package/version and the platform approval id for interactively collected ones) into a severity-gate outcome: alias-aware matching (a CVE id waives the same advisory surfaced under a GHSA/OSV alias), verbatim echo of applied entries, unmatched/invalid entries surfaced rather than dropped, and an unwaived failure always keeps the gate failed. Interactive `006` waivers bind stored `ask_user` `tool_result`/`responses` (exact finding id and human reason), not `status=approved` or question text. Ambiguous `request_approval` prose, including a `waive_finding` operation, is not a waiver. AI-judged and auto-approved rows cannot authenticate a human waiver or due-diligence decision. The severity gate is KEV or CVSS >= 9.0 unless trigger/CI `gate.fail_on_kev` / `gate.fail_on_cvss_gte` (in `[0, 10]`) override it — never model-authored `gate.policy` display text. There is no per-product policy table.
 *   **Scanner Boundary:** Scanners (gitleaks, zizmor) are installed and run inside the agent execution sandbox per the release security audit preset (`backend/presets/006-release-security-audit.yaml`), never on the platform control plane.
+
+## Tamper-evident audit trail and signed records
+*   **Chain:** A background pass seals audit rows per account into a hash chain (`chain_seq`, `prev_hash`, `row_hash`). Editing, deleting, or reordering a sealed row breaks every hash from that point. Sealing is off the request path so a chain error cannot fail the audited action. Signed checkpoints over the chain head are the artifact a customer can keep off the platform.
+*   **Keys:** One active Ed25519 key per account. The private half is Fernet-encrypted with `SECURITY__ENCRYPTION_KEY`; the public half is published. Rotation retires the old key without invalidating signatures it already made.
+*   **Signatures:** Detached, over a digest, with the payload type inside the signed bytes so a period-export signature cannot be replayed as an evidence-pack signature. Evidence packs are signed at capture, not at download. Signing is never a precondition: an unsigned export or pack is still served.
+*   **Verification:** `preloop audit verify` and `preloop evidence verify` recompute hashes and signatures on the caller's machine and tell the caller to trust that walk over the server's verdict. Operator guide: [Evidence storage and signed records](../guide/flows/evidence-storage.md).
+*   **What this does not prove:** A compromised server can forge a record before it is signed. The chain is not WORM. Rows below the retention purge floor and rows not yet sealed are outside any result.
 
 ## Authentication & Authorization
 

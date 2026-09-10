@@ -62,6 +62,22 @@ regexes = [
 ]
 
 # ---------------------------------------------------------------------------
+# Cryptography type names
+# ---------------------------------------------------------------------------
+# generic-api-key treats `private_key: <TypeName>` as a committed secret.
+# Ed25519PrivateKey / Ed25519PublicKey are cryptography class names, not
+# PEM or raw key material. The match first appeared on the audit-chain
+# branch (480bd991) and Secret Scan walks full history (fetch-depth: 0),
+# so every PR that fetches that commit fails until this class is allowed.
+[[allowlists]]
+description = "Cryptography type names, not key material"
+regexTarget = "secret"
+regexes = [
+  '''^Ed25519PrivateKey$''',
+  '''^Ed25519PublicKey$''',
+]
+
+# ---------------------------------------------------------------------------
 # Generated example payloads
 # ---------------------------------------------------------------------------
 # scripts/generate_example_session.py builds a fake GitHub Actions session for
@@ -71,18 +87,10 @@ description = "Synthetic payloads in the example-session generator"
 paths = ['''^scripts/generate_example_session\.py$''']
 
 # ---------------------------------------------------------------------------
-# Cryptography type names
+# Scanner baseline
 # ---------------------------------------------------------------------------
-# generic-api-key treats a dataclass field `private_key: Ed25519PrivateKey` as
-# a secret assignment because the type name is high-entropy. It is a type,
-# not a credential. The history scan fetches every ref (checkout fetch-depth
-# 0), so this false positive on another branch fails unrelated PRs.
-# Canonical form for this class: regexTarget=match with a single unanchored
-# type-name entry. Do not add Ed25519PublicKey; it is not an assignment-shaped
-# annotation, and a sibling branch's anchored duplicate should be dropped.
+# .gitleaksignore is a list of fingerprints. generic-api-key treats those
+# lines as credentials, so any commit that added one fails the history scan.
 [[allowlists]]
-description = "Ed25519 type names are not credentials"
-regexTarget = "match"
-regexes = [
-  '''Ed25519PrivateKey''',
-]
+description = "gitleaks fingerprint baseline"
+paths = ['''(^|/)\.gitleaksignore$''']

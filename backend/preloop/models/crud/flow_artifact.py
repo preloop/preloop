@@ -120,11 +120,18 @@ def lease(
 
 
 def cleanup(db: Session, *, now: datetime) -> int:
-    """Release expired unleased payloads while retaining honest availability."""
+    """Release expired unleased payloads while retaining honest availability.
+
+    A row under a legal hold is skipped whatever its ``expires_at`` says. The
+    hold has to block payload expiry, not only deletion: an evidence pack a
+    regulator may ask for has to still be downloadable, and "the record row
+    survived but the bytes are gone" is not what anyone means by a hold.
+    """
     count = (
         db.query(models.FlowArtifact)
         .filter(
             models.FlowArtifact.expires_at <= now,
+            models.FlowArtifact.legal_hold.is_(False),
             or_(
                 models.FlowArtifact.lease_until.is_(None),
                 models.FlowArtifact.lease_until <= now,

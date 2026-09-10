@@ -19,6 +19,7 @@
     "findings",
     "counts_by_severity",
     "art14_candidates",
+    "reporting",
     "gate",
     "new_since_last_run",
     "checks",
@@ -53,6 +54,7 @@
     "findings": {},
     "counts_by_severity": {},
     "art14_candidates": {},
+    "reporting": {},
     "gate": {},
     "new_since_last_run": {
       "type": "null"
