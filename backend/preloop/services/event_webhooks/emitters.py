@@ -15,6 +15,8 @@ from typing import Any, Mapping, Optional
 
 from preloop.services.event_webhooks import outbox
 from preloop.services.event_webhooks.events import (
+    EVENT_AGENT_NOTE_DELIVERED,
+    EVENT_AGENT_NOTE_SENT,
     EVENT_APPROVAL_CREATED,
     EVENT_APPROVAL_DECIDED,
     EVENT_BUDGET_EXCEEDED,
@@ -465,4 +467,93 @@ def emit_flow_execution_finished(
         # a run that fails then succeeds is two facts, not one.
         natural_key=f"{EVENT_FLOW_EXECUTION_FINISHED}:{execution_id}:{status}",
         subject_id=execution_id,
+    )
+
+
+# --- operator notes --------------------------------------------------------
+
+
+def operator_note_data(
+    note: Any,
+    *,
+    channel: Optional[str] = None,
+    turn_index: Optional[int] = None,
+    runtime_session_id: Optional[Any] = None,
+) -> dict[str, Any]:
+    """Body of ``agent.note_sent`` and ``agent.note_delivered``.
+
+    The note text is included: unlike tool arguments, the text *is* the fact,
+    and a receiver that mirrors notes into a ticket or a chat room has nothing
+    without it. Everything else is identity and placement.
+    """
+    return {
+        "note_id": getattr(note, "command_id", None),
+        "managed_agent_id": _str(getattr(note, "managed_agent_id", None)),
+        "runtime_session_id": _str(
+            runtime_session_id
+            if runtime_session_id is not None
+            else getattr(note, "runtime_session_id", None)
+        ),
+        "text": getattr(note, "body", None),
+        "author": {
+            "user_id": _str(getattr(note, "created_by_user_id", None)),
+            "display": getattr(note, "author_display", None),
+            "auth_method": getattr(note, "author_auth_method", None),
+        },
+        "created_at": _iso(getattr(note, "created_at", None)),
+        "expires_at": _iso(getattr(note, "expires_at", None)),
+        "delivered_at": _iso(getattr(note, "delivered_at", None)),
+        "delivery_channel": channel or getattr(note, "delivery_channel", None),
+        "turn_index": (
+            turn_index
+            if turn_index is not None
+            else getattr(note, "delivered_turn_index", None)
+        ),
+    }
+
+
+def emit_agent_note_sent(db: Any, note: Any) -> None:
+    """Enqueue ``agent.note_sent`` in the caller's transaction."""
+    note_id = getattr(note, "command_id", None)
+    if note_id is None:
+        return
+    outbox.enqueue_event(
+        db,
+        account_id=getattr(note, "account_id", None),
+        event_type=EVENT_AGENT_NOTE_SENT,
+        data=operator_note_data(note),
+        occurred_at=getattr(note, "created_at", None),
+        natural_key=f"{EVENT_AGENT_NOTE_SENT}:{note_id}",
+        subject_id=getattr(note, "id", None),
+    )
+
+
+def emit_agent_note_delivered(
+    db: Any,
+    note: Any,
+    *,
+    channel: str,
+    turn_index: Optional[int] = None,
+    runtime_session_id: Optional[Any] = None,
+) -> None:
+    """Enqueue ``agent.note_delivered`` in the caller's transaction.
+
+    Keyed on the note id alone: a note is delivered once, so a repeated emit
+    is the same fact and collapses into one delivery.
+    """
+    note_id = getattr(note, "command_id", None)
+    if note_id is None:
+        return
+    outbox.enqueue_event(
+        db,
+        account_id=getattr(note, "account_id", None),
+        event_type=EVENT_AGENT_NOTE_DELIVERED,
+        data=operator_note_data(
+            note,
+            channel=channel,
+            turn_index=turn_index,
+            runtime_session_id=runtime_session_id,
+        ),
+        natural_key=f"{EVENT_AGENT_NOTE_DELIVERED}:{note_id}",
+        subject_id=getattr(note, "id", None),
     )
