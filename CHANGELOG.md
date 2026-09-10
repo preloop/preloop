@@ -72,6 +72,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Record retention, legal hold and period export**: an account now states
+  how long it keeps each class of record (audit rows, approvals, evidence
+  pack records, runtime sessions, usage) in days, with a floor of 183 days
+  (six months, the AI Act Art. 26(6) horizon) that a deployment can raise and
+  nothing can lower, and a 365 day default.
+  `GET/PUT /api/v1/retention/settings` and `GET /api/v1/retention/purge-preview`.
+  A bounded background sweeper deletes what is past retention: batches of
+  1000, a batch ceiling, a wall clock budget per pass and an off-peak UTC
+  window, one audit row per class per pass with the cutoff and the count. It
+  is **off by default** (`RETENTION_PURGE_ENABLED`), so an upgrade never
+  silently starts deleting audit history, and `RETENTION_PURGE_DRY_RUN` gives
+  the counts without the deletes. A legal hold
+  (`POST /api/v1/retention/holds`, mandatory reason, actor recorded, audited
+  on both place and release) freezes one execution, approval or evidence
+  pack: the purge skips it and the evidence janitor leaves the ciphertext
+  alone past `expires_at`, so a held pack is still downloadable. Evidence
+  receipts now report the real `legal_hold` state instead of a hardcoded
+  false; `object_lock` stays false because Preloop cannot verify a property
+  of the storage layer beneath it.
+  `POST /api/v1/retention/exports?start=&end=` returns a tar.gz of one period
+  (audit rows, approvals, evidence receipts, holds) with a `manifest.json`
+  carrying a sha256 per member and a digest over the member list, in the same
+  shape an evidence pack manifest uses. The bundle is signed as of the entry
+  below; the digests and the signature show the archive is the one Preloop
+  built and has not been altered since, not that the records were true when
+  they were written.
+
+- **Tamper-evident audit log and signed, verifiable exports**: audit rows are
+  now sealed into a per-account hash chain. A bounded background pass gives
+  each row a `chain_seq`, the previous row's `row_hash` as `prev_hash`, and
+  its own `row_hash` over a canonical serialisation, so an edit, a deletion
+  from the middle or a reordering breaks every hash from that point on
+  (`AUDIT_CHAIN_ENABLED`, on by default: it only adds hashes, it never
+  removes a record). `GET /api/v1/audit/chain/status`, `/chain/verify`,
+  `/chain/segment` and `/chain/checkpoints`; the segment endpoint serves the
+  canonical payloads and stored hashes so `preloop audit verify` recomputes
+  every hash locally, reports the first break with its sequence and row id,
+  exits non-zero on a break, and says so when its verdict differs from ours.
+  Every `AUDIT_CHAIN_CHECKPOINT_INTERVAL` sealed rows a checkpoint over the
+  chain head is signed, which is the anchor a customer keeps off the
+  platform. The retention purge raises the chain's `pruned_below_seq` floor
+  as it deletes, so enforcing retention does not read as tampering.
+  Each account gets an Ed25519 signing key, stored encrypted like other
+  secrets, with the public half on `GET /api/v1/signing/keys` and rotation
+  through `POST /api/v1/signing/keys/rotate` (retired keys stay published and
+  their signatures stay valid). Period exports carry a detached
+  `signature.json` over the manifest digest, and evidence packs are signed at
+  capture with the signature served on the receipt and the download headers.
+  `preloop evidence verify <archive>` checks both, and `--public-key` checks
+  a bundle against a key you kept yourself, without contacting us.
+  What this does not do, stated in the docs as well: a compromised server can
+  forge a record before it is signed, and the chain proves order and
+  non-deletion within the range it names, not that the server told the truth.
+
 - **Approval windows on a human timescale, with parked executions**: an
   approval or question can now stay open for hours or days instead of the
   fixed 5 minutes. `approval_window_seconds` is a per-flow setting (flow form

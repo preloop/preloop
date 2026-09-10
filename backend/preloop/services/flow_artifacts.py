@@ -190,8 +190,15 @@ def evidence_receipt(
         "created_at": created,
         "expires_at": expires,
         "retention_hours": artifact_retention_hours("evidence"),
+        # object_lock stays false because Preloop does not assert it. It is a
+        # storage-layer property the operator configures (S3 Object Lock, a
+        # WORM volume) and the control plane has no way to verify it.
         "object_lock": False,
-        "legal_hold": False,
+        # legal_hold is now a real fact about this row rather than a constant:
+        # true means a legal_hold record freezes the pack, so the janitor
+        # leaves the ciphertext alone past expires_at and the retention purge
+        # leaves the row alone.
+        "legal_hold": bool(getattr(artifact, "legal_hold", False)),
         "integrity_verified": integrity_verified,
         "error": error,
     }
@@ -376,6 +383,11 @@ def _mark_status_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
     """Availability metadata for polls; never a verified-download claim."""
     status = str(receipt.get("status") or "missing")
     expires = receipt.get("expires_at")
+    # A held pack does not expire on the poll path either. The hold service
+    # stamps this key on the persisted receipt when it freezes a pack, so the
+    # cheap status poll and the live inspect agree.
+    if receipt.get("legal_hold"):
+        expires = None
     if status == "available" and expires:
         try:
             exp = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
@@ -428,7 +440,14 @@ def public_evidence_status(execution: Any) -> dict[str, Any]:
 def _receipt_for_artifact(execution: Any, artifact: Any) -> dict[str, Any]:
     """Build a receipt from a scoped evidence row's current availability."""
     now = datetime.now(UTC)
-    expired = artifact.expires_at <= now or artifact.ciphertext is None
+    # A held pack whose bytes are still there is available, whatever the
+    # operational expiry says: the hold is what stopped the janitor from
+    # taking them, so reporting "expired" would contradict the download.
+    held = bool(getattr(artifact, "legal_hold", False))
+    if held and artifact.ciphertext is not None:
+        expired = False
+    else:
+        expired = artifact.expires_at <= now or artifact.ciphertext is None
     status = "expired" if expired else str(artifact.availability or "available")
     if status not in {"available", "expired", "failed"}:
         status = "expired" if expired else "available"
@@ -680,7 +699,73 @@ def put_artifact(
         quota_bytes=settings.flow_artifact_account_quota_bytes,
         require_execution_open=require_execution_open,
     )
+    if kind == "evidence":
+        # Imported here, not at module scope: signing canonicalises through
+        # preloop.cra.evidence_pack, which imports this module.
+        from preloop.services import record_signing
+
+        # Sign at mint, not at download. A signature made when the pack is
+        # served would only ever say "this is what we hold now"; made here it
+        # is dated to the capture, and re-serving cannot change it (#558).
+        record_signing.sign_evidence_pack(
+            db,
+            account_id=account_id,
+            artifact_id=artifact.id,
+            execution_id=execution_id,
+            archive_sha256=manifest["sha256"],
+            size_bytes=manifest.get("size_bytes"),
+            created_at=now,
+            # store() already committed the artifact; this is the boundary
+            # that persists the signature (and a first-use key) beside it.
+            commit=True,
+        )
     return artifact_reference(artifact)
+
+
+def evidence_signature(
+    db: Session, *, account_id: UUID, artifact_id: Any
+) -> dict[str, Any] | None:
+    """The detached signature over one evidence pack, or None.
+
+    None is a normal answer: packs captured before #558, and packs from an
+    account whose key could not be minted, have no signature and the receipt
+    says so rather than pretending.
+    """
+    if not artifact_id:
+        return None
+    from preloop.services import record_signing
+
+    try:
+        record = record_signing.get_record_signature(
+            db,
+            account_id=account_id,
+            payload_type=record_signing.PAYLOAD_EVIDENCE_PACK,
+            subject_id=artifact_id,
+        )
+    except Exception:
+        logger.warning("Could not read the evidence signature", exc_info=True)
+        return None
+    if record is None:
+        return None
+    return record_signing.record_signature_document(record)
+
+
+def attach_evidence_signature(
+    db: Session, *, account_id: UUID, receipt: dict[str, Any]
+) -> dict[str, Any]:
+    """Return the receipt with its signature, when the pack has one.
+
+    Kept out of :func:`evidence_receipt` on purpose: that function is called
+    on paths that hold no session, and a receipt builder that needs a database
+    round trip would put one on every status poll.
+    """
+    document = evidence_signature(
+        db, account_id=account_id, artifact_id=receipt.get("artifact_id")
+    )
+    out = dict(receipt)
+    out["signature"] = document
+    out["signing_key_id"] = (document or {}).get("key_id")
+    return out
 
 
 def get_artifact(
