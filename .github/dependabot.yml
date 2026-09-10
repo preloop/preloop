@@ -85,10 +85,15 @@ updates:
       - backend
     commit-message:
       prefix: "chore(deps)"
-    # fastmcp 4.x requires mcp>=2 (fastmcp-slim client/server extra). mcp 2
-    # dropped streamablehttp_client, which mcp_client_pool.py imports at
-    # module load. Keep 3.x until the mcp v2 client migration lands.
+    # mcp 2.x removed streamablehttp_client (replaced by streamable_http_client
+    # plus httpx2). mcp_client_pool and the integration test client still import
+    # the 1.x name, so pyproject.toml stays at mcp<2 until that migration.
+    # Ignore mcp majors so Dependabot does not keep proposing mcp<3.
+    # fastmcp 4.x requires mcp>=2 (fastmcp-slim client/server extra). Keep 3.x
+    # until the mcp v2 client migration lands.
     ignore:
+      - dependency-name: "mcp"
+        update-types: ["version-update:semver-major"]
       - dependency-name: "fastmcp"
         update-types: ["version-update:semver-major"]
     # Group order matters: dependabot assigns a dependency to the first group
