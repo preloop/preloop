@@ -20158,12 +20158,12 @@ components:
         channel:
           type: string
           enum:
-          - gateway
           - hook
           - claude_channel
           - claude_message
           title: Channel
-          description: Which transport is about to carry the note.
+          description: Which harness transport is about to carry the note. Gateway
+            delivery is recorded by the gateway itself, never by this pull.
           default: hook
         session_id:
           anyOf:
