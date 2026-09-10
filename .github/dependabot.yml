@@ -85,6 +85,12 @@ updates:
       - backend
     commit-message:
       prefix: "chore(deps)"
+    # fastmcp 4.x requires mcp>=2 (fastmcp-slim client/server extra). mcp 2
+    # dropped streamablehttp_client, which mcp_client_pool.py imports at
+    # module load. Keep 3.x until the mcp v2 client migration lands.
+    ignore:
+      - dependency-name: "fastmcp"
+        versions: ["4.x"]
     # Group order matters: dependabot assigns a dependency to the first group
     # whose patterns match, so the lockstep families have to come before the
     # catch-all pip-minor-patch group.
