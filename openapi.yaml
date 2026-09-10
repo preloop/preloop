@@ -4768,6 +4768,235 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/retention/settings:
+    get:
+      tags:
+      - Retention
+      summary: Get Retention Settings
+      description: Return this account's retention per record class, and the floor.
+      operationId: get_retention_settings_api_v1_retention_settings_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetentionSettingsRead'
+      security:
+      - bearerAuth: []
+    put:
+      tags:
+      - Retention
+      summary: Update Retention Settings
+      description: 'Set retention per record class, never below the six month floor.
+
+
+        The body is the full desired state: a class the caller omits, or sets to
+
+        null, goes back to the deployment default.'
+      operationId: update_retention_settings_api_v1_retention_settings_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetentionSettingsUpdate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetentionSettingsRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/retention/purge-preview:
+    get:
+      tags:
+      - Retention
+      summary: Preview Retention Purge
+      description: 'Count what the purge would remove today, without removing anything.
+
+
+        Nobody should discover the effect of a retention setting by watching rows
+
+        disappear. Rows under a legal hold are already excluded by the same
+
+        filters the purge uses, so the count is the count.'
+      operationId: preview_retention_purge_api_v1_retention_purge_preview_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetentionPurgePreview'
+      security:
+      - bearerAuth: []
+  /api/v1/retention/holds:
+    get:
+      tags:
+      - Retention
+      summary: List Legal Holds
+      description: List this account's legal holds, newest first.
+      operationId: list_legal_holds_api_v1_retention_holds_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: active_only
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Hide released holds
+          default: true
+          title: Active Only
+        description: Hide released holds
+      - name: resource_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Resource Type
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 100
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LegalHoldRead'
+                title: Response List Legal Holds Api V1 Retention Holds Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - Retention
+      summary: Create Legal Hold
+      description: Freeze one execution, approval or evidence pack until released.
+      operationId: create_legal_hold_api_v1_retention_holds_post
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LegalHoldCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegalHoldRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/retention/holds/{hold_id}/release:
+    post:
+      tags:
+      - Retention
+      summary: Release Legal Hold
+      description: Lift a hold. The record stays, with who lifted it and why.
+      operationId: release_legal_hold_api_v1_retention_holds__hold_id__release_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: hold_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Hold Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LegalHoldRelease'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegalHoldRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/retention/exports:
+    post:
+      tags:
+      - Retention
+      summary: Create Period Export
+      description: 'Build a tar.gz of one period: audit rows, approvals, receipts,
+        holds.
+
+
+        The archive carries ``manifest.json`` with a sha256 per member and a
+
+        digest over the member list, in the same shape an evidence pack manifest
+
+        uses, so one verifier covers both.'
+      operationId: create_period_export_api_v1_retention_exports_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start
+        in: query
+        required: true
+        schema:
+          type: string
+          description: Period start, inclusive (YYYY-MM-DD)
+          title: Start
+        description: Period start, inclusive (YYYY-MM-DD)
+      - name: end
+        in: query
+        required: true
+        schema:
+          type: string
+          description: Period end, exclusive (YYYY-MM-DD)
+          title: End
+        description: Period end, exclusive (YYYY-MM-DD)
+      responses:
+        '200':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/notification-preferences/me:
     get:
       tags:
@@ -9135,9 +9364,13 @@ paths:
 
         Served from the persisted execution receipt (no decrypt). Availability
 
-        is not integrity proof. ``object_lock`` and ``legal_hold`` are always
+        is not integrity proof. ``object_lock`` is always false: this API does
 
-        false: this API does not implement WORM retention.'
+        not implement WORM retention and cannot verify a property of the storage
+
+        layer beneath it. ``legal_hold`` is true while a hold covers the pack or
+
+        its execution, which blocks payload expiry and purge inside Preloop.'
       operationId: get_flow_execution_evidence_status_api_v1_flows_executions__execution_id__evidence_status_get
       security:
       - bearerAuth: []
@@ -18351,6 +18584,105 @@ components:
       - row_count
       title: LedgerBackfillUnmatched
       description: Unpriced usage rows whose family had no ledger spend that day.
+    LegalHoldCreate:
+      properties:
+        resource_type:
+          type: string
+          title: Resource Type
+          description: One of execution, approval, evidence_pack
+        resource_id:
+          type: string
+          maxLength: 255
+          title: Resource Id
+        reason:
+          type: string
+          maxLength: 2000
+          minLength: 8
+          title: Reason
+          description: Why this record is frozen. Written to the audit log.
+      type: object
+      required:
+      - resource_type
+      - resource_id
+      - reason
+      title: LegalHoldCreate
+      description: Place a hold on one execution, approval or evidence pack.
+    LegalHoldRead:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        resource_type:
+          type: string
+          title: Resource Type
+        resource_id:
+          type: string
+          title: Resource Id
+        reason:
+          type: string
+          title: Reason
+        placed_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Placed By User Id
+        placed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Placed At
+        released_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Released By User Id
+        released_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Released At
+        release_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Release Reason
+        active:
+          type: boolean
+          title: Active
+        flagged:
+          anyOf:
+          - additionalProperties:
+              type: integer
+            type: object
+          - type: 'null'
+          title: Flagged
+      type: object
+      required:
+      - id
+      - resource_type
+      - resource_id
+      - reason
+      - active
+      title: LegalHoldRead
+      description: One hold, active or released.
+    LegalHoldRelease:
+      properties:
+        reason:
+          type: string
+          maxLength: 2000
+          minLength: 8
+          title: Reason
+          description: Why the hold is being lifted. Written to the audit log.
+      type: object
+      required:
+      - reason
+      title: LegalHoldRelease
+      description: Lift a hold. The release reason is recorded too.
     LoginRequest:
       properties:
         username:
@@ -21215,6 +21547,123 @@ components:
       - reason
       title: ResumeRequest
       description: Explicit human retry. Historical decisions stay append-only.
+    RetentionClassRead:
+      properties:
+        record_class:
+          type: string
+          title: Record Class
+        label:
+          type: string
+          title: Label
+        days:
+          type: integer
+          title: Days
+        source:
+          type: string
+          title: Source
+          description: '''account'' when this account set it, ''default'' otherwise'
+        floored:
+          type: boolean
+          title: Floored
+          description: True when the stored value was raised to meet the floor
+          default: false
+      type: object
+      required:
+      - record_class
+      - label
+      - days
+      - source
+      title: RetentionClassRead
+      description: Resolved retention for one record class.
+    RetentionPurgePreview:
+      properties:
+        account_id:
+          type: string
+          format: uuid
+          title: Account Id
+        purge_enabled:
+          type: boolean
+          title: Purge Enabled
+        classes:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Classes
+        total:
+          type: integer
+          title: Total
+      type: object
+      required:
+      - account_id
+      - purge_enabled
+      - classes
+      - total
+      title: RetentionPurgePreview
+      description: What a purge would remove right now, without removing it.
+    RetentionSettingsRead:
+      properties:
+        floor_days:
+          type: integer
+          title: Floor Days
+          description: No record class can be set below this many days
+        default_days:
+          type: integer
+          title: Default Days
+          description: Applied to any class this account has not set
+        max_days:
+          type: integer
+          title: Max Days
+        classes:
+          items:
+            $ref: '#/components/schemas/RetentionClassRead'
+          type: array
+          title: Classes
+        purge_enabled:
+          type: boolean
+          title: Purge Enabled
+          description: False when this deployment never deletes. Retention is then
+            a stated policy that nothing enforces.
+        purge_dry_run:
+          type: boolean
+          title: Purge Dry Run
+        purge_window_utc:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Purge Window Utc
+          description: Off-peak UTC hour window the purge runs in, e.g. '1-5'
+        evidence_payload_hours:
+          type: integer
+          title: Evidence Payload Hours
+          description: How long encrypted evidence payloads are kept. Separate from
+            the 'evidence' record class, which governs the record row.
+      type: object
+      required:
+      - floor_days
+      - default_days
+      - max_days
+      - classes
+      - purge_enabled
+      - purge_dry_run
+      - evidence_payload_hours
+      title: RetentionSettingsRead
+      description: Everything the console needs to render the retention panel.
+    RetentionSettingsUpdate:
+      properties:
+        classes:
+          additionalProperties:
+            anyOf:
+            - type: integer
+            - type: 'null'
+          type: object
+          title: Classes
+          description: 'Record class to days. null clears the account''s setting for
+            that class. Known classes: audit, approvals, evidence, runtime_sessions,
+            usage'
+      type: object
+      title: RetentionSettingsUpdate
+      description: Full desired state. An omitted class falls back to the default.
     RollbackRequest:
       properties:
         preview_only:

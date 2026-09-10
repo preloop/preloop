@@ -53,6 +53,7 @@ from preloop.api.endpoints import (
     projects,
     public_approval,
     pull_requests,
+    retention,
     roles,
     search as search_router,
     security_maintenance,
@@ -365,6 +366,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.info("Skipping optimization job sweeper for %s role.", service_role)
 
+    # Start the retention purge sweeper (skip in testing mode). Off the
+    # request path by construction, and it sleeps before its first pass rather
+    # than deleting on boot: a crash loop must not turn into a delete loop.
+    # Disabled unless RETENTION_PURGE_ENABLED is set, so an upgrade never
+    # silently starts removing audit history.
+    retention_purge_sweeper = None
+    if not is_testing and is_api_role and settings.retention_purge_enabled:
+        from preloop.services.retention_purge import get_retention_purge_sweeper
+
+        retention_purge_sweeper = get_retention_purge_sweeper()
+        await retention_purge_sweeper.start()
+        logger.info("Retention purge sweeper started.")
+    else:
+        logger.info(
+            "Retention purge sweeper not started (enabled=%s, role=%s).",
+            settings.retention_purge_enabled,
+            service_role,
+        )
+
     # Start the webhook delivery worker (skip in testing mode). Outbound
     # deliveries never run on the request path; this drains the outbox.
     webhook_delivery_worker = None
@@ -576,6 +596,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("Webhook delivery worker stopped.")
         except Exception as e:
             logger.error(f"Error stopping webhook delivery worker: {e}", exc_info=True)
+
+    # Stop the retention purge sweeper. A pass in flight finishes its current
+    # batch and stops at the next check; batches are small on purpose so this
+    # is a short wait, and a half-done purge is simply resumed next pass.
+    if not is_testing and retention_purge_sweeper:
+        try:
+            await retention_purge_sweeper.stop()
+            logger.info("Retention purge sweeper stopped.")
+        except Exception as e:
+            logger.error(f"Error stopping retention purge sweeper: {e}", exc_info=True)
 
     # Stop the optimization-job sweeper and abandon in-flight optimization
     # jobs (skip in testing mode). shutdown(wait=False) on purpose: a model
@@ -1017,6 +1047,11 @@ def create_app() -> FastAPI:
         )
         app.include_router(
             event_webhooks.router,
+            prefix="/api/v1",
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            retention.router,
             prefix="/api/v1",
             dependencies=[Depends(get_current_active_user)],
         )

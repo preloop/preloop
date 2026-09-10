@@ -904,8 +904,10 @@ def get_flow_execution_evidence_status(
 
     Status is one of ``available``, ``missing``, ``expired``, or ``failed``.
     Served from the persisted execution receipt (no decrypt). Availability
-    is not integrity proof. ``object_lock`` and ``legal_hold`` are always
-    false: this API does not implement WORM retention.
+    is not integrity proof. ``object_lock`` is always false: this API does
+    not implement WORM retention and cannot verify a property of the storage
+    layer beneath it. ``legal_hold`` is true while a hold covers the pack or
+    its execution, which blocks payload expiry and purge inside Preloop.
     """
     execution = crud_flow_execution.get(
         db=db, id=execution_id, account_id=current_user.account_id
