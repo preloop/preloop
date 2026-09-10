@@ -190,8 +190,15 @@ def evidence_receipt(
         "created_at": created,
         "expires_at": expires,
         "retention_hours": artifact_retention_hours("evidence"),
+        # object_lock stays false because Preloop does not assert it. It is a
+        # storage-layer property the operator configures (S3 Object Lock, a
+        # WORM volume) and the control plane has no way to verify it.
         "object_lock": False,
-        "legal_hold": False,
+        # legal_hold is now a real fact about this row rather than a constant:
+        # true means a legal_hold record freezes the pack, so the janitor
+        # leaves the ciphertext alone past expires_at and the retention purge
+        # leaves the row alone.
+        "legal_hold": bool(getattr(artifact, "legal_hold", False)),
         "integrity_verified": integrity_verified,
         "error": error,
     }
@@ -376,6 +383,11 @@ def _mark_status_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
     """Availability metadata for polls; never a verified-download claim."""
     status = str(receipt.get("status") or "missing")
     expires = receipt.get("expires_at")
+    # A held pack does not expire on the poll path either. The hold service
+    # stamps this key on the persisted receipt when it freezes a pack, so the
+    # cheap status poll and the live inspect agree.
+    if receipt.get("legal_hold"):
+        expires = None
     if status == "available" and expires:
         try:
             exp = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
@@ -428,7 +440,14 @@ def public_evidence_status(execution: Any) -> dict[str, Any]:
 def _receipt_for_artifact(execution: Any, artifact: Any) -> dict[str, Any]:
     """Build a receipt from a scoped evidence row's current availability."""
     now = datetime.now(UTC)
-    expired = artifact.expires_at <= now or artifact.ciphertext is None
+    # A held pack whose bytes are still there is available, whatever the
+    # operational expiry says: the hold is what stopped the janitor from
+    # taking them, so reporting "expired" would contradict the download.
+    held = bool(getattr(artifact, "legal_hold", False))
+    if held and artifact.ciphertext is not None:
+        expired = False
+    else:
+        expired = artifact.expires_at <= now or artifact.ciphertext is None
     status = "expired" if expired else str(artifact.availability or "available")
     if status not in {"available", "expired", "failed"}:
         status = "expired" if expired else "available"
