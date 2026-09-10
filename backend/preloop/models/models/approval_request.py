@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional, TYPE_CHECKING
 
 from sqlalchemy import (
+    Boolean,
     String,
     DateTime,
     Text,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     Index,
     inspect,
     text,
+    false as sa_false,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -338,6 +340,19 @@ class ApprovalRequest(Base):
         nullable=True,
         index=True,
         comment="The ApprovalBypass that auto-approved this request",
+    )
+
+    # Derived legal-hold enforcement flag (see models/legal_hold.py). The
+    # account-visible record with actor and reason is a legal_hold row; this
+    # column is what the retention purge tests so a batch DELETE stays a
+    # single table query.
+    legal_hold: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=sa_false(),
+        index=True,
+        comment="True while a legal hold blocks this approval from purge",
     )
 
     # Relationships

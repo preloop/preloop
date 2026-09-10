@@ -550,6 +550,98 @@ class Settings(BaseSettings):
     )
     flow_environment_profiles_file: str = ""
 
+    # Record retention, legal hold and the purge job
+    # (docs/guide/flows/evidence-storage.md). These govern how long *records*
+    # are kept (audit rows, approvals, evidence pack rows, runtime sessions,
+    # usage), which is a different question from how long the encrypted
+    # evidence payload is kept (FLOW_EVIDENCE_RETENTION_HOURS above).
+    retention_default_days: int = Field(
+        365,
+        ge=1,
+        description=(
+            "Default retention per record class, in days, for accounts that "
+            "set nothing. Twelve months. Resolved values are clamped up to "
+            "the effective floor, so a shorter default cannot take effect "
+            "(RETENTION_DEFAULT_DAYS)."
+        ),
+    )
+    retention_floor_days: int = Field(
+        183,
+        ge=1,
+        description=(
+            "Deployment floor for any retention setting, in days. The "
+            "absolute floor of 183 days (six months, AI Act Art. 26(6)) is a "
+            "module constant in preloop.services.retention_policy: this "
+            "setting can only raise it, never lower it "
+            "(RETENTION_FLOOR_DAYS)."
+        ),
+    )
+    retention_purge_enabled: bool = Field(
+        False,
+        description=(
+            "Run the scheduled retention purge. Off by default on purpose: a "
+            "job that starts deleting an account's audit history on upgrade "
+            "is not something an operator should discover afterwards. Turn it "
+            "on deliberately (RETENTION_PURGE_ENABLED)."
+        ),
+    )
+    retention_purge_dry_run: bool = Field(
+        False,
+        description=(
+            "Count and audit what the purge would delete without deleting "
+            "anything. Audit rows are written with action "
+            "'retention_purge_preview' (RETENTION_PURGE_DRY_RUN)."
+        ),
+    )
+    retention_purge_interval_seconds: int = Field(
+        3600,
+        ge=60,
+        description="Seconds between retention purge passes.",
+    )
+    retention_purge_batch_size: int = Field(
+        1000,
+        ge=1,
+        le=100000,
+        description=(
+            "Rows deleted per statement. Each batch is its own transaction so "
+            "the purge never holds a long lock."
+        ),
+    )
+    retention_purge_max_batches: int = Field(
+        50,
+        ge=1,
+        description=(
+            "Maximum batches per record class per account per pass. The "
+            "backlog is drained across passes rather than in one long "
+            "transaction."
+        ),
+    )
+    retention_purge_max_seconds: int = Field(
+        300,
+        ge=1,
+        description=(
+            "Wall-clock budget for one purge pass. The pass stops cleanly at "
+            "the budget and resumes on the next tick."
+        ),
+    )
+    retention_purge_window_utc: str = Field(
+        "1-5",
+        description=(
+            "Off-peak UTC hour window the purge may run in, as 'start-end' "
+            "(half open, so '1-5' means 01:00 to 04:59 UTC). Empty string "
+            "means any hour (RETENTION_PURGE_WINDOW_UTC)."
+        ),
+    )
+    retention_export_max_rows: int = Field(
+        100000,
+        ge=1,
+        description=(
+            "Maximum rows per record class in one period export. Exceeding it "
+            "is an error telling the caller to narrow the period; a compliance "
+            "export is never silently truncated (RETENTION_EXPORT_MAX_ROWS)."
+        ),
+    )
+
     # Outbound event webhooks (docs/guide/webhooks.md). Every default is
     # usable as-is; a deployment only tunes these when a receiver is slow or
     # an account produces a lot of events.
