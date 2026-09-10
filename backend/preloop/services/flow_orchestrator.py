@@ -316,6 +316,33 @@ def _result_artifact_confirmation(artifact: Optional[Dict[str, Any]]) -> Optiona
     return None
 
 
+def _artifact_failure_signal(artifact: Optional[Dict[str, Any]]) -> tuple[str, Any]:
+    """Name the field that classified an artifact as an explicit failure.
+
+    The override message used to read ``status=None`` whenever a CRA
+    incompletion envelope (#512) failed the run, because it always printed
+    ``status`` even though the envelope has no ``status`` key and the field
+    that actually decided was ``verdict``. Staging execution
+    e42c6086-f637-4d18-be09-2395c4d488ca is the example: an operator reading
+    "status=None" has no way to find the ``verdict: error`` that caused it.
+    """
+    if not isinstance(artifact, dict):
+        return "status", None
+    status = artifact.get("status")
+    if (
+        isinstance(status, str)
+        and status.strip().lower() in RESULT_ARTIFACT_FAILURE_STATUSES
+    ):
+        return "status", status
+    verdict = artifact.get("verdict")
+    if (
+        isinstance(verdict, str)
+        and verdict.strip().lower() in RESULT_ARTIFACT_VERDICT_FAILURES
+    ):
+        return "verdict", verdict
+    return "status", status
+
+
 # Line-start prefix an agent can print during the one-shot confirmation round
 # to state plainly that the ORIGINAL task did not complete. Everything after
 # the prefix is surfaced verbatim as the failure reason.
@@ -3143,6 +3170,12 @@ class FlowExecutionOrchestrator:
         """Deny a successful release when CRA persist validation failed closed."""
         from preloop.cra.persist import apply_cra_fail_closed_completion
 
+        if final_status == WAITING_FOR_HUMAN_STATUS:
+            # A parked run has not finished, so there is no release to deny.
+            # The artifact captured at park time is a mid-flight snapshot;
+            # the CRA verdict belongs to the resumed run that writes the real
+            # one. Failing closed here would mark a live execution FAILED.
+            return final_status, error_message
         decision = getattr(self, "_cra_persist_decision", None)
         if decision is None:
             return final_status, error_message
@@ -4281,6 +4314,83 @@ class FlowExecutionOrchestrator:
             seconds=remaining, source=budget.source, consumed_seconds=consumed
         )
 
+    async def _park_if_requested(
+        self, agent_executor: Any, session_reference: str, elapsed: float
+    ) -> Optional[Dict[str, Any]]:
+        """Park this run if the approval path asked for it; else None.
+
+        Called from two places in the monitor loop, and that is the point.
+        The park request is written by a different process (the approval
+        path) and observed here on a 5 second poll, while the agent that
+        received ``parked_for_human`` stops on its own. Checking only at the
+        top of the loop leaves a window in which the agent exits first and
+        the run is completed, fail-closed and notified as terminal while a
+        human still holds the question. So the terminal branch asks again.
+        """
+        from preloop.models.crud import crud_flow_execution
+
+        if self.execution_log is None:
+            return None
+        park_request = crud_flow_execution.get_park_request(
+            self.db,
+            execution_id=self.execution_log.id,
+        )
+        if not park_request or park_request.get("parked_at") is not None:
+            return None
+        logger.info(
+            "Parking execution %s on approval %s (expires %s)",
+            self.execution_log.id,
+            park_request["request_id"],
+            park_request.get("expires_at"),
+        )
+        self.execution_logger.log_milestone(
+            "execution_parked",
+            {
+                "approval_request_id": str(park_request["request_id"]),
+                "expires_at": (
+                    park_request["expires_at"].isoformat()
+                    if park_request.get("expires_at")
+                    else None
+                ),
+                "elapsed": elapsed,
+            },
+        )
+        # Capture BEFORE stopping: the result artifact call also captures the
+        # evidence pack, the workspace snapshot and the packed CLI session,
+        # which are exactly what the resume restores. On the terminal-branch
+        # call the container has already exited, and capture still works
+        # because the container is kept (AutoRemove=False).
+        result_artifact = await self._capture_result_artifact(
+            agent_executor, session_reference
+        )
+        try:
+            await agent_executor.stop(session_reference)
+        except Exception:
+            logger.warning(
+                "Could not stop the runtime for parked execution %s",
+                self.execution_log.id,
+                exc_info=True,
+            )
+        await self._publish_update(
+            "execution_parked",
+            {
+                "approval_request_id": str(park_request["request_id"]),
+                "elapsed": elapsed,
+            },
+        )
+        return {
+            "status": WAITING_FOR_HUMAN_STATUS,
+            "output_summary": None,
+            "error_message": None,
+            "actions_taken": self.execution_logger.get_actions_taken(),
+            "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+            "result": result_artifact,
+            "park": {
+                "approval_request_id": str(park_request["request_id"]),
+                "compute_seconds": (self._chain_consumed_seconds() + int(elapsed)),
+            },
+        }
+
     async def _monitor_agent_execution(
         self, session_reference: str, agent_executor: Any
     ) -> Dict[str, Any]:
@@ -4388,65 +4498,11 @@ class FlowExecutionOrchestrator:
                 # park request on this row because the question will not be
                 # answered on a container's timescale. Release the runtime and
                 # hand the run to the resume path; nothing here fails.
-                park_request = crud_flow_execution.get_park_request(
-                    self.db,
-                    execution_id=self.execution_log.id,
+                parked_result = await self._park_if_requested(
+                    agent_executor, session_reference, elapsed
                 )
-                if park_request and park_request.get("parked_at") is None:
-                    logger.info(
-                        "Parking execution %s on approval %s (expires %s)",
-                        self.execution_log.id,
-                        park_request["request_id"],
-                        park_request.get("expires_at"),
-                    )
-                    self.execution_logger.log_milestone(
-                        "execution_parked",
-                        {
-                            "approval_request_id": str(park_request["request_id"]),
-                            "expires_at": (
-                                park_request["expires_at"].isoformat()
-                                if park_request.get("expires_at")
-                                else None
-                            ),
-                            "elapsed": elapsed,
-                        },
-                    )
-                    # Capture BEFORE stopping: the result artifact call also
-                    # captures the evidence pack, the workspace snapshot and
-                    # the packed CLI session, which are exactly what the
-                    # resume restores.
-                    result_artifact = await self._capture_result_artifact(
-                        agent_executor, session_reference
-                    )
-                    try:
-                        await agent_executor.stop(session_reference)
-                    except Exception:
-                        logger.warning(
-                            "Could not stop the runtime for parked execution %s",
-                            self.execution_log.id,
-                            exc_info=True,
-                        )
-                    await self._publish_update(
-                        "execution_parked",
-                        {
-                            "approval_request_id": str(park_request["request_id"]),
-                            "elapsed": elapsed,
-                        },
-                    )
-                    return {
-                        "status": WAITING_FOR_HUMAN_STATUS,
-                        "output_summary": None,
-                        "error_message": None,
-                        "actions_taken": self.execution_logger.get_actions_taken(),
-                        "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
-                        "result": result_artifact,
-                        "park": {
-                            "approval_request_id": str(park_request["request_id"]),
-                            "compute_seconds": (
-                                self._chain_consumed_seconds() + int(elapsed)
-                            ),
-                        },
-                    }
+                if parked_result is not None:
+                    return parked_result
 
                 # Check if user requested stop
                 if self._stop_requested.is_set():
@@ -4593,6 +4649,19 @@ class FlowExecutionOrchestrator:
                     AgentStatus.FAILED,
                     AgentStatus.STOPPED,
                 ):
+                    # An agent handed `parked_for_human` stops working and
+                    # exits, which it can do entirely between two 5 second
+                    # polls of this loop. Ask once more before treating the
+                    # exit as the end of the run: a park that lost this race
+                    # would be completed, fail-closed and notified as
+                    # terminal while a human still holds the question, and
+                    # the eventual decision would have nothing to resume.
+                    parked_result = await self._park_if_requested(
+                        agent_executor, session_reference, elapsed
+                    )
+                    if parked_result is not None:
+                        return parked_result
+
                     # Agent finished, get final result
                     logger.info(
                         f"Agent finished with status {status.value} at {elapsed}s"
@@ -4645,10 +4714,16 @@ class FlowExecutionOrchestrator:
                     ):
                         assert result_artifact is not None
                         artifact_status = result_artifact.get("status")
+                        # Name the field that actually classified this, not
+                        # always "status": a CRA incompletion envelope (#512)
+                        # carries no status key and is classified on verdict.
+                        signal_field, signal_value = _artifact_failure_signal(
+                            result_artifact
+                        )
                         logger.warning(
                             "Agent exited with SUCCEEDED status but result.json "
-                            "reports an explicit failure status "
-                            f"({artifact_status!r}). "
+                            "reports an explicit failure "
+                            f"({signal_field}={signal_value!r}). "
                             "Overriding status to FAILED."
                         )
                         self.execution_logger.log_milestone(
@@ -4657,13 +4732,15 @@ class FlowExecutionOrchestrator:
                                 "original_status": result.status.value,
                                 "exit_code": result.exit_code,
                                 "artifact_status": artifact_status,
+                                "signal_field": signal_field,
+                                "signal_value": signal_value,
                                 "sentinel_seen": self._success_sentinel_seen.is_set(),
                             },
                         )
                         final_status = "FAILED"
                         error_message = result.error_message or (
                             "Agent reported an explicit failure in result.json "
-                            f"(status={artifact_status!r})."
+                            f"({signal_field}={signal_value!r})."
                         )
                     elif (
                         result.status == AgentStatus.SUCCEEDED
@@ -4761,6 +4838,12 @@ class FlowExecutionOrchestrator:
                             # failure in result.json wins over the sentinel.
                             assert result_artifact is not None
                             artifact_status = result_artifact.get("status")
+                            # Name the field that classified this, not always
+                            # "status": a CRA incompletion envelope has no status
+                            # key and is classified on verdict.
+                            signal_field, signal_value = _artifact_failure_signal(
+                                result_artifact
+                            )
                             # Container may still be in post-exec; fetch the
                             # result so _retry_decision sees exit_code instead
                             # of treating it as unknown.
@@ -4769,6 +4852,8 @@ class FlowExecutionOrchestrator:
                                 "result_artifact_failure_override",
                                 {
                                     "artifact_status": artifact_status,
+                                    "signal_field": signal_field,
+                                    "signal_value": signal_value,
                                     "sentinel_seen": True,
                                     "exit_code": result.exit_code,
                                 },
@@ -4777,8 +4862,8 @@ class FlowExecutionOrchestrator:
                                 "status": "FAILED",
                                 "error_message": (
                                     "Agent reported an explicit failure in "
-                                    "result.json (status="
-                                    f"{artifact_status!r})."
+                                    "result.json "
+                                    f"({signal_field}={signal_value!r})."
                                 ),
                                 "actions_taken": self.execution_logger.get_actions_taken(),
                                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
@@ -4996,6 +5081,7 @@ class FlowExecutionOrchestrator:
         """
         try:
             from preloop.services.event_webhooks.emitters import (
+                emit_cra_reportable_vulnerabilities,
                 emit_flow_execution_finished,
             )
 
@@ -5007,6 +5093,10 @@ class FlowExecutionOrchestrator:
                 failure_category=failure_category
                 or getattr(self.execution_log, "failure_category", None),
             )
+            # CRA Article 14 candidates ride the same commit. A 24 hour
+            # deadline that only exists inside an evidence pack nobody opened
+            # is not a notification.
+            emit_cra_reportable_vulnerabilities(self.db, self.execution_log, self.flow)
             self.db.commit()
         except Exception:
             logger.warning(

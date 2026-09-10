@@ -3,10 +3,10 @@
 # Everything here has been looked at. Nothing goes in without a note. Class
 # exclusions belong in .gitleaks.toml instead; this file is for one-offs.
 #
-# The working tree is clean without any entries in this file. All eleven
-# fingerprints below are historical commits, from before the project was
-# public and before this scanner existed. History cannot be edited without
-# rewriting every downstream clone, so they are recorded here instead.
+# The working tree is clean without any entries in this file. The
+# fingerprints below are historical (or otherwise not in this PR's tree).
+# History cannot be edited without rewriting every downstream clone, so they
+# are recorded here instead.
 #
 # IMPORTANT: "baselined" is not "harmless". Four of these are credential
 # shapes with high entropy in a repository that is now public. They must be
@@ -45,3 +45,12 @@ e71706cd13436b34ea22a3d4d71ac3da715d1114:lib/preloop-sync/test_search.py:generic
 e71706cd13436b34ea22a3d4d71ac3da715d1114:lib/preloop-sync/test_api.py:generic-api-key:6
 # Demo API token in an early frontend view under the removed lib/ tree.
 93c5b68b95da6d862a37e0e1354aa01a50e19b2e:lib/frontend/src/views/authed/issues-view.ts:generic-api-key:63
+
+# --- false positive on an unmerged feature branch -----------------------
+# Secret Scan fetch-depth 0 walks every remote branch. A signing-key
+# dataclass field annotation on feat/tamper-evident-records trips
+# generic-api-key. Not a credential.
+480bd991973f8a921d902b0dd3a401e6e11d3724:backend/preloop/services/record_signing.py:generic-api-key:84
+# The previous note on this ignore file used the same field name and
+# tripped the same rule. Working tree no longer has that wording.
+b8970d2a6f8d0354a26b271e65a052876861da2f:.gitleaksignore:generic-api-key:52

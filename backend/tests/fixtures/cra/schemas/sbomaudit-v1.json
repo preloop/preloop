@@ -19,6 +19,7 @@
     "license_flags",
     "delta",
     "verdict",
+    "reporting",
     "checks",
     "assessments",
     "artifacts",
@@ -56,6 +57,7 @@
         "fail"
       ]
     },
+    "reporting": {},
     "checks": {},
     "assessments": {},
     "artifacts": {},

@@ -147,11 +147,15 @@ it could:
 - Human approval invented from model output. Reviewer names and
   timestamps come from the approval audit trail, or they are omitted.
 - Certification, CE marking, or a completed conformity assessment.
-- Legal hold, object-lock, or WORM retention of evidence blobs. The
-  dossier copies a server-owned `kind=evidence` receipt (`sha256`,
-  status, retention hours, `integrity_verified`) from
-  `inspect_evidence` / `load_evidence`. Availability polls are not
-  download integrity. `retained` is true only after a verified receipt.
+- Object-lock or WORM retention of evidence blobs. A Preloop legal hold
+  does exist now (see
+  [evidence storage](evidence-storage.md#retention-and-legal-hold)): it
+  blocks purge and payload expiry inside Preloop, and it is not a
+  storage-layer guarantee. The dossier copies a server-owned
+  `kind=evidence` receipt (`sha256`, status, retention hours,
+  `legal_hold`, `integrity_verified`) from `inspect_evidence` /
+  `load_evidence`. Availability polls are not download integrity.
+  `retained` is true only after a verified receipt.
 - A successful **product** publication when any one repository failed
   to push or open its pull request. Local commits are not success.
   Partial remote receipts stay on the execution; the run is failed.
