@@ -642,6 +642,82 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Audit hash chain and record signing (issue #558,
+    # docs/guide/flows/evidence-storage.md). The chain gives audit rows an
+    # order and makes a later edit or deletion visible; the signing key lets
+    # evidence that has left the platform be checked by someone who does not
+    # trust the platform's copy of it.
+    audit_chain_enabled: bool = Field(
+        True,
+        description=(
+            "Seal audit rows into the per-account hash chain. On by default: "
+            "unlike the retention purge this only adds hashes, it never "
+            "removes a record, so an upgrade cannot lose anything by running "
+            "it (AUDIT_CHAIN_ENABLED)."
+        ),
+    )
+    audit_chain_seal_interval_seconds: int = Field(
+        60,
+        ge=5,
+        description=(
+            "Seconds between sealing passes. Rows written since the last pass "
+            "are not in the chain yet; this is the size of that window "
+            "(AUDIT_CHAIN_SEAL_INTERVAL_SECONDS)."
+        ),
+    )
+    audit_chain_seal_lag_seconds: int = Field(
+        60,
+        ge=0,
+        description=(
+            "How far behind now the sealer stays, so a transaction that "
+            "started before the pass can still commit its audit row in "
+            "timestamp order (AUDIT_CHAIN_SEAL_LAG_SECONDS)."
+        ),
+    )
+    audit_chain_seal_batch_size: int = Field(
+        500,
+        ge=1,
+        le=10000,
+        description=(
+            "Rows sealed per transaction. Each batch commits on its own so a "
+            "backlog never holds a long lock on audit_log."
+        ),
+    )
+    audit_chain_seal_max_batches: int = Field(
+        20,
+        ge=1,
+        description=(
+            "Batch ceiling per account per pass. A backlog is drained across "
+            "passes rather than in one long transaction."
+        ),
+    )
+    audit_chain_seal_max_seconds: int = Field(
+        60,
+        ge=1,
+        description=(
+            "Wall-clock budget for one sealing pass. The pass stops cleanly "
+            "at the budget and resumes on the next tick."
+        ),
+    )
+    audit_chain_checkpoint_interval: int = Field(
+        1000,
+        ge=1,
+        description=(
+            "Sealed rows between signed checkpoints. A checkpoint is the "
+            "anchor a customer can keep off the platform "
+            "(AUDIT_CHAIN_CHECKPOINT_INTERVAL)."
+        ),
+    )
+    audit_chain_verify_max_rows: int = Field(
+        50000,
+        ge=1,
+        description=(
+            "Maximum rows one verification request walks. Over the bound the "
+            "response is truncated and says so, so the caller can continue "
+            "from the last sequence it checked."
+        ),
+    )
+
     # Outbound event webhooks (docs/guide/webhooks.md). Every default is
     # usable as-is; a deployment only tunes these when a receiver is slow or
     # an account produces a lot of events.

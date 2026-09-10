@@ -30,6 +30,16 @@ from .issue_compliance_result import IssueComplianceResult
 from .plan import Plan, Subscription, MonthlyUsage
 from .issue_relationship import IssueRelationship
 from .issue_set import IssueSet
+from .account_signing_key import (
+    KEY_ID_PREFIX,
+    SIGNING_ALGORITHM_ED25519,
+    AccountSigningKey,
+)
+from .audit_chain import (
+    GENESIS_HASH,
+    AuditChainCheckpoint,
+    AuditChainState,
+)
 from .legal_hold import (
     HOLD_RESOURCE_APPROVAL,
     HOLD_RESOURCE_EVIDENCE_PACK,
@@ -146,6 +156,12 @@ __all__ = [
     "MonthlyUsage",
     "IssueRelationship",
     "IssueSet",
+    "AccountSigningKey",
+    "AuditChainCheckpoint",
+    "AuditChainState",
+    "GENESIS_HASH",
+    "KEY_ID_PREFIX",
+    "SIGNING_ALGORITHM_ED25519",
     "LegalHold",
     "HOLD_RESOURCE_APPROVAL",
     "HOLD_RESOURCE_EVIDENCE_PACK",
