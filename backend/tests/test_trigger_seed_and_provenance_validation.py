@@ -165,6 +165,14 @@ class TestEveryReaderUsesThatRule:
         inputs = evidence_manifest_context(body)["inputs"]
         assert [item["path"] for item in inputs] == [SEED["path"]]
 
+    def test_the_evidence_manifest_records_a_mapping_beside_payload(self):
+        from preloop.cra.evidence_pack import evidence_manifest_context
+
+        mapping = _seed_only_mapping()
+        body = {"payload": {"title": "x"}, "product_provenance": mapping}
+        source = evidence_manifest_context(body)["source"]
+        assert source["status"] == "declared"
+
     def test_provenance_hashes_the_seed_it_names(self):
         from preloop.services.product_provenance import facts_from_workspace_files
 
@@ -252,12 +260,27 @@ class TestErrorsNameTheSchemaTheKeyAndTheDoc:
         [
             ({"schema": "preloop.cra.product_provenance/v99"}, "schema"),
             (_seed_only_mapping(repositories="nope"), "repositories"),
+            (_seed_only_mapping(repositories=["not-an-object"]), "repositories"),
             (
                 {
                     "schema": PRODUCT_PROVENANCE_SCHEMA,
                     **{k: v for k, v in _seed_only_mapping().items() if k != "sbom"},
                 },
                 "sbom.digest",
+            ),
+            (
+                {
+                    **_seed_only_mapping(),
+                    "product": {"name": ""},
+                },
+                "product.name",
+            ),
+            (
+                {
+                    **_seed_only_mapping(),
+                    "release": {"identifier": ""},
+                },
+                "release.identifier",
             ),
         ],
     )
@@ -353,6 +376,41 @@ class TestTheEndpointRefusesBeforeAnExecutionExists:
         )
         assert response.status_code == 400, response.text
         assert WORKSPACE_FILES_KEY in response.json()["detail"]
+
+    def test_a_webhook_body_is_also_refused_before_an_execution(
+        self, client: TestClient, db_session: Session, test_user: User
+    ):
+        """A webhook wraps the caller's JSON as payload; shape still belongs
+        to the request, not to a FAILED row."""
+        from preloop.models.schemas.flow import WebhookConfig
+
+        flow_in = FlowCreate(
+            name=f"Seed Webhook {uuid4().hex[:8]}",
+            prompt_template="Audit {{payload.title}}",
+            agent_type="codex",
+            agent_config={"sandbox_type": "exec", "max_iterations": 9},
+            trigger_event_source="webhook",
+            trigger_event_types=["webhook"],
+            webhook_config=WebhookConfig(webhook_secret="seed-webhook-secret"),
+            account_id=test_user.account_id,
+            is_enabled=True,
+        )
+        flow = crud_flow.create(
+            db=db_session, flow_in=flow_in, account_id=test_user.account_id
+        )
+        secret = flow.webhook_config["webhook_secret"]
+        before = db_session.query(FlowExecution).filter_by(flow_id=flow.id).count()
+        mapping = _seed_only_mapping()
+        mapping.pop("sbom")
+        response = client.post(
+            f"/api/v1/webhooks/flows/{flow.id}/{secret}",
+            json={"title": "x", "product_provenance": mapping},
+        )
+        assert response.status_code == 400, response.text
+        detail = response.json()["detail"]
+        assert "sbom.digest" in detail and PRODUCT_PROVENANCE_DOC in detail
+        after = db_session.query(FlowExecution).filter_by(flow_id=flow.id).count()
+        assert after == before, "a rejected mapping must not consume an execution"
 
 
 class TestReservedKeysAreRefusedNotIgnored:

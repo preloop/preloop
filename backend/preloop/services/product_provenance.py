@@ -380,7 +380,9 @@ def _parse_identity(mapping: Mapping[str, Any]) -> ProductIdentity:
         name = ""
         product_id = None
     if not name:
-        raise ProductProvenanceError("product.name is required in product mapping")
+        raise _contract_error(
+            "product.name is required in product mapping", "product.name"
+        )
     release = mapping.get("release") or mapping.get("supported_release")
     if isinstance(release, str) and release.strip():
         identifier = release.strip()
@@ -393,8 +395,9 @@ def _parse_identity(mapping: Mapping[str, Any]) -> ProductIdentity:
         identifier = ""
         channel = None
     if not identifier or not _RELEASE_ID.fullmatch(identifier):
-        raise ProductProvenanceError(
-            "release.identifier is required and must be a stable supported-release id"
+        raise _contract_error(
+            "release.identifier is required and must be a stable supported-release id",
+            "release.identifier",
         )
     build = mapping.get("build")
     build_id = None
@@ -412,8 +415,9 @@ def _parse_identity(mapping: Mapping[str, Any]) -> ProductIdentity:
                 or parsed.username
                 or parsed.password
             ):
-                raise ProductProvenanceError(
-                    "build.url must be a credential-free http(s) URL when present"
+                raise _contract_error(
+                    "build.url must be a credential-free http(s) URL when present",
+                    "build.url",
                 )
             build_url = str(raw_url)
     return ProductIdentity(
@@ -457,7 +461,10 @@ def _parse_mapping_repositories(
     compliance = 0
     for row in rows:
         if not isinstance(row, Mapping):
-            raise ProductProvenanceError("repositories[] entries must be objects")
+            raise _contract_error(
+                "product mapping 'repositories' entries must be objects",
+                "repositories",
+            )
         remote = normalize_repository_url(
             str(row.get("remote") or row.get("repository_url") or "")
         )
@@ -467,7 +474,9 @@ def _parse_mapping_repositories(
         path = clone_path_slug(str(row.get("clone_path") or row.get("path") or ""))
         role = str(row.get("role") or "code").strip().lower()
         if role not in _ROLES:
-            raise ProductProvenanceError("repository role must be code or compliance")
+            raise _contract_error(
+                "repository role must be code or compliance", "repositories.role"
+            )
         if remote in seen_remote:
             raise DuplicateProductMappingError(
                 "product mapping lists the same remote more than once"

@@ -320,7 +320,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in both places is a 400 rather than a silent winner. The same lookup now
   feeds the container seed environment, the trigger-time budget check, the
   `_workspace_file_paths` audit stamp and the evidence pack manifest, so a
-  run's manifest digests the files it was actually given.
+  run's manifest digests the files it was actually given and records the
+  declared source wherever `product_provenance` sat in the body.
 
 - **A `product_provenance` mapping is usable on SBOM-only flows**:
   `repositories[]` was mandatory, so a flow with `git_clone_config: null`
@@ -332,8 +333,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A malformed product mapping no longer consumes an execution**: shape
   validation (schema, identity, `repositories[]`, SBOM digest and path) runs
-  at the trigger and answers 400, the way the workspace-seed budget check
-  already did, instead of creating an execution that immediately fails.
+  at the trigger (manual and webhook) and answers 400, the way the
+  workspace-seed budget check already did, instead of creating an execution
+  that immediately fails.
   Contract errors name the schema, the offending key and
   `docs/guide/flows/product-evidence.md`. Fact-dependent checks (declared SHA
   versus observed checkout, declared digest versus supplied bytes) still run

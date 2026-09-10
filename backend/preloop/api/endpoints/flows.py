@@ -52,6 +52,11 @@ from preloop.services.host_exec import (
     host_exec_profile_name,
     host_exec_unavailable_reason,
 )
+from preloop.services.product_provenance import (
+    ProductProvenanceError,
+    extract_product_provenance_payload,
+    validate_mapping_shape,
+)
 
 from preloop.schemas.flow_continuation import (
     ContinuationPreview,
@@ -1617,14 +1622,10 @@ def _reject_invalid_product_provenance(
 
     Only the body-decided half runs here. Whether the declared SHAs match the
     checkout the run actually got is a runtime fact, so it stays in the
-    orchestrator where the facts are.
+    orchestrator where the facts are. Webhook triggers wrap the caller's
+    JSON as ``payload``, so the same check runs there: a mapping inside the
+    webhook body is still a bad request, not a failed execution.
     """
-    from preloop.services.product_provenance import (
-        ProductProvenanceError,
-        extract_product_provenance_payload,
-        validate_mapping_shape,
-    )
-
     try:
         mapping = extract_product_provenance_payload(trigger_event_data)
         if mapping is not None:
@@ -2308,6 +2309,7 @@ async def trigger_flow_via_webhook(
     }
 
     _reject_oversized_workspace_seeds(event_data)
+    _reject_invalid_product_provenance(event_data)
 
     def _execution_url(execution_id: str) -> str:
         # Built from settings.preloop_url; self-hosted deployments where the
