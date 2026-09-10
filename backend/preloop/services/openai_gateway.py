@@ -169,6 +169,7 @@ from preloop.services.model_content_policy import (
     enforce_response_policy,
     wrap_stream_for_response_policy,
 )
+from preloop.services import operator_notes
 from preloop.services.secret_service import (
     ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
     CredentialRefreshError,
@@ -1079,6 +1080,33 @@ class OpenAIGatewayService:
     def _resolve_managed_agent_id(self) -> Optional[str]:
         return resolve_managed_agent_id_for_context(self.db, self.auth_context)
 
+    def _deliver_operator_notes(
+        self,
+        *,
+        payload: Dict[str, Any],
+        messages: List[Dict[str, Any]],
+        protocol: str,
+    ) -> None:
+        """Append any pending operator note to this outbound request.
+
+        Called once per protocol entry point, straight after the request
+        policy has run. That is the single place per protocol where the body
+        is final, the runtime session and managed agent are resolved, and
+        nothing has gone upstream yet, so the note lands at a turn boundary
+        and never inside a tool result or mid-stream.
+
+        Costs one indexed lookup when no note exists, which is almost always.
+        """
+        operator_notes.deliver_gateway_notes(
+            self.db,
+            account_id=str(self.auth_context.user.account_id),
+            managed_agent_id=self._resolve_managed_agent_id(),
+            runtime_session_id=self._resolve_runtime_session(),
+            protocol=protocol,
+            payload=payload,
+            messages=messages,
+        )
+
     def _emit_gateway_request_started(
         self,
         ai_model: AIModel,
@@ -1226,6 +1254,11 @@ class OpenAIGatewayService:
                 ai_model=model,
                 messages=messages,
                 provider="openai",
+            )
+            self._deliver_operator_notes(
+                payload=payload,
+                messages=messages,
+                protocol=operator_notes.PROTOCOL_OPENAI_CHAT,
             )
             if self._is_openai_codex_model(model):
                 # Codex bypasses _call_litellm, so capture tools_meta here too
@@ -1376,6 +1409,11 @@ class OpenAIGatewayService:
                 ai_model=model,
                 messages=messages,
                 provider="openai",
+            )
+            self._deliver_operator_notes(
+                payload=payload,
+                messages=messages,
+                protocol=operator_notes.PROTOCOL_OPENAI_RESPONSES,
             )
             # A Responses request should leave Preloop as a Responses request
             # whenever the upstream can take one (#159). ``None`` back from the
@@ -1528,6 +1566,11 @@ class OpenAIGatewayService:
                 ai_model=model,
                 messages=messages,
                 provider="anthropic",
+            )
+            self._deliver_operator_notes(
+                payload=payload,
+                messages=messages,
+                protocol=operator_notes.PROTOCOL_ANTHROPIC,
             )
             oauth_token = self._anthropic_oauth_passthrough_token(model)
             if oauth_token is not None:
@@ -1696,6 +1739,11 @@ class OpenAIGatewayService:
                 ai_model=model,
                 messages=messages,
                 provider="anthropic",
+            )
+            self._deliver_operator_notes(
+                payload=payload,
+                messages=messages,
+                protocol=operator_notes.PROTOCOL_ANTHROPIC,
             )
             oauth_token = self._anthropic_oauth_passthrough_token(model)
             if oauth_token is not None:
@@ -2148,6 +2196,11 @@ class OpenAIGatewayService:
                 messages=messages,
                 provider="openai",
             )
+            self._deliver_operator_notes(
+                payload=payload,
+                messages=messages,
+                protocol=operator_notes.PROTOCOL_OPENAI_CHAT,
+            )
             if self._is_openai_codex_model(model):
                 # Codex bypasses _call_litellm (T11 finding); attribute here.
                 self._capture_tools_meta(payload.get("tools"))
@@ -2443,6 +2496,11 @@ class OpenAIGatewayService:
                 ai_model=model,
                 messages=messages,
                 provider="openai",
+            )
+            self._deliver_operator_notes(
+                payload=payload,
+                messages=messages,
+                protocol=operator_notes.PROTOCOL_OPENAI_RESPONSES,
             )
             if self._is_openai_codex_model(model):
                 # Codex bypasses _call_litellm (T11 finding); attribute here.

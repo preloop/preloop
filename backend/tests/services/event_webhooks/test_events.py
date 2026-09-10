@@ -15,6 +15,8 @@ from preloop.models.models.webhook_endpoint import WebhookDelivery
 from preloop.services.event_webhooks import emitters, outbox
 from preloop.services.event_webhooks.events import (
     ENVELOPE_VERSION,
+    EVENT_AGENT_NOTE_DELIVERED,
+    EVENT_AGENT_NOTE_SENT,
     EVENT_APPROVAL_CREATED,
     EVENT_APPROVAL_DECIDED,
     EVENT_BUDGET_EXCEEDED,
@@ -99,6 +101,8 @@ def test_the_v1_catalogue_is_the_documented_list():
         EVENT_BUDGET_THRESHOLD,
         EVENT_BUDGET_EXCEEDED,
         EVENT_FLOW_EXECUTION_FINISHED,
+        EVENT_AGENT_NOTE_SENT,
+        EVENT_AGENT_NOTE_DELIVERED,
         EVENT_CRA_REPORTABLE_VULNERABILITY,
     )
 
