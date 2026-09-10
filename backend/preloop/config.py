@@ -550,6 +550,174 @@ class Settings(BaseSettings):
     )
     flow_environment_profiles_file: str = ""
 
+    # Record retention, legal hold and the purge job
+    # (docs/guide/flows/evidence-storage.md). These govern how long *records*
+    # are kept (audit rows, approvals, evidence pack rows, runtime sessions,
+    # usage), which is a different question from how long the encrypted
+    # evidence payload is kept (FLOW_EVIDENCE_RETENTION_HOURS above).
+    retention_default_days: int = Field(
+        365,
+        ge=1,
+        description=(
+            "Default retention per record class, in days, for accounts that "
+            "set nothing. Twelve months. Resolved values are clamped up to "
+            "the effective floor, so a shorter default cannot take effect "
+            "(RETENTION_DEFAULT_DAYS)."
+        ),
+    )
+    retention_floor_days: int = Field(
+        183,
+        ge=1,
+        description=(
+            "Deployment floor for any retention setting, in days. The "
+            "absolute floor of 183 days (six months, AI Act Art. 26(6)) is a "
+            "module constant in preloop.services.retention_policy: this "
+            "setting can only raise it, never lower it "
+            "(RETENTION_FLOOR_DAYS)."
+        ),
+    )
+    retention_purge_enabled: bool = Field(
+        False,
+        description=(
+            "Run the scheduled retention purge. Off by default on purpose: a "
+            "job that starts deleting an account's audit history on upgrade "
+            "is not something an operator should discover afterwards. Turn it "
+            "on deliberately (RETENTION_PURGE_ENABLED)."
+        ),
+    )
+    retention_purge_dry_run: bool = Field(
+        False,
+        description=(
+            "Count and audit what the purge would delete without deleting "
+            "anything. Audit rows are written with action "
+            "'retention_purge_preview' (RETENTION_PURGE_DRY_RUN)."
+        ),
+    )
+    retention_purge_interval_seconds: int = Field(
+        3600,
+        ge=60,
+        description="Seconds between retention purge passes.",
+    )
+    retention_purge_batch_size: int = Field(
+        1000,
+        ge=1,
+        le=100000,
+        description=(
+            "Rows deleted per statement. Each batch is its own transaction so "
+            "the purge never holds a long lock."
+        ),
+    )
+    retention_purge_max_batches: int = Field(
+        50,
+        ge=1,
+        description=(
+            "Maximum batches per record class per account per pass. The "
+            "backlog is drained across passes rather than in one long "
+            "transaction."
+        ),
+    )
+    retention_purge_max_seconds: int = Field(
+        300,
+        ge=1,
+        description=(
+            "Wall-clock budget for one purge pass. The pass stops cleanly at "
+            "the budget and resumes on the next tick."
+        ),
+    )
+    retention_purge_window_utc: str = Field(
+        "1-5",
+        description=(
+            "Off-peak UTC hour window the purge may run in, as 'start-end' "
+            "(half open, so '1-5' means 01:00 to 04:59 UTC). Empty string "
+            "means any hour (RETENTION_PURGE_WINDOW_UTC)."
+        ),
+    )
+    retention_export_max_rows: int = Field(
+        100000,
+        ge=1,
+        description=(
+            "Maximum rows per record class in one period export. Exceeding it "
+            "is an error telling the caller to narrow the period; a compliance "
+            "export is never silently truncated (RETENTION_EXPORT_MAX_ROWS)."
+        ),
+    )
+
+    # Audit hash chain and record signing (issue #558,
+    # docs/guide/flows/evidence-storage.md). The chain gives audit rows an
+    # order and makes a later edit or deletion visible; the signing key lets
+    # evidence that has left the platform be checked by someone who does not
+    # trust the platform's copy of it.
+    audit_chain_enabled: bool = Field(
+        True,
+        description=(
+            "Seal audit rows into the per-account hash chain. On by default: "
+            "unlike the retention purge this only adds hashes, it never "
+            "removes a record, so an upgrade cannot lose anything by running "
+            "it (AUDIT_CHAIN_ENABLED)."
+        ),
+    )
+    audit_chain_seal_interval_seconds: int = Field(
+        60,
+        ge=5,
+        description=(
+            "Seconds between sealing passes. Rows written since the last pass "
+            "are not in the chain yet; this is the size of that window "
+            "(AUDIT_CHAIN_SEAL_INTERVAL_SECONDS)."
+        ),
+    )
+    audit_chain_seal_lag_seconds: int = Field(
+        60,
+        ge=0,
+        description=(
+            "How far behind now the sealer stays, so a transaction that "
+            "started before the pass can still commit its audit row in "
+            "timestamp order (AUDIT_CHAIN_SEAL_LAG_SECONDS)."
+        ),
+    )
+    audit_chain_seal_batch_size: int = Field(
+        500,
+        ge=1,
+        le=10000,
+        description=(
+            "Rows sealed per transaction. Each batch commits on its own so a "
+            "backlog never holds a long lock on audit_log."
+        ),
+    )
+    audit_chain_seal_max_batches: int = Field(
+        20,
+        ge=1,
+        description=(
+            "Batch ceiling per account per pass. A backlog is drained across "
+            "passes rather than in one long transaction."
+        ),
+    )
+    audit_chain_seal_max_seconds: int = Field(
+        60,
+        ge=1,
+        description=(
+            "Wall-clock budget for one sealing pass. The pass stops cleanly "
+            "at the budget and resumes on the next tick."
+        ),
+    )
+    audit_chain_checkpoint_interval: int = Field(
+        1000,
+        ge=1,
+        description=(
+            "Sealed rows between signed checkpoints. A checkpoint is the "
+            "anchor a customer can keep off the platform "
+            "(AUDIT_CHAIN_CHECKPOINT_INTERVAL)."
+        ),
+    )
+    audit_chain_verify_max_rows: int = Field(
+        50000,
+        ge=1,
+        description=(
+            "Maximum rows one verification request walks. Over the bound the "
+            "response is truncated and says so, so the caller can continue "
+            "from the last sequence it checked."
+        ),
+    )
+
     # Outbound event webhooks (docs/guide/webhooks.md). Every default is
     # usable as-is; a deployment only tunes these when a receiver is slow or
     # an account produces a lot of events.

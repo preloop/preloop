@@ -64,6 +64,7 @@ from preloop.services.flow_continuation_adoption import (
 )
 from preloop.services.flow_artifacts import (
     EvidenceUnavailableError,
+    attach_evidence_signature,
     load_evidence,
     integrity_state,
     public_evidence_status,
@@ -905,15 +906,26 @@ def get_flow_execution_evidence_status(
 
     Status is one of ``available``, ``missing``, ``expired``, or ``failed``.
     Served from the persisted execution receipt (no decrypt). Availability
-    is not integrity proof. ``object_lock`` and ``legal_hold`` are always
-    false: this API does not implement WORM retention.
+    is not integrity proof. ``object_lock`` is always false: this API does
+    not implement WORM retention and cannot verify a property of the storage
+    layer beneath it. ``legal_hold`` is true while a hold covers the pack or
+    its execution, which blocks payload expiry and purge inside Preloop.
+
+    ``signature`` is the detached Ed25519 signature made when the pack was
+    captured, with the payload it covers, or null for a pack captured before
+    signing existed. ``preloop evidence verify`` checks it against the
+    account's public key.
     """
     execution = crud_flow_execution.get(
         db=db, id=execution_id, account_id=current_user.account_id
     )
     if not execution:
         raise HTTPException(status_code=404, detail="Flow execution not found")
-    return public_evidence_status(execution)
+    return attach_evidence_signature(
+        db,
+        account_id=current_user.account_id,
+        receipt=public_evidence_status(execution),
+    )
 
 
 @router.get("/flows/executions/{execution_id}/evidence")
@@ -943,7 +955,11 @@ def get_flow_execution_evidence(
         )
     except EvidenceUnavailableError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    receipt = attach_evidence_signature(
+        db, account_id=current_user.account_id, receipt=receipt
+    )
     digest = receipt.get("sha256") or receipt.get("digest") or ""
+    signature = receipt.get("signature") or {}
     headers = {
         "Content-Disposition": (
             f'attachment; filename="evidence-{execution.id}.tar.gz"'
@@ -966,6 +982,13 @@ def get_flow_execution_evidence(
     }
     if digest:
         headers["X-Preloop-Evidence-SHA256"] = str(digest)
+    if signature:
+        # The signature covers a small payload the caller can rebuild from
+        # the bytes it just downloaded, so these headers are checkable
+        # without trusting the response that carried them (#558).
+        headers["X-Preloop-Signature"] = str(signature.get("signature") or "")
+        headers["X-Preloop-Signing-Key-Id"] = str(signature.get("key_id") or "")
+        headers["X-Preloop-Signed-At"] = str(signature.get("signed_at") or "")
     return Response(
         content=archive,
         media_type="application/gzip",

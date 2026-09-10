@@ -99,6 +99,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is no ENISA submission client, the payload carries
   `not_a_legal_determination` and `filing_is_manufacturer_responsibility`, and
   the filing decision stays with the manufacturer.
+- **Record retention, legal hold and period export**: an account now states
+  how long it keeps each class of record (audit rows, approvals, evidence
+  pack records, runtime sessions, usage) in days, with a floor of 183 days
+  (six months, the AI Act Art. 26(6) horizon) that a deployment can raise and
+  nothing can lower, and a 365 day default.
+  `GET/PUT /api/v1/retention/settings` and `GET /api/v1/retention/purge-preview`.
+  A bounded background sweeper deletes what is past retention: batches of
+  1000, a batch ceiling, a wall clock budget per pass and an off-peak UTC
+  window, one audit row per class per pass with the cutoff and the count. It
+  is **off by default** (`RETENTION_PURGE_ENABLED`), so an upgrade never
+  silently starts deleting audit history, and `RETENTION_PURGE_DRY_RUN` gives
+  the counts without the deletes. A legal hold
+  (`POST /api/v1/retention/holds`, mandatory reason, actor recorded, audited
+  on both place and release) freezes one execution, approval or evidence
+  pack: the purge skips it and the evidence janitor leaves the ciphertext
+  alone past `expires_at`, so a held pack is still downloadable. Evidence
+  receipts now report the real `legal_hold` state instead of a hardcoded
+  false; `object_lock` stays false because Preloop cannot verify a property
+  of the storage layer beneath it.
+  `POST /api/v1/retention/exports?start=&end=` returns a tar.gz of one period
+  (audit rows, approvals, evidence receipts, holds) with a `manifest.json`
+  carrying a sha256 per member and a digest over the member list, in the same
+  shape an evidence pack manifest uses. The bundle is signed as of the entry
+  below; the digests and the signature show the archive is the one Preloop
+  built and has not been altered since, not that the records were true when
+  they were written.
+
+- **Tamper-evident audit log and signed, verifiable exports**: audit rows are
+  now sealed into a per-account hash chain. A bounded background pass gives
+  each row a `chain_seq`, the previous row's `row_hash` as `prev_hash`, and
+  its own `row_hash` over a canonical serialisation, so an edit, a deletion
+  from the middle or a reordering breaks every hash from that point on
+  (`AUDIT_CHAIN_ENABLED`, on by default: it only adds hashes, it never
+  removes a record). `GET /api/v1/audit/chain/status`, `/chain/verify`,
+  `/chain/segment` and `/chain/checkpoints`; the segment endpoint serves the
+  canonical payloads and stored hashes so `preloop audit verify` recomputes
+  every hash locally, reports the first break with its sequence and row id,
+  exits non-zero on a break, and says so when its verdict differs from ours.
+  Every `AUDIT_CHAIN_CHECKPOINT_INTERVAL` sealed rows a checkpoint over the
+  chain head is signed, which is the anchor a customer keeps off the
+  platform. The retention purge raises the chain's `pruned_below_seq` floor
+  as it deletes, so enforcing retention does not read as tampering.
+  Each account gets an Ed25519 signing key, stored encrypted like other
+  secrets, with the public half on `GET /api/v1/signing/keys` and rotation
+  through `POST /api/v1/signing/keys/rotate` (retired keys stay published and
+  their signatures stay valid). Period exports carry a detached
+  `signature.json` over the manifest digest, and evidence packs are signed at
+  capture with the signature served on the receipt and the download headers.
+  `preloop evidence verify <archive>` checks both, and `--public-key` checks
+  a bundle against a key you kept yourself, without contacting us.
+  What this does not do, stated in the docs as well: a compromised server can
+  forge a record before it is signed, and the chain proves order and
+  non-deletion within the range it names, not that the server told the truth.
+
 - **Approval windows on a human timescale, with parked executions**: an
   approval or question can now stay open for hours or days instead of the
   fixed 5 minutes. `approval_window_seconds` is a per-flow setting (flow form
@@ -384,6 +438,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and points at `GET .../evidence` and `.../evidence-status`. The reply names
   no execution and no artifact, and the route still answers 401 rather than
   404: undocumented is not disabled.
+- **An approval that should park the run no longer ends it**: when the
+  routing approval workflow had `async_approval_enabled` set (the shipped
+  "Default Approval Workflow" does), `require_approval` returned its
+  `pending_approval` payload before it reached the park handshake, so no
+  window length could park the execution. The agent got an answerless
+  result, wrote its incompletion envelope and exited, and the run was
+  completed and failed closed while a human still held the question. Both
+  paths now go through one `_park_and_build_payload` helper, so the
+  decision to park is made in a single place. The monitor loop also
+  re-checks for a park request in its terminal branch: the park is written
+  by another process and observed on a 5 second poll, so an agent that
+  exits inside that window used to be finalized first. A parked run is no
+  longer fail-closed by the CRA persist boundary, since a park is not a
+  release. Observed on staging execution
+  `e42c6086-f637-4d18-be09-2395c4d488ca`, approval
+  `6a7cd2dc-a9f8-4fa5-9870-b834f5bc1db2`: the waiver was answered 2 minutes
+  20 seconds after the run had already been marked FAILED, against a 3 day
+  window.
+
+- **The failure message names the field that classified the run**: a
+  result artifact rejected on its `verdict` reported `status=None`, which
+  named a key the CRA incompletion envelope does not carry. The override
+  now reports the field that actually decided on both the terminal exit
+  and the sentinel-grace path, and records it on the milestone as
+  `signal_field` / `signal_value`.
+
+- **Preset sync no longer drops fields on existing presets**:
+  `scripts/sync_flow_presets.py` updated existing global presets from a
+  hand-maintained dict that omitted `approval_window_seconds`,
+  `timeout_seconds`, `runner_pool`, `custom_commands`, `webhook_config`
+  and `schedule_config`, and its change detection compared only 8 fields,
+  so a preset whose only change was one of those was reported up to date.
+  Create and update now derive from the same `FlowCreate`, and drift is
+  computed over every field a preset can set. Effect: the 3 day approval
+  window that presets 006 and 014 declare reaches the flow row instead of
+  falling back to the 300 second default. A preset key that no schema
+  claims is now logged rather than silently ignored.
+
 - **Talk stays clickable on the agent page in a narrow container**: an
   action that renders its own element has no click handler an overflow
   menu item can call, so folding it produced a menu row that did nothing.

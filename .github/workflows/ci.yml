@@ -57,7 +57,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: github.event_name == 'pull_request'
 
-      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3.0.3
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         if: github.event_name == 'pull_request'
         id: filter
         with:
@@ -363,7 +363,7 @@ jobs:
         run: pip install --require-hashes -r .github/requirements/coverage.txt
 
       - name: Download shard coverage data
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: backend-coverage-*
           path: coverage-shards
@@ -382,7 +382,7 @@ jobs:
           coverage report --fail-under=60
 
       - name: Upload coverage
-        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         if: github.event_name != 'pull_request'
         with:
           files: ./coverage.xml
@@ -421,8 +421,30 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Read the Playwright version
+        id: playwright
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+        run: |
+          # The runner image preconfigures Google's chrome-stable apt source, which this job
+          # never uses. Its index intermittently fails with "Hash Sum mismatch" and takes
+          # "playwright install --with-deps" down with it (main and five PRs on 2026-09-09).
+          # Drop that source, then retry the install, which is a no-op for cached browsers.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list /etc/apt/sources.list.d/google.list
+          for attempt in 1 2 3; do
+            npx playwright install --with-deps chromium && exit 0
+            echo "playwright install failed (attempt $attempt), retrying in 15s"
+            sleep 15
+          done
+          echo "playwright install failed after 3 attempts" >&2
+          exit 1
 
       - name: Run tests
         run: npm run test
@@ -646,7 +668,7 @@ jobs:
 
       - name: Extract metadata for backend image
         id: meta-backend
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: |
             ${{ env.REGISTRY_GHCR }}/preloop/preloop
@@ -672,7 +694,7 @@ jobs:
 
       - name: Extract metadata for frontend image
         id: meta-frontend
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: |
             ${{ env.REGISTRY_GHCR }}/preloop/console
