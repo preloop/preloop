@@ -72,6 +72,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Record retention, legal hold and period export**: an account now states
+  how long it keeps each class of record (audit rows, approvals, evidence
+  pack records, runtime sessions, usage) in days, with a floor of 183 days
+  (six months, the AI Act Art. 26(6) horizon) that a deployment can raise and
+  nothing can lower, and a 365 day default.
+  `GET/PUT /api/v1/retention/settings` and `GET /api/v1/retention/purge-preview`.
+  A bounded background sweeper deletes what is past retention: batches of
+  1000, a batch ceiling, a wall clock budget per pass and an off-peak UTC
+  window, one audit row per class per pass with the cutoff and the count. It
+  is **off by default** (`RETENTION_PURGE_ENABLED`), so an upgrade never
+  silently starts deleting audit history, and `RETENTION_PURGE_DRY_RUN` gives
+  the counts without the deletes. A legal hold
+  (`POST /api/v1/retention/holds`, mandatory reason, actor recorded, audited
+  on both place and release) freezes one execution, approval or evidence
+  pack: the purge skips it and the evidence janitor leaves the ciphertext
+  alone past `expires_at`, so a held pack is still downloadable. Evidence
+  receipts now report the real `legal_hold` state instead of a hardcoded
+  false; `object_lock` stays false because Preloop cannot verify a property
+  of the storage layer beneath it.
+  `POST /api/v1/retention/exports?start=&end=` returns a tar.gz of one period
+  (audit rows, approvals, evidence receipts, holds) with a `manifest.json`
+  carrying a sha256 per member and a digest over the member list, in the same
+  shape an evidence pack manifest uses. The bundle is not signed; the digests
+  show the archive was not altered after Preloop built it, not that the
+  records were true when they were written.
+
 - **Approval windows on a human timescale, with parked executions**: an
   approval or question can now stay open for hours or days instead of the
   fixed 5 minutes. `approval_window_seconds` is a per-flow setting (flow form
