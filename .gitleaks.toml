@@ -77,6 +77,9 @@ paths = ['''^scripts/generate_example_session\.py$''']
 # a secret assignment because the type name is high-entropy. It is a type,
 # not a credential. The history scan fetches every ref (checkout fetch-depth
 # 0), so this false positive on another branch fails unrelated PRs.
+# Canonical form for this class: regexTarget=match with a single unanchored
+# type-name entry. Do not add Ed25519PublicKey; it is not an assignment-shaped
+# annotation, and a sibling branch's anchored duplicate should be dropped.
 [[allowlists]]
 description = "Ed25519 type names are not credentials"
 regexTarget = "match"
