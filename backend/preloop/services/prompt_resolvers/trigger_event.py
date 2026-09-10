@@ -232,24 +232,42 @@ class TriggerEventResolver(PromptResolver):
         starts; embedding their base64 into the prompt is exactly what the
         feature exists to avoid. Applied to every resolution (full-event and
         payload embeds alike); paths and other entry fields still resolve.
+
+        The list is looked up with :func:`workspace_seed_payload`, the same
+        inside-then-beside rule every other reader uses, so a body that puts
+        ``workspace_files`` next to ``payload`` is redacted too.
         """
-        payload = event_data.get("payload")
-        if not isinstance(payload, dict):
-            return event_data
-        files = payload.get("workspace_files")
-        if not isinstance(files, list):
-            return event_data
-        redacted_files = []
-        for entry in files:
-            if isinstance(entry, dict) and isinstance(entry.get("content_base64"), str):
-                entry = dict(entry)
-                entry["content_base64"] = (
-                    f"<{len(entry['content_base64'])} base64 chars "
-                    "omitted; file is written under /workspace>"
-                )
-            redacted_files.append(entry)
-        # event_data is already a deep copy made by _normalize_event_data.
-        payload["workspace_files"] = redacted_files
+        from preloop.utils.workspace_seed import (
+            WORKSPACE_FILES_KEY,
+            WorkspaceSeedError,
+            workspace_seed_payload,
+        )
+
+        def _redact_list(files: Any) -> list:
+            redacted_files = []
+            for entry in files:
+                if isinstance(entry, dict) and isinstance(
+                    entry.get("content_base64"), str
+                ):
+                    entry = dict(entry)
+                    entry["content_base64"] = (
+                        f"<{len(entry['content_base64'])} base64 chars "
+                        "omitted; file is written under /workspace>"
+                    )
+                redacted_files.append(entry)
+            return redacted_files
+
+        containers: list[Any] = []
+        try:
+            containers.append(workspace_seed_payload(event_data))
+        except WorkspaceSeedError:
+            containers.extend((event_data, event_data.get("payload")))
+        for container in containers:
+            if not isinstance(container, dict):
+                continue
+            files = container.get(WORKSPACE_FILES_KEY)
+            if isinstance(files, list):
+                container[WORKSPACE_FILES_KEY] = _redact_list(files)
         return event_data
 
     async def resolve(self, path: str, context: ResolverContext) -> Optional[str]:

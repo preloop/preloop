@@ -23,6 +23,7 @@ import '../../components/preloop-session-observer.ts';
 import '../../components/token-figures.ts';
 import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
+import '../../components/operator-note-composer.ts';
 import '../../components/talk-button.ts';
 import '../../components/time-range-select.ts';
 import '../../components/confirm-dialog.ts';
@@ -1423,6 +1424,34 @@ export class AgentDetailView extends LitElement {
           )}
         </div>
       </details>
+    `;
+  }
+
+  /**
+   * The note box for this agent, above the tabs.
+   *
+   * It sits on the page rather than behind a tab because the moment someone
+   * needs it, the agent is already running and the operator is already
+   * looking at this page. A note leaves the run alone: it is not a takeover,
+   * it is one sentence the agent reads at its next turn.
+   */
+  private renderOperatorNotes() {
+    if (!this.agentId) return nothing;
+    return html`
+      <sl-card
+        style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: #ffffff; width: 100%; margin-top: var(--sl-spacing-medium);"
+      >
+        <div style="padding: var(--sl-spacing-large);">
+          <div
+            style="font-weight: 700; font-size: 1.15rem; color: var(--sl-color-neutral-800); margin-bottom: var(--sl-spacing-small);"
+          >
+            Note to this agent
+          </div>
+          <operator-note-composer
+            agent-id=${this.agentId}
+          ></operator-note-composer>
+        </div>
+      </sl-card>
     `;
   }
 
@@ -2847,6 +2876,7 @@ export class AgentDetailView extends LitElement {
       </view-header>
       <div class="page" style="padding-top: 0;">
         ${this.renderSummaryStrip(aggregate)} ${this.renderIdentityHistory()}
+        ${this.renderOperatorNotes()}
 
         <!-- Sub-view Tab Navigation -->
         ${(() => {

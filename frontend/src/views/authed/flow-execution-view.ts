@@ -29,6 +29,7 @@ import { RUNNING_STATUSES, executionDurationText } from '../../utils/execution';
 import { actionsFor } from '../../actions';
 import { canRetryExecution } from '../../actions/flow-execution-actions';
 import '../../components/resource-actions.ts';
+import '../../components/operator-note-composer.ts';
 import {
   executionSubjectCss,
   isSubjectFallback,
@@ -1550,6 +1551,30 @@ export class FlowExecutionView extends LitElement {
    * Not a spinner. Nothing is running: the container was released and the
    * question is with a person, possibly for days.
    */
+  /**
+   * The note box for a run in flight.
+   *
+   * Only while the run is live: a note is delivered at the next turn
+   * boundary, so a finished run has no next turn and offering the box would
+   * be offering a message nobody will read. The composer addresses the
+   * execution, and the server resolves that to the session the run is
+   * actually talking on.
+   */
+  private renderOperatorNotes(execution: FlowExecution) {
+    const live =
+      execution.status === 'RUNNING' ||
+      execution.status === 'STARTING' ||
+      execution.status === 'INITIALIZING' ||
+      execution.status === 'PENDING' ||
+      execution.status === 'WAITING_FOR_HUMAN';
+    if (!live || !execution.id) return '';
+    return html`<operator-note-composer
+      data-testid="execution-note-composer"
+      execution-id=${execution.id}
+      @operator-note-sent=${() => void this.fetchExecution()}
+    ></operator-note-composer>`;
+  }
+
   private renderWaitingLine(execution: FlowExecution) {
     if (execution.status !== 'WAITING_FOR_HUMAN' || !execution.park) return '';
     const summary = parkWaitingSummary(execution.park);
@@ -2956,6 +2981,7 @@ ${execution.resolved_input_prompt}</pre>
             .execution=${execution}
           ></preloop-execution-continuation>
           ${this.renderWaitingLine(execution)}
+          ${this.renderOperatorNotes(execution)}
           ${
             errorLine
               ? html`<div

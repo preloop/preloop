@@ -2,7 +2,8 @@
 
 Preloop can POST signed governance events to a URL you own: an approval was
 raised or decided, a policy denied a call, a runtime session closed, spend
-crossed a budget, a flow execution finished. This is the integration path for
+crossed a budget, a flow execution finished, a CRA audit found a reportable
+vulnerability. This is the integration path for
 a SIEM, a GRC platform or any internal audit collector.
 
 This page is about events Preloop **sends**. For webhooks Preloop **receives**
@@ -74,6 +75,26 @@ Every request body is one JSON object with exactly these keys:
 | `budget.threshold` | Spend crosses a configured soft limit | `scope`, `scope_id`, `period`, `limit_amount`, `spent_amount`, `percent_used`, `threshold_percent` |
 | `budget.exceeded` | Spend passes a configured hard limit | same as above |
 | `flow.execution.finished` | A flow execution reaches a terminal status | `execution_id`, `flow_id`, `flow_name`, `status`, `failure_category`, `evidence_receipt` |
+| `agent.note_sent` | An operator note is accepted for a running agent | `note_id`, `managed_agent_id`, `runtime_session_id`, `text`, `author` (`user_id`, `display`, `auth_method`), `created_at`, `expires_at` |
+| `agent.note_delivered` | That note reaches the agent at a turn boundary | same fields plus `delivered_at`, `delivery_channel` (`gateway`, `hook`, `claude_channel`, `claude_message`), `turn_index` |
+| `cra.reportable_vulnerability` | A CRA audit found an actively exploited vulnerability that its own evidence says affects the product | `cve`, `actively_exploited`, `exploited_evidence`, `affected`, `vex_status`, `discovered_at`, `deadlines`, `status`, `assessment`, `kev_snapshot_date`, `kev_source_url` |
+
+Operator note payloads do carry the note `text`, unlike approval payloads.
+The text is the fact, and a receiver mirroring notes into a ticket or a
+chat room has nothing without it. See [operator notes](operator-notes.md).
+
+`cra.reportable_vulnerability` fires once per reportable candidate, not once
+per execution, because each candidate carries its own clock: `deadlines` holds
+the CRA Article 14 early warning (24 h), notification (72 h) and final report
+(14 d) as absolute UTC timestamps computed from `discovered_at`. The event id
+is deterministic on (execution, CVE), and `occurred_at` is `discovered_at`
+rather than the send time, so a delivery retried the next day still says when
+the clock started. The payload carries `not_a_legal_determination: true` and
+`filing_is_manufacturer_responsibility: true`: Preloop has no client for the
+ENISA single reporting platform and does not file anything. Routing this event
+into a ticket queue automates a notification, never a filing. The block behind
+it is documented in
+[security audit presets](flows/security-audit-presets.md#cra-article-14-reporting).
 
 Approval payloads deliberately omit tool arguments. Those routinely carry the
 payload the approval exists to guard, and a webhook target is not the audit

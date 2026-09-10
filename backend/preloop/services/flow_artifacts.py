@@ -134,6 +134,33 @@ def artifact_retention_hours(kind: str) -> int:
     return int(settings.workspace_snapshot_ttl_hours)
 
 
+#: What the integrity field of a receipt actually asserts. "false" used to
+#: cover two very different situations: nobody looked, and somebody looked and
+#: the bytes were wrong. On a pack whose digest verifies three ways, an
+#: operator reads the first as the second (round 2 CRA rerun, P8).
+INTEGRITY_VERIFIED = "verified"
+INTEGRITY_NOT_CHECKED = "not_checked"
+INTEGRITY_FAILED = "failed"
+INTEGRITY_NOTES: Mapping[str, str] = {
+    INTEGRITY_VERIFIED: (
+        "The archive was read and its sha256 matches the recorded digest."
+    ),
+    INTEGRITY_NOT_CHECKED: (
+        "Availability only. This endpoint does not read the archive; the "
+        "digest is verified on download, which returns "
+        "x-preloop-evidence-integrity and x-preloop-evidence-sha256."
+    ),
+    INTEGRITY_FAILED: "The archive was read and its sha256 did not match.",
+}
+
+
+def integrity_state(*, verified: bool, error: str | None = None) -> str:
+    """Name the three cases the boolean could not tell apart."""
+    if error and "digest" in str(error):
+        return INTEGRITY_FAILED
+    return INTEGRITY_VERIFIED if verified else INTEGRITY_NOT_CHECKED
+
+
 class EvidenceUnavailableError(Exception):
     """Evidence cannot be served; ``code`` is missing, expired, or failed."""
 
@@ -171,6 +198,7 @@ def evidence_receipt(
     created = manifest.get("created_at") or getattr(artifact, "created_at", None)
     if hasattr(created, "isoformat"):
         created = created.isoformat()
+    state = integrity_state(verified=integrity_verified, error=error)
     return {
         "version": 1,
         "kind": "evidence",
@@ -200,6 +228,8 @@ def evidence_receipt(
         # leaves the row alone.
         "legal_hold": bool(getattr(artifact, "legal_hold", False)),
         "integrity_verified": integrity_verified,
+        "integrity": state,
+        "integrity_note": INTEGRITY_NOTES[state],
         "error": error,
     }
 
@@ -379,8 +409,29 @@ def bind_terminal_evidence(
     return receipt
 
 
-def _mark_status_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
-    """Availability metadata for polls; never a verified-download claim."""
+def _legacy_archive_bytes(execution: Any) -> bytes | None:
+    """The legacy in-row archive, when this execution still has one."""
+    archive = getattr(execution, "evidence_archive", None)
+    if isinstance(archive, (bytes, bytearray, memoryview)):
+        raw = bytes(archive)
+        return raw or None
+    return None
+
+
+def _mark_status_receipt(
+    receipt: dict[str, Any], *, archive: bytes | None = None
+) -> dict[str, Any]:
+    """Availability metadata for polls, and what was and was not checked.
+
+    ``integrity_verified: false`` used to be hard-set here regardless of what
+    the platform knew, so a legacy pack whose bytes sit in the row next to the
+    receipt, whose manifest verifies and whose download returns
+    ``x-preloop-evidence-integrity: verified`` was reported to the operator as
+    unverified (round 2 CRA rerun, P8). The boolean is kept for compatibility
+    and joined by ``integrity``, which distinguishes "nobody looked" from
+    "somebody looked and the bytes were wrong". When the archive is in hand,
+    this looks.
+    """
     status = str(receipt.get("status") or "missing")
     expires = receipt.get("expires_at")
     # A held pack does not expire on the poll path either. The hold service
@@ -403,11 +454,27 @@ def _mark_status_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
     out = dict(receipt)
     out["status"] = status
     out["kind"] = "evidence"
-    out["integrity_verified"] = False
+    verified = False
     digest = out.get("digest") or out.get("sha256")
+    if archive is not None and status == "available":
+        observed = hashlib.sha256(archive).hexdigest()
+        if digest and digest != observed:
+            # The row disagrees with itself. Say so here rather than letting
+            # the download be the first place anyone finds out.
+            out["status"] = "failed"
+            out["error"] = out.get("error") or "artifact_digest_mismatch"
+            out["observed_sha256"] = observed
+        else:
+            digest = observed
+            verified = True
+            out.setdefault("size_bytes", len(archive))
+    out["integrity_verified"] = verified
+    state = integrity_state(verified=verified, error=out.get("error"))
+    out["integrity"] = state
+    out["integrity_note"] = INTEGRITY_NOTES[state]
     if digest:
         out["digest"] = digest
-        out.setdefault("sha256", digest)
+        out["sha256"] = digest
     out.setdefault("object_lock", False)
     out.setdefault("legal_hold", False)
     return out
@@ -421,14 +488,26 @@ def public_evidence_status(execution: Any) -> dict[str, Any]:
     Availability is not integrity proof.
     """
     raw = getattr(execution, "evidence_receipt", None)
+    transport = raw.get("transport") if isinstance(raw, dict) else None
+    # Only the legacy path keeps the bytes next to the receipt. A direct
+    # transport receipt says nothing about integrity here, by design: the
+    # ciphertext is not decrypted on a poll.
+    archive = (
+        _legacy_archive_bytes(execution)
+        if str(transport or "") in ("", "legacy")
+        else None
+    )
     if isinstance(raw, dict) and raw.get("status"):
-        return _mark_status_receipt(raw)
-    archive = getattr(execution, "evidence_archive", None)
-    if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
+        return _mark_status_receipt(raw, archive=archive)
+    if archive is not None:
+        # The bytes are in the row we already loaded. Hashing them is cheaper
+        # than an operator opening a support thread about a pack that is fine.
         return evidence_receipt(
             status="available",
             execution_id=getattr(execution, "id", None),
             transport="legacy",
+            archive=archive,
+            integrity_verified=True,
         )
     return evidence_receipt(
         status="missing",

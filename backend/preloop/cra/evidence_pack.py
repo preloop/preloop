@@ -228,9 +228,20 @@ def _manifest_source(payload: Any) -> dict[str, Any]:
 
     ``declared`` is deliberate: this is the caller's mapping, not a build
     attestation. The verified form lives in ``dossier_manifest`` on the
-    execution result, which the pack points at by execution id.
+    execution result, which the pack points at by execution id. The mapping
+    is read with the same inside-then-beside rule as ``workspace_files``.
     """
-    mapping = payload.get("product_provenance") if isinstance(payload, dict) else None
+    mapping = None
+    if isinstance(payload, Mapping):
+        try:
+            from preloop.services.product_provenance import (
+                ProductProvenanceError,
+                extract_product_provenance_payload,
+            )
+
+            mapping = extract_product_provenance_payload(payload)
+        except ProductProvenanceError:
+            mapping = None
     if not isinstance(mapping, dict):
         return {"status": "unmapped", "repositories": []}
     raw = mapping.get("repositories")
@@ -261,14 +272,28 @@ def evidence_manifest_context(
     in the environment, the control plane calls it directly when it repacks
     a legacy archive.
     """
-    payload: Any = None
-    if isinstance(trigger_event_data, Mapping):
-        nested = trigger_event_data.get("payload")
-        payload = nested if isinstance(nested, dict) else dict(trigger_event_data)
+    from preloop.utils.workspace_seed import (
+        WorkspaceSeedError,
+        workspace_seed_payload,
+    )
+
+    # Seeds and the declared source are looked up wherever the caller put
+    # them, so a body that puts workspace_files or product_provenance beside
+    # payload still records what the run was given. Reading only the nested
+    # payload would leave "inputs" empty and "source" unmapped for the
+    # staging shape, which is exactly the evidence a reviewer needs.
+    try:
+        seed_container = workspace_seed_payload(
+            dict(trigger_event_data)
+            if isinstance(trigger_event_data, Mapping)
+            else None
+        )
+    except WorkspaceSeedError:
+        seed_container = None
     return {
         "execution_id": str(execution_id) if execution_id is not None else None,
-        "inputs": _manifest_inputs(payload),
-        "source": _manifest_source(payload),
+        "inputs": _manifest_inputs(seed_container),
+        "source": _manifest_source(trigger_event_data),
     }
 
 

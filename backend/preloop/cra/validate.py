@@ -15,7 +15,22 @@ from collections.abc import Set
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Optional, Sequence
 
+from preloop.cra.reporting import (
+    deadline_mismatches,
+    kev_finding_ids,
+    parse_timestamp,
+)
 from preloop.cra.schemas import (
+    ART14_AFFECTED_SOURCES,
+    ART14_ASSESSMENTS,
+    ART14_DEADLINE_KEYS,
+    ART14_EXPLOITED_EVIDENCE,
+    ART14_NONE,
+    ART14_REPORTABLE,
+    ART14_REPORTING_FIELD,
+    ART14_STATUS_NEEDS_REASON,
+    ART14_STATUSES,
+    ART14_UNDETERMINED,
     AUDIT_INCOMPLETE_VERDICT,
     AUDIT_VERDICTS,
     DATABASE_SOURCES,
@@ -31,6 +46,7 @@ from preloop.cra.schemas import (
     GATE_CVSS_MIN,
     HEURISTIC_SOURCES,
     INCOMPLETE_ALLOWED,
+    INCOMPLETE_DRIFT_SCHEMAS,
     INCOMPLETE_FIELD,
     INCOMPLETE_REQUIRED,
     INCOMPLETE_SIGNALS,
@@ -51,6 +67,8 @@ from preloop.cra.schemas import (
     SOURCE_KINDS,
     SOURCE_MATRIX_KEYS,
     UNSUPPORTED_ERROR,
+    VEX_NON_SUPPRESSING_STATUSES,
+    VEX_SUPPRESSING_STATUSES,
     VULNSCAN_REQUIRED,
     VULNSCAN_STATUSES,
     expected_cra_schema_from_prompt,
@@ -379,9 +397,17 @@ def is_incomplete_envelope(obj: Any) -> bool:
     return set(obj) <= INCOMPLETE_ALLOWED
 
 
-def _check_incomplete_optional(obj: Mapping[str, Any], *, path: str) -> list[str]:
+def _check_incomplete_optional(
+    obj: Mapping[str, Any], *, path: str, schema_id: Optional[str] = None
+) -> list[str]:
     """Type-check the context fields an interrupted run may still carry."""
     failures: list[str] = []
+    if "drift" in obj:
+        if not json_in(schema_id, INCOMPLETE_DRIFT_SCHEMAS):
+            failures.append(f"{path}.drift is not part of {schema_id}")
+        elif obj.get("drift") is not None:
+            failures.extend(_check_drift(obj.get("drift"), path=f"{path}.drift"))
+    failures.extend(_check_drift_evidence(obj, path=path))
     git = obj.get("git")
     if git is not None and not isinstance(git, Mapping):
         failures.append(f"{path}.git must be an object or null")
@@ -453,7 +479,7 @@ def _validate_incomplete_envelope(
             f"{path}.status is not part of {schema_id}; completion is the verdict"
         )
     failures.extend(_check_disclaimer(obj, path=path))
-    failures.extend(_check_incomplete_optional(obj, path=path))
+    failures.extend(_check_incomplete_optional(obj, path=path, schema_id=schema_id))
     return failures
 
 
@@ -776,8 +802,44 @@ def _check_inventory(
     return failures, advisories
 
 
+def vex_suppression(finding: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """Return the VEX statement that takes this finding out of the gate.
+
+    A statement suppresses only when its status is one the OpenVEX/CycloneDX
+    vocabularies use to say "this product is not affected"
+    (:data:`VEX_SUPPRESSING_STATUSES`) *and* it carries a non-empty
+    justification. ``affected`` and ``under_investigation`` never suppress,
+    and neither does a bare ``not_affected`` with nothing behind it: an
+    unjustified assertion is not machine-readable evidence.
+
+    Args:
+        finding: One entry from ``vuln_scan.findings``.
+
+    Returns:
+        ``{"vex_status", "vex_statement_id", "vex_justification"}`` when the
+        finding is suppressed, otherwise ``None``.
+    """
+    status = finding.get("vex_status")
+    if not isinstance(status, str):
+        return None
+    normalized = status.strip().lower()
+    if normalized not in VEX_SUPPRESSING_STATUSES:
+        return None
+    justification = finding.get("vex_justification")
+    if not isinstance(justification, str) or not justification.strip():
+        return None
+    statement_id = finding.get("vex_statement_id")
+    return {
+        "vex_status": normalized,
+        "vex_statement_id": (
+            statement_id.strip() if isinstance(statement_id, str) else None
+        ),
+        "vex_justification": justification.strip(),
+    }
+
+
 def _finding_enters_gate(finding: Mapping[str, Any]) -> bool:
-    if finding.get("vex_status"):
+    if vex_suppression(finding) is not None:
         return False
     match_kind = finding.get("match_kind")
     sources = finding.get("sources") or []
@@ -819,6 +881,20 @@ def _check_finding(item: Any, *, path: str, allow_waived: bool) -> list[str]:
     match_kind = item.get("match_kind")
     if not json_in(match_kind, MATCH_KINDS):
         failures.append(f"{path}.match_kind must be database|heuristic")
+    vex_status = item.get("vex_status")
+    if vex_status is not None and not isinstance(vex_status, str):
+        failures.append(f"{path}.vex_status must be a string or null")
+    elif isinstance(vex_status, str) and vex_status.strip():
+        normalized = vex_status.strip().lower()
+        known = VEX_SUPPRESSING_STATUSES | VEX_NON_SUPPRESSING_STATUSES
+        if normalized not in known:
+            failures.append(
+                f"{path}.vex_status must be one of {sorted(known)}, got {vex_status!r}"
+            )
+    for key in ("vex_statement_id", "vex_justification"):
+        value = item.get(key)
+        if value is not None and not isinstance(value, str):
+            failures.append(f"{path}.{key} must be a string or null")
     if allow_waived and "waived" in item and not _is_bool(item.get("waived")):
         failures.append(
             f"{path}.waived must be a boolean, not {type(item.get('waived')).__name__}"
@@ -858,6 +934,31 @@ def _check_counts_by_severity(
     return failures
 
 
+def _policy_failure_reason(
+    finding: Mapping[str, Any], *, policy: GatePolicy
+) -> Optional[str]:
+    """Why the configured policy fails on this finding, ignoring VEX.
+
+    Returns ``"kev"``, ``"cvss"`` or ``"unscored"``, or ``None`` when the
+    policy has nothing to say about it. KEV wins over CVSS, and CVSS over
+    unscored, so the recorded reason is the strongest one.
+    """
+    cvss = finding.get("cvss")
+    scored = False
+    high_cvss = False
+    if _is_number(cvss):
+        score = float(cvss)
+        scored = math.isfinite(score)
+        high_cvss = scored and score >= policy.fail_on_cvss_gte
+    if finding.get("kev") is True and policy.fail_on_kev:
+        return "kev"
+    if high_cvss:
+        return "cvss"
+    if policy.fail_on_unscored and not scored:
+        return "unscored"
+    return None
+
+
 def _default_gate_failures(
     findings: Sequence[Any], *, policy: GatePolicy
 ) -> list[dict[str, Any]]:
@@ -866,7 +967,8 @@ def _default_gate_failures(
     A database-source finding with no usable CVSS score is gate-relevant by
     default: unscored is unknown, and unknown is not a pass. Heuristic-only
     hits still never enter the gate, so this cannot fail a release on a
-    fuzzy CPE match.
+    fuzzy CPE match. VEX-suppressed findings are out of the population
+    before the policy runs (see :func:`vex_suppression`).
     """
     failing: list[dict[str, Any]] = []
     for item in findings:
@@ -874,26 +976,334 @@ def _default_gate_failures(
             continue
         if not _finding_enters_gate(item):
             continue
-        cvss = item.get("cvss")
-        kev = item.get("kev") is True and policy.fail_on_kev
-        high_cvss = False
-        scored = False
-        if _is_number(cvss):
-            score = float(cvss)
-            scored = math.isfinite(score)
-            high_cvss = scored and score >= policy.fail_on_cvss_gte
-        unscored = policy.fail_on_unscored and not scored
-        if kev or high_cvss or unscored:
-            finding_id = str(item.get("id") or "")
-            if finding_id:
-                aliases = item.get("aliases")
-                failing.append(
-                    {
-                        "id": finding_id,
-                        "aliases": aliases if isinstance(aliases, list) else [],
-                    }
-                )
+        if _policy_failure_reason(item, policy=policy) is None:
+            continue
+        finding_id = str(item.get("id") or "")
+        if finding_id:
+            aliases = item.get("aliases")
+            failing.append(
+                {
+                    "id": finding_id,
+                    "aliases": aliases if isinstance(aliases, list) else [],
+                }
+            )
     return failing
+
+
+def _expected_vex_suppressed(
+    findings: Sequence[Any], *, policy: GatePolicy
+) -> dict[str, dict[str, Any]]:
+    """Findings the gate would have failed on but a VEX statement cleared.
+
+    Only findings that would otherwise have entered the gate *and* failed
+    the configured policy belong here: a VEX statement on a finding the
+    policy never cared about suppressed nothing and does not need a record.
+    """
+    suppressed: dict[str, dict[str, Any]] = {}
+    for item in findings:
+        if not isinstance(item, Mapping):
+            continue
+        statement = vex_suppression(item)
+        if statement is None:
+            continue
+        match_kind = item.get("match_kind")
+        sources = item.get("sources") or []
+        if match_kind == "heuristic":
+            continue
+        if (
+            isinstance(sources, list)
+            and sources
+            and all(json_in(src, HEURISTIC_SOURCES) for src in sources)
+        ):
+            continue
+        reason = _policy_failure_reason(item, policy=policy)
+        if reason is None:
+            continue
+        finding_id = str(item.get("id") or "")
+        if not finding_id:
+            continue
+        suppressed[finding_id] = {**statement, "would_have_failed": reason}
+    return suppressed
+
+
+def _check_vex_suppressed(
+    gate: Mapping[str, Any],
+    findings: Sequence[Any],
+    *,
+    path: str,
+    policy: GatePolicy,
+) -> list[str]:
+    """Reconcile ``gate.vex_suppressed`` with the delivered findings.
+
+    The list is derived, not asserted: every gate failure a VEX statement
+    displaced has to be on it, with the statement id and the justification
+    the finding carries, and nothing else may be. A suppression that is not
+    recorded is a silent one, which is the failure mode this block exists
+    to prevent.
+    """
+    failures: list[str] = []
+    expected = _expected_vex_suppressed(findings, policy=policy)
+    raw = gate.get("vex_suppressed")
+    if raw is None:
+        if expected:
+            failures.append(
+                f"{path}.vex_suppressed is missing but VEX statements "
+                f"suppressed gate failures {sorted(expected)}"
+            )
+        return failures
+    if not isinstance(raw, list):
+        return [f"{path}.vex_suppressed must be a list"]
+    submitted: dict[str, Mapping[str, Any]] = {}
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, Mapping):
+            failures.append(f"{path}.vex_suppressed[{idx}] must be an object")
+            continue
+        entry_id = entry.get("id")
+        if not isinstance(entry_id, str) or not entry_id:
+            failures.append(
+                f"{path}.vex_suppressed[{idx}].id must be a non-empty string"
+            )
+            continue
+        submitted[entry_id] = entry
+    if set(submitted) != set(expected):
+        failures.append(
+            f"{path}.vex_suppressed ids {sorted(submitted)} != deterministic "
+            f"set {sorted(expected)}"
+        )
+    for entry_id, entry in submitted.items():
+        want = expected.get(entry_id)
+        if want is None:
+            continue
+        for key in ("vex_status", "vex_justification", "would_have_failed"):
+            got = entry.get(key)
+            if isinstance(got, str):
+                got = got.strip()
+                if key == "vex_status":
+                    got = got.lower()
+            if got != want[key]:
+                failures.append(
+                    f"{path}.vex_suppressed[{entry_id}].{key} is {entry.get(key)!r} "
+                    f"but the finding says {want[key]!r}"
+                )
+        statement_id = entry.get("vex_statement_id")
+        statement_id = statement_id.strip() if isinstance(statement_id, str) else None
+        if statement_id != want["vex_statement_id"]:
+            failures.append(
+                f"{path}.vex_suppressed[{entry_id}].vex_statement_id is "
+                f"{entry.get('vex_statement_id')!r} but the finding says "
+                f"{want['vex_statement_id']!r}"
+            )
+    return failures
+
+
+def _check_reporting_candidate(
+    item: Any, *, path: str, scan_completed: bool
+) -> tuple[list[str], Optional[str]]:
+    """Validate one Article 14 candidate and return its reportability.
+
+    Returns:
+        ``(failures, state)`` where ``state`` is ``"reportable"``,
+        ``"cleared"`` or ``"undetermined"``, and ``None`` when the entry was
+        too malformed to classify.
+    """
+    if not isinstance(item, Mapping):
+        return [f"{path} must be an object"], None
+    failures: list[str] = []
+    candidate_id = item.get("id")
+    if not isinstance(candidate_id, str) or not candidate_id.strip():
+        failures.append(f"{path}.id must be a non-empty string")
+    exploited = item.get("actively_exploited")
+    if not _is_bool(exploited):
+        failures.append(f"{path}.actively_exploited must be a boolean")
+    evidence = item.get("exploited_evidence")
+    if not json_in(evidence, ART14_EXPLOITED_EVIDENCE):
+        failures.append(
+            f"{path}.exploited_evidence must be one of "
+            f"{sorted(ART14_EXPLOITED_EVIDENCE)}, got {evidence!r}"
+        )
+    if exploited is True and evidence == "none":
+        failures.append(
+            f"{path} claims active exploitation with exploited_evidence 'none': "
+            "name the evidence or set actively_exploited to false"
+        )
+    affected = item.get("affected")
+    affected_value: Any = None
+    if not isinstance(affected, Mapping):
+        failures.append(
+            f"{path}.affected must be an object with value, source and detail"
+        )
+    else:
+        affected_value = affected.get("value")
+        if not (_is_bool(affected_value) or affected_value == ART14_UNDETERMINED):
+            failures.append(
+                f"{path}.affected.value must be true, false or 'undetermined', "
+                f"got {affected_value!r}"
+            )
+            affected_value = None
+        source = affected.get("source")
+        if not json_in(source, ART14_AFFECTED_SOURCES):
+            failures.append(
+                f"{path}.affected.source must be one of "
+                f"{sorted(ART14_AFFECTED_SOURCES)}, got {source!r}"
+            )
+        elif source == "unknown" and _is_bool(affected_value):
+            failures.append(
+                f"{path}.affected.source is 'unknown' but value is "
+                f"{affected_value!r}: an unsourced call is undetermined"
+            )
+        detail = affected.get("detail")
+        if detail is not None and not isinstance(detail, str):
+            failures.append(f"{path}.affected.detail must be a string or null")
+    reportable = item.get("reportable")
+    if not _is_bool(reportable):
+        failures.append(f"{path}.reportable must be a boolean")
+    elif _is_bool(exploited) and affected_value is not None:
+        expected = exploited is True and affected_value is True
+        if reportable is not expected:
+            failures.append(
+                f"{path}.reportable is {reportable!r} but "
+                f"actively_exploited={exploited!r} and affected.value="
+                f"{affected_value!r} give {expected!r}"
+            )
+    discovered_at = item.get("discovered_at")
+    parsed = parse_timestamp(discovered_at)
+    if parsed is None:
+        failures.append(
+            f"{path}.discovered_at must be an ISO 8601 timestamp, got {discovered_at!r}"
+        )
+    else:
+        deadlines = item.get("deadlines")
+        if not isinstance(deadlines, Mapping):
+            failures.append(
+                f"{path}.deadlines must be an object with "
+                f"{', '.join(ART14_DEADLINE_KEYS)}"
+            )
+        else:
+            for key, got, want in deadline_mismatches(discovered_at, deadlines):
+                failures.append(
+                    f"{path}.deadlines.{key} is {got!r} but 24h/72h/14d from "
+                    f"discovered_at is {want!r}"
+                )
+    status = item.get("status")
+    if not json_in(status, ART14_STATUSES):
+        failures.append(
+            f"{path}.status must be one of {sorted(ART14_STATUSES)}, got {status!r}"
+        )
+    elif status == ART14_STATUS_NEEDS_REASON:
+        reason = item.get("status_reason")
+        if not isinstance(reason, str) or not reason.strip():
+            failures.append(
+                f"{path}.status_reason is required when status is "
+                f"'{ART14_STATUS_NEEDS_REASON}'"
+            )
+    if not _is_bool(exploited) or affected_value is None:
+        return failures, None
+    if not scan_completed:
+        return failures, ART14_UNDETERMINED
+    if exploited is not True:
+        return failures, "cleared"
+    if affected_value is True:
+        return failures, "reportable"
+    if affected_value is False:
+        return failures, "cleared"
+    return failures, ART14_UNDETERMINED
+
+
+def _check_reporting(
+    body: Mapping[str, Any],
+    findings: Sequence[Any],
+    *,
+    path: str,
+    scan_completed: bool,
+) -> list[str]:
+    """Validate the Article 14 ``reporting`` block against the findings.
+
+    The block is required whenever a KEV-listed finding exists: that is the
+    case where an operator most needs to know whether a clock is running,
+    and it is exactly the case where an absent block reads as "nothing to
+    report". ``assessment`` is derived from the candidates rather than
+    trusted, and it must be ``undetermined`` whenever the KEV snapshot is
+    missing or the scan did not complete.
+    """
+    reporting = body.get(ART14_REPORTING_FIELD)
+    kev_ids = kev_finding_ids(findings)
+    if reporting is None:
+        if kev_ids:
+            return [
+                f"{path}.{ART14_REPORTING_FIELD} is required when KEV-listed "
+                f"findings exist ({sorted(set(kev_ids))}): an absent block "
+                "reads as 'nothing to report'"
+            ]
+        return []
+    if not isinstance(reporting, Mapping):
+        return [f"{path}.{ART14_REPORTING_FIELD} must be an object"]
+    rpath = f"{path}.{ART14_REPORTING_FIELD}"
+    failures: list[str] = []
+    assessment = reporting.get("assessment")
+    if not json_in(assessment, ART14_ASSESSMENTS):
+        failures.append(
+            f"{rpath}.assessment must be one of {sorted(ART14_ASSESSMENTS)}, "
+            f"got {assessment!r}"
+        )
+    basis = reporting.get("basis")
+    if not isinstance(basis, str) or not basis.strip():
+        failures.append(f"{rpath}.basis must be a non-empty string naming the evidence")
+    snapshot = reporting.get("kev_snapshot_date")
+    if snapshot is not None and not isinstance(snapshot, str):
+        failures.append(f"{rpath}.kev_snapshot_date must be a string or null")
+    source_url = reporting.get("kev_source_url")
+    if source_url is not None and not isinstance(source_url, str):
+        failures.append(f"{rpath}.kev_source_url must be a string or null")
+    if reporting.get("not_a_legal_determination") is not True:
+        failures.append(f"{rpath}.not_a_legal_determination must be true")
+    candidates = reporting.get("candidates")
+    states: list[Optional[str]] = []
+    seen: set[str] = set()
+    if not isinstance(candidates, list):
+        failures.append(f"{rpath}.candidates must be a list")
+    else:
+        for idx, item in enumerate(candidates):
+            item_fail, state = _check_reporting_candidate(
+                item,
+                path=f"{rpath}.candidates[{idx}]",
+                scan_completed=scan_completed,
+            )
+            failures.extend(item_fail)
+            states.append(state)
+            if isinstance(item, Mapping) and isinstance(item.get("id"), str):
+                seen.add(item["id"])
+    missing = [item for item in dict.fromkeys(kev_ids) if item not in seen]
+    if missing:
+        failures.append(
+            f"{rpath}.candidates is missing KEV-listed findings {missing}: "
+            "every KEV hit is a candidate until the run says why it is not"
+        )
+    if not json_in(assessment, ART14_ASSESSMENTS):
+        return failures
+    undetermined_required = not scan_completed or not (
+        isinstance(snapshot, str) and snapshot.strip()
+    )
+    if undetermined_required:
+        if assessment != ART14_UNDETERMINED:
+            failures.append(
+                f"{rpath}.assessment must be '{ART14_UNDETERMINED}' when the "
+                "scan did not complete or the KEV snapshot is unknown, got "
+                f"{assessment!r}: silence is not 'nothing to report'"
+            )
+        return failures
+    if None in states:
+        return failures
+    if "reportable" in states:
+        expected = ART14_REPORTABLE
+    elif ART14_UNDETERMINED in states:
+        expected = ART14_UNDETERMINED
+    else:
+        expected = ART14_NONE
+    if assessment != expected:
+        failures.append(
+            f"{rpath}.assessment is {assessment!r} but the candidates give {expected!r}"
+        )
+    return failures
 
 
 def _gate_failure_ids(items: Sequence[Mapping[str, Any]]) -> list[str]:
@@ -939,6 +1349,10 @@ def _check_gate(
         failures.append(f"{path}.policy must be a non-empty string")
     computed = _default_gate_failures(findings, policy=gate_policy)
     computed_ids = _gate_failure_ids(computed)
+    if release_fields:
+        failures.extend(
+            _check_vex_suppressed(gate, findings, path=path, policy=gate_policy)
+        )
     applied_raw = gate.get("waivers_applied")
     if "waivers_applied" in gate and not isinstance(applied_raw, list):
         failures.append(f"{path}.waivers_applied must be a list")
@@ -1403,6 +1817,7 @@ def _validate_vuln_body(
     platform_approvals: Optional[Sequence[PlatformApproval]],
     authority: AuthorityMode = AUTHORITY_OFFLINE,
     gate_policy: GatePolicy = DEFAULT_GATE_POLICY,
+    scan_completed: bool = True,
 ) -> tuple[list[str], list[str]]:
     failures: list[str] = []
     advisories: list[str] = []
@@ -1448,6 +1863,14 @@ def _validate_vuln_body(
     if not isinstance(candidates, list):
         failures.append(f"{path}.art14_candidates must be a list")
     failures.extend(
+        _check_reporting(
+            obj,
+            findings if isinstance(findings, list) else [],
+            path=path,
+            scan_completed=scan_completed,
+        )
+    )
+    failures.extend(
         _check_gate(
             obj.get("gate"),
             findings if isinstance(findings, list) else [],
@@ -1462,6 +1885,44 @@ def _validate_vuln_body(
     return failures, advisories
 
 
+def _check_sbomaudit_reporting(obj: Mapping[str, Any], *, path: str) -> list[str]:
+    """An SBOM verification may only ever say "I did not ask that question".
+
+    Preset 004 never screens for vulnerabilities, so any Article 14 answer
+    other than ``undetermined`` would be manufactured. The block is optional
+    for compatibility with results written before it existed, and strict
+    when it is there.
+    """
+    reporting = obj.get(ART14_REPORTING_FIELD)
+    if reporting is None:
+        return []
+    rpath = f"{path}.{ART14_REPORTING_FIELD}"
+    if not isinstance(reporting, Mapping):
+        return [f"{rpath} must be an object"]
+    failures: list[str] = []
+    assessment = reporting.get("assessment")
+    if assessment != ART14_UNDETERMINED:
+        failures.append(
+            f"{rpath}.assessment must be '{ART14_UNDETERMINED}' in an SBOM "
+            f"verification, got {assessment!r}: this preset does not screen "
+            "for vulnerabilities"
+        )
+    basis = reporting.get("basis")
+    if not isinstance(basis, str) or not basis.strip():
+        failures.append(f"{rpath}.basis must be a non-empty string")
+    candidates = reporting.get("candidates")
+    if candidates not in (None, []) and not (
+        isinstance(candidates, list) and not candidates
+    ):
+        failures.append(
+            f"{rpath}.candidates must be empty: an SBOM verification has no "
+            "exploitation evidence to nominate candidates from"
+        )
+    if reporting.get("not_a_legal_determination") is not True:
+        failures.append(f"{rpath}.not_a_legal_determination must be true")
+    return failures
+
+
 def _validate_sbomaudit(
     obj: Mapping[str, Any],
 ) -> tuple[list[str], list[str], bool, bool]:
@@ -1471,6 +1932,7 @@ def _validate_sbomaudit(
         obj, path="result", require_delta_null=True
     )
     failures.extend(body_fail)
+    failures.extend(_check_sbomaudit_reporting(obj, path="result"))
     verdict = obj.get("verdict")
     incomplete = verdict == AUDIT_INCOMPLETE_VERDICT
     completed = json_in(verdict, AUDIT_VERDICTS)
@@ -1500,6 +1962,7 @@ def _validate_vulnscan(
         platform_approvals=platform_approvals,
         authority=authority,
         gate_policy=gate_policy,
+        scan_completed=status == "success",
     )
     failures.extend(body_fail)
     incomplete = status == "error"
@@ -1562,6 +2025,91 @@ def _reconcile_release_verdict(
     return failures
 
 
+def _check_string_list(value: Any, *, path: str) -> list[str]:
+    if not isinstance(value, list):
+        return [f"{path} must be a list"]
+    return [
+        f"{path}[{idx}] must be a non-empty string"
+        for idx, item in enumerate(value)
+        if not isinstance(item, str) or not item.strip()
+    ]
+
+
+def _check_drift_evidence(obj: Mapping[str, Any], *, path: str) -> list[str]:
+    """The drift block and the drift report must state the same fact.
+
+    Round 2's release audit wrote ``evidence/drift-report.md``, named it under
+    ``artifacts``, and left ``drift`` null. A consumer reading the envelope saw
+    no drift; a human reading the pack saw a full drift analysis. Either both
+    exist or neither does.
+    """
+    artifacts = obj.get("artifacts")
+    report = artifacts.get("drift_report") if isinstance(artifacts, Mapping) else None
+    has_report = isinstance(report, str) and bool(report.strip())
+    drift = obj.get("drift")
+    failures: list[str] = []
+    if isinstance(drift, Mapping) and not has_report:
+        failures.append(
+            f"{path}.artifacts.drift_report must name the report behind {path}.drift"
+        )
+    if has_report and drift is None:
+        failures.append(
+            f"{path}.drift must carry what the drift report states; "
+            f"{report} was written and the machine-readable field is null"
+        )
+    return failures
+
+
+def _check_drift(value: Any, *, path: str) -> list[str]:
+    """Validate the drift block, in full, wherever it appears.
+
+    Drift used to be type-checked as "an object or null" and nothing more,
+    which is why a run could write a complete drift report to the evidence
+    pack and leave the machine-readable field null without anyone noticing
+    (round 2 CRA rerun, P7). A field a consumer reads as "no drift" has to be
+    the same fact the report states, so the block is now checked like the
+    rest of the audit.
+    """
+    if not isinstance(value, Mapping):
+        return [f"{path} must be an object or null"]
+    failures: list[str] = []
+
+    baseline = value.get("baseline")
+    if not isinstance(baseline, Mapping):
+        failures.append(f"{path}.baseline must be an object naming what was compared")
+    else:
+        for key in ("schema", "run_at", "build_ref"):
+            item = baseline.get(key)
+            if item is not None and not isinstance(item, str):
+                failures.append(f"{path}.baseline.{key} must be a string or null")
+        if (
+            not isinstance(baseline.get("schema"), str)
+            or not baseline["schema"].strip()
+        ):
+            failures.append(
+                f"{path}.baseline.schema must name the baseline's schema; "
+                "drift against an unidentified baseline is not drift"
+            )
+
+    changes = value.get("sbom_changes")
+    if not isinstance(changes, Mapping):
+        failures.append(f"{path}.sbom_changes must be an object")
+    else:
+        for key in ("added", "removed", "upgraded", "license_changes"):
+            if key in changes and not isinstance(changes.get(key), list):
+                failures.append(f"{path}.sbom_changes.{key} must be a list")
+
+    for key in ("new_vulns", "resolved_vulns", "new_kev", "gate_transitions"):
+        if key in value:
+            failures.extend(_check_string_list(value.get(key), path=f"{path}.{key}"))
+
+    if not _is_bool(value.get("alert")):
+        failures.append(
+            f"{path}.alert must be a boolean, not {type(value.get('alert')).__name__}"
+        )
+    return failures
+
+
 def _validate_releaseaudit(
     obj: Mapping[str, Any],
     *,
@@ -1594,12 +2142,16 @@ def _validate_releaseaudit(
             platform_approvals=platform_approvals,
             authority=authority,
             gate_policy=gate_policy,
+            # A release audit that reached a real verdict ran its scan; an
+            # "error" verdict did not, and its reporting block must say so.
+            scan_completed=json_in(obj.get("verdict"), AUDIT_VERDICTS),
         )
         failures.extend(vuln_fail)
         advisories.extend(vuln_adv)
     drift = obj.get("drift")
-    if drift is not None and not isinstance(drift, Mapping):
-        failures.append("result.drift must be an object or null")
+    if drift is not None:
+        failures.extend(_check_drift(drift, path="result.drift"))
+    failures.extend(_check_drift_evidence(obj, path="result"))
     gap = obj.get("gap_register")
     if gap is not None:
         try:

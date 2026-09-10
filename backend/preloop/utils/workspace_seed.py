@@ -247,6 +247,47 @@ def workspace_seed_env(files: List[WorkspaceSeedFile]) -> Dict[str, str]:
     }
 
 
+def workspace_seed_payload(
+    trigger_event_data: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """The mapping that carries ``workspace_files``, wherever the caller put it.
+
+    Every reader used to look at ``trigger_event_data["payload"]["workspace_
+    files"]`` and nowhere else, so a body shaped
+    ``{"payload": {...}, "workspace_files": [...]}`` was accepted with 200,
+    stored on the execution, and seeded nothing: the strict validator only
+    fires when the key is in the place the validator looks. The agent then
+    started with an empty ``/workspace`` and spent a full run discovering it.
+    On staging that cost executions 91f6191f (898,932 tokens, $0.2775, "no
+    SBOM artifacts were delivered") and 444a2ace (1,680,898 tokens, $0.2824,
+    stopped by hand), neither of which could ever have produced an audit.
+
+    ``product_provenance`` in the very same body already had a top-level
+    fallback, so two neighbouring keys in one request followed two different
+    lookup rules. Now they follow one: inside ``payload`` first, then the top
+    level.
+
+    Declaring the key in both places raises rather than picking a winner. The
+    two lists mean two different runs and no reading of the request is more
+    correct than the other.
+    """
+    if not isinstance(trigger_event_data, dict):
+        return None
+    payload = trigger_event_data.get("payload")
+    inside = isinstance(payload, dict) and WORKSPACE_FILES_KEY in payload
+    beside = WORKSPACE_FILES_KEY in trigger_event_data
+    if inside and beside:
+        raise WorkspaceSeedError(
+            f"{WORKSPACE_FILES_KEY} is declared both inside 'payload' and "
+            "beside it; keep one, and prefer inside 'payload'"
+        )
+    if inside:
+        return payload
+    if beside:
+        return trigger_event_data
+    return payload if isinstance(payload, dict) else None
+
+
 def workspace_seed_env_from_payload(
     payload: Optional[Dict[str, Any]],
 ) -> Dict[str, str]:
@@ -282,7 +323,7 @@ def attach_workspace_file_paths(
     if not isinstance(trigger_details, dict):
         return trigger_details
     try:
-        paths = workspace_seed_paths(trigger_details.get("payload"))
+        paths = workspace_seed_paths(workspace_seed_payload(trigger_details))
     except WorkspaceSeedError:
         return trigger_details
     if paths:

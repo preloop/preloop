@@ -15,10 +15,13 @@ from typing import Any, Mapping, Optional
 
 from preloop.services.event_webhooks import outbox
 from preloop.services.event_webhooks.events import (
+    EVENT_AGENT_NOTE_DELIVERED,
+    EVENT_AGENT_NOTE_SENT,
     EVENT_APPROVAL_CREATED,
     EVENT_APPROVAL_DECIDED,
     EVENT_BUDGET_EXCEEDED,
     EVENT_BUDGET_THRESHOLD,
+    EVENT_CRA_REPORTABLE_VULNERABILITY,
     EVENT_FLOW_EXECUTION_FINISHED,
     EVENT_POLICY_DENIED,
     EVENT_SESSION_ENDED,
@@ -466,3 +469,191 @@ def emit_flow_execution_finished(
         natural_key=f"{EVENT_FLOW_EXECUTION_FINISHED}:{execution_id}:{status}",
         subject_id=execution_id,
     )
+
+
+# --- operator notes --------------------------------------------------------
+
+
+def operator_note_data(
+    note: Any,
+    *,
+    channel: Optional[str] = None,
+    turn_index: Optional[int] = None,
+    runtime_session_id: Optional[Any] = None,
+) -> dict[str, Any]:
+    """Body of ``agent.note_sent`` and ``agent.note_delivered``.
+
+    The note text is included: unlike tool arguments, the text *is* the fact,
+    and a receiver that mirrors notes into a ticket or a chat room has nothing
+    without it. Everything else is identity and placement.
+    """
+    return {
+        "note_id": getattr(note, "command_id", None),
+        "managed_agent_id": _str(getattr(note, "managed_agent_id", None)),
+        "runtime_session_id": _str(
+            runtime_session_id
+            if runtime_session_id is not None
+            else getattr(note, "runtime_session_id", None)
+        ),
+        "text": getattr(note, "body", None),
+        "author": {
+            "user_id": _str(getattr(note, "created_by_user_id", None)),
+            "display": getattr(note, "author_display", None),
+            "auth_method": getattr(note, "author_auth_method", None),
+        },
+        "created_at": _iso(getattr(note, "created_at", None)),
+        "expires_at": _iso(getattr(note, "expires_at", None)),
+        "delivered_at": _iso(getattr(note, "delivered_at", None)),
+        "delivery_channel": channel or getattr(note, "delivery_channel", None),
+        "turn_index": (
+            turn_index
+            if turn_index is not None
+            else getattr(note, "delivered_turn_index", None)
+        ),
+    }
+
+
+def emit_agent_note_sent(db: Any, note: Any) -> None:
+    """Enqueue ``agent.note_sent`` in the caller's transaction."""
+    note_id = getattr(note, "command_id", None)
+    if note_id is None:
+        return
+    outbox.enqueue_event(
+        db,
+        account_id=getattr(note, "account_id", None),
+        event_type=EVENT_AGENT_NOTE_SENT,
+        data=operator_note_data(note),
+        occurred_at=getattr(note, "created_at", None),
+        natural_key=f"{EVENT_AGENT_NOTE_SENT}:{note_id}",
+        subject_id=getattr(note, "id", None),
+    )
+
+
+def emit_agent_note_delivered(
+    db: Any,
+    note: Any,
+    *,
+    channel: str,
+    turn_index: Optional[int] = None,
+    runtime_session_id: Optional[Any] = None,
+) -> None:
+    """Enqueue ``agent.note_delivered`` in the caller's transaction.
+
+    Keyed on the note id alone: a note is delivered once, so a repeated emit
+    is the same fact and collapses into one delivery.
+    """
+    note_id = getattr(note, "command_id", None)
+    if note_id is None:
+        return
+    outbox.enqueue_event(
+        db,
+        account_id=getattr(note, "account_id", None),
+        event_type=EVENT_AGENT_NOTE_DELIVERED,
+        data=operator_note_data(
+            note,
+            channel=channel,
+            turn_index=turn_index,
+            runtime_session_id=runtime_session_id,
+        ),
+        natural_key=f"{EVENT_AGENT_NOTE_DELIVERED}:{note_id}",
+        subject_id=getattr(note, "id", None),
+    )
+
+
+def _reporting_block(result: Any) -> Optional[Mapping[str, Any]]:
+    """Find the Article 14 block in a CRA result, whichever schema wrote it.
+
+    Preset 006 nests it under ``vuln_scan``; preset 005 writes it at the top
+    level. Anything else has no block and produces no events.
+    """
+    if not isinstance(result, Mapping):
+        return None
+    nested = result.get("vuln_scan")
+    if isinstance(nested, Mapping) and isinstance(nested.get("reporting"), Mapping):
+        return nested["reporting"]
+    block = result.get("reporting")
+    return block if isinstance(block, Mapping) else None
+
+
+def cra_reportable_vulnerability_data(
+    execution: Any,
+    flow: Any,
+    candidate: Mapping[str, Any],
+    reporting: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Body of ``cra.reportable_vulnerability``.
+
+    Carries the deadlines the run computed rather than recomputing them, so
+    the webhook and the evidence pack cannot disagree about when the clock
+    stops.
+    """
+    affected = candidate.get("affected")
+    deadlines = candidate.get("deadlines")
+    return {
+        "execution_id": _str(getattr(execution, "id", None)),
+        "flow_id": _str(getattr(flow, "id", None)),
+        "flow_name": getattr(flow, "name", None),
+        "cve": candidate.get("id"),
+        "actively_exploited": candidate.get("actively_exploited"),
+        "exploited_evidence": candidate.get("exploited_evidence"),
+        "affected": dict(affected) if isinstance(affected, Mapping) else None,
+        "vex_status": candidate.get("vex_status"),
+        "discovered_at": candidate.get("discovered_at"),
+        "deadlines": dict(deadlines) if isinstance(deadlines, Mapping) else None,
+        "status": candidate.get("status"),
+        "assessment": reporting.get("assessment"),
+        "kev_snapshot_date": reporting.get("kev_snapshot_date"),
+        "kev_source_url": reporting.get("kev_source_url"),
+        # Said in the payload, not just in the docs: a receiver automating
+        # on this event is automating a notification, not a filing.
+        "not_a_legal_determination": True,
+        "filing_is_manufacturer_responsibility": True,
+    }
+
+
+def emit_cra_reportable_vulnerabilities(db: Any, execution: Any, flow: Any) -> int:
+    """Enqueue one ``cra.reportable_vulnerability`` per reportable candidate.
+
+    Idempotent on (execution, cve): a re-emitted run collapses onto the same
+    deterministic event ids, so a receiver never sees the same clock twice.
+
+    Returns:
+        The number of candidates that produced an enqueue attempt.
+    """
+    from preloop.cra.reporting import reportable_candidates
+
+    execution_id = getattr(execution, "id", None)
+    if execution_id is None:
+        return 0
+    reporting = _reporting_block(getattr(execution, "result", None))
+    if reporting is None:
+        return 0
+    emitted = 0
+    for candidate in reportable_candidates(reporting):
+        cve = candidate.get("id")
+        if not isinstance(cve, str) or not cve.strip():
+            continue
+        cve = cve.strip()
+        outbox.enqueue_event(
+            db,
+            account_id=getattr(flow, "account_id", None),
+            event_type=EVENT_CRA_REPORTABLE_VULNERABILITY,
+            data=cra_reportable_vulnerability_data(
+                execution, flow, candidate, reporting
+            ),
+            # Awareness, not delivery time: the clock in the payload starts
+            # here, so the envelope timestamp has to agree with it.
+            occurred_at=_discovered_at(candidate)
+            or getattr(execution, "end_time", None),
+            natural_key=(f"{EVENT_CRA_REPORTABLE_VULNERABILITY}:{execution_id}:{cve}"),
+            subject_id=execution_id,
+        )
+        emitted += 1
+    return emitted
+
+
+def _discovered_at(candidate: Mapping[str, Any]) -> Optional[datetime]:
+    """Parse a candidate's discovery timestamp, or None."""
+    from preloop.cra.reporting import parse_timestamp
+
+    return parse_timestamp(candidate.get("discovered_at"))

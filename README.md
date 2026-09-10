@@ -49,7 +49,11 @@ Onboarding, the MCP firewall, human approvals, and cutting session cost. Recorde
 
 Guides: [docs.preloop.ai](https://docs.preloop.ai). Start here: [onboard local agents (60s)](https://docs.preloop.ai/quickstart-cli/).
 
+[Operator notes](docs/guide/operator-notes.md) let an identified human steer a running agent: the note is delivered at the next turn boundary through the gateway or a hook, costs nothing when there is none, and is recorded as a human decision.
+
 The [account kill switch](docs/guide/account-kill-switch.md) blocks gateway and tool traffic, freezes pending approval deadlines, and requests termination of active managed flow executions, with audited staged recovery.
+
+Two exports turn the agent inventory and the failure record into files an auditor can read: [DORA: the AI-agent slice](docs/guide/dora-agent-slice.md). They feed an Art. 8 inventory and an Art. 28 register, and list Art. 17 incident candidates. Classification stays with your firm, and Preloop covers the agent slice of the ICT estate only.
 
 ## What you get
 

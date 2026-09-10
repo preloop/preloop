@@ -31,6 +31,9 @@ import type {
   AccountManagedAgentListResponse,
   AgentControlCommandRequest,
   AgentControlCommandResponse,
+  OperatorNote,
+  OperatorNoteCreateRequest,
+  OperatorNoteList,
   AgentControlVoiceTranscriptRequest,
   ManagedAgentDetailResponse,
   ManagedAgentSummary,
@@ -1438,6 +1441,67 @@ export async function sendAgentControlCommand(
   throw new Error(
     extractErrorMessage(errorData, 'Failed to send Agent Control command')
   );
+}
+
+/**
+ * Send an operator note: a short instruction delivered to a running agent at
+ * its next turn boundary. Same permission as the kill switch, and recorded as
+ * a human decision.
+ */
+export async function sendOperatorNote(
+  payload: OperatorNoteCreateRequest
+): Promise<OperatorNote> {
+  const response = await fetchWithAuth('/api/v1/operator-notes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(extractErrorMessage(errorData, 'Failed to send the note'));
+  }
+  return response.json();
+}
+
+/** Recent notes for one agent, session or execution, newest first. */
+export async function listOperatorNotes(params: {
+  agentId?: string;
+  runtimeSessionId?: string;
+  executionId?: string;
+  limit?: number;
+}): Promise<OperatorNote[]> {
+  const query = new URLSearchParams();
+  if (params.agentId) query.set('agent_id', params.agentId);
+  if (params.runtimeSessionId)
+    query.set('runtime_session_id', params.runtimeSessionId);
+  if (params.executionId) query.set('execution_id', params.executionId);
+  if (params.limit) query.set('limit', String(params.limit));
+  const response = await fetchWithAuth(
+    `/api/v1/operator-notes?${query.toString()}`
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(extractErrorMessage(errorData, 'Failed to load notes'));
+  }
+  const payload: OperatorNoteList = await response.json();
+  return payload.notes || [];
+}
+
+/** Withdraw a note that has not been delivered yet. */
+export async function cancelOperatorNote(
+  noteId: string
+): Promise<OperatorNote> {
+  const response = await fetchWithAuth(
+    `/api/v1/operator-notes/${encodeURIComponent(noteId)}/cancel`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to cancel the note')
+    );
+  }
+  return response.json();
 }
 
 export async function sendAgentControlVoiceTranscript(

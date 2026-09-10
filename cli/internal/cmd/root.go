@@ -124,6 +124,7 @@ func init() {
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(flowCmd)
 	rootCmd.AddCommand(runnerCmd)
+	rootCmd.AddCommand(exportCmd)
 	rootCmd.AddCommand(auditCmd)
 	rootCmd.AddCommand(evidenceCmd)
 }
