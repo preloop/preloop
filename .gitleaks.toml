@@ -69,3 +69,17 @@ regexes = [
 [[allowlists]]
 description = "Synthetic payloads in the example-session generator"
 paths = ['''^scripts/generate_example_session\.py$''']
+
+# ---------------------------------------------------------------------------
+# Cryptography type names
+# ---------------------------------------------------------------------------
+# generic-api-key treats a dataclass field `private_key: Ed25519PrivateKey` as
+# a secret assignment because the type name is high-entropy. It is a type,
+# not a credential. The history scan fetches every ref (checkout fetch-depth
+# 0), so this false positive on another branch fails unrelated PRs.
+[[allowlists]]
+description = "Ed25519 type names are not credentials"
+regexTarget = "match"
+regexes = [
+  '''Ed25519PrivateKey''',
+]
