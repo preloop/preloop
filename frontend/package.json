@@ -48,7 +48,7 @@
     "@shoelace-style/shoelace": "^2.20.1",
     "@tanstack/table-core": "^9.2.4",
     "ansi_up": "^6.0.2",
-    "dompurify": "^3.4.14",
+    "dompurify": "^3.4.15",
     "lit": "^3.3.3",
     "marked": "^18.0.11"
   },
