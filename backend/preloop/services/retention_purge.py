@@ -341,6 +341,7 @@ def purge_class(
             db, account_id=account.id, record_class=record_class, cutoff=cutoff
         )
         return result
+    pruned_seq = 0
     for _ in range(max_batches):
         if deadline is not None and time.monotonic() >= deadline:
             result.more_remaining = True
@@ -361,6 +362,12 @@ def purge_class(
             break
         if record_class == CLASS_EVIDENCE:
             _expire_receipts_for_artifacts(db, account_id=account.id, artifact_ids=ids)
+        if record_class == CLASS_AUDIT:
+            # Read the chain positions before the rows go. Deleting the oldest
+            # sealed rows is this job doing its job, and the chain verifier has
+            # to be told so, or the next verification reports the purge as
+            # tampering (issue #558).
+            pruned_seq = max(pruned_seq, _max_chain_seq(db, ids))
         deleted = db.execute(
             delete(model)
             .where(model.id.in_(ids))
@@ -382,7 +389,41 @@ def purge_class(
         if cleared:
             db.commit()
             result.deleted += cleared
+    if pruned_seq:
+        _raise_chain_floor(db, account_id=account.id, up_to_seq=pruned_seq, now=now)
     return result
+
+
+def _max_chain_seq(db: Session, ids: Sequence[Any]) -> int:
+    """Highest chain position among the audit rows about to be deleted."""
+    value = db.execute(
+        select(func.max(AuditLog.chain_seq)).where(AuditLog.id.in_(ids))
+    ).scalar()
+    return int(value or 0)
+
+
+def _raise_chain_floor(
+    db: Session, *, account_id: Any, up_to_seq: int, now: datetime
+) -> None:
+    """Record the purged prefix on the account's chain state.
+
+    Failure here is logged, not raised: the rows are already gone and the
+    purge succeeded. The cost of the failure is a verification that reports a
+    gap at the bottom of the range until the next purge pass raises the floor.
+    """
+    try:
+        from preloop.services.audit_chain import note_pruned
+
+        note_pruned(db, account_id=account_id, up_to_seq=up_to_seq, now=now)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error(
+            "Could not raise the audit chain floor for account %s to seq %s",
+            account_id,
+            up_to_seq,
+            exc_info=True,
+        )
 
 
 def purge_account(

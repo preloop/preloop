@@ -353,7 +353,9 @@ def create_period_export(
 
     The archive carries ``manifest.json`` with a sha256 per member and a
     digest over the member list, in the same shape an evidence pack manifest
-    uses, so one verifier covers both.
+    uses, so one verifier covers both, plus ``signature.json``: a detached
+    Ed25519 signature over the manifest bytes, checkable against the account's
+    published public key.
     """
     period_start = _parse_day(start, "start")
     period_end = _parse_day(end, "end")
@@ -386,16 +388,22 @@ def create_period_export(
     audit_period_export(
         db, account_id=account.id, user_id=current_user.id, export=export
     )
+    headers = {
+        "Content-Disposition": f'attachment; filename="{export.filename}"',
+        # The digest of the bytes served, so a caller can check the
+        # download before they file it.
+        "X-Preloop-Archive-Sha256": export.sha256,
+        "X-Preloop-Members-Digest": str(export.manifest.get("members_digest") or ""),
+        # What the signature covers, so a caller who has only the headers can
+        # still tell which digest to check (#558).
+        "X-Preloop-Manifest-Sha256": export.manifest_sha256,
+    }
+    if export.signature:
+        headers["X-Preloop-Signature"] = str(export.signature.get("signature") or "")
+        headers["X-Preloop-Signing-Key-Id"] = str(export.signature.get("key_id") or "")
+        headers["X-Preloop-Signed-At"] = str(export.signature.get("signed_at") or "")
     return Response(
         content=export.archive,
         media_type="application/gzip",
-        headers={
-            "Content-Disposition": f'attachment; filename="{export.filename}"',
-            # The digest of the bytes served, so a caller can check the
-            # download before they file it.
-            "X-Preloop-Archive-Sha256": export.sha256,
-            "X-Preloop-Members-Digest": str(
-                export.manifest.get("members_digest") or ""
-            ),
-        },
+        headers=headers,
     )

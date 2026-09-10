@@ -699,7 +699,70 @@ def put_artifact(
         quota_bytes=settings.flow_artifact_account_quota_bytes,
         require_execution_open=require_execution_open,
     )
+    if kind == "evidence":
+        # Imported here, not at module scope: signing canonicalises through
+        # preloop.cra.evidence_pack, which imports this module.
+        from preloop.services import record_signing
+
+        # Sign at mint, not at download. A signature made when the pack is
+        # served would only ever say "this is what we hold now"; made here it
+        # is dated to the capture, and re-serving cannot change it (#558).
+        record_signing.sign_evidence_pack(
+            db,
+            account_id=account_id,
+            artifact_id=artifact.id,
+            execution_id=execution_id,
+            archive_sha256=manifest["sha256"],
+            size_bytes=manifest.get("size_bytes"),
+            created_at=now,
+        )
     return artifact_reference(artifact)
+
+
+def evidence_signature(
+    db: Session, *, account_id: UUID, artifact_id: Any
+) -> dict[str, Any] | None:
+    """The detached signature over one evidence pack, or None.
+
+    None is a normal answer: packs captured before #558, and packs from an
+    account whose key could not be minted, have no signature and the receipt
+    says so rather than pretending.
+    """
+    if not artifact_id:
+        return None
+    from preloop.services import record_signing
+
+    try:
+        record = record_signing.get_record_signature(
+            db,
+            account_id=account_id,
+            payload_type=record_signing.PAYLOAD_EVIDENCE_PACK,
+            subject_id=artifact_id,
+        )
+    except Exception:
+        logger.warning("Could not read the evidence signature", exc_info=True)
+        return None
+    if record is None:
+        return None
+    return record_signing.record_signature_document(record)
+
+
+def attach_evidence_signature(
+    db: Session, *, account_id: UUID, receipt: dict[str, Any]
+) -> dict[str, Any]:
+    """Return the receipt with its signature, when the pack has one.
+
+    Kept out of :func:`evidence_receipt` on purpose: that function is called
+    on paths that hold no session, and a receipt builder that needs a database
+    round trip would put one on every status poll.
+    """
+    document = evidence_signature(
+        db, account_id=account_id, artifact_id=receipt.get("artifact_id")
+    )
+    out = dict(receipt)
+    out["signature"] = document
+    out["signing_key_id"] = (document or {}).get("key_id")
+    return out
 
 
 def get_artifact(

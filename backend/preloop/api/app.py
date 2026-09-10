@@ -37,6 +37,7 @@ from preloop.api.endpoints import (
     anthropic_gateway,
     audio,
     approval_bypass,
+    audit_chain,
     approval_requests,
     comments,
     cost,
@@ -385,6 +386,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             service_role,
         )
 
+    # Start the audit chain sealer (skip in testing mode). It chains audit
+    # rows written since the last pass. Off the request path on purpose: the
+    # alternative is a per-account lock held for the duration of every audited
+    # action. See preloop.services.audit_chain for why (issue #558).
+    audit_chain_sealer = None
+    if not is_testing and is_api_role and settings.audit_chain_enabled:
+        from preloop.services.audit_chain import get_audit_chain_sealer
+
+        audit_chain_sealer = get_audit_chain_sealer()
+        await audit_chain_sealer.start()
+        logger.info("Audit chain sealer started.")
+    else:
+        logger.info(
+            "Audit chain sealer not started (enabled=%s, role=%s).",
+            settings.audit_chain_enabled,
+            service_role,
+        )
+
     # Start the webhook delivery worker (skip in testing mode). Outbound
     # deliveries never run on the request path; this drains the outbox.
     webhook_delivery_worker = None
@@ -596,6 +615,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("Webhook delivery worker stopped.")
         except Exception as e:
             logger.error(f"Error stopping webhook delivery worker: {e}", exc_info=True)
+
+    # Stop the audit chain sealer. Rows it did not reach stay unsealed and are
+    # picked up by the next process; the chain is append only, so an
+    # interrupted pass costs nothing but lag.
+    if not is_testing and audit_chain_sealer:
+        try:
+            await audit_chain_sealer.stop()
+            logger.info("Audit chain sealer stopped.")
+        except Exception as e:
+            logger.error(f"Error stopping audit chain sealer: {e}", exc_info=True)
 
     # Stop the retention purge sweeper. A pass in flight finishes its current
     # batch and stops at the next check; batches are small on purpose so this
@@ -1052,6 +1081,16 @@ def create_app() -> FastAPI:
         )
         app.include_router(
             retention.router,
+            prefix="/api/v1",
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            audit_chain.router,
+            prefix="/api/v1",
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            audit_chain.signing_router,
             prefix="/api/v1",
             dependencies=[Depends(get_current_active_user)],
         )

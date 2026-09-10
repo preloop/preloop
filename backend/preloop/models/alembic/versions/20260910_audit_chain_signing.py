@@ -17,7 +17,10 @@ table that is one of the largest in the product.
 account. ``audit_chain_checkpoint`` is a signed anchor every N rows.
 ``account_signing_key`` holds the Ed25519 key, public part in the clear and
 private part Fernet-encrypted, with a partial unique index enforcing one
-active key per account.
+active key per account. ``record_signature`` holds detached signatures over
+records that cannot carry their own, which today means evidence packs: the
+archive is content addressed when it is stored, so appending a signature
+member would change the digest the receipt already promised.
 
 Downgrade drops all of it. That loses the chain, which cannot be recomputed
 afterwards for rows that were sealed and then edited, and that is the honest
@@ -30,7 +33,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 revision: str = "20260910_audit_chain"
 down_revision: Union[str, None] = "20260910_retention_hold"
@@ -174,9 +177,56 @@ def upgrade() -> None:
         postgresql_where=sa.text("retired_at IS NULL"),
     )
 
+    op.create_table(
+        "record_signature",
+        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "created_at", sa.DateTime(), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "account_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("account.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("payload_type", sa.String(120), nullable=False),
+        sa.Column("subject_type", sa.String(40), nullable=False),
+        sa.Column("subject_id", sa.String(120), nullable=False),
+        sa.Column("payload", JSONB(), nullable=False),
+        sa.Column("digest", sa.String(64), nullable=False),
+        sa.Column("algorithm", sa.String(32), nullable=False),
+        sa.Column("signing_key_id", sa.String(64), nullable=False),
+        sa.Column("signature", sa.Text(), nullable=False),
+        sa.Column("signed_at", sa.DateTime(timezone=True), nullable=True),
+    )
+    op.create_index("ix_record_signature_id", "record_signature", ["id"])
+    op.create_index(
+        "ix_record_signature_account_id", "record_signature", ["account_id"]
+    )
+    op.create_index(
+        "ix_record_signature_signing_key_id", "record_signature", ["signing_key_id"]
+    )
+    # One signature per record. Re-signing an immutable record either repeats
+    # itself or replaces evidence a customer already holds.
+    op.create_index(
+        "uq_record_signature_subject",
+        "record_signature",
+        ["account_id", "payload_type", "subject_id"],
+        unique=True,
+    )
+
 
 def downgrade() -> None:
-    """Drop the keys, the checkpoints, the head and the chain columns."""
+    """Drop the signatures, keys, checkpoints, head and chain columns."""
+    op.drop_index("uq_record_signature_subject", table_name="record_signature")
+    op.drop_index("ix_record_signature_signing_key_id", table_name="record_signature")
+    op.drop_index("ix_record_signature_account_id", table_name="record_signature")
+    op.drop_index("ix_record_signature_id", table_name="record_signature")
+    op.drop_table("record_signature")
+
     op.drop_index("uq_account_signing_key_active", table_name="account_signing_key")
     op.drop_index("ix_account_signing_key_key_id", table_name="account_signing_key")
     op.drop_index("ix_account_signing_key_account_id", table_name="account_signing_key")

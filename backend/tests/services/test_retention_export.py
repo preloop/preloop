@@ -13,6 +13,7 @@ from preloop.config import settings
 from preloop.cra.evidence_pack import canonical_manifest_json
 from preloop.models import models
 from preloop.models.models.audit_log import AuditLog
+from preloop.services import record_signing
 from preloop.services.legal_hold import place_hold
 from preloop.services.retention_export import (
     EXPORT_MANIFEST_SCHEMA,
@@ -148,6 +149,7 @@ def test_the_archive_carries_a_manifest_and_one_file_per_class(
     names = set(_members(export.archive))
     assert names == {
         "manifest.json",
+        "signature.json",
         MEMBER_AUDIT,
         MEMBER_APPROVALS,
         MEMBER_EVIDENCE,
@@ -202,14 +204,16 @@ def test_tampering_with_a_member_breaks_its_digest(db_session, test_user, accoun
     assert hashlib.sha256(altered).hexdigest() != entry["sha256"]
 
 
-def test_the_manifest_says_plainly_that_it_is_not_signed(
+def test_the_manifest_says_plainly_what_the_signature_does_not_prove(
     db_session, test_user, account
 ):
     export = build_period_export(
         db_session, account=account, start=PERIOD_START, end=PERIOD_END
     )
 
-    assert "not signed" in _manifest(export.archive)["note"]
+    note = _manifest(export.archive)["note"]
+    assert "not show the records were true when they were written" in note
+    assert "same platform that wrote them" in note
 
 
 def test_the_manifest_records_the_retention_in_force(db_session, account):
@@ -425,3 +429,142 @@ def test_the_export_is_audited_with_the_digest_of_what_was_taken(
     assert row.details["archive_sha256"] == export.sha256
     assert row.details["period_start"] == "2026-04-01T00:00:00Z"
     assert row.details["counts"]["audit"] == 1
+
+
+# --- signature -------------------------------------------------------------
+
+
+def test_the_archive_carries_a_detached_signature_over_the_manifest(
+    db_session, test_user, account
+):
+    _audit_row(db_session, account.id, INSIDE)
+    db_session.flush()
+
+    export = build_period_export(
+        db_session, account=account, start=PERIOD_START, end=PERIOD_END
+    )
+
+    members = _members(export.archive)
+    document = json.loads(members["signature.json"])
+    manifest_bytes = members["manifest.json"]
+
+    assert document["payload_type"] == record_signing.PAYLOAD_PERIOD_EXPORT
+    assert document["digest"] == hashlib.sha256(manifest_bytes).hexdigest()
+    assert document["digest"] == export.manifest_sha256
+
+
+def test_the_signature_verifies_against_the_accounts_public_key(
+    db_session, test_user, account
+):
+    export = build_period_export(
+        db_session, account=account, start=PERIOD_START, end=PERIOD_END
+    )
+    document = json.loads(_members(export.archive)["signature.json"])
+    key = record_signing.get_active_key(db_session, account_id=account.id)
+
+    # The verification a customer performs: digest the manifest bytes you
+    # hold, then check the signature over that digest with the public key.
+    digest = hashlib.sha256(_members(export.archive)["manifest.json"]).hexdigest()
+    verified = record_signing.verify_signature_document(
+        document,
+        public_key=key.public_key,
+        payload_type=record_signing.PAYLOAD_PERIOD_EXPORT,
+        digest=digest,
+    )
+
+    assert verified is True
+    assert document["key_id"] == key.key_id
+
+
+def test_editing_a_row_after_the_fact_breaks_the_signature(
+    db_session, test_user, account
+):
+    _audit_row(db_session, account.id, INSIDE)
+    db_session.flush()
+    export = build_period_export(
+        db_session, account=account, start=PERIOD_START, end=PERIOD_END
+    )
+    document = json.loads(_members(export.archive)["signature.json"])
+    key = record_signing.get_active_key(db_session, account_id=account.id)
+
+    # Rewrite one member and rebuild the manifest around it, the way an
+    # attacker with the archive but not the key would have to.
+    manifest = json.loads(_members(export.archive)["manifest.json"])
+    altered = _members(export.archive)[MEMBER_AUDIT].replace(b"allow", b"deny_")
+    for member in manifest["members"]:
+        if member["name"] == MEMBER_AUDIT:
+            member["sha256"] = hashlib.sha256(altered).hexdigest()
+    manifest["members_digest"] = hashlib.sha256(
+        canonical_manifest_json(manifest["members"])
+    ).hexdigest()
+    forged_digest = hashlib.sha256(canonical_manifest_json(manifest)).hexdigest()
+
+    assert not record_signing.verify_signature_document(
+        document, public_key=key.public_key, digest=forged_digest
+    )
+
+
+def test_the_signature_member_is_not_listed_among_the_members(
+    db_session, test_user, account
+):
+    export = build_period_export(
+        db_session, account=account, start=PERIOD_START, end=PERIOD_END
+    )
+
+    manifest = _manifest(export.archive)
+
+    # It cannot be: the signature covers the manifest that would have to list
+    # it. The manifest declares the member name instead.
+    assert "signature.json" not in {m["name"] for m in manifest["members"]}
+    assert manifest["signature"]["member"] == "signature.json"
+
+
+def test_the_exported_audit_rows_carry_their_chain_position(
+    db_session, test_user, account
+):
+    row = _audit_row(db_session, account.id, INSIDE)
+    row.chain_seq = 7
+    row.prev_hash = "aa" * 32
+    row.row_hash = "bb" * 32
+    db_session.add(row)
+    db_session.flush()
+
+    export = build_period_export(
+        db_session, account=account, start=PERIOD_START, end=PERIOD_END
+    )
+
+    exported = json.loads(_members(export.archive)[MEMBER_AUDIT].splitlines()[0])
+    assert exported["chain_seq"] == 7
+    assert exported["prev_hash"] == "aa" * 32
+    assert exported["row_hash"] == "bb" * 32
+
+
+def test_an_unsigned_export_is_still_an_export(db_session, test_user, account):
+    export = build_period_export(
+        db_session, account=account, start=PERIOD_START, end=PERIOD_END, sign=False
+    )
+
+    assert export.signature is None
+    assert "signature.json" not in _members(export.archive)
+    assert _manifest(export.archive)["members_digest"]
+
+
+def test_the_audit_row_names_the_key_that_signed_the_export(
+    db_session, test_user, account
+):
+    export = build_period_export(
+        db_session, account=account, start=PERIOD_START, end=PERIOD_END
+    )
+
+    audit_period_export(
+        db_session, account_id=account.id, user_id=test_user.id, export=export
+    )
+
+    row = (
+        db_session.query(AuditLog)
+        .filter(AuditLog.action == "retention_period_export")
+        .order_by(AuditLog.timestamp.desc())
+        .first()
+    )
+    assert row.details["signing_key_id"] == export.key_id
+    assert row.details["manifest_sha256"] == export.manifest_sha256

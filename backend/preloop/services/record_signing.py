@@ -52,6 +52,10 @@ from preloop.models.models.account_signing_key import (
     SIGNING_ALGORITHM_ED25519,
     AccountSigningKey,
 )
+from preloop.models.models.record_signature import (
+    SUBJECT_EVIDENCE_PACK,
+    RecordSignature,
+)
 from preloop.utils.encryption import decrypt_value, encrypt_value
 
 logger = logging.getLogger(__name__)
@@ -396,3 +400,166 @@ def public_key_summary(record: AccountSigningKey) -> dict[str, Any]:
         "created_at": record.created_at.isoformat() if record.created_at else None,
         "retired_at": record.retired_at.isoformat() if record.retired_at else None,
     }
+
+
+def evidence_pack_payload(
+    *,
+    account_id: Any,
+    artifact_id: Any,
+    execution_id: Any,
+    archive_sha256: str,
+    size_bytes: Optional[int],
+    created_at: Optional[datetime],
+) -> dict[str, Any]:
+    """The payload signed for one evidence pack.
+
+    Small and self-contained on purpose. A verifier holding the downloaded
+    archive can rebuild every field here: sha256 the bytes, compare, then
+    check the signature over the canonical JSON of this object. Signing the
+    stored artifact manifest instead would have made verification depend on
+    fields the downloader never receives.
+    """
+    return {
+        "schema": PAYLOAD_EVIDENCE_PACK,
+        "account_id": str(account_id),
+        "artifact_id": str(artifact_id),
+        "execution_id": str(execution_id) if execution_id is not None else None,
+        "archive_sha256": archive_sha256,
+        "size_bytes": int(size_bytes) if size_bytes is not None else None,
+        "created_at": format_signed_at(created_at) if created_at else None,
+    }
+
+
+def get_record_signature(
+    db: Session, *, account_id: Any, payload_type: str, subject_id: Any
+) -> Optional[RecordSignature]:
+    """Look up the stored signature for one record, or None."""
+    return db.execute(
+        select(RecordSignature).where(
+            RecordSignature.account_id == account_id,
+            RecordSignature.payload_type == payload_type,
+            RecordSignature.subject_id == str(subject_id),
+        )
+    ).scalar_one_or_none()
+
+
+def record_signature_document(record: RecordSignature) -> dict[str, Any]:
+    """Render a stored signature as the same document a bundle carries."""
+    return {
+        "schema": SIGNATURE_SCHEMA,
+        "algorithm": record.algorithm,
+        "key_id": record.signing_key_id,
+        "payload_type": record.payload_type,
+        "digest": record.digest,
+        "signed_at": format_signed_at(record.signed_at),
+        "signature": record.signature,
+        "payload": record.payload,
+    }
+
+
+def sign_record(
+    db: Session,
+    *,
+    account_id: Any,
+    payload_type: str,
+    subject_type: str,
+    subject_id: Any,
+    payload: Any,
+    signed_at: Optional[datetime] = None,
+    commit: bool = True,
+) -> Optional[dict[str, Any]]:
+    """Sign a payload and store the signature beside the record it covers.
+
+    Idempotent by subject: an existing signature is returned unchanged rather
+    than replaced, because the records this is used for are immutable and a
+    second signature over the same bytes would only invite the question of
+    which one is real. Returns None when the account has no usable key, since
+    signing is an addition to a record and never a precondition for storing
+    it.
+    """
+    existing = get_record_signature(
+        db, account_id=account_id, payload_type=payload_type, subject_id=subject_id
+    )
+    if existing is not None:
+        return record_signature_document(existing)
+    key = ensure_key(db, account_id=account_id, commit=commit)
+    if key is None:
+        return None
+    try:
+        material = load_material(key)
+    except SigningError:
+        logger.error("Signing key is unusable; storing no signature", exc_info=True)
+        return None
+    document = sign_digest(
+        material,
+        payload_type=payload_type,
+        digest=digest_of(payload),
+        signed_at=signed_at,
+    )
+    stamp = datetime.strptime(document["signed_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=UTC
+    )
+    record = RecordSignature(
+        account_id=account_id,
+        payload_type=payload_type,
+        subject_type=subject_type,
+        subject_id=str(subject_id),
+        payload=payload,
+        digest=document["digest"],
+        algorithm=document["algorithm"],
+        signing_key_id=document["key_id"],
+        signature=document["signature"],
+        signed_at=stamp,
+    )
+    db.add(record)
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    out = dict(document)
+    out["payload"] = payload
+    return out
+
+
+def sign_evidence_pack(
+    db: Session,
+    *,
+    account_id: Any,
+    artifact_id: Any,
+    execution_id: Any,
+    archive_sha256: str,
+    size_bytes: Optional[int] = None,
+    created_at: Optional[datetime] = None,
+    commit: bool = True,
+) -> Optional[dict[str, Any]]:
+    """Sign one evidence pack at mint time. Never raises at the caller."""
+    payload = evidence_pack_payload(
+        account_id=account_id,
+        artifact_id=artifact_id,
+        execution_id=execution_id,
+        archive_sha256=archive_sha256,
+        size_bytes=size_bytes,
+        created_at=created_at,
+    )
+    try:
+        # Inside a savepoint, so a signing failure rolls back the signature
+        # and nothing else. A plain rollback here would undo the caller's
+        # work, and an evidence pack that stored but did not sign is worth
+        # far more than an upload that failed: the bytes cannot be captured
+        # again after the run has finished.
+        with db.begin_nested():
+            document = sign_record(
+                db,
+                account_id=account_id,
+                payload_type=PAYLOAD_EVIDENCE_PACK,
+                subject_type=SUBJECT_EVIDENCE_PACK,
+                subject_id=artifact_id,
+                payload=payload,
+                commit=False,
+            )
+        if commit:
+            db.commit()
+        return document
+    except Exception:
+        logger.error("Failed to sign evidence pack %s", artifact_id, exc_info=True)
+        return None

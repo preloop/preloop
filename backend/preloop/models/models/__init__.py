@@ -40,6 +40,10 @@ from .audit_chain import (
     AuditChainCheckpoint,
     AuditChainState,
 )
+from .record_signature import (
+    SUBJECT_EVIDENCE_PACK,
+    RecordSignature,
+)
 from .legal_hold import (
     HOLD_RESOURCE_APPROVAL,
     HOLD_RESOURCE_EVIDENCE_PACK,
@@ -159,6 +163,8 @@ __all__ = [
     "AccountSigningKey",
     "AuditChainCheckpoint",
     "AuditChainState",
+    "RecordSignature",
+    "SUBJECT_EVIDENCE_PACK",
     "GENESIS_HASH",
     "KEY_ID_PREFIX",
     "SIGNING_ALGORITHM_ED25519",

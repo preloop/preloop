@@ -12,12 +12,19 @@ The manifest deliberately reuses the shape #511 gave evidence packs
 (:func:`preloop.cra.evidence_pack.build_pack_manifest`): same ``members``
 entries, same ``members_digest`` computed over the same canonical JSON. Two
 manifest formats for the same idea would be one format too many, and #558
-(signed exports and the audit hash chain) then has one thing to sign.
+signs exactly one thing because of it.
 
-What this is not: it is not signed, and the digests prove that the archive was
-not altered after we built it, not that the rows were true when they were
-written. #558 is the issue for provenance. Saying so here is cheaper than
-having someone infer it.
+Since #558 the archive also carries ``signature.json``, a detached Ed25519
+signature over the sha256 of ``manifest.json`` as packed, made with the
+account's signing key. Verification is: recompute each member's digest,
+recompute ``members_digest`` from the manifest, then check the signature over
+the manifest bytes with the account's published public key.
+
+What this is not: it is not proof that the rows were true when they were
+written. The digests show the archive was not altered after we built it and
+the signature shows we built it, both of which are claims about bytes, not
+about the world. The signing key lives on the same platform that wrote the
+records. Saying so here is cheaper than having someone infer it.
 
 Bounded on purpose: ``RETENTION_EXPORT_MAX_ROWS`` per record class, and going
 over is an error telling the caller to narrow the period. A compliance export
@@ -46,6 +53,11 @@ from preloop.models.models.audit_log import AuditLog
 from preloop.models.models.flow_artifact import FlowArtifact
 from preloop.models.models.legal_hold import LegalHold
 from preloop.services.legal_hold import hold_summary
+from preloop.services.record_signing import (
+    PAYLOAD_PERIOD_EXPORT,
+    SIGNATURE_MEMBER_NAME,
+    sign_manifest,
+)
 from preloop.services.retention_policy import RECORD_CLASSES, resolve_retention
 
 logger = logging.getLogger(__name__)
@@ -76,11 +88,24 @@ class PeriodExport:
     archive: bytes
     manifest: dict[str, Any]
     counts: dict[str, int]
+    #: Detached signature over the manifest digest, or None when the account
+    #: has no usable signing key. An unsigned export is still an export.
+    signature: Optional[dict[str, Any]] = None
 
     @property
     def sha256(self) -> str:
         """Digest of the archive bytes as served."""
         return hashlib.sha256(self.archive).hexdigest()
+
+    @property
+    def manifest_sha256(self) -> str:
+        """Digest of the manifest as packed, which is what gets signed."""
+        return hashlib.sha256(canonical_manifest_json(self.manifest)).hexdigest()
+
+    @property
+    def key_id(self) -> Optional[str]:
+        """Identifier of the key that signed this export, if any."""
+        return (self.signature or {}).get("key_id")
 
     @property
     def filename(self) -> str:
@@ -145,6 +170,12 @@ def _audit_rows(
             "ip_address": row.ip_address,
             "user_agent": row.user_agent,
             "details": row.details,
+            # Chain position travels with the row (#558), so a bundle taken
+            # today can be checked against a checkpoint years later without
+            # asking the platform for anything.
+            "chain_seq": row.chain_seq,
+            "prev_hash": row.prev_hash,
+            "row_hash": row.row_hash,
         }
         for row in _fetch(db, stmt)
     ]
@@ -301,6 +332,7 @@ def build_period_export(
     end: datetime,
     generated_at: Optional[datetime] = None,
     record_classes: Sequence[str] = RECORD_CLASSES,
+    sign: bool = True,
 ) -> PeriodExport:
     """Build the archive for one account and one half-open period.
 
@@ -351,22 +383,51 @@ def build_period_export(
             ).days
             for record_class in record_classes
         },
+        # Named before it exists, and deliberately without the key id: the
+        # signature covers this manifest, so nothing the signature says can
+        # also be asserted here without the two being able to disagree.
+        "signature": {
+            "member": SIGNATURE_MEMBER_NAME,
+            "payload_type": PAYLOAD_PERIOD_EXPORT,
+            "covers": (
+                "sha256 of this file as packed, byte for byte, including this "
+                "declaration"
+            ),
+        },
         "note": (
-            "sha256 values cover the members of this archive as packed. This "
-            "bundle is not signed: the digests show the archive was not "
-            "altered after Preloop built it, not that the records were true "
-            "when they were written. Evidence packs are referenced by receipt "
-            "(artifact id and digest), not inlined."
+            "sha256 values cover the members of this archive as packed. The "
+            "detached signature shows the bundle is the one Preloop built and "
+            "has not been altered since. It does not show the records were "
+            "true when they were written: the signing key lives on the same "
+            "platform that wrote them. Evidence packs are referenced by "
+            "receipt (artifact id and digest), not inlined."
         ),
     }
     manifest_body = canonical_manifest_json(manifest)
+
+    signature: Optional[dict[str, Any]] = None
+    if sign:
+        signature = sign_manifest(
+            db,
+            account_id=account_id,
+            payload_type=PAYLOAD_PERIOD_EXPORT,
+            manifest=manifest,
+            signed_at=stamp,
+        )
 
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
         _add(tar, EXPORT_MANIFEST_NAME, manifest_body)
         for name, body in sorted(bodies.items()):
             _add(tar, name, body)
-    return PeriodExport(archive=buffer.getvalue(), manifest=manifest, counts=counts)
+        if signature is not None:
+            _add(tar, SIGNATURE_MEMBER_NAME, canonical_manifest_json(signature))
+    return PeriodExport(
+        archive=buffer.getvalue(),
+        manifest=manifest,
+        counts=counts,
+        signature=signature,
+    )
 
 
 def audit_period_export(
@@ -398,6 +459,8 @@ def audit_period_export(
                 "counts": export.counts,
                 "archive_sha256": export.sha256,
                 "members_digest": export.manifest.get("members_digest"),
+                "manifest_sha256": export.manifest_sha256,
+                "signing_key_id": export.key_id,
                 "size_bytes": len(export.archive),
             },
         )
