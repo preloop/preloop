@@ -70,6 +70,7 @@ from sqlalchemy.orm import Session
 
 from preloop.config import settings
 from preloop.cra.evidence_pack import canonical_manifest_json
+from preloop.models.crud import audit_chain as crud_audit_chain
 from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
 from preloop.models.models.audit_chain import (
@@ -262,20 +263,9 @@ def get_state(
     db: Session, *, account_id: Any, for_update: bool = False, create: bool = True
 ) -> Optional[AuditChainState]:
     """Return (and optionally create) the chain head row for an account."""
-    stmt = select(AuditChainState).where(AuditChainState.account_id == account_id)
-    if for_update:
-        stmt = stmt.with_for_update()
-    state = db.execute(stmt).scalar_one_or_none()
-    if state is None and create:
-        state = AuditChainState(
-            account_id=account_id,
-            last_seq=0,
-            last_hash=GENESIS_HASH,
-            pruned_below_seq=0,
-        )
-        db.add(state)
-        db.flush()
-    return state
+    return crud_audit_chain.get_state(
+        db, account_id=account_id, for_update=for_update, create=create
+    )
 
 
 def note_pruned(db: Session, *, account_id: Any, up_to_seq: int, now: Any) -> None:
