@@ -8,7 +8,22 @@ to interact with the Preloop platform using FastMCP.
 import asyncio
 import logging
 import re
-from typing import Any, Optional, Dict, List, Literal
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from functools import wraps
+from typing import (
+    Any,
+    Optional,
+    Dict,
+    List,
+    Literal,
+    Awaitable,
+    Callable,
+    ParamSpec,
+    TypeVar,
+)
+from sqlalchemy.orm import Session
 from urllib.parse import urlparse, urlunparse
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -63,6 +78,58 @@ from fastmcp.server.dependencies import get_http_request
 
 
 logger = logging.getLogger(__name__)
+
+
+_ToolParams = ParamSpec("_ToolParams")
+_ToolResult = TypeVar("_ToolResult")
+
+
+@dataclass
+class _ToolDatabase:
+    stack: ExitStack
+    session: Session | None = None
+
+
+_tool_db: ContextVar[_ToolDatabase | None] = ContextVar(
+    "native_mcp_tool_db", default=None
+)
+
+
+def _with_tool_db(
+    tool: Callable[_ToolParams, Awaitable[_ToolResult]],
+) -> Callable[_ToolParams, Awaitable[_ToolResult]]:
+    """Own the lazy database session for one native MCP tool invocation.
+
+    These functions are called by FastMCP, not FastAPI's dependency runner.
+    A bare ``next(get_db())`` does not keep the dependency generator alive;
+    queries reopen the session after its finalizer and leak the new checkout.
+    Scope ownership here guarantees cleanup on errors and cancellation too.
+    """
+
+    @wraps(tool)
+    async def wrapped(
+        *args: _ToolParams.args, **kwargs: _ToolParams.kwargs
+    ) -> _ToolResult:
+        stack = ExitStack()
+        token = _tool_db.set(_ToolDatabase(stack))
+        try:
+            return await tool(*args, **kwargs)
+        finally:
+            _tool_db.reset(token)
+            stack.close()
+
+    return wrapped
+
+
+def _get_tool_db() -> Session:
+    """Return the session owned by the current native MCP invocation."""
+    scope = _tool_db.get()
+    if scope is None:
+        raise RuntimeError("Native MCP database access requires a tool invocation")
+    if scope.session is None:
+        scope.session = scope.stack.enter_context(contextmanager(get_db)())
+        scope.stack.callback(scope.session.close)
+    return scope.session
 
 
 def _extract_assignee_name(assignee_data: Any) -> Optional[str]:
@@ -143,7 +210,7 @@ class ProcessingResult:
 
 async def _get_authenticated_user(request_headers):
     """Extract and authenticate user from request headers."""
-    db = next(get_db())
+    db = _get_tool_db()
     authorization = request_headers.get("authorization")
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -473,13 +540,14 @@ def _enrich_compliance_results(db_results):
     return enriched_results
 
 
+@_with_tool_db
 async def get_issue(
     issue: str,
 ) -> GetIssueResponse:
     """
     Handles the 'get_issue' tool call.
     """
-    db = next(get_db())
+    db = _get_tool_db()
     current_user = None
     authorization = get_http_request().headers.get("authorization")
     if authorization and authorization.startswith("Bearer "):
@@ -528,6 +596,7 @@ async def get_issue(
     )
 
 
+@_with_tool_db
 async def create_issue(
     project: str,
     title: str,
@@ -541,7 +610,7 @@ async def create_issue(
     """
     Handles the 'create_issue' tool call.
     """
-    db = next(get_db())
+    db = _get_tool_db()
     current_user = None
     authorization = get_http_request().headers.get("authorization")
     if authorization and authorization.startswith("Bearer "):
@@ -618,6 +687,7 @@ async def create_issue(
         raise HTTPException(status_code=500, detail="Failed to create issue.")
 
 
+@_with_tool_db
 async def update_issue(
     issue: str,
     title: Optional[str] = None,
@@ -632,7 +702,7 @@ async def update_issue(
     """
     Handles the 'update_issue' tool call.
     """
-    db = next(get_db())
+    db = _get_tool_db()
     current_user = None
     authorization = get_http_request().headers.get("authorization")
     if authorization and authorization.startswith("Bearer "):
@@ -865,6 +935,7 @@ async def update_issue(
     )
 
 
+@_with_tool_db
 async def search(
     query: str,
     project: Optional[str] = None,
@@ -875,7 +946,7 @@ async def search(
     """
     Handles the 'search' tool call.
     """
-    db = next(get_db())
+    db = _get_tool_db()
     current_user = None
     authorization = get_http_request().headers.get("authorization")
     if authorization and authorization.startswith("Bearer "):
@@ -909,6 +980,7 @@ async def search(
         raise HTTPException(status_code=500, detail="Failed to perform search.")
 
 
+@_with_tool_db
 async def estimate_compliance(
     issues: List[str],
     compliance_metric: str = "DoR",
@@ -1112,6 +1184,7 @@ async def _process_single_issue_compliance(
         )
 
 
+@_with_tool_db
 async def improve_compliance(
     issues: List[str],
     compliance_metric: str = "DoR",
@@ -1203,6 +1276,7 @@ async def improve_compliance(
     )
 
 
+@_with_tool_db
 async def add_comment(
     target: str,
     comment: str,
@@ -1231,7 +1305,7 @@ async def add_comment(
     """
     from preloop.schemas.mcp import AddCommentResponse
 
-    db = next(get_db())
+    db = _get_tool_db()
     current_user = None
     authorization = get_http_request().headers.get("authorization")
     if authorization and authorization.startswith("Bearer "):
@@ -1331,6 +1405,8 @@ async def add_comment(
         tracker_client = await get_tracker_client(
             project_obj.organization_id, project_obj.id, db, current_user
         )
+        # Release the read transaction before the external tracker request.
+        db.close()
 
         # Determine platform from tracker if not yet known
         if platform is None:
@@ -1614,6 +1690,7 @@ async def add_comment(
             )
 
         target_id = issue_obj.key if issue_obj.key else issue_obj.external_id
+        db.close()
 
         try:
             logger.info(f"Adding comment to issue {target_id} via tracker client")
@@ -1651,6 +1728,7 @@ async def add_comment(
             )
 
 
+@_with_tool_db
 async def get_pull_request(
     pull_request: str,
     include_comments: bool = True,
@@ -1695,6 +1773,8 @@ async def get_pull_request(
     tracker_client = await get_tracker_client(
         project_obj.organization_id, project_obj.id, db, current_user
     )
+    # Client configuration is materialized; provider I/O needs no DB checkout.
+    db.close()
 
     # Determine platform from tracker if not yet known
     if platform is None:
@@ -1775,6 +1855,7 @@ async def get_pull_request(
         )
 
 
+@_with_tool_db
 async def update_pull_request(
     pull_request: str,
     title: Optional[str] = None,
@@ -1849,6 +1930,8 @@ async def update_pull_request(
     tracker_client = await get_tracker_client(
         project_obj.organization_id, project_obj.id, db, current_user
     )
+    # Client configuration is materialized; provider I/O needs no DB checkout.
+    db.close()
 
     # Determine platform from tracker if not yet known
     if platform is None:
@@ -2321,6 +2404,7 @@ def _record_opened_pr_on_execution(
         )
 
 
+@_with_tool_db
 async def create_pull_request(
     project: str,
     title: str,
@@ -2408,6 +2492,8 @@ async def create_pull_request(
     tracker_client = await get_tracker_client(
         project_obj.organization_id, project_obj.id, db, current_user
     )
+    # Client configuration is materialized; provider I/O needs no DB checkout.
+    db.close()
 
     # Determine platform from tracker if not already known
     if platform is None:
@@ -2581,6 +2667,7 @@ _EXPECTED_NOT_FOUND_MARKERS = (
 _HTTP_404_TOKEN_RE = re.compile(r"\b404\b")
 
 
+@_with_tool_db
 async def update_comment(
     target: str,
     comment_id: str,
@@ -2709,6 +2796,8 @@ async def update_comment(
     tracker_client = await get_tracker_client(
         project_obj.organization_id, project_obj.id, db, current_user
     )
+    # Client configuration is materialized; provider I/O needs no DB checkout.
+    db.close()
 
     # Determine platform from tracker if not yet known
     if platform is None:

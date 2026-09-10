@@ -230,6 +230,17 @@ class PoolHoldDiagnostics:
                 }
                 for hold in holds[:MAX_REPORTED_HOLDS]
             ],
+            # The oldest holds can all predate callsite sampling. Report the
+            # oldest sampled holds separately so their evidence stays visible.
+            "oldest_attributed": [
+                {
+                    "held_seconds": round(max(0.0, now - hold.started_at), 3),
+                    "acquired_at": hold.acquired_at,
+                }
+                for hold in [hold for hold in holds if hold.acquired_at][
+                    :MAX_REPORTED_HOLDS
+                ]
+            ],
         }
 
 
