@@ -134,6 +134,33 @@ def artifact_retention_hours(kind: str) -> int:
     return int(settings.workspace_snapshot_ttl_hours)
 
 
+#: What the integrity field of a receipt actually asserts. "false" used to
+#: cover two very different situations: nobody looked, and somebody looked and
+#: the bytes were wrong. On a pack whose digest verifies three ways, an
+#: operator reads the first as the second (round 2 CRA rerun, P8).
+INTEGRITY_VERIFIED = "verified"
+INTEGRITY_NOT_CHECKED = "not_checked"
+INTEGRITY_FAILED = "failed"
+INTEGRITY_NOTES: Mapping[str, str] = {
+    INTEGRITY_VERIFIED: (
+        "The archive was read and its sha256 matches the recorded digest."
+    ),
+    INTEGRITY_NOT_CHECKED: (
+        "Availability only. This endpoint does not read the archive; the "
+        "digest is verified on download, which returns "
+        "x-preloop-evidence-integrity and x-preloop-evidence-sha256."
+    ),
+    INTEGRITY_FAILED: "The archive was read and its sha256 did not match.",
+}
+
+
+def integrity_state(*, verified: bool, error: str | None = None) -> str:
+    """Name the three cases the boolean could not tell apart."""
+    if error and "digest" in str(error):
+        return INTEGRITY_FAILED
+    return INTEGRITY_VERIFIED if verified else INTEGRITY_NOT_CHECKED
+
+
 class EvidenceUnavailableError(Exception):
     """Evidence cannot be served; ``code`` is missing, expired, or failed."""
 
@@ -171,6 +198,7 @@ def evidence_receipt(
     created = manifest.get("created_at") or getattr(artifact, "created_at", None)
     if hasattr(created, "isoformat"):
         created = created.isoformat()
+    state = integrity_state(verified=integrity_verified, error=error)
     return {
         "version": 1,
         "kind": "evidence",
@@ -190,9 +218,18 @@ def evidence_receipt(
         "created_at": created,
         "expires_at": expires,
         "retention_hours": artifact_retention_hours("evidence"),
+        # object_lock stays false because Preloop does not assert it. It is a
+        # storage-layer property the operator configures (S3 Object Lock, a
+        # WORM volume) and the control plane has no way to verify it.
         "object_lock": False,
-        "legal_hold": False,
+        # legal_hold is now a real fact about this row rather than a constant:
+        # true means a legal_hold record freezes the pack, so the janitor
+        # leaves the ciphertext alone past expires_at and the retention purge
+        # leaves the row alone.
+        "legal_hold": bool(getattr(artifact, "legal_hold", False)),
         "integrity_verified": integrity_verified,
+        "integrity": state,
+        "integrity_note": INTEGRITY_NOTES[state],
         "error": error,
     }
 
@@ -372,10 +409,36 @@ def bind_terminal_evidence(
     return receipt
 
 
-def _mark_status_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
-    """Availability metadata for polls; never a verified-download claim."""
+def _legacy_archive_bytes(execution: Any) -> bytes | None:
+    """The legacy in-row archive, when this execution still has one."""
+    archive = getattr(execution, "evidence_archive", None)
+    if isinstance(archive, (bytes, bytearray, memoryview)):
+        raw = bytes(archive)
+        return raw or None
+    return None
+
+
+def _mark_status_receipt(
+    receipt: dict[str, Any], *, archive: bytes | None = None
+) -> dict[str, Any]:
+    """Availability metadata for polls, and what was and was not checked.
+
+    ``integrity_verified: false`` used to be hard-set here regardless of what
+    the platform knew, so a legacy pack whose bytes sit in the row next to the
+    receipt, whose manifest verifies and whose download returns
+    ``x-preloop-evidence-integrity: verified`` was reported to the operator as
+    unverified (round 2 CRA rerun, P8). The boolean is kept for compatibility
+    and joined by ``integrity``, which distinguishes "nobody looked" from
+    "somebody looked and the bytes were wrong". When the archive is in hand,
+    this looks.
+    """
     status = str(receipt.get("status") or "missing")
     expires = receipt.get("expires_at")
+    # A held pack does not expire on the poll path either. The hold service
+    # stamps this key on the persisted receipt when it freezes a pack, so the
+    # cheap status poll and the live inspect agree.
+    if receipt.get("legal_hold"):
+        expires = None
     if status == "available" and expires:
         try:
             exp = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
@@ -391,11 +454,27 @@ def _mark_status_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
     out = dict(receipt)
     out["status"] = status
     out["kind"] = "evidence"
-    out["integrity_verified"] = False
+    verified = False
     digest = out.get("digest") or out.get("sha256")
+    if archive is not None and status == "available":
+        observed = hashlib.sha256(archive).hexdigest()
+        if digest and digest != observed:
+            # The row disagrees with itself. Say so here rather than letting
+            # the download be the first place anyone finds out.
+            out["status"] = "failed"
+            out["error"] = out.get("error") or "artifact_digest_mismatch"
+            out["observed_sha256"] = observed
+        else:
+            digest = observed
+            verified = True
+            out.setdefault("size_bytes", len(archive))
+    out["integrity_verified"] = verified
+    state = integrity_state(verified=verified, error=out.get("error"))
+    out["integrity"] = state
+    out["integrity_note"] = INTEGRITY_NOTES[state]
     if digest:
         out["digest"] = digest
-        out.setdefault("sha256", digest)
+        out["sha256"] = digest
     out.setdefault("object_lock", False)
     out.setdefault("legal_hold", False)
     return out
@@ -409,14 +488,26 @@ def public_evidence_status(execution: Any) -> dict[str, Any]:
     Availability is not integrity proof.
     """
     raw = getattr(execution, "evidence_receipt", None)
+    transport = raw.get("transport") if isinstance(raw, dict) else None
+    # Only the legacy path keeps the bytes next to the receipt. A direct
+    # transport receipt says nothing about integrity here, by design: the
+    # ciphertext is not decrypted on a poll.
+    archive = (
+        _legacy_archive_bytes(execution)
+        if str(transport or "") in ("", "legacy")
+        else None
+    )
     if isinstance(raw, dict) and raw.get("status"):
-        return _mark_status_receipt(raw)
-    archive = getattr(execution, "evidence_archive", None)
-    if isinstance(archive, (bytes, bytearray, memoryview)) and bytes(archive):
+        return _mark_status_receipt(raw, archive=archive)
+    if archive is not None:
+        # The bytes are in the row we already loaded. Hashing them is cheaper
+        # than an operator opening a support thread about a pack that is fine.
         return evidence_receipt(
             status="available",
             execution_id=getattr(execution, "id", None),
             transport="legacy",
+            archive=archive,
+            integrity_verified=True,
         )
     return evidence_receipt(
         status="missing",
@@ -428,7 +519,14 @@ def public_evidence_status(execution: Any) -> dict[str, Any]:
 def _receipt_for_artifact(execution: Any, artifact: Any) -> dict[str, Any]:
     """Build a receipt from a scoped evidence row's current availability."""
     now = datetime.now(UTC)
-    expired = artifact.expires_at <= now or artifact.ciphertext is None
+    # A held pack whose bytes are still there is available, whatever the
+    # operational expiry says: the hold is what stopped the janitor from
+    # taking them, so reporting "expired" would contradict the download.
+    held = bool(getattr(artifact, "legal_hold", False))
+    if held and artifact.ciphertext is not None:
+        expired = False
+    else:
+        expired = artifact.expires_at <= now or artifact.ciphertext is None
     status = "expired" if expired else str(artifact.availability or "available")
     if status not in {"available", "expired", "failed"}:
         status = "expired" if expired else "available"
@@ -680,7 +778,73 @@ def put_artifact(
         quota_bytes=settings.flow_artifact_account_quota_bytes,
         require_execution_open=require_execution_open,
     )
+    if kind == "evidence":
+        # Imported here, not at module scope: signing canonicalises through
+        # preloop.cra.evidence_pack, which imports this module.
+        from preloop.services import record_signing
+
+        # Sign at mint, not at download. A signature made when the pack is
+        # served would only ever say "this is what we hold now"; made here it
+        # is dated to the capture, and re-serving cannot change it (#558).
+        record_signing.sign_evidence_pack(
+            db,
+            account_id=account_id,
+            artifact_id=artifact.id,
+            execution_id=execution_id,
+            archive_sha256=manifest["sha256"],
+            size_bytes=manifest.get("size_bytes"),
+            created_at=now,
+            # store() already committed the artifact; this is the boundary
+            # that persists the signature (and a first-use key) beside it.
+            commit=True,
+        )
     return artifact_reference(artifact)
+
+
+def evidence_signature(
+    db: Session, *, account_id: UUID, artifact_id: Any
+) -> dict[str, Any] | None:
+    """The detached signature over one evidence pack, or None.
+
+    None is a normal answer: packs captured before #558, and packs from an
+    account whose key could not be minted, have no signature and the receipt
+    says so rather than pretending.
+    """
+    if not artifact_id:
+        return None
+    from preloop.services import record_signing
+
+    try:
+        record = record_signing.get_record_signature(
+            db,
+            account_id=account_id,
+            payload_type=record_signing.PAYLOAD_EVIDENCE_PACK,
+            subject_id=artifact_id,
+        )
+    except Exception:
+        logger.warning("Could not read the evidence signature", exc_info=True)
+        return None
+    if record is None:
+        return None
+    return record_signing.record_signature_document(record)
+
+
+def attach_evidence_signature(
+    db: Session, *, account_id: UUID, receipt: dict[str, Any]
+) -> dict[str, Any]:
+    """Return the receipt with its signature, when the pack has one.
+
+    Kept out of :func:`evidence_receipt` on purpose: that function is called
+    on paths that hold no session, and a receipt builder that needs a database
+    round trip would put one on every status poll.
+    """
+    document = evidence_signature(
+        db, account_id=account_id, artifact_id=receipt.get("artifact_id")
+    )
+    out = dict(receipt)
+    out["signature"] = document
+    out["signing_key_id"] = (document or {}).get("key_id")
+    return out
 
 
 def get_artifact(

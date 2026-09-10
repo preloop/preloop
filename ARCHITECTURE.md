@@ -11,6 +11,13 @@ The [account kill switch](docs/guide/account-kill-switch.md) serializes halt tra
 Database worker ownership, row-lock compatibility, and cancellation rules are
 documented in [Transactions and asynchronous request handling](docs/architecture/data-model.md#transactions-and-asynchronous-request-handling).
 
+Audit rows are sealed into a per-account hash chain with signed checkpoints.
+Period exports and evidence packs carry detached Ed25519 signatures.
+`preloop audit verify` and `preloop evidence verify` recompute both on the
+caller's machine. See [Evidence storage and signed records](docs/guide/flows/evidence-storage.md).
+The chain proves order and non-deletion in the range it names, not that the
+records were true when written; the signing key lives beside the records.
+
 ## High-Level Architecture
 
 ```mermaid
@@ -72,7 +79,7 @@ graph LR
 | [Data model](docs/architecture/data-model.md) | `preloop.models`, PostgreSQL + PGVector, schema, and backend project layout. |
 | [MCP](docs/architecture/mcp.md) | FastMCP integration, dynamic tool filtering, and the HTTP MCP request path. |
 | [Realtime](docs/architecture/realtime.md) | Unified WebSocket, MessageRouter topics, and account-scoped pub/sub. |
-| [Security](docs/architecture/security.md) | Auth and tenancy, redaction, secret custody, security-screen scoring, and `preloop.security`. |
+| [Security](docs/architecture/security.md) | Auth and tenancy, redaction, secret custody, audit hash chain, record signing, security-screen scoring, and `preloop.security`. |
 | [Decisions](docs/architecture/decisions.md) | Why FastAPI, Python, and PostgreSQL, and how the stack is deployed (Compose, Helm, service roles). |
 | [Flows](docs/architecture/flows.md) | Event-driven agentic flows, remote runners, matrix/batch fan-out, label-based model routing, eval artifacts, and evidence packs. |
 

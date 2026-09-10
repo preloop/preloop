@@ -62,6 +62,22 @@ regexes = [
 ]
 
 # ---------------------------------------------------------------------------
+# Cryptography type names
+# ---------------------------------------------------------------------------
+# generic-api-key treats `private_key: <TypeName>` as a committed secret.
+# Ed25519PrivateKey / Ed25519PublicKey are cryptography class names, not
+# PEM or raw key material. The match first appeared on the audit-chain
+# branch (480bd991) and Secret Scan walks full history (fetch-depth: 0),
+# so every PR that fetches that commit fails until this class is allowed.
+[[allowlists]]
+description = "Cryptography type names, not key material"
+regexTarget = "secret"
+regexes = [
+  '''^Ed25519PrivateKey$''',
+  '''^Ed25519PublicKey$''',
+]
+
+# ---------------------------------------------------------------------------
 # Generated example payloads
 # ---------------------------------------------------------------------------
 # scripts/generate_example_session.py builds a fake GitHub Actions session for
@@ -69,3 +85,12 @@ regexes = [
 [[allowlists]]
 description = "Synthetic payloads in the example-session generator"
 paths = ['''^scripts/generate_example_session\.py$''']
+
+# ---------------------------------------------------------------------------
+# Scanner baseline
+# ---------------------------------------------------------------------------
+# .gitleaksignore is a list of fingerprints. generic-api-key treats those
+# lines as credentials, so any commit that added one fails the history scan.
+[[allowlists]]
+description = "gitleaks fingerprint baseline"
+paths = ['''(^|/)\.gitleaksignore$''']

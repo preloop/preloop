@@ -336,6 +336,9 @@ class TestWaivedFindings:
         payload["vuln_scan"]["gate"]["passed_before_waivers"] = False
         payload["vuln_scan"]["gate"]["waivers_applied"] = [waiver]
         payload["verdict"] = "pass_with_findings"
+        # A waiver is a release decision. It does not answer Article 14, so
+        # the KEV finding still needs a reporting candidate.
+        _with_reporting(payload)
         result = validate_cra_result(payload, delivered_waivers=[waiver])
         assert result.ok, result.failures
 
@@ -667,6 +670,199 @@ class TestDueDiligenceDecision:
         assert not result.ok
 
 
+class TestVexSuppression:
+    """VEX is subtracted from the gate population before the policy runs.
+
+    Round 2 escalated a not_affected advisory to a danger approval. The
+    suppression has to be deterministic (justification required) and it has
+    to be recorded, so a supplier's own say-so is auditable rather than
+    silent.
+    """
+
+    def test_justified_not_affected_leaves_the_gate(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        payload = _release_with_vex(
+            releaseaudit_result,
+            [_vex_finding()],
+            [
+                {
+                    "id": "CVE-2024-0001",
+                    "vex_status": "not_affected",
+                    "vex_statement_id": "https://example.com/vex/1#0",
+                    "vex_justification": "vulnerable_code_not_present",
+                    "would_have_failed": "kev",
+                }
+            ],
+        )
+        result = validate_cra_result(payload)
+        assert result.ok, result.failures
+
+    def test_suppression_must_be_recorded(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        payload = _release_with_vex(releaseaudit_result, [_vex_finding()], None)
+        result = validate_cra_result(payload)
+        assert not result.ok
+        assert any("vex_suppressed is missing" in item for item in result.failures)
+
+    def test_unjustified_not_affected_stays_in_the_gate(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        finding = _vex_finding(justification=None)
+        payload = _release_with_vex(releaseaudit_result, [finding], [])
+        result = validate_cra_result(payload)
+        assert not result.ok
+        assert any("gate" in item for item in result.failures)
+
+    def test_affected_never_suppresses(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        finding = _vex_finding(status="affected")
+        payload = _release_with_vex(releaseaudit_result, [finding], [])
+        result = validate_cra_result(payload)
+        assert not result.ok
+
+    def test_under_investigation_never_suppresses(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        finding = _vex_finding(status="under_investigation")
+        payload = _release_with_vex(releaseaudit_result, [finding], [])
+        result = validate_cra_result(payload)
+        assert not result.ok
+
+    def test_unknown_vex_status_is_rejected(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        finding = _vex_finding(status="probably_fine")
+        payload = _release_with_vex(releaseaudit_result, [finding], [])
+        result = validate_cra_result(payload)
+        assert not result.ok
+        assert any("vex_status must be one of" in item for item in result.failures)
+
+    def test_recorded_justification_must_match_the_finding(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        payload = _release_with_vex(
+            releaseaudit_result,
+            [_vex_finding()],
+            [
+                {
+                    "id": "CVE-2024-0001",
+                    "vex_status": "not_affected",
+                    "vex_statement_id": "https://example.com/vex/1#0",
+                    "vex_justification": "component_not_present",
+                    "would_have_failed": "kev",
+                }
+            ],
+        )
+        result = validate_cra_result(payload)
+        assert not result.ok
+        assert any(
+            "vex_justification is 'component_not_present'" in item
+            for item in result.failures
+        )
+
+    def test_statement_id_must_match_the_finding(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        payload = _release_with_vex(
+            releaseaudit_result,
+            [_vex_finding()],
+            [
+                {
+                    "id": "CVE-2024-0001",
+                    "vex_status": "not_affected",
+                    "vex_statement_id": "https://example.com/vex/OTHER#3",
+                    "vex_justification": "vulnerable_code_not_present",
+                    "would_have_failed": "kev",
+                }
+            ],
+        )
+        result = validate_cra_result(payload)
+        assert not result.ok
+        assert any("vex_statement_id is" in item for item in result.failures)
+
+    def test_invented_suppression_is_rejected(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        """A suppression entry with no suppressing finding behind it."""
+        payload = _release_with_vex(
+            releaseaudit_result,
+            [],
+            [
+                {
+                    "id": "CVE-2024-9999",
+                    "vex_status": "not_affected",
+                    "vex_statement_id": "https://example.com/vex/1#0",
+                    "vex_justification": "vulnerable_code_not_present",
+                    "would_have_failed": "kev",
+                }
+            ],
+        )
+        result = validate_cra_result(payload)
+        assert not result.ok
+        assert any(
+            "!= deterministic set" in item.replace("\n", " ")
+            for item in result.failures
+        )
+
+    def test_unscored_suppression_records_its_reason(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        """The round 2 case: unknown severity, no CVSS, not KEV, not_affected."""
+        finding = _vex_finding(
+            finding_id="GO-2026-5932", severity="unknown", cvss=None, kev=False
+        )
+        payload = _release_with_vex(
+            releaseaudit_result,
+            [finding],
+            [
+                {
+                    "id": "GO-2026-5932",
+                    "vex_status": "not_affected",
+                    "vex_statement_id": "https://example.com/vex/1#0",
+                    "vex_justification": "vulnerable_code_not_present",
+                    "would_have_failed": "unscored",
+                }
+            ],
+        )
+        result = validate_cra_result(payload)
+        assert result.ok, result.failures
+
+    def test_wrong_reason_is_rejected(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        finding = _vex_finding(
+            finding_id="GO-2026-5932", severity="unknown", cvss=None, kev=False
+        )
+        payload = _release_with_vex(
+            releaseaudit_result,
+            [finding],
+            [
+                {
+                    "id": "GO-2026-5932",
+                    "vex_status": "not_affected",
+                    "vex_statement_id": "https://example.com/vex/1#0",
+                    "vex_justification": "vulnerable_code_not_present",
+                    "would_have_failed": "kev",
+                }
+            ],
+        )
+        result = validate_cra_result(payload)
+        assert not result.ok
+        assert any("would_have_failed is 'kev'" in item for item in result.failures)
+
+    def test_suppressed_heuristic_finding_needs_no_record(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        """Heuristic hits never entered the gate, so VEX displaced nothing."""
+        finding = _vex_finding(match_kind="heuristic", sources=["nvd_cpe"])
+        payload = _release_with_vex(releaseaudit_result, [finding], [])
+        result = validate_cra_result(payload)
+        assert result.ok, result.failures
+
+
 class TestSchemaDifferences:
     def test_sbomaudit_rejects_status(self, sbomaudit_result: dict[str, Any]) -> None:
         payload = clone(sbomaudit_result)
@@ -704,6 +900,171 @@ def _kev_finding(
         "waived": True,
         "aliases": aliases,
     }
+
+
+DISCOVERED_AT = "2026-08-20T12:00:00Z"
+# 24 h, 72 h and 14 d from DISCOVERED_AT, written out rather than computed
+# so the test data does not agree with the implementation by construction.
+DEADLINES = {
+    "early_warning_24h": "2026-08-21T12:00:00Z",
+    "notification_72h": "2026-08-23T12:00:00Z",
+    "final_report_14d": "2026-09-03T12:00:00Z",
+}
+
+
+def _art14_candidate(
+    finding_id: str,
+    *,
+    affected: Any = True,
+    source: str = "reachability",
+    vex_status: str | None = None,
+    exploited: bool = True,
+    evidence: str = "kev",
+    status: str = "none",
+    status_reason: str | None = None,
+    discovered_at: str = DISCOVERED_AT,
+    deadlines: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "id": finding_id,
+        "actively_exploited": exploited,
+        "exploited_evidence": evidence,
+        "affected": {
+            "value": affected,
+            "source": source,
+            "detail": "component present at the vulnerable version",
+        },
+        "vex_status": vex_status,
+        "reportable": exploited is True and affected is True,
+        "discovered_at": discovered_at,
+        "deadlines": dict(deadlines if deadlines is not None else DEADLINES),
+        "status": status,
+    }
+    if status_reason is not None:
+        entry["status_reason"] = status_reason
+    return entry
+
+
+def _reporting(
+    candidates: list[dict[str, Any]],
+    *,
+    assessment: str | None = None,
+    kev_snapshot_date: str | None = "2026-08-19",
+    basis: str = "KEV catalogue snapshot 2026-08-19; product affected",
+) -> dict[str, Any]:
+    """A valid Article 14 reporting block for the given candidates."""
+    if assessment is None:
+        if any(item["reportable"] for item in candidates):
+            assessment = "reportable_candidate"
+        elif any(item["affected"]["value"] == "undetermined" for item in candidates):
+            assessment = "undetermined"
+        else:
+            assessment = "no_reportable_vulnerability"
+    return {
+        "assessment": assessment,
+        "basis": basis,
+        "kev_snapshot_date": kev_snapshot_date,
+        "kev_source_url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+        "candidates": candidates,
+        "not_a_legal_determination": True,
+    }
+
+
+def _with_reporting(payload: dict[str, Any]) -> dict[str, Any]:
+    """Attach a reporting block covering every KEV finding in the payload.
+
+    The affected call follows the finding: a justified VEX statement clears
+    it, a heuristic-only match cannot settle it, and a database match on a
+    vulnerable version stands.
+    """
+    body = payload["vuln_scan"] if "vuln_scan" in payload else payload
+    candidates: list[dict[str, Any]] = []
+    for item in body.get("findings", []):
+        if item.get("kev") is not True:
+            continue
+        vex_status = item.get("vex_status")
+        if vex_status in {"not_affected", "fixed", "false_positive"} and item.get(
+            "vex_justification"
+        ):
+            candidates.append(
+                _art14_candidate(
+                    str(item.get("id")),
+                    affected=False,
+                    source="vex",
+                    vex_status=vex_status,
+                )
+            )
+        elif item.get("match_kind") == "heuristic":
+            candidates.append(
+                _art14_candidate(
+                    str(item.get("id")),
+                    affected="undetermined",
+                    source="unknown",
+                    vex_status=vex_status,
+                )
+            )
+        else:
+            candidates.append(
+                _art14_candidate(str(item.get("id")), vex_status=vex_status)
+            )
+    body["reporting"] = _reporting(candidates)
+    return payload
+
+
+def _vex_finding(
+    finding_id: str = "CVE-2024-0001",
+    *,
+    status: str | None = "not_affected",
+    justification: str | None = "vulnerable_code_not_present",
+    statement_id: str | None = "https://example.com/vex/1#0",
+    severity: str = "critical",
+    cvss: float | None = 9.8,
+    kev: bool = True,
+    match_kind: str = "database",
+    sources: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": finding_id,
+        "pkg": "libexample",
+        "version": "1.0",
+        "severity": severity,
+        "cvss": cvss,
+        "epss": None,
+        "kev": kev,
+        "fix_version": None,
+        "vex_status": status,
+        "vex_statement_id": statement_id,
+        "vex_justification": justification,
+        "sources": sources if sources is not None else ["osv_purl"],
+        "match_kind": match_kind,
+        "waived": False,
+        "aliases": None,
+    }
+
+
+def _release_with_vex(
+    payload: dict[str, Any],
+    findings: list[dict[str, Any]],
+    suppressed: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """A release audit whose gate passes because VEX cleared the population."""
+    out = clone(payload)
+    out["vuln_scan"]["findings"] = findings
+    counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0}
+    for item in findings:
+        severity = str(item.get("severity"))
+        if severity in counts:
+            counts[severity] += 1
+    out["vuln_scan"]["counts_by_severity"] = counts
+    gate = out["vuln_scan"]["gate"]
+    gate["passed"] = True
+    gate["passed_before_waivers"] = True
+    gate["waivers_applied"] = []
+    gate["unwaived_failures"] = []
+    if suppressed is not None:
+        gate["vex_suppressed"] = suppressed
+    out["verdict"] = "pass_with_findings" if findings else "pass"
+    return _with_reporting(out)
 
 
 def _waiver(
@@ -747,7 +1108,7 @@ def _release_with_kevs(
     if unwaived is not None:
         out["vuln_scan"]["gate"]["unwaived_failures"] = unwaived
     out["verdict"] = "pass_with_findings"
-    return out
+    return _with_reporting(out)
 
 
 class TestUnhashableJsonMembership:
