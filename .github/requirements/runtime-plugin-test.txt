@@ -325,7 +325,9 @@ beartype==0.22.9 \
 boto3==1.43.75 \
     --hash=sha256:08a79edb68e6a0d65d305eb90188639313650e155aed015e86eef59d8475dde0 \
     --hash=sha256:86da93d3d5b46a58b03fa51b598ffa4aeaff485a3000affacf78491c105e44f0
-    # via preloop (pyproject.toml)
+    # via
+    #   preloop (pyproject.toml)
+    #   litellm
 botocore==1.43.75 \
     --hash=sha256:121abc8b0b529bc4e29a28d1e8b096b20f26708cabe3d5ae4b3446747712aece \
     --hash=sha256:e8ed6b0f3cd398dfb9e08d7ca3a0b964152166a317a04e89c45ec91003327ffe
@@ -1655,9 +1657,15 @@ lark==1.3.1 \
     --hash=sha256:b426a7a6d6d53189d318f2b6236ab5d6429eaf09259f1ca33eb716eed10d2905 \
     --hash=sha256:c629b661023a014c37da873b4ff58a817398d12635d3bbb2c5a03be7fe5d1e12
     # via cel-python
-litellm==1.89.7 \
-    --hash=sha256:4a11bdeaec66b3bd64f7606bf59e238875867678f320e70dd38d8767fddde11b \
-    --hash=sha256:94ed81946194a032eadddf0ab9d75ad8bdcd94e7fa832dd8edb48a8712eb5b9d
+litellm==1.100.1 \
+    --hash=sha256:1d2e622a2e2eab74efd25ed356208568b783cb406f413efd083e3416b81d1606 \
+    --hash=sha256:2f45760e61a624660444d110ae6475edc959e2906914c6c308c710c8be2ca742 \
+    --hash=sha256:4e2d410538c8a0d7b58440c47d7e1a6120c3219dfb5d100f39069fa8dbce0055 \
+    --hash=sha256:63201b3ed92cbe6ff9ec26ee83436efbd67c5f6d38b2d1ece0203f04819fc4c3 \
+    --hash=sha256:8f53d917ece795e35c125ec24d342ddc2103a806c22b1f7b1517110d31f45362 \
+    --hash=sha256:d24b5fbdeb1f0b5c0a6f7f0caf7b6aa79b69c704b90daca57e3ce7d50a9d6bf4 \
+    --hash=sha256:f150a169807a1b24c0ffc5bd1838f77659bf7449db8718e65d1be1bca517825f \
+    --hash=sha256:f24ab714b58a66276623b48ed58c0fbf4e1ccd6fd127b187a049ce0c74eba8ab
     # via preloop (pyproject.toml)
 loguru==0.7.3 \
     --hash=sha256:19480589e77d47b8d85b2c827ad95d49bf31b0dcde16593892eb51dd18706eb6 \
@@ -2907,6 +2915,7 @@ pydantic-settings==2.15.0 \
     # via
     #   preloop (pyproject.toml)
     #   fastmcp-slim
+    #   litellm
     #   mcp
 pygments==2.21.0 \
     --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9 \
