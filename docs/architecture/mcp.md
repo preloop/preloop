@@ -43,6 +43,22 @@ FastMCP's `@mcp.tool()` decorator, then filtered at runtime based on user contex
 - Full compatibility with FastMCP's StreamableHTTP implementation
 - Backward compatible with existing authentication infrastructure
 
+## Database session lifetime
+
+Native MCP tool functions own a lazy database session per invocation through
+`_with_tool_db`. The dependency generator remains alive until the tool finishes,
+and the session closes on success, error, or cancellation. FastMCP invokes these
+functions directly, so FastAPI does not manage their database dependencies.
+
+Pull request and comment tools resolve tracker configuration and identifiers,
+then close their read transaction before awaiting external tracker operations.
+The tracker factory currently constructs clients without network I/O. Proxied
+MCP tools likewise snapshot server configuration and release the database session
+before connecting or calling a remote tool. Database writes after a provider
+response can reopen the invocation's session and are still covered by final
+cleanup. Concurrent provider waits therefore do not each reserve a database
+connection on these paths.
+
 ## MCP Flow (Integrated HTTP)
 1.  **MCP Client Request:** An MCP client (e.g., Claude Code) sends a tool request using streamable HTTP transport to the MCP server (e.g., `/mcp/v1`). The request includes the standard MCP payload and an `Authorization: Bearer <token>` header.
 2.  **Preloop API Server:**

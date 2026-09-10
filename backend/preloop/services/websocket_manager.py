@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 import uuid
+from contextlib import closing
 from typing import Dict, List, Optional, Set, Tuple
 
 from fastapi import WebSocket
@@ -25,16 +26,22 @@ logger = logging.getLogger(__name__)
 
 # Dictionary to hold loop-specific queues to prevent test runner cross-loop panics
 _log_queues: dict[asyncio.AbstractEventLoop, asyncio.Queue] = {}
+_log_batches: dict[asyncio.AbstractEventLoop, list[tuple[str, dict]]] = {}
 
-# Background log persistence must never starve request-serving connections.
+# Limit the connections used by background log persistence.
 # Only this many threads may hold a pooled DB connection for log writes at a
 # time, so a burst of NATS logs cannot consume the whole QueuePool.
 LOG_PERSIST_MAX_CONCURRENCY = 1
 _log_persist_semaphore = threading.BoundedSemaphore(LOG_PERSIST_MAX_CONCURRENCY)
 
-# Bounded retry for transient pool/connection failures before dropping data.
+# Bound each synchronous retry cycle; the async worker retains failed batches.
 LOG_PERSIST_MAX_ATTEMPTS = 3
 LOG_PERSIST_BASE_BACKOFF_SECONDS = 0.5
+LOG_PERSIST_RETRY_SECONDS = 5.0
+LOG_QUEUE_MAX_SIZE = 10_000
+LOG_BATCH_MAX_SIZE = 500
+LOG_BATCH_WAIT_SECONDS = 0.05
+LOG_SHUTDOWN_DRAIN_SECONDS = 10.0
 
 # Transient errors worth retrying: pool checkout timeouts (QueuePool limit
 # reached) and dropped/failed connections. Anything else is a real bug and is
@@ -66,11 +73,13 @@ def _strip_orphaned_logs(
     from preloop.models.crud import crud_flow_execution
 
     ids = {execution_id for execution_id, _ in batch}
-    db = next(get_db())
-    try:
-        existing = crud_flow_execution.existing_ids(db, list(ids))
-    finally:
-        db.close()
+    # Keep the generator alive until the operation finishes.
+    with closing(get_db()) as sessions:
+        db = next(sessions)
+        try:
+            existing = crud_flow_execution.existing_ids(db, list(ids))
+        finally:
+            db.close()
 
     surviving: List[Tuple[str, dict]] = []
     orphaned: Dict[str, int] = {}
@@ -86,7 +95,7 @@ def get_log_queue() -> asyncio.Queue:
     """Returns the logging queue associated with the current running event loop."""
     loop = asyncio.get_running_loop()
     if loop not in _log_queues:
-        _log_queues[loop] = asyncio.Queue()
+        _log_queues[loop] = asyncio.Queue(maxsize=LOG_QUEUE_MAX_SIZE)
     return _log_queues[loop]
 
 
@@ -96,24 +105,22 @@ def _write_log_batch(batch: List[Tuple[str, dict]]) -> None:
     Raises whatever the database layer raises; retry policy lives in the
     caller. DB access stays behind ``preloop.models.crud``.
     """
-    from preloop.models.crud import crud_flow_execution
+    from preloop.models.crud import crud_flow_execution_log
 
-    db = next(get_db())
-    try:
-        for execution_id, log_data in batch:
-            crud_flow_execution.append_log(
-                db, execution_id=execution_id, log_data=log_data, commit=False
-            )
-        db.commit()
-    except Exception:
-        # Never leave a half-applied transaction on a pooled connection.
+    with closing(get_db()) as sessions:
+        db = next(sessions)
         try:
-            db.rollback()
-        except Exception:  # pragma: no cover - rollback failure is best-effort
-            logger.warning("Rollback failed while aborting log batch", exc_info=True)
-        raise
-    finally:
-        db.close()
+            crud_flow_execution_log.append_logs(db, batch)
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:  # pragma: no cover - rollback is best-effort
+                logger.warning(
+                    "Rollback failed while aborting log batch", exc_info=True
+                )
+            raise
+        finally:
+            db.close()
 
 
 def _sync_batch_insert_logs(batch: list) -> bool:
@@ -122,7 +129,8 @@ def _sync_batch_insert_logs(batch: list) -> bool:
     Pool exhaustion (``QueuePool limit ... reached``) and dropped connections
     are transient: the previous implementation dropped the whole batch on the
     first error, silently losing execution logs during load spikes. We now
-    retry with exponential backoff and only drop as a last resort.
+    retry with exponential backoff, then return control to the async worker
+    without discarding the batch.
 
     A semaphore bounds how many threads may hold a pooled connection for log
     persistence, so background writes cannot exhaust the pool that serves user
@@ -135,9 +143,18 @@ def _sync_batch_insert_logs(batch: list) -> bool:
         True if the batch was persisted (entries for since-deleted executions
         are dropped by design and still count as handled), False if data was
         dropped due to an unexpected error.
+
+    Raises:
+        SQLAlchemyTimeoutError: Pool exhaustion persists after this retry cycle.
+        OperationalError: The database remains unavailable after this retry cycle.
     """
     if not batch:
         return True
+
+    # Stable IDs make a retry safe even if COMMIT succeeded before the
+    # connection failed. Keep them in the retained batch across retry cycles.
+    for _, log_data in batch:
+        log_data.setdefault("_persistence_id", str(uuid.uuid4()))
 
     last_error: Optional[BaseException] = None
     attempts_made = 0
@@ -213,7 +230,10 @@ def _sync_batch_insert_logs(batch: list) -> bool:
                 )
                 break
 
-    # Exhausted retries (or hit a non-retryable error): drop, but loudly.
+    if isinstance(last_error, _RETRYABLE_DB_ERRORS):
+        raise last_error
+
+    # Non-retryable errors are dropped and reported.
     logger.error(
         "Dropping batch of %d logs after %d attempt(s): %s",
         len(batch),
@@ -235,53 +255,92 @@ def _sync_batch_insert_logs(batch: list) -> bool:
     return False
 
 
-async def _log_writer_worker():
-    """
-    Background worker that continuously drains the log queue and writes to the DB in batches.
-    """
-    while True:
-        try:
-            queue = get_log_queue()
-            # Wait for at least one item
-            item = await queue.get()
-            batch = [item]
-
-            # Greedily drain up to 500 items instantly
-            while len(batch) < 500:
+async def _log_writer_worker() -> None:
+    """Persist coalesced batches, retaining them throughout transient outages."""
+    queue = get_log_queue()
+    try:
+        while True:
+            loop = asyncio.get_running_loop()
+            batch = _log_batches.get(loop)
+            if batch is None:
+                batch = [await queue.get()]
+                _log_batches[loop] = batch
+            # Coalesce logs arriving on separate loop ticks without checking out a
+            # connection. Busy streams fill the batch immediately.
+            deadline = asyncio.get_running_loop().time() + LOG_BATCH_WAIT_SECONDS
+            while len(batch) < LOG_BATCH_MAX_SIZE:
                 try:
                     batch.append(queue.get_nowait())
                 except asyncio.QueueEmpty:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        break
+                    try:
+                        batch.append(await asyncio.wait_for(queue.get(), remaining))
+                    except asyncio.TimeoutError:
+                        break
+
+            while True:
+                try:
+                    write_task = asyncio.create_task(
+                        asyncio.to_thread(_sync_batch_insert_logs, batch)
+                    )
+                    try:
+                        await asyncio.shield(write_task)
+                    except asyncio.CancelledError:
+                        # Cancelling to_thread does not stop its transaction. Join
+                        # it before letting shutdown finish or another writer start.
+                        try:
+                            while not write_task.done():
+                                try:
+                                    await asyncio.shield(write_task)
+                                except asyncio.CancelledError:
+                                    # A second shutdown cancellation still must
+                                    # not abandon the database worker thread.
+                                    continue
+                            write_task.result()
+                        except _RETRYABLE_DB_ERRORS:
+                            logger.error(
+                                "Shutdown interrupted persistence; %d logs remain unpersisted",
+                                len(batch),
+                            )
+                        else:
+                            for _ in batch:
+                                queue.task_done()
+                            _log_batches.pop(loop, None)
+                        raise
                     break
-
-            # Dispatch the bulk insert to an isolated thread
-            await asyncio.to_thread(_sync_batch_insert_logs, batch)
-
-            # Mark all dequeued task objects as done
+                except _RETRYABLE_DB_ERRORS as exc:
+                    logger.warning(
+                        "Log persistence delayed; retaining %d logs (%d queued), "
+                        "retrying in %.1fs: %s",
+                        len(batch),
+                        queue.qsize(),
+                        LOG_PERSIST_RETRY_SECONDS,
+                        exc,
+                    )
+                    # No worker thread or database connection is held while waiting.
+                    await asyncio.sleep(LOG_PERSIST_RETRY_SECONDS)
             for _ in batch:
                 queue.task_done()
+            _log_batches.pop(loop, None)
+    except asyncio.CancelledError:
+        pending = _log_batches.get(asyncio.get_running_loop(), [])
+        if pending:
+            logger.warning(
+                "Log writer stopped with %d in-flight and %d queued logs; "
+                "retained for restart on this event loop, lost if the process exits",
+                len(pending),
+                queue.qsize(),
+            )
+        raise
 
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.error(f"Error in log writer worker: {e}", exc_info=True)
-            await asyncio.sleep(1)
 
-
-async def persist_execution_log(execution_id: str, log_data: dict):
-    """
-    Asynchronously queues a log entry for persistence to execution_logs array in the database.
-
-    Args:
-        execution_id: ID of the flow execution
-        log_data: Log message data to append
-    """
-    try:
-        # Puts the item into the queue without blocking the NATS consumer event loop
-        get_log_queue().put_nowait((execution_id, log_data))
-    except Exception as e:
-        logger.error(
-            f"Failed to queue log for execution {execution_id}: {e}", exc_info=True
-        )
+async def persist_execution_log(execution_id: str, log_data: dict) -> None:
+    """Queue a log, applying backpressure when the in-memory backlog is full."""
+    await get_log_queue().put(
+        (execution_id, {**log_data, "_persistence_id": str(uuid.uuid4())})
+    )
 
 
 class WebSocketManager:
@@ -604,47 +663,50 @@ async def nats_consumer(manager: "WebSocketManager"):
         except Exception as e:
             logger.error(f"Error persisting log: {e}")
 
+    subscriptions = []
+    log_worker_task = asyncio.create_task(_log_writer_worker())
     try:
-        # Subscribe to a wildcard subject to receive all flow updates
-        await nats_client.subscribe("flow-updates.*", cb=message_handler)
-        logger.info("Subscribed to NATS subject 'flow-updates.*'")
-
-        # Persist logs with a queue group so only one instance writes them to DB
-        await nats_client.subscribe(
-            "flow-updates.*", queue="log-persisters", cb=persistence_handler
-        )
-        logger.info(
-            "Subscribed to NATS subject 'flow-updates.*' with queue group 'log-persisters'"
-        )
-
-        await nats_client.subscribe("account-updates.*", cb=message_handler)
-        logger.info("Subscribed to NATS subject 'account-updates.*'")
-
-        # Subscribe to approval updates
-        await nats_client.subscribe("approval-updates", cb=message_handler)
-        logger.info("Subscribed to NATS subject 'approval-updates'")
-
-        # Subscribe to admin activity updates (for admin dashboard)
-        await nats_client.subscribe("admin.activity", cb=message_handler)
-        logger.info("Subscribed to NATS subject 'admin.activity'")
-
-        # Start the background log writer worker task
-        log_worker_task = asyncio.create_task(_log_writer_worker())
-
+        # Every process broadcasts locally. A queue group assigns each log to
+        # one persister; this is Core NATS and has no durable acknowledgement.
+        for subject, queue_group, handler in (
+            ("flow-updates.*", "", message_handler),
+            ("flow-updates.*", "log-persisters", persistence_handler),
+            ("account-updates.*", "", message_handler),
+            ("approval-updates", "", message_handler),
+            ("admin.activity", "", message_handler),
+        ):
+            subscriptions.append(
+                await nats_client.subscribe(subject, queue=queue_group, cb=handler)
+            )
+            logger.info("Subscribed to NATS subject %s queue=%s", subject, queue_group)
+        while True:
+            await asyncio.sleep(1)
+    except Exception as exc:
+        logger.error("NATS consumer failed: %s", exc)
+    finally:
+        # Stop accepting messages before draining already accepted logs.
+        for subscription in subscriptions:
+            if subscription is not None:
+                try:
+                    await subscription.unsubscribe()
+                except Exception:
+                    logger.warning("Failed to unsubscribe NATS consumer", exc_info=True)
+        queue = get_log_queue()
         try:
-            # Keep the consumer running
-            while True:
-                await asyncio.sleep(1)
+            await asyncio.wait_for(queue.join(), LOG_SHUTDOWN_DRAIN_SECONDS)
+        except asyncio.TimeoutError:
+            logger.error(
+                "Log shutdown drain timed out; %d queued and %d in-flight logs "
+                "may be lost on process exit because Core NATS cannot redeliver them",
+                queue.qsize(),
+                len(_log_batches.get(asyncio.get_running_loop(), [])),
+            )
         finally:
             log_worker_task.cancel()
             try:
                 await log_worker_task
             except asyncio.CancelledError:
-                # Background log writer was cancelled during consumer shutdown.
                 pass
-
-    except Exception as e:
-        logger.error(f"NATS consumer failed: {e}")
 
 
 # Create a single instance of the manager to be used across the application
