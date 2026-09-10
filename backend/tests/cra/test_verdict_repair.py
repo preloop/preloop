@@ -210,6 +210,12 @@ class TestPersistBoundary:
         assert decision.artifact is not None
         assert decision.artifact["error"] == INVALID_ERROR
         assert decision.artifact["raw"]["verdict"] == "pass_with_findings"
+        joined = "; ".join(decision.validation.failures)
+        assert "verdict must be fail" not in joined
+        assert any("components" in item for item in decision.validation.failures)
+        assert all(
+            "verdict must be fail" not in item for item in decision.artifact["failures"]
+        )
 
     def test_a_fabricated_fail_still_fails_closed(
         self, sbomaudit_result: dict[str, Any]
