@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- DORA agent-slice exports. `GET /api/v1/exports/asset-register` lists agents,
+  tools, MCP servers, models, providers and runner hosts as one flat table
+  with owners, first and last seen, and attached policies; it feeds an Art. 8
+  ICT asset inventory and the agent-slice lines of an Art. 28 register of
+  information. `GET /api/v1/exports/incident-candidates?from=&to=` lists
+  failed executions, kill-switch activations, policy denies (persisted only
+  with the Enterprise audit plugin), budget denials and gateway upstream
+  failures, with timestamps, correlation ids and the affected agent, for the
+  Art. 17 incident process. They are candidates: classification under Art. 17
+  to 19 stays with the financial entity, so no severity, major flag or
+  client-impact field is emitted. Both serve CSV or JSON, both are wrapped in
+  the same manifest and digest as the CRA evidence pack, and both require
+  `view_audit_logs` and audit themselves. Columns are identical in every
+  edition; fields a deployment cannot record are empty and named in the
+  manifest. Console buttons on the Audit page, `preloop export
+  asset-register` and `preloop export incident-candidates` in the CLI, and
+  docs at `docs/guide/dora-agent-slice.md`.
+
 ### Removed
 
 - Flow failure comments. `notifications.on_failure.comment_on_trigger_issue`
