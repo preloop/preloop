@@ -251,6 +251,6 @@ async def test_native_tool_cancellation_during_auth_releases_connection(
     await entered.wait()
     assert tool_pool.checkedout() == 1
     task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    cancelled = await asyncio.gather(task, return_exceptions=True)
+    assert isinstance(cancelled[0], asyncio.CancelledError)
     assert tool_pool.checkedout() == 0

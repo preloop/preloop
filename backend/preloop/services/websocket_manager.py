@@ -337,7 +337,11 @@ async def _log_writer_worker() -> None:
 
 
 async def persist_execution_log(execution_id: str, log_data: dict) -> None:
-    """Queue a log, applying backpressure when the in-memory backlog is full."""
+    """Queue a log, applying backpressure when the in-memory backlog is full.
+
+    NATS runs each subscription's callbacks in its own worker. Waiting here
+    pauses only the persister, not the client reader or realtime subscriptions.
+    """
     await get_log_queue().put(
         (execution_id, {**log_data, "_persistence_id": str(uuid.uuid4())})
     )

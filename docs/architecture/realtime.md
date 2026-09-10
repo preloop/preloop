@@ -31,6 +31,16 @@ and one active batch of at most 500 entries. Producers await queue capacity;
 these bounds count entries, not payload bytes. A short coalescing window gathers
 logs arriving on separate event-loop ticks into one database transaction.
 
+The pinned nats-py client dispatches messages into each subscription's bounded
+pending queue without awaiting that subscription's callback. One worker per
+subscription invokes its callbacks serially. Waiting for log queue capacity
+therefore pauses the `log-persisters` worker while the separate flow, account,
+approval and admin realtime subscriptions continue processing. No per-message
+producer tasks are created. If the persister's NATS pending buffer also fills,
+the NATS client reports a slow-consumer error and drops that subscription's overflowing
+messages; it cannot provide durable backpressure to publishers. This transport
+limit is separate from retention of logs already accepted into the writer queue.
+
 Database sessions exist only during a write attempt. The CRUD layer scrubs each
 batch and inserts it with stable row IDs, so retrying after an ambiguous commit
 response cannot duplicate the same accepted event. Pool checkout timeouts and

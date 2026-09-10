@@ -1,12 +1,19 @@
 """Exercise batching, pool saturation and retry safety against a local DB."""
 
 import asyncio
+import json
 import threading
 import uuid
 from collections.abc import Generator
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from nats.aio.client import Client
+from nats.aio.msg import Msg
+from nats.aio.subscription import Subscription
+from nats.errors import SlowConsumerError
+from collections.abc import Awaitable, Callable
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError, TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session
@@ -201,8 +208,8 @@ async def test_worker_cancellation_waits_for_in_flight_transaction(monkeypatch) 
         await asyncio.sleep(0.01)
         assert not worker.done()
         release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await worker
+        cancelled = await asyncio.gather(worker, return_exceptions=True)
+        assert isinstance(cancelled[0], asyncio.CancelledError)
         await asyncio.wait_for(queue.join(), 2)
     finally:
         release.set()
@@ -238,8 +245,8 @@ async def test_worker_restart_recovers_dequeued_batch(phase, monkeypatch) -> Non
         # Allow the worker to enter its async backoff after the thread finishes.
         await asyncio.sleep(0.01)
         worker.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await worker
+        cancelled = await asyncio.gather(worker, return_exceptions=True)
+        assert isinstance(cancelled[0], asyncio.CancelledError)
         assert len(logs._log_batches[loop]) == 1
         monkeypatch.setattr(logs, "LOG_BATCH_WAIT_SECONDS", 0)
         monkeypatch.setattr(
@@ -255,3 +262,133 @@ async def test_worker_restart_recovers_dequeued_batch(phase, monkeypatch) -> Non
         await asyncio.gather(worker, return_exceptions=True)
         logs._log_queues.pop(loop, None)
         logs._log_batches.pop(loop, None)
+
+
+@pytest.mark.asyncio
+async def test_blocked_persister_does_not_stall_other_nats_subscriptions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the real NATS parser and per-subscription callback workers."""
+    client = Client()
+    client._status = Client.CONNECTED
+    errors = AsyncMock()
+    client._error_cb = errors
+    # Replace only the socket writes: subscribe, parser dispatch and callback
+    # workers are the installed nats-py implementation used in production.
+    monkeypatch.setattr(client, "_send_subscribe", AsyncMock())
+    monkeypatch.setattr(client, "_send_unsubscribe", AsyncMock())
+    subscribe = client.subscribe
+    subscriptions: dict[tuple[str, str], Subscription] = {}
+
+    async def bounded_subscribe(
+        subject: str, *, queue: str, cb: Callable[[Msg], Awaitable[None]]
+    ) -> Subscription:
+        options = {"pending_msgs_limit": 2} if queue == "log-persisters" else {}
+        sub = await subscribe(subject, queue=queue, cb=cb, **options)
+        subscriptions[(subject, queue)] = sub
+        return sub
+
+    monkeypatch.setattr(client, "subscribe", bounded_subscribe)
+    monkeypatch.setattr(
+        logs, "get_task_publisher", AsyncMock(return_value=SimpleNamespace(nc=client))
+    )
+    monkeypatch.setattr(logs, "LOG_QUEUE_MAX_SIZE", 1)
+    monkeypatch.setattr(logs, "LOG_BATCH_WAIT_SECONDS", 0)
+    release_writer = asyncio.Event()
+    writer = logs._log_writer_worker
+    persisted: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        logs, "_sync_batch_insert_logs", lambda batch: persisted.extend(batch)
+    )
+
+    async def gated_writer() -> None:
+        await release_writer.wait()
+        await writer()
+
+    monkeypatch.setattr(logs, "_log_writer_worker", gated_writer)
+    queue = logs.get_log_queue()
+    await logs.persist_execution_log("execution", {"message": "already queued"})
+    persister_entered = asyncio.Event()
+    callback_tasks: set[asyncio.Task] = set()
+    persist = logs.persist_execution_log
+
+    async def observe_persistence(execution_id: str, log_data: dict) -> None:
+        callback_tasks.add(asyncio.current_task())
+        persister_entered.set()
+        await persist(execution_id, log_data)
+
+    monkeypatch.setattr(logs, "persist_execution_log", observe_persistence)
+    manager = logs.WebSocketManager()
+    monkeypatch.setattr(manager, "broadcast_json", AsyncMock())
+    consumer = asyncio.create_task(logs.nats_consumer(manager))
+
+    async def dispatch(sub: Subscription, message_type: str) -> None:
+        # Feed actual wire frames through the shared client parser. A server
+        # already resolves wildcards and delivers the matching subscription ID.
+        payload = json.dumps(
+            {"execution_id": "execution", "account_id": "account", "type": message_type}
+        ).encode()
+        subject = sub.subject.replace("*", "example")
+        frame = f"MSG {subject} {sub._id} {len(payload)}\r\n".encode()
+        await client._ps.parse(frame + payload + b"\r\n")
+
+    try:
+        async with asyncio.timeout(2):
+            while len(subscriptions) < 5:
+                await asyncio.sleep(0)
+        persister = subscriptions[("flow-updates.*", "log-persisters")]
+        await dispatch(persister, "agent_log_line")
+        await asyncio.wait_for(persister_entered.wait(), 2)
+        tasks_before_burst = asyncio.all_tasks()
+        realtime = [
+            (subscriptions[("flow-updates.*", "")], "agent_log_line"),
+            (subscriptions[("account-updates.*", "")], "activity_update"),
+            (subscriptions[("approval-updates", "")], "approval_update"),
+            (subscriptions[("admin.activity", "")], "admin_activity"),
+        ]
+        async with asyncio.timeout(2):
+            for _ in range(20):
+                await dispatch(persister, "agent_log_line")
+                for sub, message_type in realtime:
+                    await dispatch(sub, message_type)
+            for sub, _ in realtime:
+                await sub._pending_queue.join()
+
+        assert manager.broadcast_json.await_count == 80
+        for _, message_type in realtime:
+            assert (
+                sum(
+                    call.args[0]["type"] == message_type
+                    for call in manager.broadcast_json.await_args_list
+                )
+                == 20
+            )
+        assert queue.qsize() == 1
+        assert persister.pending_msgs == 2
+        assert errors.await_count == 18
+        assert all(
+            isinstance(call.args[0], SlowConsumerError)
+            and call.args[0].sub is persister
+            for call in errors.await_args_list
+        )
+        assert callback_tasks == {persister._wait_for_msgs_task}
+        assert asyncio.all_tasks() == tasks_before_burst
+
+        release_writer.set()
+        async with asyncio.timeout(2):
+            await persister._pending_queue.join()
+            await queue.join()
+        assert len(persisted) == 4
+        assert callback_tasks == {persister._wait_for_msgs_task}
+    finally:
+        release_writer.set()
+        consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
+        for sub in subscriptions.values():
+            sub._stop_processing()
+        await asyncio.gather(
+            *(sub._wait_for_msgs_task for sub in subscriptions.values()),
+            return_exceptions=True,
+        )
+        logs._log_queues.pop(asyncio.get_running_loop(), None)
+        logs._log_batches.pop(asyncio.get_running_loop(), None)
