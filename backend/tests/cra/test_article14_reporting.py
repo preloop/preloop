@@ -230,6 +230,19 @@ class TestReportingBlockRequired:
         result = validate_cra_result(payload)
         assert result.ok, result.failures
 
+    def test_candidates_must_be_a_list(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        payload = _release(
+            releaseaudit_result,
+            [_kev()],
+            reporting=_reporting([_art14_candidate("CVE-2024-0001")]),
+        )
+        payload["vuln_scan"]["reporting"]["candidates"] = "CVE-2024-0001"
+        result = validate_cra_result(payload)
+        assert not result.ok
+        assert any("candidates must be a list" in item for item in result.failures)
+
 
 class TestReportableDerivation:
     def test_exploited_and_affected_is_reportable(

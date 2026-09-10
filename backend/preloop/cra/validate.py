@@ -1261,7 +1261,6 @@ def _check_reporting(
     seen: set[str] = set()
     if not isinstance(candidates, list):
         failures.append(f"{rpath}.candidates must be a list")
-        candidates = []
     else:
         for idx, item in enumerate(candidates):
             item_fail, state = _check_reporting_candidate(
