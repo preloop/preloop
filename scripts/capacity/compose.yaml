@@ -1,0 +1,115 @@
+name: preloop-capacity
+
+x-environment: &environment
+  PRELOOP_DISABLE_TELEMETRY: "true"
+  DATABASE_URL: postgresql+psycopg://capacity:capacity@postgres/capacity
+  NATS_URL: nats://nats:4222
+  SECRET_KEY: change-this-capacity-local-secret
+  PRELOOP_URL: http://api:8000
+  HOST: 0.0.0.0
+  PORT: "8000"
+  REGISTRATION_ENABLED: "true"
+  FLOW_EXECUTION_WORKER_ENABLED: "false"
+  DATABASE_POOL_SIZE: ${CAPACITY_POOL_SIZE:-4}
+  DATABASE_MAX_OVERFLOW: ${CAPACITY_MAX_OVERFLOW:-4}
+  DATABASE_POOL_TIMEOUT: ${CAPACITY_POOL_TIMEOUT:-2}
+  DB_MONITORING_INTERVAL: "2"
+  DB_POOL_HOLD_STACKS: "true"
+  LOG_LEVEL: WARNING
+
+x-app: &app
+  image: ${CAPACITY_IMAGE:-preloop-capacity:local}
+  build:
+    context: ../..
+  networks: [isolated]
+  environment: *environment
+  restart: "no"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    networks: [isolated]
+    environment:
+      POSTGRES_USER: capacity
+      POSTGRES_PASSWORD: capacity
+      POSTGRES_DB: capacity
+    command: [postgres, -c, max_connections=100, -c, shared_buffers=128MB]
+    mem_limit: ${CAPACITY_POSTGRES_MEMORY:-512m}
+    volumes: ["database:/var/lib/postgresql/data"]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U capacity -d capacity]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+  nats:
+    image: nats:2.11-alpine
+    networks: [isolated]
+    command: [-js, -m, "8222"]
+    mem_limit: 128m
+  fake:
+    <<: *app
+    command: python -m uvicorn scripts.capacity.fake:app --host 0.0.0.0 --port 9000 --no-access-log
+    environment:
+      PRELOOP_DISABLE_TELEMETRY: "true"
+      FAKE_MODEL_DELAY_MS: ${FAKE_MODEL_DELAY_MS:-100}
+      FAKE_TOKEN_DELAY_MS: ${FAKE_TOKEN_DELAY_MS:-5}
+      FAKE_OUTPUT_TOKENS: ${FAKE_OUTPUT_TOKENS:-16}
+      FAKE_ERROR_EVERY: ${FAKE_ERROR_EVERY:-0}
+    mem_limit: 384m
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:9000/capacity/identity')"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+  migrate:
+    <<: *app
+    depends_on:
+      postgres: {condition: service_healthy}
+    command: python scripts/init_db.py --force
+  api:
+    <<: *app
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      nats: {condition: service_started}
+      fake: {condition: service_started}
+    command: python -m preloop.server
+    mem_limit: ${CAPACITY_API_MEMORY:-1024m}
+    cpus: ${CAPACITY_API_CPUS:-1.0}
+    healthcheck: &api-health
+      test: [CMD, python, -c, "import urllib.request,json; assert json.load(urllib.request.urlopen('http://localhost:8000/api/v1/health'))['database'] == 'connected'"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+    environment:
+      <<: *environment
+      PRELOOP_SERVICE_ROLE: api
+  gateway:
+    <<: *app
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      nats: {condition: service_started}
+    command: python -m preloop.server
+    mem_limit: ${CAPACITY_GATEWAY_MEMORY:-1024m}
+    cpus: ${CAPACITY_GATEWAY_CPUS:-1.0}
+    healthcheck: *api-health
+    environment:
+      <<: *environment
+      PRELOOP_SERVICE_ROLE: gateway
+  load:
+    <<: *app
+    profiles: [load]
+    command: python -m scripts.capacity.run
+    mem_limit: 512m
+    volumes: ["./artifacts:/artifacts"]
+    environment:
+      PRELOOP_DISABLE_TELEMETRY: "true"
+      CAPACITY_REVISION: ${CAPACITY_REVISION:-unknown}
+      DATABASE_URL: postgresql+psycopg://capacity:capacity@postgres/capacity
+      NATS_URL: nats://nats:4222
+      SECRET_KEY: change-this-capacity-local-secret
+
+networks:
+  isolated:
+    internal: true
+volumes:
+  database:

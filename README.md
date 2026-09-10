@@ -188,6 +188,9 @@ Enterprise licensing: sales@preloop.ai.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+The [disposable capacity lab](scripts/capacity/README.md) measures authenticated MCP,
+model-gateway and execution-log workloads using local simulated providers.
+
 ## License
 
 [Apache License 2.0](LICENSE). Copyright (c) 2026 Spacecode AI Inc.
