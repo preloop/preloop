@@ -252,15 +252,158 @@ holds/legal_hold.jsonl
 and a `members_digest` over that list, the same shape and the same computation
 an evidence pack manifest uses, so one verifier covers both. The response
 headers repeat the digests (`X-Preloop-Archive-Sha256`,
-`X-Preloop-Members-Digest`). Every export writes an audit row naming the
-period, the counts and the archive digest.
+`X-Preloop-Members-Digest`, `X-Preloop-Manifest-Sha256`). Every export writes
+an audit row naming the period, the counts, the archive digest and the key
+that signed it.
 
-The bundle is **not signed**. The digests show the archive was not altered
-after Preloop built it. They do not show the records were true when they were
-written; that is the audit hash chain in #558. Exports are capped at
-`RETENTION_EXPORT_MAX_ROWS` (100000) per record class and 366 days per
-archive, and going over is an error asking for a narrower period rather than a
-truncated archive somebody later mistakes for the whole period.
+The bundle also carries `signature.json`: a detached Ed25519 signature over
+the sha256 of `manifest.json` as packed, made with the account's signing key
+(see [Signed records](#signed-records)). Verify it with
+`preloop evidence verify <archive>`, or by hand: digest the manifest bytes,
+rebuild the signed bytes, check them against the published public key. The
+signature member is not listed in `members`, because it cannot be: it covers
+the manifest that would have to list it.
+
+Exports are capped at `RETENTION_EXPORT_MAX_ROWS` (100000) per record class
+and 366 days per archive, and going over is an error asking for a narrower
+period rather than a truncated archive somebody later mistakes for the whole
+period.
+
+Exported audit rows carry their chain position (`chain_seq`, `prev_hash`,
+`row_hash`), so a bundle taken today can be checked against a checkpoint kept
+years ago without asking Preloop for anything.
+
+## Tamper-evident audit trail
+
+Audit rows are chained per account. A background pass seals rows in timestamp
+order: each sealed row gets a `chain_seq`, the `row_hash` of the row before it
+as `prev_hash`, and its own `row_hash` over a canonical serialisation of the
+record. Editing a sealed row, deleting one from the middle, or reordering two
+breaks every hash from that point on.
+
+```
+GET  /api/v1/audit/chain/status        head, purge floor, sealing lag, newest checkpoint
+GET  /api/v1/audit/chain/verify        a server-side walk over a range
+GET  /api/v1/audit/chain/segment       canonical payloads and stored hashes, for your own walk
+GET  /api/v1/audit/chain/checkpoints   signed anchors over the chain head
+```
+
+`preloop audit verify` uses the segment endpoint rather than the verdict: it
+recomputes every hash on your machine, checks the checkpoint signatures, and
+reports the first break with its sequence and row id. Exit status is 1 on a
+break, so CI can gate on it. When Preloop's verdict and the local walk
+disagree, the CLI prints both and tells you to trust the walk.
+
+```
+preloop audit verify
+preloop audit verify --start-seq 1000 --end-seq 2000 --json
+```
+
+Two ranges are outside any result, and both are stated in the output rather
+than glossed over. Rows below `pruned_below_seq` were removed by the retention
+purge under a stated policy: the purge raises that floor as it deletes, so
+enforcing retention does not read as tampering. Rows written since the last
+sealing pass are not chained yet (`unsealed_rows`).
+
+Every `AUDIT_CHAIN_CHECKPOINT_INTERVAL` sealed rows, Preloop signs a
+checkpoint over the chain head. A checkpoint you copied off the platform is
+the one artifact here that a rewritten chain cannot reproduce, because it was
+signed before the rewrite and it names the head at that sequence. Fetch and
+keep them.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `AUDIT_CHAIN_ENABLED` | `true` | Seal rows into the chain. Adds hashes, removes nothing |
+| `AUDIT_CHAIN_SEAL_INTERVAL_SECONDS` | `60` | Time between sealing passes |
+| `AUDIT_CHAIN_SEAL_LAG_SECONDS` | `60` | How far behind now the sealer stays |
+| `AUDIT_CHAIN_CHECKPOINT_INTERVAL` | `1000` | Sealed rows between signed checkpoints |
+| `AUDIT_CHAIN_VERIFY_MAX_ROWS` | `50000` | Rows one verify request walks before truncating |
+
+## Signed records
+
+Each account has an Ed25519 signing key. The private half is stored encrypted
+with `SECURITY__ENCRYPTION_KEY`, like every other secret; the public half is
+served to anyone with `view_audit_logs`.
+
+```
+GET  /api/v1/signing/keys          every key the account has held, public halves
+POST /api/v1/signing/keys/rotate   retire the active key, mint its replacement
+```
+
+Rotation keeps old keys listed and old signatures valid. Invalidating them
+would revoke the customer's own evidence, which is the opposite of the point.
+Every signature names the `key_id` that made it.
+
+A signature covers these bytes and nothing else:
+
+```
+preloop.signature/v1\n<payload_type>\n<digest>\n<signed_at>
+```
+
+`payload_type` is in there so a signature over a period export manifest cannot
+be presented as a signature over an evidence pack. `digest` is the sha256 of
+the canonical JSON of the signed payload (sorted keys, no insignificant
+whitespace, UTF-8), or of the manifest bytes for a period export.
+
+Evidence packs are signed at capture, not at download, so re-serving a pack
+cannot change what was signed. The signature lives beside the pack rather than
+inside it: an evidence archive is content addressed the moment it is stored,
+and appending a member would change the digest the receipt already promised.
+`GET .../evidence-status` and the evidence download return the signature and
+`signing_key_id`, and the download repeats them in `X-Preloop-Signature`,
+`X-Preloop-Signing-Key-Id` and `X-Preloop-Signed-At`.
+
+```
+preloop evidence verify export.tar.gz
+preloop evidence verify evidence.tar.gz --execution <execution-id>
+preloop evidence verify export.tar.gz --public-key ./account-key.pub
+```
+
+`--public-key` is the version worth running. A public key fetched from us at
+verification time only shows that the bundle matches whatever key we serve you
+today; a key you copied when the bundle was issued does not depend on us at
+all. `preloop audit keys` prints them for that purpose.
+
+Packs captured before signing existed, and accounts whose key could not be
+minted, have no signature. The receipt says `signature: null` rather than
+pretending, and signing is never a precondition for storing evidence: bytes
+that cannot be re-captured outweigh a signature that can be added later.
+
+## What this proves and what it does not
+
+Being precise here matters more than sounding strong, so the limits come
+first.
+
+**A compromised server can forge anything before it is signed.** The signing
+key lives on the same platform that writes the records. Anyone who can write
+an audit row can write a false one, and it will be sealed into the chain and
+signed like any other. Nothing in this feature makes Preloop's own claims
+trustworthy; it makes them *fixed*. Signing and chaining defend against
+changing history after the fact, not against writing it wrong the first time.
+
+**The chain proves order and non-deletion within a range.** A clean walk over
+sequences 1000 to 2000 shows that those rows are in the order they were sealed
+in, that none was removed from between them, and that none was edited after
+sealing. It does not extend past the range: rows below the purge floor are
+gone, and rows not yet sealed are outside the chain. It says nothing at all
+about whether a row's contents were true.
+
+**A signature proves origin and integrity, not truth.** A verified period
+export is the bundle Preloop built, unchanged since. Whether the approvals
+inside it reflect what really happened is a question about the platform, not
+about the signature.
+
+**A checkpoint is only as good as where you keep it.** Its value comes from
+being outside our reach. A checkpoint we hold and a chain we hold prove
+consistency between two things under the same control. Copy checkpoints and
+public keys somewhere Preloop cannot write.
+
+**None of this is WORM.** An operator with database access can still delete
+rows. The difference is that after this change, deleting sealed rows leaves a
+gap the next verification names, instead of leaving nothing at all. A gap in
+the chain is evidence; it is not prevention. If your obligation needs
+immutability that survives a platform administrator, that control belongs in
+the storage layer.
 
 ## Operator checklist
 
@@ -282,3 +425,8 @@ truncated archive somebody later mistakes for the whole period.
 7. Place a legal hold before an incident review starts, not after the
    payload window has closed. A hold pins bytes that are still there; it
    cannot bring back bytes already cleared.
+8. Copy signed checkpoints (`GET /api/v1/audit/chain/checkpoints`) and the
+   public keys (`preloop audit keys`) somewhere Preloop cannot write. Held
+   only here, they prove consistency between two things under the same
+   control. Run `preloop audit verify` on a schedule and treat a break as an
+   incident.

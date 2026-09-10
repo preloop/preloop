@@ -94,9 +94,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `POST /api/v1/retention/exports?start=&end=` returns a tar.gz of one period
   (audit rows, approvals, evidence receipts, holds) with a `manifest.json`
   carrying a sha256 per member and a digest over the member list, in the same
-  shape an evidence pack manifest uses. The bundle is not signed; the digests
-  show the archive was not altered after Preloop built it, not that the
-  records were true when they were written.
+  shape an evidence pack manifest uses. The bundle is signed as of the entry
+  below; the digests and the signature show the archive is the one Preloop
+  built and has not been altered since, not that the records were true when
+  they were written.
+
+- **Tamper-evident audit log and signed, verifiable exports**: audit rows are
+  now sealed into a per-account hash chain. A bounded background pass gives
+  each row a `chain_seq`, the previous row's `row_hash` as `prev_hash`, and
+  its own `row_hash` over a canonical serialisation, so an edit, a deletion
+  from the middle or a reordering breaks every hash from that point on
+  (`AUDIT_CHAIN_ENABLED`, on by default: it only adds hashes, it never
+  removes a record). `GET /api/v1/audit/chain/status`, `/chain/verify`,
+  `/chain/segment` and `/chain/checkpoints`; the segment endpoint serves the
+  canonical payloads and stored hashes so `preloop audit verify` recomputes
+  every hash locally, reports the first break with its sequence and row id,
+  exits non-zero on a break, and says so when its verdict differs from ours.
+  Every `AUDIT_CHAIN_CHECKPOINT_INTERVAL` sealed rows a checkpoint over the
+  chain head is signed, which is the anchor a customer keeps off the
+  platform. The retention purge raises the chain's `pruned_below_seq` floor
+  as it deletes, so enforcing retention does not read as tampering.
+  Each account gets an Ed25519 signing key, stored encrypted like other
+  secrets, with the public half on `GET /api/v1/signing/keys` and rotation
+  through `POST /api/v1/signing/keys/rotate` (retired keys stay published and
+  their signatures stay valid). Period exports carry a detached
+  `signature.json` over the manifest digest, and evidence packs are signed at
+  capture with the signature served on the receipt and the download headers.
+  `preloop evidence verify <archive>` checks both, and `--public-key` checks
+  a bundle against a key you kept yourself, without contacting us.
+  What this does not do, stated in the docs as well: a compromised server can
+  forge a record before it is signed, and the chain proves order and
+  non-deletion within the range it names, not that the server told the truth.
 
 - **Approval windows on a human timescale, with parked executions**: an
   approval or question can now stay open for hours or days instead of the
