@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 )
@@ -49,6 +50,15 @@ func DecodeCanonical(raw []byte) (interface{}, error) {
 	var value interface{}
 	if err := decoder.Decode(&value); err != nil {
 		return nil, err
+	}
+	// A signed payload is one document. Accepting only the first value would
+	// silently discard attacker-controlled bytes after the hashed document.
+	var trailing interface{}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("multiple JSON documents")
+		}
+		return nil, fmt.Errorf("trailing JSON data: %w", err)
 	}
 	return value, nil
 }

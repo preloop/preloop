@@ -575,16 +575,8 @@ jobs:
           cp scripts/install-cli.ps1 release-assets/install-cli.ps1
           cp scripts/install-oss.sh release-assets/install-oss.sh
           chmod +x release-assets/install-cli.sh release-assets/install-oss.sh
-          # Checksums for CLI binaries and SBOMs, both named preloop-*
-          # (Defender / supply-chain verification)
-          (
-            cd release-assets
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum preloop-* > SHA256SUMS
-            else
-              shasum -a 256 preloop-* > SHA256SUMS
-            fi
-          )
+          # Cover every published payload; the manifest is itself attested.
+          python3 scripts/release_assets.py checksum release-assets
           ls -la release-assets/
 
       - name: Generate changelog
@@ -646,6 +638,19 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: 'release-assets/*'
+
+      # Verify signed bytes and workflow identity before attaching release assets.
+      # Keep the bundle outside release-assets until all subjects have passed.
+      - name: Verify release asset provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          python3 scripts/release_assets.py verify release-assets \
+            --bundle "$BUNDLE_PATH" \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$GITHUB_REF_NAME" \
+            --source-sha "$GITHUB_SHA"
 
       - name: Stage provenance bundle with release assets
         env:
@@ -709,6 +714,24 @@ jobs:
             - `preloop-sbom-cli-${{ steps.version.outputs.package_version }}.cdx.json` (linux/amd64 build constraints)
 
             Their digests are in `SHA256SUMS` and their build provenance is in the attestation bundle. Regenerate locally with `scripts/generate_sbom.sh`.
+
+            ## Verify release provenance
+
+            Each attached payload and `SHA256SUMS` has signed Sigstore build provenance.
+            Download an asset and `preloop-${{ github.ref_name }}.intoto.jsonl`, then run:
+
+            ```bash
+            gh attestation verify ./preloop-linux-amd64 \
+              --bundle ./preloop-${{ github.ref_name }}.intoto.jsonl \
+              --repo preloop/preloop \
+              --signer-workflow preloop/preloop/.github/workflows/release.yml \
+              --source-ref refs/tags/${{ github.ref_name }} \
+              --source-digest ${{ github.sha }} \
+              --deny-self-hosted-runners
+            ```
+
+            Replace the binary filename to verify any other attached payload.
+            See [release verification](https://github.com/preloop/preloop/blob/main/docs/release-verification.md) for details and scope.
 
             ## Changelog
 
