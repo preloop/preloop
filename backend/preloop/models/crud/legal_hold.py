@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models.models.approval_request import ApprovalRequest
 from preloop.models.models.flow_artifact import FlowArtifact
+from preloop.models.models.flow import Flow
 from preloop.models.models.flow_execution import FlowExecution
 from preloop.models.models.legal_hold import (
     HOLD_RESOURCE_APPROVAL,
@@ -24,6 +25,19 @@ from preloop.models.models.legal_hold import (
     HOLD_RESOURCE_EXECUTION,
     LegalHold,
 )
+
+
+def execution_in_account(account_id: Any):
+    """Account filter for an execution.
+
+    ``flow_execution`` carries no ``account_id`` of its own: an execution
+    belongs to an account through its flow. Every execution-scoped query here
+    goes through this so the ownership check cannot be forgotten in one place
+    and remembered in another.
+    """
+    return FlowExecution.flow_id.in_(
+        select(Flow.id).where(Flow.account_id == account_id)
+    )
 
 
 def get(db: Session, *, account_id: Any, hold_id: UUID) -> Optional[LegalHold]:
@@ -142,7 +156,7 @@ def set_execution_flag(
         update(FlowExecution)
         .where(
             FlowExecution.id == execution_id,
-            FlowExecution.account_id == account_id,
+            execution_in_account(account_id),
         )
         .values(legal_hold=held)
         .execution_options(synchronize_session=False)

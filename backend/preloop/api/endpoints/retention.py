@@ -179,7 +179,7 @@ def update_retention_settings(
         # substance, and the message names the floor so the console can show
         # it without a second round trip.
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
     except ValueError as exc:
         raise HTTPException(
@@ -376,7 +376,7 @@ def create_period_export(
         )
     except PeriodExportError as exc:
         codes = {
-            "period_too_large": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            "period_too_large": status.HTTP_413_CONTENT_TOO_LARGE,
             "invalid_period": status.HTTP_400_BAD_REQUEST,
         }
         raise HTTPException(

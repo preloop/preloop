@@ -113,9 +113,15 @@ def _require_resource(
         HOLD_RESOURCE_APPROVAL: ApprovalRequest,
         HOLD_RESOURCE_EVIDENCE_PACK: FlowArtifact,
     }[resource_type]
-    stmt = select(model.id).where(
-        model.id == identifier, model.account_id == account_id
-    )
+    if resource_type == HOLD_RESOURCE_EXECUTION:
+        # An execution is owned through its flow, not by a column of its own.
+        stmt = select(FlowExecution.id).where(
+            FlowExecution.id == identifier, crud.execution_in_account(account_id)
+        )
+    else:
+        stmt = select(model.id).where(
+            model.id == identifier, model.account_id == account_id
+        )
     if resource_type == HOLD_RESOURCE_EVIDENCE_PACK:
         stmt = stmt.where(FlowArtifact.kind == "evidence")
     if db.execute(stmt).scalar_one_or_none() is None:
@@ -143,7 +149,7 @@ def _stamp_evidence_receipts(
     rows = (
         db.execute(
             select(FlowExecution).where(
-                FlowExecution.account_id == account_id,
+                crud.execution_in_account(account_id),
                 FlowExecution.id.in_(list(execution_ids)),
             )
         )

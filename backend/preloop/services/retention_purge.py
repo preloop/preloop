@@ -43,6 +43,7 @@ from sqlalchemy.orm import Session
 
 from preloop.config import settings
 from preloop.models.crud import crud_audit_log
+from preloop.models.crud.legal_hold import execution_in_account
 from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
 from preloop.models.models.api_usage import ApiUsage
@@ -267,7 +268,7 @@ def _expire_receipts_for_artifacts(
     rows = (
         db.execute(
             select(FlowExecution).where(
-                FlowExecution.account_id == account_id,
+                execution_in_account(account_id),
                 FlowExecution.id.in_(execution_ids),
             )
         )
@@ -304,7 +305,7 @@ def _drop_legacy_evidence_columns(
     result = db.execute(
         update(FlowExecution)
         .where(
-            FlowExecution.account_id == account_id,
+            execution_in_account(account_id),
             FlowExecution.created_at < cutoff,
             FlowExecution.legal_hold.is_(False),
             FlowExecution.evidence_archive.isnot(None),
