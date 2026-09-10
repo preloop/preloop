@@ -2,6 +2,9 @@
   "name": "preloop",
   "version": "0.15.0",
   "description": "Preloop console frontend",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "main": "src/main.ts",
   "overrides": {
     "static-eval": "^2.1.0",
