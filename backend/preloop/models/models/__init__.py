@@ -30,6 +30,27 @@ from .issue_compliance_result import IssueComplianceResult
 from .plan import Plan, Subscription, MonthlyUsage
 from .issue_relationship import IssueRelationship
 from .issue_set import IssueSet
+from .account_signing_key import (
+    KEY_ID_PREFIX,
+    SIGNING_ALGORITHM_ED25519,
+    AccountSigningKey,
+)
+from .audit_chain import (
+    GENESIS_HASH,
+    AuditChainCheckpoint,
+    AuditChainState,
+)
+from .record_signature import (
+    SUBJECT_EVIDENCE_PACK,
+    RecordSignature,
+)
+from .legal_hold import (
+    HOLD_RESOURCE_APPROVAL,
+    HOLD_RESOURCE_EVIDENCE_PACK,
+    HOLD_RESOURCE_EXECUTION,
+    HOLD_RESOURCE_TYPES,
+    LegalHold,
+)
 from .managed_agent import ManagedAgent
 from .managed_agent_ai_model_binding import ManagedAgentAIModelBinding
 from .managed_agent_credential import ManagedAgentCredential
@@ -139,6 +160,19 @@ __all__ = [
     "MonthlyUsage",
     "IssueRelationship",
     "IssueSet",
+    "AccountSigningKey",
+    "AuditChainCheckpoint",
+    "AuditChainState",
+    "RecordSignature",
+    "SUBJECT_EVIDENCE_PACK",
+    "GENESIS_HASH",
+    "KEY_ID_PREFIX",
+    "SIGNING_ALGORITHM_ED25519",
+    "LegalHold",
+    "HOLD_RESOURCE_APPROVAL",
+    "HOLD_RESOURCE_EVIDENCE_PACK",
+    "HOLD_RESOURCE_EXECUTION",
+    "HOLD_RESOURCE_TYPES",
     "ManagedAgent",
     "ManagedAgentAIModelBinding",
     "ManagedAgentCredential",

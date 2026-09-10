@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **CRA VEX suppressions are applied before the severity gate, not after it**:
+  preset 006 asked for VEX and the gate in one breath, so a run could escalate
+  a finding to a human and then annotate it as `not_affected`, which made
+  authoring VEX cost an approval interrupt instead of saving one. Order is now
+  stated and deterministic, and `gate.vex_suppressed` must equal the set the
+  body implies, field for field. A status only suppresses with a non-empty
+  justification beside it: a bare `not_affected` stays in the gate, where
+  before it was dropped from the gate silently. `affected` and
+  `under_investigation` never suppress.
 - bcrypt 5.0.0 raises on secrets longer than 72 bytes instead of truncating.
   New passwords stay capped at 72 characters. Login and `current_password`
   do not: hashing and verify use bcrypt's 72-byte prefix so existing longer
@@ -71,6 +80,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checkout observation, not signed build attestation.
 
 ### Added
+
+- **CRA Article 14 reporting: the judgement and the clock**: presets 005 and
+  006 now emit a `reporting` block instead of a bare `art14_candidates` list of
+  KEV CVE ids. KEV membership says a vulnerability is exploited somewhere, not
+  that this product is affected, and it carries no deadline. The block records
+  `actively_exploited` (from named exploitation evidence), `affected` (from VEX
+  or reachability, with the source named, `undetermined` when neither
+  answered), `reportable` (exactly `actively_exploited AND affected is True`)
+  and the three Article 14 deadlines computed in UTC from a single
+  `discovered_at`: early warning at 24 hours, notification at 72 hours, final
+  report at 14 days. The validator forces `undetermined` when the KEV fetch
+  failed or the scan did not complete, so silence is not read as safety. The
+  audit report cover prints an ARTICLE 14 REPORTING BOX and the new
+  `cra.reportable_vulnerability` webhook event fires once per candidate,
+  idempotent on (execution, cve). The obligation applies from 11 September
+  2026. Preloop computes the judgement and the clock and does not file: there
+  is no ENISA submission client, the payload carries
+  `not_a_legal_determination` and `filing_is_manufacturer_responsibility`, and
+  the filing decision stays with the manufacturer.
+- **Record retention, legal hold and period export**: an account now states
+  how long it keeps each class of record (audit rows, approvals, evidence
+  pack records, runtime sessions, usage) in days, with a floor of 183 days
+  (six months, the AI Act Art. 26(6) horizon) that a deployment can raise and
+  nothing can lower, and a 365 day default.
+  `GET/PUT /api/v1/retention/settings` and `GET /api/v1/retention/purge-preview`.
+  A bounded background sweeper deletes what is past retention: batches of
+  1000, a batch ceiling, a wall clock budget per pass and an off-peak UTC
+  window, one audit row per class per pass with the cutoff and the count. It
+  is **off by default** (`RETENTION_PURGE_ENABLED`), so an upgrade never
+  silently starts deleting audit history, and `RETENTION_PURGE_DRY_RUN` gives
+  the counts without the deletes. A legal hold
+  (`POST /api/v1/retention/holds`, mandatory reason, actor recorded, audited
+  on both place and release) freezes one execution, approval or evidence
+  pack: the purge skips it and the evidence janitor leaves the ciphertext
+  alone past `expires_at`, so a held pack is still downloadable. Evidence
+  receipts now report the real `legal_hold` state instead of a hardcoded
+  false; `object_lock` stays false because Preloop cannot verify a property
+  of the storage layer beneath it.
+  `POST /api/v1/retention/exports?start=&end=` returns a tar.gz of one period
+  (audit rows, approvals, evidence receipts, holds) with a `manifest.json`
+  carrying a sha256 per member and a digest over the member list, in the same
+  shape an evidence pack manifest uses. The bundle is signed as of the entry
+  below; the digests and the signature show the archive is the one Preloop
+  built and has not been altered since, not that the records were true when
+  they were written.
+
+- **Tamper-evident audit log and signed, verifiable exports**: audit rows are
+  now sealed into a per-account hash chain. A bounded background pass gives
+  each row a `chain_seq`, the previous row's `row_hash` as `prev_hash`, and
+  its own `row_hash` over a canonical serialisation, so an edit, a deletion
+  from the middle or a reordering breaks every hash from that point on
+  (`AUDIT_CHAIN_ENABLED`, on by default: it only adds hashes, it never
+  removes a record). `GET /api/v1/audit/chain/status`, `/chain/verify`,
+  `/chain/segment` and `/chain/checkpoints`; the segment endpoint serves the
+  canonical payloads and stored hashes so `preloop audit verify` recomputes
+  every hash locally, reports the first break with its sequence and row id,
+  exits non-zero on a break, and says so when its verdict differs from ours.
+  Every `AUDIT_CHAIN_CHECKPOINT_INTERVAL` sealed rows a checkpoint over the
+  chain head is signed, which is the anchor a customer keeps off the
+  platform. The retention purge raises the chain's `pruned_below_seq` floor
+  as it deletes, so enforcing retention does not read as tampering.
+  Each account gets an Ed25519 signing key, stored encrypted like other
+  secrets, with the public half on `GET /api/v1/signing/keys` and rotation
+  through `POST /api/v1/signing/keys/rotate` (retired keys stay published and
+  their signatures stay valid). Period exports carry a detached
+  `signature.json` over the manifest digest, and evidence packs are signed at
+  capture with the signature served on the receipt and the download headers.
+  `preloop evidence verify <archive>` checks both, and `--public-key` checks
+  a bundle against a key you kept yourself, without contacting us.
+  What this does not do, stated in the docs as well: a compromised server can
+  forge a record before it is signed, and the chain proves order and
+  non-deletion within the range it names, not that the server told the truth.
 
 - **Approval windows on a human timescale, with parked executions**: an
   approval or question can now stay open for hours or days instead of the
@@ -310,6 +391,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adds a page by dropping a markdown file.
 
 ### Fixed
+
+- **`tool_calls_count` was 0 on runs that used MCP tools**: the log parser
+  matched three phrasings the runner never prints, so nothing incremented the
+  counter, and the execution page read only agent-derived logs while the
+  executions list also counted runtime session activity, so the two could
+  disagree. The parser now matches the runner's own `mcp: <server>/<tool>
+  started` marker (the started form only, so a call counts once) and the
+  metrics take the largest of parsed logs, recorded activity and the stored
+  rollup. Largest and not sum: a call is usually recorded twice, once by the
+  agent and once by the server that served it.
+- **A derivable CRA verdict label is corrected instead of discarding the
+  audit**: a run that measured everything correctly but wrote
+  `pass_with_findings` next to its own `minimum_elements.passed: false` was
+  rejected whole as `cra_result_invalid`. The persist boundary now retries once
+  with the verdict the body implies. Only the label moves, every measurement is
+  persisted as submitted, the correction is escalation only (`fail` is never
+  softened), the corrected document is re-validated in full so a second defect
+  still fails closed, an incomplete run is never repaired, and the body records
+  `verdict_corrected` with the submitted value and the reason.
+- **A drift report and a null `drift` field can no longer both be true**: a
+  release audit that completed its drift comparison and then stopped at a
+  waiver question emitted an incompletion envelope with `drift: null` next to
+  `artifacts.drift_report` naming a real file, which reads as no drift at all.
+  `drift` is now allowed on the envelope for the release audit schema only, it
+  is validated in full there, and a named report and a populated field imply
+  each other in both directions. The verdict stays `error`, so the release is
+  still denied.
+- **`evidence-status` reported `integrity_verified: false` on packs that
+  verify**: the field promised an integrity judgement and delivered "this
+  endpoint did not look". It is now a three-state `integrity` (`verified`,
+  `not_checked`, `failed`) plus an `integrity_note`, with the boolean kept for
+  compatibility and true only for `verified`. On the legacy transport the poll
+  hashes the archive it already has and answers `failed` with the observed
+  digest on a mismatch, rather than letting the download be the first place
+  anyone finds out. The direct transport answers `not_checked`, because a poll
+  does not decrypt ciphertext, and `GET .../evidence` repeats the same word in
+  `X-Preloop-Evidence-Integrity-State`.
+- **`GET /flows/executions/{id}/artifacts` 401 explains itself**: that route
+  pair is the runner's artifact transport and only ever accepts a minted
+  `flow-artifact` capability, but `openapi.yaml` published it under
+  `bearerAuth` as though an operator could call it, and the refusal was one
+  word. Both routes are dropped from the published schema (no generated client
+  or frontend referenced them) and the 401 now names the error code and the
+  audience, sends a `WWW-Authenticate: Bearer realm="flow-artifact"` challenge
+  and points at `GET .../evidence` and `.../evidence-status`. The reply names
+  no execution and no artifact, and the route still answers 401 rather than
+  404: undocumented is not disabled.
+- **An approval that should park the run no longer ends it**: when the
+  routing approval workflow had `async_approval_enabled` set (the shipped
+  "Default Approval Workflow" does), `require_approval` returned its
+  `pending_approval` payload before it reached the park handshake, so no
+  window length could park the execution. The agent got an answerless
+  result, wrote its incompletion envelope and exited, and the run was
+  completed and failed closed while a human still held the question. Both
+  paths now go through one `_park_and_build_payload` helper, so the
+  decision to park is made in a single place. The monitor loop also
+  re-checks for a park request in its terminal branch: the park is written
+  by another process and observed on a 5 second poll, so an agent that
+  exits inside that window used to be finalized first. A parked run is no
+  longer fail-closed by the CRA persist boundary, since a park is not a
+  release. Observed on staging execution
+  `e42c6086-f637-4d18-be09-2395c4d488ca`, approval
+  `6a7cd2dc-a9f8-4fa5-9870-b834f5bc1db2`: the waiver was answered 2 minutes
+  20 seconds after the run had already been marked FAILED, against a 3 day
+  window.
+
+- **The failure message names the field that classified the run**: a
+  result artifact rejected on its `verdict` reported `status=None`, which
+  named a key the CRA incompletion envelope does not carry. The override
+  now reports the field that actually decided on both the terminal exit
+  and the sentinel-grace path, and records it on the milestone as
+  `signal_field` / `signal_value`.
+
+- **Preset sync no longer drops fields on existing presets**:
+  `scripts/sync_flow_presets.py` updated existing global presets from a
+  hand-maintained dict that omitted `approval_window_seconds`,
+  `timeout_seconds`, `runner_pool`, `custom_commands`, `webhook_config`
+  and `schedule_config`, and its change detection compared only 8 fields,
+  so a preset whose only change was one of those was reported up to date.
+  Create and update now derive from the same `FlowCreate`, and drift is
+  computed over every field a preset can set. Effect: the 3 day approval
+  window that presets 006 and 014 declare reaches the flow row instead of
+  falling back to the 300 second default. A preset key that no schema
+  claims is now logged rather than silently ignored.
 
 - **Talk stays clickable on the agent page in a narrow container**: an
   action that renders its own element has no click handler an overflow

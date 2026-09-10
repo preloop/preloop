@@ -4,6 +4,7 @@ Tests for the MCP API endpoints.
 
 import uuid
 from datetime import datetime, timezone
+from typing import Any, Generator
 from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
@@ -233,6 +234,8 @@ async def test_mcp_update_issue_success(db_session: Session, test_user: User):
     assert isinstance(response, GetIssueResponse)
     assert response.title == "Updated Title"
     mock_tracker_client.update_issue.assert_called_once()
+    # The tool owns and closes its session; reattach before checking persistence.
+    db_session.add(issue)
     db_session.refresh(issue)
     assert issue.title == "Updated Title"
 
@@ -2140,7 +2143,11 @@ async def test_update_comment_not_found_maps_to_404_with_warning_log(
 
         from fastapi import HTTPException
 
-        with caplog.at_level(logging.WARNING):
+        # Application loggers do not propagate to pytest's root handler.
+        with (
+            caplog.at_level(logging.WARNING),
+            patch.object(mcp.logger, "handlers", [caplog.handler]),
+        ):
             with pytest.raises(HTTPException) as exc_info:
                 await mcp.update_comment(
                     target="owner/repo#123",
@@ -2236,7 +2243,11 @@ async def test_update_comment_genuine_api_failure_maps_to_502_with_error_log(
 
         from fastapi import HTTPException
 
-        with caplog.at_level(logging.ERROR):
+        # Application loggers do not propagate to pytest's root handler.
+        with (
+            caplog.at_level(logging.ERROR),
+            patch.object(mcp.logger, "handlers", [caplog.handler]),
+        ):
             with pytest.raises(HTTPException) as exc_info:
                 await mcp.update_comment(
                     target="owner/repo#123",
@@ -2326,7 +2337,11 @@ async def test_update_comment_404_substring_is_not_misclassified_as_not_found(
 
         from fastapi import HTTPException
 
-        with caplog.at_level(logging.ERROR):
+        # Application loggers do not propagate to pytest's root handler.
+        with (
+            caplog.at_level(logging.ERROR),
+            patch.object(mcp.logger, "handlers", [caplog.handler]),
+        ):
             with pytest.raises(HTTPException) as exc_info:
                 await mcp.update_comment(
                     target="owner/repo#123",
@@ -3614,3 +3629,110 @@ async def test_update_pull_request_remove_absent_reaction_is_success(
     assert response.status == "updated"
     assert "FAILED" not in response.message
     assert "already absent" in response.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["read", "create"])
+async def test_pr_provider_uses_hydrated_config_after_session_close(
+    operation: str,
+    db_session: Session,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real tracker/project ORM state is consumed before external provider I/O."""
+    from types import SimpleNamespace
+
+    from sqlalchemy import inspect
+
+    from preloop.api import common
+    from preloop.models import models
+    from preloop.models.crud import crud_project
+
+    tracker = models.Tracker(
+        name="example",
+        account_id=test_user.account_id,
+        tracker_type="github",
+        api_key="test_key",
+        url="https://github.com",
+        auth_type="api_token",
+    )
+    db_session.add(tracker)
+    db_session.flush()
+    organization = models.Organization(
+        name="example", identifier="example", tracker_id=tracker.id
+    )
+    db_session.add(organization)
+    db_session.flush()
+    project = models.Project(
+        name="repo",
+        identifier="example/repo",
+        slug="example/repo",
+        organization_id=organization.id,
+    )
+    db_session.add(project)
+    db_session.add(
+        models.TrackerScopeRule(
+            tracker_id=tracker.id,
+            scope_type="ORGANIZATION",
+            rule_type="INCLUDE",
+            identifier="example",
+        )
+    )
+    db_session.commit()
+    project_id = project.id
+    tracker_id = str(tracker.id)
+    account_id = test_user.account_id
+    recorded = False
+
+    async def provider(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        assert not db_session.in_transaction()
+        assert inspect(project).detached
+        assert inspect(test_user).detached
+        return {
+            "id": "123",
+            "number": 123,
+            "title": "Example",
+            "state": "open",
+            "url": "https://github.com/example/repo/pull/123",
+        }
+
+    async def create_client(**kwargs: Any) -> SimpleNamespace:
+        assert kwargs["tracker_id"] == tracker_id
+        assert kwargs["api_key"] == "test_key"
+        assert kwargs["connection_details"]["owner"] == "example"
+        assert kwargs["connection_details"]["repo"] == "repo"
+        return SimpleNamespace(
+            tracker_type="github",
+            get_pull_request=provider,
+            create_pull_request=provider,
+        )
+
+    def record_opened(db: Session, **kwargs: Any) -> None:
+        nonlocal recorded
+        # The invocation can reopen the same session for persistence after I/O.
+        assert crud_project.get(db, id=project_id, account_id=account_id).name == "repo"
+        recorded = True
+
+    def dependency() -> Generator[Session, None, None]:
+        yield db_session
+
+    monkeypatch.setattr(mcp, "get_db", dependency)
+    monkeypatch.setattr(
+        mcp,
+        "get_http_request",
+        lambda: SimpleNamespace(headers={"authorization": "Bearer test"}),
+    )
+    monkeypatch.setattr(
+        mcp, "get_user_from_token_if_valid", AsyncMock(return_value=test_user)
+    )
+    monkeypatch.setattr(common, "create_tracker_client", create_client)
+    monkeypatch.setattr(mcp, "_record_opened_pr_on_execution", record_opened)
+    if operation == "read":
+        result = await mcp.get_pull_request("https://github.com/example/repo/pull/123")
+    else:
+        result = await mcp.create_pull_request(
+            "example/repo", "Example", "feature", "main"
+        )
+        assert recorded
+    assert result.number == 123
+    assert not db_session.in_transaction()

@@ -3,6 +3,7 @@ from datetime import datetime, UTC
 from typing import Optional
 
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     ForeignKey,
@@ -11,6 +12,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    false as sa_false,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, query_expression, relationship
@@ -141,8 +143,16 @@ class FlowExecution(Base):
     evidence_archive = Column(LargeBinary, nullable=True)
     # Availability/retention receipt for captured evidence. Small JSON so a
     # release consumer can distinguish available / missing / expired / failed
-    # without downloading the pack. Not a legal-hold claim.
+    # without downloading the pack. The legal_hold field it carries is the
+    # artifact's own flag, not a storage-layer object-lock claim.
     evidence_receipt = Column(JSONB, nullable=True)
+    # Derived legal-hold enforcement flag. The account-visible record (actor,
+    # reason, release) is a legal_hold row; this column is what the retention
+    # purge tests, in the same transaction, so a batch DELETE stays a single
+    # table query. A hold here also covers this execution's evidence packs.
+    legal_hold = Column(
+        Boolean, nullable=False, server_default=sa_false(), default=False, index=True
+    )
     # Workspace snapshot (tar.gz of /workspace, .git included) captured by the
     # runner on every terminal path so work that was never pushed survives the
     # container. Size-capped at capture time

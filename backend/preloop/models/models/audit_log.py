@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import ForeignKey, Text, func
+from sqlalchemy import BigInteger, ForeignKey, Index, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import DateTime, String
@@ -41,6 +41,13 @@ class AuditLog(Base):
     """
 
     __tablename__ = "audit_log"
+    __table_args__ = (
+        # The chain walk is "give me this account's rows in sequence order",
+        # and the sealer's own query is "the next unsealed rows for this
+        # account". One composite index serves both; NULLs sort last in
+        # Postgres, so the unsealed tail sits at the end of it.
+        Index("ix_audit_log_account_chain_seq", "account_id", "chain_seq"),
+    )
 
     # Foreign keys
     account_id: Mapped[uuid.UUID] = mapped_column(
@@ -80,6 +87,35 @@ class AuditLog(Base):
     # Timestamp
     timestamp: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False, index=True
+    )
+
+    # Hash chain (issue #558). Nullable on purpose, in both directions: every
+    # row written before this feature existed has no chain position and never
+    # will, and a freshly written row is unsealed until the sealer reaches it.
+    # Chaining inline would mean holding a per-account lock until the caller's
+    # transaction commits, and ``model_gateway_request`` writes one of these
+    # rows per gateway call. See preloop.services.audit_chain.
+    chain_seq: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        nullable=True,
+        comment="Position in this account's hash chain. NULL means unsealed.",
+    )
+    prev_hash: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="row_hash of the row at chain_seq - 1, or the genesis hash",
+    )
+    row_hash: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="sha256 over the canonical serialisation of this row, "
+        "prev_hash included",
+    )
+    sealed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="When the sealer chained this row, which is later than "
+        "timestamp by up to one sealer interval",
     )
 
     # Relationships
