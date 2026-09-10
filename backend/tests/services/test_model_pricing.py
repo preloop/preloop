@@ -1101,7 +1101,12 @@ def test_estimate_external_model_usage_cost_maps_cursor_alias() -> None:
 
 @pytest.mark.parametrize("name", ["composer", "auto", "claude-4-sonnet", ""])
 def test_estimate_external_model_usage_cost_unknown_stays_unpriced(name: str) -> None:
-    """Unknown or catalog-less names return unpriced rather than a guess."""
+    """Unknown or catalog-less names return unpriced rather than a guess.
+
+    ``claude-4-sonnet`` is the 1.100.x regression: litellm fabricates
+    ``(0.0, 0.0)`` for that spelling even though the map has no entry, so
+    a naive ``cost_per_token`` sum would bill catalog $0.
+    """
     from preloop.services.model_pricing import estimate_external_model_usage_cost
 
     estimate = estimate_external_model_usage_cost(
