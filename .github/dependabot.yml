@@ -90,7 +90,7 @@ updates:
     # module load. Keep 3.x until the mcp v2 client migration lands.
     ignore:
       - dependency-name: "fastmcp"
-        versions: ["4.x"]
+        update-types: ["version-update:semver-major"]
     # Group order matters: dependabot assigns a dependency to the first group
     # whose patterns match, so the lockstep families have to come before the
     # catch-all pip-minor-patch group.
