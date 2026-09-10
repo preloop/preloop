@@ -715,6 +715,9 @@ def put_artifact(
             archive_sha256=manifest["sha256"],
             size_bytes=manifest.get("size_bytes"),
             created_at=now,
+            # store() already committed the artifact; this is the boundary
+            # that persists the signature (and a first-use key) beside it.
+            commit=True,
         )
     return artifact_reference(artifact)
 

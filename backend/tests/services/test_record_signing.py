@@ -371,6 +371,55 @@ def test_the_stored_payload_is_what_a_downloader_can_rebuild(db_session, account
     )
 
 
+def test_sign_manifest_does_not_commit_the_callers_session(
+    db_session, account, monkeypatch
+):
+    committed: list[bool] = []
+    real_commit = db_session.commit
+
+    def capture_commit() -> None:
+        committed.append(True)
+        real_commit()
+
+    monkeypatch.setattr(db_session, "commit", capture_commit)
+
+    document = record_signing.sign_manifest(
+        db_session,
+        account_id=account.id,
+        payload_type=record_signing.PAYLOAD_PERIOD_EXPORT,
+        manifest={"schema": "test"},
+    )
+
+    assert document is not None
+    assert committed == []
+
+
+def test_ensure_key_failure_does_not_roll_back_the_caller(
+    db_session, account, monkeypatch
+):
+    marker = AccountSigningKey(
+        account_id=account.id,
+        key_id="psk_marker_retired",
+        algorithm="ed25519",
+        public_key="AA",
+        private_key_encrypted="nonsense",
+        retired_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    db_session.add(marker)
+    db_session.flush()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("mint failed")
+
+    monkeypatch.setattr(record_signing, "create_key", boom)
+
+    assert (
+        record_signing.ensure_key(db_session, account_id=account.id, commit=False)
+        is None
+    )
+    assert db_session.get(AccountSigningKey, marker.id) is not None
+
+
 def test_signing_failure_leaves_the_callers_work_intact(db_session, account):
     marker = AccountSigningKey(
         account_id=account.id,

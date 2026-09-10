@@ -217,15 +217,23 @@ def ensure_key(
 
     Returns None rather than raising when minting fails. Signing is an
     addition to an export, never a precondition for it: a customer asking for
-    their compliance period must still get it if key generation broke.
+    their compliance period must still get it if key generation broke. A mint
+    failure is contained in a savepoint so the caller's in-flight work stays.
     """
     existing = get_active_key(db, account_id=account_id)
     if existing is not None:
         return existing
     try:
-        return create_key(db, account_id=account_id, commit=commit)
+        # Savepoint, not session.rollback(): this function does not own the
+        # caller's transaction. A mint failure must not undo sealed rows or
+        # a chain-head update already flushed in this session.
+        with db.begin_nested():
+            record = create_key(db, account_id=account_id, commit=False)
+        if commit:
+            db.commit()
+            db.refresh(record)
+        return record
     except Exception:
-        db.rollback()
         logger.error("Failed to mint an account signing key", exc_info=True)
         return get_active_key(db, account_id=account_id)
 
@@ -313,12 +321,16 @@ def sign_manifest(
     payload_type: str,
     manifest: Any,
     signed_at: Optional[datetime] = None,
-    commit: bool = True,
+    commit: bool = False,
 ) -> Optional[dict[str, Any]]:
     """Sign a manifest for an account, minting a key on first use.
 
     Returns None when the account has no usable key and one could not be
     made. Callers degrade to an unsigned export rather than failing it.
+
+    ``commit`` defaults to False: this helper does not own the caller's
+    transaction. Commit at the request or operation boundary. Pass
+    ``commit=True`` only when this call *is* that boundary.
     """
     record = ensure_key(db, account_id=account_id, commit=commit)
     if record is None:
@@ -530,9 +542,14 @@ def sign_evidence_pack(
     archive_sha256: str,
     size_bytes: Optional[int] = None,
     created_at: Optional[datetime] = None,
-    commit: bool = True,
+    commit: bool = False,
 ) -> Optional[dict[str, Any]]:
-    """Sign one evidence pack at mint time. Never raises at the caller."""
+    """Sign one evidence pack at mint time. Never raises at the caller.
+
+    ``commit`` defaults to False so a mint-time signature stays in the
+    caller's transaction. Pass ``commit=True`` when this call is the
+    operation boundary (for example after another helper already committed).
+    """
     payload = evidence_pack_payload(
         account_id=account_id,
         artifact_id=artifact_id,

@@ -230,7 +230,14 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 	if after < 0 {
 		after = 0
 	}
-	walk := verify.NewChainWalk(verify.RowDomainV1, after, "")
+	// Empty expectedPrev means "take the first row's word for it", which is
+	// honest only for a mid-chain start. From sequence 1 the first row must
+	// commit to genesis, matching the server walk and the package tests.
+	expectedPrev := ""
+	if after < 1 {
+		expectedPrev = verify.GenesisHash
+	}
+	walk := verify.NewChainWalk(verify.RowDomainV1, after, expectedPrev)
 	watched := make([]int64, 0, len(checkpoints))
 	for _, checkpoint := range checkpoints {
 		watched = append(watched, checkpoint.Seq)
@@ -284,7 +291,7 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 		}
 		report.Checkpoints = checkCheckpoints(checkpoints, keys, walk)
 		for _, checked := range report.Checkpoints {
-			if !checked.SignatureOK || !checked.MatchesLocalRow {
+			if checkpointFails(checked) {
 				report.Status = "broken"
 				if report.FirstBreak == nil {
 					report.FirstBreak = &verify.Break{
@@ -352,7 +359,7 @@ func printAuditVerify(cmd *cobra.Command, status chainStatus, report auditVerify
 	}
 	for _, checked := range report.Checkpoints {
 		state := "verified"
-		if !checked.SignatureOK || !checked.MatchesLocalRow {
+		if checkpointFails(checked) {
 			state = "FAILED"
 		}
 		fmt.Fprintf(out, "Checkpoint at sequence %d: %s (key %s)\n", checked.Seq, state, checked.KeyID)
@@ -404,12 +411,29 @@ func runAuditKeys(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// checkpointOutsideWalk is reported when a checkpoint's sequence was never
+// in the rows this walk fetched. A valid signature still stands; it just
+// was not held against local rows, so matches_local_rows stays false.
+const checkpointOutsideWalk = "outside the walked range"
+
+// checkpointFails reports whether this checkpoint contradicts the walk.
+// A signature that verifies for a sequence we did not walk is not a break.
+func checkpointFails(v checkpointVerdict) bool {
+	if !v.SignatureOK {
+		return true
+	}
+	if v.Detail == checkpointOutsideWalk {
+		return false
+	}
+	return !v.MatchesLocalRow
+}
+
 // checkCheckpoints verifies each anchor's signature and holds it against the
 // rows this walk actually fetched.
 func checkCheckpoints(checkpoints []chainCheckpoint, keys verify.KeyList, walk *verify.ChainWalk) []checkpointVerdict {
 	verdicts := make([]checkpointVerdict, 0, len(checkpoints))
 	for _, checkpoint := range checkpoints {
-		verdict := checkpointVerdict{Seq: checkpoint.Seq, KeyID: checkpoint.SigningKeyID, MatchesLocalRow: true}
+		verdict := checkpointVerdict{Seq: checkpoint.Seq, KeyID: checkpoint.SigningKeyID}
 		if checkpoint.SignatureDocument == nil {
 			verdict.Detail = "this checkpoint carries no signature, so it anchors nothing outside the database"
 			verdicts = append(verdicts, verdict)
@@ -433,12 +457,20 @@ func checkCheckpoints(checkpoints []chainCheckpoint, keys verify.KeyList, walk *
 			continue
 		}
 		verdict.SignatureOK = true
-		if observed, walked := walk.Observed[checkpoint.Seq]; walked && observed != checkpoint.ChainHash {
-			verdict.MatchesLocalRow = false
+		observed, walked := walk.Observed[checkpoint.Seq]
+		if !walked {
+			verdict.Detail = checkpointOutsideWalk
+			verdicts = append(verdicts, verdict)
+			continue
+		}
+		if observed != checkpoint.ChainHash {
 			verdict.Detail = fmt.Sprintf(
 				"the checkpoint anchors %s at this sequence but the rows served now hash to %s",
 				checkpoint.ChainHash, observed)
+			verdicts = append(verdicts, verdict)
+			continue
 		}
+		verdict.MatchesLocalRow = true
 		verdicts = append(verdicts, verdict)
 	}
 	sort.Slice(verdicts, func(i, j int) bool { return verdicts[i].Seq < verdicts[j].Seq })

@@ -309,3 +309,65 @@ func TestAuditVerifyOnAnEmptyChainSaysSo(t *testing.T) {
 		t.Fatalf("output = %q", out)
 	}
 }
+
+func TestAuditVerifyRejectsAForgedGenesisPrevHash(t *testing.T) {
+	chain := newFakeChain(t, 4)
+	bogus := strings.Repeat("ab", 32)
+	prev := bogus
+	for i := range chain.entries {
+		chain.entries[i].PrevHash = prev
+		chain.entries[i].Payload["prev_hash"] = prev
+		hash, err := verify.RowHash(verify.RowDomainV1, chain.entries[i].Payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chain.entries[i].RowHash = hash
+		prev = hash
+	}
+	pointCLIAt(t, chain.serve(t).URL)
+
+	out, err := runAudit(t)
+
+	if err == nil {
+		t.Fatalf("a forged genesis prev_hash passed:\n%s", out)
+	}
+	if !strings.Contains(out, "prev_hash_mismatch at sequence 1") {
+		t.Fatalf("output = %q", out)
+	}
+}
+
+func TestAuditVerifyReportsUnwalkedCheckpointsHonestly(t *testing.T) {
+	chain := newFakeChain(t, 6)
+	chain.addCheckpoint(t, 6, chain.entries[5].RowHash)
+	pointCLIAt(t, chain.serve(t).URL)
+	auditJSON = true
+	auditEndSeq = 3
+
+	out, err := runAudit(t)
+
+	if err != nil {
+		t.Fatalf("an out-of-range checkpoint failed the walk: %v\n%s", err, out)
+	}
+	var report map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if report["status"] != "ok" {
+		t.Fatalf("status = %#v", report["status"])
+	}
+	checkpoints, _ := report["checkpoints"].([]interface{})
+	if len(checkpoints) != 1 {
+		t.Fatalf("checkpoints = %#v", report["checkpoints"])
+	}
+	checked, _ := checkpoints[0].(map[string]interface{})
+	if checked["matches_local_rows"] != false {
+		t.Fatalf("unwalked checkpoint claimed a local match: %#v", checked)
+	}
+	detail, _ := checked["detail"].(string)
+	if !strings.Contains(detail, "outside the walked range") {
+		t.Fatalf("detail = %q", detail)
+	}
+	if checked["signature_ok"] != true {
+		t.Fatalf("signature should still verify: %#v", checked)
+	}
+}
