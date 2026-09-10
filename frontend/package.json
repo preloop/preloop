@@ -48,12 +48,12 @@
     "@shoelace-style/shoelace": "^2.20.1",
     "@tanstack/table-core": "^9.2.4",
     "ansi_up": "^6.0.2",
-    "dompurify": "^3.4.14",
+    "dompurify": "^3.4.15",
     "lit": "^3.3.3",
-    "marked": "^18.0.11"
+    "marked": "^18.0.12"
   },
   "devDependencies": {
-    "@open-wc/testing": "^4.0.0",
+    "@open-wc/testing": "^5.0.0",
     "@playwright/test": "^1.63.0",
     "@types/marked": "^5.0.2",
     "@types/mocha": "^10.0.10",

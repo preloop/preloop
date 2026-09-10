@@ -79,8 +79,12 @@ def park_pending_payload(
     """The structured pending result a parked tool call returns to the agent.
 
     Additive: the async-approval path keeps returning ``pending_approval``
-    with polling instructions, and this one says the opposite (stop, do not
-    poll) because the run itself is about to be suspended.
+    with polling instructions for a window inside the interactive default,
+    and this one says the opposite (stop, do not poll) because the run itself
+    is about to be suspended. Beyond that default the async path parks too:
+    "poll for up to three days" is not a contract an agent can honour, and
+    on staging it cost a run and a CRA waiver
+    (execution e42c6086-f637-4d18-be09-2395c4d488ca).
     """
     payload: Dict[str, Any] = {
         "status": "parked_for_human",

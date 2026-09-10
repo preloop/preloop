@@ -16,6 +16,7 @@ from typing import Any, Mapping, Optional
 from preloop.services.event_webhooks import outbox
 from preloop.services.event_webhooks.events import (
     EVENT_APPROVAL_CREATED,
+    EVENT_CRA_REPORTABLE_VULNERABILITY,
     EVENT_APPROVAL_DECIDED,
     EVENT_BUDGET_EXCEEDED,
     EVENT_BUDGET_THRESHOLD,
@@ -466,3 +467,102 @@ def emit_flow_execution_finished(
         natural_key=f"{EVENT_FLOW_EXECUTION_FINISHED}:{execution_id}:{status}",
         subject_id=execution_id,
     )
+
+
+def _reporting_block(result: Any) -> Optional[Mapping[str, Any]]:
+    """Find the Article 14 block in a CRA result, whichever schema wrote it.
+
+    Preset 006 nests it under ``vuln_scan``; preset 005 writes it at the top
+    level. Anything else has no block and produces no events.
+    """
+    if not isinstance(result, Mapping):
+        return None
+    nested = result.get("vuln_scan")
+    if isinstance(nested, Mapping) and isinstance(nested.get("reporting"), Mapping):
+        return nested["reporting"]
+    block = result.get("reporting")
+    return block if isinstance(block, Mapping) else None
+
+
+def cra_reportable_vulnerability_data(
+    execution: Any,
+    flow: Any,
+    candidate: Mapping[str, Any],
+    reporting: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Body of ``cra.reportable_vulnerability``.
+
+    Carries the deadlines the run computed rather than recomputing them, so
+    the webhook and the evidence pack cannot disagree about when the clock
+    stops.
+    """
+    affected = candidate.get("affected")
+    deadlines = candidate.get("deadlines")
+    return {
+        "execution_id": _str(getattr(execution, "id", None)),
+        "flow_id": _str(getattr(flow, "id", None)),
+        "flow_name": getattr(flow, "name", None),
+        "cve": candidate.get("id"),
+        "actively_exploited": candidate.get("actively_exploited"),
+        "exploited_evidence": candidate.get("exploited_evidence"),
+        "affected": dict(affected) if isinstance(affected, Mapping) else None,
+        "vex_status": candidate.get("vex_status"),
+        "discovered_at": candidate.get("discovered_at"),
+        "deadlines": dict(deadlines) if isinstance(deadlines, Mapping) else None,
+        "status": candidate.get("status"),
+        "assessment": reporting.get("assessment"),
+        "kev_snapshot_date": reporting.get("kev_snapshot_date"),
+        "kev_source_url": reporting.get("kev_source_url"),
+        # Said in the payload, not just in the docs: a receiver automating
+        # on this event is automating a notification, not a filing.
+        "not_a_legal_determination": True,
+        "filing_is_manufacturer_responsibility": True,
+    }
+
+
+def emit_cra_reportable_vulnerabilities(db: Any, execution: Any, flow: Any) -> int:
+    """Enqueue one ``cra.reportable_vulnerability`` per reportable candidate.
+
+    Idempotent on (execution, cve): a re-emitted run collapses onto the same
+    deterministic event ids, so a receiver never sees the same clock twice.
+
+    Returns:
+        The number of candidates that produced an enqueue attempt.
+    """
+    from preloop.cra.reporting import reportable_candidates
+
+    execution_id = getattr(execution, "id", None)
+    if execution_id is None:
+        return 0
+    reporting = _reporting_block(getattr(execution, "result", None))
+    if reporting is None:
+        return 0
+    emitted = 0
+    for candidate in reportable_candidates(reporting):
+        cve = candidate.get("id")
+        if not isinstance(cve, str) or not cve.strip():
+            continue
+        cve = cve.strip()
+        outbox.enqueue_event(
+            db,
+            account_id=getattr(flow, "account_id", None),
+            event_type=EVENT_CRA_REPORTABLE_VULNERABILITY,
+            data=cra_reportable_vulnerability_data(
+                execution, flow, candidate, reporting
+            ),
+            # Awareness, not delivery time: the clock in the payload starts
+            # here, so the envelope timestamp has to agree with it.
+            occurred_at=_discovered_at(candidate)
+            or getattr(execution, "end_time", None),
+            natural_key=(f"{EVENT_CRA_REPORTABLE_VULNERABILITY}:{execution_id}:{cve}"),
+            subject_id=execution_id,
+        )
+        emitted += 1
+    return emitted
+
+
+def _discovered_at(candidate: Mapping[str, Any]) -> Optional[datetime]:
+    """Parse a candidate's discovery timestamp, or None."""
+    from preloop.cra.reporting import parse_timestamp
+
+    return parse_timestamp(candidate.get("discovered_at"))
