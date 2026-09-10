@@ -48,6 +48,7 @@ from preloop.api.endpoints import (
     kill_switch,
     mcp_servers,
     notification_preferences,
+    operator_notes,
     organizations,
     policies,
     projects,
@@ -1181,6 +1182,13 @@ def create_app() -> FastAPI:
             agent_permission.router,
             prefix="/api/v1",
             tags=["Agent Permissions"],
+        )
+        # Operator notes: authored on the console/CLI half (session auth), and
+        # pulled on the harness half (runtime bearer, authenticated in-route).
+        app.include_router(
+            operator_notes.router,
+            prefix="/api/v1",
+            tags=["Operator Notes"],
         )
 
         # Impersonation router - Enterprise feature (loaded via admin plugin)

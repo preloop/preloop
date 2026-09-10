@@ -78,6 +78,9 @@ def test_permission_check_accepts_source_opencode_and_stamps_marker(client, db_s
         "reason": "Approved via Preloop.",
         "request_id": "req-1",
         "timed_out": False,
+        # The hook carries operator notes back with the decision; this session
+        # has none, which is the common case and costs nothing.
+        "operator_note": None,
     }
     decide.assert_awaited_once()
     kwargs = decide.await_args.kwargs

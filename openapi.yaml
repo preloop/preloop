@@ -10839,6 +10839,174 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/operator-notes:
+    post:
+      tags:
+      - Operator Notes
+      - Operator Notes
+      summary: Create Operator Note
+      description: Send a note to a running agent, delivered at its next turn boundary.
+      operationId: create_operator_note_api_v1_operator_notes_post
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorNoteCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorNoteResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Operator Notes
+      - Operator Notes
+      summary: List Operator Notes
+      description: List notes for one agent, session or execution, newest first.
+      operationId: list_operator_notes_api_v1_operator_notes_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+      - name: runtime_session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Runtime Session Id
+      - name: execution_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Execution Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorNoteList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/operator-notes/{note_id}/cancel:
+    post:
+      tags:
+      - Operator Notes
+      - Operator Notes
+      summary: Cancel Operator Note
+      description: 'Withdraw a note that has not been delivered yet.
+
+
+        Cancelling is a state, never a delete. A delivered note cannot be unsent,
+
+        so this returns it unchanged and the caller can see why.'
+      operationId: cancel_operator_note_api_v1_operator_notes__note_id__cancel_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: note_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Note Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorNoteResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agents/notes/pending:
+    post:
+      tags:
+      - Operator Notes
+      - Operator Notes
+      summary: Pending Operator Notes
+      description: 'Hand a harness the notes its session has been given.
+
+
+        Claiming is the delivery: what this returns is marked delivered on the
+
+        named channel, audited and evented before it leaves. Call it from the hook
+
+        process, not from the model.'
+      operationId: pending_operator_notes_api_v1_agents_notes_pending_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorNotePendingRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorNotePendingResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/roles:
     get:
       tags:
@@ -12434,6 +12602,16 @@ components:
           - type: string
           - type: 'null'
           title: Request Id
+        operator_note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Operator Note
+          description: 'A pending operator note, rendered for the model, to surface
+            as additional context alongside this decision. Null when there is none,
+            which is almost always: the PreToolUse call the agent was making anyway
+            carries the note, so a note costs no extra round trip and no note costs
+            nothing at all.'
         timed_out:
           type: boolean
           title: Timed Out
@@ -19894,6 +20072,224 @@ components:
       - username
       - password
       title: OnboardingRequest
+    OperatorNoteAuthor:
+      properties:
+        user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: User Id
+        display:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Display
+        auth_method:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Auth Method
+      type: object
+      title: OperatorNoteAuthor
+      description: Who sent the note, as stamped into the delivered label.
+    OperatorNoteCreate:
+      properties:
+        text:
+          type: string
+          maxLength: 4096
+          minLength: 1
+          title: Text
+          description: What the agent should be told, as the author typed it.
+        agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+          description: Managed agent to steer, current or next session.
+        runtime_session_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Runtime Session Id
+          description: One runtime session, and only that session.
+        execution_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Execution Id
+          description: Flow execution, resolved to its live runtime session.
+        expires_in_seconds:
+          anyOf:
+          - type: integer
+            maximum: 604800.0
+            minimum: 60.0
+          - type: 'null'
+          title: Expires In Seconds
+          description: 'How long the note stays deliverable. Default 24 hours: an
+            undelivered note is stale advice, and expiring visibly beats rotting silently.'
+      type: object
+      required:
+      - text
+      title: OperatorNoteCreate
+      description: 'Send one note to a running agent, session or flow execution.
+
+
+        Exactly one target. A session id steers that conversation; an execution id
+
+        resolves to the session that execution is running on; an agent id with no
+
+        open session waits for the agent''s next one.'
+    OperatorNoteList:
+      properties:
+        notes:
+          items:
+            $ref: '#/components/schemas/OperatorNoteResponse'
+          type: array
+          title: Notes
+      type: object
+      title: OperatorNoteList
+      description: Notes for one agent, session or execution, newest first.
+    OperatorNotePendingRequest:
+      properties:
+        channel:
+          type: string
+          enum:
+          - gateway
+          - hook
+          - claude_channel
+          - claude_message
+          title: Channel
+          description: Which transport is about to carry the note.
+          default: hook
+        session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Id
+          description: Harness session id, for logging only.
+      type: object
+      title: OperatorNotePendingRequest
+      description: 'A harness-side pull for whatever this session has been told.
+
+
+        Called by a hook, a Claude Code channel server or an inbox bridge, never
+
+        by the model: an agent must not spend tokens deciding to check.'
+    OperatorNotePendingResponse:
+      properties:
+        notes:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Notes
+          description: 'Per note: id, the stored A2A envelope, the rendered element.'
+        text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Text
+          description: The framed block to hand the model verbatim as additional context.
+            Null when nothing is pending.
+        channel_event:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Channel Event
+          description: The same block shaped as a Claude Code channel notification,
+            so a channel server can forward it unchanged.
+      type: object
+      title: OperatorNotePendingResponse
+      description: Pending notes, rendered once for the model and once for a machine.
+    OperatorNoteResponse:
+      properties:
+        note_id:
+          type: string
+          title: Note Id
+        state:
+          type: string
+          enum:
+          - pending
+          - delivered
+          - acknowledged
+          - cancelled
+          - expired
+          - failed
+          title: State
+        text:
+          type: string
+          title: Text
+        managed_agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Managed Agent Id
+        runtime_session_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Runtime Session Id
+        author:
+          $ref: '#/components/schemas/OperatorNoteAuthor'
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+        delivered_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Delivered At
+        delivery_channel:
+          anyOf:
+          - type: string
+            enum:
+            - gateway
+            - hook
+            - claude_channel
+            - claude_message
+          - type: 'null'
+          title: Delivery Channel
+        delivered_turn_index:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Delivered Turn Index
+        acknowledged_turn_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Acknowledged Turn Id
+        cancelled_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Cancelled At
+      type: object
+      required:
+      - note_id
+      - state
+      - text
+      - author
+      title: OperatorNoteResponse
+      description: One note and everything the sender needs to know about its fate.
     OrganizationCreate:
       properties:
         name:
