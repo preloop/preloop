@@ -69,3 +69,12 @@ regexes = [
 [[allowlists]]
 description = "Synthetic payloads in the example-session generator"
 paths = ['''^scripts/generate_example_session\.py$''']
+
+# ---------------------------------------------------------------------------
+# Scanner baseline
+# ---------------------------------------------------------------------------
+# .gitleaksignore is a list of fingerprints. generic-api-key treats those
+# lines as credentials, so any commit that added one fails the history scan.
+[[allowlists]]
+description = "gitleaks fingerprint baseline"
+paths = ['''(^|/)\.gitleaksignore$''']
