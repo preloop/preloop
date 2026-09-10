@@ -273,7 +273,11 @@ class DoraExport:
 
     @property
     def sha256(self) -> str:
-        """Digest of the body exactly as served."""
+        """Digest of ``body`` (CSV bytes, or the JSON ``rows`` array).
+
+        For JSON the HTTP response wraps those rows in an envelope; the
+        served-file digest is computed at the endpoint from the envelope.
+        """
         return hashlib.sha256(self.body).hexdigest()
 
     @property
@@ -433,15 +437,29 @@ def render_rows(
     return canonical_manifest_json(list(rows))
 
 
+#: Spreadsheet formula prefixes. A register is opened in Excel/Sheets; a
+#: cell that starts with one of these is executed, not displayed.
+_CSV_FORMULA_PREFIXES = frozenset("=+-@\t\r")
+
+
 def _csv_cell(value: Any) -> str:
-    """One CSV cell. None is empty, a list is semicolon joined."""
+    """One CSV cell. None is empty, a list is semicolon joined.
+
+    Formula-leading characters are prefixed with a quote so a user-controlled
+    name or error message cannot become a spreadsheet formula. The column
+    set is unchanged; only the cell text is neutralized.
+    """
     if value is None:
         return ""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (list, tuple)):
-        return "; ".join(str(item) for item in value)
-    return str(value)
+        text = "; ".join(str(item) for item in value)
+    else:
+        text = str(value)
+    if text and text[0] in _CSV_FORMULA_PREFIXES:
+        return "'" + text
+    return text
 
 
 def _member_entry(name: str, body: bytes) -> dict[str, Any]:
@@ -1610,6 +1628,11 @@ def audit_dora_export(
     An export is a bulk read of an account's compliance record. Who took it,
     when, for what period, and the digest of what they got are exactly the
     questions asked afterwards.
+
+    A failed audit write is logged and rolled back; the file is still served.
+    That fail-open is deliberate: the caller was already authorised to take
+    the file, and a transient logging fault must not withhold it. The cost
+    is that a successful download can then exist with no audit row.
     """
     period = export.manifest.get("period") or {}
     try:

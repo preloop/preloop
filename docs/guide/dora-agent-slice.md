@@ -120,8 +120,10 @@ and the retention period export, so one verifier covers all of them:
 ```
 
 JSON exports carry the manifest in the body next to the `rows` it digests: a
-verifier can canonicalise the rows and recompute `members[0].sha256`. CSV
-cannot carry it in the body, so it travels in response headers:
+verifier can canonicalise the rows and recompute `members[0].sha256`. The
+`X-Preloop-Export-Sha256` header hashes that whole JSON envelope, which is the
+file as served; the CLI compares against it. CSV cannot carry the manifest in
+the body, so it travels in response headers:
 
 - `X-Preloop-Export-Sha256`: the digest of the file as served
 - `X-Preloop-Members-Digest`: the manifest's members digest

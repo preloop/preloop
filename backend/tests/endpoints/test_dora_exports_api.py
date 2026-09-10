@@ -95,6 +95,10 @@ class TestAssetRegisterEndpoint:
             hashlib.sha256(canonical_manifest_json(payload["rows"])).hexdigest()
             == member["sha256"]
         ), "the rows as served rehash to the member digest"
+        assert (
+            response.headers["X-Preloop-Export-Sha256"]
+            == hashlib.sha256(response.content).hexdigest()
+        ), "the header must hash the JSON envelope, not the rows member"
 
     def test_unknown_format_is_a_400(self, client, estate):
         response = client.get(ASSET_URL, params={"format": "pdf"})

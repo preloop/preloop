@@ -557,6 +557,14 @@ class TestIncidentCandidates:
 
 
 class TestRendering:
+    def test_csv_cell_prefixes_formula_characters(self):
+        for raw in ("=1+1", "+cmd", "-1+1", "@SUM(A1)", "\tcmd", "\rcmd"):
+            assert dora_exports._csv_cell(raw).startswith("'")
+        assert dora_exports._csv_cell("Payments agent") == "Payments agent"
+        assert dora_exports._csv_cell(["=1", "ok"]) == "'=1; ok"
+        assert dora_exports._csv_cell(None) == ""
+        assert dora_exports._csv_cell(True) == "true"
+
     def test_csv_header_matches_the_column_list(self, db_session, test_user, estate):
         export = build_asset_register(
             db_session, account=test_user.account, export_format="csv", generated_at=NOW
@@ -580,6 +588,18 @@ class TestRendering:
         }
         assert "; " in parsed["tool"]["attached_policies"]
         assert parsed["agent"]["last_config_change_at"] == ""
+
+    def test_csv_neutralizes_formula_leading_cells(self, db_session, test_user, estate):
+        estate["agent"].display_name = '=HYPERLINK("http://evil.example","x")'
+        db_session.commit()
+        export = build_asset_register(
+            db_session, account=test_user.account, export_format="csv", generated_at=NOW
+        )
+        parsed = {
+            row["record_type"]: row
+            for row in csv.DictReader(io.StringIO(export.body.decode("utf-8")))
+        }
+        assert parsed["agent"]["name"] == '\'=HYPERLINK("http://evil.example","x")'
 
     def test_incident_csv_columns(self, db_session, test_user, estate):
         export = build_incident_candidates(

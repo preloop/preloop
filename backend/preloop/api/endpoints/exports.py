@@ -12,6 +12,7 @@ export is called *candidates* (classification is the financial entity's).
 """
 
 import base64
+import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Optional
@@ -125,9 +126,16 @@ def _respond(export: DoraExport) -> Response:
     bytes that were hashed) for a verifier that wants all of it.
     """
     manifest = export.manifest
+    if export.export_format == "csv":
+        body = export.body
+    else:
+        # JSON serves the {manifest, rows} envelope; the member digest still
+        # covers ``rows`` alone. The header must hash the bytes actually sent
+        # or the CLI's local recompute warns on every JSON export.
+        body = canonical_manifest_json(json_envelope(export))
     headers = {
         "Content-Disposition": f'attachment; filename="{export.filename}"',
-        "X-Preloop-Export-Sha256": export.sha256,
+        "X-Preloop-Export-Sha256": hashlib.sha256(body).hexdigest(),
         "X-Preloop-Members-Digest": str(manifest.get("members_digest") or ""),
         "X-Preloop-Export-Rows": str(len(export.rows)),
         "X-Preloop-Export-Edition": str(
@@ -138,9 +146,6 @@ def _respond(export: DoraExport) -> Response:
         headers["X-Preloop-Export-Manifest"] = base64.b64encode(
             canonical_manifest_json(manifest)
         ).decode("ascii")
-        body = export.body
-    else:
-        body = canonical_manifest_json(json_envelope(export))
     return Response(content=body, media_type=export.media_type, headers=headers)
 
 

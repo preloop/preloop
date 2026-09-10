@@ -124,6 +124,30 @@ func TestExportAssetRegisterWritesTheBytesItReceived(t *testing.T) {
 	}
 }
 
+func TestExportJSONDoesNotWarnWhenHeaderMatchesTheEnvelope(t *testing.T) {
+	testenv.SetTempHome(t)
+	body := []byte(`{"manifest":{"members_digest":"abc"},"rows":[{"record_type":"agent"}]}`)
+	server := newExportServer(t, body)
+	server.contentType = "application/json"
+	sum := sha256.Sum256(body)
+	server.extra["X-Preloop-Export-Sha256"] = hex.EncodeToString(sum[:])
+	server.extra["X-Preloop-Members-Digest"] = "abc"
+
+	stdout, stderr, err := runExportCommand(t, "asset-register", "--format", "json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(stdout) != string(body) {
+		t.Fatalf("stdout must be the JSON envelope byte for byte, got %q", stdout)
+	}
+	if strings.Contains(stderr, "changed in transit") {
+		t.Fatalf("matching envelope digest must not warn, got %q", stderr)
+	}
+	if !strings.Contains(stderr, "sha256: "+hex.EncodeToString(sum[:])) {
+		t.Fatalf("the digest belongs on stderr, got %q", stderr)
+	}
+}
+
 func TestExportWarnsWhenTheFileChangedInTransit(t *testing.T) {
 	testenv.SetTempHome(t)
 	server := newExportServer(t, []byte("record_type\r\n"))
