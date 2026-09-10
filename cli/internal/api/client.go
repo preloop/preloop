@@ -304,14 +304,14 @@ func (c *Client) doWithBodyAndHeaders(
 	extraHeaders map[string]string,
 	result interface{},
 ) error {
-	statusCode, responseBody, err := c.executeRequest(method, path, bodyBytes, contentType, extraHeaders)
+	statusCode, responseBody, _, err := c.executeRequest(method, path, bodyBytes, contentType, extraHeaders)
 	if err != nil {
 		return err
 	}
 
 	if statusCode == http.StatusUnauthorized && c.refreshEnabled && path != "/oauth/token" {
 		if refreshErr := c.RefreshAccessToken(); refreshErr == nil {
-			statusCode, responseBody, err = c.executeRequest(
+			statusCode, responseBody, _, err = c.executeRequest(
 				method,
 				path,
 				bodyBytes,
@@ -346,7 +346,7 @@ func (c *Client) executeRequest(
 	bodyBytes []byte,
 	contentType string,
 	extraHeaders map[string]string,
-) (int, []byte, error) {
+) (int, []byte, http.Header, error) {
 	url := strings.TrimRight(c.baseURL, "/") + path
 
 	var bodyReader io.Reader
@@ -356,13 +356,15 @@ func (c *Client) executeRequest(
 
 	req, err := http.NewRequest(method, url, bodyReader)
 	if err != nil {
-		return 0, nil, fmt.Errorf("failed to create request: %w", err)
+		return 0, nil, nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// Apply extra headers FIRST so the canonical headers below win on
 	// conflict. This is what protects callers from accidentally
-	// overriding Content-Type / Accept / Authorization with stale values
-	// passed in from upstream code paths.
+	// overriding Content-Type / Authorization with stale values passed in
+	// from upstream code paths. Accept is the one exception: an endpoint
+	// that serves a file needs to ask for that file's media type, so a
+	// caller-supplied Accept stands.
 	for key, value := range extraHeaders {
 		req.Header.Set(key, value)
 	}
@@ -370,7 +372,9 @@ func (c *Client) executeRequest(
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	req.Header.Set("Accept", "application/json")
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "application/json")
+	}
 	version.SetClientIdentityHeaders(req.Header)
 
 	if c.token != "" {
@@ -379,16 +383,52 @@ func (c *Client) executeRequest(
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("request failed: %w", err)
+		return 0, nil, nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, nil, fmt.Errorf("failed to read response body: %w", err)
+		return 0, nil, nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	return resp.StatusCode, responseBody, nil
+	return resp.StatusCode, responseBody, resp.Header, nil
+}
+
+// GetFile performs a GET and hands back the body and the response headers
+// untouched.
+//
+// The JSON helpers above decode into a struct, which is wrong for an endpoint
+// that serves a file: a CSV export must reach disk byte for byte or the digest
+// that travels with it stops matching. The headers come back too because that
+// is where such an endpoint puts its manifest and its digests.
+func (c *Client) GetFile(path, accept string) ([]byte, http.Header, error) {
+	extraHeaders := map[string]string{}
+	if accept != "" {
+		extraHeaders["Accept"] = accept
+	}
+	// Empty content type: a GET has no body to describe, and the standard
+	// Accept header must not overwrite the one asked for here.
+	statusCode, body, header, err := c.executeRequest(http.MethodGet, path, nil, "", extraHeaders)
+	if err != nil {
+		return nil, nil, err
+	}
+	if statusCode == http.StatusUnauthorized && c.refreshEnabled {
+		if refreshErr := c.RefreshAccessToken(); refreshErr == nil {
+			statusCode, body, header, err = c.executeRequest(http.MethodGet, path, nil, "", extraHeaders)
+			if err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+	if statusCode < 200 || statusCode >= 300 {
+		return nil, header, &APIError{
+			StatusCode:        statusCode,
+			Body:              string(body),
+			SuppressLoginHint: c.gatewayProbe,
+		}
+	}
+	return body, header, nil
 }
 
 type oauthTokenResponse struct {
@@ -405,7 +445,7 @@ func (c *Client) RefreshAccessToken() error {
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", c.refreshToken)
 
-	statusCode, responseBody, err := c.executeRequest(
+	statusCode, responseBody, _, err := c.executeRequest(
 		http.MethodPost,
 		"/oauth/token",
 		[]byte(form.Encode()),

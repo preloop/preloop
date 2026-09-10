@@ -19,9 +19,17 @@ from preloop.utils.workspace_seed import (
     WorkspaceSeedError,
     WorkspaceSeedFile,
     parse_workspace_files,
+    workspace_seed_payload,
 )
 
 PRODUCT_PROVENANCE_SCHEMA = "preloop.cra.product_provenance/v1"
+# Key on the trigger body carrying the mapping, accepted inside ``payload``
+# or beside it (the same rule as ``workspace_files``, its usual neighbour).
+PRODUCT_PROVENANCE_KEY = "product_provenance"
+# Where the accepted body shape is written down. Every contract error names
+# it, because the round-2 dogfood run showed that a message stating what is
+# wrong without stating what is right costs a whole execution to act on.
+PRODUCT_PROVENANCE_DOC = "docs/guide/flows/product-evidence.md"
 _GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _RELEASE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+/-]{0,127}$")
@@ -47,6 +55,40 @@ class MismatchedProductMappingError(ProductProvenanceError):
 
 class UnauthorizedProductMappingError(ProductProvenanceError):
     """The mapping names a repository outside the authorized account set."""
+
+
+def _contract_error(
+    message: str,
+    key: str,
+    *,
+    error_class: type[ProductProvenanceError] = ProductProvenanceError,
+) -> ProductProvenanceError:
+    """Build a mapping error that says what is wrong and where the rule is.
+
+    Three facts, always: the schema the body claims to satisfy, the key that
+    broke the contract, and the page that documents the accepted shape. A
+    caller reading "product mapping must list constituent repositories with
+    exact SHAs" cannot tell which of the schema, the key or the flow config is
+    at fault, and on staging that ambiguity was paid for one execution at a
+    time.
+    """
+    return error_class(
+        f"{message} (schema {PRODUCT_PROVENANCE_SCHEMA}, key {key!r}; "
+        f"see {PRODUCT_PROVENANCE_DOC})"
+    )
+
+
+def _as_contract(exc: ProductProvenanceError, key: str) -> ProductProvenanceError:
+    """Re-wrap a bare mapping error so it names schema, key and doc.
+
+    Sub-validators (``normalize_repository_url``, ``clone_path_slug``,
+    ``_require_git_sha``) are also used against runtime facts, so they raise
+    a short message. Shape validation catches them here and adds the
+    contract suffix the trigger returns to the caller.
+    """
+    if PRODUCT_PROVENANCE_DOC in str(exc):
+        return exc
+    return _contract_error(str(exc), key, error_class=type(exc))
 
 
 @dataclass(frozen=True)
@@ -202,13 +244,17 @@ def sha256_digest(data: bytes) -> str:
 def parse_sbom_digest(value: Any) -> str:
     """Require an explicit SHA-256 digest, never a truncated or git SHA."""
     if not isinstance(value, str) or not value.strip():
-        raise ProductProvenanceError("SBOM digest is required in product mapping")
+        raise _contract_error(
+            "SBOM digest is required in product mapping", "sbom.digest"
+        )
     raw = value.strip().lower()
     if raw.startswith("sha256:"):
         raw = raw[7:]
     if not _SHA256.fullmatch(raw):
-        raise MismatchedProductMappingError(
-            "SBOM digest must be sha256:<64 hex>; git SHAs are not SBOM digests"
+        raise _contract_error(
+            "SBOM digest must be sha256:<64 hex>; git SHAs are not SBOM digests",
+            "sbom.digest",
+            error_class=MismatchedProductMappingError,
         )
     return f"sha256:{raw}"
 
@@ -216,13 +262,24 @@ def parse_sbom_digest(value: Any) -> str:
 def extract_product_provenance_payload(
     trigger_event_data: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Read optional mapping from a trigger payload. Missing is legacy mode."""
+    """Read optional mapping from a trigger payload. Missing is legacy mode.
+
+    The top-level fallback used to fire only when ``payload`` was absent or
+    not a mapping, so the shape design partners actually send,
+    ``{"payload": {...}, "product_provenance": {...}}``, was ignored: the
+    nested payload existed, so the top level was never consulted. The rule is
+    now the same one :func:`workspace_seed_payload` applies to its sibling
+    key: inside ``payload`` first, then beside it.
+    """
     if not isinstance(trigger_event_data, Mapping):
         return None
     payload = trigger_event_data.get("payload")
-    if not isinstance(payload, Mapping):
-        payload = trigger_event_data
-    mapping = payload.get("product_provenance")
+    if not isinstance(payload, Mapping) or PRODUCT_PROVENANCE_KEY not in payload:
+        if PRODUCT_PROVENANCE_KEY in trigger_event_data:
+            payload = trigger_event_data
+        elif not isinstance(payload, Mapping):
+            payload = trigger_event_data
+    mapping = payload.get(PRODUCT_PROVENANCE_KEY)
     if mapping is None:
         return None
     if not isinstance(mapping, dict):
@@ -238,10 +295,8 @@ def facts_from_workspace_files(
     """Hash a supplied workspace seed file when the mapping names one."""
     if not isinstance(trigger_event_data, Mapping):
         return None, None
-    payload = trigger_event_data.get("payload")
-    if not isinstance(payload, Mapping):
-        payload = trigger_event_data
     try:
+        payload = workspace_seed_payload(dict(trigger_event_data))
         files = parse_workspace_files(dict(payload) if payload else None)
     except WorkspaceSeedError:
         return None, None
@@ -342,7 +397,9 @@ def _parse_identity(mapping: Mapping[str, Any]) -> ProductIdentity:
         name = ""
         product_id = None
     if not name:
-        raise ProductProvenanceError("product.name is required in product mapping")
+        raise _contract_error(
+            "product.name is required in product mapping", "product.name"
+        )
     release = mapping.get("release") or mapping.get("supported_release")
     if isinstance(release, str) and release.strip():
         identifier = release.strip()
@@ -355,8 +412,9 @@ def _parse_identity(mapping: Mapping[str, Any]) -> ProductIdentity:
         identifier = ""
         channel = None
     if not identifier or not _RELEASE_ID.fullmatch(identifier):
-        raise ProductProvenanceError(
-            "release.identifier is required and must be a stable supported-release id"
+        raise _contract_error(
+            "release.identifier is required and must be a stable supported-release id",
+            "release.identifier",
         )
     build = mapping.get("build")
     build_id = None
@@ -374,8 +432,9 @@ def _parse_identity(mapping: Mapping[str, Any]) -> ProductIdentity:
                 or parsed.username
                 or parsed.password
             ):
-                raise ProductProvenanceError(
-                    "build.url must be a credential-free http(s) URL when present"
+                raise _contract_error(
+                    "build.url must be a credential-free http(s) URL when present",
+                    "build.url",
                 )
             build_url = str(raw_url)
     return ProductIdentity(
@@ -391,11 +450,27 @@ def _parse_identity(mapping: Mapping[str, Any]) -> ProductIdentity:
 def _parse_mapping_repositories(
     mapping: Mapping[str, Any],
 ) -> list[dict[str, str]]:
+    """Parse ``repositories[]``. Absent or empty means an SBOM-only mapping.
+
+    ``repositories`` used to be mandatory, which made the mapping unusable on
+    exactly the flows it was written for: an SBOM-only audit (preset 004 ships
+    ``git_clone_config: null``) has no constituent repositories to name, and
+    naming any was separately rejected as unauthorized. So both branches
+    failed and there was no accepted body at all. The contract is now the one
+    the doc page states: repositories when the flow clones them, otherwise an
+    SBOM digest, and at least one of the two.
+    """
     rows = mapping.get("repositories")
-    if not isinstance(rows, list) or not rows:
-        raise ProductProvenanceError(
-            "product mapping must list constituent repositories with exact SHAs"
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        raise _contract_error(
+            "product mapping 'repositories' must be a list of "
+            "{remote, sha, clone_path} objects when present",
+            "repositories",
         )
+    if not rows:
+        return []
     parsed: list[dict[str, str]] = []
     seen_remote: set[str] = set()
     seen_path: set[str] = set()
@@ -403,29 +478,49 @@ def _parse_mapping_repositories(
     compliance = 0
     for row in rows:
         if not isinstance(row, Mapping):
-            raise ProductProvenanceError("repositories[] entries must be objects")
-        remote = normalize_repository_url(
-            str(row.get("remote") or row.get("repository_url") or "")
-        )
-        sha = _require_git_sha(
-            row.get("sha") or row.get("commit") or row.get("head_sha")
-        )
-        path = clone_path_slug(str(row.get("clone_path") or row.get("path") or ""))
+            raise _contract_error(
+                "product mapping 'repositories' entries must be objects",
+                "repositories",
+            )
+        try:
+            remote = normalize_repository_url(
+                str(row.get("remote") or row.get("repository_url") or "")
+            )
+        except ProductProvenanceError as exc:
+            raise _as_contract(exc, "repositories.remote") from exc
+        try:
+            sha = _require_git_sha(
+                row.get("sha") or row.get("commit") or row.get("head_sha")
+            )
+        except ProductProvenanceError as exc:
+            raise _as_contract(exc, "repositories.sha") from exc
+        try:
+            path = clone_path_slug(str(row.get("clone_path") or row.get("path") or ""))
+        except ProductProvenanceError as exc:
+            raise _as_contract(exc, "repositories.clone_path") from exc
         role = str(row.get("role") or "code").strip().lower()
         if role not in _ROLES:
-            raise ProductProvenanceError("repository role must be code or compliance")
+            raise _contract_error(
+                "repository role must be code or compliance", "repositories.role"
+            )
         if remote in seen_remote:
-            raise DuplicateProductMappingError(
-                "product mapping lists the same remote more than once"
+            raise _contract_error(
+                "product mapping lists the same remote more than once",
+                "repositories",
+                error_class=DuplicateProductMappingError,
             )
         if path in seen_path:
-            raise DuplicateProductMappingError(
-                "product mapping lists the same clone_path more than once"
+            raise _contract_error(
+                "product mapping lists the same clone_path more than once",
+                "repositories",
+                error_class=DuplicateProductMappingError,
             )
         pair = (remote, sha)
         if pair in seen_pair:
-            raise DuplicateProductMappingError(
-                "product mapping repeats the same remote+SHA pair"
+            raise _contract_error(
+                "product mapping repeats the same remote+SHA pair",
+                "repositories",
+                error_class=DuplicateProductMappingError,
             )
         seen_remote.add(remote)
         seen_path.add(path)
@@ -434,10 +529,67 @@ def _parse_mapping_repositories(
             compliance += 1
         parsed.append({"remote": remote, "sha": sha, "clone_path": path, "role": role})
     if compliance > 1:
-        raise AmbiguousProductMappingError(
-            "product mapping names more than one compliance repository"
+        raise _contract_error(
+            "product mapping names more than one compliance repository",
+            "repositories.role",
+            error_class=AmbiguousProductMappingError,
         )
     return parsed
+
+
+def validate_mapping_shape(
+    mapping: Mapping[str, Any],
+) -> tuple[ProductIdentity, list[dict[str, str]], str | None, str | None]:
+    """Validate everything about a mapping that the body alone decides.
+
+    This is the half of :func:`validate_product_provenance` that needs no
+    runtime facts: schema, identity, ``repositories[]``, the SBOM digest and
+    path, and the rule that ties them together. Splitting it out lets the
+    trigger endpoint reject a malformed mapping with a 4xx, before an
+    execution row exists.
+
+    That split is the whole point. The mapping used to be validated only
+    inside the orchestrator, so a body the platform was always going to
+    refuse still created an execution, moved it to FAILED, notified on it and
+    put a red row in the flow's history: on staging, 42b9d159 burned an
+    execution to deliver a validation message. Shape errors belong to the
+    request, so the request is what carries them, the same way the
+    ``workspace_files`` budget check does.
+
+    Returns:
+        ``(identity, repositories, sbom_digest, sbom_path)``, all parsed and
+        normalized, for the caller to check against runtime facts.
+    """
+    schema = mapping.get("schema") or PRODUCT_PROVENANCE_SCHEMA
+    if schema != PRODUCT_PROVENANCE_SCHEMA:
+        raise _contract_error(
+            f"Unsupported product provenance schema {schema!r}", "schema"
+        )
+    identity = _parse_identity(mapping)
+    declared = _parse_mapping_repositories(mapping)
+
+    raw_sbom = mapping.get("sbom")
+    sbom_block: Mapping[str, Any] = raw_sbom if isinstance(raw_sbom, Mapping) else {}
+    declared_digest = None
+    if mapping.get("sbom_digest"):
+        declared_digest = parse_sbom_digest(mapping.get("sbom_digest"))
+    elif sbom_block.get("digest"):
+        declared_digest = parse_sbom_digest(sbom_block.get("digest"))
+    declared_path = None
+    if isinstance(sbom_block.get("path"), str) and sbom_block["path"].strip():
+        declared_path = sbom_block["path"].strip()
+
+    # A mapping has to bind the evidence to something. Repositories bind it to
+    # source, an SBOM digest binds it to a built artifact, and a mapping with
+    # neither names a product without identifying it, which is not provenance.
+    if not declared and declared_digest is None:
+        raise _contract_error(
+            "product mapping must identify the product: list 'repositories' "
+            "with exact SHAs, or, for an SBOM-only flow with no git clone "
+            "config, give 'sbom.digest' as sha256:<64 hex>",
+            "sbom.digest",
+        )
+    return identity, declared, declared_digest, declared_path
 
 
 def validate_product_provenance(
@@ -467,17 +619,12 @@ def validate_product_provenance(
     """
     if mapping is None:
         if require_mapping:
-            raise ProductProvenanceError(
-                "Product-mode audit requires an explicit product_provenance mapping"
+            raise _contract_error(
+                "Product-mode audit requires an explicit product_provenance mapping",
+                PRODUCT_PROVENANCE_KEY,
             )
         return None
-    schema = mapping.get("schema") or PRODUCT_PROVENANCE_SCHEMA
-    if schema != PRODUCT_PROVENANCE_SCHEMA:
-        raise ProductProvenanceError(
-            f"Unsupported product provenance schema {schema!r}"
-        )
-    identity = _parse_identity(mapping)
-    declared = _parse_mapping_repositories(mapping)
+    identity, declared, declared_digest, declared_path = validate_mapping_shape(mapping)
     authorized = {normalize_repository_url(item) for item in facts.authorized_remotes}
     authorized_paths = set(facts.clone_paths)
     if authorized:
@@ -498,20 +645,14 @@ def validate_product_provenance(
                 "product mapping clone_path set does not match git_clone_config"
             )
     elif declared:
-        raise UnauthorizedProductMappingError(
-            "product mapping names repositories but this flow has none authorized"
+        raise _contract_error(
+            "product mapping names repositories but this flow clones none; "
+            "either configure git_clone_config or drop 'repositories' and "
+            "identify the product by its SBOM digest",
+            "repositories",
+            error_class=UnauthorizedProductMappingError,
         )
 
-    raw_sbom = mapping.get("sbom")
-    sbom_block: Mapping[str, Any] = raw_sbom if isinstance(raw_sbom, Mapping) else {}
-    declared_digest = None
-    if mapping.get("sbom_digest"):
-        declared_digest = parse_sbom_digest(mapping.get("sbom_digest"))
-    elif sbom_block.get("digest"):
-        declared_digest = parse_sbom_digest(sbom_block.get("digest"))
-    declared_path = None
-    if isinstance(sbom_block.get("path"), str) and sbom_block["path"].strip():
-        declared_path = sbom_block["path"].strip()
     artifact_bytes = facts.sbom_bytes
     artifact_path = facts.sbom_path
     if declared_path and artifact_path and declared_path != artifact_path:

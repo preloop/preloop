@@ -541,3 +541,81 @@ class TestServiceLogHygiene:
             ):
                 logger._try_extract_mcp_call(f"Calling srv/tool {self.PAT}")
         assert self.PAT not in caplog.text
+
+
+class TestRunnerMcpMarkers:
+    """The runner's own "mcp: server/tool started" marker is a tool call.
+
+    Round 2 of the CRA rerun finished with tool_calls_count 0 on an execution
+    whose logs contained "mcp: preloop/ask_user started". None of the parser's
+    patterns matched that shape, so the audit trail's headline number said the
+    run used no governed tools at all.
+    """
+
+    def test_started_marker_is_counted(self):
+        logger = FlowExecutionLogger()
+
+        logger.parse_agent_logs(["mcp: preloop/ask_user started"])
+
+        assert len(logger.mcp_usage_logs) == 1
+        assert logger.mcp_usage_logs[0]["server_name"] == "preloop"
+        assert logger.mcp_usage_logs[0]["tool_name"] == "ask_user"
+        assert logger.mcp_usage_logs[0]["status"] == "detected"
+
+    def test_completion_marker_does_not_double_count(self):
+        """One call prints two lines. It is still one call."""
+        logger = FlowExecutionLogger()
+
+        logger.parse_agent_logs(
+            [
+                "mcp: preloop/ask_user started",
+                "mcp: preloop/ask_user (completed)",
+            ]
+        )
+
+        assert len(logger.mcp_usage_logs) == 1
+
+    def test_every_distinct_call_is_counted(self):
+        """The four calls the round 2 release audit actually made."""
+        logger = FlowExecutionLogger()
+
+        logger.parse_agent_logs(
+            [
+                "mcp: codex/list_mcp_resources started",
+                "mcp: codex/list_mcp_resources (completed)",
+                "mcp: codex/list_mcp_resource_templates started",
+                "mcp: codex/list_mcp_resource_templates (completed)",
+                "mcp: preloop/ask_user started",
+                "mcp: preloop/ask_user (completed)",
+                "mcp: preloop/resolve_sbom_upstreams started",
+                "mcp: preloop/resolve_sbom_upstreams (completed)",
+            ]
+        )
+
+        assert len(logger.mcp_usage_logs) == 4
+        assert [entry["tool_name"] for entry in logger.mcp_usage_logs] == [
+            "list_mcp_resources",
+            "list_mcp_resource_templates",
+            "ask_user",
+            "resolve_sbom_upstreams",
+        ]
+
+    def test_timestamped_line_is_counted(self):
+        """Runners prefix their lines; the marker is not anchored to column 0."""
+        logger = FlowExecutionLogger()
+
+        logger.parse_agent_logs(["[2026-09-09T10:00:00] mcp: preloop/ask_user started"])
+
+        assert len(logger.mcp_usage_logs) == 1
+
+    def test_a_line_about_mcp_is_not_a_call(self):
+        logger = FlowExecutionLogger()
+
+        logger.parse_agent_logs(
+            [
+                "mcp: preloop/ask_user is configured",
+                "no mcp servers started",
+            ]
+        )
+
+        assert logger.mcp_usage_logs == []

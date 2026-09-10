@@ -90,9 +90,9 @@ dependencies = [
     "firebase-admin>=6.0.0",  # For Android FCM push notifications
     # Gateway upstream + cost engine. The floor matches the streaming-usage and
     # register_model semantics the gateway accounting relies on (verified on
-    # 1.81.x); the ceiling guards those internals — bump deliberately with the
-    # gateway streaming tests.
-    "litellm>=1.81.13,<1.100",
+    # 1.81.x and 1.100.x); the ceiling guards those internals — bump
+    # deliberately with the gateway streaming tests.
+    "litellm>=1.81.13,<1.101",
     "boto3>=1.34.0",  # For AWS Bedrock support through litellm
     "webauthn>=2.0.0",  # WebAuthn passkey registration/authentication ceremonies
     "opentelemetry-api>=1.27.0",

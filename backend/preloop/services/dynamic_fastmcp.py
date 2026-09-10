@@ -782,7 +782,8 @@ async def {internal_name}({params_str}) -> str:
 
     # Call external MCP server
     try:
-        db = next(get_db())
+        db_dependency = get_db()
+        db = next(db_dependency)
         try:
             # Use CRUD layer to get MCP server
             mcp_server = crud_mcp_server.get(db, id=server_id, account_id=account_id)
@@ -790,15 +791,19 @@ async def {internal_name}({params_str}) -> str:
             if not mcp_server:
                 return f"Error: MCP server {{server_id}} not found"
 
-            # Get client from pool
+            # Snapshot configuration before releasing the database connection.
+            # Connecting, approvals and remote tools can wait indefinitely.
+            server_name = mcp_server.name
+            client_config = {{
+                "server_id": server_id,
+                "url": mcp_server.url,
+                "auth_type": mcp_server.auth_type,
+                "auth_config": mcp_server.auth_config,
+                "transport": mcp_server.transport,
+            }}
+            db.close()
             client_pool = get_mcp_client_pool()
-            client = await client_pool.get_client(
-                server_id=server_id,
-                url=mcp_server.url,
-                auth_type=mcp_server.auth_type,
-                auth_config=mcp_server.auth_config,
-                transport=mcp_server.transport,
-            )
+            client = await client_pool.get_client(**client_config)
 
             # Approval and connection setup may outlive the initial halt check.
             denial = await self._halt_dispatch_denial(account_id)
@@ -817,7 +822,7 @@ async def {internal_name}({params_str}) -> str:
                     result,
                     account_id=account_id,
                     tool_name=tool_name,
-                    server_name=getattr(mcp_server, "name", None),
+                    server_name=server_name,
                     managed_agent_id=getattr(
                         user_context, "managed_agent_id", None
                     ),

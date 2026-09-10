@@ -333,6 +333,47 @@ def test_should_capture_callsite_at_half_of_size_and_overflow() -> None:
     assert diagnostics._should_capture_callsite(pool)
 
 
+def test_oldest_unsampled_holds_do_not_hide_sampled_acquisitions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A full pool reports attribution even when its oldest holds predate pressure."""
+    monkeypatch.delenv("DB_POOL_HOLD_DIAGNOSTICS", raising=False)
+    pool_engine = create_engine(
+        "sqlite://", poolclass=QueuePool, pool_size=16, max_overflow=0
+    )
+    diagnostics.install_pool_hold_diagnostics(pool_engine)
+    namespace: dict[str, Any] = {"engine": pool_engine}
+    exec(
+        compile(
+            "def acquire():\n    return engine.connect()\n",
+            str(Path(diagnostics._PACKAGE_ROOT) / "services" / "sample_provider.py"),
+            "exec",
+        ),
+        namespace,
+    )
+    connections = []
+    try:
+        connections = [namespace["acquire"]() for _ in range(16)]
+        snapshot = diagnostics.collect_pool_holds(pool_engine)
+        assert len(snapshot["oldest"]) == diagnostics.MAX_REPORTED_HOLDS
+        assert all(not hold["acquired_at"] for hold in snapshot["oldest"])
+        attributed = snapshot["oldest_attributed"]
+        assert len(attributed) == diagnostics.MAX_REPORTED_HOLDS
+        assert all(
+            "services/sample_provider.py:acquire:2" in hold["acquired_at"]
+            for hold in attributed
+        )
+        assert all(
+            first["held_seconds"] >= second["held_seconds"]
+            for first, second in zip(attributed, attributed[1:], strict=False)
+        )
+    finally:
+        for connection in connections:
+            connection.close()
+        pool_engine.dispose()
+    assert diagnostics.collect_pool_holds(pool_engine)["oldest_attributed"] == []
+
+
 def test_dispose_during_capture_cannot_reinsert_old_hold(engine: Engine) -> None:
     tracker = getattr(engine, diagnostics._ATTRIBUTE)
     old_record = object()

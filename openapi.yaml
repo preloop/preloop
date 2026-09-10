@@ -4468,6 +4468,111 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/exports/asset-register:
+    get:
+      tags:
+      - DORA Exports
+      summary: Export Asset Register
+      description: 'The account''s agent-slice ICT assets as one flat register.
+
+
+        Feeds an Art. 8 asset inventory and the ICT-service lines of an Art. 28
+
+        register of information. It is an input to those documents, not either of
+
+        them: Preloop knows the agents, tools, MCP servers, models, providers and
+
+        runner hosts, and nothing else in the estate.'
+      operationId: export_asset_register_api_v1_exports_asset_register_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: format
+        in: query
+        required: false
+        schema:
+          type: string
+          description: csv or json
+          default: csv
+          title: Format
+        description: csv or json
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/exports/incident-candidates:
+    get:
+      tags:
+      - DORA Exports
+      summary: Export Incident Candidates
+      description: 'Everything in the period that might need classifying under Art.
+        17.
+
+
+        Candidates, not incidents. Preloop reports what its own records show
+
+        (failed executions, kill-switch activations, policy denies where a
+
+        deployment persists them, budget denials, gateway upstream failures) with
+
+        timestamps, correlation ids and the affected agent. Whether any of it is
+
+        an ICT-related incident, and whether that incident is major, is the
+
+        financial entity''s determination under Art. 17 to 19.'
+      operationId: export_incident_candidates_api_v1_exports_incident_candidates_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Start of the period, inclusive
+          title: From
+        description: Start of the period, inclusive
+      - name: to
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: End of the period, exclusive
+          title: To
+        description: End of the period, exclusive
+      - name: format
+        in: query
+        required: false
+        schema:
+          type: string
+          description: csv or json
+          default: csv
+          title: Format
+        description: csv or json
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/event-webhooks/catalogue:
     get:
       tags:
@@ -9007,78 +9112,6 @@ paths:
         schema:
           type: string
           title: Organization Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-      security:
-      - bearerAuth: []
-  /api/v1/flows/executions/{execution_id}/artifacts:
-    put:
-      tags:
-      - Flow artifacts
-      summary: Upload Artifact
-      description: Read a bounded gzip archive and commit only after complete validation.
-      operationId: upload_artifact_api_v1_flows_executions__execution_id__artifacts_put
-      parameters:
-      - name: execution_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Execution Id
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          type: string
-          default: ''
-          title: Authorization
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ArtifactReference'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-      security:
-      - bearerAuth: []
-    get:
-      tags:
-      - Flow artifacts
-      summary: Download Artifact
-      description: Download the one immutable reference named by a scoped capability.
-      operationId: download_artifact_api_v1_flows_executions__execution_id__artifacts_get
-      parameters:
-      - name: execution_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Execution Id
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          type: string
-          default: ''
-          title: Authorization
       responses:
         '200':
           description: Successful Response
@@ -14349,40 +14382,6 @@ components:
       type: object
       title: ApprovalWorkflowUpdate
       description: Schema for updating approval workflow.
-    ArtifactReference:
-      properties:
-        version:
-          type: integer
-          const: 1
-          title: Version
-          default: 1
-        artifact_id:
-          type: string
-          format: uuid
-          title: Artifact Id
-        execution_id:
-          type: string
-          format: uuid
-          title: Execution Id
-        storage_kind:
-          type: string
-          enum:
-          - hosted
-          - runner_local
-          title: Storage Kind
-          default: hosted
-        manifest_sha256:
-          type: string
-          pattern: ^[a-f0-9]{64}$
-          title: Manifest Sha256
-      additionalProperties: false
-      type: object
-      required:
-      - artifact_id
-      - execution_id
-      - manifest_sha256
-      title: ArtifactReference
-      description: Opaque reference; authorization is checked on every retrieval.
     AttentionDismissalListResponse:
       properties:
         items:

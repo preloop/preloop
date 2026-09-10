@@ -23,6 +23,17 @@ _ROLLUP_DECIMALS = 4
 TOOL_CALL_LOG_TYPES = ("tool_call", "mcp_call")
 
 
+def _as_count(value: Any) -> int:
+    """Read a count that may be NULL or absent as 0, never as a crash.
+
+    A missing rollup and an unrecorded aggregate both mean "this source knows
+    of no calls", which is a floor of zero, not an error.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
+
+
 def sync_execution_cost_rollup(db: Session, execution_id: str) -> bool:
     """Recompute ``flow_execution.estimated_cost`` from attributed usage rows.
 
@@ -371,7 +382,20 @@ class ExecutionMetricsService:
         return crud_api_usage.get_gateway_usage_for_execution(self.db, execution.id)
 
     def _count_tool_calls(self, execution: models.FlowExecution) -> int:
-        """Count tool calls from execution logs.
+        """Count tool calls for one execution, the way the list view counts them.
+
+        Three sources, because no single one sees every call:
+
+        - the JSONB MCP log and the normalized log entries, both written from
+          the agent's own output;
+        - the tool-call activity the Preloop MCP server recorded against this
+          execution, which exists even when the agent printed nothing the log
+          parser recognized;
+        - the rollup column the orchestrator wrote, which is a floor.
+
+        The largest wins, matching :func:`get_execution_totals`. Reading only
+        the parsed logs is what made this endpoint report 0 tool calls for a
+        run whose own MCP server had served four of them.
 
         Args:
             execution: FlowExecution model
@@ -388,18 +412,43 @@ class ExecutionMetricsService:
         # Count from normalized log_entries (new table) if available
         if execution.log_entries:
             for entry in execution.log_entries:
-                if entry.log_type in ["tool_call", "mcp_call"]:
+                if entry.log_type in TOOL_CALL_LOG_TYPES:
                     count += 1
         elif execution.execution_logs and isinstance(execution.execution_logs, list):
             # Legacy fallback: count from JSONB execution_logs
             for log in execution.execution_logs:
-                if isinstance(log, dict) and log.get("type") in [
-                    "tool_call",
-                    "mcp_call",
-                ]:
+                if isinstance(log, dict) and log.get("type") in TOOL_CALL_LOG_TYPES:
                     count += 1
 
-        return count
+        return max(
+            count,
+            self._count_activity_tool_calls(execution),
+            _as_count(getattr(execution, "tool_calls_count", None)),
+        )
+
+    def _count_activity_tool_calls(self, execution: models.FlowExecution) -> int:
+        """Tool calls the Preloop MCP server recorded against this execution."""
+        from preloop.models.models.runtime_session_activity import (
+            RuntimeSessionActivity,
+        )
+
+        try:
+            recorded = (
+                self.db.query(func.count(RuntimeSessionActivity.id))
+                .filter(
+                    RuntimeSessionActivity.flow_execution_id == execution.id,
+                    RuntimeSessionActivity.activity_type == "tool_call",
+                )
+                .scalar()
+            )
+        except Exception:  # pragma: no cover - a read-model count, never fatal
+            logger.debug(
+                "Could not read tool-call activity for execution %s",
+                getattr(execution, "id", None),
+                exc_info=True,
+            )
+            return 0
+        return _as_count(recorded)
 
     def _parse_token_usage(self, execution: models.FlowExecution) -> Dict[str, int]:
         """Parse token usage from codex output logs.

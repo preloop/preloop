@@ -406,6 +406,34 @@ class TestWorkspaceFilesRedaction:
         assert parsed["payload"]["run"] == "smoke-1"
 
     @pytest.mark.asyncio
+    async def test_full_event_dump_redacts_seeds_beside_payload(self):
+        """Seeds declared next to payload are redacted the same way."""
+        import base64
+        import json
+
+        resolver = TriggerEventResolver()
+        content = base64.b64encode(b"fixture-bytes" * 100).decode("ascii")
+        context = ResolverContext(
+            db=MagicMock(),
+            trigger_event_data={
+                "source": "webhook",
+                "payload": {"run": "smoke-1"},
+                "workspace_files": [
+                    {"path": "fixtures/input.json", "content_base64": content}
+                ],
+            },
+            flow_id="flow-1",
+            execution_id="exec-1",
+        )
+
+        result = await resolver.resolve("", context)
+        assert content not in result
+        parsed = json.loads(result)
+        entry = parsed["workspace_files"][0]
+        assert entry["path"] == "fixtures/input.json"
+        assert "omitted" in entry["content_base64"]
+
+    @pytest.mark.asyncio
     async def test_payload_fields_still_resolve(self):
         """Deep paths next to workspace_files are unaffected."""
         resolver = TriggerEventResolver()
