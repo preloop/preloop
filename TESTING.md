@@ -160,3 +160,9 @@ Smoke tests are run on a schedule (e.g., every hour) and are configured to send 
 A CHANGELOG-only follow-up can reuse verified recent successful suites when all
 other effective merge-tree inputs match. See [CI test reuse](docs/ci-test-reuse.md)
 for trust checks, limitations, and how to force fresh tests.
+
+## Continuous fuzzing
+
+Native Go fuzz targets exercise MCP event-stream parsing and canonical audit/evidence
+JSON. Relevant PRs run bounded mutations; nightly jobs explore longer and retain
+crash inputs. See [fuzzing budgets, local commands, and triage](docs/fuzzing.md).

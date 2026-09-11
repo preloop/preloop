@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("data: {\"method\":\"notifications/progress\",\"params\":{\"message\":\"working \u2713\"}}\n\ndata: {\"id\":1,\"result\":{\"nested\":[null,true,1.25]}}")

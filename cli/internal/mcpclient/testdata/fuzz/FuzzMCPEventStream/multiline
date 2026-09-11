@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("data: {\"jsonrpc\":\"2.0\",\ndata: \"id\":1,\"error\":{\"code\":-32602,\"message\":\"invalid arguments\"}}\n\n")

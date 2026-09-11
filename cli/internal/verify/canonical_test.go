@@ -180,3 +180,16 @@ func TestGarbageInThePlaceOfASignatureIsRefused(t *testing.T) {
 		t.Fatal("a malformed signature was accepted")
 	}
 }
+
+func TestDecodeCanonicalConsumesOneDocument(t *testing.T) {
+	for _, raw := range []string{`{}[]`, `1 true`, `null false`, `{"a":1}garbage`} {
+		t.Run(raw, func(t *testing.T) {
+			if _, err := DecodeCanonical([]byte(raw)); err == nil {
+				t.Fatal("trailing content was silently ignored")
+			}
+		})
+	}
+	if got := canonicalOf(t, " \n\t"+pythonSimple+"\r\n\t "); got != pythonSimple {
+		t.Fatalf("valid whitespace changed canonical bytes: %q", got)
+	}
+}
