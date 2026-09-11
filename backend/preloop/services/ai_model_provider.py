@@ -400,8 +400,9 @@ async def _get_openai_compatible_models(
         # The SDK's __aenter__ returns the client itself; the context manager
         # closes the underlying HTTP connection pool on exit. A custom
         # http_client is owned here and closed in finally.
-        async with client:
-            response = await client.models.list()
+        async with asyncio.timeout(MODEL_DISCOVERY_TIMEOUT_SECONDS):
+            async with client:
+                model_ids = await _list_compatible_model_ids(client)
     except AuthenticationError as e:
         # Do not log the key or the full request URL: a key passed as a query
         # param would otherwise land in logs (see the api_key handling in the
@@ -418,12 +419,59 @@ async def _get_openai_compatible_models(
         if http_client is not None:
             await http_client.aclose()
 
-    model_ids = _extract_model_ids(response)
     if model_kind in ("stt", "tts"):
         model_ids = _openai_ids_for_kind(model_ids, model_kind)
         if not model_ids:
             return _fallback([], ERROR_EMPTY_RESPONSE)
     return _live(model_ids)
+
+
+async def _list_compatible_model_ids(client: Any) -> List[str]:
+    """Read bounded SDK or has_more/last_id pages within the caller's timeout."""
+    model_ids: set[str] = set()
+    seen_cursors: set[str] = set()
+    seen_pages: set[tuple[str, ...]] = set()
+    response = await client.models.list()
+    for _ in range(50):
+        page_ids = _extract_model_ids(response)
+        page_key = tuple(page_ids)
+        if page_key in seen_pages:
+            raise ValueError("Repeated model discovery page")
+        seen_pages.add(page_key)
+        model_ids.update(page_ids)
+        if len(model_ids) >= MAX_DISCOVERED_MODELS:
+            break
+        has_more = (
+            response.get("has_more")
+            if isinstance(response, dict)
+            else getattr(response, "has_more", None)
+        )
+        if has_more is True:
+            cursor = (
+                response.get("last_id")
+                if isinstance(response, dict)
+                else getattr(response, "last_id", None)
+            )
+            if (
+                not page_ids
+                or not isinstance(cursor, str)
+                or not cursor
+                or cursor in seen_cursors
+            ):
+                raise ValueError("Invalid model discovery cursor")
+            seen_cursors.add(cursor)
+            # The SDK models AsyncPage has no pagination implementation, but
+            # compatible endpoints may provide this cursor envelope.
+            response = await client.models.list(extra_query={"after": cursor})
+        else:
+            has_next = getattr(response, "has_next_page", None)
+            if callable(has_next) and has_next() is True:
+                response = await response.get_next_page()
+            else:
+                break
+    else:
+        raise ValueError("Model discovery page limit exceeded")
+    return sorted(model_ids)[:MAX_DISCOVERED_MODELS]
 
 
 def _extract_model_ids(response: object) -> List[str]:
@@ -778,8 +826,9 @@ async def _get_catalog_provider_models(
         )
         # The SDK's __aenter__ returns the client itself; the context manager
         # closes the underlying HTTP connection pool on exit.
-        async with client:
-            response = await client.models.list()
+        async with asyncio.timeout(MODEL_DISCOVERY_TIMEOUT_SECONDS):
+            async with client:
+                live_models = await _list_compatible_model_ids(client)
     except AuthenticationError as e:
         logger.warning("%s authentication failed: %s", provider_label, type(e).__name__)
         raise ProviderAuthError(
@@ -794,7 +843,6 @@ async def _get_catalog_provider_models(
         )
         return _fallback([], _classify_fetch_error(e))
 
-    live_models = _extract_model_ids(response)
     if not live_models:
         logger.info("%s returned no models", provider_label)
         return _fallback([], ERROR_EMPTY_RESPONSE)
@@ -809,6 +857,88 @@ async def _get_catalog_provider_models(
 QWEN_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 QWEN_INTL_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 QWEN_US_BASE_URL = "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+
+
+async def _get_qwen_native_models(api_key: str) -> ModelDiscoveryResult:
+    """List the documented Singapore native catalog with bounded pagination.
+
+    This endpoint is documented on the classic Singapore host. Do not derive
+    an undocumented native route from an account's workspace endpoint or send
+    its credentials to a different host. Native tariffs are separate from this
+    picker result and never inferred from model identifiers.
+    """
+    import httpx
+
+    model_ids: set[str] = set()
+    seen_pages: set[tuple[str, ...]] = set()
+    page_size = 20
+    try:
+        async with asyncio.timeout(MODEL_DISCOVERY_TIMEOUT_SECONDS):
+            async with httpx.AsyncClient(
+                timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS, follow_redirects=False
+            ) as client:
+                for page_no in range(1, MAX_DISCOVERED_MODELS // page_size + 1):
+                    response = await client.get(
+                        "https://dashscope-intl.aliyuncs.com/api/v1/models",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        params={
+                            "capabilities": "TG",
+                            "service_site": "international",
+                            "language": "en-US",
+                            "page_no": page_no,
+                            "page_size": page_size,
+                        },
+                    )
+                    if response.status_code in {401, 403}:
+                        raise ProviderAuthError(
+                            "Invalid Qwen API key. Please check your API key and try again."
+                        )
+                    response.raise_for_status()
+                    body = response.json()
+                    if not isinstance(body, dict) or body.get("success") is not True:
+                        return _fallback([], ERROR_UNKNOWN)
+                    output = body.get("output")
+                    if not isinstance(output, dict) or not isinstance(
+                        output.get("models"), list
+                    ):
+                        return _fallback([], ERROR_EMPTY_RESPONSE)
+                    entries = output["models"]
+                    page_ids = tuple(
+                        str(entry.get("model", ""))
+                        for entry in entries
+                        if isinstance(entry, dict)
+                    )
+                    if page_ids in seen_pages:
+                        return _fallback([], ERROR_UNKNOWN)
+                    seen_pages.add(page_ids)
+                    for entry in entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        model_id = entry.get("model")
+                        capabilities = entry.get("capabilities")
+                        if isinstance(capabilities, list) and "TG" not in capabilities:
+                            continue
+                        if isinstance(model_id, str) and _is_qwen_chat_model(model_id):
+                            model_ids.add(model_id.strip())
+                    total = output.get("total")
+                    if not entries or (
+                        type(total) is int and page_no * page_size >= total
+                    ):
+                        break
+                    if len(entries) < page_size and type(total) is not int:
+                        break
+    except ProviderAuthError:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "Failed to list Model Studio native models: %s", type(exc).__name__
+        )
+        return _fallback([], _classify_fetch_error(exc))
+    return (
+        _live(sorted(model_ids)[:MAX_DISCOVERED_MODELS])
+        if model_ids
+        else _fallback([], ERROR_EMPTY_RESPONSE)
+    )
 
 
 def _is_qwen_chat_model(model_id: str) -> bool:
@@ -875,6 +1005,11 @@ async def _get_qwen_models(
         base_url = validate_qwen_endpoint(raw).rstrip("/")
     else:
         base_url = QWEN_DEFAULT_BASE_URL
+
+    if api_key and base_url == QWEN_INTL_BASE_URL:
+        native = await _get_qwen_native_models(api_key)
+        if native.source == "live":
+            return native
 
     result = await _get_catalog_provider_models(
         provider_label="Qwen",

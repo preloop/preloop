@@ -827,6 +827,22 @@ describe('AddAIModelModal Qwen regional endpoints', () => {
     expect(help).to.contain('dashscope.aliyuncs.com');
     expect(help).to.contain('dashscope-intl.aliyuncs.com');
     expect(help).to.contain('dashscope-us.aliyuncs.com');
+    expect(help).to.contain('.maas.aliyuncs.com/compatible-mode/v1');
+  });
+
+  it('labels Model Studio while preserving the saved qwen provider value', async () => {
+    element.open = true;
+    await element.updateComplete;
+    const option = element.shadowRoot?.querySelector('sl-option[value="qwen"]');
+    expect(option?.textContent).to.contain('Alibaba Cloud Model Studio (Qwen)');
+  });
+
+  it('links Singapore workspace keys to the international console', () => {
+    (element as any)._currentModel.api_endpoint =
+      'https://example.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1';
+    expect((element as any)._getProviderKeyUrl('qwen')).to.equal(
+      'https://modelstudio.console.alibabacloud.com/ap-southeast-1?tab=globalset#/efm/api_key'
+    );
   });
 });
 

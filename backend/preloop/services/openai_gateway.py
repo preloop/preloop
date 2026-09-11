@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import asyncio
+from copy import deepcopy
 import hashlib
 import json
 import logging
@@ -144,6 +145,7 @@ from preloop.services.model_pricing import (
 from preloop.services.litellm_routing import (
     apply_preloop_client_headers,
     is_openrouter_model,
+    model_api_base,
     preloop_client_headers,
     to_litellm_model,
 )
@@ -838,6 +840,7 @@ class OpenAIGatewayService:
         request can never lend its ``retried: n`` to the next one.
         """
         self._last_upstream_retry_count = 0
+        self._last_alibaba_cache_mode = None
 
     def _adopt_native_session_id(self, payload: Optional[Dict[str, Any]]) -> None:
         """Adopt the agent's own session id from an Anthropic request payload.
@@ -1300,6 +1303,17 @@ class OpenAIGatewayService:
                 "role": "assistant",
                 "content": assistant_content,
             }
+            upstream_message = (response_dict.get("choices") or [{}])[0].get(
+                "message"
+            ) or {}
+            if (
+                (model.provider_name or "").strip().lower() == "qwen"
+                and not is_openrouter_model(model)
+                and isinstance(upstream_message.get("reasoning_content"), str)
+            ):
+                assistant_message["reasoning_content"] = upstream_message[
+                    "reasoning_content"
+                ]
             tool_calls = self._extract_tool_calls(response_dict)
             if tool_calls:
                 assistant_message["tool_calls"] = tool_calls
@@ -1313,7 +1327,14 @@ class OpenAIGatewayService:
                     {
                         "index": 0,
                         "message": assistant_message,
-                        "finish_reason": self._extract_finish_reason(response_dict),
+                        "finish_reason": (
+                            "tool_calls"
+                            if tool_calls
+                            and (model.provider_name or "").strip().lower() == "qwen"
+                            and not is_openrouter_model(model)
+                            and self._extract_finish_reason(response_dict) == "stop"
+                            else self._extract_finish_reason(response_dict)
+                        ),
                     }
                 ],
                 "usage": usage,
@@ -2301,6 +2322,17 @@ class OpenAIGatewayService:
                             state["function"]["arguments"] += function_delta[
                                 "arguments"
                             ]
+                    # Model Studio can report stop with actual tool calls.
+                    # Preserve the tool turn even when its final chunk has no
+                    # tool delta of its own.
+                    if (
+                        (model.provider_name or "").strip().lower() == "qwen"
+                        and not is_openrouter_model(model)
+                        and tool_call_states
+                    ):
+                        for choice in event_payload.get("choices") or []:
+                            if choice.get("finish_reason") == "stop":
+                                choice["finish_reason"] = "tool_calls"
                     last_finish_reason = (
                         self._extract_finish_reason(event_payload) or last_finish_reason
                     )
@@ -3564,6 +3596,7 @@ class OpenAIGatewayService:
         # Reset per request (mirrors _build_completion_kwargs) so an errored
         # resolution never leaves a stale value on the usage row.
         self._last_upstream_credential_type = None
+        self._last_alibaba_cache_mode = None
         if self._owns_db_session:
             ai_model = self._reattach_for_recording(ai_model)
         try:
@@ -6042,6 +6075,7 @@ class OpenAIGatewayService:
         # Reset per request so a prior request's value never leaks if
         # resolution below raises before the credential type is determined.
         self._last_upstream_credential_type = None
+        self._last_alibaba_cache_mode = None
         if self._owns_db_session:
             ai_model = self._reattach_for_recording(ai_model)
         try:
@@ -6128,8 +6162,114 @@ class OpenAIGatewayService:
                 **client_stream_options,
                 "include_usage": True,
             }
-        if ai_model.api_endpoint:
-            kwargs["api_base"] = ai_model.api_endpoint
+        if api_base := model_api_base(ai_model):
+            kwargs["api_base"] = api_base
+        if (
+            ai_model.provider_name or ""
+        ).strip().lower() == "qwen" and not is_openrouter_model(ai_model):
+            cache_markers = 0
+            for message in messages:
+                content = message.get("content")
+                for block in content if isinstance(content, list) else []:
+                    if not isinstance(block, dict) or "cache_control" not in block:
+                        continue
+                    marker = block["cache_control"]
+                    if message.get("role") not in {"system", "user"} or marker != {
+                        "type": "ephemeral"
+                    }:
+                        raise ModelGatewayAPIError(
+                            provider=provider,
+                            status_code=400,
+                            message="Model Studio cache_control must be {type: ephemeral} on a system or user content block",
+                        )
+                    cache_markers += 1
+            if cache_markers > 4:
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=400,
+                    message="Model Studio supports at most four explicit cache markers",
+                )
+            self._last_alibaba_cache_mode = "explicit" if cache_markers else "implicit"
+            # Model Studio's documented thinking controls are extra JSON
+            # fields on its OpenAI-compatible API. Keep this provider-scoped
+            # and allowlisted so arbitrary body fields cannot override routing.
+            extra_body = payload.get("extra_body")
+            extra_body = extra_body if isinstance(extra_body, dict) else {}
+            thinking_options = {}
+            for key in ("enable_thinking", "thinking_budget"):
+                value = payload.get(key, extra_body.get(key))
+                if value is None:
+                    continue
+                valid = (
+                    isinstance(value, bool)
+                    if key == "enable_thinking"
+                    else type(value) is int and value >= 0
+                )
+                if not valid:
+                    expected = (
+                        "a boolean"
+                        if key == "enable_thinking"
+                        else "a non-negative integer"
+                    )
+                    raise ModelGatewayAPIError(
+                        provider=provider,
+                        status_code=400,
+                        message=f"{key} must be {expected}",
+                    )
+                thinking_options[key] = value
+            reasoning = payload.get("reasoning")
+            reasoning = reasoning if isinstance(reasoning, dict) else {}
+            effort = payload.get(
+                "reasoning_effort",
+                reasoning.get("effort", extra_body.get("reasoning_effort")),
+            )
+            if effort is not None:
+                if not isinstance(effort, str) or effort not in {
+                    "low",
+                    "medium",
+                    "xhigh",
+                    "high",
+                    "max",
+                    "minimal",
+                    "none",
+                }:
+                    raise ModelGatewayAPIError(
+                        provider=provider,
+                        status_code=400,
+                        message="Unsupported Model Studio reasoning_effort",
+                    )
+                if "thinking_budget" in thinking_options:
+                    raise ModelGatewayAPIError(
+                        provider=provider,
+                        status_code=400,
+                        message="Use reasoning_effort or thinking_budget, not both",
+                    )
+                thinking_options["reasoning_effort"] = effort
+            if cache_markers:
+                # The overlay bypasses LiteLLM content conversion. Limit it
+                # to the text chat shape whose wire representation is already
+                # identical; image/file conversion must not be bypassed.
+                for message in messages:
+                    content = message.get("content")
+                    if isinstance(content, list) and any(
+                        not isinstance(block, dict)
+                        or block.get("type") != "text"
+                        or not isinstance(block.get("text"), str)
+                        or set(block) - {"type", "text", "cache_control"}
+                        for block in content
+                    ):
+                        raise ModelGatewayAPIError(
+                            provider=provider,
+                            status_code=400,
+                            message="Explicit Model Studio caching supports text content blocks only",
+                        )
+                # LiteLLM's OpenAI adapter strips content cache_control. Use
+                # only the gateway's governed message list, never a caller's
+                # extra_body.messages, to preserve these validated markers.
+                thinking_options["messages"] = deepcopy(messages)
+                kwargs["messages"] = deepcopy(messages)
+            if thinking_options:
+                kwargs["extra_body"] = thinking_options
         if _is_openrouter_upstream(ai_model) and _openrouter_usage_accounting_enabled():
             # Ask OpenRouter to include the request's actual cost in the
             # response usage payload (usage accounting). litellm forwards
@@ -7623,6 +7763,8 @@ class OpenAIGatewayService:
         usage_details = usage_details or {}
         prompt_details = usage_details.get("prompt_tokens_details")
         prompt_details = prompt_details if isinstance(prompt_details, dict) else {}
+        cache_creation = prompt_details.get("cache_creation")
+        cache_creation = cache_creation if isinstance(cache_creation, dict) else {}
         completion_details = usage_details.get("completion_tokens_details")
         completion_details = (
             completion_details if isinstance(completion_details, dict) else {}
@@ -7644,6 +7786,8 @@ class OpenAIGatewayService:
             ),
             "cache_creation_tokens": _first_int(
                 prompt_details.get("cache_creation_tokens"),
+                prompt_details.get("cache_creation_input_tokens"),
+                cache_creation.get("ephemeral_5m_input_tokens"),
                 usage_details.get("cache_creation_input_tokens"),
             ),
             "reasoning_tokens": _first_int(
@@ -8137,6 +8281,10 @@ class OpenAIGatewayService:
             if isinstance(usage, dict)
             else {}
         )
+        if cache_mode := getattr(self, "_last_alibaba_cache_mode", None):
+            # Trusted routing metadata for tariff selection only. Copy the
+            # provider usage so this annotation never enters the client stream.
+            usage_details = {**usage_details, "_preloop_cache_mode": cache_mode}
         if not isinstance(usage, dict):
             usage = {}
         # Prefer the client-facing usage payload, but fall back to the raw

@@ -37,7 +37,11 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   { value: 'anthropic', label: 'Anthropic', serviceKinds: ['llm'] },
   { value: 'moonshot', label: 'Moonshot (Kimi)', serviceKinds: ['llm'] },
   { value: 'google', label: 'Google', serviceKinds: ['llm', 'stt'] },
-  { value: 'qwen', label: 'Qwen', serviceKinds: ['llm'] },
+  {
+    value: 'qwen',
+    label: 'Alibaba Cloud Model Studio (Qwen)',
+    serviceKinds: ['llm'],
+  },
   { value: 'deepseek', label: 'DeepSeek', serviceKinds: ['llm'] },
   { value: 'zai', label: 'Z.ai (GLM)', serviceKinds: ['llm'] },
   { value: 'mistral', label: 'Mistral', serviceKinds: ['llm'] },
@@ -478,7 +482,17 @@ export class AddAIModelModal extends LitElement {
       case 'google':
         return 'https://aistudio.google.com/app/apikey';
       case 'qwen':
-        return 'https://dashscope.console.aliyun.com/apiKey';
+        if (
+          this._currentModel.api_endpoint?.includes(
+            'dashscope-intl.aliyuncs.com'
+          ) ||
+          this._currentModel.api_endpoint?.includes(
+            '.ap-southeast-1.maas.aliyuncs.com'
+          )
+        ) {
+          return 'https://modelstudio.console.alibabacloud.com/ap-southeast-1?tab=globalset#/efm/api_key';
+        }
+        return 'https://www.alibabacloud.com/help/en/model-studio/get-api-key';
       case 'deepseek':
         return 'https://platform.deepseek.com/api_keys';
       case 'moonshot':
@@ -1018,7 +1032,10 @@ export class AddAIModelModal extends LitElement {
                               https://dashscope-intl.aliyuncs.com/compatible-mode/v1.
                               US:
                               https://dashscope-us.aliyuncs.com/compatible-mode/v1.
-                              Keys are not interchangeable across regions.
+                              Workspace URLs ending in
+                              .maas.aliyuncs.com/compatible-mode/v1 are also
+                              supported. Keys are not interchangeable across
+                              regions.
                             </div>
                           `
                         : ''
