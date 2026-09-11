@@ -60,7 +60,6 @@
   "devDependencies": {
     "@open-wc/testing": "^5.0.0",
     "@playwright/test": "^1.63.0",
-    "@types/marked": "^6.0.0",
     "@types/mocha": "^10.0.10",
     "@types/sinon": "^22.0.0",
     "@web/dev-server-esbuild": "^1.0.4",
