@@ -8,6 +8,22 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 
+# PostgreSQL SQLSTATE for foreign_key_violation. ON CONFLICT below absorbs
+# only a duplicate account head; this code must still surface to callers.
+FOREIGN_KEY_VIOLATION = "23503"
+
+
+def postgres_sqlstate(error: BaseException) -> str | None:
+    """Return the SQLSTATE from a DBAPI error, if the driver exposes one.
+
+    SQLAlchemy's sync engine uses psycopg2, which sets ``pgcode``. psycopg3
+    sets ``sqlstate``. Neither attribute exists on both drivers, so callers
+    must not read either one directly.
+    """
+    orig = getattr(error, "orig", error)
+    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    return str(code) if code is not None else None
+
 
 def get_state(
     db: Session, *, account_id: Any, for_update: bool = False, create: bool = True

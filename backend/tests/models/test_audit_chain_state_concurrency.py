@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Barrier
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from preloop.config import settings
 from preloop.models import models
+from preloop.models.crud.audit_chain import FOREIGN_KEY_VIOLATION, postgres_sqlstate
 from preloop.services import audit_chain
 
 
@@ -223,5 +225,15 @@ def test_initialization_propagates_unrelated_integrity_errors(
         with pytest.raises(IntegrityError) as error:
             with db.begin_nested():
                 audit_chain.get_state(db, account_id=uuid4(), for_update=True)
-        assert error.value.orig.sqlstate == "23503"
+        assert postgres_sqlstate(error.value) == FOREIGN_KEY_VIOLATION
         assert db.scalar(select(1)) == 1
+
+
+def test_postgres_sqlstate_reads_pgcode_or_sqlstate() -> None:
+    """CI's sync driver exposes pgcode; psycopg3 exposes sqlstate. Neither both."""
+    pgcode_only = IntegrityError("INSERT", {}, SimpleNamespace(pgcode="23503"))
+    sqlstate_only = IntegrityError("INSERT", {}, SimpleNamespace(sqlstate="23503"))
+    neither = IntegrityError("INSERT", {}, object())
+    assert postgres_sqlstate(pgcode_only) == FOREIGN_KEY_VIOLATION
+    assert postgres_sqlstate(sqlstate_only) == FOREIGN_KEY_VIOLATION
+    assert postgres_sqlstate(neither) is None
