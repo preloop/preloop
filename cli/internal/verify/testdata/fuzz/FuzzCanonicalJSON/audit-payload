@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"seq\":1,\"action\":\"tool_call_approved\",\"details\":{\"note\":\"hello \u2713\",\"amount\":1000},\"user_id\":null}")

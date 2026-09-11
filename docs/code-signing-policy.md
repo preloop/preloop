@@ -3,7 +3,15 @@
 Free code signing provided by [SignPath.io](https://about.signpath.io/),
 certificate by [SignPath Foundation](https://signpath.org/).
 
-## What is signed
+## Signed release provenance
+
+Since v0.15.0, GitHub release assets carry Sigstore build provenance generated
+with the Release workflow's GitHub OIDC identity. This covers all attached CLI
+binaries, Python packages, Helm charts, installers, Compose configuration,
+SBOMs, and the checksum manifest. See [release verification](release-verification.md)
+for verification commands and coverage limits.
+
+## Windows Authenticode
 
 Windows CLI release binaries published on
 [GitHub Releases](https://github.com/preloop/preloop/releases):
@@ -12,8 +20,10 @@ Windows CLI release binaries published on
 - `preloop-windows-arm64.exe`
 
 These artifacts are built by GitHub Actions from this repository on version
-tags (`v*`) and submitted to SignPath for Authenticode signing before they are
-attached to the release. macOS and Linux CLI binaries are not Authenticode-signed.
+tags (`v*`). When SignPath credentials and policy are configured, they are
+submitted for Authenticode signing before attachment to the release. Otherwise
+the workflow warns and publishes them without Authenticode signatures. macOS
+and Linux binaries use the Sigstore provenance above, not Authenticode.
 
 See also [windows-code-signing.md](./windows-code-signing.md) for CI wiring and
 maintainer setup.

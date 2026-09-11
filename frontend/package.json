@@ -4,7 +4,7 @@
   "description": "Preloop console frontend",
   "type": "module",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.22.1"
   },
   "main": "src/main.ts",
   "overrides": {
@@ -21,7 +21,7 @@
     "esbuild": "^0.28.1",
     "errorstacks": "2.4.1",
     "postcss": "^8.5.18",
-    "yaml": "2.8.3",
+    "yaml": "2.9.0",
     "image-size": "npm:image-size-next@2.1.1",
     "fflate": "0.7.5"
   },
@@ -60,17 +60,15 @@
   "devDependencies": {
     "@open-wc/testing": "^5.0.0",
     "@playwright/test": "^1.63.0",
-    "@types/marked": "^5.0.2",
     "@types/mocha": "^10.0.10",
     "@types/sinon": "^22.0.0",
-    "@web/dev-server-esbuild": "^1.0.4",
+    "@web/dev-server-esbuild": "^2.0.0",
     "@web/test-runner": "^1.0.0",
     "@web/test-runner-commands": "^1.0.1",
     "@web/test-runner-playwright": "^1.0.0",
-    "chai": "^5.0.0",
     "husky": "^9.0.11",
     "js-yaml": "^5.4.1",
-    "lint-staged": "^15.2.7",
+    "lint-staged": "^17.5.0",
     "prettier": "^3.9.6",
     "sinon": "^22.1.0",
     "typescript": "^7.0.2",

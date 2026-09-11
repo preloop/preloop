@@ -192,11 +192,16 @@ Enterprise licensing: sales@preloop.ai.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+The [disposable capacity lab](scripts/capacity/README.md) measures authenticated MCP,
+model-gateway and execution-log workloads using local simulated providers.
+
 ## License
 
 [Apache License 2.0](LICENSE). Copyright (c) 2026 Spacecode AI Inc.
 
-Windows CLI release binaries: `SHA256SUMS` plus a VirusTotal scan; SignPath Authenticode signing is pending. [windows-cli.md](./docs/windows-cli.md), [windows-code-signing.md](./docs/windows-code-signing.md), [code-signing-policy.md](./docs/code-signing-policy.md).
+Release assets carry signed Sigstore build provenance and checksums. See [verification instructions](./docs/release-verification.md).
+
+Windows CLI release binaries: optional VirusTotal scanning; SignPath Authenticode signing is pending. [windows-cli.md](./docs/windows-cli.md), [windows-code-signing.md](./docs/windows-code-signing.md), [code-signing-policy.md](./docs/code-signing-policy.md).
 
 Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 

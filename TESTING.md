@@ -154,3 +154,9 @@ Production smoke tests are designed to perform a quick, high-level check to ensu
 ### Schedule
 
 Smoke tests are run on a schedule (e.g., every hour) and are configured to send notifications if the tests fail.
+
+## Continuous fuzzing
+
+Native Go fuzz targets exercise MCP event-stream parsing and canonical audit/evidence
+JSON. Relevant PRs run bounded mutations; nightly jobs explore longer and retain
+crash inputs. See [fuzzing budgets, local commands, and triage](docs/fuzzing.md).
