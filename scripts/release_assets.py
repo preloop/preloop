@@ -25,6 +25,15 @@ def assets_in(directory: Path) -> list[Path]:
     return assets
 
 
+def _sha256_hex(path: Path) -> str:
+    """Return the SHA-256 hex digest without loading the whole file."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def write_checksums(directory: Path) -> None:
     """Hash every payload, including packages, installers, Compose and SBOMs."""
     assets = [asset for asset in assets_in(directory) if asset.name != CHECKSUMS]
@@ -32,9 +41,7 @@ def write_checksums(directory: Path) -> None:
         raise ValueError("No release payloads to checksum")
     lines = []
     for asset in assets:
-        with asset.open("rb") as stream:
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
-        lines.append(f"{digest}  {asset.name}\n")
+        lines.append(f"{_sha256_hex(asset)}  {asset.name}\n")
     (directory / CHECKSUMS).write_text("".join(lines), encoding="utf-8")
 
 

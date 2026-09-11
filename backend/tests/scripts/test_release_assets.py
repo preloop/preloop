@@ -62,6 +62,18 @@ class ReleaseAssetsTest(unittest.TestCase):
         release_assets.write_checksums(self.directory)
         self.assertEqual(first, manifest.read_bytes())
 
+    def test_checksums_hash_files_larger_than_one_chunk(self) -> None:
+        payload = self.directory / "preloop-linux-amd64"
+        payload.write_bytes(b"x" * ((1 << 20) + 17))
+        release_assets.write_checksums(self.directory)
+        entries = dict(
+            line.split("  ")[::-1]
+            for line in (self.directory / "SHA256SUMS").read_text().splitlines()
+        )
+        self.assertEqual(
+            entries[payload.name], hashlib.sha256(payload.read_bytes()).hexdigest()
+        )
+
     def test_verify_all_payloads_and_manifest_with_strict_identity(self) -> None:
         release_assets.write_checksums(self.directory)
         with patch.object(release_assets.subprocess, "run") as run:
