@@ -174,6 +174,9 @@ export class AuditView extends AuthedElement {
   @state() private _livePulse = false;
   private _livePulseTimer: number | null = null;
 
+  // DORA exports (#561). Which one is in flight, so only that button spins.
+  @state() private _exporting: 'assets' | 'incidents' | null = null;
+
   // ── Lifecycle ──────────────────────────────────────────────────────
 
   connectedCallback() {
@@ -1125,6 +1128,33 @@ export class AuditView extends AuthedElement {
             </span>
           </sl-tooltip>
         </span>
+        <div slot="main-column">
+          <sl-tooltip
+            content="Agents, tools, MCP servers, models, providers and runner hosts, with owners and attached policies. Feeds a DORA Art. 8 inventory and Art. 28 register."
+          >
+            <sl-button
+              size="small"
+              ?loading=${this._exporting === 'assets'}
+              @click=${() => this._downloadExport('assets')}
+            >
+              <sl-icon slot="prefix" name="download"></sl-icon>
+              Asset register
+            </sl-button>
+          </sl-tooltip>
+
+          <sl-tooltip
+            content="Failures, halts, denies and budget stops in the filtered period. Candidates only: classification under DORA Art. 17 stays with your firm."
+          >
+            <sl-button
+              size="small"
+              ?loading=${this._exporting === 'incidents'}
+              @click=${() => this._downloadExport('incidents')}
+            >
+              <sl-icon slot="prefix" name="download"></sl-icon>
+              Incident candidates
+            </sl-button>
+          </sl-tooltip>
+        </div>
       </view-header>
       <div class="column-layout wide">
         <div class="main-column audit-view" style="padding-top: 0;">
@@ -1162,6 +1192,77 @@ export class AuditView extends AuthedElement {
         </div>
       </div>
     `;
+  }
+
+  // ── DORA exports (#561) ────────────────────────────────────────────
+
+  /**
+   * Download one of the two DORA exports as CSV.
+   *
+   * The incident export inherits the timeline's date filter, so the file is
+   * the period the reader is already looking at. With no filter set the
+   * server picks its own default window rather than the console guessing
+   * one, so the API and the CLI agree on what "no period" means.
+   */
+  private async _downloadExport(kind: 'assets' | 'incidents') {
+    if (this._exporting) return;
+    this._exporting = kind;
+    try {
+      const params = new URLSearchParams({ format: 'csv' });
+      let path = '/api/v1/exports/asset-register';
+      if (kind === 'incidents') {
+        path = '/api/v1/exports/incident-candidates';
+        if (this._startDate) params.set('from', this._startDate);
+        if (this._endDate) params.set('to', this._endDate);
+      }
+      const response = await fetchWithAuth(`${path}?${params.toString()}`);
+      if (!response.ok) {
+        let detail = `Export failed (${response.status})`;
+        try {
+          const body = await response.json();
+          if (body?.detail) detail = body.detail;
+        } catch {
+          // Non-JSON error body: the status line is all we can report.
+        }
+        throw new Error(detail);
+      }
+      const filename =
+        this._filenameFromDisposition(
+          response.headers.get('content-disposition')
+        ) ||
+        (kind === 'assets'
+          ? 'preloop-asset-register.csv'
+          : 'preloop-incident-candidates.csv');
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      // The digest travels with the file. Showing it here means the person
+      // who took the export can quote it without opening a terminal.
+      const digest = response.headers.get('x-preloop-export-sha256') || '';
+      showToast(
+        digest
+          ? `${filename} downloaded (sha256 ${digest.slice(0, 12)}…)`
+          : `${filename} downloaded`,
+        'success'
+      );
+    } catch (err: any) {
+      showToast(err?.message || 'Export failed', 'danger');
+    } finally {
+      this._exporting = null;
+    }
+  }
+
+  /** Pull the server's filename out of a Content-Disposition header. */
+  private _filenameFromDisposition(header: string | null): string | null {
+    if (!header) return null;
+    const match = /filename="?([^";]+)"?/i.exec(header);
+    return match ? match[1] : null;
   }
 
   private _renderFilterBar() {

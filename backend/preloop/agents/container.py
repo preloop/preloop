@@ -48,6 +48,7 @@ from preloop.utils.workspace_seed import (
     build_workspace_seed_shell,
     parse_workspace_files,
     workspace_seed_env_from_payload,
+    workspace_seed_payload,
 )
 from preloop.utils.workspace_snapshot import (
     WORKSPACE_SNAPSHOT_PATH,
@@ -3220,12 +3221,15 @@ class ContainerAgentExecutor(AgentExecutor):
     def _workspace_seed_payload(
         execution_context: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        """The trigger payload the seed declaration lives on, if any."""
+        """The trigger payload the seed declaration lives on, if any.
+
+        ``workspace_seed_payload`` resolves the same lookup every other
+        reader uses (inside ``payload`` first, then beside it), so a body
+        that puts ``workspace_files`` next to ``payload`` seeds the same
+        files here that the trigger endpoint validated.
+        """
         trigger_data = execution_context.get("trigger_event_data") or {}
-        if not isinstance(trigger_data, dict):
-            return None
-        payload = trigger_data.get("payload")
-        return payload if isinstance(payload, dict) else None
+        return workspace_seed_payload(trigger_data)
 
     def _workspace_seed_env(self, execution_context: Dict[str, Any]) -> Dict[str, str]:
         """Per-seed environment variables carrying the base64 contents."""

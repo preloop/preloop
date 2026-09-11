@@ -75,7 +75,13 @@ Every request body is one JSON object with exactly these keys:
 | `budget.threshold` | Spend crosses a configured soft limit | `scope`, `scope_id`, `period`, `limit_amount`, `spent_amount`, `percent_used`, `threshold_percent` |
 | `budget.exceeded` | Spend passes a configured hard limit | same as above |
 | `flow.execution.finished` | A flow execution reaches a terminal status | `execution_id`, `flow_id`, `flow_name`, `status`, `failure_category`, `evidence_receipt` |
+| `agent.note_sent` | An operator note is accepted for a running agent | `note_id`, `managed_agent_id`, `runtime_session_id`, `text`, `author` (`user_id`, `display`, `auth_method`), `created_at`, `expires_at` |
+| `agent.note_delivered` | That note reaches the agent at a turn boundary | same fields plus `delivered_at`, `delivery_channel` (`gateway`, `hook`, `claude_channel`, `claude_message`), `turn_index` |
 | `cra.reportable_vulnerability` | A CRA audit found an actively exploited vulnerability that its own evidence says affects the product | `cve`, `actively_exploited`, `exploited_evidence`, `affected`, `vex_status`, `discovered_at`, `deadlines`, `status`, `assessment`, `kev_snapshot_date`, `kev_source_url` |
+
+Operator note payloads do carry the note `text`, unlike approval payloads.
+The text is the fact, and a receiver mirroring notes into a ticket or a
+chat room has nothing without it. See [operator notes](operator-notes.md).
 
 `cra.reportable_vulnerability` fires once per reportable candidate, not once
 per execution, because each candidate carries its own clock: `deadlines` holds

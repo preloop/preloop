@@ -132,6 +132,9 @@ including SQLAlchemy greenlet parents for async callers.
 
 The existing pool monitor warning includes the five oldest active holds with
 monotonic durations and sanitized package-relative file/function/line identities.
+Callsites are sampled only from half capacity onward. The separate
+`oldest_attributed` list includes up to five sampled active holds, so early
+unsampled acquisitions cannot hide the available callsite evidence.
 At most 128 active holds are retained per engine. No SQL, parameters, source lines,
 locals, credentials, account identifiers, frame objects or DBAPI connections are
 captured. Metadata is removed on checkin, invalidation, close and detach; engine
