@@ -421,6 +421,19 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Production build
+        run: |
+          npm run build
+          if find dist -name '*.css' -print | grep -q .; then
+            echo "standalone CSS files must not be emitted; CSS is injected into JS" >&2
+            find dist -name '*.css' -print >&2
+            exit 1
+          fi
+          if ! grep -q 'vite-plugin-css-injected-by-js' dist/assets/main-*.js; then
+            echo "CSS injection marker missing from the main JS bundle" >&2
+            exit 1
+          fi
+
       - name: Read the Playwright version
         id: playwright
         run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
