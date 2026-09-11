@@ -470,11 +470,7 @@ def record_cli_session(db: Session, execution_id: Any, cli_session: Any) -> None
             },
         )
         db.commit()
-        logger.info(
-            "Recorded CLI session on execution %s (%s)",
-            execution_id,
-            cli_session.get("agent_type"),
-        )
+        logger.info("Recorded CLI session on execution %s", execution_id)
     except Exception:
         logger.warning(
             "Failed to record CLI session on execution %s",
