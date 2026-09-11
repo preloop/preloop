@@ -79,11 +79,17 @@ class LogFixture:
                     db, execution_id, after=self.cursors.get(execution_id), limit=1000
                 )
                 for row in rows:
-                    prefix, row_stage, sequence = (row.message or "").split(":")
-                    if prefix != "capacity":
+                    parts = (row.message or "").split(":")
+                    if (
+                        len(parts) != 3
+                        or parts[0] != "capacity"
+                        or not parts[1].isdigit()
+                        or not parts[2].isdigit()
+                    ):
                         raise ValueError("Unexpected fixture log")
-                    if int(row_stage) == stage:
-                        self.seen[stage].add(int(sequence))
+                    row_stage, sequence = int(parts[1]), int(parts[2])
+                    if row_stage == stage:
+                        self.seen[stage].add(sequence)
                         self.rows[stage] += 1
                 if rows:
                     self.cursors[execution_id] = (rows[-1].timestamp, rows[-1].id)

@@ -1,5 +1,10 @@
 name: preloop-capacity
 
+# Placeholder credentials (SECRET_KEY, POSTGRES_PASSWORD, DATABASE_URL) are
+# disposable and internal-only. This project uses an isolated Compose network
+# (internal: true, no published ports) and a throwaway database volume. Do not
+# reuse these values outside this lab or attach the network to other stacks.
+
 x-environment: &environment
   PRELOOP_DISABLE_TELEMETRY: "true"
   DATABASE_URL: postgresql+psycopg://capacity:capacity@postgres/capacity
