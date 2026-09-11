@@ -16,18 +16,19 @@ import type { FlowExecutionView } from './flow-execution-view';
 describe('FlowExecutionView, parked on a human decision', () => {
   let fetchStub: sinon.SinonStub;
 
+  const now = Date.now();
   const PARKED = {
     id: 'exec-parked',
     flow_id: 'flow-1',
     flow_name: 'Release security audit',
     status: 'WAITING_FOR_HUMAN',
-    start_time: '2026-09-08T00:45:00Z',
+    start_time: new Date(now - 2 * 60_000).toISOString(),
     end_time: null,
     mcp_usage_logs: [],
     park: {
       request_id: 'req-1',
-      since: '2026-09-08T00:47:00Z',
-      expires_at: '2026-09-11T00:47:00Z',
+      since: new Date(now - 90_000).toISOString(),
+      expires_at: new Date(now + 3 * 24 * 60 * 60_000).toISOString(),
       waiting_for: 'Security approvers',
       tool_name: 'ask_user',
       question: 'Waive CVE-2026-1234 for 90 days?',
