@@ -21,14 +21,12 @@ describe('FlowExecutionView, parked on a human decision', () => {
     flow_id: 'flow-1',
     flow_name: 'Release security audit',
     status: 'WAITING_FOR_HUMAN',
-    start_time: '2026-09-08T00:45:00Z',
+    start_time: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
     end_time: null,
     mcp_usage_logs: [],
     park: {
       request_id: 'req-1',
-      since: '2026-09-08T00:47:00Z',
-      // Wall-clock: a fixed 2026-09-11T00:47Z expiry closed in UTC CI
-      // after that instant and flipped the line to "window closed".
+      since: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
       expires_at: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString(),
       waiting_for: 'Security approvers',
       tool_name: 'ask_user',
