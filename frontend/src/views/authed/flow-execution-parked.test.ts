@@ -29,7 +29,7 @@ describe('FlowExecutionView, parked on a human decision', () => {
       park: {
         request_id: 'req-1',
         since: new Date(now - 2 * 60 * 1000).toISOString(),
-        expires_at: new Date(now + 60 * 60 * 1000).toISOString(),
+        expires_at: new Date(now + 2 * 24 * 60 * 60 * 1000).toISOString(),
         waiting_for: 'Security approvers',
         tool_name: 'ask_user',
         question: 'Waive CVE-2026-1234 for 90 days?',
