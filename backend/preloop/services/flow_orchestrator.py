@@ -2431,7 +2431,11 @@ class FlowExecutionOrchestrator:
         try:
             async for log_line in agent_executor.stream_logs(session_reference):
                 log_count += 1
-                logger.debug(f"Streamed log line #{log_count}: {log_line[:100]}")
+                logger.debug(
+                    "Streamed log line #%s (%s chars)",
+                    log_count,
+                    len(log_line),
+                )
 
                 await self._process_agent_log_line(
                     log_line,
@@ -2484,20 +2488,26 @@ class FlowExecutionOrchestrator:
         if stripped_line == FLOW_SUCCESS_SENTINEL:
             if not self._agent_exec_started:
                 logger.warning(
-                    f"[Sentinel] Ignoring sentinel match at line #{log_count} "
-                    f"— agent exec start marker not yet seen (prompt echo?). "
-                    f"Previous line: {previous_line[:120]!r}"
+                    "[Sentinel] Ignoring sentinel match at line #%s "
+                    "— agent exec start marker not yet seen (prompt echo?). "
+                    "Previous line length: %s",
+                    log_count,
+                    len(previous_line),
                 )
             elif self._success_sentinel_seen.is_set():
                 logger.warning(
-                    f"[Sentinel] Duplicate sentinel match at line #{log_count} "
-                    f"— already triggered. Previous line: {previous_line[:120]!r}"
+                    "[Sentinel] Duplicate sentinel match at line #%s "
+                    "— already triggered. Previous line length: %s",
+                    log_count,
+                    len(previous_line),
                 )
             else:
                 logger.info(
-                    f"[Sentinel] Success sentinel detected for {session_reference} "
-                    f"at line #{log_count}. "
-                    f"Previous line: {previous_line[:120]!r}"
+                    "[Sentinel] Success sentinel detected for %s at line #%s. "
+                    "Previous line length: %s",
+                    session_reference,
+                    log_count,
+                    len(previous_line),
                 )
                 self._success_sentinel_seen.set()
 
@@ -2538,8 +2548,8 @@ class FlowExecutionOrchestrator:
             self._inplace_nudge_unsupported = True
             logger.info(
                 "Agent runtime could not resume its session in place "
-                "for the completion contract: %s",
-                stripped_line,
+                "for the completion contract (%s chars)",
+                len(stripped_line),
             )
 
         previous_tool_calls_count = len(self.execution_logger.mcp_usage_logs)
@@ -3618,11 +3628,7 @@ class FlowExecutionOrchestrator:
         if self._agent_session is not None:
             return
         self._agent_session = parsed
-        logger.info(
-            "Agent reported CLI session %s (%s)",
-            parsed.get("session_id"),
-            parsed.get("agent_type"),
-        )
+        logger.info("Agent reported a CLI session")
         self.execution_logger.log_milestone("cli_session_captured", dict(parsed))
         if self.execution_log is not None:
             record_cli_session(self.db, self.execution_log.id, parsed)
@@ -3638,13 +3644,7 @@ class FlowExecutionOrchestrator:
         if parsed is None:
             return
         self._verification_evidence = parsed
-        logger.info(
-            "Publication gate evidence captured: allowed=%s status=%s profile=%s@%s",
-            parsed.get("allowed"),
-            parsed.get("status"),
-            parsed.get("profile_id"),
-            parsed.get("profile_version"),
-        )
+        logger.info("Publication gate evidence captured")
 
     def _resolve_verification_evidence(self) -> Optional[Dict[str, Any]]:
         """Gate evidence from the live stream, or from the stored log tail.

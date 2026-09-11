@@ -1,0 +1,9 @@
+{
+  "name": "preloop-environment-tools",
+  "private": true,
+  "description": "Pinned Codex and Playwright for environments/preloop/Dockerfile",
+  "dependencies": {
+    "@openai/codex": "0.153.4",
+    "playwright": "1.63.0"
+  }
+}
