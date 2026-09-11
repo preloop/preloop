@@ -285,6 +285,80 @@ class ReuseTests(unittest.TestCase):
             all_jobs["build-and-push"]["if"], "github.event_name == 'push'"
         )
 
+    def test_planner_runs_from_trusted_base_not_merge_tree(self) -> None:
+        workflow = yaml.safe_load((ROOT / reuse.WORKFLOW).read_text())
+        steps = workflow["jobs"]["changes"]["steps"]
+        checkouts = [
+            step
+            for step in steps
+            if step.get("uses", "").startswith("actions/checkout@")
+        ]
+        self.assertEqual(len(checkouts), 2)
+        merge, trusted = checkouts
+        self.assertEqual(merge["with"]["ref"], "${{ github.sha }}")
+        self.assertEqual(
+            trusted["with"]["ref"],
+            "${{ github.event.pull_request.base.sha || github.sha }}",
+        )
+        self.assertEqual(
+            trusted["with"]["repository"],
+            "${{ github.event.pull_request.base.repo.full_name || github.repository }}",
+        )
+        self.assertIn(
+            "scripts/ci/reuse_tests.py", str(trusted["with"]["sparse-checkout"])
+        )
+        self.assertFalse(trusted["with"]["sparse-checkout-cone-mode"])
+        self.assertEqual(
+            trusted["with"]["path"],
+            "${{ runner.temp }}/trusted-ci-planner",
+        )
+        self.assertTrue(trusted["continue-on-error"])
+        reuse_step = next(step for step in steps if step.get("id") == "reuse")
+        script = reuse_step["run"]
+        self.assertNotIn("python3 -I scripts/ci/reuse_tests.py", script)
+        self.assertIn('python3 -I "$TRUSTED_PLANNER"', script)
+        self.assertEqual(
+            reuse_step["env"]["TRUSTED_PLANNER"],
+            "${{ runner.temp }}/trusted-ci-planner/scripts/ci/reuse_tests.py",
+        )
+
+    def test_missing_trusted_planner_emits_fresh_outputs(self) -> None:
+        workflow = yaml.safe_load((ROOT / reuse.WORKFLOW).read_text())
+        reuse_step = next(
+            step
+            for step in workflow["jobs"]["changes"]["steps"]
+            if step.get("id") == "reuse"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing.py"
+            output = Path(tmp) / "out"
+            env = {
+                **os.environ,
+                "GITHUB_OUTPUT": str(output),
+                "TRUSTED_PLANNER": str(missing),
+            }
+            result = subprocess.run(
+                ["bash", "-c", reuse_step["run"]],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            text = output.read_text()
+            self.assertIn("reuse_backend=false", text)
+            self.assertIn("reuse_frontend=false", text)
+            self.assertIn("reuse_plugins=false", text)
+            self.assertIn("reuse_cli=false", text)
+
+    def test_unreachable_historical_merge_commit_is_fail_closed(self) -> None:
+        api = reuse.GitHub(REPO, "synthetic-read-only-token")
+        with patch.object(
+            reuse,
+            "git",
+            side_effect=subprocess.CalledProcessError(128, "git"),
+        ):
+            self.assertFalse(api.matching_fingerprint(COMMIT, DIGEST))
+
     def test_real_ci_gate_rejects_unproven_skip_and_accepts_verified_reuse(
         self,
     ) -> None:
@@ -332,9 +406,20 @@ class ReuseTests(unittest.TestCase):
             )
             good = subprocess.run(["bash", "-c", script], env=env, capture_output=True)
             self.assertEqual(good.returncode, 0, good.stderr)
-            self.assertIn(
-                "reused successful", Path(env["GITHUB_STEP_SUMMARY"]).read_text()
+            summary = Path(env["GITHUB_STEP_SUMMARY"]).read_text()
+            self.assertIn("reused successful", summary)
+            self.assertIn("cli: informational", summary)
+            env.update(
+                BACKEND="success",
+                COVERAGE="success",
+                REUSE_BACKEND="",
+                EVIDENCE_BACKEND="",
+                EXPECT_CLI="true",
+                REUSE_CLI="",
+                EVIDENCE_CLI="",
             )
+            cli = subprocess.run(["bash", "-c", script], env=env, capture_output=True)
+            self.assertEqual(cli.returncode, 0, cli.stderr)
 
 
 if __name__ == "__main__":

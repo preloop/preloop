@@ -47,19 +47,41 @@ and requires byte equality with the current CI workflow. Only then does it trust
 the fixed GitHub-evaluated merge-SHA marker and successful checkout-verification
 step. Every reusable suite explicitly checks out that immutable merge SHA.
 
+The planner executable is never taken from the PR merge tree. CI checks out
+`scripts/ci/reuse_tests.py` from `${{ github.event.pull_request.base.sha }}`
+(or the event commit on push/dispatch) into a separate directory and runs that
+copy with isolated Python (`python3 -I`). Fork pull requests cannot skip
+required suites by editing the planner: GitHub loads the workflow from the
+base branch, and the planner bytes come from that same trusted ref. The
+`scripts/**` path filter still forces suites on when helpers change, but it is
+not the trust boundary — fabricated `reuse_*` outputs from an untrusted
+planner would otherwise override those jobs. If the planner is absent on the
+base (first introduction of this file), reuse is skipped and suites run fresh.
+
 The planner independently fetches and fingerprints the actual historical merge
 tree and compares it with the current checkout. PR head/base fields from old REST
 run records are not used as historical commit evidence: those fields can reflect
 the PR's current state. Caches and downloadable artifact markers never authorize
-reuse. The planner runs isolated Python (`-I`) and uses only read permissions.
-Malformed data, denied API access, missing objects or ambiguous evidence cause
-fresh tests instead of assumed success.
+reuse. Malformed data, denied API access, missing objects or ambiguous evidence
+cause fresh tests instead of assumed success.
 
-The required `CI` gate rejects an applicable skipped suite unless the planner
-provided verified reuse and a prior-run link. A failed/canceled current job still
-fails the gate even when reuse metadata exists. Keep `CI` as the required check;
-individual test jobs now show the full input fingerprint and can legitimately
-skip when earlier successful tests are reused.
+GitHub force-updates `refs/pull/N/merge`, so an older merge SHA recorded in a
+prior job name may no longer be fetchable. That fetch failure is fail-closed:
+that candidate is skipped and, if no other reachable run proves the suite,
+tests run fresh. The first reusable baseline after publication therefore needs a
+still-reachable merge commit.
+
+The required `CI` gate rejects an applicable skipped backend, coverage, frontend,
+or plugins suite unless the planner provided verified reuse and a prior-run
+link. A failed/canceled current job still fails the gate even when reuse
+metadata exists. Keep `CI` as the required check; individual test jobs now show
+the full input fingerprint and can legitimately skip when earlier successful
+tests are reused.
+
+`reuse_cli` / `evidence_cli` are computed and written to the changes-job summary
+and the required-gate summary, but they do not gate `CI`. The Windows suite is
+`continue-on-error` and is not a `build-and-push` dependency. If that job later
+becomes required, add `require_tests cli …` to the gate.
 
 ## Force fresh and limitations
 

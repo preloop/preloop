@@ -181,19 +181,27 @@ class GitHub:
         return git("show", f"{commit}:{WORKFLOW}") == git("show", f"HEAD:{WORKFLOW}")
 
     def matching_fingerprint(self, commit: str, digest: str) -> bool:
-        """Fetch the actual historic merge commit and independently hash its tree."""
+        """Fetch the actual historic merge commit and independently hash its tree.
+
+        GitHub force-updates refs/pull/N/merge, so an older merge SHA may no
+        longer be reachable. Treat fetch/object failures as no-match so the
+        caller can try another run instead of aborting all reuse.
+        """
         if not SHA.fullmatch(commit):
             return False
-        git(
-            "fetch",
-            "--no-tags",
-            "--depth=1",
-            f"https://github.com/{self.repo}.git",
-            commit,
-        )
-        if git("cat-file", "-t", commit).strip() != b"commit":
+        try:
+            git(
+                "fetch",
+                "--no-tags",
+                "--depth=1",
+                f"https://github.com/{self.repo}.git",
+                commit,
+            )
+            if git("cat-file", "-t", commit).strip() != b"commit":
+                return False
+            return fingerprint(commit) == digest
+        except subprocess.SubprocessError:
             return False
-        return fingerprint(commit) == digest
 
 
 def recent_run(

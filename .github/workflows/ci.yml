@@ -79,12 +79,46 @@ jobs:
           EXPECTED_SHA: ${{ github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
+      # Never execute scripts/ci/reuse_tests.py from the PR merge tree: a
+      # fork can rewrite it to emit reuse_*=true and skip required suites.
+      # The workflow file for forks is loaded from the base branch; load the
+      # planner from the same immutable base SHA (or this event's commit on
+      # push/dispatch). The merge checkout above is only the fingerprinted tree.
+      - name: Checkout trusted reuse planner
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.event.pull_request.base.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          sparse-checkout: scripts/ci/reuse_tests.py
+          sparse-checkout-cone-mode: false
+          path: ${{ runner.temp }}/trusted-ci-planner
+          persist-credentials: false
+        continue-on-error: true
+
       - name: Find successful identical-input tests
         id: reuse
         env:
           GH_TOKEN: ${{ github.token }}
           PRELOOP_DISABLE_TELEMETRY: "true"
-        run: python3 -I scripts/ci/reuse_tests.py
+          TRUSTED_PLANNER: ${{ runner.temp }}/trusted-ci-planner/scripts/ci/reuse_tests.py
+        run: |
+          set -euo pipefail
+          if [ ! -f "$TRUSTED_PLANNER" ]; then
+            echo "Trusted reuse planner missing on base; running fresh tests"
+            {
+              echo "fingerprint="
+              echo "reuse_backend=false"
+              echo "reuse_frontend=false"
+              echo "reuse_plugins=false"
+              echo "reuse_cli=false"
+              echo "evidence_backend="
+              echo "evidence_frontend="
+              echo "evidence_plugins="
+              echo "evidence_cli="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 -I "$TRUSTED_PLANNER"
 
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         if: github.event_name == 'pull_request'
@@ -811,6 +845,9 @@ jobs:
           EVIDENCE_BACKEND: ${{ needs.changes.outputs.evidence_backend }}
           EVIDENCE_FRONTEND: ${{ needs.changes.outputs.evidence_frontend }}
           EVIDENCE_PLUGINS: ${{ needs.changes.outputs.evidence_plugins }}
+          EXPECT_CLI: ${{ needs.changes.outputs.cli }}
+          REUSE_CLI: ${{ needs.changes.outputs.reuse_cli }}
+          EVIDENCE_CLI: ${{ needs.changes.outputs.evidence_cli }}
         run: |
           failed=0
           check() {
@@ -851,4 +888,8 @@ jobs:
           require_tests coverage "$COVERAGE" "$EXPECT_BACKEND" "$REUSE_BACKEND" "$EVIDENCE_BACKEND"
           require_tests frontend "$FRONTEND" "$EXPECT_FRONTEND" "$REUSE_FRONTEND" "$EVIDENCE_FRONTEND"
           require_tests plugins "$PLUGINS" "$EXPECT_PLUGINS" "$REUSE_PLUGINS" "$EVIDENCE_PLUGINS"
+          # Windows CLI is continue-on-error and is neither a required check
+          # nor a build-and-push dependency. Surface reuse metadata only; do
+          # not fail this gate on an unproven CLI skip.
+          echo "- cli: informational (paths=$EXPECT_CLI reuse=$REUSE_CLI evidence=${EVIDENCE_CLI:-none})" >> "$GITHUB_STEP_SUMMARY"
           exit "$failed"
