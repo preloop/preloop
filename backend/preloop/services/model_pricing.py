@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, Optional
 import litellm
 
 from preloop.models.models.ai_model import AIModel
+from preloop.services import alibaba_pricing
 from preloop.services.litellm_routing import PROVIDER_PREFIX as _PROVIDER_PREFIX
 
 logger = logging.getLogger(__name__)
@@ -348,7 +349,13 @@ def estimate_ai_model_usage_cost_detailed(
                 source="override" if pricing_override else "model_config",
             )
 
-    reported_cost = provider_reported_cost(usage_details)
+    # Alibaba documents token usage, not a per-request USD charge. A future
+    # arbitrary `cost` field must not bypass region/currency safeguards.
+    reported_cost = (
+        None
+        if alibaba_pricing.is_alibaba(ai_model)
+        else provider_reported_cost(usage_details)
+    )
     if reported_cost is not None:
         return CostEstimate(cost=reported_cost, source="provider")
 
@@ -404,6 +411,13 @@ def _estimate_litellm_cost(
     usage_details: Optional[Dict[str, Any]] = None,
 ) -> Optional[float]:
     """Estimate list-price model cost using LiteLLM metadata."""
+    if alibaba_pricing.is_alibaba(ai_model):
+        return alibaba_pricing.estimate(
+            ai_model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            usage_details=usage_details,
+        )
     for candidate in _iter_litellm_model_candidates(ai_model):
         if usage_details:
             try:
@@ -480,6 +494,10 @@ def _estimate_cost_from_pricing(
     )
     cache_creation_tokens = int(
         prompt_tokens_details.get("cache_creation_tokens")
+        or prompt_tokens_details.get("cache_creation_input_tokens")
+        or (prompt_tokens_details.get("cache_creation") or {}).get(
+            "ephemeral_5m_input_tokens"
+        )
         or usage_details.get("cache_creation_input_tokens")
         or 0
     )
@@ -554,6 +572,11 @@ def _apply_pricing_adjustments(
 
 def _iter_litellm_model_candidates(ai_model: AIModel) -> Iterable[str]:
     """Yield likely LiteLLM model names for the configured AI model."""
+    # Alibaba prices depend on serving region, deployment scope and cache mode.
+    # A bare/native-provider fallback can underprice the same SKU substantially.
+    # The scoped estimator and UI quote reader share alibaba_pricing instead.
+    if alibaba_pricing.is_alibaba(ai_model):
+        return
     provider = (ai_model.provider_name or "openai").strip().lower()
     model_identifier = (ai_model.model_identifier or "").strip()
     meta_data = ai_model.meta_data if isinstance(ai_model.meta_data, dict) else {}

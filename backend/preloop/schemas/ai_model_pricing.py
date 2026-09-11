@@ -45,7 +45,7 @@ class AIModelPrice(BaseModel):
 
 
 class AIModelPricingResponse(BaseModel):
-    """The price this account is actually charged for one model, and why."""
+    """Effective list or configured tariff estimate, not a settled invoice charge."""
 
     ai_model_id: str
     model_alias: Optional[str] = None

@@ -406,27 +406,25 @@ class TestQwenProviderPricing:
     Plus/flash families are tiered; we store the lower published tier.
     """
 
-    def test_candidates_include_dashscope_prefix(self) -> None:
+    def test_default_china_does_not_borrow_international_prices(self) -> None:
         ai_model = AIModel(provider_name="qwen", model_identifier="qwen3.8-max")
         candidates = list(_iter_litellm_model_candidates(ai_model))
-        assert "qwen3.8-max" in candidates
-        assert "dashscope/qwen3.8-max" in candidates
+        assert candidates == []
 
-    def test_dated_qwen_id_expands_to_dashscope_undated(self) -> None:
-        """Date-stamped Qwen ids must undate under dashscope, not openai."""
+    def test_dated_qwen_id_never_borrows_undated_prices(self) -> None:
+        """Snapshots can carry their own tariffs or peak/off-peak prices."""
         ai_model = AIModel(provider_name="qwen", model_identifier="qwen-plus-20250101")
         candidates = list(_iter_litellm_model_candidates(ai_model))
-        assert "dashscope/qwen-plus" in candidates
-        assert "openai/qwen-plus" not in candidates
+        assert candidates == []
 
-    def test_intl_endpoint_still_prices_as_dashscope(self) -> None:
+    def test_intl_endpoint_uses_scoped_tariffs_not_generic_candidates(self) -> None:
         ai_model = AIModel(
             provider_name="qwen",
             model_identifier="qwen3.8-max",
             api_endpoint="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         )
         candidates = list(_iter_litellm_model_candidates(ai_model))
-        assert "dashscope/qwen3.8-max" in candidates
+        assert candidates == []
 
     def test_bundled_table_prices_every_qwen_fallback_id(self) -> None:
         prices = json.loads(CATALOG_PATH.read_text())
@@ -460,7 +458,11 @@ class TestQwenProviderPricing:
 
     def test_qwen38_max_cost_resolves_through_estimator(self) -> None:
         load_catalog(force=True)
-        ai_model = AIModel(provider_name="qwen", model_identifier="qwen3.8-max")
+        ai_model = AIModel(
+            provider_name="qwen",
+            model_identifier="qwen3.8-max",
+            api_endpoint="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        )
         estimate = estimate_ai_model_usage_cost_detailed(
             ai_model,
             prompt_tokens=1_000_000,
