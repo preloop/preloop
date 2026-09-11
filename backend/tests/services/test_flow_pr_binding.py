@@ -298,6 +298,29 @@ class TestRecordCliSession:
             mod.crud_flow_execution.get = original_get
             mod.crud_flow_execution.set_cli_session = original_set
 
+    def test_does_not_log_session_id(self, caplog):
+        execution = MagicMock()
+        db = MagicMock()
+        from preloop.services import flow_pr_binding as mod
+
+        original_get = mod.crud_flow_execution.get
+        original_set = mod.crud_flow_execution.set_cli_session
+        mod.crud_flow_execution.get = MagicMock(return_value=execution)
+        mod.crud_flow_execution.set_cli_session = MagicMock()
+        try:
+            with caplog.at_level("INFO", logger="preloop.services.flow_pr_binding"):
+                record_cli_session(
+                    db,
+                    "exec-1",
+                    {"agent_type": "opencode", "session_id": "ses_ab12cd34"},
+                )
+            joined = "\n".join(caplog.messages)
+            assert "ses_ab12cd34" not in joined
+            assert "opencode" not in joined
+        finally:
+            mod.crud_flow_execution.get = original_get
+            mod.crud_flow_execution.set_cli_session = original_set
+
     def test_ignores_missing_session_id(self):
         db = MagicMock()
         from preloop.services import flow_pr_binding as mod

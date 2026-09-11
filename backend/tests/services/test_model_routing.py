@@ -522,19 +522,29 @@ class TestPrepareAndTrigger:
                 _rule("docs", any_labels=["documentation"], model_id=fast.id)
             ),
         )
+        body = {
+            "payload": {"labels": ["documentation"]},
+            MATRIX_OVERRIDES_KEY: {
+                "ai_model_id": str(foreign.id),
+                "agent_type": "codex",
+            },
+        }
         nats_patch, dispatch_patch = _patch_dispatch()
         with nats_patch, dispatch_patch:
-            response = client.post(
+            # A caller-supplied _resume is now refused outright at the
+            # endpoint rather than carried and ignored: it is not recomputed
+            # from trusted state the way the routing record is, and
+            # _resume.source_branch decides the branch the agent pushes to.
+            rejected = client.post(
                 f"/api/v1/flows/{flow.id}/trigger",
-                json={
-                    "payload": {"labels": ["documentation"]},
-                    "_resume": {"anything": True},
-                    MATRIX_OVERRIDES_KEY: {
-                        "ai_model_id": str(foreign.id),
-                        "agent_type": "codex",
-                    },
-                },
+                json={**body, "_resume": {"anything": True}},
             )
+            assert rejected.status_code == 400, rejected.text
+            assert "_resume" in rejected.json()["detail"]
+
+            # The foreign matrix override is still neutralized on a body the
+            # endpoint accepts, which is the property this test guards.
+            response = client.post(f"/api/v1/flows/{flow.id}/trigger", json=body)
         assert response.status_code == 200, response.text
         row = db_session.query(FlowExecution).filter_by(id=response.json()["id"]).one()
         assert MATRIX_OVERRIDES_KEY not in row.trigger_event_details
@@ -1228,19 +1238,27 @@ class TestRoutingEndpointTrust:
             "agent_type": "codex",
             "ai_model_id": str(foreign.id),
         }
+        body = {
+            ROUTING_RECORD_KEY: forged,
+            "payload": {
+                ROUTING_RECORD_KEY: forged,
+                MATRIX_OVERRIDES_KEY: forged,
+            },
+        }
         nats_patch, dispatch_patch = _patch_dispatch()
         with nats_patch, dispatch_patch:
-            response = client.post(
+            # Naming a prior execution in _resume is refused at the endpoint,
+            # so the forged continuation never reaches the trigger service.
+            rejected = client.post(
                 f"/api/v1/flows/{flow.id}/trigger",
-                json={
-                    "_resume": {"execution_id": prior_id},
-                    ROUTING_RECORD_KEY: forged,
-                    "payload": {
-                        ROUTING_RECORD_KEY: forged,
-                        MATRIX_OVERRIDES_KEY: forged,
-                    },
-                },
+                json={**body, "_resume": {"execution_id": prior_id}},
             )
+            assert rejected.status_code == 400, rejected.text
+            assert "_resume" in rejected.json()["detail"]
+
+            # And the forged routing record is still recomputed from the
+            # flow's own policy on a body the endpoint accepts.
+            response = client.post(f"/api/v1/flows/{flow.id}/trigger", json=body)
         assert response.status_code == 200, response.text
         row = db_session.query(FlowExecution).filter_by(id=response.json()["id"]).one()
         assert row.trigger_event_details[ROUTING_RECORD_KEY]["ai_model_id"] == str(

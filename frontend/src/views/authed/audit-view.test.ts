@@ -812,6 +812,148 @@ describe('AuditView', () => {
     });
   });
 
+  describe('DORA exports (#561)', () => {
+    let clickedAnchors: HTMLAnchorElement[];
+    let anchorClickStub: sinon.SinonStub;
+    let createObjectURLStub: sinon.SinonStub;
+    let revokeObjectURLStub: sinon.SinonStub;
+
+    beforeEach(() => {
+      clickedAnchors = [];
+      // Stop the browser actually navigating on the synthetic download.
+      anchorClickStub = sinon
+        .stub(HTMLAnchorElement.prototype, 'click')
+        .callsFake(function (this: HTMLAnchorElement) {
+          clickedAnchors.push(this);
+        });
+      createObjectURLStub = sinon
+        .stub(window.URL, 'createObjectURL')
+        .returns('blob:export');
+      revokeObjectURLStub = sinon.stub(window.URL, 'revokeObjectURL');
+    });
+
+    afterEach(() => {
+      anchorClickStub.restore();
+      createObjectURLStub.restore();
+      revokeObjectURLStub.restore();
+    });
+
+    const mountView = async () => {
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(
+        () => !(element as any)._loading,
+        'Audit view did not finish loading'
+      );
+      await element.updateComplete;
+      return element;
+    };
+
+    const exportButtons = (element: AuditView) =>
+      Array.from(
+        element.shadowRoot?.querySelectorAll(
+          '[slot="main-column"] sl-button'
+        ) || []
+      ) as HTMLElement[];
+
+    it('offers both exports in the header', async () => {
+      const element = await mountView();
+      const labels = exportButtons(element).map((button) =>
+        (button.textContent || '').trim()
+      );
+      expect(labels).to.deep.equal(['Asset register', 'Incident candidates']);
+      element.remove();
+    });
+
+    it('downloads the asset register with the filename the server chose', async () => {
+      fetchStub
+        .withArgs(sinon.match(/^\/api\/v1\/exports\/asset-register/))
+        .resolves(
+          new Response('record_type,asset_id\r\nagent,a-1\r\n', {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/csv',
+              'Content-Disposition':
+                'attachment; filename="preloop-asset-register-2026-03-15.csv"',
+              'X-Preloop-Export-Sha256': 'abc123def4567890',
+            },
+          })
+        );
+
+      const element = await mountView();
+      exportButtons(element)[0].click();
+
+      await waitUntil(
+        () => clickedAnchors.length === 1,
+        'the register should have been downloaded'
+      );
+      const requested = fetchStub
+        .getCalls()
+        .map((call) => call.args[0] as string)
+        .find((url) => url.startsWith('/api/v1/exports/asset-register'));
+      expect(requested).to.contain('format=csv');
+      expect(clickedAnchors[0].download).to.equal(
+        'preloop-asset-register-2026-03-15.csv'
+      );
+      element.remove();
+    });
+
+    it('sends the timeline date filter as the incident period', async () => {
+      fetchStub
+        .withArgs(sinon.match(/^\/api\/v1\/exports\/incident-candidates/))
+        .resolves(
+          new Response('record_type,occurred_at\r\n', {
+            status: 200,
+            headers: { 'Content-Type': 'text/csv' },
+          })
+        );
+
+      const element = await mountView();
+      (element as any)._startDate = '2026-01-01';
+      (element as any)._endDate = '2026-02-01';
+      await element.updateComplete;
+
+      exportButtons(element)[1].click();
+      await waitUntil(
+        () => clickedAnchors.length === 1,
+        'the candidates file should have been downloaded'
+      );
+
+      const requested = fetchStub
+        .getCalls()
+        .map((call) => call.args[0] as string)
+        .find((url) => url.startsWith('/api/v1/exports/incident-candidates'));
+      expect(requested).to.contain('from=2026-01-01');
+      expect(requested).to.contain('to=2026-02-01');
+      element.remove();
+    });
+
+    it('reports the server error instead of saving an error page', async () => {
+      fetchStub
+        .withArgs(sinon.match(/^\/api\/v1\/exports\/asset-register/))
+        .resolves(
+          new Response(
+            JSON.stringify({ detail: 'period is longer than 400 days' }),
+            {
+              status: 400,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          )
+        );
+
+      const element = await mountView();
+      exportButtons(element)[0].click();
+
+      await waitUntil(
+        () => !!document.querySelector('sl-alert[variant="danger"]'),
+        'a failure toast should appear'
+      );
+      expect(clickedAnchors.length, 'nothing should be saved').to.equal(0);
+      document.querySelectorAll('sl-alert').forEach((alert) => alert.remove());
+      element.remove();
+    });
+  });
+
   it('subscribes to the audit websocket topic and refreshes on live events', async () => {
     const element = document.createElement('audit-view') as AuditView;
     document.body.appendChild(element);

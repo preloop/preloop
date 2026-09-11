@@ -377,6 +377,25 @@ def estimate_ai_model_usage_cost_detailed(
     return CostEstimate(cost=list_cost, source="catalog")
 
 
+def _litellm_entry_has_explicit_price(candidate: str) -> bool:
+    """Return True when ``candidate`` is in litellm's map with a numeric price.
+
+    litellm 1.100's ``cost_per_token`` / ``get_model_info`` fabricate
+    ``(0.0, 0.0)`` for names that are not in the map (e.g. ``claude-sonnet-4``),
+    which would otherwise be recorded as a catalog $0 instead of unpriced.
+    An explicit ``0`` in the map (free models such as glm-4.7-flash) still
+    counts as priced.
+    """
+    entry = litellm.model_cost.get(candidate)
+    if not isinstance(entry, dict):
+        return False
+    for key in ("input_cost_per_token", "output_cost_per_token"):
+        value = entry.get(key)
+        if isinstance(value, (int, float)):
+            return True
+    return False
+
+
 def _estimate_litellm_cost(
     ai_model: AIModel,
     *,
@@ -388,7 +407,7 @@ def _estimate_litellm_cost(
     for candidate in _iter_litellm_model_candidates(ai_model):
         if usage_details:
             try:
-                return round(
+                cost = round(
                     float(
                         litellm.completion_cost(
                             model=candidate,
@@ -397,6 +416,9 @@ def _estimate_litellm_cost(
                     ),
                     6,
                 )
+                if cost == 0.0 and not _litellm_entry_has_explicit_price(candidate):
+                    continue
+                return cost
             except Exception:  # noqa: BLE001 - litellm cost functions raise various types
                 logger.debug(
                     "LiteLLM detailed pricing unavailable for model candidate %s",
@@ -409,7 +431,10 @@ def _estimate_litellm_cost(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
             )
-            return round(float(prompt_cost or 0.0) + float(completion_cost or 0.0), 6)
+            total = float(prompt_cost or 0.0) + float(completion_cost or 0.0)
+            if total == 0.0 and not _litellm_entry_has_explicit_price(candidate):
+                continue
+            return round(total, 6)
         except Exception:  # noqa: BLE001 - litellm cost functions raise various types
             logger.debug(
                 "LiteLLM pricing unavailable for model candidate %s",

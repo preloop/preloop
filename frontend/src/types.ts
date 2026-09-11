@@ -593,6 +593,54 @@ export interface AgentControlCommandResponse {
   [key: string]: unknown;
 }
 
+/**
+ * An operator note: a short instruction an identified human sent to a running
+ * agent, delivered at the agent's next turn boundary.
+ */
+export interface OperatorNote {
+  note_id: string;
+  /**
+   * Delivery is explicit because the failure mode of every push design is a
+   * silent drop: the sender always learns whether the agent got it.
+   */
+  state:
+    | 'pending'
+    | 'delivered'
+    | 'acknowledged'
+    | 'cancelled'
+    | 'expired'
+    | 'failed';
+  text: string;
+  managed_agent_id?: string | null;
+  runtime_session_id?: string | null;
+  author: {
+    user_id?: string | null;
+    display?: string | null;
+    auth_method?: string | null;
+  };
+  created_at?: string | null;
+  expires_at?: string | null;
+  delivered_at?: string | null;
+  /** Which transport carried it: gateway, hook, or a Claude Code channel. */
+  delivery_channel?: string | null;
+  delivered_turn_index?: number | null;
+  acknowledged_turn_id?: string | null;
+  cancelled_at?: string | null;
+}
+
+/** Exactly one target: an agent, one runtime session, or one execution. */
+export interface OperatorNoteCreateRequest {
+  text: string;
+  agent_id?: string;
+  runtime_session_id?: string;
+  execution_id?: string;
+  expires_in_seconds?: number;
+}
+
+export interface OperatorNoteList {
+  notes: OperatorNote[];
+}
+
 export interface ManagedAgentModelBindingSummary {
   id: string;
   ai_model_id: string | null;

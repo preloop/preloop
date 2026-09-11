@@ -917,6 +917,40 @@ Example payload (Release Security Audit):
 }
 ```
 
+#### Where `workspace_files` goes in the body
+
+A webhook body **is** the trigger payload, so the example above is
+delivered exactly as written. The manual trigger endpoint
+(`POST /api/v1/flows/{flow_id}/trigger`) is different: its body is the
+whole trigger event, and flow inputs conventionally sit under a
+`payload` object. Both of these are accepted and mean the same thing:
+
+```json
+{ "payload": { "release_ref": "v1.2.3", "workspace_files": [ ... ] } }
+```
+
+```json
+{ "payload": { "release_ref": "v1.2.3" }, "workspace_files": [ ... ] }
+```
+
+The lookup is `payload` first, then the top level, and it is the same
+for `product_provenance`. Declaring `workspace_files` in **both** places
+is a `400`: two lists describe two different runs, and neither reading
+of the request is more correct than the other.
+
+Until preloop/preloop#509 only the first shape seeded anything. The
+second was accepted with `200`, stored on the execution, and seeded
+nothing, so the agent started with an empty `/workspace` and spent a
+whole run finding out. If you are reading an execution from before that
+fix, check `_workspace_file_paths` on the trigger snapshot: no such key
+means no files were seeded, whatever the request said.
+
+Top-level keys are otherwise free-form and usable as
+`{{template}}` variables, with one exception: keys the platform writes
+itself (`_resume`, `_answers`, `_answers_prompt`, `_feedback_prompt`,
+`_ci_failure`, `_workspace_file_paths`, `_subject`) are rejected with a
+`400` naming the key rather than being quietly accepted.
+
 Recommended CI job outputs to retain and deliver: the SPDX / CycloneDX
 file(s), the license manifest (e.g. Yocto `license.manifest`), image or
 package manifests for cross-checks, and the previous audit's

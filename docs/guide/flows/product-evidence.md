@@ -23,6 +23,41 @@ An optional trigger payload field `product_provenance`
 When the field is absent the flow keeps legacy behaviour: one bound
 repository, or an artifact-only audit with no git checkouts.
 
+### What a mapping must contain
+
+A mapping has to bind the evidence to something identifiable, so it
+needs **at least one** of:
+
+- `repositories[]`, when the flow clones them. The remotes must match
+  `git_clone_config`; naming a repository the flow does not clone is
+  refused, because an unauthorized remote is the one thing the mapping
+  exists to prevent.
+- `sbom.digest` (`sha256:` plus 64 hex), which is what an **SBOM-only**
+  flow supplies. SBOM Verify (preset 004) ships `git_clone_config: null`
+  and has no constituent repositories to name.
+
+`repositories` used to be mandatory, which made the mapping unusable on
+exactly those SBOM-only flows: omitting it was rejected as an incomplete
+mapping and supplying it was rejected as unauthorized, so no accepted
+body existed (preloop/preloop#509). A mapping with neither is still
+refused: it names a product without identifying it, which is not
+provenance.
+
+Every shape error names three things: the schema, the offending key, and
+this page. Shape errors are answered by the **trigger** with a `400`,
+before an execution row exists, so a body the platform was always going
+to refuse no longer costs a run or leaves a FAILED row in the flow's
+history. Checks that need runtime facts (does the mapped SHA match the
+checkout this run actually got, does the digest match the supplied
+bytes) still happen during the execution, because that is where the
+facts are.
+
+### Where the mapping goes in the body
+
+`product_provenance` is read from `payload` first, then from the top
+level of the trigger body, and `workspace_files` follows the same rule.
+See [where `workspace_files` goes](security-audit-presets.md#where-workspace_files-goes-in-the-body).
+
 ## Example (synthetic)
 
 Two code repositories and one compliance repository for
@@ -226,3 +261,52 @@ annotated control-plane result (mapping and publication receipts).
 Sensitive fields are redacted. The dossier does not hash itself.
 Evidence fields come from a `kind=evidence` receipt; missing or
 unverified evidence is reported as not retained.
+
+## One SBOM per mapping (known limit)
+
+`sbom` is a single artefact: one `digest`, one `path`. A mapping can
+therefore bind exactly one SBOM to a release. That is the right shape
+for a single image or firmware build and the wrong shape for a product
+that ships several artefacts at one release (an image plus an installer,
+or one SBOM per architecture).
+
+Today, supplying several SBOM-shaped files without naming
+`sbom.path` fails with `Multiple SBOM-like workspace files supplied;
+name sbom.path`. That message is accurate and the behaviour is the safe
+one: guessing which artefact the digest refers to would put an unearned
+claim in the evidence pack. But naming one path only lets you verify
+one of them, and the others are then delivered to the run without ever
+being bound to the release.
+
+The proposed shape, **not implemented**, is an optional `artefacts[]`
+alongside `sbom`, with `sbom` remaining the single-artefact spelling:
+
+```json
+{
+  "artefacts": [
+    {
+      "name": "firmware-image",
+      "kind": "sbom",
+      "format": "spdx-2.3",
+      "path": "sbom/image.spdx.json",
+      "digest": "sha256:<64 hex>"
+    },
+    {
+      "name": "installer",
+      "kind": "sbom",
+      "format": "cyclonedx-1.5",
+      "path": "sbom/installer.cdx.json",
+      "digest": "sha256:<64 hex>"
+    }
+  ]
+}
+```
+
+Each entry would be digest-verified against its own supplied bytes and
+recorded with its own status, so a partially verified set is reported as
+such rather than collapsing to one verdict. Open questions before
+building it: whether a release verdict is the worst of its artefacts or
+one verdict per artefact, whether `sbom` becomes an alias for a
+single-entry `artefacts[]` or stays a separate field, and what the
+dossier manifest lists when one artefact verifies and another does not.
+Deciding those is the work; the schema above is the easy part.
