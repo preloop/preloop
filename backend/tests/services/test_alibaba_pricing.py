@@ -203,3 +203,36 @@ def test_impossible_cache_counts_do_not_produce_negative_cost() -> None:
         ).cost
         is None
     )
+
+
+def test_snapshot_with_gateway_alias_prices_observed_uncached_usage() -> None:
+    """A dated upstream ID retains its tariff despite the prefixed client alias."""
+    model = _model(
+        "qwen3.8-max-0902",
+        endpoint="https://tenant.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+    )
+    model.meta_data = {"gateway": {"model_alias": "qwen/qwen3.8-max-0902"}}
+    result = estimate_ai_model_usage_cost_detailed(
+        model,
+        prompt_tokens=72,
+        completion_tokens=69,
+        total_tokens=141,
+        usage_details={
+            "prompt_tokens": 72,
+            "completion_tokens": 69,
+            "total_tokens": 141,
+            "prompt_tokens_details": {
+                "text_tokens": 72,
+                "audio_tokens": None,
+                "cached_tokens": 0,
+            },
+            "completion_tokens_details": {
+                "text_tokens": 69,
+                "audio_tokens": None,
+                "reasoning_tokens": 59,
+            },
+        },
+    )
+    # Reasoning is included in the 69 output tokens, not added again.
+    assert result.cost == pytest.approx(0.000558)
+    assert result.source == "catalog"
