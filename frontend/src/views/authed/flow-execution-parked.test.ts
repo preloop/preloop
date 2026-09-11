@@ -27,7 +27,9 @@ describe('FlowExecutionView, parked on a human decision', () => {
     park: {
       request_id: 'req-1',
       since: '2026-09-08T00:47:00Z',
-      expires_at: '2026-09-11T00:47:00Z',
+      // Wall-clock: a fixed 2026-09-11T00:47Z expiry closed in UTC CI
+      // after that instant and flipped the line to "window closed".
+      expires_at: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString(),
       waiting_for: 'Security approvers',
       tool_name: 'ask_user',
       question: 'Waive CVE-2026-1234 for 90 days?',
