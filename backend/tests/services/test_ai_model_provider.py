@@ -16,6 +16,7 @@ from preloop.services.ai_model_provider import (
     ERROR_SDK_MISSING,
     ERROR_TIMEOUT,
     ERROR_UNKNOWN,
+    ERROR_UNSUPPORTED,
     FALLBACK_ERROR_REASONS,
     GOOGLE_LIST_PAGE_SIZE,
     GOOGLE_MAX_LIST_PAGES,
@@ -881,6 +882,15 @@ class TestGetGoogleModels:
 
 class TestGetQwenModels:
     """Test _get_qwen_models function."""
+
+    @pytest.fixture(autouse=True)
+    def native_catalog_unavailable(self):
+        """Exercise compatible fallback here; native pages have dedicated tests."""
+        with patch(
+            "preloop.services.ai_model_provider._get_qwen_native_models",
+            new=AsyncMock(return_value=ModelDiscoveryResult(error=ERROR_UNSUPPORTED)),
+        ):
+            yield
 
     @pytest.mark.asyncio
     async def test_get_qwen_models_without_key(self):

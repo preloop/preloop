@@ -169,6 +169,10 @@ def _catalog_entry(ai_model: AIModel) -> Optional[Tuple[str, Dict[str, Any]]]:
     reach the network. A model the catalog cannot price reads as "none" and
     the gateway's own background lookup fills the map later.
     """
+    from preloop.services import alibaba_pricing
+
+    if alibaba_pricing.is_alibaba(ai_model):
+        return alibaba_pricing.catalog_entry(ai_model)
     try:
         import litellm
 

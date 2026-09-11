@@ -26,7 +26,10 @@ from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.models.ai_model import AIModel
 from preloop.services.aux_model_retry import call_with_aux_retry
-from preloop.services.litellm_routing import apply_preloop_client_headers
+from preloop.services.litellm_routing import (
+    apply_preloop_client_headers,
+    model_api_base,
+)
 from preloop.services.secret_service import get_secret_service
 
 logger = logging.getLogger(__name__)
@@ -100,8 +103,8 @@ def resolve_model_call_credentials(
 
     # Routing is independent of credentials. Set it outside the try so a secret
     # backend failure cannot silently send the request to the wrong endpoint.
-    if model.api_endpoint:
-        kwargs["api_base"] = model.api_endpoint
+    if api_base := model_api_base(model):
+        kwargs["api_base"] = api_base
 
     try:
         resolved = get_secret_service().resolve_ai_model_credentials(

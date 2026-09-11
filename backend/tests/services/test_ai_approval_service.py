@@ -425,3 +425,87 @@ class TestGoogleSdkRetry:
 
         assert caught.value.status_code == 429
         assert caught.value.provider == "gemini"
+
+
+class TestAlibabaApprovalEndpoint:
+    """Approval policies must send Alibaba keys to their configured region."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "https://tenant.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+        ],
+    )
+    async def test_evaluate_preserves_serving_provider_and_region(
+        self, service: AIApprovalService, endpoint: str
+    ) -> None:
+        create = AsyncMock(
+            return_value=SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content='{"decision":"APPROVE","confidence":0.9,"reasoning":"Read only"}'
+                        )
+                    )
+                ]
+            )
+        )
+        workflow = make_workflow(
+            approval_config={
+                "model": "deepseek-v4-pro",
+                "provider": "qwen",
+                "api_key": "test-placeholder",
+                "api_endpoint": endpoint,
+            }
+        )
+        client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+        with patch("openai.AsyncOpenAI", return_value=client) as constructor:
+            result = await service.evaluate(
+                "read_file", {"path": "README.md"}, workflow
+            )
+        assert result.decision == "approve"
+        assert constructor.call_args.kwargs["base_url"] == endpoint
+        assert create.await_args.kwargs["model"] == "deepseek-v4-pro"
+
+    @pytest.mark.asyncio
+    async def test_qwen_default_stays_beijing(self, service: AIApprovalService) -> None:
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=AsyncMock(
+                        return_value=SimpleNamespace(
+                            choices=[
+                                SimpleNamespace(message=SimpleNamespace(content="ok"))
+                            ]
+                        )
+                    )
+                )
+            )
+        )
+        with patch("openai.AsyncOpenAI", return_value=client) as constructor:
+            await service._call_llm("prompt", "qwen3.8-max", provider="qwen")
+        assert (
+            constructor.call_args.kwargs["base_url"]
+            == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_invalid_qwen_endpoint_escalates_without_sending_key(
+        self, service: AIApprovalService
+    ) -> None:
+        workflow = make_workflow(
+            approval_config={
+                "model": "qwen3.8-max",
+                "provider": "qwen",
+                "api_key": "test-placeholder",
+                "api_endpoint": "https://attacker.example/compatible-mode/v1",
+            }
+        )
+        with patch("openai.AsyncOpenAI") as constructor:
+            result = await service.evaluate("read_file", {}, workflow)
+        assert result.decision == "uncertain"
+        constructor.assert_not_called()

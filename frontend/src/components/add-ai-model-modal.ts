@@ -37,7 +37,11 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   { value: 'anthropic', label: 'Anthropic', serviceKinds: ['llm'] },
   { value: 'moonshot', label: 'Moonshot (Kimi)', serviceKinds: ['llm'] },
   { value: 'google', label: 'Google', serviceKinds: ['llm', 'stt'] },
-  { value: 'qwen', label: 'Qwen', serviceKinds: ['llm'] },
+  {
+    value: 'qwen',
+    label: 'Alibaba Cloud Model Studio (Qwen)',
+    serviceKinds: ['llm'],
+  },
   { value: 'deepseek', label: 'DeepSeek', serviceKinds: ['llm'] },
   { value: 'zai', label: 'Z.ai (GLM)', serviceKinds: ['llm'] },
   { value: 'mistral', label: 'Mistral', serviceKinds: ['llm'] },
@@ -85,6 +89,38 @@ const ENDPOINT_LISTED_PROVIDERS = ['openai-compatible', 'custom', 'openrouter'];
  * availability is regional, so the region must be resolved before listing.
  */
 const BEDROCK_DEFAULT_REGION = 'us-east-1';
+
+const QWEN_SINGAPORE_KEY_URL =
+  'https://modelstudio.console.alibabacloud.com/ap-southeast-1?tab=globalset#/efm/api_key';
+const QWEN_BEIJING_KEY_URL = 'https://dashscope.console.aliyun.com/apiKey';
+const QWEN_US_KEY_HELP_URL =
+  'https://www.alibabacloud.com/help/en/model-studio/get-api-key';
+
+/**
+ * Hostname of an API endpoint. Substring matches on the raw URL are unsafe:
+ * `dashscope-intl.aliyuncs.com` can appear in a path or as a prefix of another
+ * host. Empty / unparseable endpoints are treated as omitted.
+ */
+function hostnameFromEndpoint(endpoint: string | undefined): string {
+  if (!endpoint?.trim()) {
+    return '';
+  }
+  const trimmed = endpoint.trim();
+  try {
+    const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(trimmed)
+      ? trimmed
+      : `https://${trimmed}`;
+    return (new URL(withScheme).hostname || '')
+      .toLowerCase()
+      .replace(/\.+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function hostnameEqualsOrSuffix(host: string, expected: string): boolean {
+  return host === expected || host.endsWith(`.${expected}`);
+}
 
 /**
  * Assemble the credential blob stored for a bedrock model. The gateway
@@ -477,8 +513,19 @@ export class AddAIModelModal extends LitElement {
         return 'https://console.anthropic.com/settings/keys';
       case 'google':
         return 'https://aistudio.google.com/app/apikey';
-      case 'qwen':
-        return 'https://dashscope.console.aliyun.com/apiKey';
+      case 'qwen': {
+        const host = hostnameFromEndpoint(this._currentModel.api_endpoint);
+        if (
+          hostnameEqualsOrSuffix(host, 'dashscope-intl.aliyuncs.com') ||
+          hostnameEqualsOrSuffix(host, 'ap-southeast-1.maas.aliyuncs.com')
+        ) {
+          return QWEN_SINGAPORE_KEY_URL;
+        }
+        if (hostnameEqualsOrSuffix(host, 'dashscope-us.aliyuncs.com')) {
+          return QWEN_US_KEY_HELP_URL;
+        }
+        return QWEN_BEIJING_KEY_URL;
+      }
       case 'deepseek':
         return 'https://platform.deepseek.com/api_keys';
       case 'moonshot':
@@ -1018,7 +1065,10 @@ export class AddAIModelModal extends LitElement {
                               https://dashscope-intl.aliyuncs.com/compatible-mode/v1.
                               US:
                               https://dashscope-us.aliyuncs.com/compatible-mode/v1.
-                              Keys are not interchangeable across regions.
+                              Workspace URLs ending in
+                              .maas.aliyuncs.com/compatible-mode/v1 are also
+                              supported. Keys are not interchangeable across
+                              regions.
                             </div>
                           `
                         : ''

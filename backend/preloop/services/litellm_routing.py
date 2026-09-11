@@ -312,3 +312,17 @@ def to_litellm_model(ai_model: AIModel) -> str:
         else:
             prefix = provider
     return f"{prefix}/{identifier}"
+
+
+def model_api_base(ai_model: Any) -> Optional[str]:
+    """Use the configured base, or the same Qwen default used by discovery.
+
+    Qwen uses LiteLLM's OpenAI-compatible adapter, which otherwise defaults
+    to OpenAI when the optional stored endpoint is absent.
+    """
+    endpoint = getattr(ai_model, "api_endpoint", None)
+    if (getattr(ai_model, "provider_name", "") or "").strip().lower() == "qwen":
+        from preloop.services.ai_model_provider import QWEN_DEFAULT_BASE_URL
+
+        return (endpoint or "").strip() or QWEN_DEFAULT_BASE_URL
+    return endpoint

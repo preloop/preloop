@@ -2,6 +2,9 @@
 
 A flow can choose a model and harness per execution from the issue's current labels. The flow's selected model and harness remain the default. This is not an automatic swap mid-conversation.
 
+For Alibaba-hosted chat models, see [Alibaba Cloud Model Studio](../alibaba-model-studio.md)
+for regional endpoints, live discovery, agent controls, and cost reporting.
+
 ## Configure rules
 
 On Create / Edit Flow, under **Model routing rules**:

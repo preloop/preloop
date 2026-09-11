@@ -12034,7 +12034,8 @@ components:
       - ai_model_id
       - source
       title: AIModelPricingResponse
-      description: The price this account is actually charged for one model, and why.
+      description: Effective list or configured tariff estimate, not a settled invoice
+        charge.
     AIModelRead:
       properties:
         id:

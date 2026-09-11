@@ -147,6 +147,7 @@ class AIApprovalService:
         # These are still from approval_config (no dedicated columns for secrets/provider)
         api_key = ai_config.get("api_key")
         provider = ai_config.get("provider")
+        api_endpoint = ai_config.get("api_endpoint")
         timeout = ai_config.get("timeout", self._default_timeout)
 
         # Merge ai_context into the evaluation context
@@ -173,6 +174,7 @@ class AIApprovalService:
                     model=model,
                     api_key=api_key,
                     provider=provider,
+                    api_endpoint=api_endpoint,
                 ),
                 timeout=timeout,
             )
@@ -297,6 +299,7 @@ class AIApprovalService:
         model: str,
         api_key: Optional[str] = None,
         provider: Optional[str] = None,
+        api_endpoint: Optional[str] = None,
     ) -> str:
         """Call the LLM to evaluate the tool call.
 
@@ -305,6 +308,7 @@ class AIApprovalService:
             model: Model identifier.
             api_key: API key for the provider.
             provider: Provider name (auto-detected from model if not specified).
+            api_endpoint: Optional Qwen region/workspace endpoint.
 
         Returns:
             Raw response from the LLM.
@@ -319,7 +323,9 @@ class AIApprovalService:
             return await self._call_google(prompt, model, api_key)
         else:
             # Default to OpenAI-compatible API (works for OpenAI, DeepSeek, Qwen, etc.)
-            return await self._call_openai(prompt, model, api_key, provider)
+            return await self._call_openai(
+                prompt, model, api_key, provider, api_endpoint=api_endpoint
+            )
 
     def _detect_provider(self, model: str) -> str:
         """Detect provider from model name.
@@ -348,6 +354,7 @@ class AIApprovalService:
         model: str,
         api_key: Optional[str] = None,
         provider: str = "openai",
+        api_endpoint: Optional[str] = None,
     ) -> str:
         """Call OpenAI-compatible API.
 
@@ -356,6 +363,7 @@ class AIApprovalService:
             model: Model identifier.
             api_key: API key.
             provider: Provider name for base URL configuration.
+            api_endpoint: Optional Qwen region/workspace endpoint.
 
         Returns:
             Response text from the API.
@@ -367,7 +375,16 @@ class AIApprovalService:
         if provider == "deepseek":
             base_url = "https://api.deepseek.com/v1"
         elif provider == "qwen":
-            base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            from preloop.services.ai_model_provider import (
+                QWEN_DEFAULT_BASE_URL,
+                validate_qwen_endpoint,
+            )
+
+            base_url = validate_qwen_endpoint(
+                api_endpoint.strip()
+                if isinstance(api_endpoint, str) and api_endpoint.strip()
+                else QWEN_DEFAULT_BASE_URL
+            )
 
         client_kwargs: Dict[str, Any] = {}
         if api_key:

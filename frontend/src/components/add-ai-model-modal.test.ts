@@ -827,6 +827,63 @@ describe('AddAIModelModal Qwen regional endpoints', () => {
     expect(help).to.contain('dashscope.aliyuncs.com');
     expect(help).to.contain('dashscope-intl.aliyuncs.com');
     expect(help).to.contain('dashscope-us.aliyuncs.com');
+    expect(help).to.contain('.maas.aliyuncs.com/compatible-mode/v1');
+  });
+
+  it('labels Model Studio while preserving the saved qwen provider value', async () => {
+    element.open = true;
+    await element.updateComplete;
+    const option = element.shadowRoot?.querySelector('sl-option[value="qwen"]');
+    expect(option?.textContent).to.contain('Alibaba Cloud Model Studio (Qwen)');
+  });
+
+  it('links Singapore workspace keys to the international console', () => {
+    (element as any)._currentModel.api_endpoint =
+      'https://example.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1';
+    expect((element as any)._getProviderKeyUrl('qwen')).to.equal(
+      'https://modelstudio.console.alibabacloud.com/ap-southeast-1?tab=globalset#/efm/api_key'
+    );
+  });
+
+  it('links the Singapore International host to the international console', () => {
+    (element as any)._currentModel.api_endpoint =
+      'https://dashscope-intl.aliyuncs.com/compatible-mode/v1';
+    expect((element as any)._getProviderKeyUrl('qwen')).to.equal(
+      'https://modelstudio.console.alibabacloud.com/ap-southeast-1?tab=globalset#/efm/api_key'
+    );
+  });
+
+  it('links Beijing and omitted endpoints to the China DashScope console', () => {
+    (element as any)._currentModel.api_endpoint =
+      'https://dashscope.aliyuncs.com/compatible-mode/v1';
+    expect((element as any)._getProviderKeyUrl('qwen')).to.equal(
+      'https://dashscope.console.aliyun.com/apiKey'
+    );
+    (element as any)._currentModel.api_endpoint = '';
+    expect((element as any)._getProviderKeyUrl('qwen')).to.equal(
+      'https://dashscope.console.aliyun.com/apiKey'
+    );
+  });
+
+  it('links the US host to the help page, which has no dedicated console', () => {
+    (element as any)._currentModel.api_endpoint =
+      'https://dashscope-us.aliyuncs.com/compatible-mode/v1';
+    expect((element as any)._getProviderKeyUrl('qwen')).to.equal(
+      'https://www.alibabacloud.com/help/en/model-studio/get-api-key'
+    );
+  });
+
+  it('does not treat a substring in the path or a lookalike host as Singapore', () => {
+    (element as any)._currentModel.api_endpoint =
+      'https://evil.example/dashscope-intl.aliyuncs.com';
+    expect((element as any)._getProviderKeyUrl('qwen')).to.equal(
+      'https://dashscope.console.aliyun.com/apiKey'
+    );
+    (element as any)._currentModel.api_endpoint =
+      'https://dashscope-intl.aliyuncs.com.evil.test/v1';
+    expect((element as any)._getProviderKeyUrl('qwen')).to.equal(
+      'https://dashscope.console.aliyun.com/apiKey'
+    );
   });
 });
 
