@@ -90,6 +90,38 @@ const ENDPOINT_LISTED_PROVIDERS = ['openai-compatible', 'custom', 'openrouter'];
  */
 const BEDROCK_DEFAULT_REGION = 'us-east-1';
 
+const QWEN_SINGAPORE_KEY_URL =
+  'https://modelstudio.console.alibabacloud.com/ap-southeast-1?tab=globalset#/efm/api_key';
+const QWEN_BEIJING_KEY_URL = 'https://dashscope.console.aliyun.com/apiKey';
+const QWEN_US_KEY_HELP_URL =
+  'https://www.alibabacloud.com/help/en/model-studio/get-api-key';
+
+/**
+ * Hostname of an API endpoint. Substring matches on the raw URL are unsafe:
+ * `dashscope-intl.aliyuncs.com` can appear in a path or as a prefix of another
+ * host. Empty / unparseable endpoints are treated as omitted.
+ */
+function hostnameFromEndpoint(endpoint: string | undefined): string {
+  if (!endpoint?.trim()) {
+    return '';
+  }
+  const trimmed = endpoint.trim();
+  try {
+    const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(trimmed)
+      ? trimmed
+      : `https://${trimmed}`;
+    return (new URL(withScheme).hostname || '')
+      .toLowerCase()
+      .replace(/\.+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function hostnameEqualsOrSuffix(host: string, expected: string): boolean {
+  return host === expected || host.endsWith(`.${expected}`);
+}
+
 /**
  * Assemble the credential blob stored for a bedrock model. The gateway
  * (openai_gateway._bedrock_credential_kwargs) parses this JSON back into
@@ -481,18 +513,19 @@ export class AddAIModelModal extends LitElement {
         return 'https://console.anthropic.com/settings/keys';
       case 'google':
         return 'https://aistudio.google.com/app/apikey';
-      case 'qwen':
+      case 'qwen': {
+        const host = hostnameFromEndpoint(this._currentModel.api_endpoint);
         if (
-          this._currentModel.api_endpoint?.includes(
-            'dashscope-intl.aliyuncs.com'
-          ) ||
-          this._currentModel.api_endpoint?.includes(
-            '.ap-southeast-1.maas.aliyuncs.com'
-          )
+          hostnameEqualsOrSuffix(host, 'dashscope-intl.aliyuncs.com') ||
+          hostnameEqualsOrSuffix(host, 'ap-southeast-1.maas.aliyuncs.com')
         ) {
-          return 'https://modelstudio.console.alibabacloud.com/ap-southeast-1?tab=globalset#/efm/api_key';
+          return QWEN_SINGAPORE_KEY_URL;
         }
-        return 'https://www.alibabacloud.com/help/en/model-studio/get-api-key';
+        if (hostnameEqualsOrSuffix(host, 'dashscope-us.aliyuncs.com')) {
+          return QWEN_US_KEY_HELP_URL;
+        }
+        return QWEN_BEIJING_KEY_URL;
+      }
       case 'deepseek':
         return 'https://platform.deepseek.com/api_keys';
       case 'moonshot':

@@ -844,6 +844,47 @@ describe('AddAIModelModal Qwen regional endpoints', () => {
       'https://modelstudio.console.alibabacloud.com/ap-southeast-1?tab=globalset#/efm/api_key'
     );
   });
+
+  it('links the Singapore International host to the international console', () => {
+    (element as any)._currentModel.api_endpoint =
+      'https://dashscope-intl.aliyuncs.com/compatible-mode/v1';
+    expect((element as any)._getProviderKeyUrl('qwen')).to.equal(
+      'https://modelstudio.console.alibabacloud.com/ap-southeast-1?tab=globalset#/efm/api_key'
+    );
+  });
+
+  it('links Beijing and omitted endpoints to the China DashScope console', () => {
+    (element as any)._currentModel.api_endpoint =
+      'https://dashscope.aliyuncs.com/compatible-mode/v1';
+    expect((element as any)._getProviderKeyUrl('qwen')).to.equal(
+      'https://dashscope.console.aliyun.com/apiKey'
+    );
+    (element as any)._currentModel.api_endpoint = '';
+    expect((element as any)._getProviderKeyUrl('qwen')).to.equal(
+      'https://dashscope.console.aliyun.com/apiKey'
+    );
+  });
+
+  it('links the US host to the help page, which has no dedicated console', () => {
+    (element as any)._currentModel.api_endpoint =
+      'https://dashscope-us.aliyuncs.com/compatible-mode/v1';
+    expect((element as any)._getProviderKeyUrl('qwen')).to.equal(
+      'https://www.alibabacloud.com/help/en/model-studio/get-api-key'
+    );
+  });
+
+  it('does not treat a substring in the path or a lookalike host as Singapore', () => {
+    (element as any)._currentModel.api_endpoint =
+      'https://evil.example/dashscope-intl.aliyuncs.com';
+    expect((element as any)._getProviderKeyUrl('qwen')).to.equal(
+      'https://dashscope.console.aliyun.com/apiKey'
+    );
+    (element as any)._currentModel.api_endpoint =
+      'https://dashscope-intl.aliyuncs.com.evil.test/v1';
+    expect((element as any)._getProviderKeyUrl('qwen')).to.equal(
+      'https://dashscope.console.aliyun.com/apiKey'
+    );
+  });
 });
 
 /**
