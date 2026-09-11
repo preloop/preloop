@@ -25,6 +25,7 @@ ERROR_CLASS_UPSTREAM_OVERLOADED = "upstream_overloaded"
 ERROR_CLASS_UPSTREAM_RATE_LIMITED = "upstream_rate_limited"
 ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED = "upstream_quota_exhausted"
 ERROR_CLASS_UPSTREAM_AUTH = "upstream_auth"
+ERROR_CLASS_UPSTREAM_PROTOCOL = "upstream_protocol"
 ERROR_CLASS_UPSTREAM_ERROR = "upstream_error"
 ERROR_CLASS_UPSTREAM_DISCONNECT = "upstream_disconnect"
 ERROR_CLASS_CLIENT_CANCELLED = "client_cancelled"
@@ -81,6 +82,19 @@ _OVERLOAD_MARKERS = (
     "at capacity",
     "server is busy",
 )
+
+# Explicit capability errors are deterministic even when a provider reports
+# HTTP 500. An opaque "Internal server error" remains eligible for recovery.
+_PROTOCOL_MISMATCH_MARKERS = (
+    "unsupported protocol",
+    "unsupported_protocol",
+    "unsupported endpoint",
+    "does not support chat completions",
+    "does not support chat/completions",
+    "only supports the responses api",
+    "only supported in the responses api",
+)
+
 
 # Textual fallbacks for connection-level failures when the exception type is
 # opaque (e.g. wrapped by a provider SDK).
@@ -192,6 +206,13 @@ def classify_upstream_error(exc: Exception) -> Optional[UpstreamErrorClass]:
     text = _exception_text(exc)
     status = _status_code(exc)
     retry_after = _retry_after_seconds(exc)
+
+    if _contains(text, _PROTOCOL_MISMATCH_MARKERS):
+        return UpstreamErrorClass(
+            error_class=ERROR_CLASS_UPSTREAM_PROTOCOL,
+            status_code=400,
+            terminal=True,
+        )
 
     # Provider dropped an in-flight stream; litellm raises this when a
     # fallback would be needed mid-stream (#117).
@@ -322,6 +343,7 @@ _RETRYABLE_ERROR_CLASSES = frozenset(
 _NON_RETRYABLE_ERROR_CLASSES = frozenset(
     {
         ERROR_CLASS_UPSTREAM_AUTH,
+        ERROR_CLASS_UPSTREAM_PROTOCOL,
         ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
         ERROR_CLASS_CLIENT_CANCELLED,
         ERROR_CLASS_STREAM_ABANDONED,

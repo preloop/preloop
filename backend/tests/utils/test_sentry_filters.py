@@ -43,3 +43,56 @@ class TestSentryFilters:
         hint = {"exc_info": (RuntimeError, RuntimeError("boom"), None)}
         assert should_drop_sentry_event(event, hint) is False
         assert sentry_before_send(event, hint) == event
+
+
+def test_filters_only_automatic_owned_openai_upstream_errors() -> None:
+    import httpx
+    from openai import InternalServerError
+
+    from preloop.utils.sentry_filters import gateway_upstream_call
+
+    error = InternalServerError(
+        "provider unavailable",
+        response=httpx.Response(
+            500, request=httpx.Request("POST", "https://example.com")
+        ),
+        body=None,
+    )
+    event = {
+        "exception": {
+            "values": [
+                {
+                    "type": "InternalServerError",
+                    "mechanism": {"type": "openai", "handled": False},
+                }
+            ]
+        }
+    }
+    hint = {"exc_info": (type(error), error, None)}
+    assert not should_drop_sentry_event(event, hint)
+    with gateway_upstream_call():
+        assert should_drop_sentry_event(event, hint)
+        assert not should_drop_sentry_event(event, {})
+        assert not should_drop_sentry_event(
+            event, {"exc_info": (RuntimeError, RuntimeError("adapter bug"), None)}
+        )
+        assert not should_drop_sentry_event(
+            {"exception": {"values": [{"mechanism": {"type": "generic"}}]}}, hint
+        )
+        with gateway_upstream_call():
+            assert should_drop_sentry_event(event, hint)
+        assert should_drop_sentry_event(event, hint)
+    assert not should_drop_sentry_event(event, hint)
+
+
+def test_owned_context_resets_on_exception() -> None:
+    import pytest
+
+    from preloop.utils.sentry_filters import (
+        _GATEWAY_UPSTREAM_CALL,
+        gateway_upstream_call,
+    )
+
+    with pytest.raises(RuntimeError), gateway_upstream_call():
+        raise RuntimeError("local failure")
+    assert _GATEWAY_UPSTREAM_CALL.get() is False

@@ -82,7 +82,11 @@ class TestAuthorizedGatewayModelList:
 
         def list_models(db, account_id, auth_context=None):
             captured["auth_context"] = auth_context
-            return [MagicMock(alias="openai/gpt-5", display_name="GPT 5")]
+            return [
+                MagicMock(
+                    alias="openai/gpt-5", display_name="GPT 5", api_protocol="responses"
+                )
+            ]
 
         context, build_context, api_key_id = await _prepare(
             orchestrator, list_models=list_models
@@ -93,7 +97,11 @@ class TestAuthorizedGatewayModelList:
         assert build_context.call_args.kwargs["api_key_id"] == str(api_key_id)
         assert captured["auth_context"] is build_context.return_value
         assert context["authorized_gateway_models"] == [
-            {"alias": "openai/gpt-5", "display_name": "GPT 5"}
+            {
+                "alias": "openai/gpt-5",
+                "display_name": "GPT 5",
+                "api_protocol": "responses",
+            }
         ]
 
     async def test_resolution_failure_is_logged_at_warning(

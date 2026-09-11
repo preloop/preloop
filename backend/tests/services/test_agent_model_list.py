@@ -272,3 +272,19 @@ class TestFlowExecutionPrincipal:
 
         assert BYOK_ALIAS in aliases
         assert BOUND_ALIAS not in aliases
+
+
+def test_authorized_descriptor_preserves_protocol_and_alias() -> None:
+    selected = _make_ai_model(
+        "fixture",
+        "responses-fixture",
+        "openai-compatible",
+        gateway_alias="friendly-alias",
+    )
+    selected.api_endpoint = "https://provider.example/v1"
+    selected.meta_data["gateway"]["responses_api"] = "native"
+    with patch(_CRUD_PATCH) as mock_crud:
+        mock_crud.get_all_for_account.return_value = [selected]
+        result = list_authorized_gateway_models(MagicMock(), "fixture-account")
+    assert result[0].alias == "friendly-alias"
+    assert result[0].api_protocol == "responses"

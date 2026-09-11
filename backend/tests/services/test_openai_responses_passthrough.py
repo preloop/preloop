@@ -981,7 +981,7 @@ def test_passthrough_does_not_pass_verify_as_a_request_kwarg(monkeypatch):
         patch.object(
             service,
             "_run_with_upstream_retries",
-            side_effect=lambda _provider, attempt: attempt(),
+            side_effect=lambda _provider, attempt, **_kwargs: attempt(),
         ),
         patch.object(service, "_capture_rate_limit_headers"),
         _patch_passthrough_client(client),

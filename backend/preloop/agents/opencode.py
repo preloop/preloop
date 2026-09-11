@@ -847,9 +847,13 @@ exit $OPENCODE_EXIT_CODE
                 ``authorized_gateway_models``).
 
         Returns:
-            ``{local_id: {"name": display_name}, ...}`` dict.
+            Model names keyed by local id, with per-model SDK overrides when
+            the gateway requires Responses.
         """
         models: Dict[str, Any] = {primary_local_id: {"name": primary_model}}
+
+        if execution_context.get("model_api_protocol") == "responses":
+            models[primary_local_id]["provider"] = {"npm": "@ai-sdk/openai"}
 
         authorized: list[dict] = execution_context.get("authorized_gateway_models", [])
         for entry in authorized:
@@ -857,9 +861,14 @@ exit $OPENCODE_EXIT_CODE
             if not alias:
                 continue
             local_id = _opencode_provider_local_model_id(alias, effective_provider)
-            if not local_id or local_id in models:
+            if not local_id:
                 continue
-            models[local_id] = {"name": entry.get("display_name") or alias}
+            models.setdefault(local_id, {"name": entry.get("display_name") or alias})
+            # Model-level npm wins over provider.npm in OpenCode. The native
+            # OpenAI SDK's languageModel() uses Responses; the compatible SDK
+            # continues to use chat for every other model in the same picker.
+            if entry.get("api_protocol") == "responses":
+                models[local_id]["provider"] = {"npm": "@ai-sdk/openai"}
 
         return models
 

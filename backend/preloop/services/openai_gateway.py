@@ -42,6 +42,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
+from preloop.utils.sentry_filters import gateway_upstream_call
 from preloop.models.crud import (
     crud_ai_model,
     crud_api_usage,
@@ -124,6 +125,7 @@ from preloop.services.upstream_errors import (
 )
 from preloop.services.gateway_error_alerts import (
     enqueue_gateway_5xx_alert,
+    gateway_alert_key,
     reserve_gateway_5xx_alert,
 )
 from preloop.services.model_price_catalog import schedule_price_lookup
@@ -550,6 +552,10 @@ class LiteLLMModelGatewayBackend:
         # extra_headers is the source of truth for Preloop branding.
         # LITELLM_USER_AGENT is set once at process startup.
         apply_preloop_client_headers(kwargs)
+        # The gateway owns the bounded retry budget, including stream prefetch.
+        # LiteLLM and its provider SDK must not multiply each owned attempt.
+        kwargs["num_retries"] = 0
+        kwargs["max_retries"] = 0
         anthropic_auth_token = kwargs.pop("_preloop_anthropic_auth_token", None)
         if anthropic_auth_token:
             with _anthropic_oauth_environment(str(anthropic_auth_token)):
@@ -576,6 +582,20 @@ class _PrefetchedUpstreamStream:
 
     def __next__(self) -> Any:
         return next(self._iterator)
+
+
+class _PrefetchedPassthroughResponse:
+    """Keep the first decoded body chunk and the original response together."""
+
+    def __init__(self, response: httpx.Response, text: Iterator[str]) -> None:
+        self.raw = response
+        self._text = text
+
+    def iter_text(self) -> Iterator[str]:
+        return self._text
+
+    def close(self) -> None:
+        self.raw.close()
 
 
 def get_model_gateway_backend(
@@ -1608,7 +1628,7 @@ class OpenAIGatewayService:
                     stream=False,
                 )
                 response_payload = self._anthropic_oauth_passthrough_complete(
-                    url=url, headers=headers, body=body
+                    url=url, headers=headers, body=body, ai_model=model
                 )
                 upstream_usage = (
                     response_payload.get("usage")
@@ -1779,7 +1799,7 @@ class OpenAIGatewayService:
                     stream=True,
                 )
                 passthrough_connection = self._open_anthropic_oauth_passthrough_stream(
-                    url=url, headers=headers, body=body
+                    url=url, headers=headers, body=body, ai_model=model
                 )
             else:
                 upstream_stream = self._open_upstream_stream(
@@ -4365,7 +4385,9 @@ class OpenAIGatewayService:
             # Recorded by the caller's pre-stream error handler.
             raise
         except Exception as exc:
-            raise self._normalize_upstream_error("openai", exc) from exc
+            raise self._normalize_upstream_error(
+                "openai", exc, ai_model=ai_model
+            ) from exc
 
         def event_stream() -> Iterator[str]:
             response_payload = self._build_responses_api_payload(
@@ -4591,7 +4613,9 @@ class OpenAIGatewayService:
             # Recorded by the caller's pre-stream error handler.
             raise
         except Exception as exc:
-            raise self._normalize_upstream_error("openai", exc) from exc
+            raise self._normalize_upstream_error(
+                "openai", exc, ai_model=ai_model
+            ) from exc
 
         def event_stream() -> Iterator[str]:
             recorded = False
@@ -5150,7 +5174,7 @@ class OpenAIGatewayService:
 
     @staticmethod
     def _anthropic_passthrough_upstream_error(
-        status_code: int, body_text: str
+        status_code: int, body_text: str, *, ai_model: Optional[AIModel] = None
     ) -> ModelGatewayAPIError:
         """Map an upstream Anthropic error body to a gateway error."""
         try:
@@ -5183,7 +5207,7 @@ class OpenAIGatewayService:
 
         # Prefer the shared classifier (#118) when the body is provider-side.
         classified_error = OpenAIGatewayService._normalize_upstream_error(
-            "anthropic", _PassthroughUpstreamError()
+            "anthropic", _PassthroughUpstreamError(), ai_model=ai_model
         )
         if classified_error.error_class is not None:
             if error_type:
@@ -5198,7 +5222,12 @@ class OpenAIGatewayService:
         )
 
     def _anthropic_oauth_passthrough_complete(
-        self, *, url: str, headers: Dict[str, str], body: Dict[str, Any]
+        self,
+        *,
+        url: str,
+        headers: Dict[str, str],
+        body: Dict[str, Any],
+        ai_model: Optional[AIModel] = None,
     ) -> Dict[str, Any]:
         """Execute a non-streaming passthrough request.
 
@@ -5232,7 +5261,7 @@ class OpenAIGatewayService:
             self._capture_rate_limit_headers(response.headers)
             if response.status_code >= 400:
                 raise self._anthropic_passthrough_upstream_error(
-                    response.status_code, response.text
+                    response.status_code, response.text, ai_model=ai_model
                 )
             try:
                 response_payload = response.json()
@@ -5255,7 +5284,12 @@ class OpenAIGatewayService:
             response.close()
 
     def _open_anthropic_oauth_passthrough_stream(
-        self, *, url: str, headers: Dict[str, str], body: Dict[str, Any]
+        self,
+        *,
+        url: str,
+        headers: Dict[str, str],
+        body: Dict[str, Any],
+        ai_model: Optional[AIModel] = None,
     ) -> tuple[httpx.Client, httpx.Response]:
         """Open a streaming passthrough request, eagerly checking the status.
 
@@ -5290,7 +5324,7 @@ class OpenAIGatewayService:
             finally:
                 response.close()
             raise self._anthropic_passthrough_upstream_error(
-                response.status_code, body_text
+                response.status_code, body_text, ai_model=ai_model
             )
         return client, response
 
@@ -5664,15 +5698,14 @@ class OpenAIGatewayService:
         return responses_passthrough_url(ai_model), headers, body
 
     @staticmethod
-    def _openai_passthrough_upstream_error(
-        status_code: int, body_text: str
-    ) -> ModelGatewayAPIError:
-        """Map an upstream Responses error body to a gateway error.
+    def _openai_passthrough_raw_error(
+        status_code: int, body_text: str, headers: httpx.Headers
+    ) -> Exception:
+        """Preserve provider status and headers until the retry budget is spent.
 
-        Mirrors ``_anthropic_passthrough_upstream_error``: prefer the shared
-        classifier (#118) so retry/alert behaviour matches the LiteLLM path,
-        and scrub through the same helper so upstream blobs cannot echo URLs
-        or keys back to the client.
+        Normalizing inside an attempt loses the real status (500 becomes 502)
+        and alerts before recovery can succeed. The outer retry wrapper alone
+        normalizes the final failure, with the resolved model for attribution.
         """
         try:
             status_code = int(status_code)
@@ -5702,22 +5735,10 @@ class OpenAIGatewayService:
                 self.status_code = status_code
                 self.message = message
                 self.error_type = error_type
+                self.response = httpx.Response(status_code, headers=headers)
                 super().__init__(message)
 
-        classified_error = OpenAIGatewayService._normalize_upstream_error(
-            "openai", _PassthroughUpstreamError()
-        )
-        if classified_error.error_class is not None:
-            if error_type:
-                classified_error.error_type = error_type
-            return classified_error
-
-        return ModelGatewayAPIError(
-            provider="openai",
-            status_code=status_code,
-            message=message,
-            error_type=error_type,
-        )
+        return _PassthroughUpstreamError()
 
     def _note_responses_api_absent(self, ai_model: AIModel, status_code: int) -> None:
         """Remember that this upstream has no Responses endpoint."""
@@ -5752,26 +5773,19 @@ class OpenAIGatewayService:
         self.release_db_for_wait(ai_model)
 
         def _attempt() -> Optional[Dict[str, Any]]:
-            try:
-                response = _openai_passthrough_http_client(ai_model).post(
-                    url,
-                    headers=headers,
-                    json=body,
-                )
-            except httpx.HTTPError as exc:
-                raise ModelGatewayAPIError(
-                    provider="openai",
-                    status_code=502,
-                    message=f"Gateway upstream error: {exc}",
-                ) from exc
+            response = _openai_passthrough_http_client(ai_model).post(
+                url,
+                headers=headers,
+                json=body,
+            )
             try:
                 self._capture_rate_limit_headers(response.headers)
                 if response.status_code in RESPONSES_API_ABSENT_STATUS_CODES:
                     self._note_responses_api_absent(ai_model, response.status_code)
                     return None
                 if response.status_code >= 400:
-                    raise self._openai_passthrough_upstream_error(
-                        response.status_code, response.text
+                    raise self._openai_passthrough_raw_error(
+                        response.status_code, response.text, response.headers
                     )
                 try:
                     response_payload = response.json()
@@ -5793,19 +5807,23 @@ class OpenAIGatewayService:
             finally:
                 response.close()
 
-        return self._run_with_upstream_retries("openai", _attempt)
+        return self._run_with_upstream_retries("openai", _attempt, ai_model=ai_model)
 
     def _open_openai_responses_passthrough_stream(
         self, ai_model: AIModel, payload: Dict[str, Any]
-    ) -> Optional[httpx.Response]:
+    ) -> Optional[_PrefetchedPassthroughResponse]:
         """Open a streaming native Responses request, checking status eagerly.
 
         The connection is opened before the generator reaches the ASGI layer
         so upstream auth/validation failures surface as normal gateway errors
         with a real status code instead of an empty HTTP 200 stream (#109).
+        The first nonempty body chunk is also read inside the retry attempt:
+        an HTTP 200 handshake alone does not mean the provider can stream.
+        Later reads never retry, even if the first chunk was only a heartbeat
+        or an incomplete SSE frame.
 
         Returns:
-            The open streaming response, or ``None`` when the upstream has no
+            The prefetched streaming response, or ``None`` when the upstream has no
             Responses endpoint and the caller must fall back.
 
         Raises:
@@ -5816,25 +5834,33 @@ class OpenAIGatewayService:
         )
         self.release_db_for_wait(ai_model)
 
-        def _attempt() -> Optional[httpx.Response]:
+        def _attempt() -> Optional[_PrefetchedPassthroughResponse]:
             client = _openai_passthrough_http_client(ai_model)
-            try:
-                request = client.build_request(
-                    "POST",
-                    url,
-                    headers=headers,
-                    json=body,
-                )
-                response = client.send(request, stream=True)
-            except httpx.HTTPError as exc:
-                raise ModelGatewayAPIError(
-                    provider="openai",
-                    status_code=502,
-                    message=f"Gateway upstream error: {exc}",
-                ) from exc
+            request = client.build_request(
+                "POST",
+                url,
+                headers=headers,
+                json=body,
+            )
+            response = client.send(request, stream=True)
             self._capture_rate_limit_headers(response.headers)
             if response.status_code < 400:
-                return response
+                try:
+                    text = response.iter_text()
+                    first_chunk = next(chunk for chunk in text if chunk)
+                except StopIteration:
+                    # An empty successful handshake is not a model response.
+                    self._close_failed_upstream_stream(response)
+                    raise httpx.RemoteProtocolError(
+                        "Upstream closed Responses stream before any body data"
+                    ) from None
+                except BaseException:
+                    # Cancellation is never retried, but still owns cleanup.
+                    self._close_failed_upstream_stream(response)
+                    raise
+                return _PrefetchedPassthroughResponse(
+                    response, chain([first_chunk], text)
+                )
             try:
                 body_text = response.read().decode("utf-8", errors="replace")
             except Exception:
@@ -5844,15 +5870,15 @@ class OpenAIGatewayService:
             if response.status_code in RESPONSES_API_ABSENT_STATUS_CODES:
                 self._note_responses_api_absent(ai_model, response.status_code)
                 return None
-            raise self._openai_passthrough_upstream_error(
-                response.status_code, body_text
+            raise self._openai_passthrough_raw_error(
+                response.status_code, body_text, response.headers
             )
 
-        return self._run_with_upstream_retries("openai", _attempt)
+        return self._run_with_upstream_retries("openai", _attempt, ai_model=ai_model)
 
     def _openai_responses_passthrough_event_stream(
         self,
-        upstream_response: httpx.Response,
+        upstream_response: httpx.Response | _PrefetchedPassthroughResponse,
         *,
         ai_model: AIModel,
         payload: Dict[str, Any],
@@ -6366,7 +6392,8 @@ class OpenAIGatewayService:
         last_exc: Optional[Exception] = None
         for attempt in range(max_attempts):
             try:
-                result = operation()
+                with gateway_upstream_call():
+                    result = operation()
                 # Count the retries that got us here, not the attempts: 0
                 # means "worked first time". Recorded on the usage row and
                 # surfaced on the gateway event as `retried`, so a run that
@@ -7288,12 +7315,23 @@ class OpenAIGatewayService:
             try:
                 from preloop.utils.secret_scrubbing import scrub_secrets
 
-                # One admin alert per (provider, status) per quiet window, so
-                # a sustained upstream outage pages once instead of once per
-                # request (#185). The slot is reserved before notifying so a
-                # failing notifier consumes it rather than re-arming the alert.
+                # Local gating bounds broker traffic; background delivery
+                # reserves the same incident across gateway replicas.
+                upstream_status = getattr(exc, "status_code", None)
+                if not isinstance(upstream_status, int):
+                    upstream_status = None
+                incident_key = gateway_alert_key(
+                    str(provider),
+                    status_code,
+                    account_id=str(getattr(ai_model, "account_id", None) or ""),
+                    upstream_provider=getattr(ai_model, "provider_name", None) or "",
+                    model=getattr(ai_model, "model_identifier", None) or "",
+                    model_id=str(getattr(ai_model, "id", None) or ""),
+                    error_class=classified.error_class if classified else "",
+                    upstream_status=upstream_status,
+                )
                 send_alert, suppressed_alerts = reserve_gateway_5xx_alert(
-                    str(provider), status_code
+                    str(provider), status_code, incident_key=incident_key
                 )
                 if send_alert:
                     scrubbed_trace = (scrub_secrets(str(exc)) or "")[:400]
@@ -7311,11 +7349,12 @@ class OpenAIGatewayService:
                         noun = "alert" if suppressed_alerts == 1 else "alerts"
                         alert_body += (
                             f"\n\nSuppressed {suppressed_alerts} similar {noun} "
-                            "since the previous notification."
+                            "on this gateway process during its previous quiet window."
                         )
                     enqueue_gateway_5xx_alert(
                         subject=f"[Preloop Alert] AI Gateway HTTP {status_code} Error ({provider})",
                         message=scrub_secrets(alert_body) or "",
+                        incident_key=incident_key,
                     )
             except Exception:
                 # Admin alert is best-effort; never block error mapping. Logged

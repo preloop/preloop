@@ -2386,7 +2386,11 @@ class FlowExecutionOrchestrator:
                         auth_context=auth_context,
                     )
                     execution_context["authorized_gateway_models"] = [
-                        {"alias": m.alias, "display_name": m.display_name}
+                        {
+                            "alias": m.alias,
+                            "display_name": m.display_name,
+                            "api_protocol": m.api_protocol,
+                        }
                         for m in authorized
                     ]
                 except Exception:

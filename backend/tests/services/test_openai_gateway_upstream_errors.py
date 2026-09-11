@@ -627,10 +627,14 @@ class TestMidStreamErrorLogHygiene:
 def _deliver_alerts_inline(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep payload/throttle assertions deterministic; delivery has separate tests."""
 
-    def _deliver(**kwargs: str) -> None:
+    def _deliver(
+        *, subject: str, message: str, incident_key: str | None = None
+    ) -> None:
         from preloop.sync.tasks import notify_admins
 
-        notify_admins(**kwargs)
+        # Reservation metadata belongs to the queue, not the notifier payload.
+        # Shared reservation/delivery behavior has dedicated alert tests.
+        notify_admins(subject=subject, message=message)
 
     monkeypatch.setattr(
         "preloop.services.openai_gateway.enqueue_gateway_5xx_alert", _deliver

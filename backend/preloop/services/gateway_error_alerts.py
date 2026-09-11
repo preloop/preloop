@@ -1,30 +1,17 @@
-"""Throttled admin alerting for sustained gateway 5xx failures.
+"""Bounded gateway failure alerts with fleet-wide incident reservations.
 
-Before this module, every gateway 5xx fired ``notify_admins`` from
-``OpenAIGatewayService._normalize_upstream_error`` with no rate limit,
-deduplication, or backoff: a sustained upstream outage sent one admin
-email/Slack/Mattermost message per request. This module caps that to one
-notification per ``(provider, status_code)`` key per quiet window and reports
-how many alerts were dropped while a window was open.
-
-Design notes:
-
-- **Per-process state, deliberately.** The window is an in-memory timestamp
-  guarded by a ``threading.Lock``, so no database or broker is involved and a
-  notifier failure cannot turn into a retry storm. With several gateway
-  workers the effective rate is ``N x workers`` per key/window; that is
-  documented rather than papered over with shared state.
-- **Reserve before notifying.** The window is reserved atomically and the
-  notifier is queued afterwards, outside the lock. A failing notifier therefore
-  consumes its window instead of re-arming the alert for the next request.
-- **Never raises.** Alert bookkeeping is best-effort: any unexpected error
-  falls back to the old behavior (send now) so a bug in the throttle cannot
-  silently silence outage alerts.
+Local windows keep broker load to one reservation per incident per process per
+quiet window. Eligible alerts compete for an atomic, expiring JetStream KV key
+in the background notification worker. Broker failures fall back to the already
+reserved local window. Reminder suppression counts describe this process only.
 """
 
 from __future__ import annotations
 
+import asyncio
 import atexit
+import hashlib
+import json
 import logging
 import math
 import os
@@ -36,7 +23,7 @@ from typing import Callable, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-#: Quiet period (seconds) between admin alerts for one (provider, status) key.
+#: Quiet period (seconds) between admin alerts for one incident key.
 DEFAULT_ALERT_INTERVAL_SECONDS = 300.0
 
 #: Env var overriding the quiet period; must parse to a finite positive number.
@@ -46,7 +33,10 @@ GATEWAY_ERROR_ALERT_INTERVAL_ENV = "GATEWAY_ERROR_ALERT_INTERVAL_SECONDS"
 _MIN_THROTTLED_STATUS = 500
 
 _lock = threading.Lock()
-_state: dict[Tuple[str, int], "_Window"] = {}
+_state: dict[str, "_Window"] = {}
+_MAX_LOCAL_WINDOWS = 4096
+_SHARED_TIMEOUT_SECONDS = 1.0
+_SHARED_MAX_BYTES = 4 * 1024 * 1024
 
 #: Monotonic clock, overridable in tests (``time.monotonic`` in production).
 _clock: Callable[[], float] = time.monotonic
@@ -54,7 +44,7 @@ _clock: Callable[[], float] = time.monotonic
 
 @dataclass
 class _Window:
-    """Quiet window for one (provider, status) alert key.
+    """Quiet window for one stable incident key.
 
     Attributes:
         next_allowed_at: Earliest monotonic time (inclusive) at which the
@@ -88,13 +78,118 @@ def _alert_interval_seconds() -> float:
     return value
 
 
+def gateway_alert_key(
+    provider: str,
+    status_code: int,
+    *,
+    account_id: str = "",
+    upstream_provider: str = "",
+    model: str = "",
+    model_id: str = "",
+    error_class: str = "",
+    upstream_status: int | None = None,
+) -> str:
+    """Hash stable incident identity without storing account/model data in NATS.
+
+    Do not include exception messages or request IDs: they can contain secrets
+    and vary for each occurrence of the same outage.
+    """
+    identity = [
+        str(account_id),
+        provider,
+        upstream_provider,
+        model,
+        str(model_id),
+        error_class,
+        status_code,
+        upstream_status,
+    ]
+    return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+
+
+async def _reserve_shared_alert(incident_key: str, interval: float) -> bool:
+    """Compete for a broker-expiring slot using a short-lived, isolated client.
+
+    The worker owns its event loop; sharing the application's async connection
+    across threads would be unsafe. Local gating bounds connection frequency.
+    A bucket per interval keeps broker TTL authoritative without clock skew or
+    changing another replica's configuration during a rolling deployment.
+    """
+    import nats
+    from nats.js.api import KeyValueConfig, StorageType
+    from nats.js.errors import BucketNotFoundError, KeyWrongLastSequenceError
+
+    from preloop.config import settings
+
+    connection = None
+    try:
+        async with asyncio.timeout(_SHARED_TIMEOUT_SECONDS):
+            connection = await nats.connect(
+                settings.nats_url,
+                name="preloop-gateway-alerts",
+                connect_timeout=0.25,
+                max_reconnect_attempts=0,
+                allow_reconnect=False,
+            )
+            jetstream = connection.jetstream(timeout=0.5)
+            interval_hash = hashlib.sha256(str(interval).encode()).hexdigest()[:12]
+            bucket = f"gateway_alerts_{interval_hash}"
+            try:
+                store = await jetstream.key_value(bucket)
+            except BucketNotFoundError:
+                # Identical concurrent stream creation is idempotent in NATS.
+                store = await jetstream.create_key_value(
+                    KeyValueConfig(
+                        bucket=bucket,
+                        ttl=interval,
+                        history=1,
+                        max_bytes=_SHARED_MAX_BYTES,
+                        max_value_size=1024,
+                        storage=StorageType.FILE,
+                    )
+                )
+            try:
+                await store.create(incident_key, b"1")
+            except KeyWrongLastSequenceError:
+                return False
+            return True
+    finally:
+        if connection is not None:
+            try:
+                await asyncio.wait_for(connection.close(), timeout=0.25)
+            except Exception:
+                # Cleanup failure must not turn a lost reservation into a
+                # fallback send and duplicate the winning replica's alert.
+                logger.warning(
+                    "Could not close gateway alert connection", exc_info=True
+                )
+
+
+def _reserve_shared_or_fallback(incident_key: str) -> bool:
+    """Fall back to the caller's local reservation if the broker is unavailable."""
+    try:
+        return asyncio.run(
+            _reserve_shared_alert(incident_key, _alert_interval_seconds())
+        )
+    except Exception:  # Alerting must not break requests or retry delivery.
+        logger.warning(
+            "Shared gateway alert reservation unavailable; using local cooldown",
+            exc_info=True,
+        )
+        return True
+
+
 def reserve_gateway_5xx_alert(
-    provider: str, status_code: int, *, now: Optional[float] = None
+    provider: str,
+    status_code: int,
+    *,
+    now: Optional[float] = None,
+    incident_key: str | None = None,
 ) -> Tuple[bool, int]:
     """Atomically reserve an admin-alert slot for a gateway 5xx.
 
-    The first error for a ``(provider, status_code)`` key sends immediately
-    and opens a quiet window; repeats inside the window are dropped. The
+    The first error for an incident key sends immediately and opens a quiet
+    window; repeats inside the window are dropped. The
     first error after the window closes sends again and reports how many
     alerts were suppressed while it was open; the counter then resets for the
     new window. Statuses below 500 are never reserved.
@@ -108,6 +203,8 @@ def reserve_gateway_5xx_alert(
         status_code: Normalized integer HTTP status of the failure.
         now: Monotonic timestamp override for tests. Defaults to the module
             clock (``time.monotonic``).
+        incident_key: Stable identity from :func:`gateway_alert_key`. Legacy
+            callers default to protocol and status only.
 
     Returns:
         A ``(send, suppressed)`` pair: ``send`` is True when the caller
@@ -118,7 +215,7 @@ def reserve_gateway_5xx_alert(
     try:
         if status_code < _MIN_THROTTLED_STATUS:
             return False, 0
-        key = (str(provider), int(status_code))
+        key = incident_key or gateway_alert_key(str(provider), int(status_code))
         interval = _alert_interval_seconds()
         current = _clock() if now is None else now
 
@@ -126,6 +223,19 @@ def reserve_gateway_5xx_alert(
             window = _state.get(key)
             if window is None or current >= window.next_allowed_at:
                 suppressed = window.suppressed if window is not None else 0
+                if window is None and len(_state) >= _MAX_LOCAL_WINDOWS:
+                    # Preserve active reservations instead of evicting them and
+                    # re-arming noisy incidents. Expired entries need no cleanup
+                    # task; a new incident reclaims their space here.
+                    expired = [
+                        k
+                        for k, value in _state.items()
+                        if current >= value.next_allowed_at
+                    ]
+                    for expired_key in expired:
+                        del _state[expired_key]
+                    if len(_state) >= _MAX_LOCAL_WINDOWS:
+                        return False, 0
                 _state[key] = _Window(next_allowed_at=current + interval)
                 return True, suppressed
             window.suppressed += 1
@@ -154,7 +264,9 @@ _ALERT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gateway-
 atexit.register(_ALERT_EXECUTOR.shutdown, wait=False, cancel_futures=True)
 
 
-def enqueue_gateway_5xx_alert(*, subject: str, message: str) -> None:
+def enqueue_gateway_5xx_alert(
+    *, subject: str, message: str, incident_key: str | None = None
+) -> None:
     """Schedule best-effort delivery without delaying the gateway response.
 
     The caller must reserve its quiet window first. A full queue or a failed
@@ -168,6 +280,10 @@ def enqueue_gateway_5xx_alert(*, subject: str, message: str) -> None:
         try:
             from preloop.sync.tasks import notify_admins
 
+            if incident_key is not None and not _reserve_shared_or_fallback(
+                incident_key
+            ):
+                return
             notify_admins(subject=subject, message=message)
         except Exception:
             logger.warning("Gateway admin notification failed", exc_info=True)
