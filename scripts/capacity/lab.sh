@@ -15,7 +15,7 @@ action=${1:-help}
 if [[ $# -gt 0 ]]; then shift; fi
 case "$action" in
   up)
-    if [[ -z "${CAPACITY_IMAGE:-}" ]]; then "${compose[@]}" build; fi
+    if [[ -z "${CAPACITY_IMAGE:-}" ]]; then "${compose[@]}" build api; fi
     "${compose[@]}" up -d --wait api gateway fake
     ;;
   run)

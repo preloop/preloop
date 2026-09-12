@@ -27,12 +27,46 @@ def sample() -> dict[str, Any]:
     ids = command([*COMPOSE, "ps", "-aq"]).split()
     if not ids:
         return {"error": "no_capacity_containers"}
+    runtime_settings = []
     for row in json.loads(command(["docker", "inspect", *ids])):
         if (
             row.get("Config", {}).get("Labels", {}).get("com.docker.compose.project")
             != "preloop-capacity"
         ):
             raise ValueError("Unexpected Compose project")
+        config = row.get("Config", {})
+        host = row.get("HostConfig", {})
+        # Whitelist performance knobs; never archive arbitrary container env.
+        allowed = {
+            "DATABASE_POOL_SIZE",
+            "DATABASE_MAX_OVERFLOW",
+            "DATABASE_POOL_TIMEOUT",
+            "PRELOOP_SERVICE_ROLE",
+            "FAKE_MODEL_DELAY_MS",
+            "FAKE_TOKEN_DELAY_MS",
+            "FAKE_OUTPUT_TOKENS",
+            "FAKE_ERROR_EVERY",
+            "PRELOOP_DISABLE_TELEMETRY",
+        }
+        environment = {}
+        for entry in config.get("Env", []):
+            key, _, value = entry.partition("=")
+            if key in allowed:
+                environment[key] = value
+        runtime_settings.append(
+            {
+                "container_id": row.get("Id"),
+                "service": config.get("Labels", {}).get("com.docker.compose.service"),
+                "image_id": row.get("Image"),
+                "nano_cpus": host.get("NanoCpus"),
+                "cpu_quota": host.get("CpuQuota"),
+                "cpu_period": host.get("CpuPeriod"),
+                "memory_bytes": host.get("Memory"),
+                "memory_swap_bytes": host.get("MemorySwap"),
+                "ports": row.get("NetworkSettings", {}).get("Ports"),
+                "environment": environment,
+            }
+        )
     stats = [
         json.loads(line)
         for line in command(
@@ -61,7 +95,12 @@ def sample() -> dict[str, Any]:
             "SELECT COALESCE(state, 'background'), COALESCE(wait_event_type, 'none'), count(*) FROM pg_stat_activity WHERE datname = current_database() GROUP BY 1, 2;",
         ]
     )
-    return {"containers": stats, "states": states, "postgres_activity": pg.splitlines()}
+    return {
+        "containers": stats,
+        "states": states,
+        "postgres_activity": pg.splitlines(),
+        "runtime_settings": runtime_settings,
+    }
 
 
 def main() -> None:
