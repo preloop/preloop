@@ -948,3 +948,52 @@ class TestOpenCodeLogFilterJs:
             ),
         )
         assert not session_file.exists()
+
+
+@pytest.mark.parametrize("primary_protocol", ["responses", "chat_completions"])
+def test_mixed_protocol_models_preserve_primary_and_title_adapter(
+    primary_protocol: str,
+) -> None:
+    agent = OpenCodeAgent({})
+    config = agent._build_opencode_config(
+        "primary-alias",
+        "custom",
+        {
+            "model_gateway_enabled": True,
+            "model_gateway_provider": "preloop",
+            "model_gateway_url": "https://gateway.example/openai/v1",
+            "model_api_protocol": primary_protocol,
+            "authorized_gateway_models": [
+                {"alias": "primary-alias", "api_protocol": primary_protocol},
+                {"alias": "responses-alias", "api_protocol": "responses"},
+                {"alias": "chat-alias", "api_protocol": "chat_completions"},
+            ],
+        },
+        600000,
+    )
+    provider = config["provider"]["preloop"]
+    assert provider["npm"] == "@ai-sdk/openai-compatible"
+    assert provider["models"]["responses-alias"]["provider"]["npm"] == "@ai-sdk/openai"
+    assert "provider" not in provider["models"]["chat-alias"]
+    assert ("provider" in provider["models"]["primary-alias"]) == (
+        primary_protocol == "responses"
+    )
+    assert config["model"] == config["small_model"] == "preloop/primary-alias"
+    assert provider["options"]["baseURL"] == "https://gateway.example/openai/v1"
+
+
+def test_primary_responses_protocol_survives_unavailable_authorized_inventory() -> None:
+    config = OpenCodeAgent({})._build_opencode_config(
+        "primary-fixture",
+        "custom",
+        {
+            "model_gateway_enabled": True,
+            "model_gateway_provider": "preloop",
+            "model_gateway_url": "https://gateway.example/openai/v1",
+            "model_api_protocol": "responses",
+        },
+        600000,
+    )
+    assert config["provider"]["preloop"]["models"]["primary-fixture"]["provider"] == {
+        "npm": "@ai-sdk/openai"
+    }

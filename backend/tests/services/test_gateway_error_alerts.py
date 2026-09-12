@@ -258,6 +258,7 @@ def _deliver_alerts_inline(monkeypatch: pytest.MonkeyPatch) -> None:
     def _deliver(**kwargs: str) -> None:
         from preloop.sync.tasks import notify_admins
 
+        kwargs.pop("incident_key", None)
         notify_admins(**kwargs)
 
     monkeypatch.setattr(
@@ -414,3 +415,70 @@ def test_direct_stream_error_renderer_preserves_model_and_original_network_class
     assert "upstream_disconnect" in frame
     assert warning.call_args.args[1:] == (protocol, "deepseek", "test-model", "network")
     notify.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"account_id": "account-b"},
+        {"provider_name": "other-provider"},
+        {"model_identifier": "other-model", "id": "other-model-row"},
+        {"id": "different-upstream-configuration"},
+    ],
+)
+def test_gateway_alerts_keep_private_model_incidents_separate(
+    changed: dict,
+) -> None:
+    service = _service()
+    values = dict(
+        account_id="account-a",
+        provider_name="example-provider",
+        model_identifier="example-model",
+        id="private-model-row",
+        api_endpoint="http://localhost:8000/v1",
+    )
+    first = SimpleNamespace(**values)
+    second = SimpleNamespace(**(values | changed))
+    exc = _FakeHTTPError("provider failed", status_code=500)
+    with patch("preloop.sync.tasks.notify_admins") as notify:
+        service._normalize_upstream_error("openai", exc, ai_model=first)
+        service._normalize_upstream_error("openai", exc, ai_model=first)
+        service._normalize_upstream_error("openai", exc, ai_model=second)
+        assert notify.call_count == 2
+
+
+def test_provider_outage_budget_coalesces_upstream_5xx_statuses() -> None:
+    service = _service()
+    with patch("preloop.services.openai_gateway.enqueue_gateway_5xx_alert") as enqueue:
+        first = service._normalize_upstream_error(
+            "openai", _FakeHTTPError("failed", status_code=500)
+        )
+        second = service._normalize_upstream_error(
+            "openai", _FakeHTTPError("failed", status_code=502)
+        )
+    assert first.status_code == second.status_code == 502
+    assert enqueue.call_count == 1
+
+
+def test_anthropic_passthrough_error_keeps_model_incidents_separate() -> None:
+    service = _service()
+    first = SimpleNamespace(
+        account_id="account-a",
+        provider_name="anthropic",
+        model_identifier="example-model",
+        id="upstream-one",
+        api_endpoint="https://gateway-one.example.com/v1",
+    )
+    second = SimpleNamespace(
+        account_id="account-a",
+        provider_name="anthropic",
+        model_identifier="example-model",
+        id="upstream-two",
+        api_endpoint="https://gateway-two.example.com/v1",
+    )
+    with patch("preloop.sync.tasks.notify_admins") as notify:
+        for model in [first, first, second]:
+            service._anthropic_passthrough_upstream_error(
+                500, '{"error":{"message":"unavailable"}}', ai_model=model
+            )
+        assert notify.call_count == 2

@@ -354,9 +354,23 @@ def test_native_provider_bypasses_release_before_http(
     response.status_code = 200
     response.headers = {}
     response.json.return_value = {"id": "response", "output": []}
+    wait_points: list[str] = []
+    first_frame = (
+        'event: response.completed\ndata: {"type":"response.completed",'
+        '"response":{"id":"response","output":[]}}\n\n'
+    )
+
+    def iter_text() -> Iterator[str]:
+        # This runs when prefetch reads the body, not when iter_text is called.
+        assert engine.pool.checkedout() == 0
+        wait_points.append("first_body_read")
+        yield first_frame
+
+    response.iter_text.side_effect = iter_text
 
     def sent(*_args: Any, **_kwargs: Any) -> Any:
         assert engine.pool.checkedout() == 0
+        wait_points.append("http_request")
         return response
 
     _checkout(service)
@@ -411,7 +425,18 @@ def test_native_provider_bypasses_release_before_http(
             if transport == "responses":
                 service._create_openai_responses_passthrough(model, {})
             else:
-                service._open_openai_responses_passthrough_stream(model, {})
+                stream = service._open_openai_responses_passthrough_stream(model, {})
+                assert wait_points == ["http_request", "first_body_read"]
+                assert stream is not None
+                try:
+                    assert list(stream.iter_text()) == [first_frame]
+                finally:
+                    stream.close()
+    assert wait_points == (
+        ["http_request", "first_body_read"]
+        if transport == "responses_stream"
+        else ["http_request"]
+    )
     assert engine.pool.checkedout() == 0
 
 

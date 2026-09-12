@@ -402,18 +402,318 @@ def test_cleanup_failure_preserves_original_upstream_error() -> None:
     assert backend.completion.call_count == 1
 
 
-def test_disconnect_after_prefetched_chunk_never_retries() -> None:
+@pytest.mark.parametrize(
+    "first_chunk",
+    [
+        {"delta": "already generated"},
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {"index": 0, "function": {"arguments": '{"path":'}}
+                        ]
+                    }
+                }
+            ]
+        },
+    ],
+)
+def test_disconnect_after_prefetched_chunk_never_retries(
+    first_chunk: dict[str, Any],
+) -> None:
     service, ai_model, backend = _service_and_model()
 
     def partial_stream() -> Iterator[dict[str, Any]]:
-        yield {"delta": "already generated"}
+        yield first_chunk
         raise _MidStreamFallbackError(_FOUNDER_502, is_pre_first_chunk=False)
 
     backend.completion.return_value = partial_stream()
     with patch("preloop.services.openai_gateway._sleep_before_upstream_retry") as sleep:
         stream = _open_stream(service, ai_model)
-        assert next(stream) == {"delta": "already generated"}
+        assert next(stream) == first_chunk
         with pytest.raises(_MidStreamFallbackError):
             next(stream)
     assert backend.completion.call_count == 1
     sleep.assert_not_called()
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 422, 500, 503])
+def test_gateway_owns_actual_sdk_retry_budget(status: int) -> None:
+    """Exercise LiteLLM and the real OpenAI SDK against an offline transport."""
+    import httpx
+    from litellm.llms.openai.openai import OpenAIChatCompletion
+
+    from preloop.services.openai_gateway import LiteLLMModelGatewayBackend
+
+    service, ai_model, _ = _service_and_model()
+    service.upstream_backend = LiteLLMModelGatewayBackend()
+    ai_model.api_endpoint = "https://retry-budget.example.com/v1"
+    calls = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(status, json={"error": {"message": "provider failure"}})
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(respond)) as client,
+        patch.object(
+            OpenAIChatCompletion, "_get_sync_http_client", return_value=client
+        ),
+        patch.object(
+            OpenAIChatCompletion, "get_cached_openai_client", return_value=None
+        ),
+        patch("preloop.services.openai_gateway._sleep_before_upstream_retry"),
+        patch("preloop.services.openai_gateway.enqueue_gateway_5xx_alert"),
+    ):
+        with pytest.raises(ModelGatewayAPIError):
+            _call(service, ai_model)
+    assert len(calls) == (3 if status >= 500 else 1)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_native_responses_retains_retry_after_until_success(stream: bool) -> None:
+    import httpx
+
+    service, ai_model, _ = _service_and_model()
+    failed = httpx.Response(
+        500,
+        headers={"retry-after": "3"},
+        json={"error": {"message": "Internal server error", "type": "api_error"}},
+    )
+    success = httpx.Response(200, json={"id": "resp_test", "output": []})
+    client = MagicMock()
+    (client.send if stream else client.post).side_effect = [failed, success]
+    with (
+        patch.object(
+            service,
+            "_prepare_openai_responses_passthrough",
+            return_value=("https://example.com/responses", {}, {}),
+        ),
+        patch(
+            "preloop.services.openai_gateway._openai_passthrough_http_client",
+            return_value=client,
+        ),
+        patch("preloop.services.openai_gateway._sleep_before_upstream_retry") as sleep,
+        patch("preloop.services.openai_gateway.enqueue_gateway_5xx_alert") as alert,
+    ):
+        operation = (
+            service._open_openai_responses_passthrough_stream
+            if stream
+            else service._create_openai_responses_passthrough
+        )
+        result = operation(ai_model, {})
+    assert result.raw is success if stream else result == success.json()
+    sleep.assert_called_once_with(3.0)
+    alert.assert_not_called()
+    assert service._last_upstream_retry_count == 1
+    assert failed.is_closed
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "This model does not support chat completions; use Responses",
+        "unsupported protocol",
+        "unsupported endpoint",
+        "invalid_request_error",
+    ],
+)
+def test_explicit_capability_failure_does_not_retry_even_on_500(message: str) -> None:
+    import httpx
+    from openai import InternalServerError
+
+    service, ai_model, backend = _service_and_model()
+    backend.completion.side_effect = InternalServerError(
+        message,
+        response=httpx.Response(
+            500, request=httpx.Request("POST", "https://example.com")
+        ),
+        body=None,
+    )
+    with patch("preloop.services.openai_gateway._sleep_before_upstream_retry") as sleep:
+        with pytest.raises(ModelGatewayAPIError) as failure:
+            _call(service, ai_model)
+    assert backend.completion.call_count == 1
+    sleep.assert_not_called()
+    if "invalid_request" not in message:
+        assert failure.value.error_class == "upstream_protocol"
+        assert failure.value.status_code == 400
+        assert failure.value.response_headers()["X-Preloop-Retry-Terminal"] == "true"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_native_responses_network_failure_recovers(stream: bool) -> None:
+    import httpx
+
+    service, ai_model, _ = _service_and_model()
+    client = MagicMock()
+    success = httpx.Response(200, json={"id": "resp_test", "output": []})
+    operation = client.send if stream else client.post
+    operation.side_effect = [httpx.ConnectError("disconnected"), success]
+    with (
+        patch.object(
+            service,
+            "_prepare_openai_responses_passthrough",
+            return_value=("https://example.com/responses", {}, {}),
+        ),
+        patch(
+            "preloop.services.openai_gateway._openai_passthrough_http_client",
+            return_value=client,
+        ),
+        patch("preloop.services.openai_gateway._sleep_before_upstream_retry"),
+    ):
+        method = (
+            service._open_openai_responses_passthrough_stream
+            if stream
+            else service._create_openai_responses_passthrough
+        )
+        method(ai_model, {})
+    assert operation.call_count == 2
+    assert service._last_upstream_retry_count == 1
+
+
+def test_real_sentry_openai_integration_filters_only_owned_failures() -> None:
+    """The automatic SDK capture occurs before LiteLLM/gateway exception handlers."""
+    import httpx
+    import sentry_sdk
+    from litellm.llms.openai.openai import OpenAIChatCompletion
+    from openai import InternalServerError, OpenAI
+    from sentry_sdk.integrations.openai import OpenAIIntegration
+
+    from preloop.services.openai_gateway import LiteLLMModelGatewayBackend
+    from preloop.utils.sentry_filters import sentry_before_send, gateway_upstream_call
+
+    captures = []
+    delivered = []
+
+    def before_send(event: dict[str, Any], hint: dict[str, Any]) -> Any:
+        result = sentry_before_send(event, hint)
+        captures.append((event, result))
+        return result
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": {"message": "provider failure"}})
+
+    service, ai_model, _ = _service_and_model()
+    service.upstream_backend = LiteLLMModelGatewayBackend()
+    ai_model.api_endpoint = "https://sentry-budget.example.com/v1"
+    with (
+        sentry_sdk.init(
+            dsn="https://public@example.com/1",
+            default_integrations=False,
+            integrations=[OpenAIIntegration()],
+            before_send=before_send,
+            transport=lambda event: delivered.append(event),
+        ),
+        httpx.Client(transport=httpx.MockTransport(respond)) as client,
+        patch.object(
+            OpenAIChatCompletion, "_get_sync_http_client", return_value=client
+        ),
+        patch.object(
+            OpenAIChatCompletion, "get_cached_openai_client", return_value=None
+        ),
+        patch("preloop.services.openai_gateway._sleep_before_upstream_retry"),
+        patch("preloop.services.openai_gateway.enqueue_gateway_5xx_alert"),
+    ):
+        with pytest.raises(ModelGatewayAPIError) as failure:
+            _call(service, ai_model)
+        assert failure.value.error_class == "upstream_error"
+        assert service._last_upstream_retry_count == 2
+        assert len(captures) == 3
+        assert all(result is None for _, result in captures)
+        assert delivered == []
+
+        # The same SDK exception outside the owned call remains visible.
+        sdk = OpenAI(
+            api_key="sk-test",
+            base_url=ai_model.api_endpoint,
+            http_client=client,
+            max_retries=0,
+        )
+        with pytest.raises(InternalServerError):
+            sdk.chat.completions.create(
+                model="gpt-5", messages=[{"role": "user", "content": "hi"}]
+            )
+        assert captures[-1][1] is not None
+        assert len(delivered) == 1
+
+        # A local application failure in the context must still be captured.
+        with gateway_upstream_call():
+            sentry_sdk.capture_exception(RuntimeError("local bug"))
+        assert len(delivered) == 2
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_native_responses_final_failure_alerts_once_with_model(stream: bool) -> None:
+    import httpx
+
+    service, ai_model, _ = _service_and_model()
+    client = MagicMock()
+    responses = [
+        httpx.Response(500, json={"error": {"message": "provider failure"}})
+        for _ in range(3)
+    ]
+    operation = client.send if stream else client.post
+    operation.side_effect = responses
+    with (
+        patch.object(
+            service,
+            "_prepare_openai_responses_passthrough",
+            return_value=("https://example.com/responses", {}, {}),
+        ),
+        patch(
+            "preloop.services.openai_gateway._openai_passthrough_http_client",
+            return_value=client,
+        ),
+        patch("preloop.services.openai_gateway._sleep_before_upstream_retry"),
+        patch(
+            "preloop.services.openai_gateway.reserve_gateway_5xx_alert",
+            return_value=(True, 0),
+        ) as reserve,
+        patch("preloop.services.openai_gateway.enqueue_gateway_5xx_alert") as alert,
+    ):
+        method = (
+            service._open_openai_responses_passthrough_stream
+            if stream
+            else service._create_openai_responses_passthrough
+        )
+        with pytest.raises(ModelGatewayAPIError) as failure:
+            method(ai_model, {})
+    assert operation.call_count == 3
+    assert failure.value.status_code == 502
+    assert failure.value.error_class == "upstream_error"
+    assert service._last_upstream_retry_count == 2
+    assert all(response.is_closed for response in responses)
+    reserve.assert_called_once()
+    alert.assert_called_once()
+    assert "Upstream model: gpt-5" in alert.call_args.kwargs["message"]
+
+
+def test_gateway_cancellation_is_not_retried_or_normalized() -> None:
+    import asyncio
+
+    service, ai_model, backend = _service_and_model()
+    backend.completion.side_effect = asyncio.CancelledError()
+    with patch("preloop.services.openai_gateway._sleep_before_upstream_retry") as sleep:
+        with pytest.raises(asyncio.CancelledError):
+            _call(service, ai_model)
+    backend.completion.assert_called_once()
+    sleep.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "failure_type", ["ConnectError", "ReadError", "ReadTimeout", "RemoteProtocolError"]
+)
+def test_transport_failure_recovers_before_output(failure_type: str) -> None:
+    import httpx
+
+    service, ai_model, backend = _service_and_model()
+    backend.completion.side_effect = [
+        getattr(httpx, failure_type)("provider disconnected"),
+        {"ok": True},
+    ]
+    with patch("preloop.services.openai_gateway._sleep_before_upstream_retry"):
+        assert _call(service, ai_model) == {"ok": True}
+    assert backend.completion.call_count == 2
+    assert service._last_upstream_retry_count == 1

@@ -32,6 +32,7 @@ class AuthorizedGatewayModel:
 
     alias: str
     display_name: str
+    api_protocol: str = "chat_completions"
 
 
 def list_authorized_gateway_models(
@@ -94,7 +95,13 @@ def list_authorized_gateway_models(
             continue
         seen_aliases.add(alias)
         display_name = ai_model.name or ai_model.model_identifier or alias
-        result.append(AuthorizedGatewayModel(alias=alias, display_name=display_name))
+        result.append(
+            AuthorizedGatewayModel(
+                alias=alias,
+                display_name=display_name,
+                api_protocol=runtime.model_api_protocol,
+            )
+        )
 
     result.sort(key=lambda m: m.alias)
     return result

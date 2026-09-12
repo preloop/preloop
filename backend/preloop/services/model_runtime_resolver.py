@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from preloop.models.models.ai_model import AIModel
+from preloop.services.model_api_protocol import model_api_protocol
 from preloop.services.secret_service import get_secret_service
 
 
@@ -39,12 +40,15 @@ class ResolvedModelRuntime:
     model_gateway_model_alias: Optional[str]
     model_gateway_provider: Optional[str]
 
+    model_api_protocol: str = "chat_completions"
+
     def to_execution_context(
         self, gateway_token: Optional[str] = None
     ) -> Dict[str, Any]:
         """Convert the resolved runtime to execution-context fields."""
         return {
             "model_identifier": self.model_identifier,
+            "model_api_protocol": self.model_api_protocol,
             "model_provider": self.model_provider,
             "model_endpoint": self.model_endpoint,
             "model_api_key": self.model_api_key,
@@ -242,6 +246,7 @@ def resolve_ai_model_runtime(
 
         return ResolvedModelRuntime(
             model_identifier=gateway_model_alias,
+            model_api_protocol=model_api_protocol(ai_model),
             model_provider=gateway_provider,
             model_endpoint=gateway_url,
             model_api_key=None,

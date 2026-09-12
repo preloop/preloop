@@ -412,6 +412,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Hosted OpenCode preserves each model's Responses or chat-completions protocol,
+  including title generation and mixed model inventories. Known OpenCode Zen
+  Responses models and explicit native overrides use the matching SDK adapter.
+- Gateway retries no longer multiply with hidden SDK retries. Transient failures
+  retain bounded recovery, explicit protocol mismatches return a terminal error,
+  and native Responses can recover from a disconnect before body output begins
+  without replaying an emitted stream. Handled upstream SDK errors no longer
+  appear as unhandled application failures in Sentry.
+- Gateway incident alerts share a bounded reservation across replicas. A local
+  throttle remains available when the broker cannot be reached.
+
 - **`workspace_files` beside `payload` is no longer silently ignored**: a
   manual trigger body shaped `{"payload": {...}, "workspace_files": [...]}`
   was accepted with 200, stored on the execution, and seeded nothing,
