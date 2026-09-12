@@ -19,6 +19,7 @@ from preloop.plugins.base import PluginManager
 from preloop.services.model_gateway_budget_enforcer import ModelGatewayBudgetEnforcer
 
 
+@pytest.mark.parametrize("policy_scope", ["account", "model_id", "model_alias"])
 @pytest.mark.parametrize("explicit_alias", [True, False])
 @pytest.mark.parametrize(
     "limit, pricing, policy_alias, expected_status",
@@ -40,6 +41,7 @@ def test_dedicated_gateway_applies_real_budget_before_dispatch(
     policy_alias: str | None,
     expected_status: int,
     explicit_alias: bool,
+    policy_scope: str,
 ) -> None:
     monkeypatch.setenv("PRELOOP_SERVICE_ROLE", "gateway")
     monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
@@ -72,14 +74,36 @@ def test_dedicated_gateway_applies_real_budget_before_dispatch(
         db_session,
         obj_in={
             "account_id": test_user.account_id,
-            "subject_type": "account",
+            "subject_type": "account" if policy_scope == "account" else "ai_model",
+            "subject_id": ai_model.id if policy_scope == "model_id" else None,
             "period": models.BudgetPeriod.monthly,
             "hard_limit_usd": limit,
             "model_alias": policy_alias
-            or (requested_alias if not explicit_alias else None),
+            or (
+                requested_alias
+                if (not explicit_alias or policy_scope == "model_alias")
+                else None
+            ),
             "soft_limit_usd": 1.0 if limit is None else None,
         },
     )
+    if policy_scope == "model_id" and limit == 100 and pricing:
+        from datetime import datetime, timezone
+        from preloop.models.crud.budget import crud_budget_spend, get_period_start
+
+        # Spend on other models must not exhaust an ID-only model policy.
+        crud_budget_spend.upsert_spend(
+            db_session,
+            account_id=test_user.account_id,
+            subject_type="account",
+            subject_id=None,
+            model_alias=None,
+            period=models.BudgetPeriod.monthly,
+            period_start=get_period_start(
+                datetime.now(timezone.utc), models.BudgetPeriod.monthly
+            ),
+            spend_increment_usd=1000.0,
+        )
     app = create_app()
     assert get_budget_enforcer not in app.dependency_overrides
     assert isinstance(get_budget_enforcer(), ModelGatewayBudgetEnforcer)
@@ -155,9 +179,49 @@ def test_subscription_zero_cost_is_distinct_from_unknown_pricing(
         patch.object(
             service.__class__, "_pricing_override_for_request", return_value=None
         ),
-        patch.object(crud_budget_policy, "get_policies_for_subject") as lookup,
+        patch.object(crud_budget_policy, "get_gateway_policies") as lookup,
     ):
         get_budget_enforcer().enforce_or_raise(
             db_session, auth, model, {"max_tokens": 10}
         )
     lookup.assert_not_called()
+
+
+def test_legacy_model_policy_lookup_is_account_scoped(
+    db_session: Session, test_user: models.User
+) -> None:
+    import uuid
+    from preloop.models.crud import crud_account
+
+    model_id = uuid.uuid4()
+    foreign = crud_account.create(
+        db_session, obj_in={"organization_name": "Other account"}
+    )
+    own = crud_budget_policy.create(
+        db_session,
+        obj_in={
+            "account_id": test_user.account_id,
+            "subject_type": "ai_model",
+            "subject_id": model_id,
+            "period": models.BudgetPeriod.monthly,
+            "hard_limit_usd": 10,
+        },
+    )
+    own_id = own.id
+    crud_budget_policy.create(
+        db_session,
+        obj_in={
+            "account_id": foreign.id,
+            "subject_type": "ai_model",
+            "subject_id": model_id,
+            "period": models.BudgetPeriod.monthly,
+            "hard_limit_usd": 0,
+        },
+    )
+    found = crud_budget_policy.get_gateway_policies(
+        db_session,
+        account_id=test_user.account_id,
+        ai_model_id=model_id,
+        model_alias="synthetic-model",
+    )
+    assert [policy.id for policy in found] == [own_id]

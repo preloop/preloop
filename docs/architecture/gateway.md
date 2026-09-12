@@ -61,3 +61,9 @@ no applicable hard limit remain usable when pricing is unknown.
 Checks estimate cost before dispatch; they do not reserve spend atomically.
 Concurrent calls can pass against the same remaining balance and exceed a limit
 when usage is recorded. These controls do not promise an exact concurrent ceiling.
+
+Policy evaluation fetches account-scoped candidates once and resolves a managed
+agent or its owner only when a matching policy type requires that attribution.
+Legacy model-ID and model-alias policy rows remain enforced against the model's
+canonical spend bucket. User-scoped policies apply to spending attributed to
+agents owned by that user; they do not cover every directly authenticated call.

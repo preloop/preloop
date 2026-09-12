@@ -4,7 +4,7 @@ from typing import Any, Optional, Sequence
 from datetime import datetime, timedelta
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
 
@@ -47,6 +47,55 @@ class CRUDBudgetPolicy(CRUDBase[BudgetPolicy]):
             self.model.subject_id == subject_id,
         )
         return db.execute(query).scalars().all()
+
+    def get_gateway_policies(
+        self,
+        db: Session,
+        *,
+        account_id: uuid.UUID,
+        ai_model_id: uuid.UUID,
+        model_alias: str | None,
+        api_key_id: uuid.UUID | None = None,
+    ) -> list[BudgetPolicy]:
+        """Fetch candidate gateway policies once, always scoped to the account.
+
+        Agent and owner IDs may require database resolution. Their candidate
+        policies are returned so the caller resolves those subjects only when
+        needed, then filters by the resolved ID before checking any spend.
+        """
+        subjects = [
+            and_(
+                self.model.subject_type.in_(tuple(ACCOUNT_LEVEL_SUBJECT_TYPES)),
+                self.model.subject_id.is_(None),
+            ),
+            self.model.subject_type.in_(("managed_agent", "user")),
+            and_(
+                self.model.subject_type == "ai_model",
+                or_(
+                    self.model.subject_id == ai_model_id,
+                    self.model.subject_id.is_(None),
+                ),
+            ),
+        ]
+        if api_key_id is not None:
+            subjects.append(
+                and_(
+                    self.model.subject_type == "api_key",
+                    self.model.subject_id == api_key_id,
+                )
+            )
+        return list(
+            db.execute(
+                select(self.model).where(
+                    self.model.account_id == account_id,
+                    or_(*subjects),
+                    or_(
+                        self.model.model_alias == model_alias,
+                        self.model.model_alias.is_(None),
+                    ),
+                )
+            ).scalars()
+        )
 
     def remove(
         self, db: Session, *, id: uuid.UUID, account_id: str

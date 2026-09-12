@@ -149,7 +149,6 @@ class ModelGatewayBudgetEnforcer:
 
         now = datetime.now(timezone.utc)
         account_id = auth_context.user.account_id
-        managed_agent_id = _resolve_managed_agent_id(db, auth_context)
 
         model_alias = resolve_ai_model_runtime(
             ai_model
@@ -157,20 +156,43 @@ class ModelGatewayBudgetEnforcer:
 
         provider = (ai_model.provider_name or "openai").lower()
 
-        owner_user_id = _resolve_owner_user_id(db, account_id, managed_agent_id)
-
-        # 2. Collect applicable policies once, regardless of lookup alias.
-        policies_by_id: Dict[uuid.UUID, models.BudgetPolicy] = {}
-        for subject_type, subject_id in _policy_lookup_subjects(
-            auth_context, managed_agent_id, owner_user_id
-        ):
-            for policy in crud_budget_policy.get_policies_for_subject(
-                db,
-                account_id=account_id,
-                subject_type=subject_type,
-                subject_id=subject_id,
-            ):
-                policies_by_id[policy.id] = policy
+        # Read candidate policies before resolving optional attribution. Accounts
+        # without policies pay one indexed policy query and no agent/owner reads.
+        candidates = crud_budget_policy.get_gateway_policies(
+            db,
+            account_id=account_id,
+            ai_model_id=ai_model.id,
+            model_alias=model_alias,
+            api_key_id=auth_context.api_key.id if auth_context.api_key else None,
+        )
+        if not candidates:
+            return
+        subject_types = {policy.subject_type for policy in candidates}
+        managed_agent_id = (
+            _resolve_managed_agent_id(db, auth_context)
+            if subject_types.intersection({"managed_agent", "user"})
+            else None
+        )
+        owner_user_id = (
+            _resolve_owner_user_id(db, account_id, managed_agent_id)
+            if "user" in subject_types
+            else None
+        )
+        policies_by_id = {
+            policy.id: policy
+            for policy in candidates
+            if (
+                policy.subject_type != "managed_agent"
+                or (
+                    managed_agent_id is not None
+                    and policy.subject_id == managed_agent_id
+                )
+            )
+            and (
+                policy.subject_type != "user"
+                or (owner_user_id is not None and policy.subject_id == owner_user_id)
+            )
+        }
 
         evaluations: List[
             Tuple[
@@ -215,6 +237,10 @@ class ModelGatewayBudgetEnforcer:
 
             p_start = get_period_start(now, policy.period)
             spend_type, spend_id, spend_model_alias = spend_bucket_for_policy(policy)
+            if policy.subject_type == "ai_model" and policy.subject_id is not None:
+                # Legacy ID-only policies consume this model's rollup, not the
+                # account-wide rollup selected by a missing stored alias.
+                spend_model_alias = model_alias
             bucket_key = (
                 spend_type,
                 spend_id,
