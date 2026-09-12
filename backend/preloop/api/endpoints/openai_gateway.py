@@ -158,6 +158,7 @@ def create_response(
         auth_context,
         budget_enforcer=budget_enforcer,
         owns_db_session=True,
+        client_identity_headers=request.headers,
         client_session_id=x_preloop_session_id
         or native_session_id_from_headers(request.headers, auth_context=auth_context),
     )

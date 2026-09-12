@@ -26,6 +26,8 @@ from typing import (
     Dict,
     Iterator,
     List,
+    Literal,
+    Mapping,
     Optional,
     Protocol,
     Sequence,
@@ -130,6 +132,7 @@ from preloop.services.gateway_error_alerts import (
     reserve_gateway_5xx_alert,
 )
 from preloop.services.model_price_catalog import schedule_price_lookup
+from preloop.services.model_api_protocol import OPENCODE_ZEN_ENDPOINT
 from preloop.services.unpriced_model_alert import (
     notify_unpriced_model,
     should_notify_unpriced_model,
@@ -622,6 +625,34 @@ _CLIENT_SESSION_ID_MAX_LEN = 200
 _CLIENT_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_.:\-]+$")
 
 
+# Preserve only caller identity, never ingress credentials or proxy headers.
+_RESPONSES_CLIENT_IDENTITY_LIMITS = {
+    "user-agent": 512,
+    "x-opencode-client": 256,
+    "x-opencode-request": 256,
+    "x-opencode-session": 256,
+    "x-opencode-project": 256,
+}
+
+
+def _bounded_client_identity_headers(
+    headers: Optional[Mapping[str, str]],
+) -> Dict[str, str]:
+    """Copy bounded printable HTTP identity fields without inventing values."""
+    identity: Dict[str, str] = {}
+    for name, value in (headers or {}).items():
+        key = name.lower()
+        limit = _RESPONSES_CLIENT_IDENTITY_LIMITS.get(key)
+        if (
+            limit is not None
+            and isinstance(value, str)
+            and 0 < len(value) <= limit
+            and all(32 <= ord(character) <= 126 for character in value)
+        ):
+            identity["User-Agent" if key == "user-agent" else key] = value
+    return identity
+
+
 def _normalize_client_session_id(raw: Optional[str]) -> Optional[str]:
     """Validate and normalize the client-supplied per-run session id.
 
@@ -724,6 +755,9 @@ def _session_id_from_openai_payload(
     return _normalize_client_session_id(payload.get("prompt_cache_key"))
 
 
+_GatewayCallPurpose = Literal["gateway", "runtime_session_summary"]
+
+
 class OpenAIGatewayService:
     """Service for Preloop's OpenAI-compatible gateway."""
 
@@ -740,9 +774,13 @@ class OpenAIGatewayService:
         client_session_id: Optional[str] = None,
         skip_runtime_session_resolution: bool = False,
         owns_db_session: bool = False,
+        client_identity_headers: Optional[Mapping[str, str]] = None,
     ) -> None:
         self.db = db
         self.auth_context = auth_context
+        self._client_identity_headers = _bounded_client_identity_headers(
+            client_identity_headers
+        )
         self._owns_db_session = owns_db_session
         self._wait_model: Optional[AIModel] = None
         self._wait_preserve: tuple[Any, ...] = ()
@@ -5696,6 +5734,11 @@ class OpenAIGatewayService:
             "Accept": "text/event-stream" if stream else "application/json",
             **preloop_client_headers(),
         }
+        if responses_passthrough_url(ai_model) == f"{OPENCODE_ZEN_ENDPOINT}/responses":
+            # Zen uses caller identity for client eligibility. Relay only what
+            # the caller actually sent, including a non-OpenCode User-Agent;
+            # the provider still decides whether that client is eligible.
+            headers.update(getattr(self, "_client_identity_headers", {}))
         return responses_passthrough_url(ai_model), headers, body
 
     @staticmethod
@@ -6368,6 +6411,7 @@ class OpenAIGatewayService:
         operation: Callable[[], Any],
         *,
         ai_model: Optional[AIModel] = None,
+        purpose: _GatewayCallPurpose = "gateway",
     ) -> Any:
         """Run ``operation`` with bounded retries for transient upstream faults.
 
@@ -6381,6 +6425,7 @@ class OpenAIGatewayService:
             provider: Gateway provider used to shape the final error.
             operation: Zero-arg callable to invoke.
             ai_model: Resolved upstream model for alert attribution.
+            purpose: Distinguish optional generation from a primary model request.
 
         Returns:
             The value returned by ``operation``.
@@ -6414,8 +6459,9 @@ class OpenAIGatewayService:
                     attempt,
                     retry_after_seconds=_upstream_retry_after_hint_seconds(exc),
                 )
-                logger.warning(
-                    "Retrying gateway upstream call after transient failure "
+                log_retry = logger.warning if purpose == "gateway" else logger.info
+                log_retry(
+                    f"Retrying {purpose} upstream call after transient failure "
                     "(attempt %s/%s, delay=%.2fs, error=%s)",
                     attempt + 1,
                     max_attempts,
@@ -6429,7 +6475,7 @@ class OpenAIGatewayService:
         if isinstance(last_exc, ModelGatewayAPIError):
             raise last_exc
         raise self._normalize_upstream_error(
-            provider, last_exc, ai_model=ai_model
+            provider, last_exc, ai_model=ai_model, purpose=purpose
         ) from last_exc
 
     def _call_litellm(
@@ -6441,6 +6487,7 @@ class OpenAIGatewayService:
         stream: bool = False,
         provider: GatewayProvider,
         retry_transient: bool = True,
+        purpose: _GatewayCallPurpose = "gateway",
     ):
         # Capture the ORIGINAL tools before optimization strips any of them so
         # per-tool attribution covers the request as the client sent it.
@@ -6468,7 +6515,7 @@ class OpenAIGatewayService:
 
         if retry_transient:
             response = self._run_with_upstream_retries(
-                provider, _invoke, ai_model=ai_model
+                provider, _invoke, ai_model=ai_model, purpose=purpose
             )
         else:
             response = _invoke()
@@ -7216,6 +7263,7 @@ class OpenAIGatewayService:
         *,
         ai_model: Optional[AIModel] = None,
         streaming: bool = False,
+        purpose: _GatewayCallPurpose = "gateway",
     ) -> ModelGatewayAPIError:
         """Map an upstream exception to a classified ModelGatewayAPIError.
 
@@ -7304,15 +7352,22 @@ class OpenAIGatewayService:
             # individual transport interruption is not an admin page. Preserve
             # the original class here; _stream_error maps network failures to
             # upstream_disconnect in the client-facing SSE error.
-            logger.warning(
+            log_disconnect = logger.warning if purpose == "gateway" else logger.info
+            log_message = (
                 "Gateway upstream disconnect: protocol=%s provider=%s model=%s "
-                "error_class=%s",
+                "error_class=%s"
+                if purpose == "gateway"
+                else "Optional session summary upstream disconnect: protocol=%s "
+                "provider=%s model=%s error_class=%s"
+            )
+            log_disconnect(
+                log_message,
                 provider,
                 getattr(ai_model, "provider_name", None),
                 getattr(ai_model, "model_identifier", None),
                 classified.error_class,
             )
-        if status_code >= 500 and not is_disconnect:
+        if status_code >= 500 and not is_disconnect and purpose == "gateway":
             try:
                 from preloop.utils.secret_scrubbing import scrub_secrets
 
@@ -8762,25 +8817,31 @@ class OpenAIGatewayService:
         response_payload: Optional[Dict[str, Any]],
         observed_at: datetime,
     ) -> None:
-        """Refresh the persisted session summary on first request, then occasionally."""
+        """Attempt an optional summary at successful call counts 1, 10, 20, ...
+
+        Persisted usage counts bound failed/empty initial summaries across
+        service instances as well as successful refreshes. Concurrent records
+        may observe the same boundary; this is cadence, not an in-flight lock.
+        """
+        status_code = getattr(usage, "status_code", None)
+        if not isinstance(status_code, int) or not 200 <= status_code < 300:
+            return
         if not self._runtime_session_summary_columns_available():
             return
         summary_state = self._runtime_session_summary_state(runtime_session.id)
         if summary_state is None:
             return
         existing_summary = summary_state.get("summary")
-        request_count = (
-            crud_runtime_session_activity.count_model_gateway_calls_for_session(
-                self.db,
-                account_id=self.auth_context.user.account_id,
-                runtime_session_id=runtime_session.id,
-            )
+        request_count = crud_api_usage.count_successful_gateway_calls_for_session(
+            self.db,
+            account_id=self.auth_context.user.account_id,
+            runtime_session_id=runtime_session.id,
         )
-        if existing_summary and not isinstance(request_count, int):
+        if not isinstance(request_count, int) or request_count < 1:
             return
-        if existing_summary and (
-            request_count < 1
-            or request_count % _RUNTIME_SESSION_SUMMARY_REFRESH_EVERY_REQUESTS != 0
+        if (
+            request_count != 1
+            and request_count % _RUNTIME_SESSION_SUMMARY_REFRESH_EVERY_REQUESTS != 0
         ):
             return
 
@@ -8807,10 +8868,15 @@ class OpenAIGatewayService:
                     limit=_RUNTIME_SESSION_SUMMARY_REFRESH_EVERY_REQUESTS,
                 ),
             )
-        except Exception:
+        except Exception as exc:
             logger.info(
-                "Skipping runtime session summary refresh for %s",
+                "Optional runtime session summary refresh failed: session=%s "
+                "provider=%s model=%s error_class=%s status=%s",
                 runtime_session.id,
+                getattr(default_model, "provider_name", None),
+                getattr(default_model, "model_identifier", None),
+                getattr(exc, "error_class", None),
+                getattr(exc, "status_code", None),
                 exc_info=True,
             )
             return
@@ -8895,7 +8961,17 @@ class OpenAIGatewayService:
             if (summary_model.provider_name or "").strip().lower() == "anthropic"
             else "openai"
         )
-        response = self._call_litellm(
+        # Auxiliary work must not replace the primary request's retry count,
+        # rate-limit snapshot, credential/context metadata or client identity.
+        summary_gateway = OpenAIGatewayService(
+            self.db,
+            self.auth_context,
+            upstream_backend=self.upstream_backend,
+            skip_runtime_session_resolution=True,
+            owns_db_session=self._owns_db_session,
+        )
+        summary_gateway._wait_preserve = (*self._wait_preserve, self._wait_model)
+        response = summary_gateway._call_litellm(
             summary_model,
             messages=[
                 {
@@ -8914,6 +8990,7 @@ class OpenAIGatewayService:
             ],
             payload={"temperature": 0.1, "max_tokens": 80},
             provider=summary_provider,
+            purpose="runtime_session_summary",
         )
         content = response.choices[0].message.content if response else None
         return str(content).strip() if content else None
