@@ -90,7 +90,7 @@ type SortColumn<T> = {
   value: (row: T) => number | string;
 };
 
-// Aggregated row for the Agents tab (grouped sessions by agent or flow).
+// Aggregated row for the Agents tab (agent sessions or full flow totals).
 type AgentGroupRow = {
   key: string;
   name: string;
@@ -1506,13 +1506,31 @@ export class CostView extends AuthedElement {
     );
   }
 
-  // Group sessions for the Agents tab. Agent-backed sessions collapse into an
-  // agent row (linked when agent_id is present), flow-backed sessions into a
-  // flow row, and everything else into a single "Other" row.
+  // Flow rows use complete period aggregates, not the bounded recent-session
+  // list. Flow-scoped requests belong to the flow in this mixed table, even
+  // when their session also names an agent, so their cost is counted once.
+  // Non-flow sessions retain their agent/Other grouping.
   private buildAgentGroups(): AgentGroupRow[] {
     const sessions = this.summary?.usage_by_session || [];
     const groups = new Map<string, AgentGroupRow>();
+    for (const flow of this.summary?.usage_by_flow || []) {
+      // The null-flow aggregate includes non-flow agents: it is not a flow
+      // row and must not be added again beside their session-based groups.
+      if (!flow.flow_id) continue;
+      const key = `flow:${flow.flow_id}`;
+      groups.set(key, {
+        key,
+        name: flow.flow_name || flow.flow_id,
+        agentId: null,
+        flowId: flow.flow_id,
+        requests: flow.request_count || 0,
+        totalTokens: flow.token_usage?.total_tokens || 0,
+        tokenUsage: flow.token_usage || null,
+        cost: flow.estimated_cost || 0,
+      });
+    }
     for (const session of sessions) {
+      if (session.flow_id) continue;
       let key: string;
       let name: string;
       let agentId: string | null = null;

@@ -24,7 +24,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Optional, Sequence, Union
+from typing import Any, Dict, Optional, Sequence, Union
 
 from sqlalchemy.orm import Session
 
@@ -56,6 +56,22 @@ class RepriceResult:
     cost_before: float = 0.0
     cost_after: float = 0.0
     dry_run: bool = False
+
+
+def _pricing_observed_at(meta_data: Any, fallback: datetime) -> datetime:
+    """Reuse the original pricing instant when a stream crossed a time band."""
+    snapshot = (
+        meta_data.get("pricing_snapshot") if isinstance(meta_data, dict) else None
+    )
+    value = snapshot.get("observed_at") if isinstance(snapshot, dict) else None
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+            if parsed.tzinfo is not None:
+                return parsed.astimezone(timezone.utc)
+        except ValueError:
+            pass
+    return fallback
 
 
 def reprice_single_row(
@@ -101,6 +117,7 @@ def reprice_single_row(
         total_tokens=int(row.total_tokens or 0),
         usage_details=usage_details if isinstance(usage_details, dict) else None,
         pricing_override=pricing_override,
+        observed_at=_pricing_observed_at(meta, row.timestamp),
     )
     if estimate.cost == row.estimated_cost and estimate.source == row.cost_source:
         return False
@@ -115,6 +132,7 @@ def reprice_single_row(
             "previous_estimated_cost": row.estimated_cost,
             "previous_cost_source": row.cost_source,
             "repriced_by": "live_price_lookup",
+            "pricing_snapshot": estimate.pricing_snapshot,
         },
     )
     if row.flow_execution_id is not None:
@@ -251,6 +269,7 @@ def reprice_gateway_usage(
             "total_tokens": int(row.total_tokens or 0),
             "usage_details": usage_details,
             "pricing_override": pricing_override,
+            "observed_at": _pricing_observed_at(meta, row.timestamp),
         }
         estimate = estimate_ai_model_usage_cost_detailed(ai_model, **estimate_kwargs)
 
@@ -299,6 +318,7 @@ def reprice_gateway_usage(
                 "repriced_at": repriced_at,
                 "previous_estimated_cost": row.estimated_cost,
                 "previous_cost_source": row.cost_source,
+                "pricing_snapshot": estimate.pricing_snapshot,
             },
             commit=False,
         )

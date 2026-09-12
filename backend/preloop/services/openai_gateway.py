@@ -8522,6 +8522,11 @@ class OpenAIGatewayService:
             ai_model=ai_model,
             model_alias=model_alias,
         )
+        # Estimate the request's start from the measured duration so crossing
+        # a tariff boundary during a stream does not select completion-time rates.
+        pricing_observed_at = datetime.now(timezone.utc) - timedelta(
+            seconds=max(duration, 0.0)
+        )
         cost_estimate = estimate_ai_model_usage_cost_detailed(
             ai_model,
             prompt_tokens=prompt_tokens,
@@ -8529,6 +8534,7 @@ class OpenAIGatewayService:
             total_tokens=total_tokens or 0,
             usage_details=usage_details,
             pricing_override=pricing_override,
+            observed_at=pricing_observed_at,
         )
         estimated_cost = cost_estimate.cost
         cost_source = cost_estimate.source
@@ -8618,6 +8624,12 @@ class OpenAIGatewayService:
                 if upstream_response
                 else None,
                 "usage_details": usage_details or None,
+                "pricing_snapshot": {
+                    **cost_estimate.pricing_snapshot,
+                    "timestamp_basis": "request_start_estimated_from_duration",
+                }
+                if cost_estimate.pricing_snapshot
+                else None,
                 "pricing_override_id": pricing_override.get("id")
                 if pricing_override
                 else None,

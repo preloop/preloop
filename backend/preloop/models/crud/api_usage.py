@@ -1417,10 +1417,13 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         runtime_principal_id: Optional[str] = None,
-        limit: int = 20,
+        limit: Optional[int] = 20,
     ) -> List[Dict[str, Any]]:
-        """Group gateway usage by flow."""
-        from ..models.flow import Flow
+        """Group gateway usage by flow.
+
+        Pass ``limit=None`` for complete account totals; the default only
+        returns the busiest flows and is appropriate for top-flow lists.
+        """
 
         base_query = (
             db.query(

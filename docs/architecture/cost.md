@@ -15,3 +15,17 @@ Cost analytics turns gateway telemetry into explainable spend and budget health.
 *   **Default AI Model Use:** Enterprise session-value analysis should call the account's default AI model through the Preloop Gateway, producing an auditable meta-usage record for the evaluation itself. The analysis should reference redacted session summaries, gateway events, tool calls, approvals, and final outcomes rather than unrestricted raw prompts.
 *   **Plugin Boundary:** Backend features beyond OSS summaries and budget-health tracking must live in Enterprise plugins under `./plugins/`, likely extending `plugins/billing/` for budget policy enforcement, pricing overrides, FinOps, credits, promotions, forecasting, exports, and value-review jobs. The shared frontend should gate those panels with feature flags.
 *   **Budget Actions:** Core enforcement should continue to block or warn before upstream dispatch. Enterprise plugins can add escalations, Slack/mobile notifications, approval requirements for expensive calls, and post-hoc anomaly workflows.
+
+## Reviewed price publication
+
+After an initial rollout and explicit configuration, each API, dedicated gateway,
+and worker polls the same trusted HTTPS price artifact. A reviewed publication
+updates supported flat token rates and native DeepSeek UTC peak/off-peak tariff
+revisions without deploying application code. Unknown policy structures require
+an estimator change, boundary tests, and a deployment. Refresh validates evidence,
+effective dates, model scope, and historical tariff continuity before replacing
+the current map; existing usage records, account overrides, and provider-reported
+costs are unchanged. On failure it retains last-known rates as potentially stale
+estimates and logs the failure. The disabled weekly factory review template
+produces an evidence-backed PR and generated feed, reporting providers it could
+not verify. See [configuration and publication](../guide/model-price-refresh.md).

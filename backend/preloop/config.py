@@ -477,6 +477,23 @@ class Settings(BaseSettings):
             "day so repeated traffic never re-triggers lookups."
         ),
     )
+    model_price_refresh_url: str = Field(
+        "",
+        description=(
+            "Trusted HTTPS URL of a reviewed price feed; empty disables refresh. "
+            "Refreshes supported current estimates in every API/gateway/worker "
+            "process without an application deployment. Never re-prices history."
+        ),
+    )
+    model_price_refresh_allowed_models: list[str] = Field(
+        default_factory=list,
+        description="Exact catalog keys the reviewed feed may update; required when enabled.",
+    )
+    model_price_refresh_interval_seconds: int = Field(
+        21600,
+        ge=60,
+        description="Reviewed price feed polling interval (default six hours).",
+    )
     model_catalog_sync_scheduled_enabled: bool = Field(
         False,
         description=(

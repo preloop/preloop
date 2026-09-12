@@ -12012,6 +12012,13 @@ components:
             format: date-time
           - type: 'null'
           title: Effective Until
+        catalog_provenance:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Catalog Provenance
+          description: Published-price provenance and schedule estimation assumptions.
         catalog_key:
           anyOf:
           - type: string
