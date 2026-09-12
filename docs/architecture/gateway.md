@@ -47,3 +47,16 @@ Dedicated `gateway` processes install plugin request dependencies and run `on_ga
 *   **Inactivity Closer (signal-less fallback):** Without a native id, session identity would derive solely from the runtime principal, which for a durable managed-agent credential is machine-scoped and never changes — so every conversation on that machine appends forever to one row that is never `ended_at`. `runtime_session_idle_timeout_minutes` (default 720) bounds this: when the newest generation's last activity is older than the window, that row is closed **at its own last activity** (never at "now", so history is not rewritten) and the next request opens a new generation keyed `<principal>:idle-<epoch>`. It is strictly a safety net — a native session id always wins, so agents from levels 1-3 above are unaffected — and setting it to `0` disables it entirely. This is deliberately preferred over prompt-prefix inference, which was measured and rejected: two unrelated Codex sessions were 99.6% byte-identical (false merge) while one OpenCode session's consecutive requests shared zero messages (false split), i.e. it fails in both directions at once.
 *   **Operator Actions:** Operators can end a session explicitly, which updates runtime state, emits audit and runtime-session events, and refreshes managed-agent summaries derived from the same principal.
 *   **Target Direction:** Introduce a runtime-wide session abstraction that can represent flow executions, independent CLI/desktop agent sessions, and later enrolled workforce entities without making `flow_execution` the universal long-term session model.
+
+### Budget enforcement across editions
+
+Basic BYOK spending policies run in the core gateway, including dedicated gateway
+processes. Enterprise extends the same enforcer for commercial controls and
+notifications; generic policies are evaluated once. A configured hard limit
+rejects requests whose model pricing is unknown. Subscription OAuth models with
+known zero marginal cost remain distinct from unpriced API usage. Requests with
+no applicable hard limit remain usable when pricing is unknown.
+
+Checks estimate cost before dispatch; they do not reserve spend atomically.
+Concurrent calls can pass against the same remaining balance and exceed a limit
+when usage is recorded. These controls do not promise an exact concurrent ceiling.

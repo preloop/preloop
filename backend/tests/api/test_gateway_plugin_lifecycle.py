@@ -65,12 +65,17 @@ def test_gateway_installs_plugin_dependencies_without_api_routes(
     assert app.dependency_overrides[get_budget_enforcer]() == "governed"
 
 
-def test_oss_gateway_keeps_noop_without_enterprise_plugin(
+def test_oss_gateway_uses_core_budget_enforcer_without_enterprise_plugin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     configure(monkeypatch, None)
     app = create_app()
     assert get_budget_enforcer not in app.dependency_overrides
+    from preloop.services.model_gateway_budget_enforcer import (
+        ModelGatewayBudgetEnforcer,
+    )
+
+    assert isinstance(get_budget_enforcer(), ModelGatewayBudgetEnforcer)
 
 
 @pytest.mark.asyncio
@@ -95,3 +100,34 @@ async def test_gateway_refuses_startup_when_required_hook_fails(
     with pytest.raises(RuntimeError, match="governance unavailable"):
         async with lifespan(create_app()):
             pytest.fail("An ungoverned gateway must not accept traffic")
+
+
+@pytest.mark.asyncio
+async def test_gateway_unwinds_partial_startup_in_reverse_order() -> None:
+    calls: list[str] = []
+
+    class ResourcePlugin(GatewayPlugin):
+        def __init__(self, name: str, *, fail: bool = False) -> None:
+            super().__init__(fail=fail)
+            self.name = name
+
+        @property
+        def metadata(self) -> PluginMetadata:
+            return PluginMetadata(self.name, "1", "tests", "Resources")
+
+        async def on_gateway_startup(self) -> None:
+            calls.append(f"start:{self.name}")
+            if self.fail:
+                raise RuntimeError("startup unavailable")
+
+        async def on_gateway_shutdown(self) -> None:
+            calls.append(f"stop:{self.name}")
+            if self.fail:
+                raise RuntimeError("cleanup also failed")
+
+    manager = PluginManager()
+    for name, fail in [("first", False), ("second", True), ("unstarted", False)]:
+        manager.register_plugin(ResourcePlugin(name, fail=fail))
+    with pytest.raises(RuntimeError, match="startup unavailable"):
+        await manager.startup_gateway()
+    assert calls == ["start:first", "start:second", "stop:second", "stop:first"]

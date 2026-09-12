@@ -336,8 +336,23 @@ class PluginManager:
 
     async def startup_gateway(self) -> None:
         """Initialize gateway policies; propagate failures before serving traffic."""
-        for plugin in self._plugins.values():
-            await plugin.on_gateway_startup()
+        attempted: list[Plugin] = []
+        try:
+            for plugin in self._plugins.values():
+                attempted.append(plugin)
+                await plugin.on_gateway_startup()
+        except BaseException:
+            # Include the failing plugin: it may have acquired resources before
+            # raising. Cleanup failures must not hide the startup exception.
+            for plugin in reversed(attempted):
+                try:
+                    await plugin.on_gateway_shutdown()
+                except BaseException:
+                    logger.exception(
+                        "Error cleaning up failed gateway startup for '%s'",
+                        plugin.metadata.name,
+                    )
+            raise
 
     async def shutdown_gateway(self) -> None:
         """Shut down only gateway resources, attempting every plugin."""
