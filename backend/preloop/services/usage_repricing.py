@@ -70,6 +70,8 @@ def _pricing_observed_at(meta_data: Any, fallback: datetime) -> datetime:
             if parsed.tzinfo is not None:
                 return parsed.astimezone(timezone.utc)
         except ValueError:
+            # Malformed legacy snapshots must not block repricing; use the
+            # usage row's timestamp below, as for missing or naive snapshots.
             pass
     return fallback
 
