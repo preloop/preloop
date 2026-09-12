@@ -548,16 +548,19 @@ async def test_gateway_auth_releases_pool_before_other_request_dependencies(
     gateway_pool: GatewayPoolFixture,
 ) -> None:
     """Authenticated state must not reserve capacity while later work queues."""
-    from preloop.api.deps import NoopBudgetEnforcer, get_budget_enforcer
+    from preloop.api.deps import get_budget_enforcer
+    from preloop.services.model_gateway_budget_enforcer import (
+        ModelGatewayBudgetEnforcer,
+    )
 
     checked = Event()
 
-    def budget_dependency() -> NoopBudgetEnforcer:
+    def budget_dependency() -> ModelGatewayBudgetEnforcer:
         # A separate dependency can use the sole slot after authentication.
         # This models a request waiting for its next off-loop preparation step.
         _probe_pool(gateway_pool.engine)
         checked.set()
-        return NoopBudgetEnforcer()
+        return get_budget_enforcer()
 
     gateway_pool.app.dependency_overrides[get_budget_enforcer] = budget_dependency
     provider = HeldProvider()

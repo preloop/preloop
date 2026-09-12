@@ -575,7 +575,7 @@ class GatewayBudgetEnforcer(Protocol):
     Replay never calls the enforcer itself; it forwards it to
     ``OpenAIGatewayService``, whose pre-call budget check invokes exactly one
     method (see ``OpenAIGatewayService._check_budget``). The OSS default is
-    ``preloop.api.deps.NoopBudgetEnforcer``; billing plugins override it.
+    ``ModelGatewayBudgetEnforcer``; billing plugins extend it.
     ``auth_context`` stays ``Any``: its concrete type lives in
     ``preloop.services.model_gateway_auth``, which is imported lazily below
     to keep this module import-light.
