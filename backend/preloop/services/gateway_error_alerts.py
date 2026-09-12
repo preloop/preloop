@@ -12,6 +12,7 @@ import asyncio
 import atexit
 import hashlib
 import json
+import ipaddress
 import logging
 import math
 import os
@@ -19,7 +20,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -107,71 +109,248 @@ def gateway_alert_key(
     return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
 
-async def _reserve_shared_alert(incident_key: str, interval: float) -> bool:
-    """Compete for a broker-expiring slot using a short-lived, isolated client.
+def gateway_outage_key(
+    provider: str,
+    *,
+    upstream_status: int | None,
+    error_class: str,
+    endpoint: str = "",
+    account_id: str = "",
+    model_id: str = "",
+) -> str | None:
+    """Budget general upstream outages across accounts, models and HTTP codes.
 
-    The worker owns its event loop; sharing the application's async connection
-    across threads would be unsafe. Local gating bounds connection frequency.
-    A bucket per interval keeps broker TTL authoritative without clock skew or
-    changing another replica's configuration during a rolling deployment.
+    Account-specific auth/quota failures retain their granular incident keys.
+    Private addresses and endpoint-less generic adapters cannot identify a
+    common public upstream, so their budgets stay scoped to the configuration.
+    No DNS requests or credential-bearing URL parts enter the identity.
     """
-    import nats
-    from nats.js.api import KeyValueConfig, StorageType
-    from nats.js.errors import BucketNotFoundError, KeyWrongLastSequenceError
-
-    from preloop.config import settings
-
-    connection = None
-    try:
-        async with asyncio.timeout(_SHARED_TIMEOUT_SECONDS):
-            connection = await nats.connect(
-                settings.nats_url,
-                name="preloop-gateway-alerts",
-                connect_timeout=0.25,
-                max_reconnect_attempts=0,
-                allow_reconnect=False,
+    if error_class in {
+        "upstream_auth",
+        "upstream_quota_exhausted",
+        "upstream_rate_limited",
+    }:
+        return None
+    if not (
+        (upstream_status is not None and 500 <= upstream_status <= 599)
+        or error_class in {"network", "upstream_overloaded"}
+    ):
+        return None
+    upstream = provider.strip().lower()
+    private = False
+    canonical = ""
+    if endpoint:
+        try:
+            parsed = urlsplit(endpoint.strip())
+            host = (parsed.hostname or "").lower().rstrip(".")
+            if parsed.scheme.lower() not in {"http", "https"} or not host:
+                raise ValueError("Invalid upstream URL")
+            port = parsed.port
+            if port == {"http": 80, "https": 443}.get(parsed.scheme.lower()):
+                port = None
+            canonical = json.dumps(
+                [parsed.scheme.lower(), host, port, parsed.path.rstrip("/")]
             )
-            jetstream = connection.jetstream(timeout=0.5)
-            interval_hash = hashlib.sha256(str(interval).encode()).hexdigest()[:12]
-            bucket = f"gateway_alerts_{interval_hash}"
             try:
-                store = await jetstream.key_value(bucket)
-            except BucketNotFoundError:
-                # Identical concurrent stream creation is idempotent in NATS.
-                store = await jetstream.create_key_value(
-                    KeyValueConfig(
-                        bucket=bucket,
-                        ttl=interval,
-                        history=1,
-                        max_bytes=_SHARED_MAX_BYTES,
-                        max_value_size=1024,
-                        storage=StorageType.FILE,
-                    )
+                private = not ipaddress.ip_address(host).is_global
+            except ValueError:
+                private = "." not in host or host.endswith(
+                    (".local", ".localhost", ".internal")
                 )
-            try:
-                await store.create(incident_key, b"1")
-            except KeyWrongLastSequenceError:
-                return False
-            return True
-    finally:
+        except ValueError:
+            private = True
+    elif upstream in {
+        "",
+        "custom",
+        "openai-compatible",
+        "openai_compatible",
+        "ollama",
+        "vllm",
+        "local",
+    }:
+        private = True
+    identity = ["availability", upstream, canonical]
+    if private:
+        identity.extend([str(account_id), str(model_id)])
+    return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+
+
+class _SharedAlertStore:
+    """One connection and current bucket, owned by one running event loop."""
+
+    def __init__(self) -> None:
+        self.connection: Any = None
+        self.store: Any = None
+        self.configuration: tuple[str, float] | None = None
+        self._operation_lock = asyncio.Lock()
+
+    async def close(self) -> None:
+        """Wait for in-flight reservation cleanup before closing its client."""
+        async with self._operation_lock:
+            await self._close()
+
+    async def _close(self) -> None:
+        """Clear state before bounded cleanup, even if closing fails."""
+        connection, self.connection = self.connection, None
+        self.store = None
+        self.configuration = None
         if connection is not None:
             try:
                 await asyncio.wait_for(connection.close(), timeout=0.25)
             except Exception:
-                # Cleanup failure must not turn a lost reservation into a
-                # fallback send and duplicate the winning replica's alert.
                 logger.warning(
                     "Could not close gateway alert connection", exc_info=True
                 )
+
+    async def reserve(self, incident_key: str, interval: float) -> bool:
+        """Serialize reservation and shutdown on the owning event loop."""
+        async with self._operation_lock:
+            return await self._reserve(incident_key, interval)
+
+    async def _reserve(self, incident_key: str, interval: float) -> bool:
+        """Reserve one broker-expiring slot; reconnect only on a later call."""
+        import nats
+        from nats.js.api import KeyValueConfig, StorageType
+        from nats.js.errors import BucketNotFoundError, KeyWrongLastSequenceError
+
+        from preloop.config import settings
+
+        try:
+            async with asyncio.timeout(_SHARED_TIMEOUT_SECONDS):
+                configuration = (settings.nats_url, interval)
+                if self.connection is not None and (
+                    not self.connection.is_connected
+                    or self.configuration != configuration
+                ):
+                    await self._close()
+                if self.connection is None:
+                    # Own the client before its first network await, so a
+                    # timed-out handshake cannot orphan an open transport.
+                    self.connection = nats.NATS()
+                    await self.connection.connect(
+                        settings.nats_url,
+                        name="preloop-gateway-alerts",
+                        connect_timeout=0.25,
+                        max_reconnect_attempts=0,
+                        allow_reconnect=False,
+                    )
+                    self.configuration = configuration
+                if self.store is None:
+                    jetstream = self.connection.jetstream(timeout=0.5)
+                    interval_hash = hashlib.sha256(str(interval).encode()).hexdigest()[
+                        :12
+                    ]
+                    bucket = f"gateway_alerts_{interval_hash}"
+                    try:
+                        self.store = await jetstream.key_value(bucket)
+                    except BucketNotFoundError:
+                        self.store = await jetstream.create_key_value(
+                            KeyValueConfig(
+                                bucket=bucket,
+                                ttl=interval,
+                                history=1,
+                                max_bytes=_SHARED_MAX_BYTES,
+                                max_value_size=1024,
+                                storage=StorageType.FILE,
+                            )
+                        )
+                try:
+                    await self.store.create(incident_key, b"1")
+                except KeyWrongLastSequenceError:
+                    return False
+                return True
+        except BaseException:
+            # Includes timeout cancellation: never reuse an uncertain client.
+            await self._close()
+            raise
+
+
+async def _reserve_shared_alert(incident_key: str, interval: float) -> bool:
+    """Single-use reservation helper for isolated clients and broker checks."""
+    store = _SharedAlertStore()
+    try:
+        return await store.reserve(incident_key, interval)
+    finally:
+        await store.close()
+
+
+class _SharedAlertWorker:
+    """Keep NATS heartbeats running while the notification worker is idle."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._closed = False
+        self._store = _SharedAlertStore()
+        self._pending: set[Any] = set()
+
+    @property
+    def closed(self) -> bool:
+        """Whether shutdown has rejected further submissions."""
+        return self._closed
+
+    def reserve(self, incident_key: str, interval: float) -> bool:
+        """Called only from the bounded notification executor, never requests."""
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Gateway alert worker has shut down")
+            if self._loop is None:
+                self._loop = asyncio.new_event_loop()
+                self._thread = threading.Thread(
+                    target=self._loop.run_forever,
+                    name="gateway-alert-nats",
+                    daemon=True,
+                )
+                self._thread.start()
+            future = asyncio.run_coroutine_threadsafe(
+                self._store.reserve(incident_key, interval), self._loop
+            )
+            self._pending.add(future)
+        try:
+            return future.result(timeout=_SHARED_TIMEOUT_SECONDS + 0.5)
+        except TimeoutError:
+            future.cancel()
+            raise
+        finally:
+            with self._lock:
+                self._pending.discard(future)
+
+    def close(self) -> None:
+        """Reject late work, close the client, then stop its event loop."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            loop, thread = self._loop, self._thread
+            if loop is None:
+                return
+            for pending in self._pending:
+                pending.cancel()
+            cleanup = asyncio.run_coroutine_threadsafe(self._store.close(), loop)
+            # Even if the caller's bounded wait expires, cleanup finishes on
+            # the running loop before stopping it. Never cut a client close short.
+            cleanup.add_done_callback(lambda _: loop.call_soon_threadsafe(loop.stop))
+        try:
+            cleanup.result(timeout=1.0)
+        except Exception:
+            logger.warning("Gateway alert worker cleanup failed", exc_info=True)
+        finally:
+            if thread is not None:
+                thread.join(timeout=0.5)
+            if not loop.is_running():
+                loop.close()
+
+
+_SHARED_WORKER = _SharedAlertWorker()
+atexit.register(_SHARED_WORKER.close)
 
 
 def _reserve_shared_or_fallback(incident_key: str) -> bool:
     """Fall back to the caller's local reservation if the broker is unavailable."""
     try:
-        return asyncio.run(
-            _reserve_shared_alert(incident_key, _alert_interval_seconds())
-        )
-    except Exception:  # Alerting must not break requests or retry delivery.
+        return _SHARED_WORKER.reserve(incident_key, _alert_interval_seconds())
+    except Exception:
         logger.warning(
             "Shared gateway alert reservation unavailable; using local cooldown",
             exc_info=True,
@@ -272,6 +451,9 @@ def enqueue_gateway_5xx_alert(
     The caller must reserve its quiet window first. A full queue or a failed
     delivery consumes that window; alert failures must not cause retry storms.
     """
+    if _SHARED_WORKER.closed:
+        logger.debug("Gateway alert worker has shut down; dropping notification")
+        return
     if not _ALERT_PENDING.acquire(blocking=False):
         logger.warning("Gateway alert queue is full; dropping notification")
         return

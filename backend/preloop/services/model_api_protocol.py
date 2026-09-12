@@ -7,13 +7,24 @@ lookup runs while preparing a flow.
 
 from __future__ import annotations
 
+from datetime import date
+from functools import lru_cache
+import logging
+
 from preloop.models import models
 from preloop.services.openai_responses_passthrough import (
     is_openai_shaped_upstream,
     responses_passthrough_mode,
 )
 
-# models.dev (MIT), https://models.dev/api.json, snapshot 2026-09-12.
+logger = logging.getLogger(__name__)
+
+OPENCODE_ZEN_ENDPOINT = "https://opencode.ai/zen/v1"
+OPENCODE_ZEN_CATALOG_SOURCE = "https://models.dev/api.json"
+OPENCODE_ZEN_SNAPSHOT_DATE = date(2026, 9, 12)
+OPENCODE_ZEN_SNAPSHOT_REVIEW_DAYS = 90
+
+# models.dev (MIT); source and review date are recorded above.
 # OpenCode Zen models whose model.provider.npm is @ai-sdk/openai. Refresh from
 # that field, not model-name prefixes: the same endpoint also serves chat-only
 # models, and another endpoint can expose the same id over a different API.
@@ -51,6 +62,20 @@ OPENCODE_ZEN_RESPONSES_MODELS = frozenset(
 )
 
 
+@lru_cache(maxsize=1)
+def _warn_stale_snapshot(snapshot_date: date) -> None:
+    """Log once after a snapshot needs review, without changing model routing."""
+    logger.warning(
+        "OpenCode Zen protocol snapshot from %s is older than %s days; "
+        "review %s and refresh OPENCODE_ZEN_RESPONSES_MODELS and its snapshot "
+        "date. Set meta_data.gateway.responses_api=native or transcode "
+        "to explicitly pin a model's protocol. Existing routing is unchanged.",
+        snapshot_date,
+        OPENCODE_ZEN_SNAPSHOT_REVIEW_DAYS,
+        OPENCODE_ZEN_CATALOG_SOURCE,
+    )
+
+
 def model_api_protocol(ai_model: models.AIModel) -> str:
     """Choose Responses only with an explicit override or scoped capability.
 
@@ -66,8 +91,13 @@ def model_api_protocol(ai_model: models.AIModel) -> str:
     identifier = getattr(ai_model, "model_identifier", None)
     if (
         isinstance(endpoint, str)
-        and endpoint.strip().rstrip("/") == "https://opencode.ai/zen/v1"
-        and identifier in OPENCODE_ZEN_RESPONSES_MODELS
+        and endpoint.strip().rstrip("/") == OPENCODE_ZEN_ENDPOINT
     ):
-        return "responses"
+        # Only cache the warning, never the freshness decision: a long-lived
+        # process must notice when its initially fresh snapshot needs review.
+        age_days = (date.today() - OPENCODE_ZEN_SNAPSHOT_DATE).days
+        if age_days > OPENCODE_ZEN_SNAPSHOT_REVIEW_DAYS:
+            _warn_stale_snapshot(OPENCODE_ZEN_SNAPSHOT_DATE)
+        if identifier in OPENCODE_ZEN_RESPONSES_MODELS:
+            return "responses"
     return "chat_completions"

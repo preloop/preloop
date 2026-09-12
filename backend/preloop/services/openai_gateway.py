@@ -126,6 +126,7 @@ from preloop.services.upstream_errors import (
 from preloop.services.gateway_error_alerts import (
     enqueue_gateway_5xx_alert,
     gateway_alert_key,
+    gateway_outage_key,
     reserve_gateway_5xx_alert,
 )
 from preloop.services.model_price_catalog import schedule_price_lookup
@@ -7316,7 +7317,7 @@ class OpenAIGatewayService:
                 from preloop.utils.secret_scrubbing import scrub_secrets
 
                 # Local gating bounds broker traffic; background delivery
-                # reserves the same incident across gateway replicas.
+                # reserves the same notification budget across gateway replicas.
                 upstream_status = getattr(exc, "status_code", None)
                 if not isinstance(upstream_status, int):
                     upstream_status = None
@@ -7330,8 +7331,17 @@ class OpenAIGatewayService:
                     error_class=classified.error_class if classified else "",
                     upstream_status=upstream_status,
                 )
+                outage_key = gateway_outage_key(
+                    getattr(ai_model, "provider_name", None) or str(provider),
+                    upstream_status=upstream_status,
+                    error_class=classified.error_class if classified else "",
+                    endpoint=getattr(ai_model, "api_endpoint", None) or "",
+                    account_id=str(getattr(ai_model, "account_id", None) or ""),
+                    model_id=str(getattr(ai_model, "id", None) or ""),
+                )
+                notification_key = outage_key or incident_key
                 send_alert, suppressed_alerts = reserve_gateway_5xx_alert(
-                    str(provider), status_code, incident_key=incident_key
+                    str(provider), status_code, incident_key=notification_key
                 )
                 if send_alert:
                     scrubbed_trace = (scrub_secrets(str(exc)) or "")[:400]
@@ -7345,6 +7355,13 @@ class OpenAIGatewayService:
                         f"Class: {classified.error_class if classified else None}\n\n"
                         f"Trace:\n{scrubbed_trace}"
                     )
+                    if outage_key:
+                        alert_body = (
+                            "This is a representative availability failure. "
+                            "Public upstreams share an alert budget across accounts "
+                            "and models using the same provider endpoint; private "
+                            "endpoints retain configured-model scope.\n\n" + alert_body
+                        )
                     if suppressed_alerts:
                         noun = "alert" if suppressed_alerts == 1 else "alerts"
                         alert_body += (
@@ -7354,7 +7371,7 @@ class OpenAIGatewayService:
                     enqueue_gateway_5xx_alert(
                         subject=f"[Preloop Alert] AI Gateway HTTP {status_code} Error ({provider})",
                         message=scrub_secrets(alert_body) or "",
-                        incident_key=incident_key,
+                        incident_key=notification_key,
                     )
             except Exception:
                 # Admin alert is best-effort; never block error mapping. Logged

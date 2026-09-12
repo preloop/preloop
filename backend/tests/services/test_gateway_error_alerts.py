@@ -422,11 +422,11 @@ def test_direct_stream_error_renderer_preserves_model_and_original_network_class
     [
         {"account_id": "account-b"},
         {"provider_name": "other-provider"},
-        {"model_identifier": "other-model"},
+        {"model_identifier": "other-model", "id": "other-model-row"},
         {"id": "different-upstream-configuration"},
     ],
 )
-def test_gateway_alerts_keep_independent_model_incidents_separate(
+def test_gateway_alerts_keep_private_model_incidents_separate(
     changed: dict,
 ) -> None:
     service = _service()
@@ -434,6 +434,8 @@ def test_gateway_alerts_keep_independent_model_incidents_separate(
         account_id="account-a",
         provider_name="example-provider",
         model_identifier="example-model",
+        id="private-model-row",
+        api_endpoint="http://localhost:8000/v1",
     )
     first = SimpleNamespace(**values)
     second = SimpleNamespace(**(values | changed))
@@ -445,7 +447,7 @@ def test_gateway_alerts_keep_independent_model_incidents_separate(
         assert notify.call_count == 2
 
 
-def test_gateway_alert_preserves_original_status_in_incident_identity() -> None:
+def test_provider_outage_budget_coalesces_upstream_5xx_statuses() -> None:
     service = _service()
     with patch("preloop.services.openai_gateway.enqueue_gateway_5xx_alert") as enqueue:
         first = service._normalize_upstream_error(
@@ -455,11 +457,7 @@ def test_gateway_alert_preserves_original_status_in_incident_identity() -> None:
             "openai", _FakeHTTPError("failed", status_code=502)
         )
     assert first.status_code == second.status_code == 502
-    assert enqueue.call_count == 2
-    assert (
-        enqueue.call_args_list[0].kwargs["incident_key"]
-        != enqueue.call_args_list[1].kwargs["incident_key"]
-    )
+    assert enqueue.call_count == 1
 
 
 def test_anthropic_passthrough_error_keeps_model_incidents_separate() -> None:
@@ -469,12 +467,14 @@ def test_anthropic_passthrough_error_keeps_model_incidents_separate() -> None:
         provider_name="anthropic",
         model_identifier="example-model",
         id="upstream-one",
+        api_endpoint="https://gateway-one.example.com/v1",
     )
     second = SimpleNamespace(
         account_id="account-a",
         provider_name="anthropic",
         model_identifier="example-model",
         id="upstream-two",
+        api_endpoint="https://gateway-two.example.com/v1",
     )
     with patch("preloop.sync.tasks.notify_admins") as notify:
         for model in [first, first, second]:

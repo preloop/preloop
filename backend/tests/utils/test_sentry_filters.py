@@ -93,6 +93,11 @@ def test_owned_context_resets_on_exception() -> None:
         gateway_upstream_call,
     )
 
-    with pytest.raises(RuntimeError), gateway_upstream_call():
-        raise RuntimeError("local failure")
+    def fail_inside_owned_call() -> None:
+        with gateway_upstream_call():
+            assert _GATEWAY_UPSTREAM_CALL.get() is True
+            raise RuntimeError("local failure")
+
+    failure = pytest.raises(RuntimeError, fail_inside_owned_call)
+    assert str(failure.value) == "local failure"
     assert _GATEWAY_UPSTREAM_CALL.get() is False

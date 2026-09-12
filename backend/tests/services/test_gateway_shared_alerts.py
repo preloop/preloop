@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from types import SimpleNamespace
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,7 +23,7 @@ class _Broker:
         self.keys: dict[str, float] = {}
         self.clients: list[SimpleNamespace] = []
 
-    async def connect(self, *args: object, **kwargs: object) -> SimpleNamespace:
+    def connect(self, *args: object, **kwargs: object) -> SimpleNamespace:
         # Every call gets a distinct connection and KV handle. No client cache
         # or Python module state coordinates the competing reservations.
         store = SimpleNamespace(create=AsyncMock(side_effect=self.create))
@@ -42,7 +43,10 @@ class _Broker:
             create_key_value=AsyncMock(side_effect=create_bucket),
         )
         client = SimpleNamespace(
-            jetstream=MagicMock(return_value=jetstream), close=AsyncMock()
+            connect=AsyncMock(),
+            jetstream=MagicMock(return_value=jetstream),
+            close=AsyncMock(),
+            is_connected=True,
         )
         self.clients.append(client)
         return client
@@ -56,14 +60,18 @@ class _Broker:
 
 
 @pytest.fixture(autouse=True)
-def isolate_local_state() -> None:
+def isolate_local_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     alerts.reset_alert_state_for_tests()
+    worker = alerts._SharedAlertWorker()
+    monkeypatch.setattr(alerts, "_SHARED_WORKER", worker)
+    yield
+    worker.close()
 
 
 @pytest.mark.asyncio
 async def test_independent_clients_compete_once_and_expiry_allows_reminder() -> None:
     broker = _Broker()
-    with patch("nats.connect", side_effect=broker.connect):
+    with patch("nats.NATS", side_effect=broker.connect):
         results = await asyncio.gather(
             *(alerts._reserve_shared_alert("incident", 300.0) for _ in range(8))
         )
@@ -86,7 +94,7 @@ async def test_different_incidents_have_separate_shared_windows() -> None:
     broker = _Broker()
     first = alerts.gateway_alert_key("openai", 502, account_id="account-a")
     second = alerts.gateway_alert_key("openai", 502, account_id="account-b")
-    with patch("nats.connect", side_effect=broker.connect):
+    with patch("nats.NATS", side_effect=broker.connect):
         assert await alerts._reserve_shared_alert(first, 60.0)
         assert await alerts._reserve_shared_alert(second, 60.0)
         assert not await alerts._reserve_shared_alert(first, 60.0)
@@ -133,7 +141,7 @@ def test_shared_outage_falls_back_to_local_cooldown_and_reminder(
     _deliver_inline(monkeypatch)
     key = alerts.gateway_alert_key("openai", 502, model="example-model")
     with (
-        patch("nats.connect", side_effect=OSError("broker unavailable")) as connect,
+        patch("nats.NATS", side_effect=OSError("broker unavailable")) as connect,
         patch("preloop.sync.tasks.notify_admins") as notify,
     ):
         for now in [0.0, 1.0, 10.0, 299.0, 300.0]:
@@ -180,11 +188,12 @@ async def test_shared_deadline_cancels_slow_broker_and_closes_connection(
         await asyncio.Event().wait()
 
     client = SimpleNamespace(
+        connect=AsyncMock(),
         jetstream=MagicMock(return_value=SimpleNamespace(key_value=blocked_lookup)),
         close=AsyncMock(),
     )
     monkeypatch.setattr(alerts, "_SHARED_TIMEOUT_SECONDS", 0.01)
-    with patch("nats.connect", return_value=client):
+    with patch("nats.NATS", return_value=client):
         with pytest.raises(TimeoutError):
             await alerts._reserve_shared_alert("incident", 300.0)
     client.close.assert_awaited_once()
@@ -211,12 +220,13 @@ def test_local_incident_cardinality_is_bounded_and_expired_slots_reclaimed(
 async def test_close_failure_does_not_turn_lost_reservation_into_send() -> None:
     store = SimpleNamespace(create=AsyncMock(side_effect=KeyWrongLastSequenceError))
     client = SimpleNamespace(
+        connect=AsyncMock(),
         jetstream=MagicMock(
             return_value=SimpleNamespace(key_value=AsyncMock(return_value=store))
         ),
         close=AsyncMock(side_effect=OSError("close failed")),
     )
-    with patch("nats.connect", return_value=client):
+    with patch("nats.NATS", return_value=client):
         assert not await alerts._reserve_shared_alert("incident", 300.0)
 
 
@@ -260,3 +270,144 @@ def test_reservation_runs_off_request_thread_with_bounded_queue(
     finally:
         release.set()
         executor.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+async def test_store_reuses_connection_and_bucket_until_disconnect() -> None:
+    broker = _Broker()
+    store = alerts._SharedAlertStore()
+    with patch("nats.NATS", side_effect=broker.connect) as connect:
+        assert await store.reserve("first", 300.0)
+        assert await store.reserve("second", 300.0)
+        assert not await store.reserve("first", 300.0)
+        assert connect.call_count == 1
+        broker.clients[0].jetstream.assert_called_once()
+        broker.clients[0].is_connected = False
+        assert await store.reserve("third", 300.0)
+        assert connect.call_count == 2
+        broker.clients[0].close.assert_awaited_once()
+        await store.close()
+        broker.clients[1].close.assert_awaited_once()
+
+
+def test_worker_runs_loop_while_idle_and_rejects_late_work() -> None:
+    worker = alerts._SharedAlertWorker()
+    broker = _Broker()
+    heartbeat = threading.Event()
+    with patch("nats.NATS", side_effect=broker.connect) as connect:
+        try:
+            assert worker.reserve("first", 300.0)
+            worker._loop.call_soon_threadsafe(
+                worker._loop.call_later, 0.01, heartbeat.set
+            )
+            assert heartbeat.wait(2), "idle worker stopped servicing its event loop"
+            assert worker.reserve("second", 300.0)
+            assert connect.call_count == 1
+        finally:
+            worker.close()
+        assert worker._loop.is_closed()
+        assert not worker._thread.is_alive()
+        broker.clients[0].close.assert_awaited_once()
+        with pytest.raises(RuntimeError, match="shut down"):
+            worker.reserve("late", 300.0)
+        assert connect.call_count == 1
+
+
+def test_shutdown_cancels_reservation_and_finishes_close_before_stopping() -> None:
+    worker = alerts._SharedAlertWorker()
+    entered = threading.Event()
+    closed = threading.Event()
+
+    async def blocked_create(*args: object) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    async def close() -> None:
+        await asyncio.sleep(0.01)
+        closed.set()
+
+    store = SimpleNamespace(create=blocked_create)
+    client = SimpleNamespace(
+        connect=AsyncMock(),
+        is_connected=True,
+        jetstream=lambda **kwargs: SimpleNamespace(
+            key_value=AsyncMock(return_value=store)
+        ),
+        close=close,
+    )
+    results: list[BaseException] = []
+
+    def reserve() -> None:
+        try:
+            worker.reserve("incident", 300.0)
+        except BaseException as error:
+            results.append(error)
+
+    with patch("nats.NATS", return_value=client):
+        thread = threading.Thread(target=reserve)
+        thread.start()
+        assert entered.wait(2)
+        worker.close()
+        thread.join(timeout=2)
+    assert closed.is_set()
+    assert worker._loop.is_closed()
+    assert not thread.is_alive()
+    assert results
+
+
+def test_enqueue_after_shutdown_does_not_start_broker_or_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alerts._SHARED_WORKER.close()
+    executor = MagicMock()
+    monkeypatch.setattr(alerts, "_ALERT_EXECUTOR", executor)
+    alerts.enqueue_gateway_5xx_alert(
+        subject="Failure", message="Detail", incident_key="late"
+    )
+    executor.submit.assert_not_called()
+    assert alerts._SHARED_WORKER._loop is None
+
+
+@pytest.mark.asyncio
+async def test_handshake_timeout_closes_owned_client_and_tcp_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nats
+    from nats.aio.client import Client
+
+    from preloop.config import settings
+
+    peer_closed = asyncio.Event()
+
+    async def stalled_handshake(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        try:
+            writer.write(
+                b'INFO {"server_id":"fixture","version":"2.11.8","proto":1,"max_payload":1048576}\r\n'
+            )
+            await writer.drain()
+            await reader.read()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            peer_closed.set()
+
+    server = await asyncio.start_server(stalled_handshake, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    client = Client()
+    store = alerts._SharedAlertStore()
+    monkeypatch.setattr(settings, "nats_url", f"nats://127.0.0.1:{port}")
+    monkeypatch.setattr(alerts, "_SHARED_TIMEOUT_SECONDS", 0.05)
+    try:
+        with patch.object(nats, "NATS", return_value=client):
+            with pytest.raises(TimeoutError):
+                await store.reserve("incident", 300.0)
+        assert store.connection is None
+        assert client.is_closed
+        await asyncio.wait_for(peer_closed.wait(), timeout=1.0)
+    finally:
+        await store.close()
+        await client.close()
+        server.close()
+        await server.wait_closed()
