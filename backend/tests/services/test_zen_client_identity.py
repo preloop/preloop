@@ -194,7 +194,11 @@ def identity_gateway(
     )
     app = FastAPI()
     app.include_router(endpoint.router, prefix="/openai/v1")
-    app.dependency_overrides[endpoint.get_db_session] = lambda: MagicMock()
+
+    def mock_db_session() -> MagicMock:
+        return MagicMock()
+
+    app.dependency_overrides[endpoint.get_db_session] = mock_db_session
     app.dependency_overrides[endpoint.get_model_gateway_auth_context] = lambda: auth
     app.dependency_overrides[endpoint.get_budget_enforcer] = lambda: None
 
