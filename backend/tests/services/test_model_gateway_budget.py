@@ -1,6 +1,7 @@
 """Tests for model gateway budget enforcement."""
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import Mock
 
 import pytest
 from fastapi import HTTPException
@@ -637,3 +638,45 @@ def test_enforce_or_raise_elides_long_allowlists(db_session, test_user):
 
     assert "(model-0, model-1, model-2, model-3, model-4, ...)" in exc_info.value.detail
     assert "model-5" not in exc_info.value.detail
+
+
+@pytest.mark.parametrize("pricing_override", [None, {"price_per_1k": 1.0}])
+def test_enforcer_estimate_passes_explicit_pricing_override(
+    pricing_override: dict[str, float] | None,
+) -> None:
+    """Decorated or mocked estimators retain the explicit pricing contract."""
+    from preloop.services.model_gateway_budget_enforcer import (
+        _estimate_request_cost_with_optional_override,
+    )
+
+    service = Mock(spec=ModelGatewayBudgetService)
+    service._pricing_override_for_request.return_value = pricing_override
+    service._estimate_request_cost.return_value = 0.5
+    model = Mock()
+    payload = {"max_tokens": 10}
+
+    assert _estimate_request_cost_with_optional_override(service, model, payload) == 0.5
+    service._pricing_override_for_request.assert_called_once_with(model, payload)
+    service._estimate_request_cost.assert_called_once_with(
+        model, payload, pricing_override=pricing_override
+    )
+
+
+def test_enforcer_estimator_type_error_is_not_retried_without_override() -> None:
+    """Estimator failures must propagate without a fallback that drops pricing."""
+    from preloop.services.model_gateway_budget_enforcer import (
+        _estimate_request_cost_with_optional_override,
+    )
+
+    service = Mock(spec=ModelGatewayBudgetService)
+    override = {"price_per_1k": 1.0}
+    service._pricing_override_for_request.return_value = override
+    service._estimate_request_cost.side_effect = TypeError("invalid pricing data")
+    model = Mock()
+    payload = {"max_tokens": 10}
+
+    with pytest.raises(TypeError, match="invalid pricing data"):
+        _estimate_request_cost_with_optional_override(service, model, payload)
+    service._estimate_request_cost.assert_called_once_with(
+        model, payload, pricing_override=override
+    )

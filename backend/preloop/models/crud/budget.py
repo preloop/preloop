@@ -1,12 +1,14 @@
 """CRUD operations for Budget models."""
 
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 from datetime import datetime, timedelta
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
+
+from preloop.models import models
 
 from .base import CRUDBase
 from ..models.budget import BudgetPolicy, BudgetSpendActivity, BudgetPeriod
@@ -46,6 +48,60 @@ class CRUDBudgetPolicy(CRUDBase[BudgetPolicy]):
         )
         return db.execute(query).scalars().all()
 
+    def get_gateway_policies(
+        self,
+        db: Session,
+        *,
+        account_id: uuid.UUID,
+        ai_model_id: uuid.UUID,
+        model_alias: str | None,
+        api_key_id: uuid.UUID | None = None,
+    ) -> list[BudgetPolicy]:
+        """Fetch candidate gateway policies once, always scoped to the account.
+
+        Agent and owner IDs may require database resolution. Their candidate
+        policies are returned so the caller resolves those subjects only when
+        needed, then filters by the resolved ID before checking any spend.
+        """
+        subjects = [
+            and_(
+                self.model.subject_type.in_(tuple(ACCOUNT_LEVEL_SUBJECT_TYPES)),
+                self.model.subject_id.is_(None),
+            ),
+            self.model.subject_type.in_(("managed_agent", "user")),
+            and_(
+                self.model.subject_type == "ai_model",
+                or_(
+                    self.model.subject_id == ai_model_id,
+                    self.model.subject_id.is_(None),
+                ),
+            ),
+        ]
+        if api_key_id is not None:
+            subjects.append(
+                and_(
+                    self.model.subject_type == "api_key",
+                    self.model.subject_id == api_key_id,
+                )
+            )
+        return list(
+            db.execute(
+                select(self.model).where(
+                    self.model.account_id == account_id,
+                    or_(*subjects),
+                    or_(
+                        self.model.model_alias == model_alias,
+                        self.model.model_alias.is_(None),
+                        self.model.model_alias == "",
+                        and_(
+                            self.model.subject_type == "ai_model",
+                            self.model.subject_id == ai_model_id,
+                        ),
+                    ),
+                )
+            ).scalars()
+        )
+
     def remove(
         self, db: Session, *, id: uuid.UUID, account_id: str
     ) -> Optional[BudgetPolicy]:
@@ -63,6 +119,45 @@ class CRUDBudgetPolicy(CRUDBase[BudgetPolicy]):
 
 class CRUDBudgetSpendActivity(CRUDBase[BudgetSpendActivity]):
     """CRUD operations for BudgetSpendActivity model."""
+
+    def upsert_spend_batch(
+        self, db: Session, *, rows: Sequence[dict[str, Any]]
+    ) -> None:
+        """Increment distinct spend buckets without committing the caller's work.
+
+        All callers lock conflict keys in the same order. One PostgreSQL
+        statement replaces a transaction per bucket, while the usage CRUD's
+        outer commit publishes its usage fact and every rollup together.
+        """
+        if not rows:
+            return
+        ordered = sorted(
+            rows,
+            key=lambda row: (
+                str(row["account_id"]),
+                row["subject_type"],
+                str(row["subject_id"] or ""),
+                row["model_alias"],
+                row["period"].value,
+                row["period_start"].isoformat() if row["period_start"] else "",
+            ),
+        )
+        stmt = insert(models.BudgetSpendActivity).values(ordered)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[
+                "account_id",
+                "subject_type",
+                "subject_id",
+                "model_alias",
+                "period",
+                "period_start",
+            ],
+            set_={
+                "spend_usd": models.BudgetSpendActivity.spend_usd
+                + stmt.excluded.spend_usd
+            },
+        )
+        db.execute(stmt)
 
     def upsert_spend(
         self,
@@ -347,11 +442,12 @@ def record_spend_for_request(
     *,
     subject_scopes: Optional[Sequence[tuple[str, Optional[str]]]] = None,
 ) -> None:
-    """Record gateway spend into budget buckets for every applicable scope.
+    """Record gateway spend into budget buckets without committing.
 
     Upserts spend for the account and each configured subject scope (API key,
     managed agent, etc.) across all :class:`BudgetPeriod` values and, when
     ``model_alias`` is set, both the model-specific and account-wide buckets.
+    The caller commits this together with its usage fact, or rolls back both.
 
     Args:
         db: Database session.
@@ -392,20 +488,24 @@ def record_spend_for_request(
         seen_scopes.add(scope)
         subjects.append(scope)
 
-    models = [None]  # All models
+    model_aliases = [None]  # All models
     if model_alias:
-        models.append(model_alias)
+        model_aliases.append(model_alias)
 
+    rows: list[dict[str, Any]] = []
     for s_type, s_id in subjects:
-        for m_alias in models:
+        for m_alias in model_aliases:
             for p in periods:
-                crud_budget_spend.upsert_spend(
-                    db=db,
-                    account_id=account_id,
-                    subject_type=s_type,
-                    subject_id=s_id,
-                    model_alias=m_alias,
-                    period=p,
-                    period_start=get_period_start(timestamp, p),
-                    spend_increment_usd=estimated_cost,
+                rows.append(
+                    {
+                        "id": uuid.uuid4(),
+                        "account_id": account_id,
+                        "subject_type": s_type,
+                        "subject_id": s_id,
+                        "model_alias": m_alias or "",
+                        "period": p,
+                        "period_start": get_period_start(timestamp, p),
+                        "spend_usd": estimated_cost,
+                    }
                 )
+    crud_budget_spend.upsert_spend_batch(db, rows=rows)
