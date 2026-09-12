@@ -41,6 +41,10 @@ PRICE_FIELDS = frozenset(
 )
 
 
+class PriceRefreshCompatibilityError(RuntimeError):
+    """LiteLLM cannot safely invalidate estimates after a price-map change."""
+
+
 def validate_https_url(value: str) -> str:
     """Require HTTPS without embedded credentials or fragments."""
     parsed = urlsplit(value)
@@ -293,7 +297,32 @@ class ReviewedPriceRefresher:
             raise ValueError("Refusing older or mutated published price revision")
         if set(feed.models) - self.allowed_models:
             raise ValueError("Feed contains models outside the operator allowlist")
-        from litellm.utils import _invalidate_model_cost_lowercase_map
+        from litellm import utils as litellm_utils
+
+        # This private helper clears LiteLLM's derived model-info caches. A
+        # map-only or register_model fallback could leave warmed prices stale.
+        invalidate = getattr(
+            litellm_utils, "_invalidate_model_cost_lowercase_map", None
+        )
+        if not callable(invalidate):
+            raise PriceRefreshCompatibilityError(
+                "LiteLLM price caches are incompatible"
+            )
+        # Capture supported LRU clearers for rollback if a callable helper
+        # fails after the map swap. Names differ between LiteLLM versions.
+        rollback_clearers = [
+            clear
+            for name in (
+                "get_model_info",
+                "_cached_get_model_info",
+                "_cached_get_model_info_helper",
+            )
+            if callable(
+                clear := getattr(
+                    getattr(litellm_utils, name, None), "cache_clear", None
+                )
+            )
+        ]
 
         from preloop.services.model_price_catalog import _lock as catalog_lock
 
@@ -350,8 +379,30 @@ class ReviewedPriceRefresher:
                 updated[model] = replacement
             if not changed:
                 return 0
+            # Probe before publishing: signature/internal API incompatibility
+            # normally fails here while all prices still use the old map.
+            try:
+                invalidate()
+            except Exception:  # noqa: BLE001 - dependency callback compatibility
+                raise PriceRefreshCompatibilityError(
+                    "LiteLLM price caches are incompatible"
+                ) from None
+            previous = litellm.model_cost
             litellm.model_cost = updated
-            _invalidate_model_cost_lowercase_map()
+            try:
+                invalidate()
+            except Exception:  # noqa: BLE001 - roll back before reporting failure
+                litellm.model_cost = previous
+                for clear in rollback_clearers:
+                    try:
+                        clear()
+                    except Exception:  # noqa: BLE001 - try remaining compatible caches
+                        logger.warning(
+                            "Reviewed price rollback could not clear a LiteLLM cache"
+                        )
+                raise PriceRefreshCompatibilityError(
+                    "LiteLLM price caches are incompatible"
+                ) from None
         self.applied_at = feed.published_at
         self.digest = digest
         logger.info("Applied reviewed model price feed: %d models", len(feed.models))
@@ -374,6 +425,11 @@ class ReviewedPriceRefresher:
             while True:
                 try:
                     await self.refresh(client)
+                except PriceRefreshCompatibilityError:
+                    logger.warning(
+                        "Reviewed price refresh unavailable: incompatible LiteLLM "
+                        "cache API; retaining last good prices"
+                    )
                 except (httpx.HTTPError, ValueError, TypeError):
                     # Do not log the configured URL or fetched body: operator
                     # endpoints may carry access tokens in query parameters.
@@ -402,10 +458,16 @@ def start_reviewed_price_refresh() -> ReviewedPriceRefresher | None:
 
     if not settings.model_price_refresh_url:
         return None
-    refresher = ReviewedPriceRefresher(
-        url=settings.model_price_refresh_url,
-        allowed_models=settings.model_price_refresh_allowed_models,
-        interval_seconds=settings.model_price_refresh_interval_seconds,
-    )
+    try:
+        refresher = ReviewedPriceRefresher(
+            url=settings.model_price_refresh_url,
+            allowed_models=settings.model_price_refresh_allowed_models,
+            interval_seconds=settings.model_price_refresh_interval_seconds,
+        )
+    except (ValueError, TypeError):
+        # Never include the URL or exception text: configuration can contain
+        # query-string tokens, embedded credentials, or private hostnames.
+        logger.warning("Reviewed price refresh disabled: invalid configuration")
+        return None
     refresher.start()
     return refresher

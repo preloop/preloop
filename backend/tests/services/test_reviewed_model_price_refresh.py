@@ -13,6 +13,7 @@ import litellm
 import pytest
 
 from preloop.services.reviewed_model_price_refresh import (
+    PriceRefreshCompatibilityError,
     ReviewedPriceRefresher,
     start_reviewed_price_refresh,
     validate_feed,
@@ -190,6 +191,147 @@ def test_disabled_setting_starts_nothing(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(settings, "model_price_refresh_url", "")
     assert start_reviewed_price_refresh() is None
+
+
+@pytest.mark.parametrize(
+    ("url", "allowed_models"),
+    [
+        ("http://example.com/feed?token=synthetic-secret", ["example/model"]),
+        ("https://user:synthetic-secret@example.com/feed", ["example/model"]),
+        ("https://example.com/feed?token=synthetic-secret", []),
+    ],
+)
+def test_invalid_startup_configuration_disables_refresh_without_logging_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    url: str,
+    allowed_models: list[str],
+) -> None:
+    from preloop.config import settings
+
+    monkeypatch.setattr(settings, "model_price_refresh_url", url)
+    monkeypatch.setattr(settings, "model_price_refresh_allowed_models", allowed_models)
+    start = MagicMock()
+    monkeypatch.setattr(ReviewedPriceRefresher, "start", start)
+    assert start_reviewed_price_refresh() is None
+    start.assert_not_called()
+    assert "disabled" in caplog.text
+    assert "synthetic-secret" not in caplog.text
+    assert "example.com" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "compatibility",
+    [
+        "missing",
+        "not_callable",
+        "raises",
+        "raises_after_swap",
+        "rollback_clearer_raises",
+    ],
+)
+def test_incompatible_litellm_keeps_warmed_last_good_prices_and_revision(
+    refresher: ReviewedPriceRefresher,
+    payload: dict,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    compatibility: str,
+) -> None:
+    from litellm import utils
+
+    original_invalidate = utils._invalidate_model_cost_lowercase_map
+    litellm.model_cost["example/model"].update({"mode": "chat", "max_tokens": 4096})
+    refresher.apply(payload)
+    previous = litellm.model_cost
+    previous_digest, previous_applied = refresher.digest, refresher.applied_at
+
+    def price() -> tuple[float, float]:
+        return litellm.cost_per_token(
+            model="example/model",
+            prompt_tokens=1000,
+            completion_tokens=1000,
+            custom_llm_provider="openai",
+        )
+
+    assert price() == pytest.approx((0.001, 0.002))
+    revised = copy.deepcopy(payload)
+    revised["published_at"] = datetime.now(timezone.utc).isoformat()
+    revised["revision"] = "next-review"
+    revised["models"]["example/model"]["prices"]["input_cost_per_token"] = 0.000005
+    calls = 0
+
+    def broken_invalidate() -> None:
+        nonlocal calls
+        calls += 1
+        after_swap = compatibility in {"raises_after_swap", "rollback_clearer_raises"}
+        if after_swap and calls == 1:
+            original_invalidate()
+            return
+        if after_swap:
+            original_invalidate()
+            price()  # Warm the candidate before its invalidation failure.
+        raise RuntimeError("synthetic-private-library-detail")
+
+    if compatibility == "rollback_clearer_raises":
+
+        def broken_clearer() -> None:
+            raise RuntimeError("synthetic-private-cache-detail")
+
+        monkeypatch.setattr(
+            utils.get_model_info, "cache_clear", broken_clearer, raising=False
+        )
+
+    if compatibility == "missing":
+        monkeypatch.delattr(utils, "_invalidate_model_cost_lowercase_map")
+    elif compatibility == "not_callable":
+        monkeypatch.setattr(utils, "_invalidate_model_cost_lowercase_map", None)
+    else:
+        monkeypatch.setattr(
+            utils, "_invalidate_model_cost_lowercase_map", broken_invalidate
+        )
+    with pytest.raises(PriceRefreshCompatibilityError, match="incompatible"):
+        refresher.apply(revised)
+    assert litellm.model_cost is previous
+    assert refresher.digest == previous_digest
+    assert refresher.applied_at == previous_applied
+    assert price() == pytest.approx((0.001, 0.002))
+    assert "synthetic-private" not in caplog.text
+    monkeypatch.setattr(
+        utils,
+        "_invalidate_model_cost_lowercase_map",
+        original_invalidate,
+        raising=False,
+    )
+    assert refresher.apply(revised) == 1
+    assert price() == pytest.approx((0.005, 0.002))
+
+
+@pytest.mark.asyncio
+async def test_poll_retries_compatibility_failure_without_logging_exception_details(
+    refresher: ReviewedPriceRefresher,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    poll = AsyncMock(
+        side_effect=[PriceRefreshCompatibilityError("synthetic-secret"), 0]
+    )
+    monkeypatch.setattr(refresher, "refresh", poll)
+    original_sleep = asyncio.sleep
+
+    async def bounded_sleep(seconds: float) -> None:
+        if poll.await_count == 2:
+            raise asyncio.CancelledError
+        await original_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", bounded_sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await refresher.run()
+    assert poll.await_count == 2
+    assert "incompatible LiteLLM" in caplog.text
+    assert "retaining last good prices" in caplog.text
+    assert "synthetic-secret" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
 
 
 def test_builder_exports_catalog_prices_and_requires_evidence(payload: dict) -> None:

@@ -27,6 +27,9 @@ publication branch/bucket: this URL is a pricing trust boundary. Redirects are n
 followed. An approved PR can publish the artifact through the organization's
 existing branch or static-artifact hosting; no extra application deployment is
 needed. This feature does not configure that hosting or activate a live schedule.
+An invalid URL or an empty allowlist disables this optional refresh service and
+logs a sanitized warning; it does not stop API, gateway, or worker startup. The
+warning omits the configured URL and exception details, which may contain secrets.
 
 Each feed must declare USD, a revision, publication and expiry timestamps, and
 per-model source URL, verification time, effective date, and either flat input/output rates per token (with optional cache rates) or
@@ -43,6 +46,16 @@ policies retain their existing precedence. The job never writes usage records or
 re-prices historical costs. Retained last-good rates remain estimates if a feed
 expires or becomes unreachable; operators should monitor the refresh failure log.
 Rollback uses a newly reviewed revision with a later publication timestamp.
+
+Runtime replacement currently depends on LiteLLM's private
+`_invalidate_model_cost_lowercase_map` helper to clear cached model information.
+LiteLLM upgrades must pass the warmed-price refresh regression tests. If that
+helper is missing, not callable, or raises, refresh logs a compatibility warning
+and retains the previous price map and accepted revision. It does not fall back
+to changing the map without invalidating caches. A callable helper is checked
+before publication; if it fails after publication, the map is restored and the
+known model-info LRU caches are cleared. Polling continues so a compatibility
+repair can recover without losing the last accepted feed.
 
 The supported native DeepSeek policy uses UTC peak hours 01:00-04:00 and
 06:00-10:00 Monday-Friday, separate peak/off-peak input/output/cache prices,
