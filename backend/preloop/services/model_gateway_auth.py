@@ -10,9 +10,11 @@ from typing import Optional, Sequence
 from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import (
-    get_user_from_token_if_valid,
+    get_user_from_token_if_valid_sync,
     _managed_agent_for_api_key,
 )
+from preloop.models import models
+from preloop.models.db.gateway_session import release_gateway_session
 from preloop.models.crud import (
     crud_api_key,
     crud_managed_agent,
@@ -21,10 +23,6 @@ from preloop.models.crud import (
     crud_user,
 )
 from preloop.models.crud.oauth_mcp_token import crud_oauth_mcp_access_token
-from preloop.models.models.ai_model import AIModel
-from preloop.models.models.api_key import ApiKey
-from preloop.models.models.oauth_mcp_token import OAuthMCPAccessToken
-from preloop.models.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -40,26 +38,47 @@ class ModelGatewayAuthContext:
     """Authenticated model gateway request context."""
 
     token: str
-    user: User
-    api_key: Optional[ApiKey] = None
-    oauth_access_token: Optional[OAuthMCPAccessToken] = None
+    user: models.User
+    api_key: Optional[models.ApiKey] = None
+    oauth_access_token: Optional[models.OAuthMCPAccessToken] = None
 
 
 async def authenticate_bearer_token(
-    token: str, db: Session
+    token: str, db: Session, *, owns_db_session: bool = False
 ) -> Optional[ModelGatewayAuthContext]:
-    """Authenticate a bearer token while preserving ApiKey context."""
+    """Resolve bearer state in one worker, releasing HTTP-owned auth reads.
+
+    HTTP dependencies opt into a detached scalar snapshot so authentication
+    cannot hold a connection while the next request phase waits for a worker.
+    Internal callers retain their transaction ownership. Credentials and their
+    current bindings are checked on every call; this is not an auth cache.
+    """
     if not token:
         return None
 
     from preloop.api.loop_safety import run_db_off_loop
 
-    user = await get_user_from_token_if_valid(token, db)
-    return await run_db_off_loop(lambda: _resolve_bearer_context(token, db, user))
+    def authenticate() -> Optional[ModelGatewayAuthContext]:
+        user = get_user_from_token_if_valid_sync(token, db)
+        if user is not None:
+            # A last-use commit may expire the user. Hydrate while this worker
+            # still owns the session rather than issuing ORM I/O on the loop.
+            _ = user.id, user.account_id, user.username, user.email, user.is_active
+        context = _resolve_bearer_context(token, db, user)
+        if owns_db_session:
+            preserve = (
+                (context.user, context.api_key, context.oauth_access_token)
+                if context is not None
+                else ()
+            )
+            release_gateway_session(db, preserve=preserve)
+        return context
+
+    return await run_db_off_loop(authenticate)
 
 
 def _resolve_bearer_context(
-    token: str, db: Session, user: Optional[User]
+    token: str, db: Session, user: Optional[models.User]
 ) -> Optional[ModelGatewayAuthContext]:
     """Resolve remaining gateway credentials on the session's worker thread."""
     if user:
@@ -204,7 +223,7 @@ def resolve_managed_agent_id_for_context(
 def compute_authorized_model_ids(
     db: Session,
     auth_context: ModelGatewayAuthContext,
-    account_models: Sequence[AIModel],
+    account_models: Sequence[models.AIModel],
 ) -> frozenset[str]:
     """Compute the ids of ``account_models`` this gateway principal may use.
 

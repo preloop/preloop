@@ -541,3 +541,266 @@ async def test_http_stream_disconnect_records_partial_usage_and_releases_pool(
         ).all()
         assert len(rows) == 1
         assert rows[0].status_code == 499
+
+
+@pytest.mark.asyncio
+async def test_gateway_auth_releases_pool_before_other_request_dependencies(
+    gateway_pool: GatewayPoolFixture,
+) -> None:
+    """Authenticated state must not reserve capacity while later work queues."""
+    from preloop.api.deps import NoopBudgetEnforcer, get_budget_enforcer
+
+    checked = Event()
+
+    def budget_dependency() -> NoopBudgetEnforcer:
+        # A separate dependency can use the sole slot after authentication.
+        # This models a request waiting for its next off-loop preparation step.
+        _probe_pool(gateway_pool.engine)
+        checked.set()
+        return NoopBudgetEnforcer()
+
+    gateway_pool.app.dependency_overrides[get_budget_enforcer] = budget_dependency
+    provider = HeldProvider()
+    provider.release_handshakes.set()
+    provider.release_streams.set()
+    path, payload = _request("chat")
+    with (
+        patch(
+            "preloop.services.openai_gateway.litellm.completion",
+            side_effect=provider.completion,
+        ),
+        patch("preloop.services.openai_gateway.emit_account_event"),
+        patch("preloop.services.openai_gateway._emit_account_event_nonblocking"),
+        patch(
+            "preloop.services.openai_gateway.ModelGatewayEventEmitter.emit_for_usage"
+        ),
+        patch(
+            "preloop.services.openai_gateway.GatewayUsageSearchService.auto_index_interaction"
+        ),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=gateway_pool.app, raise_app_exceptions=False
+            ),
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                path,
+                json=payload,
+                headers={"Authorization": f"Bearer {gateway_pool.token}"},
+            )
+    assert response.status_code == 200, response.text
+    assert checked.is_set()
+    assert "[DONE]" in response.text
+    assert gateway_pool.engine.pool.checkedout() == 0
+
+
+@pytest.mark.asyncio
+async def test_gateway_owned_auth_detaches_context_and_still_checks_revocation(
+    gateway_pool: GatewayPoolFixture,
+) -> None:
+    """Releasing auth reads never turns a prior success into an auth cache."""
+    from sqlalchemy import inspect
+
+    from preloop.services.model_gateway_auth import authenticate_bearer_token
+
+    with Session(gateway_pool.engine) as db:
+        user = crud_user.get_multi(db, account_id=str(gateway_pool.account_id))[0]
+        key, token = crud_api_key.create_runtime_key(
+            db,
+            name="Synthetic auth phase key",
+            account_id=gateway_pool.account_id,
+            user_id=user.id,
+            context_data={},
+        )
+        key_id = key.id
+
+    with Session(gateway_pool.engine) as db:
+        context = await authenticate_bearer_token(token, db, owns_db_session=True)
+        assert context is not None and context.api_key is not None
+        assert gateway_pool.engine.pool.checkedout() == 0
+        assert inspect(context.user).detached
+        assert inspect(context.api_key).detached
+        # Scalar state needed by the next phase remains readable without SQL.
+        assert context.user.account_id == gateway_pool.account_id
+        assert context.api_key.id == key_id
+        assert context.api_key.context_data == {}
+        assert gateway_pool.engine.pool.checkedout() == 0
+
+    with Session(gateway_pool.engine) as db:
+        crud_api_key.deactivate(db, key_id=key_id)
+    with Session(gateway_pool.engine) as db:
+        assert await authenticate_bearer_token(token, db, owns_db_session=True) is None
+        assert gateway_pool.engine.pool.checkedout() == 0
+
+
+@pytest.mark.asyncio
+async def test_gateway_owned_oauth_auth_detaches_context_and_checks_revocation(
+    gateway_pool: GatewayPoolFixture,
+) -> None:
+    """OAuth snapshots release capacity while subsequent revocation stays fresh."""
+    from sqlalchemy import inspect
+
+    from preloop.models.crud.oauth_mcp_token import crud_oauth_mcp_access_token
+    from preloop.services.model_gateway_auth import authenticate_bearer_token
+
+    token = f"synthetic-oauth-{uuid4().hex}"
+    with Session(gateway_pool.engine) as db:
+        user = crud_user.get_multi(db, account_id=str(gateway_pool.account_id))[0]
+        oauth = crud_oauth_mcp_access_token.create(
+            db,
+            token=token,
+            client_id="synthetic-client",
+            user_id=user.id,
+            account_id=gateway_pool.account_id,
+            scopes=["mcp:read"],
+        )
+        oauth_id = oauth.id
+
+    with Session(gateway_pool.engine) as db:
+        context = await authenticate_bearer_token(token, db, owns_db_session=True)
+        assert context is not None and context.oauth_access_token is not None
+        assert gateway_pool.engine.pool.checkedout() == 0
+        assert inspect(context.user).detached
+        assert inspect(context.oauth_access_token).detached
+        assert context.user.account_id == gateway_pool.account_id
+        assert context.oauth_access_token.id == oauth_id
+        assert context.oauth_access_token.scopes == ["mcp:read"]
+        assert context.oauth_access_token.client_id == "synthetic-client"
+        assert gateway_pool.engine.pool.checkedout() == 0
+
+    with Session(gateway_pool.engine) as db:
+        oauth = crud_oauth_mcp_access_token.get_by_token(db, token=token)
+        assert oauth is not None
+        crud_oauth_mcp_access_token.revoke(db, obj=oauth)
+    with Session(gateway_pool.engine) as db:
+        assert await authenticate_bearer_token(token, db, owns_db_session=True) is None
+        assert gateway_pool.engine.pool.checkedout() == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["chat", "responses", "anthropic", "gemini"])
+@pytest.mark.parametrize("asgi_spec", ["2.3", "2.4"])
+async def test_initial_stream_policy_failure_is_accounted_and_closes_provider(
+    gateway_pool: GatewayPoolFixture,
+    protocol: str,
+    asgi_spec: str,
+) -> None:
+    """A gate lookup failure after headers emits no payload and records one503."""
+    from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+
+    class Upstream:
+        def __init__(self) -> None:
+            self.pulls = 0
+            self.closed = 0
+
+        def __iter__(self) -> Any:
+            return self
+
+        def __next__(self) -> dict[str, Any]:
+            self.pulls += 1
+            if self.pulls > 1:
+                raise AssertionError(
+                    "policy failure must not consume more provider data"
+                )
+            return {"choices": [{"delta": {"content": "private-output"}}]}
+
+        def close(self) -> None:
+            self.closed += 1
+
+    upstream = Upstream()
+    calls = 0
+
+    def load(*_args: Any) -> list[Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise SQLAlchemyTimeoutError("sensitive SQL")
+        return []
+
+    async def asgi_app(scope: Any, receive: Any, send: Any) -> None:
+        scope["asgi"]["spec_version"] = asgi_spec
+        await gateway_pool.app(scope, receive, send)
+
+    path, payload = _request(protocol)
+    with (
+        patch(
+            "preloop.services.openai_gateway.litellm.completion", return_value=upstream
+        ),
+        patch(
+            "preloop.services.model_content_policy.load_model_io_rules",
+            side_effect=load,
+        ),
+        patch("preloop.services.openai_gateway.emit_account_event"),
+        patch("preloop.services.openai_gateway._emit_account_event_nonblocking"),
+        patch(
+            "preloop.services.openai_gateway.ModelGatewayEventEmitter.emit_for_usage"
+        ),
+        patch(
+            "preloop.services.openai_gateway.GatewayUsageSearchService.auto_index_interaction"
+        ),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=asgi_app, raise_app_exceptions=True),
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                path,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {gateway_pool.token}",
+                    "anthropic-version": "2023-06-01",
+                },
+            )
+    assert response.status_code == 200
+    assert "private-output" not in response.text
+    assert "sensitive SQL" not in response.text
+    assert "temporarily unavailable" in response.text
+    if protocol == "anthropic":
+        assert "event: error" in response.text
+    elif protocol in {"chat", "responses"}:
+        assert "[DONE]" in response.text
+        assert "content_policy_unavailable" in response.text
+    else:
+        assert '"error"' in response.text
+        assert '"candidates"' not in response.text
+    assert upstream.closed == 1
+    assert upstream.pulls == 1
+    with Session(gateway_pool.engine) as db:
+        rows = db.scalars(
+            select(models.ApiUsage).where(
+                models.ApiUsage.account_id == gateway_pool.account_id,
+            )
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].status_code == 503
+        assert rows[0].error_class == "content_policy_unavailable"
+
+
+def test_pricing_override_uses_the_existing_request_pool_slot(
+    gateway_pool: GatewayPoolFixture,
+) -> None:
+    """Budget/accounting must not silently drop an override waiting for slot2."""
+    from preloop.models.crud import crud_model_price_override
+    from preloop.services.pricing_overrides import resolve_pricing_override
+
+    with Session(gateway_pool.engine) as db:
+        model = crud_ai_model.get_by_account(db, account_id=gateway_pool.account_id)[0]
+        crud_model_price_override.create_for_account(
+            db,
+            account_id=gateway_pool.account_id,
+            obj_in={"model_alias": "example-model", "input_price_per_1k": 9.0},
+        )
+        assert gateway_pool.engine.pool.checkedout() == 1
+        transaction = db.get_transaction()
+        pricing = resolve_pricing_override(
+            db,
+            account_id=gateway_pool.account_id,
+            ai_model=model,
+            requested_alias="example-model",
+        )
+        assert pricing is not None
+        assert pricing["input_price_per_1k"] == 9.0
+        assert db.get_transaction() is transaction
+        assert transaction.is_active
+        assert gateway_pool.engine.pool.checkedout() == 1

@@ -1571,6 +1571,7 @@ def test_account_agent_pause_then_reenroll_restores_gateway_traffic(
     client, db_session, test_user
 ):
     """The CLI's reenroll action must also restore gateway function."""
+    account_id = test_user.account_id
     _seed_anthropic_gateway_model(db_session, test_user.account_id)
     agent_id, durable_token = _seed_pauseable_agent(
         client, db_session, test_user, source_id="pause-reenroll-host"
@@ -1592,7 +1593,7 @@ def test_account_agent_pause_then_reenroll_restores_gateway_traffic(
 
     after = _post_anthropic_message(client, durable_token)
     assert after.status_code == 200, after.text
-    assert _usage_count(db_session, test_user.account_id) == 1
+    assert _usage_count(db_session, account_id) == 1
 
 
 def test_account_agent_resume_heals_legacy_revoked_credentials(

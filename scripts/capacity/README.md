@@ -9,7 +9,7 @@ It measures a particular checkout and workload. It does not run actual CLI agent
 Use a new Linux VM with Docker Engine, Compose v2 and Python 3.11+. The example resource limits are in `compose.yaml`; a small VM starting point is 2 vCPU and 4 GiB RAM. The container memory ceilings total roughly 3.5 GiB while the load driver runs, leaving little OS headroom. Watch host pressure and lower ceilings or use a larger VM as needed. A local image build can need more memory and disk than the running lab: build on another machine of the same architecture and `docker save`/`docker load` the image if necessary. No VM is provisioned by these scripts.
 
 From a checkout of the revision to test, the wrapper handles resource capture,
-resolved Compose configuration, image records and service logs:
+requested Compose configuration, effective running-container settings, image records and service logs. It builds the shared application image once through the `api` service:
 
 ```bash
 scripts/capacity/lab.sh up
@@ -22,7 +22,7 @@ The equivalent individual commands are:
 ```bash
 export PRELOOP_DISABLE_TELEMETRY=true
 export CAPACITY_REVISION=$(git rev-parse HEAD)
-docker compose -f scripts/capacity/compose.yaml build
+docker compose -f scripts/capacity/compose.yaml build api
 # Use --wait so database migrations and service health pass before setup.
 docker compose -f scripts/capacity/compose.yaml up -d --wait api gateway fake
 mkdir -p scripts/capacity/artifacts
@@ -60,6 +60,8 @@ Defaults stop at the first configured error-rate or p95 breach. `--continue-afte
 `config.json` records workload settings, source revision and driver platform. `requests.jsonl` records operation, duration, status/error category and model time to first content, without tokens, request bodies or response payloads. `summary.json` reports stage throughput, successful full-request p50/p95/p99, all-attempt p99, error categories and first threshold crossing. It records attempted and completed throughput separately. Failed requests remain in error counts even if their latency is absent from successful-request percentiles.
 
 `telemetry.jsonl` contains API/gateway health bodies (request pool occupancy and usage writer queue), NATS counters, recovery log counts and driver event-loop timer lag. Ping latency is an **indirect** signal of target event-loop responsiveness, not an instrumented server event-loop-delay gauge. Correlate it with driver lag and CPU saturation before blaming the target. Missing/erroring telemetry is evidence missing, never evidence of health. Health HTTP 200 alone does not establish available request-pool capacity.
+
+`resources.jsonl` also records each running container's effective image ID, CPU/memory limits, published ports and an allowlist of pool, service-role and fixture settings. These are the actual Docker settings, including overrides applied outside the wrapper; `compose.yaml` records only the wrapper's requested configuration. Arbitrary container environment variables and credentials are excluded.
 
 `resources.jsonl` samples each lab container's Docker CPU, memory, process count and state, plus PostgreSQL connection/wait categories. Include the fake service and load driver: if either is saturated, the experiment has reached an injector/fixture limit. Service logs provide pool holder warnings, NATS write failures and restart diagnostics. The native smoke and unit tests validate behavior; they are not VM capacity benchmarks.
 

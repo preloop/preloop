@@ -13,7 +13,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, TypedDict, Union
 
-from sqlalchemy import inspect
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -79,13 +78,10 @@ def alias_candidates(
 def _overrides_table_available(db: Session) -> bool:
     """Report whether the overrides table exists, never raising."""
     try:
-        bind = db.get_bind()
-        if bind is not None and not inspect(bind).has_table("model_price_overrides"):
-            return False
+        return crud_model_price_override.table_exists(db)
     except SQLAlchemyError:
         logger.debug("Pricing override table check failed", exc_info=True)
         return False
-    return True
 
 
 def resolve_active_override_row(

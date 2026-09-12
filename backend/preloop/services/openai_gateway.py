@@ -580,6 +580,13 @@ class _PrefetchedUpstreamStream:
     def __init__(self, iterator: Iterator[Any], *, raw: Any) -> None:
         self._iterator = iterator
         self.raw = raw
+        self._closed = False
+
+    def close(self) -> None:
+        """Release an upstream connection when policy prevents stream iteration."""
+        if not self._closed:
+            self._closed = True
+            OpenAIGatewayService._close_failed_upstream_stream(self.raw)
 
     def __iter__(self) -> "_PrefetchedUpstreamStream":
         return self
@@ -867,7 +874,7 @@ class OpenAIGatewayService:
         rendering a chunk cannot reacquire a connection by implicit ORM I/O.
         Caller-owned internal sessions are deliberately unaffected.
 
-        Sole production caller of ``release_gateway_session``. Invoke only after
+        Alongside the HTTP authentication boundary, invoke this only after
         HTTP request preparation (or after persisted accounting) so any pending
         state is that request's unit of work, never an unrelated mid-request
         transaction. Provider waits, streams, retries, approval holds, and
@@ -2213,6 +2220,7 @@ class OpenAIGatewayService:
             ai_model=model,
             payload=payload,
             budget_result=budget_result,
+            closes=(upstream_stream,),
         )
 
     def stream_chat_completion(self, payload: Dict[str, Any]) -> Iterator[str]:
@@ -2532,6 +2540,7 @@ class OpenAIGatewayService:
             ai_model=model,
             payload=payload,
             budget_result=budget_result,
+            closes=(upstream_stream,),
         )
 
     def stream_response(self, payload: Dict[str, Any]) -> Iterator[str]:
@@ -3115,6 +3124,7 @@ class OpenAIGatewayService:
             ai_model=model,
             payload=payload,
             budget_result=budget_result,
+            closes=(upstream_stream,),
         )
 
     def _get_account_models(self) -> List[AIModel]:
@@ -7995,7 +8005,7 @@ class OpenAIGatewayService:
         )
 
     def _defer_stream_record(self, **kwargs: Any) -> None:
-        """Stash a success usage record until the HTTP body is finished.
+        """Stash a stream usage record until the HTTP body is finished.
 
         Starlette pulls the generator once more after the terminal SSE yield
         and only then sends ``more_body=False``. Recording in that pull holds
@@ -8167,7 +8177,55 @@ class OpenAIGatewayService:
                 budget_result=budget_result,
             )
 
-        return ObservedGatewayStream(stream, on_abandoned=_on_abandoned, closes=closes)
+        def guarded_stream() -> Iterator[str]:
+            emitted = False
+            policy_failed = False
+            try:
+                for event in stream:
+                    emitted = True
+                    yield event
+            except ModelGatewayAPIError as exc:
+                # The fresh response gate runs before the provider event
+                # generator starts. Its failure therefore has no inner
+                # accounting/cleanup owner, even though HTTP headers are sent.
+                if emitted or exc.code != "content_policy_unavailable":
+                    raise
+                policy_failed = True
+                for resource in closes:
+                    self._close_failed_upstream_stream(resource)
+                self._defer_stream_record(
+                    endpoint=endpoint,
+                    method="POST",
+                    status_code=503,
+                    duration=time.perf_counter() - started_at,
+                    ai_model=ai_model,
+                    requested_model=payload.get("model"),
+                    response_payload=None,
+                    upstream_response=None,
+                    endpoint_kind=endpoint_kind,
+                    budget_result=budget_result,
+                    error_detail=exc.message,
+                    error_class="content_policy_unavailable",
+                    request_payload=payload,
+                )
+                if endpoint == "/anthropic/v1/messages":
+                    yield self._anthropic_stream_error_event(exc, exc)
+                elif endpoint == "/openai/v1/responses":
+                    yield self._responses_stream_error_event(exc, exc)
+                    yield self._sse_done()
+                else:
+                    yield self._openai_stream_error_event(exc, exc)
+                    yield self._sse_done()
+            finally:
+                if policy_failed and isinstance(sys.exc_info()[1], GeneratorExit):
+                    self.flush_deferred_stream_record()
+                close = getattr(stream, "close", None)
+                if close is not None:
+                    close()
+
+        return ObservedGatewayStream(
+            guarded_stream(), on_abandoned=_on_abandoned, closes=(stream, *closes)
+        )
 
     def _record_stream_abandoned(
         self,

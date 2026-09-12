@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import or_
+from sqlalchemy import inspect, or_
 from sqlalchemy.orm import Session
 
 from ..models.model_price_override import ModelPriceOverride
@@ -15,6 +15,10 @@ from .base import CRUDBase
 
 class CRUDModelPriceOverride(CRUDBase[ModelPriceOverride]):
     """CRUD helper for model price override lookup and management."""
+
+    def table_exists(self, db: Session) -> bool:
+        """Inspect using the caller's connection, without a second pool checkout."""
+        return inspect(db.connection()).has_table(self.model.__tablename__)
 
     def list_for_account(
         self,

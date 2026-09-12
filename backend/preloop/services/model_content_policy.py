@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 from uuid import UUID
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -652,6 +653,27 @@ def _apply_decision(
     raise _gateway_error(provider, decision)
 
 
+def _load_gateway_policy_rules(
+    gateway: Any, *, ai_model: Any, provider: str
+) -> List[ModelIORule]:
+    """Finish the policy read before waits, and fail closed on database errors."""
+    try:
+        try:
+            return load_model_io_rules(gateway.db, gateway.auth_context.user.account_id)
+        finally:
+            release = getattr(gateway, "release_db_for_wait", None)
+            if release is not None:
+                release(ai_model)
+    except SQLAlchemyError as exc:
+        logger.warning("Model I/O policy unavailable: %s", type(exc).__name__)
+        raise ModelGatewayAPIError(
+            provider=provider,
+            status_code=503,
+            message="Content policy is temporarily unavailable. Please retry.",
+            code="content_policy_unavailable",
+        ) from exc
+
+
 def enforce_request_policy(
     gateway: Any,
     *,
@@ -662,12 +684,7 @@ def enforce_request_policy(
 ) -> None:
     """Evaluate model.request rules before the provider call."""
     account_id = gateway.auth_context.user.account_id
-    try:
-        rules = load_model_io_rules(gateway.db, account_id)
-    finally:
-        release = getattr(gateway, "release_db_for_wait", None)
-        if release is not None:
-            release(ai_model)
+    rules = _load_gateway_policy_rules(gateway, ai_model=ai_model, provider=provider)
     if not any(rule.enabled and str(rule.target) == "model.request" for rule in rules):
         return
     text = canonical_request_text(messages, payload)
@@ -699,12 +716,7 @@ def enforce_response_policy(
 ) -> None:
     """Evaluate model.response rules before bytes reach the client."""
     account_id = gateway.auth_context.user.account_id
-    try:
-        rules = load_model_io_rules(gateway.db, account_id)
-    finally:
-        release = getattr(gateway, "release_db_for_wait", None)
-        if release is not None:
-            release(ai_model)
+    rules = _load_gateway_policy_rules(gateway, ai_model=ai_model, provider=provider)
     if not any(rule.enabled and str(rule.target) == "model.response" for rule in rules):
         return
     decision = evaluate_model_io(
@@ -825,13 +837,10 @@ def wrap_stream_for_response_policy(
     actions. Clients see time-to-first-token equal time-to-last-token
     when any ``model.response`` rule is enabled.
     """
-    account_id = gateway.auth_context.user.account_id
-    try:
-        rules = load_model_io_rules(gateway.db, account_id)
-    finally:
-        release = getattr(gateway, "release_db_for_wait", None)
-        if release is not None:
-            release(ai_model)
+    # Reload after request approval/provider waits so newly added response
+    # rules are visible before the first output. Release this lookup before
+    # pulling the provider stream, even when the rule list is empty.
+    rules = _load_gateway_policy_rules(gateway, ai_model=ai_model, provider=provider)
     if not any(rule.enabled and str(rule.target) == "model.response" for rule in rules):
         yield from events
         return

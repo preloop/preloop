@@ -1,7 +1,5 @@
 """Tests for model gateway auth helpers."""
 
-from unittest.mock import AsyncMock, patch
-
 import pytest
 
 from preloop.models.crud import crud_api_key
@@ -44,11 +42,7 @@ async def test_authenticate_bearer_token_preserves_api_key_context(
         },
     )
 
-    with patch(
-        "preloop.services.model_gateway_auth.get_user_from_token_if_valid",
-        new=AsyncMock(return_value=test_user),
-    ):
-        auth_context = await authenticate_bearer_token(presented_token, db_session)
+    auth_context = await authenticate_bearer_token(presented_token, db_session)
 
     assert auth_context is not None
     assert auth_context.user.id == test_user.id
