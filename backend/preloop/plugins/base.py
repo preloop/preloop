@@ -129,6 +129,14 @@ class Plugin(ABC):
         """Called when application shuts down."""
         return
 
+    async def on_gateway_startup(self) -> None:
+        """Initialize request governance without API-only workers or services."""
+        return
+
+    async def on_gateway_shutdown(self) -> None:
+        """Release resources created by on_gateway_startup."""
+        return
+
 
 class ConditionEvaluatorPlugin(ABC):
     """Abstract base for condition evaluator plugins."""
@@ -325,6 +333,21 @@ class PluginManager:
                     features["features"][feature_name] = value
 
         return features
+
+    async def startup_gateway(self) -> None:
+        """Initialize gateway policies; propagate failures before serving traffic."""
+        for plugin in self._plugins.values():
+            await plugin.on_gateway_startup()
+
+    async def shutdown_gateway(self) -> None:
+        """Shut down only gateway resources, attempting every plugin."""
+        for plugin in reversed(list(self._plugins.values())):
+            try:
+                await plugin.on_gateway_shutdown()
+            except Exception:
+                logger.exception(
+                    "Error shutting down gateway plugin '%s'", plugin.metadata.name
+                )
 
     async def startup_all(self):
         """Call on_startup for all plugins."""

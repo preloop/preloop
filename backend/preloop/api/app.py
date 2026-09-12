@@ -494,6 +494,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             f"Plugin system initialized. "
             f"Registered {len(plugin_manager.list_condition_evaluators())} condition evaluators."
         )
+    elif not is_testing and is_gateway_role:
+        from preloop.plugins import get_plugin_manager
+
+        plugin_manager = get_plugin_manager()
+        # Required policy initialization must fail startup if unavailable.
+        # API plugin startup starts unrelated schedulers and is not safe here.
+        await plugin_manager.startup_gateway()
     else:
         logger.info("Skipping plugin system for %s role.", service_role)
 
@@ -591,7 +598,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if not is_testing and plugin_manager:
         logger.info("Shutting down plugin system...")
         try:
-            await plugin_manager.shutdown_all()
+            if is_api_role:
+                await plugin_manager.shutdown_all()
+            else:
+                await plugin_manager.shutdown_gateway()
             logger.info("Plugin system shut down successfully.")
         except Exception as e:
             logger.error(f"Error shutting down plugins: {e}", exc_info=True)
@@ -979,6 +989,13 @@ def create_app() -> FastAPI:
         version.router, prefix="/api/v1", tags=["Version"], include_in_schema=False
     )
 
+    if is_api_role or is_gateway_role:
+        from preloop.plugins import get_plugin_manager
+
+        plugin_manager = get_plugin_manager()
+        for plugin in plugin_manager._plugins.values():
+            app.dependency_overrides.update(plugin.get_dependencies())
+
     if is_api_role:
         # OAuth consent page (login form for CLI and MCP OAuth flows)
         from preloop.api.endpoints.oauth_consent import router as oauth_consent_router
@@ -1000,12 +1017,7 @@ def create_app() -> FastAPI:
         # This allows plugins (both builtin and proprietary) to add their own endpoints
         # We do this before adding standard routers to ensure plugins can override if needed
         # or just be registered alongside
-        from preloop.plugins import get_plugin_manager
-
-        plugin_manager = get_plugin_manager()
         plugin_manager.register_routes(app)
-        for plugin in plugin_manager._plugins.values():
-            app.dependency_overrides.update(plugin.get_dependencies())
 
         # Core API routers
         app.include_router(auth_router, prefix="/api/v1/auth", tags=["Auth"])
