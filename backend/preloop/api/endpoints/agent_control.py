@@ -6,16 +6,14 @@ import asyncio
 import json
 import logging
 import uuid
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, Awaitable, Callable, Optional, TypeVar
 
 import nats.errors
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 from pydantic_core import PydanticSerializationError
-from sqlalchemy import inspect
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
@@ -37,6 +35,8 @@ from preloop.models.crud import (
     crud_runtime_session,
     crud_runtime_session_activity,
 )
+from preloop.models.crud import agent_control_connection as control_connection
+from preloop.models.crud.agent_control_connection import AgentControlConnectionContext
 from preloop.models.db.session import get_db_session
 from preloop.schemas.agent_control import (
     AgentControlCommandResponse,
@@ -63,6 +63,9 @@ router = APIRouter()
 # already defines the same value as ``EVICTION_CLOSE_CODE`` in
 # ``integrations/agent_control/core.py``; keep them in sync.
 EVICTION_CLOSE_CODE: int = 4000
+# Registration is serialized through the claim/registry handoff. A stalled
+# evicted socket must not hold that lock while unrelated agents try to connect.
+EVICTION_CLOSE_TIMEOUT_SECONDS: float = 1.0
 
 # How long the control WebSocket waits for an inbound frame before it pings the
 # agent, and how many of those windows may pass in silence before the socket is
@@ -110,24 +113,17 @@ HEARTBEAT_TOUCH_INTERVAL = timedelta(seconds=15)
 SUPPORTED_CONTROL_AGENT_KINDS = {"hermes", "openclaw", "claude_code", "opencode"}
 
 
-@dataclass(frozen=True)
-class AgentControlConnectionContext:
-    """Stable connection identifiers that survive managed-agent deletion."""
-
-    account_id: str
-    managed_agent_id: str
-    runtime_session_id: str
-    session_source_type: str
-    session_source_id: str
-    managed_agent_session_source_type: str
-    managed_agent_session_source_id: str
-
-
 def _connection_context_from_auth(
     context: RuntimeBearerAuthContext,
 ) -> AgentControlConnectionContext:
     """Capture connection identifiers before ORM rows can be deleted."""
     return AgentControlConnectionContext(
+        api_key_id=str(context.api_key.id),
+        user_id=str(context.user.id),
+        agent_kind=context.managed_agent.agent_kind,
+        session_reference=context.runtime_session.session_reference,
+        runtime_principal_id=context.runtime_session.runtime_principal_id,
+        connection_id=str(uuid.uuid4()),
         account_id=str(context.runtime_session.account_id),
         managed_agent_id=str(context.managed_agent.id),
         runtime_session_id=str(context.runtime_session.id),
@@ -158,6 +154,7 @@ class _ControlDatabase:
             with Session(
                 bind=self._bind, join_transaction_mode="create_savepoint"
             ) as db:
+                control_connection.configure_transaction(db)
                 return operation(db)
 
         async with self._lock:
@@ -165,25 +162,12 @@ class _ControlDatabase:
             return await run_db_off_loop(execute)
 
 
-def _load_control_identity(db: Session, token: str) -> RuntimeBearerAuthContext:
-    """Authenticate and detach scalar identity before any socket/NATS await."""
+def _load_control_identity(db: Session, token: str) -> AgentControlConnectionContext:
+    """Authenticate in the worker and return scalar identity only."""
     context = authenticate_runtime_bearer_token(
         db, token, enforce_current_binding=False
     )
-    # Detached entities must only be read by column attribute (no
-    # relationships, lazy loads, db.merge, or db.add). api_key is unused after
-    # auth, so do not hydrate its columns for socket use.
-    for entity in (
-        context.user,
-        context.runtime_session,
-        context.managed_agent,
-    ):
-        # Auth can commit and expire these rows. Hydrate on the worker, then
-        # detach so later phase commits/rollbacks cannot trigger lazy reloads.
-        for attribute in inspect(entity).mapper.column_attrs:
-            getattr(entity, attribute.key)
-        db.expunge(entity)
-    return context
+    return _connection_context_from_auth(context)
 
 
 def _agent_has_control_config(db: Session, *, account_id: str, agent: Any) -> bool:
@@ -241,9 +225,17 @@ class AgentControlConnectionManager:
         self._agent_connections: dict[str, str] = {}
         self._connection_agents: dict[str, str] = {}
         self._presence: dict[str, dict[str, Any]] = {}
+        self._senders: dict[str, Callable[[dict[str, Any]], Awaitable[bool]]] = {}
         self._lock = asyncio.Lock()
+        self.registration_lock = asyncio.Lock()
 
-    async def connect(self, *, managed_agent_id: str, websocket: WebSocket) -> str:
+    async def connect(
+        self,
+        *,
+        managed_agent_id: str,
+        websocket: WebSocket,
+        sender: Callable[[dict[str, Any]], Awaitable[bool]] | None = None,
+    ) -> str:
         """Register one accepted managed-agent WebSocket.
 
         If another connection is already registered for the same agent,
@@ -260,7 +252,10 @@ class AgentControlConnectionManager:
                 evicted_ws = self._connections.pop(previous_connection_id, None)
                 evicted_id = previous_connection_id
                 self._connection_agents.pop(previous_connection_id, None)
+                self._senders.pop(previous_connection_id, None)
             self._connections[connection_id] = websocket
+            if sender is not None:
+                self._senders[connection_id] = sender
             self._agent_connections[managed_agent_id] = connection_id
             self._connection_agents[connection_id] = managed_agent_id
         if evicted_ws is not None:
@@ -272,9 +267,12 @@ class AgentControlConnectionManager:
                 connection_id,
             )
             try:
-                await evicted_ws.close(
-                    code=EVICTION_CLOSE_CODE,
-                    reason="Superseded by a newer connection for this agent",
+                await asyncio.wait_for(
+                    evicted_ws.close(
+                        code=EVICTION_CLOSE_CODE,
+                        reason="Superseded by a newer connection for this agent",
+                    ),
+                    timeout=EVICTION_CLOSE_TIMEOUT_SECONDS,
                 )
             except Exception:
                 logger.debug(
@@ -289,6 +287,7 @@ class AgentControlConnectionManager:
         async with self._lock:
             managed_agent_id = self._connection_agents.pop(connection_id, None)
             self._connections.pop(connection_id, None)
+            self._senders.pop(connection_id, None)
             if managed_agent_id is None:
                 return False
             if self._agent_connections.get(managed_agent_id) == connection_id:
@@ -325,9 +324,18 @@ class AgentControlConnectionManager:
         }
 
     def record_presence(
-        self, managed_agent_id: str, payload: dict[str, Any] | None
+        self,
+        managed_agent_id: str,
+        payload: dict[str, Any] | None,
+        *,
+        connection_id: str | None = None,
     ) -> None:
         """Remember the last capabilities/session_mode envelope from the plugin."""
+        if (
+            connection_id is not None
+            and self._agent_connections.get(managed_agent_id) != connection_id
+        ):
+            return
         self._presence[managed_agent_id] = payload or {}
 
     async def send_to_agent(
@@ -337,6 +345,7 @@ class AgentControlConnectionManager:
         async with self._lock:
             connection_id = self._agent_connections.get(managed_agent_id)
             websocket = self._connections.get(connection_id or "")
+            sender = self._senders.get(connection_id or "")
         if websocket is None:
             return False
         try:
@@ -355,6 +364,8 @@ class AgentControlConnectionManager:
                 "payload": {"error": "envelope_serialization_failed"},
             }
         try:
+            if sender is not None:
+                return bool(await sender(payload))
             await websocket.send_json(payload)
         except _WS_DELIVERY_ERRORS:
             logger.exception(
@@ -453,7 +464,7 @@ def _operator_command_envelope(
 
 def _touch_presence(
     db: Session,
-    context: RuntimeBearerAuthContext,
+    context: AgentControlConnectionContext,
     *,
     observed_at: datetime,
     session_mode: Optional[str] = None,
@@ -463,10 +474,9 @@ def _touch_presence(
     # Reversing this order lets heartbeat and decommission wait on each other.
     crud_managed_agent.touch_last_seen_for_principal(
         db,
-        account_id=context.runtime_session.account_id,
-        session_source_type=context.managed_agent.session_source_type,
-        session_source_id=context.managed_agent.session_source_id,
-        runtime_session_id=context.runtime_session.id,
+        account_id=context.account_id,
+        session_source_type=context.managed_agent_session_source_type,
+        session_source_id=context.managed_agent_session_source_id,
         observed_at=observed_at,
         control_session_mode=session_mode,
         # This function is only reachable from the Agent Control WebSocket, so
@@ -477,29 +487,31 @@ def _touch_presence(
     )
     crud_runtime_session.touch_activity(
         db,
-        account_id=context.runtime_session.account_id,
-        runtime_session_id=context.runtime_session.id,
+        account_id=context.account_id,
+        runtime_session_id=context.runtime_session_id,
         observed_at=observed_at,
         min_update_interval=HEARTBEAT_TOUCH_INTERVAL,
         commit=False,
     )
     if commit:
-        db.commit()
+        control_connection.commit(db)
 
 
 def _mark_control_verified_from_capabilities(
     db: Session,
-    context: RuntimeBearerAuthContext,
+    context: AgentControlConnectionContext,
     inbound: AgentControlInboundEnvelope,
+    *,
+    commit: bool = True,
 ) -> None:
     """Treat a live capabilities envelope as runtime-plugin verification."""
     if inbound.type != "presence" or inbound.name != "capabilities":
         return
 
     agent_kind = str(
-        context.managed_agent.agent_kind
-        or context.managed_agent.session_source_type
-        or context.runtime_session.session_source_type
+        context.agent_kind
+        or context.managed_agent_session_source_type
+        or context.session_source_type
         or ""
     ).lower()
     if agent_kind not in SUPPORTED_CONTROL_AGENT_KINDS:
@@ -507,13 +519,13 @@ def _mark_control_verified_from_capabilities(
 
     latest_enrollment = crud_managed_agent_enrollment.get_latest_for_agent_by_type(
         db,
-        account_id=str(context.runtime_session.account_id),
-        agent_id=str(context.managed_agent.id),
+        account_id=str(context.account_id),
+        agent_id=str(context.managed_agent_id),
         enrollment_type="cli_managed_config",
     ) or crud_managed_agent_enrollment.get_latest_for_agent_by_type(
         db,
-        account_id=str(context.runtime_session.account_id),
-        agent_id=str(context.managed_agent.id),
+        account_id=str(context.account_id),
+        agent_id=str(context.managed_agent_id),
         enrollment_type="runtime_plugin_control",
     )
     validation_result = {
@@ -533,26 +545,29 @@ def _mark_control_verified_from_capabilities(
         "control_runtime_session_id_present": True,
     }
     if latest_enrollment is not None:
-        latest_enrollment.status = "validated"
-        latest_enrollment.validation_result = validation_result
-        latest_enrollment.last_validated_at = datetime.now(UTC)
-        db.add(latest_enrollment)
-        db.commit()
+        crud_managed_agent_enrollment.mark_validated(
+            db,
+            account_id=context.account_id,
+            agent_id=context.managed_agent_id,
+            enrollment_id=str(latest_enrollment.id),
+            validation_result=validation_result,
+            commit=commit,
+        )
         return
 
     crud_managed_agent_enrollment.create_for_agent(
         db,
-        account_id=context.runtime_session.account_id,
-        agent_id=context.managed_agent.id,
-        created_by_user_id=context.user.id,
+        account_id=context.account_id,
+        agent_id=context.managed_agent_id,
+        created_by_user_id=context.user_id,
         enrollment_type="runtime_plugin_control",
         adapter_key=agent_kind,
         status="validated",
-        target_config_path=context.runtime_session.session_reference,
+        target_config_path=context.session_reference,
         discovered_config={
-            "session_source_type": context.runtime_session.session_source_type,
-            "session_source_id": context.runtime_session.session_source_id,
-            "runtime_principal_id": context.runtime_session.runtime_principal_id,
+            "session_source_type": context.session_source_type,
+            "session_source_id": context.session_source_id,
+            "runtime_principal_id": context.runtime_principal_id,
         },
         managed_config={
             "preloop": {
@@ -560,9 +575,9 @@ def _mark_control_verified_from_capabilities(
                     "enabled": True,
                     "runtime": agent_kind,
                     "control_ws_url": "/api/v1/agents/control/ws",
-                    "managed_agent_id": str(context.managed_agent.id),
-                    "runtime_session_id": str(context.runtime_session.id),
-                    "runtime_principal_id": context.runtime_session.runtime_principal_id,
+                    "managed_agent_id": str(context.managed_agent_id),
+                    "runtime_session_id": str(context.runtime_session_id),
+                    "runtime_principal_id": context.runtime_principal_id,
                 }
             }
         },
@@ -570,7 +585,7 @@ def _mark_control_verified_from_capabilities(
         restore_available=False,
         last_applied_at=datetime.now(UTC),
         last_validated_at=datetime.now(UTC),
-        commit=True,
+        commit=commit,
     )
 
 
@@ -623,12 +638,71 @@ def _safe_mark_command_delivered(
         )
 
 
+async def _send_control_command(
+    database: _ControlDatabase,
+    connection: AgentControlConnectionContext,
+    websocket: WebSocket,
+    payload: dict[str, Any],
+) -> bool:
+    """Fence database effects around at-least-once socket delivery.
+
+    Use the persisted account/agent-scoped envelope, never broker-supplied
+    command content. Replacement can happen after the read and before the
+    send; that old socket can no longer acknowledge or mark delivery.
+    """
+    command_id = payload.get("message_id")
+    if payload.get("type") != "command" or not isinstance(command_id, str):
+        return False
+
+    def load(db: Session) -> dict[str, Any] | None:
+        if control_connection.authorize(db, connection) is None:
+            return None
+        record = crud_agent_control_command.get_by_command_id(
+            db,
+            account_id=connection.account_id,
+            managed_agent_id=connection.managed_agent_id,
+            command_id=command_id,
+        )
+        if (
+            record is None
+            or record.kind != "command"
+            or record.status not in {"pending", "delivered"}
+        ):
+            return None
+        if record.expires_at is not None and record.expires_at.replace(
+            tzinfo=UTC
+        ) <= datetime.now(UTC):
+            return None
+        return dict(record.envelope)
+
+    def mark(db: Session) -> None:
+        if control_connection.authorize(db, connection) is not None:
+            _safe_mark_command_delivered(
+                db,
+                account_id=connection.account_id,
+                managed_agent_id=connection.managed_agent_id,
+                command_id=command_id,
+            )
+
+    try:
+        envelope = await database.run(load)
+        if envelope is None:
+            return False
+        await websocket.send_json(envelope)
+        await database.run(mark)
+        return True
+    except _DB_DELIVERY_ERRORS + _WS_DELIVERY_ERRORS:
+        logger.warning("Control command delivery unavailable", exc_info=True)
+        return False
+
+
 async def _subscribe_to_commands(
     *,
     managed_agent_id: str,
     websocket: WebSocket,
     database: Optional[_ControlDatabase] = None,
     account_id: Optional[str] = None,
+    connection: AgentControlConnectionContext | None = None,
 ) -> Any:
     subject = f"agent-control.commands.{managed_agent_id}"
     try:
@@ -639,34 +713,12 @@ async def _subscribe_to_commands(
         async def forward_command(msg: Any) -> None:
             try:
                 payload = json.loads(msg.data.decode())
-                await websocket.send_json(payload)
             except _WS_DELIVERY_ERRORS:
-                logger.exception("Failed to forward managed-agent command")
-                # Do not mark delivered — NATS/WS may retry; continue to the
-                # next message without treating this payload as sent.
+                logger.exception("Invalid managed-agent command notification")
                 return
-            # The publishing pod leaves the command pending; the pod that
-            # holds the WebSocket marks it delivered once actually sent.
-            command_id = payload.get("message_id")
-            envelope_agent_id = payload.get("managed_agent_id")
-            if (
-                database is not None
-                and account_id is not None
-                and payload.get("type") == "command"
-                and isinstance(command_id, str)
-                and (
-                    envelope_agent_id is None
-                    or str(envelope_agent_id) == str(managed_agent_id)
-                )
-            ):
-                await database.run(
-                    lambda db: _safe_mark_command_delivered(
-                        db,
-                        account_id=account_id,
-                        command_id=command_id,
-                        managed_agent_id=managed_agent_id,
-                    )
-                )
+            if not isinstance(payload, dict) or database is None or connection is None:
+                return
+            await _send_control_command(database, connection, websocket, payload)
 
         return await nats_client.subscribe(subject, cb=forward_command)
     except _NATS_DELIVERY_ERRORS:
@@ -683,10 +735,21 @@ async def _redeliver_pending_commands(
     now = datetime.now(UTC)
 
     def load(db: Session) -> list[tuple[str, dict[str, Any]]]:
+        if control_connection.authorize(db, connection) is None:
+            return []
         with db.begin_nested():
-            crud_agent_control_command.expire_stale(db, now=now, commit=False)
+            crud_agent_control_command.expire_stale(
+                db,
+                now=now,
+                account_id=connection.account_id,
+                managed_agent_id=connection.managed_agent_id,
+                commit=False,
+            )
             pending = crud_agent_control_command.get_undelivered_for_agent(
-                db, managed_agent_id=connection.managed_agent_id, now=now
+                db,
+                managed_agent_id=connection.managed_agent_id,
+                account_id=connection.account_id,
+                now=now,
             )
             snapshots = [
                 (record.command_id, dict(record.envelope)) for record in pending
@@ -703,35 +766,9 @@ async def _redeliver_pending_commands(
         )
         return
 
-    delivered_ids: list[str] = []
-    for command_id, envelope in pending:
-        try:
-            await websocket.send_json(envelope)
-        except _WS_DELIVERY_ERRORS:
-            logger.exception("Failed to redeliver Agent Control command %s", command_id)
+    for _, envelope in pending:
+        if not await _send_control_command(database, connection, websocket, envelope):
             break
-        delivered_ids.append(command_id)
-
-    def mark_delivered(db: Session) -> None:
-        with db.begin_nested():
-            crud_agent_control_command.mark_delivered_many(
-                db,
-                account_id=connection.account_id,
-                managed_agent_id=connection.managed_agent_id,
-                command_ids=delivered_ids,
-                delivered_at=datetime.now(UTC),
-                commit=False,
-            )
-        db.commit()
-
-    if delivered_ids:
-        try:
-            await database.run(mark_delivered)
-        except _DB_DELIVERY_ERRORS:
-            logger.exception(
-                "Failed to batch-mark %s Agent Control commands delivered",
-                len(delivered_ids),
-            )
 
 
 _COMMAND_ACK_NAMES = {"ack", "command_ack", "command_result", "command_error"}
@@ -741,6 +778,8 @@ def _handle_command_ack(
     db: Session,
     connection: AgentControlConnectionContext,
     inbound: AgentControlInboundEnvelope,
+    *,
+    commit: bool = True,
 ) -> None:
     """Record an end-to-end command acknowledgement from the agent.
 
@@ -766,13 +805,16 @@ def _handle_command_ack(
                 acked_at=datetime.now(UTC),
                 commit=False,
             )
-        db.commit()
+        if commit:
+            control_connection.commit(db)
         if record is None:
             logger.info(
                 "Received ack for unknown or cross-agent Agent Control command %s",
                 command_id,
             )
     except _DB_DELIVERY_ERRORS:
+        if not commit:
+            raise
         logger.exception("Failed to mark Agent Control command %s acked", command_id)
 
 
@@ -813,8 +855,10 @@ def _sanitize_agent_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _persist_agent_control_result(
     db: Session,
-    context: RuntimeBearerAuthContext,
+    context: AgentControlConnectionContext,
     inbound: AgentControlInboundEnvelope,
+    *,
+    commit: bool = True,
 ) -> None:
     if inbound.type != "status" or inbound.name not in {
         "command_result",
@@ -824,6 +868,15 @@ def _persist_agent_control_result(
 
     command_id = inbound.payload.get("command_id")
     if not isinstance(command_id, str) or not command_id.strip():
+        return
+
+    command = crud_agent_control_command.get_by_command_id(
+        db,
+        account_id=context.account_id,
+        managed_agent_id=context.managed_agent_id,
+        command_id=command_id.strip(),
+    )
+    if command is None or command.kind != "command" or command.status != "acked":
         return
 
     default_status = "failed" if inbound.name == "command_error" else "completed"
@@ -838,12 +891,13 @@ def _persist_agent_control_result(
 
     crud_runtime_session_activity.log_agent_control_result(
         db,
-        account_id=context.runtime_session.account_id,
+        account_id=context.account_id,
         command_id=command_id.strip(),
-        fallback_runtime_session_id=context.runtime_session.id,
+        fallback_runtime_session_id=context.runtime_session_id,
         status=result_status,
         message=message,
         metadata=_sanitize_agent_control_payload(inbound.payload),
+        commit=commit,
     )
 
 
@@ -874,24 +928,23 @@ async def _emit_agent_message(
 
 def _process_control_message(
     db: Session,
-    context: RuntimeBearerAuthContext,
     connection: AgentControlConnectionContext,
     inbound: AgentControlInboundEnvelope,
     observed_at: datetime,
 ) -> bool:
     """Persist one inbound frame using one isolated worker session."""
-    agent = crud_managed_agent.get_for_account(
-        db, account_id=connection.account_id, agent_id=connection.managed_agent_id
-    )
-    if agent is None or agent.lifecycle_state in {"suspended", "decommissioned"}:
+    if control_connection.authorize(db, connection) is None:
         return False
     inbound_mode = inbound.payload.get("session_mode")
     if inbound_mode not in {"local", "remote", "queued"}:
         inbound_mode = None
-    _touch_presence(db, context, observed_at=observed_at, session_mode=inbound_mode)
-    _mark_control_verified_from_capabilities(db, context, inbound)
-    _handle_command_ack(db, connection, inbound)
-    _persist_agent_control_result(db, context, inbound)
+    _touch_presence(
+        db, connection, observed_at=observed_at, session_mode=inbound_mode, commit=False
+    )
+    _mark_control_verified_from_capabilities(db, connection, inbound, commit=False)
+    _handle_command_ack(db, connection, inbound, commit=False)
+    _persist_agent_control_result(db, connection, inbound, commit=False)
+    control_connection.commit(db)
     return True
 
 
@@ -899,24 +952,18 @@ def _retire_control_presence(
     db: Session,
     connection: AgentControlConnectionContext,
     last_presence_at: datetime,
-) -> None:
-    """Retire only this connection's heartbeat and runtime binding."""
-    crud_managed_agent.clear_control_heartbeat(
-        db,
-        account_id=connection.account_id,
-        session_source_type=connection.managed_agent_session_source_type,
-        session_source_id=connection.managed_agent_session_source_id,
-        not_newer_than=last_presence_at,
-        commit=True,
-    )
-    crud_managed_agent.clear_runtime_session_binding(
-        db,
-        account_id=connection.account_id,
-        session_source_type=connection.managed_agent_session_source_type,
-        session_source_id=connection.managed_agent_session_source_id,
-        runtime_session_id=connection.runtime_session_id,
-        commit=True,
-    )
+) -> bool:
+    """Retire presence atomically using the persisted generation."""
+    return control_connection.retire(db, connection)
+
+
+def _claim_control_connection(
+    db: Session, connection: AgentControlConnectionContext, observed_at: datetime
+) -> bool:
+    if control_connection.authorize(db, connection, claim=True) is None:
+        return False
+    _touch_presence(db, connection, observed_at=observed_at)
+    return True
 
 
 @router.websocket("/agents/control/ws")
@@ -925,6 +972,7 @@ async def managed_agent_control_websocket(
     db: Session = Depends(get_db_session),
 ) -> None:
     """Keep one managed agent online for low-latency operator commands."""
+    manager = agent_control_manager
     token = _extract_bearer_token(websocket)
     if token is None:
         await websocket.close(code=1008, reason="Runtime bearer token required")
@@ -932,7 +980,7 @@ async def managed_agent_control_websocket(
 
     database = _ControlDatabase(db)
     try:
-        context = await database.run(
+        connection = await database.run(
             lambda session: _load_control_identity(session, token)
         )
     except HTTPException as exc:
@@ -949,24 +997,30 @@ async def managed_agent_control_websocket(
         return
 
     await websocket.accept()
-    connection = _connection_context_from_auth(context)
-    connection_id = await agent_control_manager.connect(
-        managed_agent_id=connection.managed_agent_id,
-        websocket=websocket,
-    )
+    connection_id = ""
     command_subscription = None
     now = datetime.now(UTC)
     last_presence_at = now
     try:
+        async with manager.registration_lock:
+            if not await database.run(
+                lambda session: _claim_control_connection(session, connection, now)
+            ):
+                await websocket.close(
+                    code=1008, reason="Control credential is no longer active"
+                )
+                return
+            connection_id = await manager.connect(
+                managed_agent_id=connection.managed_agent_id,
+                websocket=websocket,
+                sender=partial(_send_control_command, database, connection, websocket),
+            )
         command_subscription = await _subscribe_to_commands(
             managed_agent_id=connection.managed_agent_id,
             websocket=websocket,
             database=database,
             account_id=connection.account_id,
-        )
-
-        await database.run(
-            lambda session: _touch_presence(session, context, observed_at=now)
+            connection=connection,
         )
         # The last heartbeat this connection wrote, so a clean close can retire
         # its own presence without stealing a newer connection's.
@@ -1040,7 +1094,6 @@ async def managed_agent_control_websocket(
                 active = await database.run(
                     partial(
                         _process_control_message,
-                        context=context,
                         connection=connection,
                         inbound=inbound,
                         observed_at=last_presence_at,
@@ -1051,10 +1104,16 @@ async def managed_agent_control_websocket(
                         "Managed agent %s deleted or inactive during control websocket; closing",
                         connection.managed_agent_id,
                     )
+                    await websocket.close(
+                        code=EVICTION_CLOSE_CODE,
+                        reason="Control ownership or credential changed",
+                    )
                     break
                 if inbound.type in {"presence", "heartbeat", "status"}:
-                    agent_control_manager.record_presence(
-                        connection.managed_agent_id, inbound.payload
+                    manager.record_presence(
+                        connection.managed_agent_id,
+                        inbound.payload,
+                        connection_id=connection_id,
                     )
             except _AGENT_GONE_ERRORS:
                 logger.info(
@@ -1068,6 +1127,7 @@ async def managed_agent_control_websocket(
                     connection.managed_agent_id,
                     exc_info=True,
                 )
+                await websocket.close(code=1013, reason="Database busy; reconnect")
                 break
             await _emit_agent_message(connection, inbound)
             if inbound.type == "heartbeat":
@@ -1079,8 +1139,11 @@ async def managed_agent_control_websocket(
                     payload={"status": "ok"},
                 )
                 await websocket.send_json(ack.model_dump(mode="json"))
-    except WebSocketDisconnect:
+    except _WS_DELIVERY_ERRORS:
         logger.info("Managed-agent control WebSocket disconnected")
+    except _DB_DELIVERY_ERRORS:
+        logger.warning("Control database phase failed", exc_info=True)
+        await websocket.close(code=1013, reason="Database busy; reconnect")
     finally:
         if command_subscription is not None:
             try:
@@ -1090,14 +1153,15 @@ async def managed_agent_control_websocket(
                     "Failed to unsubscribe agent command subscription",
                     exc_info=True,
                 )
-        removed_active = await agent_control_manager.disconnect(connection_id)
-        if removed_active:
+        removed_active = await manager.disconnect(connection_id)
+        if removed_active or not connection_id:
             # A clean close is presence information every replica can read, so
             # retire the heartbeat instead of waiting out the window. This runs
             # in a finally block: a session that already failed must not stop
             # the disconnect bookkeeping below.
+            retired = False
             try:
-                await database.run(
+                retired = await database.run(
                     lambda session: _retire_control_presence(
                         session, connection, last_presence_at
                     )
@@ -1108,19 +1172,20 @@ async def managed_agent_control_websocket(
                     connection.managed_agent_id,
                     exc_info=True,
                 )
-            emit_account_event(
-                build_account_event(
-                    account_id=connection.account_id,
-                    topic=ACCOUNT_TOPIC_AGENT_CONTROL,
-                    event_type="managed_agent_offline",
-                    payload={
-                        "managed_agent_id": connection.managed_agent_id,
-                        "runtime_session_id": connection.runtime_session_id,
-                    },
-                    managed_agent_id=connection.managed_agent_id,
-                    runtime_session_id=connection.runtime_session_id,
+            if retired:
+                emit_account_event(
+                    build_account_event(
+                        account_id=connection.account_id,
+                        topic=ACCOUNT_TOPIC_AGENT_CONTROL,
+                        event_type="managed_agent_offline",
+                        payload={
+                            "managed_agent_id": connection.managed_agent_id,
+                            "runtime_session_id": connection.runtime_session_id,
+                        },
+                        managed_agent_id=connection.managed_agent_id,
+                        runtime_session_id=connection.runtime_session_id,
+                    )
                 )
-            )
 
 
 def _resolve_session_mode(
@@ -1287,18 +1352,17 @@ async def _route_managed_agent_prompt(
         expires_at=expires_at,
     )
 
+    # create_command refreshes its row after committing. End that read
+    # transaction before the guarded sender checks out its own connection.
+    # Snapshot before rollback; reading an expired agent here would reacquire it.
+    delivery_agent_id = str(agent.id)
+    await run_db_off_loop(partial(control_connection.release_read_transaction, db))
     command_status = "pending"
     local_delivery = await agent_control_manager.send_to_agent(
-        managed_agent_id=str(agent.id),
+        managed_agent_id=delivery_agent_id,
         envelope=envelope,
     )
     if local_delivery:
-        _safe_mark_command_delivered(
-            db,
-            account_id=str(agent.account_id),
-            command_id=envelope.message_id,
-            managed_agent_id=str(agent.id),
-        )
         command_status = "delivered"
     subject = None
     if not local_delivery:
@@ -1535,18 +1599,17 @@ async def _route_session_action(
         created_by_user_id=current_user.id,
         expires_at=expires_at,
     )
+    # create_command refreshes its row after committing. End that read
+    # transaction before the guarded sender checks out its own connection.
+    # Snapshot before rollback; reading an expired agent here would reacquire it.
+    delivery_agent_id = str(agent.id)
+    await run_db_off_loop(partial(control_connection.release_read_transaction, db))
     command_status = "pending"
     local_delivery = await agent_control_manager.send_to_agent(
-        managed_agent_id=str(agent.id),
+        managed_agent_id=delivery_agent_id,
         envelope=envelope,
     )
     if local_delivery:
-        _safe_mark_command_delivered(
-            db,
-            account_id=str(agent.account_id),
-            command_id=envelope.message_id,
-            managed_agent_id=str(agent.id),
-        )
         command_status = "delivered"
     subject = None
     if not local_delivery:
