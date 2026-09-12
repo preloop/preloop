@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from preloop.models import models
+from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.model_gateway_budget import ModelGatewayBudgetService
@@ -150,9 +151,9 @@ class ModelGatewayBudgetEnforcer:
         account_id = auth_context.user.account_id
         managed_agent_id = _resolve_managed_agent_id(db, auth_context)
 
-        model_alias = None
-        if isinstance(ai_model.meta_data, dict) and "gateway" in ai_model.meta_data:
-            model_alias = ai_model.meta_data["gateway"].get("model_alias")
+        model_alias = resolve_ai_model_runtime(
+            ai_model
+        ).model_gateway_model_alias or payload.get("model")
 
         provider = (ai_model.provider_name or "openai").lower()
 

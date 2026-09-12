@@ -19,6 +19,7 @@ from preloop.plugins.base import PluginManager
 from preloop.services.model_gateway_budget_enforcer import ModelGatewayBudgetEnforcer
 
 
+@pytest.mark.parametrize("explicit_alias", [True, False])
 @pytest.mark.parametrize(
     "limit, pricing, policy_alias, expected_status",
     [
@@ -38,13 +39,14 @@ def test_dedicated_gateway_applies_real_budget_before_dispatch(
     pricing: bool,
     policy_alias: str | None,
     expected_status: int,
+    explicit_alias: bool,
 ) -> None:
     monkeypatch.setenv("PRELOOP_SERVICE_ROLE", "gateway")
     monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
     monkeypatch.setattr(settings, "disable_rbac", True)
     monkeypatch.setattr("preloop.plugins.get_plugin_manager", lambda: PluginManager())
     monkeypatch.setattr("preloop.plugins.base._plugin_manager", None)
-    crud_ai_model.create_with_account(
+    ai_model = crud_ai_model.create_with_account(
         db_session,
         account_id=test_user.account_id,
         obj_in={
@@ -53,13 +55,19 @@ def test_dedicated_gateway_applies_real_budget_before_dispatch(
             "model_identifier": "synthetic-priced-model",
             "api_key": "unused-synthetic-key",
             "meta_data": {
-                "gateway": {"enabled": True, "model_alias": "priced-test"},
+                "gateway": {
+                    "enabled": True,
+                    **({"model_alias": "priced-test"} if explicit_alias else {}),
+                },
                 "pricing": {"input_price_per_1k": 1, "output_price_per_1k": 1}
                 if pricing
                 else {},
             },
         },
     )
+    from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
+
+    requested_alias = resolve_ai_model_runtime(ai_model).model_gateway_model_alias
     crud_budget_policy.create(
         db_session,
         obj_in={
@@ -67,7 +75,8 @@ def test_dedicated_gateway_applies_real_budget_before_dispatch(
             "subject_type": "account",
             "period": models.BudgetPeriod.monthly,
             "hard_limit_usd": limit,
-            "model_alias": policy_alias,
+            "model_alias": policy_alias
+            or (requested_alias if not explicit_alias else None),
             "soft_limit_usd": 1.0 if limit is None else None,
         },
     )
@@ -113,7 +122,7 @@ def test_dedicated_gateway_applies_real_budget_before_dispatch(
         response = client.post(
             "/openai/v1/chat/completions",
             json={
-                "model": "priced-test",
+                "model": requested_alias,
                 "messages": [{"role": "user", "content": "hello"}],
                 "max_tokens": 10,
             },
