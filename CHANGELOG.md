@@ -412,6 +412,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Optional gateway session-summary failures no longer page as primary gateway
+  outages or retry generation after every request. Failed primary requests skip
+  summaries; successful calls use a bounded refresh cadence and isolated state.
+- Native Responses forwarding to OpenCode Zen preserves authentic caller identity
+  headers so the provider receives the original client identity for eligibility
+  checks. Upstream credentials remain separate.
+
 - Hosted OpenCode preserves each model's Responses or chat-completions protocol,
   including title generation and mixed model inventories. Known OpenCode Zen
   Responses models and explicit native overrides use the matching SDK adapter.

@@ -67,6 +67,10 @@ def test_runtime_session_summary_refreshes_when_missing():
 
     with (
         patch(
+            "preloop.services.openai_gateway.crud_api_usage.count_successful_gateway_calls_for_session",
+            return_value=1,
+        ),
+        patch(
             "preloop.services.openai_gateway.crud_ai_model.get_default_active_model",
             return_value=SimpleNamespace(name="Default model"),
         ),

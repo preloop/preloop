@@ -2186,6 +2186,31 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .all()
         )
 
+    def count_successful_gateway_calls_for_session(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        runtime_session_id: Union[uuid.UUID, str],
+    ) -> int:
+        """Count persisted successful calls for flow and non-flow sessions.
+
+        Usage rows exist before optional summary refresh. Flow calls are not
+        mirrored into RuntimeSessionActivity, so that store cannot drive a
+        shared summary cadence.
+        """
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.action_type == "model_gateway",
+                self.model.account_id == account_id,
+                self.model.runtime_session_id == runtime_session_id,
+                self.model.status_code >= 200,
+                self.model.status_code < 300,
+            )
+            .count()
+        )
+
     def list_session_request_rows(
         self,
         db: Session,
