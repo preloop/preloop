@@ -7353,12 +7353,15 @@ class OpenAIGatewayService:
             # the original class here; _stream_error maps network failures to
             # upstream_disconnect in the client-facing SSE error.
             log_disconnect = logger.warning if purpose == "gateway" else logger.info
-            log_disconnect(
+            log_message = (
                 "Gateway upstream disconnect: protocol=%s provider=%s model=%s "
                 "error_class=%s"
                 if purpose == "gateway"
                 else "Optional session summary upstream disconnect: protocol=%s "
-                "provider=%s model=%s error_class=%s",
+                "provider=%s model=%s error_class=%s"
+            )
+            log_disconnect(
+                log_message,
                 provider,
                 getattr(ai_model, "provider_name", None),
                 getattr(ai_model, "model_identifier", None),
