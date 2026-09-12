@@ -42,7 +42,7 @@ async def get_gemini_gateway_auth_context(
             message="Missing API key",
         )
 
-    auth_context = await authenticate_bearer_token(token, db)
+    auth_context = await authenticate_bearer_token(token, db, owns_db_session=True)
     if not auth_context:
         raise ModelGatewayAPIError(
             provider="gemini",

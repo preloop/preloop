@@ -541,3 +541,94 @@ async def test_http_stream_disconnect_records_partial_usage_and_releases_pool(
         ).all()
         assert len(rows) == 1
         assert rows[0].status_code == 499
+
+
+@pytest.mark.asyncio
+async def test_gateway_auth_releases_pool_before_other_request_dependencies(
+    gateway_pool: GatewayPoolFixture,
+) -> None:
+    """Authenticated state must not reserve capacity while later work queues."""
+    from preloop.api.deps import NoopBudgetEnforcer, get_budget_enforcer
+
+    checked = Event()
+
+    def budget_dependency() -> NoopBudgetEnforcer:
+        # A separate dependency can use the sole slot after authentication.
+        # This models a request waiting for its next off-loop preparation step.
+        _probe_pool(gateway_pool.engine)
+        checked.set()
+        return NoopBudgetEnforcer()
+
+    gateway_pool.app.dependency_overrides[get_budget_enforcer] = budget_dependency
+    provider = HeldProvider()
+    provider.release_handshakes.set()
+    provider.release_streams.set()
+    path, payload = _request("chat")
+    with (
+        patch(
+            "preloop.services.openai_gateway.litellm.completion",
+            side_effect=provider.completion,
+        ),
+        patch("preloop.services.openai_gateway.emit_account_event"),
+        patch("preloop.services.openai_gateway._emit_account_event_nonblocking"),
+        patch(
+            "preloop.services.openai_gateway.ModelGatewayEventEmitter.emit_for_usage"
+        ),
+        patch(
+            "preloop.services.openai_gateway.GatewayUsageSearchService.auto_index_interaction"
+        ),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=gateway_pool.app, raise_app_exceptions=False
+            ),
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                path,
+                json=payload,
+                headers={"Authorization": f"Bearer {gateway_pool.token}"},
+            )
+    assert response.status_code == 200, response.text
+    assert checked.is_set()
+    assert "[DONE]" in response.text
+    assert gateway_pool.engine.pool.checkedout() == 0
+
+
+@pytest.mark.asyncio
+async def test_gateway_owned_auth_detaches_context_and_still_checks_revocation(
+    gateway_pool: GatewayPoolFixture,
+) -> None:
+    """Releasing auth reads never turns a prior success into an auth cache."""
+    from sqlalchemy import inspect
+
+    from preloop.services.model_gateway_auth import authenticate_bearer_token
+
+    with Session(gateway_pool.engine) as db:
+        user = crud_user.get_multi(db, account_id=str(gateway_pool.account_id))[0]
+        key, token = crud_api_key.create_runtime_key(
+            db,
+            name="Synthetic auth phase key",
+            account_id=gateway_pool.account_id,
+            user_id=user.id,
+            context_data={},
+        )
+        key_id = key.id
+
+    with Session(gateway_pool.engine) as db:
+        context = await authenticate_bearer_token(token, db, owns_db_session=True)
+        assert context is not None and context.api_key is not None
+        assert gateway_pool.engine.pool.checkedout() == 0
+        assert inspect(context.user).detached
+        assert inspect(context.api_key).detached
+        # Scalar state needed by the next phase remains readable without SQL.
+        assert context.user.account_id == gateway_pool.account_id
+        assert context.api_key.id == key_id
+        assert context.api_key.context_data == {}
+        assert gateway_pool.engine.pool.checkedout() == 0
+
+    with Session(gateway_pool.engine) as db:
+        crud_api_key.deactivate(db, key_id=key_id)
+    with Session(gateway_pool.engine) as db:
+        assert await authenticate_bearer_token(token, db, owns_db_session=True) is None
+        assert gateway_pool.engine.pool.checkedout() == 0

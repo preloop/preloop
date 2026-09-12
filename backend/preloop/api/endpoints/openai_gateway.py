@@ -81,7 +81,7 @@ async def get_model_gateway_auth_context(
         )
 
     token = authorization[7:]
-    auth_context = await authenticate_bearer_token(token, db)
+    auth_context = await authenticate_bearer_token(token, db, owns_db_session=True)
     if not auth_context:
         raise ModelGatewayAPIError(
             provider="openai",

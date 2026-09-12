@@ -24,6 +24,9 @@ def release_gateway_session(db: Session, *, preserve: Iterable[Any]) -> None:
     those values implicitly query again. Expunging before close means rollback
     cannot expire values retained by stream generators.
     """
+    # Authentication can release its phase before a gateway service exists.
+    # Keep the loaded values valid across the final commit and detachment.
+    db.expire_on_commit = False
     try:
         for instance in preserve:
             state = inspect(instance, raiseerr=False) if instance is not None else None
