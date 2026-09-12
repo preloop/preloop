@@ -4,7 +4,6 @@ Checks are preflight estimates, not atomic spend reservations. Concurrent calls
 can exceed a limit before their final usage is recorded.
 """
 
-import inspect
 import uuid
 from typing import Any, Dict, Optional, List, Tuple
 from datetime import datetime, timezone
@@ -31,16 +30,14 @@ def _estimate_request_cost_with_optional_override(
     ai_model: models.AIModel,
     payload: Dict[str, Any],
 ) -> Optional[float]:
-    """Estimate request cost across core versions with and without overrides."""
-    pricing_override = None
-    pricing_resolver = getattr(budget_service, "_pricing_override_for_request", None)
-    if callable(pricing_resolver):
-        pricing_override = pricing_resolver(ai_model, payload)
-
-    estimate = budget_service._estimate_request_cost
-    if "pricing_override" in inspect.signature(estimate).parameters:
-        return estimate(ai_model, payload, pricing_override=pricing_override)
-    return estimate(ai_model, payload)
+    """Estimate cost using the shared core pricing-override contract."""
+    return budget_service._estimate_request_cost(
+        ai_model,
+        payload,
+        pricing_override=budget_service._pricing_override_for_request(
+            ai_model, payload
+        ),
+    )
 
 
 def _resolve_managed_agent_id(

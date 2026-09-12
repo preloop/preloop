@@ -53,7 +53,7 @@ def test_dedicated_gateway_applies_real_budget_before_dispatch(
     monkeypatch.setenv("PRELOOP_SERVICE_ROLE", "gateway")
     monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
     monkeypatch.setattr(settings, "disable_rbac", True)
-    monkeypatch.setattr("preloop.plugins.get_plugin_manager", lambda: PluginManager())
+    monkeypatch.setattr("preloop.plugins.get_plugin_manager", PluginManager)
     monkeypatch.setattr("preloop.plugins.base._plugin_manager", None)
     ai_model = crud_ai_model.create_with_account(
         db_session,
