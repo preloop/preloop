@@ -685,10 +685,6 @@ def enforce_request_policy(
     """Evaluate model.request rules before the provider call."""
     account_id = gateway.auth_context.user.account_id
     rules = _load_gateway_policy_rules(gateway, ai_model=ai_model, provider=provider)
-    # Capture the streaming gate while request policy is still in preflight.
-    # The final buffered response check still reloads current policy; no rules
-    # are cached across requests and in-flight approval/deny checks stay live.
-    gateway._prepared_response_policy_rules = tuple(rules)
     if not any(rule.enabled and str(rule.target) == "model.request" for rule in rules):
         return
     text = canonical_request_text(messages, payload)
@@ -841,12 +837,10 @@ def wrap_stream_for_response_policy(
     actions. Clients see time-to-first-token equal time-to-last-token
     when any ``model.response`` rule is enabled.
     """
-    rules = getattr(gateway, "_prepared_response_policy_rules", None)
-    if rules is None:
-        # Direct/internal wrapper callers may not have a request preflight.
-        rules = _load_gateway_policy_rules(
-            gateway, ai_model=ai_model, provider=provider
-        )
+    # Reload after request approval/provider waits so newly added response
+    # rules are visible before the first output. Release this lookup before
+    # pulling the provider stream, even when the rule list is empty.
+    rules = _load_gateway_policy_rules(gateway, ai_model=ai_model, provider=provider)
     if not any(rule.enabled and str(rule.target) == "model.response" for rule in rules):
         yield from events
         return

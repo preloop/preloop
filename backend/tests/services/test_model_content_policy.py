@@ -457,7 +457,7 @@ def test_buffered_response_policy_db_failure_emits_error_without_payload() -> No
     assert out == ["data: content_policy_unavailable\n\n", "data: [DONE]\n\n"]
 
 
-def test_prepared_response_buffer_still_enforces_current_deny_rule() -> None:
+def test_response_buffer_still_enforces_current_deny_rule() -> None:
     """A changed policy remains authoritative before buffered output is released."""
     prepared = _rule(
         id="check-out",
@@ -472,13 +472,12 @@ def test_prepared_response_buffer_still_enforces_current_deny_rule() -> None:
     gateway = SimpleNamespace(
         db=MagicMock(),
         auth_context=SimpleNamespace(user=SimpleNamespace(account_id="acct", id="u")),
-        _prepared_response_policy_rules=(prepared,),
         _openai_stream_error_event=lambda exc, _err: f"data: {exc.code}\n\n",
         _sse_done=lambda: "data: [DONE]\n\n",
     )
     with patch(
         "preloop.services.model_content_policy.load_model_io_rules",
-        return_value=[current],
+        side_effect=[[prepared], [current]],
     ) as load:
         out = list(
             wrap_stream_for_response_policy(
@@ -491,5 +490,46 @@ def test_prepared_response_buffer_still_enforces_current_deny_rule() -> None:
                 provider="openai",
             )
         )
-    load.assert_called_once()
+    assert load.call_count == 2
     assert out == ["data: content_policy_denied\n\n", "data: [DONE]\n\n"]
+
+
+def test_response_rule_added_after_empty_request_preflight_blocks_output() -> None:
+    """An approval/provider wait must not freeze an empty response-rule gate."""
+    from preloop.services.model_content_policy import enforce_request_policy
+
+    deny = _rule(
+        id="new-deny",
+        target="model.response",
+        conditions=[ToolCondition(expression="true", action="deny")],
+    )
+    gateway = SimpleNamespace(
+        db=MagicMock(),
+        auth_context=SimpleNamespace(user=SimpleNamespace(account_id="acct", id="u")),
+        _openai_stream_error_event=lambda exc, _err: f"data: {exc.code}\n\n",
+        _sse_done=lambda: "data: [DONE]\n\n",
+    )
+    with patch(
+        "preloop.services.model_content_policy.load_model_io_rules",
+        side_effect=[[], [deny], [deny]],
+    ) as load:
+        enforce_request_policy(
+            gateway,
+            payload={},
+            ai_model=None,
+            messages=[],
+            provider="openai",
+        )
+        out = list(
+            wrap_stream_for_response_policy(
+                iter(
+                    ['data: {"choices":[{"delta":{"content":"private-output"}}]}\n\n']
+                ),
+                gateway=gateway,
+                payload={},
+                ai_model=None,
+                provider="openai",
+            )
+        )
+    assert out == ["data: content_policy_denied\n\n", "data: [DONE]\n\n"]
+    assert load.call_count == 3

@@ -676,3 +676,102 @@ async def test_gateway_owned_oauth_auth_detaches_context_and_checks_revocation(
     with Session(gateway_pool.engine) as db:
         assert await authenticate_bearer_token(token, db, owns_db_session=True) is None
         assert gateway_pool.engine.pool.checkedout() == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["chat", "responses", "anthropic", "gemini"])
+@pytest.mark.parametrize("asgi_spec", ["2.3", "2.4"])
+async def test_initial_stream_policy_failure_is_accounted_and_closes_provider(
+    gateway_pool: GatewayPoolFixture,
+    protocol: str,
+    asgi_spec: str,
+) -> None:
+    """A gate lookup failure after headers emits no payload and records one503."""
+    from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+
+    class Upstream:
+        def __init__(self) -> None:
+            self.pulls = 0
+            self.closed = 0
+
+        def __iter__(self) -> Any:
+            return self
+
+        def __next__(self) -> dict[str, Any]:
+            self.pulls += 1
+            if self.pulls > 1:
+                raise AssertionError(
+                    "policy failure must not consume more provider data"
+                )
+            return {"choices": [{"delta": {"content": "private-output"}}]}
+
+        def close(self) -> None:
+            self.closed += 1
+
+    upstream = Upstream()
+    calls = 0
+
+    def load(*_args: Any) -> list[Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise SQLAlchemyTimeoutError("sensitive SQL")
+        return []
+
+    async def asgi_app(scope: Any, receive: Any, send: Any) -> None:
+        scope["asgi"]["spec_version"] = asgi_spec
+        await gateway_pool.app(scope, receive, send)
+
+    path, payload = _request(protocol)
+    with (
+        patch(
+            "preloop.services.openai_gateway.litellm.completion", return_value=upstream
+        ),
+        patch(
+            "preloop.services.model_content_policy.load_model_io_rules",
+            side_effect=load,
+        ),
+        patch("preloop.services.openai_gateway.emit_account_event"),
+        patch("preloop.services.openai_gateway._emit_account_event_nonblocking"),
+        patch(
+            "preloop.services.openai_gateway.ModelGatewayEventEmitter.emit_for_usage"
+        ),
+        patch(
+            "preloop.services.openai_gateway.GatewayUsageSearchService.auto_index_interaction"
+        ),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=asgi_app, raise_app_exceptions=True),
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                path,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {gateway_pool.token}",
+                    "anthropic-version": "2023-06-01",
+                },
+            )
+    assert response.status_code == 200
+    assert "private-output" not in response.text
+    assert "sensitive SQL" not in response.text
+    assert "temporarily unavailable" in response.text
+    if protocol == "anthropic":
+        assert "event: error" in response.text
+    elif protocol in {"chat", "responses"}:
+        assert "[DONE]" in response.text
+        assert "content_policy_unavailable" in response.text
+    else:
+        assert '"error"' in response.text
+        assert '"candidates"' not in response.text
+    assert upstream.closed == 1
+    assert upstream.pulls == 1
+    with Session(gateway_pool.engine) as db:
+        rows = db.scalars(
+            select(models.ApiUsage).where(
+                models.ApiUsage.account_id == gateway_pool.account_id,
+            )
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].status_code == 503
+        assert rows[0].error_class == "content_policy_unavailable"

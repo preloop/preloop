@@ -513,37 +513,3 @@ def test_failed_materialization_still_returns_pool_connection(
     ):
         service.release_db_for_wait(_model())
     assert engine.pool.checkedout() == 0
-
-
-def test_stream_policy_reuses_preflight_rules_when_pool_is_occupied(
-    local_gateway: Any,
-) -> None:
-    """The first stream pull must not query policy after headers were sent."""
-    service, engine = local_gateway
-    model = _model()
-    events = [
-        'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n',
-        "data: [DONE]\n\n",
-    ]
-    with patch(
-        "preloop.services.model_content_policy.load_model_io_rules", return_value=[]
-    ) as load:
-        enforce_request_policy(
-            service, payload={}, ai_model=model, messages=[], provider="openai"
-        )
-        # The provider is now open and every DB slot is used by other work.
-        with engine.connect():
-            load.side_effect = AssertionError("policy read after response start")
-            assert (
-                list(
-                    wrap_stream_for_response_policy(
-                        iter(events),
-                        gateway=service,
-                        payload={},
-                        ai_model=model,
-                        provider="openai",
-                    )
-                )
-                == events
-            )
-    assert load.call_count == 1
