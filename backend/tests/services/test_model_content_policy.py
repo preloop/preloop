@@ -422,3 +422,74 @@ async def test_sync_hold_driver_refuses_to_block_running_loop():
             _await_model_io_hold(coro)
     finally:
         coro.close()
+
+
+def test_buffered_response_policy_db_failure_emits_error_without_payload() -> None:
+    """A required response check that loses DB capacity must remain fail closed."""
+    from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+
+    gateway = SimpleNamespace(
+        db=MagicMock(),
+        auth_context=SimpleNamespace(user=SimpleNamespace(account_id="acct", id="u")),
+        _openai_stream_error_event=lambda exc, _err: f"data: {exc.code}\n\n",
+        _sse_done=lambda: "data: [DONE]\n\n",
+    )
+    rule = _rule(
+        id="check-out",
+        target="model.response",
+        conditions=[ToolCondition(expression="true", action="allow")],
+    )
+    with patch(
+        "preloop.services.model_content_policy.load_model_io_rules",
+        side_effect=[[rule], SQLAlchemyTimeoutError("sensitive SQL must not escape")],
+    ):
+        out = list(
+            wrap_stream_for_response_policy(
+                iter(
+                    ['data: {"choices":[{"delta":{"content":"private-output"}}]}\n\n']
+                ),
+                gateway=gateway,
+                payload={},
+                ai_model=None,
+                provider="openai",
+            )
+        )
+    assert out == ["data: content_policy_unavailable\n\n", "data: [DONE]\n\n"]
+
+
+def test_prepared_response_buffer_still_enforces_current_deny_rule() -> None:
+    """A changed policy remains authoritative before buffered output is released."""
+    prepared = _rule(
+        id="check-out",
+        target="model.response",
+        conditions=[ToolCondition(expression="true", action="allow")],
+    )
+    current = _rule(
+        id="new-deny",
+        target="model.response",
+        conditions=[ToolCondition(expression="true", action="deny")],
+    )
+    gateway = SimpleNamespace(
+        db=MagicMock(),
+        auth_context=SimpleNamespace(user=SimpleNamespace(account_id="acct", id="u")),
+        _prepared_response_policy_rules=(prepared,),
+        _openai_stream_error_event=lambda exc, _err: f"data: {exc.code}\n\n",
+        _sse_done=lambda: "data: [DONE]\n\n",
+    )
+    with patch(
+        "preloop.services.model_content_policy.load_model_io_rules",
+        return_value=[current],
+    ) as load:
+        out = list(
+            wrap_stream_for_response_policy(
+                iter(
+                    ['data: {"choices":[{"delta":{"content":"private-output"}}]}\n\n']
+                ),
+                gateway=gateway,
+                payload={},
+                ai_model=None,
+                provider="openai",
+            )
+        )
+    load.assert_called_once()
+    assert out == ["data: content_policy_denied\n\n", "data: [DONE]\n\n"]

@@ -858,6 +858,9 @@ class OpenAIGatewayService:
         # (``GatewayStreamingResponse.on_complete``). None when the generator
         # is still mid-stream or recording already ran.
         self._deferred_stream_record: Optional[Callable[[], None]] = None
+        # A per-request streaming gate loaded before provider I/O. Buffered
+        # response enforcement still reads current rules before releasing data.
+        self._prepared_response_policy_rules: Optional[tuple[Any, ...]] = None
 
     def release_db_for_wait(self, ai_model: Optional[AIModel] = None) -> None:
         """Release an owned request transaction before external or stream waits.
@@ -867,7 +870,7 @@ class OpenAIGatewayService:
         rendering a chunk cannot reacquire a connection by implicit ORM I/O.
         Caller-owned internal sessions are deliberately unaffected.
 
-        Sole production caller of ``release_gateway_session``. Invoke only after
+        Alongside the HTTP authentication boundary, invoke this only after
         HTTP request preparation (or after persisted accounting) so any pending
         state is that request's unit of work, never an unrelated mid-request
         transaction. Provider waits, streams, retries, approval holds, and
@@ -900,6 +903,7 @@ class OpenAIGatewayService:
         """
         self._last_upstream_retry_count = 0
         self._last_alibaba_cache_mode = None
+        self._prepared_response_policy_rules = None
 
     def _adopt_native_session_id(self, payload: Optional[Dict[str, Any]]) -> None:
         """Adopt the agent's own session id from an Anthropic request payload.

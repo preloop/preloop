@@ -237,3 +237,30 @@ def test_streaming_request_deny_does_not_open_upstream():
                 }
             )
     mock_open.assert_not_called()
+
+
+def test_streaming_policy_load_failure_stops_before_provider() -> None:
+    """A failed policy preflight returns a clean failure without bypassing it."""
+    from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+
+    service = _service()
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=_ai_model()),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_record_gateway_request") as record,
+        patch.object(service, "_emit_gateway_request_started"),
+        patch.object(service, "_open_upstream_stream") as upstream,
+        patch(
+            "preloop.services.model_content_policy.load_model_io_rules",
+            side_effect=SQLAlchemyTimeoutError("synthetic unavailable database"),
+        ),
+        pytest.raises(ModelGatewayAPIError) as error,
+    ):
+        service.stream_chat_completion(
+            {"model": "gpt-5", "messages": [{"role": "user", "content": "Hi"}]}
+        )
+    assert error.value.status_code == 503
+    assert error.value.code == "content_policy_unavailable"
+    upstream.assert_not_called()
+    record.assert_called_once()
+    assert record.call_args.kwargs["status_code"] == 503

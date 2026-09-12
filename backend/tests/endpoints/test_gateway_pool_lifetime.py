@@ -632,3 +632,47 @@ async def test_gateway_owned_auth_detaches_context_and_still_checks_revocation(
     with Session(gateway_pool.engine) as db:
         assert await authenticate_bearer_token(token, db, owns_db_session=True) is None
         assert gateway_pool.engine.pool.checkedout() == 0
+
+
+@pytest.mark.asyncio
+async def test_gateway_owned_oauth_auth_detaches_context_and_checks_revocation(
+    gateway_pool: GatewayPoolFixture,
+) -> None:
+    """OAuth snapshots release capacity while subsequent revocation stays fresh."""
+    from sqlalchemy import inspect
+
+    from preloop.models.crud.oauth_mcp_token import crud_oauth_mcp_access_token
+    from preloop.services.model_gateway_auth import authenticate_bearer_token
+
+    token = f"synthetic-oauth-{uuid4().hex}"
+    with Session(gateway_pool.engine) as db:
+        user = crud_user.get_multi(db, account_id=str(gateway_pool.account_id))[0]
+        oauth = crud_oauth_mcp_access_token.create(
+            db,
+            token=token,
+            client_id="synthetic-client",
+            user_id=user.id,
+            account_id=gateway_pool.account_id,
+            scopes=["mcp:read"],
+        )
+        oauth_id = oauth.id
+
+    with Session(gateway_pool.engine) as db:
+        context = await authenticate_bearer_token(token, db, owns_db_session=True)
+        assert context is not None and context.oauth_access_token is not None
+        assert gateway_pool.engine.pool.checkedout() == 0
+        assert inspect(context.user).detached
+        assert inspect(context.oauth_access_token).detached
+        assert context.user.account_id == gateway_pool.account_id
+        assert context.oauth_access_token.id == oauth_id
+        assert context.oauth_access_token.scopes == ["mcp:read"]
+        assert context.oauth_access_token.client_id == "synthetic-client"
+        assert gateway_pool.engine.pool.checkedout() == 0
+
+    with Session(gateway_pool.engine) as db:
+        oauth = crud_oauth_mcp_access_token.get_by_token(db, token=token)
+        assert oauth is not None
+        crud_oauth_mcp_access_token.revoke(db, obj=oauth)
+    with Session(gateway_pool.engine) as db:
+        assert await authenticate_bearer_token(token, db, owns_db_session=True) is None
+        assert gateway_pool.engine.pool.checkedout() == 0

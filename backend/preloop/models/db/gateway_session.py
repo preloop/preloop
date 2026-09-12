@@ -49,8 +49,8 @@ def release_gateway_session(db: Session, *, preserve: Iterable[Any]) -> None:
         # auth/model graph). A clean-session ValueError would discard them.
         # Pending identity is this request's unit of work — empty (idle
         # checkout) or those preparation writes — never a reason to skip
-        # commit. Sole caller: OpenAIGatewayService.release_db_for_wait after
-        # request preparation or persisted accounting. Do not assert on
+        # commit. HTTP authentication and OpenAIGatewayService use this after
+        # their preparation or persisted accounting. Do not assert on
         # db.new/dirty/deleted here: those collections are ORM instances, not
         # a None-able identity, and a vacuous check would look like a guard.
         if db.in_transaction():
