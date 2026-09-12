@@ -4144,7 +4144,8 @@ func applyAgentControlConfigToDocument(
 			"entries",
 			openClawPreloopPluginID,
 		)
-		pluginEntry["config"] = control
+		existing, _ := asObjectMap(pluginEntry["config"])
+		pluginEntry["config"] = preserveRuntimeApprovalConfig("openclaw", existing, control)
 		ensureOpenClawPluginAllowlisted(doc)
 		return
 	}
@@ -4160,7 +4161,56 @@ func applyAgentControlConfigToDocument(
 		return
 	}
 	preloop := ensureObjectPath(doc, "preloop")
-	preloop["control"] = control
+	existing, _ := asObjectMap(preloop["control"])
+	preloop["control"] = preserveRuntimeApprovalConfig(runtimeSessionSourceTypeForAgent(agent.Name), existing, control)
+}
+
+// Preserve only validated operator approval settings; onboarding refreshes
+// every credential, runtime identity, and endpoint from the new control block.
+func preserveRuntimeApprovalConfig(runtime string, existing, fresh map[string]interface{}) map[string]interface{} {
+	merged := map[string]interface{}{}
+	for key, value := range fresh {
+		merged[key] = value
+	}
+	if runtime != "openclaw" && runtime != "hermes" {
+		return merged
+	}
+	if enabled, ok := existing["enabled"].(bool); ok {
+		merged["enabled"] = enabled
+	}
+	copyApproval := func(previous, target map[string]interface{}, enabledKey, failOpenKey, timeoutKey string) {
+		for _, key := range []string{enabledKey, failOpenKey} {
+			if value, ok := previous[key].(bool); ok {
+				target[key] = value
+			}
+		}
+		if value, ok := previous[timeoutKey]; ok && validRuntimeApprovalTimeout(value) {
+			target[timeoutKey] = value
+		}
+	}
+	if runtime == "openclaw" {
+		copyApproval(existing, merged, "tool_approval_enabled", "tool_approval_fail_open", "tool_approval_timeout_seconds")
+	} else if previous, ok := asObjectMap(existing["tool_approval"]); ok {
+		approval := map[string]interface{}{}
+		copyApproval(previous, approval, "enabled", "fail_open", "timeout_seconds")
+		if len(approval) > 0 {
+			merged["tool_approval"] = approval
+		}
+	}
+	return merged
+}
+
+func validRuntimeApprovalTimeout(value interface{}) bool {
+	switch seconds := value.(type) {
+	case int:
+		return seconds >= 30 && seconds <= maxApprovalWorkflowTimeoutSeconds
+	case int64:
+		return seconds >= 30 && seconds <= maxApprovalWorkflowTimeoutSeconds
+	case float64:
+		return seconds >= 30 && seconds <= maxApprovalWorkflowTimeoutSeconds && seconds == float64(int(seconds))
+	default:
+		return false
+	}
 }
 
 func writeClaudePreloopControlFile(control map[string]interface{}) error {

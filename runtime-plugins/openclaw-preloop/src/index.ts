@@ -22,6 +22,8 @@ type ControlConfig = {
    * instead of blocking. Defaults to false (fail closed / block on error).
    */
   tool_approval_fail_open?: boolean;
+  /** Workflow wait budget (30..86400 seconds); HTTP adds 15 seconds headroom. */
+  tool_approval_timeout_seconds?: number;
   /** Override for the permission-check endpoint (derived from the WS URL otherwise). */
   permission_check_url?: string;
 };
@@ -72,8 +74,10 @@ type FetchLike = (
   json: () => Promise<unknown>;
 }>;
 
-/** Upper bound for the blocking permission check; backend blocks up to ~300s. */
-const PERMISSION_CHECK_TIMEOUT_MS = 310_000;
+// Cover the supported policy workflow range, including rule-selected workflows
+// whose timeout is not known before the blocking response arrives.
+const MAX_APPROVAL_WAIT_SECONDS = 86_400;
+const PERMISSION_HTTP_HEADROOM_SECONDS = 15;
 
 type OpenClawRuntime = {
   sendPrompt?: (
@@ -181,6 +185,8 @@ export class PreloopOpenClawPlugin {
 
   verify(): void {
     const config = this.loadConfig();
+    this.validateApprovalSettings(config);
+    this.permissionCheckTimeoutSeconds(config);
     if (config.runtime !== this.runtime) {
       throw new Error(
         `Expected OpenClaw runtime config, got ${String(config.runtime)}`,
@@ -387,6 +393,35 @@ export class PreloopOpenClawPlugin {
     this.socket = undefined;
   }
 
+  permissionCheckTimeoutSeconds(config?: ControlConfig): number {
+    const resolved = config ?? this.controlConfig;
+    const value =
+      resolved?.tool_approval_timeout_seconds === undefined
+        ? MAX_APPROVAL_WAIT_SECONDS
+        : resolved.tool_approval_timeout_seconds;
+    if (
+      !Number.isInteger(value) ||
+      value < 30 ||
+      value > MAX_APPROVAL_WAIT_SECONDS
+    ) {
+      throw new Error(
+        "tool_approval_timeout_seconds must be an integer from 30 to 86400",
+      );
+    }
+    return value + PERMISSION_HTTP_HEADROOM_SECONDS;
+  }
+
+  private validateApprovalSettings(config: ControlConfig): void {
+    for (const key of [
+      "tool_approval_enabled",
+      "tool_approval_fail_open",
+    ] as const) {
+      if (config[key] !== undefined && typeof config[key] !== "boolean") {
+        throw new Error(`${key} must be a boolean`);
+      }
+    }
+  }
+
   toolApprovalEnabled(config?: ControlConfig): boolean {
     const resolved = config ?? this.controlConfig;
     return resolved?.tool_approval_enabled !== false;
@@ -436,21 +471,48 @@ export class PreloopOpenClawPlugin {
    * when the operator denies (or the check fails while failing closed), or
    * `undefined` to allow execution.
    *
-   * Per plan §4, honor OpenClaw's own exec-approvals policy when present:
-   * auto-allow / auto-deny locally via `client_decision`, and only escalate
-   * would-prompt cases to Preloop.
+   * Local deny is terminal. Forward allow/ask so central rules can veto or
+   * require approval; the server preserves a local allow when no rule matches.
    */
   async checkToolPermission(
     event: BeforeToolCallEvent,
     ctx: ToolHookContext,
   ): Promise<BeforeToolCallResult | undefined> {
-    const config = this.controlConfig ?? this.loadConfig();
-    if (!this.toolApprovalEnabled(config)) {
-      return undefined;
+    let config: ControlConfig;
+    let timeoutSeconds: number;
+    let url: string;
+    try {
+      config = this.controlConfig ?? this.loadConfig();
+      this.validateApprovalSettings(config);
+      if (!this.toolApprovalEnabled(config)) return undefined;
+      timeoutSeconds = this.permissionCheckTimeoutSeconds(config);
+      url = this.permissionCheckUrl(config);
+      const parsedUrl = new URL(url);
+      if (
+        !["http:", "https:"].includes(parsedUrl.protocol) ||
+        parsedUrl.username ||
+        parsedUrl.password
+      )
+        throw new Error(
+          "Permission endpoint must use HTTP(S) without URL credentials",
+        );
+      if (
+        typeof config.bearer_token !== "string" ||
+        !config.bearer_token.trim() ||
+        /[\r\n]/.test(config.bearer_token)
+      )
+        throw new Error("A valid runtime bearer credential is required");
+    } catch (error) {
+      return {
+        block: true,
+        blockReason: `Preloop approval configuration invalid: ${String(error)}`,
+      };
     }
     const params = event.params ?? {};
     const cwd =
-      typeof params["cwd"] === "string" ? (params["cwd"] as string) : process.cwd();
+      typeof params["cwd"] === "string"
+        ? (params["cwd"] as string)
+        : process.cwd();
     const sessionId =
       ctx.sessionId ?? ctx.sessionKey ?? config.session_reference ?? undefined;
     const clientDecision = resolveOpenClawClientDecision(
@@ -458,10 +520,7 @@ export class PreloopOpenClawPlugin {
       params,
       ctx.agentId,
     );
-    // Honor local auto-allow/deny without round-tripping to Preloop.
-    if (clientDecision === "allow") {
-      return undefined;
-    }
+    // Central policy must see local allows; a local deny cannot be widened.
     if (clientDecision === "deny") {
       return {
         block: true,
@@ -487,24 +546,50 @@ export class PreloopOpenClawPlugin {
 
     const doFetch = this.fetchImpl ?? (fetch as unknown as FetchLike);
     const controller = new AbortController();
-    const timer = setTimeout(
-      () => controller.abort(),
-      PERMISSION_CHECK_TIMEOUT_MS,
-    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const response = await doFetch(this.permissionCheckUrl(config), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${config.bearer_token}`,
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      });
+      timer = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
+      let response: Awaited<ReturnType<FetchLike>>;
+      try {
+        response = await doFetch(url, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${config.bearer_token}`,
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+      } catch (error) {
+        // Only a rejection from the validated HTTP request is a transport
+        // failure. JSON parsing and configuration errors stay fail-closed.
+        if (this.toolApprovalFailOpen(config)) return undefined;
+        throw error;
+      }
       if (!response.ok) {
+        if (
+          response.status >= 500 &&
+          response.status < 600 &&
+          this.toolApprovalFailOpen(config)
+        )
+          return undefined;
         throw new Error(`permission-check returned HTTP ${response.status}`);
       }
-      const decision = (await response.json()) as PermissionDecision;
+      const decision = (await response.json()) as PermissionDecision | null;
+      if (
+        !decision ||
+        typeof decision !== "object" ||
+        Array.isArray(decision) ||
+        (decision.decision !== "allow" && decision.decision !== "deny") ||
+        (decision.reason !== undefined &&
+          typeof decision.reason !== "string") ||
+        ("timed_out" in decision && typeof decision.timed_out !== "boolean") ||
+        ("timed_out" in decision &&
+          decision.timed_out === true &&
+          decision.decision !== "deny")
+      ) {
+        throw new Error("permission-check returned a malformed decision");
+      }
       if (decision.decision === "deny") {
         return {
           block: true,
@@ -512,13 +597,10 @@ export class PreloopOpenClawPlugin {
             decision.reason ?? "Tool call denied by Preloop approval.",
         };
       }
-      // allow (or any non-deny decision) -> let the tool run.
+      // Only an explicit allow lets the tool run.
       return undefined;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (this.toolApprovalFailOpen(config)) {
-        return undefined;
-      }
       // Fail closed: block when the approval service is unreachable.
       return {
         block: true,
@@ -616,7 +698,11 @@ export class PreloopOpenClawPlugin {
   }
 }
 
-export { gatewayModelsUrl, fetchGatewayModels, type GatewayModel } from "./models.js";
+export {
+  gatewayModelsUrl,
+  fetchGatewayModels,
+  type GatewayModel,
+} from "./models.js";
 
 export const plugin = new PreloopOpenClawPlugin();
 
@@ -694,12 +780,13 @@ export function register(api: {
         return await instance.checkToolPermission(event, ctx);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        api.logger?.error?.(
-          `Preloop tool approval check failed: ${message}`,
-        );
+        api.logger?.error?.(`Preloop tool approval check failed: ${message}`);
         // checkToolPermission already handles its own fail-open/closed policy;
         // an error escaping here is unexpected, so block to stay safe.
-        return { block: true, blockReason: `Preloop approval error: ${message}` };
+        return {
+          block: true,
+          blockReason: `Preloop approval error: ${message}`,
+        };
       }
     },
   );
@@ -727,7 +814,10 @@ type ExecSecurity = "deny" | "allowlist" | "full";
 
 type ExecApprovalsFile = {
   defaults?: { security?: string; ask?: string };
-  agents?: Record<string, { security?: string; ask?: string; allowlist?: unknown[] }>;
+  agents?: Record<
+    string,
+    { security?: string; ask?: string; allowlist?: unknown[] }
+  >;
 };
 
 /**
@@ -809,7 +899,9 @@ function loadOpenClawExecApprovals(
     if (!fs.existsSync(filePath)) {
       return null;
     }
-    const raw = JSON.parse(fs.readFileSync(filePath, "utf8")) as ExecApprovalsFile;
+    const raw = JSON.parse(
+      fs.readFileSync(filePath, "utf8"),
+    ) as ExecApprovalsFile;
     const defaults = raw.defaults ?? {};
     const agentKey = agentId?.trim() || "main";
     const agent = raw.agents?.[agentKey] ?? raw.agents?.["*"] ?? {};
@@ -822,16 +914,26 @@ function loadOpenClawExecApprovals(
 }
 
 function normalizeExecSecurity(value: unknown): ExecSecurity {
-  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (normalized === "deny" || normalized === "allowlist" || normalized === "full") {
+  const normalized =
+    typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (
+    normalized === "deny" ||
+    normalized === "allowlist" ||
+    normalized === "full"
+  ) {
     return normalized;
   }
   return "full";
 }
 
 function normalizeExecAsk(value: unknown): ExecAsk {
-  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (normalized === "off" || normalized === "on-miss" || normalized === "always") {
+  const normalized =
+    typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (
+    normalized === "off" ||
+    normalized === "on-miss" ||
+    normalized === "always"
+  ) {
     return normalized;
   }
   return "off";

@@ -9,7 +9,7 @@ decision (or timeout) and returns a simple allow/deny.
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
@@ -145,6 +145,16 @@ class AgentPermissionCheckRequest(BaseModel):
         ),
     )
 
+    evaluation_phase: Literal["permission_request", "pre_tool_use"] = Field(
+        "permission_request",
+        description=(
+            "'pre_tool_use' checks central native rules without assuming a host "
+            "permission decision: no matching rule continues without automatic "
+            "human escalation. 'permission_request' retains normal remote "
+            "escalation. A pre-tool allow never grants the host's permission."
+        ),
+    )
+
 
 class AgentPermissionCheckResponse(BaseModel):
     """Allow/deny decision for the agent's native tool call."""
@@ -166,8 +176,8 @@ class AgentPermissionCheckResponse(BaseModel):
         False,
         description=(
             "True when the deny is only the expiry of an unanswered approval "
-            "request, not a human decision. Adapters with a native 'ask' "
-            "verdict may fall back to the agent's local prompt."
+            "request, not a human decision. It remains a denial; adapters must "
+            "not replace required central approval with a local prompt."
         ),
     )
 
@@ -221,6 +231,7 @@ async def agent_permission_check(
         tool_input=tool_input,
         agent_reasoning=payload.agent_reasoning,
         client_decision=payload.client_decision,
+        evaluation_phase=payload.evaluation_phase,
     )
     return AgentPermissionCheckResponse(
         decision=decision,
