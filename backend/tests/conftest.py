@@ -275,8 +275,13 @@ def assign_role_to_user(db_session: Session, user: User, role_name: str) -> None
 def app(db_session: Session, test_user: User) -> Generator[fastapi.FastAPI, None, None]:
     """Create a FastAPI app for testing with dependency overrides."""
 
+    user_id = test_user.id
+
     def override_get_current_active_user():
-        return test_user
+        # Gateway requests close their owned session between phases. This
+        # fixture shares one session across requests, so a prior request can
+        # detach the original user. Resolve it anew as real authentication does.
+        return crud_user.get(db_session, id=user_id)
 
     app = create_app()
     app.dependency_overrides[get_db] = lambda: db_session

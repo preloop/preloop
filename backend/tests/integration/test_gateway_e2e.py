@@ -279,6 +279,8 @@ def test_openai_chat_completion_success_persists_usage_ledger(
         test_user,
         principal={"type": "custom", "id": "agent-e2e-1", "name": "E2E Agent"},
     )
+    # Capture expected identities before HTTP authentication closes its session.
+    model_id, api_key_id = model.id, api_key.id
 
     response = client.post(
         "/openai/v1/chat/completions",
@@ -307,8 +309,8 @@ def test_openai_chat_completion_success_persists_usage_ledger(
     assert usage.provider_name == "openai"
     # Attribution: account, model, api-key subject, runtime principal.
     assert str(usage.account_id) == str(test_user.account_id)
-    assert str(usage.ai_model_id) == str(model.id)
-    assert str(usage.api_key_id) == str(api_key.id)
+    assert usage.ai_model_id == model_id
+    assert usage.api_key_id == api_key_id
     assert usage.auth_subject_type == "api_key"
     assert usage.runtime_principal_type == "custom"
     assert usage.runtime_principal_id == "agent-e2e-1"
@@ -405,6 +407,7 @@ def test_anthropic_messages_success_persists_usage_ledger(
         test_user,
         principal={"type": "custom", "id": "claude-agent", "name": "Claude Agent"},
     )
+    model_id, api_key_id = model.id, api_key.id
 
     with patch(
         "preloop.services.openai_gateway.litellm.completion",
@@ -438,8 +441,8 @@ def test_anthropic_messages_success_persists_usage_ledger(
     assert usage.completion_tokens == 5
     assert usage.model_alias == "anthropic/claude-e2e"
     assert usage.provider_name == "anthropic"
-    assert str(usage.ai_model_id) == str(model.id)
-    assert str(usage.api_key_id) == str(api_key.id)
+    assert usage.ai_model_id == model_id
+    assert usage.api_key_id == api_key_id
     assert usage.runtime_principal_id == "claude-agent"
 
 

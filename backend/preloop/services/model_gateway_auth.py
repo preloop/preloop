@@ -27,7 +27,7 @@ from preloop.models.crud.oauth_mcp_token import crud_oauth_mcp_access_token
 logger = logging.getLogger(__name__)
 
 # Explicit empty bearer for synthetic gateway contexts that already have a
-# resolved ``models.User`` (internal replay/optimization). ``authenticate_bearer_token``
+# resolved ``User`` (internal replay/optimization). ``authenticate_bearer_token``
 # treats falsy tokens as unauthenticated; callers must never pass this to that
 # path — only to ``ModelGatewayAuthContext`` when the user is already known.
 NO_BEARER_TOKEN = ""
@@ -160,7 +160,7 @@ def build_runtime_key_auth_context(
     Args:
         db: Active database session.
         token: Plaintext runtime token minted for the principal.
-        api_key_id: Id of the ``models.ApiKey`` row backing *token*.
+        api_key_id: Id of the ``ApiKey`` row backing *token*.
 
     Returns:
         Context carrying the key and its owning user, or ``None`` when the
@@ -234,7 +234,7 @@ def compute_authorized_model_ids(
     - Subscription-OAuth models (``is_principal_bound_oauth``) are authorized
       ONLY for the managed-agent principal whose id has an active row in
       ``managed_agent_ai_model_binding`` for that model.
-    - models.User tokens (console-originated calls, no API key and no OAuth MCP
+    - User tokens (console-originated calls, no API key and no OAuth MCP
       token) keep full visibility of the account inventory.
     - Fail closed: credentials that resolve to no managed agent — legacy
       gateway keys without ``managed_agent_id`` and OAuth MCP client tokens —
@@ -247,7 +247,7 @@ def compute_authorized_model_ids(
         account_models: Full account model inventory to authorize against.
 
     Returns:
-        Frozen set of authorized ``models.AIModel`` id strings.
+        Frozen set of authorized ``AIModel`` id strings.
     """
     all_ids = frozenset(str(ai_model.id) for ai_model in account_models)
     bound_ids = {
