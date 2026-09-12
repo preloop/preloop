@@ -67,3 +67,5 @@ agent or its owner only when a matching policy type requires that attribution.
 Legacy model-ID and model-alias policy rows remain enforced against the model's
 canonical spend bucket. User-scoped policies apply to spending attributed to
 agents owned by that user; they do not cover every directly authenticated call.
+An alias rename preserves legacy model-ID policy applicability to the current
+model bucket; it does not migrate historical spend from the former alias.

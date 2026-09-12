@@ -221,7 +221,14 @@ class ModelGatewayBudgetEnforcer:
         ] = set()
 
         for policy in policies_by_id.values():
-            if policy.model_alias and policy.model_alias != model_alias:
+            if (
+                policy.model_alias
+                and policy.model_alias != model_alias
+                and not (
+                    policy.subject_type == "ai_model"
+                    and policy.subject_id == ai_model.id
+                )
+            ):
                 continue
 
             if estimated_cost is None and policy.hard_limit_usd is not None:
@@ -241,6 +248,7 @@ class ModelGatewayBudgetEnforcer:
                 # Legacy ID-only policies consume this model's rollup, not the
                 # account-wide rollup selected by a missing stored alias.
                 spend_model_alias = model_alias
+            spend_model_alias = spend_model_alias or None
             bucket_key = (
                 spend_type,
                 spend_id,

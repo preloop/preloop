@@ -30,6 +30,8 @@ from preloop.services.model_gateway_budget_enforcer import ModelGatewayBudgetEnf
         (100.0, False, None, 403),
         (100.0, False, "another-model", 200),
         (None, False, None, 200),
+        (0.0, True, "", 403),
+        (0.0, True, "old-model-alias", 200),
     ],
 )
 def test_dedicated_gateway_applies_real_budget_before_dispatch(
@@ -43,6 +45,11 @@ def test_dedicated_gateway_applies_real_budget_before_dispatch(
     explicit_alias: bool,
     policy_scope: str,
 ) -> None:
+    if policy_scope == "model_id" and policy_alias in {
+        "another-model",
+        "old-model-alias",
+    }:
+        expected_status = 403
     monkeypatch.setenv("PRELOOP_SERVICE_ROLE", "gateway")
     monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
     monkeypatch.setattr(settings, "disable_rbac", True)
@@ -79,7 +86,8 @@ def test_dedicated_gateway_applies_real_budget_before_dispatch(
             "period": models.BudgetPeriod.monthly,
             "hard_limit_usd": limit,
             "model_alias": policy_alias
-            or (
+            if policy_alias is not None
+            else (
                 requested_alias
                 if (not explicit_alias or policy_scope == "model_alias")
                 else None

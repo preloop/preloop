@@ -92,6 +92,11 @@ class CRUDBudgetPolicy(CRUDBase[BudgetPolicy]):
                     or_(
                         self.model.model_alias == model_alias,
                         self.model.model_alias.is_(None),
+                        self.model.model_alias == "",
+                        and_(
+                            self.model.subject_type == "ai_model",
+                            self.model.subject_id == ai_model_id,
+                        ),
                     ),
                 )
             ).scalars()
