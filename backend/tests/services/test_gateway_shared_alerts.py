@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import CancelledError
 import threading
 from types import SimpleNamespace
 from collections.abc import Iterator
@@ -335,12 +336,12 @@ def test_shutdown_cancels_reservation_and_finishes_close_before_stopping() -> No
         ),
         close=close,
     )
-    results: list[BaseException] = []
+    results: list[CancelledError] = []
 
     def reserve() -> None:
         try:
             worker.reserve("incident", 300.0)
-        except BaseException as error:
+        except CancelledError as error:
             results.append(error)
 
     with patch("nats.NATS", return_value=client):
@@ -352,7 +353,8 @@ def test_shutdown_cancels_reservation_and_finishes_close_before_stopping() -> No
     assert closed.is_set()
     assert worker._loop.is_closed()
     assert not thread.is_alive()
-    assert results
+    assert len(results) == 1
+    assert isinstance(results[0], CancelledError)
 
 
 def test_enqueue_after_shutdown_does_not_start_broker_or_delivery(
