@@ -23,7 +23,7 @@ from preloop.schemas.ai_model_pricing import (
     AIModelPriceQuote,
     AIModelPricingResponse,
 )
-from preloop.services import model_price_catalog
+from preloop.services import deepseek_pricing, model_price_catalog
 from preloop.services.model_pricing import (
     _get_configured_pricing,
     _iter_litellm_model_candidates,
@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
 
 #: Providers that publish machine-readable prices Preloop can read back.
 #: OpenRouter's ``GET /api/v1/models`` carries a ``pricing`` block per model;
-#: no other supported provider serves prices from its API, so the console
-#: offers the fetch to these and disables it, by name, for the rest.
+#: this is the set of implemented adapters, not an assertion that other
+#: providers have no machine-readable retail catalogs.
 PRICE_FETCH_PROVIDERS = {"openrouter"}
 
 #: Shown when a provider does not publish prices.
@@ -247,6 +247,21 @@ def _pricing_response(
                 currency=str(configured.get("currency") or "USD"),
             )
 
+    tariff = deepseek_pricing.native_tariff(ai_model)
+    if tariff is not None:
+        return AIModelPricingResponse(
+            **base,
+            source="catalog",
+            price=AIModelPrice(
+                input_per_1m=tariff.input_per_1m,
+                output_per_1m=tariff.output_per_1m,
+                cached_input_per_1m=tariff.cached_input_per_1m,
+            ),
+            catalog_key=f"deepseek/{tariff.model}",
+            effective_from=tariff.effective_from,
+            catalog_provenance=tariff.metadata(),
+        )
+
     catalog = _catalog_entry(ai_model)
     if catalog:
         catalog_key, entry = catalog
@@ -255,6 +270,7 @@ def _pricing_response(
             source="catalog",
             price=_price_from_catalog_entry(entry),
             catalog_key=catalog_key,
+            catalog_provenance=entry.get("preloop_price_provenance"),
         )
 
     return AIModelPricingResponse(**base, source="none")

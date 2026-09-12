@@ -479,7 +479,10 @@ def lookup_model_price_now(candidates: List[str]) -> Optional[str]:
             try:
                 import litellm
 
-                litellm.register_model({candidate: entry})
+                with _lock:
+                    existing = litellm.model_cost.get(candidate, {})
+                    if not existing.get("preloop_price_provenance"):
+                        litellm.register_model({candidate: entry})
                 matched_key = candidate
                 logger.info(
                     "Live price lookup registered %s from upstream map",

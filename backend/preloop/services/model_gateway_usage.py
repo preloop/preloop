@@ -104,6 +104,9 @@ class ModelGatewayUsageService:
                 start_date=start_date,
                 end_date=end_date,
                 runtime_principal_id=runtime_principal_id,
+                # These are full per-flow totals for Cost and Inventory,
+                # including flows outside the recent-session/top-flow lists.
+                limit=None,
             )
             usage_by_session = crud_api_usage.get_gateway_usage_by_session(
                 self.db,
@@ -111,9 +114,8 @@ class ModelGatewayUsageService:
                 start_date=start_date,
                 end_date=end_date,
                 runtime_principal_id=runtime_principal_id,
-                # Cover all agents' sessions for the cost-view breakdown tabs;
-                # the default of 20 truncates to the most-recent sessions and
-                # drops agents whose traffic isn't in that window.
+                # Recent session detail stays bounded. Flow totals above must
+                # not be reconstructed by summing this truncated activity list.
                 limit=250,
             )
             usage_by_tool = ToolUsageStatsService(self.db).get_account_usage_by_tool(

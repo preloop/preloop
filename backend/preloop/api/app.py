@@ -570,7 +570,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 exc_info=True,
             )
 
-    yield
+    # All roles, including a dedicated gateway, need the same current prices.
+    from preloop.services.reviewed_model_price_refresh import (
+        start_reviewed_price_refresh,
+    )
+
+    price_refresher = start_reviewed_price_refresh()
+    try:
+        yield
+    finally:
+        if price_refresher is not None:
+            await price_refresher.stop()
 
     # Shutdown logic
 

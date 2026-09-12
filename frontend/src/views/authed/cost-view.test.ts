@@ -170,6 +170,111 @@ describe('CostView', () => {
     expect(agentTable?.querySelector('th[scope="col"]')).to.exist;
   });
 
+  it('uses complete flow totals when the recent session breakdown is capped', async () => {
+    const flow = {
+      flow_id: 'flow-review',
+      flow_name: 'Review Flow',
+      request_count: 1000,
+      token_usage: {
+        prompt_tokens: 4000,
+        completion_tokens: 1000,
+        total_tokens: 5000,
+      },
+      estimated_cost: 42,
+    };
+    summaryPayload = {
+      ...summary,
+      usage_by_flow: [
+        flow,
+        {
+          ...flow,
+          flow_id: 'flow-older',
+          flow_name: 'Older Flow',
+          estimated_cost: 6,
+        },
+        { ...flow, flow_id: null, flow_name: null, estimated_cost: 8.5 },
+      ],
+      // The backend returns only the newest 250 session/model slices. The
+      // flow aggregate includes older requests and flows outside that page.
+      usage_by_session: [
+        ...Array.from({ length: 249 }, (_, index) => ({
+          ...summary.usage_by_session[0],
+          runtime_session_id: `flow-session-${index}`,
+          agent_id: null,
+          agent_name: null,
+          flow_id: flow.flow_id,
+          flow_name: flow.flow_name,
+          request_count: 1,
+          estimated_cost: 0.02,
+        })),
+        summary.usage_by_session[0],
+      ],
+    };
+    const element = await fixture<CostView>(html`<cost-view></cost-view>`);
+    await waitUntil(() => !element['loading']);
+    await element.updateComplete;
+    const groups = element['buildAgentGroups']();
+    const review = groups.find((row) => row.flowId === flow.flow_id)!;
+    expect(review.cost).to.equal(42);
+    expect(review.requests).to.equal(1000);
+    expect(review.totalTokens).to.equal(5000);
+    expect(review.tokenUsage).to.deep.equal(flow.token_usage);
+    expect(groups.find((row) => row.flowId === 'flow-older')?.cost).to.equal(6);
+    expect(groups.find((row) => row.agentId === 'agent-1')?.cost).to.equal(8.5);
+    expect(groups).to.have.length(3);
+    const flowLink = element.shadowRoot!.querySelector(
+      'a[href="/console/flows/flow-review"]'
+    )!;
+    expect(flowLink.closest('tr')!.textContent).to.contain('$42.00');
+  });
+
+  it('counts a flow request only once when its session also names an agent', async () => {
+    summaryPayload = {
+      ...summary,
+      usage_by_flow: [
+        {
+          flow_id: 'flow-review',
+          flow_name: 'Review Flow',
+          request_count: 5,
+          token_usage: summary.token_usage,
+          estimated_cost: 8.5,
+        },
+      ],
+      usage_by_session: [
+        {
+          ...summary.usage_by_session[0],
+          flow_id: 'flow-review',
+          flow_name: 'Review Flow',
+        },
+      ],
+    };
+    const element = await fixture<CostView>(html`<cost-view></cost-view>`);
+    await waitUntil(() => !element['loading']);
+    const groups = element['buildAgentGroups']();
+    expect(groups).to.have.length(1);
+    expect(groups[0].flowId).to.equal('flow-review');
+    expect(groups[0].cost).to.equal(8.5);
+  });
+
+  it('does not replace an empty flow aggregate with a partial session total', async () => {
+    summaryPayload = {
+      ...summary,
+      usage_by_flow: [],
+      usage_by_session: [
+        {
+          ...summary.usage_by_session[0],
+          agent_id: null,
+          agent_name: null,
+          flow_id: 'flow-review',
+          flow_name: 'Review Flow',
+        },
+      ],
+    };
+    const element = await fixture<CostView>(html`<cost-view></cost-view>`);
+    await waitUntil(() => !element['loading']);
+    expect(element['buildAgentGroups']()).to.have.length(0);
+  });
+
   it('puts the token split ahead of the money in the agent table', async () => {
     summaryPayload = {
       ...summary,

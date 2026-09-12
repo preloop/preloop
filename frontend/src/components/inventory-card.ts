@@ -293,6 +293,9 @@ export class InventoryCard extends LitElement {
    * answer, not a slow one.
    */
   @property({ type: Boolean }) usageLoading = false;
+  /** Whether the usage belongs to the range in the header. */
+  @property({ type: Boolean }) usageAvailable = true;
+  @property({ type: Boolean }) modelUsageAvailable = true;
   /**
    * Per-tab overrides for {@link usageLoading}. The tabs do not share one
    * usage request: Agents / Users / Tools read the account breakdown, Flows
@@ -985,14 +988,22 @@ export class InventoryCard extends LitElement {
    * of a number rather than the width of the column, so the cell does not
    * shimmer across half the table while it waits.
    */
-  private renderUsageCell(value: unknown, pending = this.usageLoading) {
+  private renderUsageCell(
+    value: unknown,
+    pending = this.usageLoading,
+    available = this.activeTab === 'models'
+      ? this.modelUsageAvailable
+      : this.usageAvailable
+  ) {
     if (pending) {
       return html`<sl-skeleton
         class="usage-skeleton"
         effect="none"
       ></sl-skeleton>`;
     }
-    return value;
+    return available
+      ? value
+      : html`<span title="Usage unavailable for this range">—</span>`;
   }
 
   private renderEmpty() {
@@ -1211,7 +1222,8 @@ export class InventoryCard extends LitElement {
                         >
                           ${this.renderUsageCell(
                             this.formatCompactNumber(row.failed),
-                            this.isUsageLoading('flows')
+                            this.isUsageLoading('flows'),
+                            true
                           )}
                         </td>
                         <!-- Tokens before cost, split in and out: the

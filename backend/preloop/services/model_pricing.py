@@ -5,12 +5,13 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, Iterable, Optional
 
 import litellm
 
 from preloop.models.models.ai_model import AIModel
-from preloop.services import alibaba_pricing
+from preloop.services import alibaba_pricing, deepseek_pricing
 from preloop.services.litellm_routing import PROVIDER_PREFIX as _PROVIDER_PREFIX
 
 logger = logging.getLogger(__name__)
@@ -200,6 +201,7 @@ class CostEstimate:
 
     cost: Optional[float]
     source: str
+    pricing_snapshot: Optional[Dict[str, Any]] = None
 
 
 def provider_reported_cost(
@@ -302,6 +304,7 @@ def estimate_ai_model_usage_cost(
     total_tokens: int,
     usage_details: Optional[Dict[str, Any]] = None,
     pricing_override: Optional[Dict[str, Any]] = None,
+    observed_at: Optional[datetime] = None,
 ) -> Optional[float]:
     """Estimate usage cost using manual pricing overrides or LiteLLM pricing."""
     return estimate_ai_model_usage_cost_detailed(
@@ -311,6 +314,7 @@ def estimate_ai_model_usage_cost(
         total_tokens=total_tokens,
         usage_details=usage_details,
         pricing_override=pricing_override,
+        observed_at=observed_at,
     ).cost
 
 
@@ -322,6 +326,7 @@ def estimate_ai_model_usage_cost_detailed(
     total_tokens: int,
     usage_details: Optional[Dict[str, Any]] = None,
     pricing_override: Optional[Dict[str, Any]] = None,
+    observed_at: Optional[datetime] = None,
 ) -> CostEstimate:
     """Estimate usage cost and report which pricing source produced it.
 
@@ -361,6 +366,23 @@ def estimate_ai_model_usage_cost_detailed(
 
     if prompt_tokens <= 0 and completion_tokens <= 0:
         return CostEstimate(cost=None, source="unpriced")
+
+    tariff = deepseek_pricing.native_tariff(ai_model, observed_at=observed_at)
+    if tariff is not None:
+        native_cost = tariff.estimate(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            usage_details=usage_details,
+        )
+        if pricing_override:
+            native_cost = _apply_pricing_adjustments(
+                native_cost, pricing_override, total_tokens=total_tokens
+            )
+        return CostEstimate(
+            cost=native_cost,
+            source="override" if pricing_override else "catalog",
+            pricing_snapshot=tariff.metadata(),
+        )
 
     list_cost = _estimate_litellm_cost(
         ai_model,

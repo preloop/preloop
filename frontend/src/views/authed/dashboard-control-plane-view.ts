@@ -78,10 +78,7 @@ import { parseUTCDate } from '../../utils/date';
 import { formatRelativeTime } from '../../components/relative-time-label';
 import { sumTokenUsage } from '../../components/token-figures';
 import { executionSubjectCss } from '../../utils/execution-subject';
-import {
-  hasUsageBreakdown,
-  mergeGatewaySummaryPreservingBreakdown,
-} from '../../utils/gateway-summary';
+import { mergeGatewaySummaryPreservingBreakdown } from '../../utils/gateway-summary';
 import {
   pickDefaultModel,
   selectableModels,
@@ -321,6 +318,10 @@ export class DashboardView extends AuthedElement {
   @state() private error: string | null = null;
   @state() private gatewaySummary: AccountGatewayUsageSummaryResponse | null =
     null;
+  // Provenance belongs to the detailed reads, not the lightweight summary
+  // whose period metadata advances independently on realtime refreshes.
+  @state() private gatewayUsageRange: string | null = null;
+  @state() private modelUsageRange: string | null = null;
   /** The window before `gatewayTimeRange`, for the Usage card's delta. */
   @state()
   private priorGatewaySummary: AccountGatewayUsageSummaryResponse | null = null;
@@ -1542,7 +1543,10 @@ export class DashboardView extends AuthedElement {
       if (!raw) return;
 
       const data = JSON.parse(raw);
-      if (data.gatewaySummary) this.gatewaySummary = data.gatewaySummary;
+      if (data.gatewayUsageRange === this.gatewayTimeRange) {
+        this.gatewaySummary = data.gatewaySummary || null;
+        this.gatewayUsageRange = data.gatewayUsageRange;
+      }
       this.runtimeSessions = data.runtimeSessions || [];
       this.managedAgents = data.managedAgents || [];
       this.gatewayInteractions = data.gatewayInteractions || [];
@@ -1555,7 +1559,10 @@ export class DashboardView extends AuthedElement {
       // the Inventory Models tab would otherwise sit on "No models yet · Add
       // a model" for the length of that pass on every reload.
       this.aiModels = data.aiModels || [];
-      this.aiModelOverview = data.aiModelOverview || [];
+      if (data.modelUsageRange === this.gatewayTimeRange) {
+        this.aiModelOverview = data.aiModelOverview || [];
+        this.modelUsageRange = data.modelUsageRange;
+      }
       this.flowExecutions = data.flowExecutions || [];
       this.flows = data.flows || [];
       this.flowExecutionsCount = data.flowExecutionsCount || 0;
@@ -1623,6 +1630,8 @@ export class DashboardView extends AuthedElement {
       const key = `preloop:dashboard:${sub}`;
       const cacheObj = {
         gatewaySummary: this.gatewaySummary,
+        gatewayUsageRange: this.gatewayUsageRange,
+        modelUsageRange: this.modelUsageRange,
         // Only what the cards actually show is worth keeping: the full lists
         // pushed this object past the sessionStorage quota on busy accounts,
         // and a quota failure threw away the whole cache.
@@ -1933,6 +1942,7 @@ export class DashboardView extends AuthedElement {
 
   /** What a gateway call can change: the totals, the deltas, the failures. */
   private async refreshGatewayFold(): Promise<void> {
+    const range = this.gatewayTimeRange;
     const startDateStr = this.getGatewayStartDate();
     const priorWindow = this.getPriorGatewayWindow(startDateStr);
     const [summary, priorSummary, rateLimitReport, interactions] =
@@ -1966,12 +1976,14 @@ export class DashboardView extends AuthedElement {
           >
         ),
       ]);
+    if (range !== this.gatewayTimeRange) return;
     // Merge, never replace: the breakdown on screen came from a heavier
     // request that this one does not make.
     this.gatewaySummary = mergeGatewaySummaryPreservingBreakdown(
-      this.gatewaySummary,
+      this.gatewayUsageRange === range ? this.gatewaySummary : null,
       summary
     );
+    if (this.gatewayUsageRange !== range) this.gatewayUsageRange = null;
     this.priorGatewaySummary = priorSummary;
     this.rateLimitReport = rateLimitReport;
     this.gatewayInteractions = interactions.items || [];
@@ -2225,6 +2237,7 @@ export class DashboardView extends AuthedElement {
     }
     this.error = null;
 
+    const range = this.gatewayTimeRange;
     const startDateStr = this.getGatewayStartDate();
     const priorWindow = this.getPriorGatewayWindow(startDateStr);
 
@@ -2297,10 +2310,13 @@ export class DashboardView extends AuthedElement {
       // One batch of assignments with no await between them, so Lit renders
       // the finished fold once instead of eight times.
       this.rateLimitReport = rateLimitReport;
-      this.gatewaySummary = mergeGatewaySummaryPreservingBreakdown(
-        this.gatewaySummary,
-        gatewaySummary
-      );
+      if (range === this.gatewayTimeRange) {
+        this.gatewaySummary = mergeGatewaySummaryPreservingBreakdown(
+          this.gatewayUsageRange === range ? this.gatewaySummary : null,
+          gatewaySummary
+        );
+        if (this.gatewayUsageRange !== range) this.gatewayUsageRange = null;
+      }
       this.priorGatewaySummary = priorGatewaySummary;
       this.fetchingGatewaySummary = false;
       this.updatingUsage = false;
@@ -2332,6 +2348,7 @@ export class DashboardView extends AuthedElement {
         // A range change reloads what the range changes; the flows, the
         // people and the tool catalogue are the same at any range.
         rangeChangeOnly: options.preserveLoadingState === true,
+        range,
       });
     } catch (error) {
       console.error(
@@ -2366,12 +2383,12 @@ export class DashboardView extends AuthedElement {
    */
   private async fetchDeferredData(
     startDateStr: string,
-    options: { rangeChangeOnly?: boolean } = {}
+    options: { rangeChangeOnly?: boolean; range?: string } = {}
   ): Promise<void> {
     if (options.rangeChangeOnly) {
       await Promise.all([
         this.refreshGatewayInteractions(startDateStr),
-        this.refreshUsageBreakdown(startDateStr),
+        this.refreshUsageBreakdown(startDateStr, options.range),
         // The Audit trail line is per range, and the approvals it counts are
         // filtered from the page already in hand.
         this.refreshAuditEventCount(startDateStr),
@@ -2381,7 +2398,10 @@ export class DashboardView extends AuthedElement {
       return;
     }
     const inventoryPromise = this.fetchInventoryData(startDateStr);
-    const breakdownPromise = this.refreshUsageBreakdown(startDateStr);
+    const breakdownPromise = this.refreshUsageBreakdown(
+      startDateStr,
+      options.range
+    );
     const secondaryPromise = this.fetchSecondaryDashboardData();
 
     await Promise.all([inventoryPromise, breakdownPromise]);
@@ -2708,20 +2728,22 @@ export class DashboardView extends AuthedElement {
    * handed it instead of asking for a second one.
    */
   private async refreshUsageBreakdown(
-    gatewayStartDate: string
+    gatewayStartDate: string,
+    range: string = this.gatewayTimeRange
   ): Promise<AccountGatewayUsageSummaryResponse | null> {
     // Two requests, two flags: Models usage can land from the overview
     // without waiting for the heavier account breakdown, and the other way
     // around (D32).
     const [detailed] = await Promise.all([
-      this.fetchGatewayBreakdown(gatewayStartDate),
-      this.fetchModelUsage(gatewayStartDate),
+      this.fetchGatewayBreakdown(gatewayStartDate, range),
+      this.fetchModelUsage(gatewayStartDate, range),
     ]);
     return detailed;
   }
 
   private async fetchGatewayBreakdown(
-    gatewayStartDate: string
+    gatewayStartDate: string,
+    range: string = this.gatewayTimeRange
   ): Promise<AccountGatewayUsageSummaryResponse | null> {
     this.fetchingUsageBreakdown = true;
     try {
@@ -2732,30 +2754,35 @@ export class DashboardView extends AuthedElement {
         }),
         null
       );
-      if (!detailed) {
+      if (!detailed || range !== this.gatewayTimeRange) {
         return null;
       }
       this.gatewaySummary = detailed;
+      this.gatewayUsageRange = range;
       return detailed;
     } catch (error) {
       console.error('Failed to load gateway breakdown for top models', error);
       return null;
     } finally {
-      // Off whatever happened: a 403 on this endpoint means the columns will
-      // never fill, and a skeleton that never resolves is worse than a zero.
+      // Failed reads stop loading; unavailable range data renders as a dash.
+      // A same-range refresh failure can keep the previous usable values.
       this.fetchingUsageBreakdown = false;
     }
   }
 
-  private async fetchModelUsage(gatewayStartDate: string): Promise<void> {
+  private async fetchModelUsage(
+    gatewayStartDate: string,
+    range: string = this.gatewayTimeRange
+  ): Promise<void> {
     this.fetchingModelUsage = true;
     try {
       const overview = await this.catchWith403Handling(
         getAIModelsOverview({ startDate: gatewayStartDate }),
         null
       );
-      if (overview?.models) {
+      if (overview?.models && range === this.gatewayTimeRange) {
         this.aiModelOverview = overview.models;
+        this.modelUsageRange = range;
       }
     } catch (error) {
       console.error('Failed to load model usage for the Inventory', error);
@@ -3957,6 +3984,10 @@ export class DashboardView extends AuthedElement {
       };
     });
 
+    // Alias-only rows need a breakdown from this range too: the model
+    // overview can finish first while the summary still holds old usage.
+    if (this.gatewayUsageRange !== this.gatewayTimeRange) return rows;
+
     // Aliases the gateway served that are no longer in the models list.
     const seenAliases = new Set<string>();
     for (const model of this.gatewaySummary?.usage_by_model || []) {
@@ -4070,15 +4101,13 @@ export class DashboardView extends AuthedElement {
       });
   }
 
-  /**
-   * True while the usage columns of the Agents and Users tabs have nothing
-   * true to show. A breakdown already in hand (from the cache, or from the
-   * range before this one) is shown rather than hidden: stale numbers that
-   * are about to be replaced beat skeletons over data the page already has.
-   */
+  /** Keep same-range values during refresh; never relabel another range. */
   private get usageColumnsPending(): boolean {
     return (
-      this.fetchingUsageBreakdown && !hasUsageBreakdown(this.gatewaySummary)
+      this.gatewayUsageRange !== this.gatewayTimeRange &&
+      (this.fetchingUsageBreakdown ||
+        this.fetchingGatewaySummary ||
+        this.updatingUsage)
     );
   }
 
@@ -4091,7 +4120,12 @@ export class DashboardView extends AuthedElement {
   }
 
   private get modelUsagePending(): boolean {
-    return this.fetchingModelUsage && this.aiModelOverview.length === 0;
+    return (
+      this.modelUsageRange !== this.gatewayTimeRange &&
+      (this.fetchingModelUsage ||
+        this.fetchingGatewaySummary ||
+        this.updatingUsage)
+    );
   }
 
   /**
@@ -4120,6 +4154,8 @@ export class DashboardView extends AuthedElement {
         .loadingModels=${this.fetchingModels}
         .loadingTools=${this.fetchingTools}
         .loadingUsers=${this.fetchingUsers}
+        .usageAvailable=${this.gatewayUsageRange === this.gatewayTimeRange}
+        .modelUsageAvailable=${this.modelUsageRange === this.gatewayTimeRange}
         ?usageLoading=${this.usageColumnsPending}
         .usageLoadingFlows=${this.flowUsagePending}
         .usageLoadingFlowCost=${this.usageColumnsPending}

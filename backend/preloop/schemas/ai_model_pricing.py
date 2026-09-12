@@ -8,7 +8,7 @@ conversion happens here, once, rather than in each client.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -63,6 +63,10 @@ class AIModelPricingResponse(BaseModel):
     override_id: Optional[str] = None
     effective_from: Optional[datetime] = None
     effective_until: Optional[datetime] = None
+    catalog_provenance: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Published-price provenance and schedule estimation assumptions.",
+    )
     catalog_key: Optional[str] = Field(
         default=None,
         description="The price list entry that matched, when the source is the catalog.",

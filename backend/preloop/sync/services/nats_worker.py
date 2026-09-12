@@ -214,6 +214,13 @@ class PreloopSyncNatsWorker:
             logger.error("Cannot start listening, NATS client not connected.")
             return
 
+        from preloop.services.reviewed_model_price_refresh import (
+            start_reviewed_price_refresh,
+        )
+
+        if getattr(self, "_price_refresher", None) is None:
+            self._price_refresher = start_reviewed_price_refresh()
+
         subjects_to_subscribe = self._subjects_to_subscribe()
 
         logger.info(
@@ -535,6 +542,9 @@ class PreloopSyncNatsWorker:
 
     async def stop(self):
         logger.info("Worker stop signal received.")
+        if getattr(self, "_price_refresher", None) is not None:
+            await self._price_refresher.stop()
+            self._price_refresher = None
         await self.begin_drain()
         for subject, sub in self.subs:
             try:

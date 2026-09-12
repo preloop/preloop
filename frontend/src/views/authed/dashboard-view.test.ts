@@ -1781,6 +1781,195 @@ describe('DashboardView', () => {
       ]);
     });
 
+    it('does not label cached usage from another range as 30d', async () => {
+      const payload = btoa(JSON.stringify({ sub: 'range-cache-tester' }));
+      localStorage.setItem('accessToken', `header.${payload}.signature`);
+      const first = await mountLoaded();
+      first['gatewayTimeRange'] = 'day';
+      await first['refreshUsageBreakdown'](first['getGatewayStartDate']());
+      first['saveDashboardCache']();
+      const restored = document.createElement(
+        'dashboard-view'
+      ) as DashboardView;
+      restored['loadCachedDashboardData']();
+      expect(restored['aiModels']).to.have.length(1);
+      expect(restored['gatewaySummary']).to.equal(null);
+      expect(restored['aiModelOverview']).to.have.length(0);
+    });
+
+    it('hides old-range spend while loading and after a failed range refresh', async () => {
+      const element = await mountLoaded();
+      let release!: () => void;
+      const failureGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      fetchStub
+        .withArgs(
+          sinon.match(
+            (url: string) =>
+              url.includes('include_breakdown=true') ||
+              url.startsWith('/api/v1/ai-models/overview')
+          )
+        )
+        .callsFake(async () => {
+          await failureGate;
+          return new Response('', { status: 500 });
+        });
+      const inventory = element.shadowRoot!.querySelector(
+        'inventory-card'
+      ) as any;
+      element
+        .shadowRoot!.querySelector('usage-card')!
+        .dispatchEvent(
+          new CustomEvent('range-change', { detail: { value: 'day' } })
+        );
+      await waitUntil(() => element['fetchingUsageBreakdown']);
+      await element.updateComplete;
+      await inventory.updateComplete;
+      expect(inventory.rangeLabel).to.equal('24h');
+      expect(
+        inventory.shadowRoot.querySelector('[data-label="Spend"]').textContent
+      ).not.to.contain('$4.20');
+      expect(inventory.usageLoading).to.equal(true);
+      release();
+      await waitUntil(() => !element['refreshInFlight']);
+      await element.updateComplete;
+      await inventory.updateComplete;
+      expect(inventory.usageLoading).to.equal(false);
+      expect(
+        inventory.shadowRoot
+          .querySelector('[data-label="Spend"]')
+          .textContent.trim()
+      ).to.equal('—');
+      inventory.tab = 'models';
+      await inventory.updateComplete;
+      expect(
+        inventory.shadowRoot
+          .querySelector('[data-label="Spend"]')
+          .textContent.trim()
+      ).to.equal('—');
+    });
+
+    it('ignores a breakdown and model overview completed after the range changes', async () => {
+      const element = await mountLoaded();
+      let release!: () => void;
+      breakdownGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      overviewGate = breakdownGate;
+      const originalSummary = element['gatewaySummary'];
+      const originalModels = element['aiModelOverview'];
+      const pending = element['refreshUsageBreakdown'](
+        element['getGatewayStartDate']()
+      );
+      element['gatewayTimeRange'] = 'day';
+      release();
+      await pending;
+      expect(element['gatewaySummary']).to.equal(originalSummary);
+      expect(element['aiModelOverview']).to.equal(originalModels);
+    });
+
+    it('carries the original range into deferred requests after a slow first wave', async () => {
+      const element = await mountLoaded();
+      let release!: () => void;
+      summaryGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const pending = element['fetchDashboardData']({
+        preserveLoadingState: true,
+      });
+      element['gatewayTimeRange'] = 'day';
+      release();
+      await pending;
+      expect(element['gatewayUsageRange']).to.equal('month');
+      expect(element['modelUsageRange']).to.equal('month');
+      await element.updateComplete;
+      const inventory = element.shadowRoot!.querySelector(
+        'inventory-card'
+      ) as any;
+      expect(inventory.usageAvailable).to.equal(false);
+      expect(inventory.modelUsageAvailable).to.equal(false);
+    });
+
+    it('does not reuse provenance after a lightweight summary replaces another range', async () => {
+      const element = await mountLoaded();
+      element['gatewayTimeRange'] = 'day';
+      gatewaySummaryResponse = {
+        ...gatewaySummaryResponse,
+        usage_by_session: [],
+        usage_by_model: [],
+        usage_by_flow: [],
+        usage_by_tool: [],
+      };
+      await element['refreshGatewayFold']();
+      expect(element['gatewayUsageRange']).to.equal(null);
+      element['gatewayTimeRange'] = 'month';
+      await element.updateComplete;
+      const inventory = element.shadowRoot!.querySelector(
+        'inventory-card'
+      ) as any;
+      await inventory.updateComplete;
+      expect(inventory.usageAvailable).to.equal(false);
+      expect(
+        inventory.shadowRoot
+          .querySelector('[data-label="Spend"]')
+          .textContent.trim()
+      ).to.equal('—');
+    });
+
+    it('does not expose old alias costs when model usage arrives before the new breakdown', async () => {
+      const element = await mountLoaded();
+      element['gatewaySummary'] = {
+        ...element['gatewaySummary']!,
+        usage_by_model: [
+          {
+            ...gatewaySummaryResponse.usage_by_model[0],
+            ai_model_id: null,
+            model_alias: 'retired-model',
+          },
+        ],
+      };
+      element['gatewayTimeRange'] = 'day';
+      await element['fetchModelUsage'](element['getGatewayStartDate']());
+      expect(
+        element['inventoryModelRows'].map((row) => row.alias)
+      ).not.to.contain('retired-model');
+    });
+
+    it('keeps same-range usage during refresh but clears it on a successful empty breakdown', async () => {
+      const element = await mountLoaded();
+      let release!: () => void;
+      breakdownGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const pending = element['refreshUsageBreakdown'](
+        element['getGatewayStartDate']()
+      );
+      await element.updateComplete;
+      const inventory = element.shadowRoot!.querySelector(
+        'inventory-card'
+      ) as any;
+      await inventory.updateComplete;
+      expect(inventory.usageLoading).to.equal(false);
+      expect(
+        inventory.shadowRoot.querySelector('[data-label="Spend"]').textContent
+      ).to.contain('$4.20');
+      gatewaySummaryResponse = {
+        ...gatewaySummaryResponse,
+        usage_by_session: [],
+        usage_by_model: [],
+        usage_by_flow: [],
+        usage_by_tool: [],
+      };
+      release();
+      await pending;
+      await element.updateComplete;
+      await inventory.updateComplete;
+      expect(
+        inventory.shadowRoot.querySelector('[data-label="Spend"]').textContent
+      ).to.contain('$0.00');
+    });
+
     it('counts flow runs in the range the $ est. column already covers', async () => {
       // Two runs of the same flow: one this morning, one last quarter. The
       // spend column is range-scoped, so the run counts beside it must be.
