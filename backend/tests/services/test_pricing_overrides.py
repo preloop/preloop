@@ -233,3 +233,30 @@ def test_bulk_resolver_effective_from_and_provider_precedence(db_session, test_u
     assert bulk[str(ai_model.id)].id == winner.id
     assert str(single.id) == str(bulk[str(ai_model.id)].id)
     assert bulk[str(ai_model.id)].input_price_per_1k == 2.0
+
+
+def test_missing_override_table_keeps_existing_transaction_usable() -> None:
+    """Pre-migration detection must neither need another slot nor abort work."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import QueuePool
+
+    from preloop.services.pricing_overrides import _overrides_table_available
+
+    engine = create_engine(
+        "sqlite://",
+        poolclass=QueuePool,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.1,
+    )
+    try:
+        with Session(engine) as db:
+            db.execute(text("SELECT 1"))
+            transaction = db.get_transaction()
+            assert _overrides_table_available(db) is False
+            assert db.get_transaction() is transaction
+            assert db.execute(text("SELECT 1")).scalar_one() == 1
+            assert engine.pool.checkedout() == 1
+    finally:
+        engine.dispose()

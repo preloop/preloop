@@ -775,3 +775,32 @@ async def test_initial_stream_policy_failure_is_accounted_and_closes_provider(
         assert len(rows) == 1
         assert rows[0].status_code == 503
         assert rows[0].error_class == "content_policy_unavailable"
+
+
+def test_pricing_override_uses_the_existing_request_pool_slot(
+    gateway_pool: GatewayPoolFixture,
+) -> None:
+    """Budget/accounting must not silently drop an override waiting for slot2."""
+    from preloop.models.crud import crud_model_price_override
+    from preloop.services.pricing_overrides import resolve_pricing_override
+
+    with Session(gateway_pool.engine) as db:
+        model = crud_ai_model.get_by_account(db, account_id=gateway_pool.account_id)[0]
+        crud_model_price_override.create_for_account(
+            db,
+            account_id=gateway_pool.account_id,
+            obj_in={"model_alias": "example-model", "input_price_per_1k": 9.0},
+        )
+        assert gateway_pool.engine.pool.checkedout() == 1
+        transaction = db.get_transaction()
+        pricing = resolve_pricing_override(
+            db,
+            account_id=gateway_pool.account_id,
+            ai_model=model,
+            requested_alias="example-model",
+        )
+        assert pricing is not None
+        assert pricing["input_price_per_1k"] == 9.0
+        assert db.get_transaction() is transaction
+        assert transaction.is_active
+        assert gateway_pool.engine.pool.checkedout() == 1
