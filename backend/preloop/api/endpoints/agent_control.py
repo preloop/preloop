@@ -951,7 +951,6 @@ def _process_control_message(
 def _retire_control_presence(
     db: Session,
     connection: AgentControlConnectionContext,
-    last_presence_at: datetime,
 ) -> bool:
     """Retire presence atomically using the persisted generation."""
     return control_connection.retire(db, connection)
@@ -1162,9 +1161,7 @@ async def managed_agent_control_websocket(
             retired = False
             try:
                 retired = await database.run(
-                    lambda session: _retire_control_presence(
-                        session, connection, last_presence_at
-                    )
+                    lambda session: _retire_control_presence(session, connection)
                 )
             except _DB_DELIVERY_ERRORS:
                 logger.warning(

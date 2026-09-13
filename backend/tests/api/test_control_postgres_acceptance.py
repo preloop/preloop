@@ -503,7 +503,7 @@ async def test_cancelled_persistence_drains_and_replacement_survives_retirement(
                 await task
             assert await next_phase
             assert not await database.run(
-                lambda db: control._retire_control_presence(db, old, datetime.now(UTC))
+                lambda db: control._retire_control_presence(db, old)
             )
         assert engine.pool.checkedout() == 0
     finally:
