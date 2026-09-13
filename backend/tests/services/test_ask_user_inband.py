@@ -221,7 +221,7 @@ class TestDeliverQuestionToSession:
             )
         return result, mock_create, mock_delivered, mock_activity
 
-    async def test_local_delivery_marks_delivered_and_logs_turn(self):
+    async def test_local_delivery_leaves_mark_to_guarded_sender_and_logs_turn(self):
         account_id = uuid.uuid4()
         agent = self._agent(account_id)
         manager, db, patches = self._patched_env(agent, send_result=True)
@@ -236,7 +236,7 @@ class TestDeliverQuestionToSession:
         assert envelope["name"] == "send_message"
         assert envelope["payload"]["metadata"]["kind"] == QUESTION_NOTICE_KIND
         assert "Ship it?" in envelope["payload"]["text"]
-        mock_delivered.assert_called_once()
+        mock_delivered.assert_not_called()
         mock_activity.assert_called_once()
         assert mock_activity.call_args.kwargs["status"] == "delivered"
 

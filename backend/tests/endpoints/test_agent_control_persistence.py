@@ -121,6 +121,14 @@ def test_command_is_persisted_before_delivery_and_marked_delivered(
             command_id=envelope.message_id,
         )
         observed_status["at_delivery_time"] = record.status if record else None
+        # Production manager delegates delivery persistence to its guarded sender.
+        crud_agent_control_command.mark_delivered(
+            db_session,
+            account_id=test_user.account_id,
+            managed_agent_id=managed_agent_id,
+            command_id=envelope.message_id,
+            delivered_at=datetime.now(UTC),
+        )
         return True
 
     with patch(
