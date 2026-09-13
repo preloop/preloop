@@ -1,9 +1,4 @@
-"""Tests for the Issue Triage Assistant preset.
-
-The first slice is proposals-only: assess the issue, reuse labels that
-already exist, and post a comment. It must not rewrite the issue, create
-follow-up issues, invent a taxonomy, or apply labels.
-"""
+"""Shipped triage contract: an updated issue and scoped complexity application."""
 
 from pathlib import Path
 
@@ -13,11 +8,18 @@ import yaml
 PRESET_FILE = "001-issue-triage-assistant.yaml"
 PRESETS_DIR = Path(__file__).resolve().parents[1] / "presets"
 
-EXPECTED_TOOLS = ["search_issues", "get_issue", "add_comment"]
+EXPECTED_TOOLS = [
+    "search_issues",
+    "get_issue",
+    "get_pull_request",
+    "get_issue_triage_context",
+    "apply_issue_triage",
+]
 
 FORBIDDEN_TOOLS = {
     "create_issue": "follow-up issues belong to a human",
-    "update_issue": "label apply is a later slice, not prompt-only",
+    "update_issue": "triage uses the bounded context/apply contract",
+    "add_comment": "the assessment belongs on the issue itself",
     "create_pull_request": "triage does not open pull requests",
     "update_pull_request": "triage does not edit pull requests",
     "request_approval": "approval gates are deployment-specific",
@@ -83,10 +85,24 @@ class TestPromptContract:
         assert "{{trigger_event.payload.object_attributes.labels}}" in template
         assert "{{trigger_event.payload.issue.body}}" not in template
 
-    def test_does_not_invent_or_apply_labels(self, prompt: str) -> None:
-        assert "Do not invent a label taxonomy" in prompt
-        assert "Do not create labels" in prompt
-        assert "Do not apply labels" in prompt
+    def test_applies_existing_or_standard_complexity_scheme(self, prompt: str) -> None:
+        assert "Select one exact name from complexity_scheme.labels" in prompt
+        assert "complexity:low, complexity:medium and complexity:high" in prompt
+        assert "Do not invent another scheme or create labels yourself" in prompt
+        assert (
+            "removing only obsolete siblings while preserving unrelated labels"
+            in prompt
+        )
+        assert "use null for complexity_label" in prompt
+
+    def test_issue_update_is_the_deliverable(self, prompt: str) -> None:
+        assert "Call `apply_issue_triage`" in prompt
+        assert "exact expected_revision" in prompt
+        assert "developer who will never read the execution output" in prompt
+        assert "diagnostic receipt, not the sole triage deliverable" in prompt
+        assert "A conflict requires fresh context and re-evaluation" in prompt
+        assert "do not blindly repeat writes" in prompt
+        assert "provider writes are not atomic compare-and-swap" in prompt
 
     def test_no_install_specific_taxonomy(self, prompt: str) -> None:
         lowered = prompt.lower()
@@ -99,22 +115,22 @@ class TestPromptContract:
         ):
             assert banned not in lowered, f"{banned} is install-specific"
 
-    def test_comment_marker_and_result_schema(self, prompt: str) -> None:
-        assert "<!-- preloop-triage -->" in prompt
+    def test_application_receipt_and_result_schema(self, prompt: str) -> None:
         assert "/workspace/result.json" in prompt
         assert '"status": "success"' in prompt
         assert '"status": "error"' in prompt
         assert '"reason"' in prompt
         for field in (
-            '"comment_posted"',
+            '"issue_updated"',
+            '"applied_complexity_label"',
+            '"application"',
             '"assessment"',
             '"observed_labels"',
-            '"proposed_labels"',
-            '"new_label_proposals"',
             '"policy_notes"',
         ):
             assert field in prompt
         assert "Record Completion (MANDATORY FINAL ACT)" in prompt
+        assert "including local synchronization" in prompt
 
     def test_prompt_uses_only_allowlisted_tools(
         self, preset: dict, prompt: str
@@ -168,3 +184,92 @@ class TestLoaderIntegration:
             "issue_updated",
         }
         assert flow.git_clone_config is None
+
+
+class TestEvidenceAndAssessmentContract:
+    def test_records_source_and_issue_revision(self, prompt: str) -> None:
+        for field in (
+            '"evidence_baseline"',
+            '"issue_updated_at"',
+            '"checkout_revision"',
+            '"related_work"',
+            '"evidence_limits"',
+        ):
+            assert field in prompt
+        assert "merged does not mean every acceptance criterion passed" in prompt
+        assert "No checkout or PR-listing capability" in prompt
+
+    def test_separates_description_from_implementation_readiness(
+        self, prompt: str
+    ) -> None:
+        for field in (
+            '"description_quality"',
+            '"implementation_readiness"',
+            '"risk"',
+            '"complexity_scope"',
+        ):
+            assert field in prompt
+        assert "A well-written issue can still be high complexity" in prompt
+        assert "No numerical completeness score" in prompt
+
+    def test_assessment_does_not_choose_implementation_models(
+        self, preset: dict
+    ) -> None:
+        import json
+
+        template = preset["prompt_template"]
+        start = template.index('{\n  "status": "success"')
+        packet, _ = json.JSONDecoder().raw_decode(template[start:])
+        assert "automation_suitability" not in packet["assessment"]
+        for term in (
+            "flash",
+            "inexpensive",
+            "model routing",
+            "automation:",
+            "expert",
+            "hold",
+        ):
+            assert term not in template.lower()
+        assert "Assess complexity independently of readiness and risk" in template
+
+    def test_structured_example_is_parseable_and_additive(self, preset: dict) -> None:
+        import json
+
+        template = preset["prompt_template"]
+        start = template.index('{\n  "status": "success"')
+        packet, _ = json.JSONDecoder().raw_decode(template[start:])
+        assert packet["assessment"]["complexity"] == "unknown | small | medium | large"
+        assert (
+            packet["assessment"]["readiness"]
+            == "unknown | blocked | ready_for_human_review"
+        )
+        for field in (
+            "description_quality",
+            "risk",
+            "implementation_readiness",
+        ):
+            assert packet["assessment"][field]["value"].startswith("unknown")
+        assert packet["evidence_baseline"]["checkout_revision"] is None
+        assert packet["application"]["cache_updated"] is True
+        assert "applied_complexity_label" in packet
+        assert "proposed_labels" not in packet
+
+
+@pytest.mark.parametrize(
+    "filename", [PRESET_FILE, "011-automated-issue-implementation.yaml"]
+)
+def test_presets_do_not_classify_work_for_implementation_models(filename: str) -> None:
+    """Assessment and implementation prompts do not contain a model rubric."""
+    data = yaml.safe_load((PRESETS_DIR / filename).read_text())
+    template = data["prompt_template"].lower()
+    for forbidden in (
+        "flash",
+        "inexpensive",
+        "automation_suitability",
+        "automation:",
+        "model routing",
+    ):
+        assert forbidden not in template
+    tools = {entry["name"] for entry in data["allowed_mcp_tools"]}
+    assert "update_flow" not in tools
+    assert "create_flow" not in tools

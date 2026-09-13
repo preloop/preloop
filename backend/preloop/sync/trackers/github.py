@@ -281,6 +281,8 @@ class GitHubTracker(BaseTracker):
                     raise error_type(
                         f"GitHub API error: {response.status_code} - {response.text}"
                     )
+                if response.status_code == 204:
+                    return None, dict(response.headers)
                 return response.json(), dict(response.headers)
             except httpx.RequestError as e:
                 raise TrackerConnectionError(f"GitHub connection error: {str(e)}")

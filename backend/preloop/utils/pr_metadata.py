@@ -6,6 +6,7 @@ carry the same validation implementation without installing the server package.
 
 from __future__ import annotations
 
+import html
 import json
 import re
 from dataclasses import dataclass
@@ -50,7 +51,11 @@ def bounded_text(value: Any, *, title: bool = False) -> str:
     if title and ("\n" in value or "\t" in value):
         return ""
     # An agent must not impersonate the publisher-owned region.
-    if PROVENANCE_START in value or PROVENANCE_END in value:
+    if (
+        PROVENANCE_START in value
+        or PROVENANCE_END in value
+        or "<!-- preloop:failure:" in value
+    ):
         return ""
     return value
 
@@ -109,6 +114,99 @@ def read_result_metadata(raw: bytes | None) -> tuple[str, str, list[str]]:
     return title, body, warnings
 
 
+def result_failure_reason(raw: bytes | None) -> str:
+    """Describe failed/incomplete reports without blocking recoverable work."""
+    if raw is None:
+        return ""
+    try:
+        if len(raw) > MAX_ARTIFACT_BYTES:
+            raise ValueError("oversized")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("not an object")
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return "The execution result artifact is invalid or exceeds the size limit; completion could not be confirmed."
+    status = data.get("status")
+    normalized = status.strip().lower() if isinstance(status, str) else ""
+    if normalized in {"success", "succeeded", "pass", "passed", "fail"}:
+        return ""
+    incomplete = {
+        "failure",
+        "failed",
+        "error",
+        "timeout",
+        "timed_out",
+        "cancelled",
+        "canceled",
+        "partial",
+        "in_progress",
+        "running",
+        "pending",
+    }
+    verdict = data.get("verdict")
+    if normalized not in incomplete and not (
+        isinstance(verdict, str) and verdict.strip().lower() == "error"
+    ):
+        return ""
+    reason = bounded_text(data.get("reason")) or bounded_text(data.get("summary"))
+    return (
+        reason[:4000]
+        or "The execution reported failure or incomplete work without a reason."
+    )
+
+
+def failure_notice(reason: str, execution_link: str) -> str:
+    """Render a bounded disclosure with a validated execution identity."""
+    if not reason:
+        return ""
+    parsed = urlsplit(execution_link)
+    prefix, separator, execution_id = parsed.path.rpartition(
+        "/console/flows/executions/"
+    )
+    if (
+        not separator
+        or parsed.scheme not in {"https", "http"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or any(char in execution_link for char in "\n\r<>()[] ")
+    ):
+        raise ValueError("Failure disclosure requires a valid execution URL")
+    UUID(execution_id)
+    escaped = html.escape(reason)
+    escaped = re.sub(r"([\\`*_{}\[\]()!])", r"\\\1", escaped)
+    quoted = "\n".join("> " + line for line in escaped.splitlines())
+    return (
+        f"<!-- preloop:failure:{execution_id}:start -->\n"
+        "### Execution incomplete\n\n"
+        "This execution did not complete successfully. These commits are preserved "
+        "for review and recovery; this PR does not establish completion.\n\n"
+        f"{quoted}\n\n[Execution details]({execution_link})\n"
+        f"<!-- preloop:failure:{execution_id}:end -->"
+    )
+
+
+def merge_failure_notice(body: str, notice: str) -> str:
+    """Add or replace only this execution's owned failure disclosure."""
+    if not notice:
+        return body
+    start = notice.split("\n", 1)[0]
+    end = notice.rsplit("\n", 1)[-1]
+    pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.DOTALL)
+    matches = list(pattern.finditer(body))
+    if body.count(start) != len(matches) or body.count(end) != len(matches):
+        raise ValueError("Malformed failure disclosure region")
+    if matches:
+        body = pattern.sub(lambda _: notice, body)
+    else:
+        body += ("\n\n" if body else "") + notice
+    if len(body.encode("utf-8")) > 65536:
+        raise ValueError("PR body plus failure disclosure exceeds provider limit")
+    return body
+
+
 def select_metadata(
     raw: bytes | None,
     *,
@@ -134,7 +232,8 @@ def select_metadata(
     )
     if issue_number and re.fullmatch(r"[1-9][0-9]*", issue_number):
         if not re.search(rf"(?<![0-9])#{issue_number}(?![0-9])", body):
-            body += f"\n\nCloses #{issue_number}"
+            relation = "Refs" if result_failure_reason(raw) else "Closes"
+            body += f"\n\n{relation} #{issue_number}"
     return title, body, warnings
 
 

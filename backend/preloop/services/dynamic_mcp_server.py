@@ -912,6 +912,22 @@ def register_default_tools(server: DynamicMCPServer):
     # Import the MCP router functions
     from preloop.api.endpoints import mcp as mcp_router
 
+    from preloop.tools.builtin_defs import (
+        APPLY_ISSUE_TRIAGE_TOOL,
+        GET_ISSUE_TRIAGE_CONTEXT_TOOL,
+    )
+
+    for definition, handler in (
+        (GET_ISSUE_TRIAGE_CONTEXT_TOOL, mcp_router.get_issue_triage_context),
+        (APPLY_ISSUE_TRIAGE_TOOL, mcp_router.apply_issue_triage),
+    ):
+        server.register_default_tool(
+            name=definition["name"],
+            description=definition["description"],
+            input_schema=definition["schema"],
+            handler=handler,
+        )
+
     # Tool 1: get_issue
     server.register_default_tool(
         name="get_issue",

@@ -323,3 +323,63 @@ def builtin_tools_with_ask_user(tools: List[Dict[str, Any]]) -> List[Dict[str, A
     if not inserted:
         result.append(dict(ASK_USER_TOOL))
     return result
+
+
+GET_ISSUE_TRIAGE_CONTEXT_TOOL: Dict[str, Any] = {
+    "name": "get_issue_triage_context",
+    "description": (
+        "Read the authorized GitHub or GitLab issue and complete project label "
+        "catalogue directly from its tracker. Returns the current revision, "
+        "recognized complexity scheme, and limitations for safe issue triage."
+    ),
+    "source": "builtin",
+    "requires_tracker": True,
+    "required_tracker_types": ["github", "gitlab"],
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "issue": {"type": "string", "description": "Issue URL, key, or ID"},
+        },
+        "required": ["issue"],
+    },
+}
+
+APPLY_ISSUE_TRIAGE_TOOL: Dict[str, Any] = {
+    "name": "apply_issue_triage",
+    "description": (
+        "Improve an authorized GitHub or GitLab issue with a managed triage "
+        "assessment, optional title, and one recognized complexity label. "
+        "Use the revision from get_issue_triage_context. Preserves original "
+        "issue content and unrelated labels; returns truthful conflict or "
+        "partial-write receipts. Creates standard complexity labels only "
+        "when no existing scheme is present."
+    ),
+    "source": "builtin",
+    "requires_tracker": True,
+    "required_tracker_types": ["github", "gitlab"],
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "issue": {"type": "string", "description": "Issue URL, key, or ID"},
+            "expected_revision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "assessment": {"type": "string", "minLength": 1, "maxLength": 16000},
+            "complexity_label": {
+                "anyOf": [
+                    {"type": "string", "minLength": 1, "maxLength": 255},
+                    {"type": "null"},
+                ],
+                "default": None,
+            },
+            "title": {
+                "anyOf": [
+                    {"type": "string", "minLength": 1, "maxLength": 256},
+                    {"type": "null"},
+                ],
+                "default": None,
+            },
+        },
+        "required": ["issue", "expected_revision", "assessment"],
+    },
+}

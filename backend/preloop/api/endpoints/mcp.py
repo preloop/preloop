@@ -46,6 +46,8 @@ from preloop.api.endpoints.issue_compliance import (
     _calculate_issue_compliance,
     get_compliance_improvement_suggestion as api_get_compliance_suggestion,
 )
+from preloop.schemas.issue_triage import IssueTriageContext, IssueTriageResult
+from preloop.utils.permissions import require_permission
 from preloop.schemas.issue import IssueCreate
 from preloop.schemas.tracker_models import IssueUpdate
 from preloop.schemas.mcp import (
@@ -538,6 +540,150 @@ def _enrich_compliance_results(db_results):
             result_dict["short_name"] = prompt_data.get("short_name")
             enriched_results.append(result_dict)
     return enriched_results
+
+
+async def _triage_user(db: Session) -> Any:
+    """Resolve the principal without accepting account IDs from tool arguments."""
+    authorization = get_http_request().headers.get("authorization", "")
+    user = None
+    if authorization.startswith("Bearer "):
+        user = await get_user_from_token_if_valid(authorization[7:], db)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
+
+
+async def _triage_provider(
+    db: Session, current_user: Any, issue: str
+) -> tuple[Any, Any]:
+    from preloop.services.issue_triage_provider import IssueTriageProvider
+
+    try:
+        issue_obj = _find_issue_by_identifier(db, issue, current_user.account_id)
+    except IssueNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    client = await get_tracker_client(
+        issue_obj.project.organization_id, issue_obj.project_id, db, current_user
+    )
+    number = str(issue_obj.key or issue_obj.external_id).rsplit("#", 1)[-1]
+    try:
+        provider = IssueTriageProvider(client, number)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return issue_obj, provider
+
+
+@_with_tool_db
+async def get_issue_triage_context(issue: str) -> "IssueTriageContext":
+    """Read authoritative issue content and a complete scoped label catalogue."""
+    from preloop.services.issue_triage import get_context
+    from preloop.sync.exceptions import TrackerError
+
+    db = _get_tool_db()
+    user = await _triage_user(db)
+    _, provider = await _triage_provider(db, user, issue)
+    try:
+        async with asyncio.timeout(90):
+            return await get_context(provider)
+    except (ValueError, TrackerError, TimeoutError) as exc:
+        reason = (
+            str(exc)
+            if isinstance(exc, ValueError) and re.fullmatch(r"[a-z_]+", str(exc))
+            else "provider_read_failed"
+        )
+        raise HTTPException(
+            status_code=502, detail="Issue triage context unavailable: " + reason
+        ) from exc
+
+
+@require_permission("edit_issues")
+async def _apply_authorized_issue_triage(
+    *,
+    db: Session,
+    current_user: Any,
+    issue: str,
+    expected_revision: str,
+    complexity_label: str | None,
+    assessment: str,
+    title: str | None = None,
+) -> "IssueTriageResult":
+    from preloop.schemas.issue_triage import IssueTriageApply
+    from preloop.services.issue_triage import apply_triage
+
+    issue_obj, provider = await _triage_provider(db, current_user, issue)
+    try:
+        request = IssueTriageApply(
+            expected_revision=expected_revision,
+            complexity_label=complexity_label,
+            assessment=assessment,
+            title=title,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail="Invalid triage assessment or revision"
+        ) from exc
+
+    def record_intent(receipt: dict[str, Any]) -> None:
+        crud_issue.set_triage_receipt(db, db_obj=issue_obj, receipt=receipt)
+
+    try:
+        async with asyncio.timeout(120):
+            result = await apply_triage(provider, request, record_intent)
+    except TimeoutError:
+        return IssueTriageResult(
+            status="partial",
+            reason="provider_timeout_outcome_unknown",
+            next_action="Fetch fresh context and inspect the issue before retrying.",
+        )
+    if result.issue is not None:
+        try:
+            metadata = dict(issue_obj.meta_data or {})
+            metadata["labels"] = result.issue.labels
+            values = {
+                "title": result.issue.title,
+                "description": result.issue.body,
+                "status": result.issue.state,
+                "meta_data": metadata,
+            }
+            if result.issue.updated_at:
+                from datetime import datetime
+
+                try:
+                    values["last_updated_external"] = datetime.fromisoformat(
+                        result.issue.updated_at.replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    pass
+            crud_issue.update(db, db_obj=issue_obj, obj_in=values)
+            result.cache_updated = True
+        except SQLAlchemyError:
+            logger.exception("Issue triage provider result could not be cached")
+            result.status = "partial"
+            result.reason = result.reason or "provider_result_cache_failed"
+            result.next_action = "The receipt reflects provider state. Refresh synchronization; do not repeat completed writes."
+    return result
+
+
+@_with_tool_db
+async def apply_issue_triage(
+    issue: str,
+    expected_revision: str,
+    assessment: str,
+    complexity_label: str | None = None,
+    title: str | None = None,
+) -> "IssueTriageResult":
+    """Update issue assessment and complexity through scoped provider deltas."""
+    db = _get_tool_db()
+    user = await _triage_user(db)
+    return await _apply_authorized_issue_triage(
+        db=db,
+        current_user=user,
+        issue=issue,
+        expected_revision=expected_revision,
+        complexity_label=complexity_label,
+        assessment=assessment,
+        title=title,
+    )
 
 
 @_with_tool_db

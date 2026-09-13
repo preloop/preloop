@@ -2,7 +2,7 @@
 
 import uuid as uuid_module
 from datetime import datetime, timezone  # Import timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -16,6 +16,33 @@ from .issue_compliance_result import issue_compliance_result
 
 class CRUDIssue(CRUDBase[Issue]):
     """CRUD operations for Issue model."""
+
+    def create(
+        self, db: Session, *, obj_in: Dict[str, Any], commit: bool = True
+    ) -> Issue:
+        """Create an issue without accepting a provider-supplied triage receipt."""
+        values = dict(obj_in)
+        if isinstance(values.get("meta_data"), dict):
+            metadata = dict(values["meta_data"])
+            metadata.pop("preloop_triage", None)
+            values["meta_data"] = metadata
+        return super().create(db, obj_in=values, commit=commit)
+
+    def set_triage_receipt(
+        self, db: Session, *, db_obj: Issue, receipt: Dict[str, Any] | None
+    ) -> Issue:
+        """Persist trusted triage intent separately from provider metadata.
+
+        Only the authorized triage writer calls this method. Ordinary issue
+        ingestion cannot replace or create this receipt through ``update``.
+        """
+        db.refresh(db_obj, attribute_names=["meta_data"], with_for_update=True)
+        metadata = dict(db_obj.meta_data or {})
+        if receipt is None:
+            metadata.pop("preloop_triage", None)
+        else:
+            metadata["preloop_triage"] = dict(receipt)
+        return super().update(db, db_obj=db_obj, obj_in={"meta_data": metadata})
 
     def create_with_external(
         self, db: Session, *, obj_in: Dict, sync_to_tracker: bool = True
@@ -367,7 +394,18 @@ class CRUDIssue(CRUDBase[Issue]):
 
     def update(self, db: Session, *, db_obj: Issue, obj_in: Dict) -> Optional[Issue]:
         """Update issue and optionally sync to tracker."""
-        retval = super().update(db, db_obj=db_obj, obj_in=obj_in)
+        values = dict(obj_in)
+        if "meta_data" in values:
+            # A webhook may have loaded this row before the writer committed
+            # its receipt. Serialize metadata merges against the latest row.
+            db.refresh(db_obj, attribute_names=["meta_data"], with_for_update=True)
+            metadata = dict(values["meta_data"] or {})
+            metadata.pop("preloop_triage", None)
+            receipt = (db_obj.meta_data or {}).get("preloop_triage")
+            if receipt is not None:
+                metadata["preloop_triage"] = receipt
+            values["meta_data"] = metadata
+        retval = super().update(db, db_obj=db_obj, obj_in=values)
         issue_compliance_result.delete_by_issue_id(db, issue_id=db_obj.id)
         return retval
 
