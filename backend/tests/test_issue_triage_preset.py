@@ -13,7 +13,7 @@ import yaml
 PRESET_FILE = "001-issue-triage-assistant.yaml"
 PRESETS_DIR = Path(__file__).resolve().parents[1] / "presets"
 
-EXPECTED_TOOLS = ["search_issues", "get_issue", "add_comment"]
+EXPECTED_TOOLS = ["search_issues", "get_issue", "get_pull_request", "add_comment"]
 
 FORBIDDEN_TOOLS = {
     "create_issue": "follow-up issues belong to a human",
@@ -168,3 +168,67 @@ class TestLoaderIntegration:
             "issue_updated",
         }
         assert flow.git_clone_config is None
+
+
+class TestEvidenceAndRoutingContract:
+    def test_records_source_and_issue_revision(self, prompt: str) -> None:
+        for field in (
+            '"evidence_baseline"',
+            '"issue_updated_at"',
+            '"checkout_revision"',
+            '"related_work"',
+            '"evidence_limits"',
+        ):
+            assert field in prompt
+        assert "merged does not mean every acceptance criterion passed" in prompt
+        assert "No checkout or PR-listing capability" in prompt
+
+    def test_separates_description_from_implementation_readiness(
+        self, prompt: str
+    ) -> None:
+        for field in (
+            '"description_quality"',
+            '"implementation_readiness"',
+            '"risk"',
+            '"automation_suitability"',
+            '"complexity_scope"',
+        ):
+            assert field in prompt
+        assert "A well-written issue can still be high complexity" in prompt
+        assert "No numerical completeness score" in prompt
+
+    def test_flash_requires_all_observed_gates(self, prompt: str) -> None:
+        assert "only when all are established" in prompt
+        for condition in (
+            "low complexity",
+            "low risk",
+            "ready for implementation",
+            "no active overlapping work",
+            "known runnable local validation",
+        ):
+            assert condition in prompt
+        assert "unknown or missing evidence means hold" in prompt
+        assert (
+            "never an implementation candidate merely because closure looks small"
+            in prompt
+        )
+
+    def test_structured_example_is_parseable_and_additive(self, preset: dict) -> None:
+        import json
+
+        template = preset["prompt_template"]
+        start = template.index('{\n  "status": "success"')
+        packet, _ = json.JSONDecoder().raw_decode(template[start:])
+        assert packet["assessment"]["complexity"] == "unknown | small | medium | large"
+        assert (
+            packet["assessment"]["readiness"]
+            == "unknown | blocked | ready_for_human_review"
+        )
+        for field in (
+            "description_quality",
+            "risk",
+            "implementation_readiness",
+            "automation_suitability",
+        ):
+            assert packet["assessment"][field]["value"].startswith("unknown")
+        assert packet["evidence_baseline"]["checkout_revision"] is None

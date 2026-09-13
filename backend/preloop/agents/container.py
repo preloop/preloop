@@ -115,6 +115,51 @@ RESULT_ARTIFACT_PATH = "/workspace/result.json"
 # keep result.json small and reference workspace files for bulky output).
 MAX_RESULT_ARTIFACT_BYTES = 256 * 1024
 
+
+def _legacy_result_publication_guard() -> str:
+    """Honor explicit failed reports without treating agent output as attestation."""
+    return f"""
+if ! python3 - <<'PRELOOP_RESULT_GUARD'
+import json
+import os
+import stat
+import sys
+
+def refuse(reason):
+    print("PRELOOP_PUBLICATION_REFUSED " + reason)
+    sys.exit(1)
+
+try:
+    fd = os.open({RESULT_ARTIFACT_PATH!r}, os.O_RDONLY | os.O_NONBLOCK)
+except FileNotFoundError:
+    # Older flows need not produce a result artifact.
+    sys.exit(0)
+except OSError:
+    refuse("result_unreadable")
+try:
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            refuse("result_not_regular")
+        raw = stream.read({MAX_RESULT_ARTIFACT_BYTES} + 1)
+    if len(raw) > {MAX_RESULT_ARTIFACT_BYTES}:
+        refuse("result_oversized")
+    result = json.loads(raw)
+    if not isinstance(result, dict):
+        refuse("result_not_object")
+except (OSError, ValueError, RecursionError):
+    refuse("result_invalid")
+# Keep aligned with RESULT_ARTIFACT_FAILURE_STATUSES in flow_orchestrator.
+# Eval status "fail" is a completed assessment, not an execution failure.
+status = result.get("status")
+if isinstance(status, str) and status.strip().lower() in {{"failure", "failed", "error"}}:
+    refuse("reported_failure")
+PRELOOP_RESULT_GUARD
+then
+    exit 1
+fi
+""".strip()
+
+
 # Directory inside the agent container where audit-style presets write their
 # evidence pack (see backend/presets/004..006). Captured as a tar.gz archive.
 EVIDENCE_DIR_PATH = "/workspace/evidence"
@@ -4577,6 +4622,10 @@ true
                         f"2>/dev/null || true"
                     ),
                     f'  echo "Wrote git recovery artifacts under {EVIDENCE_DIR_PATH}"',
+                    # A CLI can exit zero after reporting failure. Preserve
+                    # recovery first, then refuse inline publication. Isolated
+                    # export above remains available for controller handling.
+                    _legacy_result_publication_guard(),
                 ]
 
                 # Publication gate (issue #428): before anything leaves the

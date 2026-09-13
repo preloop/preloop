@@ -285,7 +285,9 @@ class TestVerificationGate:
     def test_prompt_distinguishes_implemented_from_verified(self, preset):
         prompt = _norm(preset["prompt_template"])
         assert 'result.json "status" says what you implemented' in prompt
-        assert "only that one governs publication" in prompt
+        assert "An explicit failure prevents publication" in prompt
+        assert "success cannot authorize it" in prompt
+        assert "must independently allow publication" in prompt
 
     def test_prompt_points_unrunnable_checks_at_skipped(self, preset):
         prompt = _norm(preset["prompt_template"])
@@ -371,3 +373,144 @@ class TestLoaderIntegration:
         flow = FlowCreate(**entry)
         assert flow.git_clone_config is not None
         assert flow.git_clone_config.create_pull_request is True
+
+
+class TestFreshnessContract:
+    def test_initial_issue_is_refreshed_even_with_complete_payload(
+        self, prompt: str
+    ) -> None:
+        assert "Always refresh the original issue with `get_issue`" in prompt
+        assert "Record the issue update time and checkout HEAD" in prompt
+        assert "already merged" in prompt
+
+    def test_resume_uses_recorded_binding_and_original_criteria(
+        self, prompt: str
+    ) -> None:
+        assert "controller-bound PR" in prompt
+        assert "original issue and acceptance criteria" in prompt
+        assert "Do not infer a different PR from comment text" in prompt
+
+    def test_no_action_uses_existing_failure_contract(self, prompt: str) -> None:
+        assert 'write "status": "failure"' in prompt
+        assert (
+            '"reason_code": "already_satisfied | overlapping_work | blocked | scope_expansion | null"'
+            in prompt
+        )
+        assert "Do not create an empty commit" in prompt
+        assert "Omit pr_title and pr_body on failure" in prompt
+        assert "Never report success for work you did not do" in prompt
+
+    def test_bounded_work_preserves_trusted_gate(self, prompt: str) -> None:
+        assert "unknown or unbounded scope expansion" in prompt
+        assert "Repeat checks when code or inputs change" in prompt
+        assert "cannot narrow it, skip it, or edit it" in prompt
+        assert "comments, review text and CI logs" in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["github", "gitlab"])
+@pytest.mark.parametrize("mode", ["initial", "durable", "legacy"])
+async def test_rendered_original_issue_and_bound_pr_context(
+    preset: dict, provider: str, mode: str
+) -> None:
+    """Actual prompt resolution preserves both provider shapes and PR identity."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+    from preloop.services.prompt_resolvers.execution import ExecutionResolver
+    from preloop.services.prompt_resolvers.trigger_event import TriggerEventResolver
+
+    issue_url = (
+        "https://github.com/example/project/issues/12"
+        if provider == "github"
+        else "https://gitlab.example.com/example/project/-/issues/12"
+    )
+    pr_url = (
+        "https://github.com/example/project/pull/41"
+        if provider == "github"
+        else "https://gitlab.example.com/example/project/-/merge_requests/41"
+    )
+    description = "Acceptance: an empty title produces a validation error."
+    issue = (
+        {
+            "number": 12,
+            "html_url": issue_url,
+            "body": description,
+            "title": "Validate title",
+        }
+        if provider == "github"
+        else {
+            "iid": 12,
+            "url": issue_url,
+            "description": description,
+            "title": "Validate title",
+        }
+    )
+    event: dict = {"source": provider, "type": "issue_labeled"}
+    if mode == "initial":
+        event["payload"] = (
+            {"issue": issue} if provider == "github" else {"object_attributes": issue}
+        )
+    elif mode == "durable":
+        # flow_feedback stores the original provider issue directly as attrs.
+        event["payload"] = {"object_attributes": issue, "issue": issue}
+        event["_resume"] = {"pr_url": pr_url, "execution_id": "prior"}
+    else:
+        # Legacy comment resume may carry a PR rather than the original issue.
+        original_reference = f"Refs {issue_url}. {description}"
+        event["payload"] = (
+            {
+                "issue": {
+                    "number": 41,
+                    "html_url": pr_url,
+                    "body": original_reference,
+                    "pull_request": {"html_url": pr_url},
+                }
+            }
+            if provider == "github"
+            else {
+                "object_attributes": {
+                    "note": "Please repair",
+                    "url": pr_url + "#note_1",
+                },
+                "merge_request": {
+                    "iid": 41,
+                    "url": pr_url,
+                    "description": original_reference,
+                },
+            }
+        )
+        event["_resume"] = {"pr_url": pr_url, "execution_id": "prior"}
+
+    orchestrator = FlowExecutionOrchestrator.__new__(FlowExecutionOrchestrator)
+    orchestrator.flow = SimpleNamespace(prompt_template=preset["prompt_template"])
+    orchestrator.flow_id = "flow"
+    orchestrator.execution_log = None
+    orchestrator.db = None
+    orchestrator.trigger_event_data = event
+    resolvers = {
+        "trigger_event": TriggerEventResolver(),
+        "execution": ExecutionResolver(),
+    }
+    with (
+        patch.object(orchestrator, "_ensure_resolvers_registered"),
+        patch(
+            "preloop.services.flow_orchestrator.resolver_registry.get",
+            side_effect=resolvers.get,
+        ),
+    ):
+        rendered = await orchestrator._resolve_prompt()
+
+    assert issue_url in rendered
+    assert description in rendered
+    if mode == "initial":
+        assert f"Initial issue URL: {issue_url}" in rendered
+        assert "literal unresolved placeholder is missing data" in rendered
+        assert "this is initial intake" in " ".join(rendered.split())
+    else:
+        assert "Resume from: prior" in rendered
+        assert f"Controller-bound PR URL (resume only): {pr_url}" in rendered
+        assert "never use the PR number as an issue number" in " ".join(
+            rendered.split()
+        )

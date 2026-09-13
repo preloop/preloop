@@ -10,6 +10,7 @@ denies publication), repair, final verification, publication.
 """
 
 import json
+import os
 import pathlib
 import subprocess
 
@@ -111,6 +112,21 @@ class GateRepo:
     """Temporary repository + evidence dir with a fake publication step."""
 
     def __init__(self, tmp_path: pathlib.Path):
+        home = tmp_path / "home"
+        home.mkdir()
+        template = tmp_path / "git-template"
+        template.mkdir()
+        self.env = {
+            "PATH": os.environ["PATH"],
+            "HOME": str(home),
+            "GIT_CONFIG_GLOBAL": str(home / "gitconfig"),
+            "GIT_CONFIG_SYSTEM": str(home / "system-gitconfig"),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TEMPLATE_DIR": str(template),
+            "GIT_ALLOW_PROTOCOL": "file",
+            "GIT_TERMINAL_PROMPT": "0",
+            "PRELOOP_DISABLE_TELEMETRY": "true",
+        }
         self.repo = tmp_path / "repo"
         self.evidence = tmp_path / "evidence"
         self.repo.mkdir()
@@ -129,6 +145,7 @@ class GateRepo:
         result = subprocess.run(
             ["git", *args],
             cwd=self.repo,
+            env=self.env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -175,6 +192,7 @@ fi
 """
         return subprocess.run(
             ["bash", "-c", script],
+            env=self.env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -249,6 +267,7 @@ class TestGateIntegration:
         script = f"cd {repo.repo}\n{repo.gate_shell(PROFILE, base='no-such-branch')}\n"
         result = subprocess.run(
             ["bash", "-c", script],
+            env=repo.env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -282,6 +301,7 @@ fi
 """
         result = subprocess.run(
             ["bash", "-c", script],
+            env=repo.env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -423,3 +443,189 @@ class TestShippedPresetProfile:
         repo.commit()
         assert repo.run_publisher(preset_profile).returncode == VERIFIER_EXIT_DENIED
         assert repo.evidence_json()["used_unknown_default"]
+
+
+class TestLegacyReportedOutcome:
+    """Execute generated post-CLI shell with local git and fake provider I/O."""
+
+    def run_generated(
+        self,
+        repo: GateRepo,
+        monkeypatch: pytest.MonkeyPatch,
+        outcome: bytes | None,
+        *,
+        profile: dict | None = None,
+        isolated: bool = False,
+        checkpoint_enabled: bool = True,
+    ) -> subprocess.CompletedProcess:
+        import os
+        import shlex
+        import shutil
+
+        from preloop.agents.container import ContainerAgentExecutor
+
+        workspace = repo.repo.parent / "workspace"
+        workspace.mkdir()
+        if outcome is not None:
+            (workspace / "result.json").write_bytes(outcome)
+        executable_dir = repo.repo.parent / "bin"
+        executable_dir.mkdir()
+        git_calls = repo.repo.parent / "git-calls"
+        provider_calls = repo.repo.parent / "provider-calls"
+        real_git = shutil.which("git")
+        assert real_git is not None
+        (executable_dir / "git").write_text(
+            "#!/bin/sh\n"
+            f'echo "$*" >> {shlex.quote(str(git_calls))}\n'
+            'if [ "$1" = push ]; then exit 0; fi\n'
+            f'exec {shlex.quote(real_git)} "$@"\n'
+        )
+        (executable_dir / "curl").write_text(
+            "#!/bin/sh\n"
+            f"echo called >> {shlex.quote(str(provider_calls))}\n"
+            'while [ "$#" -gt 0 ]; do\n'
+            '  if [ "$1" = -o ]; then shift; output="$1"; fi\n'
+            "  shift\n"
+            "done\n"
+            'printf \'{"number":1,"html_url":"https://github.com/example/widgets/pull/1"}\' > "$output"\n'
+            "printf 201\n"
+        )
+        for executable in executable_dir.iterdir():
+            executable.chmod(0o755)
+        executor = ContainerAgentExecutor("codex", {}, "test-image")
+        config = {
+            "create_pull_request": True,
+            "repositories": [
+                {
+                    "repository_url": "https://github.com/example/widgets.git",
+                    "clone_path": str(repo.repo),
+                    "tracker_id": "tracker-1",
+                }
+            ],
+        }
+        if profile is not None:
+            config["verification"] = {"mode": "gate", "profile": profile}
+        if isolated:
+            config["publication_mode"] = "isolated"
+        context = {
+            "git_clone_config": config,
+            "_git_target_branch": "preloop/issue-1",
+            "_git_source_branch": "main",
+            "git_credentials_map": {
+                "tracker-1": {"token": "fake-token", "tracker_type": "github"}
+            },
+        }
+        if checkpoint_enabled:
+            context["checkpoint_env"] = {"enabled": True}
+        commands = executor._prepare_git_post_execution_commands(context)
+        assert commands
+        # Relocate container-only paths; execute the emitted logic unchanged.
+        commands = (
+            commands.replace("/workspace", str(workspace))
+            .replace("/tmp/preloop-", str(repo.repo.parent / "preloop-"))
+            .replace(
+                "/tmp/.preloop-git-credentials",
+                str(repo.repo.parent / "git-credentials"),
+            )
+        )
+        checkpoint = repo.repo.parent / "checkpoint.marker"
+        script = (
+            f"_preloop_checkpoint() {{ echo checkpoint > {shlex.quote(str(checkpoint))}; }}\n"
+            # A successful harness process does not negate a failed result.
+            "(exit 0)\n" + commands
+        )
+        monkeypatch.setenv("PRELOOP_DISABLE_TELEMETRY", "true")
+        env = {**repo.env, **executor._git_credential_env(context)}
+        env["PATH"] = str(executable_dir) + os.pathsep + env["PATH"]
+        result = subprocess.run(
+            ["bash", "-c", script], env=env, capture_output=True, text=True, timeout=60
+        )
+        assert checkpoint.exists() == checkpoint_enabled, result.stdout + result.stderr
+        return result
+
+    @pytest.mark.parametrize("status", ["failure", "failed", "error", " ERROR "])
+    def test_cli_zero_with_failure_never_pushes_or_calls_provider(
+        self, repo: GateRepo, monkeypatch: pytest.MonkeyPatch, status: str
+    ) -> None:
+        repo.add_file("feature.py")
+        repo.commit()
+        result = self.run_generated(
+            repo, monkeypatch, json.dumps({"status": status}).encode()
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "PRELOOP_PUBLICATION_REFUSED" in result.stdout
+        assert "push origin" not in (repo.repo.parent / "git-calls").read_text()
+        assert not (repo.repo.parent / "provider-calls").exists()
+
+    @pytest.mark.parametrize(
+        "outcome",
+        [b"{", b"[]", b"x" * (262144 + 1)],
+        ids=["malformed", "non-object", "oversized"],
+    )
+    def test_invalid_result_blocks_publication(
+        self, repo: GateRepo, monkeypatch: pytest.MonkeyPatch, outcome: bytes
+    ) -> None:
+        repo.add_file("feature.py")
+        repo.commit()
+        result = self.run_generated(repo, monkeypatch, outcome)
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "push origin" not in (repo.repo.parent / "git-calls").read_text()
+        assert not (repo.repo.parent / "provider-calls").exists()
+
+    @pytest.mark.parametrize(
+        "outcome", [None, b'{"status":"success"}', b'{"status":"fail"}']
+    )
+    def test_legacy_missing_and_completed_results_still_reach_publication(
+        self, repo: GateRepo, monkeypatch: pytest.MonkeyPatch, outcome: bytes | None
+    ) -> None:
+        repo.add_file("feature.py")
+        repo.commit()
+        result = self.run_generated(repo, monkeypatch, outcome, profile=PROFILE)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (
+            "push origin preloop/issue-1"
+            in (repo.repo.parent / "git-calls").read_text()
+        )
+        assert (repo.repo.parent / "provider-calls").exists()
+        evidence = repo.repo.parent / "workspace/evidence/verification/evidence.json"
+        assert json.loads(evidence.read_text())["status"] == "passed"
+
+    def test_success_does_not_bypass_failing_verifier(
+        self, repo: GateRepo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo.add_file("feature.py")
+        repo.commit()
+        failing = dict(PROFILE, unknown_default=[_check_that_fails(repo.evidence)])
+        result = self.run_generated(
+            repo, monkeypatch, b'{"status":"success"}', profile=failing
+        )
+        assert result.returncode == VERIFIER_EXIT_DENIED
+        assert "push origin" not in (repo.repo.parent / "git-calls").read_text()
+        assert not (repo.repo.parent / "provider-calls").exists()
+
+    def test_isolated_failure_preserves_recovery_export(
+        self, repo: GateRepo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo.add_file("feature.py")
+        repo.commit()
+        result = self.run_generated(
+            repo, monkeypatch, b'{"status":"failure"}', isolated=True
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (repo.repo.parent / "workspace/evidence/branch.bundle").exists()
+        assert "push origin" not in (repo.repo.parent / "git-calls").read_text()
+        assert not (repo.repo.parent / "provider-calls").exists()
+
+    def test_failure_without_checkpoint_keeps_recovery_artifacts(
+        self, repo: GateRepo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo.add_file("feature.py")
+        repo.commit()
+        result = self.run_generated(
+            repo, monkeypatch, b'{"status":"failure"}', checkpoint_enabled=False
+        )
+        assert result.returncode != 0
+        assert (repo.repo.parent / "workspace/evidence/branch.bundle").exists()
+        assert (repo.repo.parent / "workspace/evidence/branch.patch").exists()
+        assert "push origin" not in (repo.repo.parent / "git-calls").read_text()
+        assert not (repo.repo.parent / "provider-calls").exists()

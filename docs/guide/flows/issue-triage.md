@@ -14,7 +14,7 @@ The preset ships as `backend/presets/001-issue-triage-assistant.yaml`
 | --- | --- |
 | Match `issue_opened` and `issue_updated` (legacy `issue.opened` clones still match) | flow trigger |
 | Ignore Preloop-bot `issue_updated` loops; human title/body edits still run | flow trigger |
-| Read the issue and nearby project context | agent (`get_issue`, `search_issues`) |
+| Refresh the issue, inspect linked PRs and nearby project context | agent (`get_issue`, `get_pull_request`, `search_issues`) |
 | Propose existing labels; leave missing taxonomy unknown | agent |
 | Post one comment marked `<!-- preloop-triage -->` | agent (`add_comment`) |
 | Write `/workspace/result.json` | agent |
@@ -48,9 +48,84 @@ retrying. Other valid issues in the batch continue.
 
 `result.json` keeps a bounded assessment separate from provider label names:
 
-- `assessment`: kind, complexity with rationale/confidence, missing context, acceptance, code/test pointers, dependencies, readiness
+- `assessment`: existing kind, complexity with rationale/confidence, missing context,
+  acceptance, code/test pointers, dependencies and human-review readiness.
+- Additive assessment objects: `description_quality`, `implementation_readiness`,
+  `risk` and `automation_suitability`, each with a `value` and `rationale`.
+  `complexity_scope` identifies remaining work or a historical umbrella.
+- `evidence_baseline`: observed `issue_updated_at`, `checkout_revision`,
+  `related_work` and `evidence_limits`. Missing revisions stay null; a PR entry
+  records its observed URL/state/revision and the acceptance it covers.
 - `observed_labels` / `proposed_labels` (existing names only) / `new_label_proposals`
 - `policy_notes`: whether project policy was found; never invent labels
+
+The original `complexity` vocabulary remains `unknown | small | medium | large`.
+Small maps to low complexity, large to high. The original `readiness` field remains
+`unknown | blocked | ready_for_human_review`; it is not a dispatch signal.
+The new fields use these advisory values:
+
+| Field | Values |
+| --- | --- |
+| `description_quality.value` | `unknown`, `clear`, `needs_improvement` |
+| `implementation_readiness.value` | `unknown`, `ready`, `needs_spec`, `blocked`, `in_progress`, `needs_verification` |
+| `risk.value` | `unknown`, `low`, `medium`, `high` |
+| `automation_suitability.value` | `unknown`, `flash_candidate`, `expert`, `hold` |
+| `complexity_scope` | `remaining_change`, `historical_umbrella`, `unknown` |
+
+These fields do not change the flow schema or grant routing authority. Unknown
+suitability is conservatively reported as `hold`. New label proposals remain
+empty. Existing consumers can continue reading the original fields.
+
+## Evidence and inexpensive-model pickup
+
+A clear issue can be complex, risky, already implemented or under active review.
+Triage reconciles linked PR state and current source with remaining acceptance
+before recommending pickup. A merged PR proves code landed; it does not prove
+all acceptance or deployment conditions passed. An acceptance-only tracker needs
+verification, even when updating or closing the issue would take little effort.
+
+The generic preset has no checkout by default. Its tools do not enumerate every
+project PR or the label catalogue. When those limits prevent confirming remaining
+work or overlap, it records the limitation and holds the automation recommendation.
+It does not fabricate code pointers, tests or a missing implementation. Operators
+can provide a checkout and scoped evidence appropriate to their own projects.
+
+A flash candidate needs all of: localized known implementation, low complexity,
+low consequence of failure, complete actionable criteria, no active overlapping
+work and a runnable decisive local check. A missing design, dependency, source
+baseline or validation path prevents that recommendation. Expert implementation
+is a recommendation for ready work with higher complexity or risk. It does not
+resolve missing specifications. Neither recommendation applies labels, starts a
+run or chooses a model. See the [Preloop repository policy](issue-readiness-policy.md)
+for one project-specific label mapping and [model routing](model-routing.md) for
+controller-owned selection.
+
+## Implementation freshness
+
+Preset 011 refreshes the original issue even when its trigger packet looks
+complete. A continuation uses the controller-bound PR and original criteria,
+checks current source and linked PRs, and preserves unpushed work on divergence.
+It implements only remaining in-scope behavior, with targeted tests, while retaining
+the trusted verifier's required checks. Unknown scope expansion takes the existing
+critical-decision path instead of becoming speculative work.
+
+If there is no actionable implementation, active overlapping work or an unresolved
+blocker, the agent reports the existing `status: failure` completion outcome with
+an advisory `reason_code` (`already_satisfied`, `overlapping_work`, `blocked`, or
+`scope_expansion`). It does not manufacture an empty commit or success PR metadata.
+The report also adds `evidence_baseline` with observed issue/repository revisions,
+related work and remaining acceptance. These are report fields, not new execution
+states. The shared legacy publication path also refuses explicit failed or invalid
+result artifacts after preserving recovery data, even when the CLI exits zero.
+Missing artifacts retain legacy compatibility; a successful report still cannot
+bypass the trusted verification gate. A satisfied issue is not automatically closed. A partial implementation
+uses a reference to the issue rather than a closing directive.
+
+Changing preset files alone does not deploy or synchronize saved flows. The normal
+preset synchronization can propagate uncustomized fields to linked flows; customized
+flows retain the update-review path and notifications. Review that behavior before
+running synchronization. These changes do not enable isolated publication mode or
+automatically assign an issue to an implementation flow.
 
 ## Not in this slice
 
