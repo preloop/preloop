@@ -12,7 +12,7 @@ from sqlalchemy import Engine, event, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from preloop.api.auth.jwt import RuntimeBearerAuthContext
+from preloop.models.crud.agent_control_connection import AgentControlConnectionContext
 from preloop.api.endpoints.agent_control import _touch_presence
 from preloop.models import models
 from preloop.models.crud import crud_managed_agent, crud_runtime_session
@@ -74,11 +74,14 @@ def test_heartbeat_does_not_hold_runtime_while_waiting_for_operator_agent_lock(
             runtime = db.get(models.RuntimeSession, runtime_id)
             agent = db.get(models.ManagedAgent, agent_id)
             assert runtime is not None and agent is not None
-            context = RuntimeBearerAuthContext(
-                user=models.User(),
-                api_key=None,
-                runtime_session=runtime,
-                managed_agent=agent,
+            context = AgentControlConnectionContext(
+                account_id=str(account_id),
+                runtime_session_id=str(runtime_id),
+                managed_agent_id=str(agent_id),
+                session_source_type="test",
+                session_source_id=agent.session_source_id,
+                managed_agent_session_source_type="test",
+                managed_agent_session_source_id=agent.session_source_id,
             )
 
             def before_update(

@@ -80,6 +80,9 @@ class ManagedAgent(Base):
     # Written only by the Agent Control WebSocket. last_seen_at is stamped by
     # enrollment and by gateway traffic too, so it cannot answer "is the
     # plugin connected" for a process that does not hold the socket.
+    control_connection_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     control_last_heartbeat_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
     account: Mapped["Account"] = relationship(

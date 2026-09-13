@@ -11,16 +11,18 @@ from sqlalchemy.orm import Session
 
 from preloop.utils.agent_kind import normalize_agent_kind
 
-from ..models.api_usage import ApiUsage
-from ..models.managed_agent import ManagedAgent
-from ..models.runtime_session import RuntimeSession
-from ..models.user import User
+from preloop.models import models
 from .api_usage import (
     EMPTY_CACHE_SPLIT,
     cache_split_columns,
     cache_split_from_row,
 )
 from .base import CRUDBase
+
+ApiUsage = models.ApiUsage
+ManagedAgent = models.ManagedAgent
+RuntimeSession = models.RuntimeSession
+User = models.User
 
 MANAGED_AGENT_ACTIVE_WINDOW = timedelta(minutes=10)
 MANAGED_AGENT_RECENT_WINDOW = timedelta(hours=24)
@@ -576,6 +578,10 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             # reversible and every auth path rejects non-active agents on each
             # request, so dropping the binding here would just make resume
             # unable to restore the agent to its previous state.
+            if lifecycle_state != "active":
+                db_obj.control_connection_id = None
+                db_obj.control_last_heartbeat_at = None
+                db_obj.control_session_mode = None
             if lifecycle_state == "decommissioned":
                 db_obj.runtime_session_id = None
         db.add(db_obj)

@@ -94,7 +94,7 @@ Undo anything with `preloop agents restore openclaw` or
 Concretely, for the approval path: the `before_tool_call` hook intercepts the
 call and asks Preloop for a decision. Preloop matches your policy, sees this
 needs a human, and pushes a notification with the full command to your phone.
-The tool call blocks for up to ~300 seconds while you decide. You deny it;
+The tool call waits for the selected approval workflow while you decide. You deny it;
 OpenClaw gets the block plus your reason, and the agent carries on with
 something else.
 
@@ -131,6 +131,7 @@ either; OpenClaw builds that validate config schemas reject unknown root keys.
 |---|---|---|
 | `tool_approval_enabled` | `true` | Set to `false` to turn the native tool-call gate off entirely |
 | `tool_approval_fail_open` | `false` | Fail-closed by default: if Preloop is unreachable, the tool call is **blocked**. Set `true` only if you accept ungoverned execution during an outage |
+| `tool_approval_timeout_seconds` | `86400` | Workflow wait budget, an integer from 30 to 86400 seconds; HTTP adds 15 seconds of headroom |
 | `permission_check_url` | derived from `control_ws_url` | Override the approval endpoint |
 
 ### Where the plugin metadata lives
@@ -149,16 +150,42 @@ code, not from manifest declarations.
 
 1. **OpenClaw's own policy runs first.** The plugin reads
    `~/.openclaw/exec-approvals.json`. Commands your local policy denies are
-   denied outright; ones it allows run untouched. Only calls that *would have
-   prompted you* round-trip to Preloop, so the hook stays cheap.
+   denied outright. Locally allowed calls also reach Preloop so central rules
+   can deny them or require approval. Without a matching central rule, a local
+   allow returns immediately without creating a human approval.
    Allowlist-miss cases are escalated rather than resolved locally — the plugin
    does not reimplement OpenClaw's command analyzer.
 2. **Preloop evaluates your policy.** Allow, deny, require approval, or require
    a written justification, expressed as YAML + CEL.
 3. **A human decides, if the policy says so.** Notification to mobile, watch,
-   Slack, Mattermost, email, or webhook; the tool call blocks up to ~300s.
+   Slack, Mattermost, email, or webhook; the tool waits for the selected workflow.
 4. **The result is recorded** in the same audit trail as MCP tool calls, tagged
    with tool source `agent`.
+
+### Waits and unavailable approvals
+
+Only a valid `allow` response permits execution. A returned `deny`, including
+an expired approval (`timed_out: true`), blocks even when fail-open is enabled.
+Transport errors/timeouts and HTTP 5xx block by default;
+`tool_approval_fail_open: true` explicitly permits execution for those availability
+failures only. HTTP 4xx (including 401/403), malformed replies and invalid
+configuration always block, even with fail-open enabled.
+
+The default wait budget covers approval workflows up to 24 hours, including a
+workflow selected by a central rule. This is a maximum wait, not a new workflow
+timeout: a five-minute workflow still expires after five minutes. Set
+`tool_approval_timeout_seconds` lower only if it covers all workflows this agent
+can select; a shorter transport deadline can interrupt a pending approval and
+follows the configured failure behavior. Missing config uses the new default;
+invalid values block by default and are rejected by `verify` and the manifest.
+
+Bundled standalone and Helm nginx configurations allow 86460 seconds only on
+`/api/v1/agents/permission-check`. Other ingress/load-balancer and OpenClaw host
+limits must also permit the chosen wait. The plugin only governs calls delivered
+to its `before_tool_call` hook; it cannot promise coverage for tools that bypass
+that host hook. Turning the plugin gate off skips central enforcement entirely;
+Preloop's server-side approvals-off setting only disables human escalation and
+does not override an explicit central require-approval rule.
 
 ## Manual Test Without Preloop CLI
 

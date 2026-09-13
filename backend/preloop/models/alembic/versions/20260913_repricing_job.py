@@ -5,7 +5,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 revision = "20260913_repricing_job"
-down_revision = "20260910_operator_notes"
+down_revision = "20260912_control_connection"
 branch_labels = None
 depends_on = None
 _ALEMBIC_IDENTIFIERS = (revision, down_revision, branch_labels, depends_on)

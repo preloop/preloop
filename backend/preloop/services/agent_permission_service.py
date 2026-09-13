@@ -1,8 +1,8 @@
 """Permission checks for onboarded agents' native tool calls.
 
 This is the shared backend seam behind ``POST /api/v1/agents/permission-check``.
-Onboarded agents (Claude Code via a PreToolUse hook, Codex via a
-PermissionRequest hook, OpenClaw/Hermes via their runtime plugins) call the
+Onboarded agents (Claude Code via PreToolUse, Codex via PreToolUse and
+PermissionRequest, OpenClaw/Hermes via their runtime plugins) call the
 endpoint before running a native/built-in tool. We reuse the existing
 :class:`ApprovalService` pipeline (create + notify mobile/watch + decide) and
 return a simple allow/deny the adapter maps back into the agent's hook format.
@@ -391,7 +391,13 @@ def _honour_native_policy_decision(decision: Any) -> bool:
             SOURCE_RULE_EVALUATION_ERROR,
         }
     if action != "allow":
-        return False
+        # An unsupported action from a matching native rule is still a match.
+        # The caller turns it into a normal policy denial, not a no-rule allow.
+        return source in {
+            SOURCE_TOOL_ACCESS_RULE,
+            SOURCE_SUBJECT_SCOPED_RULE,
+            SOURCE_RULE_EVALUATION_ERROR,
+        }
     if source in {
         SOURCE_TOOL_ACCESS_RULE,
         SOURCE_SUBJECT_SCOPED_RULE,
@@ -449,6 +455,13 @@ async def apply_native_access_rules(
         return None
     ctx = getattr(decision, "rule_context", None)
     action, approval_workflow_id, rule_description = decision
+    if action not in ("allow", "deny", "require_approval"):
+        return (
+            "deny",
+            "Unsupported native access rule action",
+            None,
+            ctx if isinstance(ctx, dict) else None,
+        )
     return (
         action,
         rule_description or f"{action} by access rule",
@@ -471,7 +484,8 @@ async def request_agent_permission(
     tool_input: Optional[dict],
     agent_reasoning: Optional[str],
     client_decision: Optional[str],
-) -> Tuple[str, str, Optional[str]]:
+    evaluation_phase: str = "permission_request",
+) -> Tuple[str, str, Optional[str], bool]:
     """Decide whether an agent's native tool call may proceed.
 
     A client ``deny`` is honoured before rules so a Preloop allow cannot
@@ -508,14 +522,17 @@ async def request_agent_permission(
         agent_reasoning: Optional explanation shown to the approver.
         client_decision: Client policy outcome: ``allow``, ``deny``, or absent/
             ``ask`` to escalate to human approval.
+        evaluation_phase: ``pre_tool_use`` checks central native rules before
+            the host permission decision, skipping no-rule automatic escalation.
+            The default ``permission_request`` preserves remote host prompts.
 
     Returns:
         Tuple of ``(decision, reason, request_id, timed_out)`` where
         ``decision`` is ``"allow"`` or ``"deny"``, ``request_id`` is set when
         an approval row was created, and ``timed_out`` is True only when the
         deny is the expiry of an unanswered approval rather than a human (or
-        policy) judgement — adapters with a native "ask" verdict use it to
-        fall back to the agent's local prompt instead of hard-denying.
+        policy) judgement. Both remain denials; adapters must not replace
+        required central approval with a local prompt.
     """
     decision = (client_decision or "").strip().lower()
     # A client deny is never widened by a Preloop allow rule.
@@ -560,6 +577,12 @@ async def request_agent_permission(
                 return (action, reason, None, False)
             if action == "require_approval":
                 matched_require = (reason, rule_wf_id, rule_ctx)
+
+        # Pre-tool hooks run before the host decides whether it will prompt.
+        # Clear only the central veto when no rule matched; the adapter must
+        # leave native permission processing intact. Never infer client allow.
+        if matched_require is None and evaluation_phase == "pre_tool_use":
+            return ("allow", "No central native rule requires approval", None, False)
 
         if (
             matched_require is None

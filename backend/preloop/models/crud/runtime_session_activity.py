@@ -8,11 +8,13 @@ from typing import Any, Optional
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
-from ..models.managed_agent import ManagedAgent
-from ..models.runtime_session import RuntimeSession
-from ..models.runtime_session_activity import RuntimeSessionActivity
+from preloop.models import models
 from ...utils.jsonb_sanitize import sanitize_for_jsonb
 from .base import CRUDBase
+
+ManagedAgent = models.ManagedAgent
+RuntimeSession = models.RuntimeSession
+RuntimeSessionActivity = models.RuntimeSessionActivity
 
 MAX_AGENT_CONTROL_MESSAGE_SUMMARY_LEN = 2000
 
@@ -204,6 +206,19 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             .order_by(self.model.timestamp.desc())
             .first()
         )
+        if original is not None and "result_status" in (original.metadata_ or {}):
+            return original
+        previous_result = (
+            db.query(self.model)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.metadata_["command_id"].astext == command_id,
+                self.model.metadata_["source"].astext == "agent_control_result",
+            )
+            .first()
+        )
+        if previous_result is not None:
+            return previous_result
         runtime_session_id = (
             original.runtime_session_id
             if original is not None
@@ -231,11 +246,13 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             return original
 
         result_metadata = {
+            **(metadata or {}),
+            # Identity and deduplication markers belong to the server. Runtime
+            # metadata must not disguise a result as another activity/command.
             "command_id": command_id,
             "role": "assistant",
             "direction": "agent_to_operator",
             "source": "agent_control_result",
-            **(metadata or {}),
         }
         return self.log_agent_control_message(
             db,

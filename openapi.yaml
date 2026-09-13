@@ -13088,6 +13088,17 @@ components:
           title: Client Decision
           description: 'What the client''s own policy decided: ''allow'' | ''deny''
             | ''ask''. Absent/''ask'' escalates to a human approver.'
+        evaluation_phase:
+          type: string
+          enum:
+          - permission_request
+          - pre_tool_use
+          title: Evaluation Phase
+          description: '''pre_tool_use'' checks central native rules without assuming
+            a host permission decision: no matching rule continues without automatic
+            human escalation. ''permission_request'' retains normal remote escalation.
+            A pre-tool allow never grants the host''s permission.'
+          default: permission_request
       type: object
       required:
       - tool_name
@@ -13122,8 +13133,8 @@ components:
           type: boolean
           title: Timed Out
           description: True when the deny is only the expiry of an unanswered approval
-            request, not a human decision. Adapters with a native 'ask' verdict may
-            fall back to the agent's local prompt.
+            request, not a human decision. It remains a denial; adapters must not
+            replace required central approval with a local prompt.
           default: false
       type: object
       required:
