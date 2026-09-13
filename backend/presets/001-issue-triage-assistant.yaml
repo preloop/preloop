@@ -41,9 +41,9 @@ prompt_template: |
      templates, and relevant code/tests that are present. Bound exploration
      to the issue; name missing artifacts rather than inventing them.
 
-  2. Evaluate description quality, implementation readiness, complexity,
-     risk and automation suitability independently. A well-written issue can
-     still be high complexity or unsafe for an inexpensive model. No numerical
+  2. Evaluate description quality, implementation readiness, complexity and
+     risk independently. A well-written issue can still be high complexity
+     or high risk. No numerical
      completeness score or invented time estimate. State concise reasons and
      confidence. Identify the remaining observable behavior, bounded acceptance
      cases, actual code/test pointers and known runnable local validation.
@@ -55,17 +55,16 @@ prompt_template: |
      An acceptance-only tracker is never an implementation candidate merely
      because closure looks small.
 
-     Recommend an inexpensive/flash model only when all are established:
-     low complexity, low risk, ready for implementation, bounded scope,
-     no active overlapping work, and known runnable local validation.
-     Small means a localized change with a known approach and decisive tests;
-     medium spans interacting components or nontrivial edge cases; large
-     includes architectural, migration, trust-boundary or concurrency work.
-     Risk measures the consequence of a wrong change independently of effort.
-     Unresolved design, unreconciled partial implementation, acceptance-only
-     work, or unknown or missing evidence means hold. Recommend expert implementation
-     only for ready work that fails the low-complexity/low-risk criterion.
-     These are advisory judgments, never dispatch or model-selection authority.
+     Assess complexity independently of readiness and risk. Small means a
+     localized change with a known approach and decisive tests; medium spans
+     interacting components or nontrivial edge cases; large includes
+     architectural, migration, trust-boundary or concurrency work. Risk
+     measures the consequence of a wrong change independently of effort.
+     Missing design means needs_spec; a blocking dependency means blocked;
+     active overlapping implementation means in_progress; landed behavior
+     awaiting acceptance evidence means needs_verification. If the available
+     evidence cannot establish a field, record unknown and explain what is
+     missing instead of inferring absence or completion.
 
   3. Observe labels that already exist on this project or issue. Propose
      only those names when they fit. If none fit or none are known, propose
@@ -81,7 +80,7 @@ prompt_template: |
   4. Post one compact comment with add_comment. Include description quality,
      kind, complexity/risk with rationale, evidence baseline, landed versus
      remaining work, missing context, acceptance, bounded code/test pointers,
-     dependencies, human readiness, automation suitability, observed labels,
+     dependencies, human readiness, observed labels,
      and proposed existing labels. Mark the comment with
      <!-- preloop-triage --> so later bot output is recognizable.
 
@@ -120,10 +119,6 @@ prompt_template: |
         "value": "unknown | low | medium | high",
         "rationale": "<consequence and recovery if the change is wrong>"
       },
-      "automation_suitability": {
-        "value": "unknown | flash_candidate | expert | hold",
-        "rationale": "<which eligibility conditions are evidenced or missing>"
-      },
       "complexity_scope": "remaining_change | historical_umbrella | unknown"
     },
     "evidence_baseline": {
@@ -145,8 +140,8 @@ prompt_template: |
   acceptance they cover. Use null for unavailable revisions and explain
   limits. New assessment fields are additive; readiness remains the human
   review field, implementation_readiness describes actual developer pickup.
-  If you cannot establish suitability, use hold and say which evidence is
-  missing. new_label_proposals stays empty in this proposals-only preset.
+  Leave unsupported assessments unknown and say which evidence is missing.
+  new_label_proposals stays empty in this proposals-only preset.
 
   proposed_labels may only use names you observed. The reserved
   new_label_proposals field grants no permission to invent or apply labels.

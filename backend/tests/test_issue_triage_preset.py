@@ -170,7 +170,7 @@ class TestLoaderIntegration:
         assert flow.git_clone_config is None
 
 
-class TestEvidenceAndRoutingContract:
+class TestEvidenceAndAssessmentContract:
     def test_records_source_and_issue_revision(self, prompt: str) -> None:
         for field in (
             '"evidence_baseline"',
@@ -190,28 +190,31 @@ class TestEvidenceAndRoutingContract:
             '"description_quality"',
             '"implementation_readiness"',
             '"risk"',
-            '"automation_suitability"',
             '"complexity_scope"',
         ):
             assert field in prompt
         assert "A well-written issue can still be high complexity" in prompt
         assert "No numerical completeness score" in prompt
 
-    def test_flash_requires_all_observed_gates(self, prompt: str) -> None:
-        assert "only when all are established" in prompt
-        for condition in (
-            "low complexity",
-            "low risk",
-            "ready for implementation",
-            "no active overlapping work",
-            "known runnable local validation",
+    def test_assessment_does_not_choose_implementation_models(
+        self, preset: dict
+    ) -> None:
+        import json
+
+        template = preset["prompt_template"]
+        start = template.index('{\n  "status": "success"')
+        packet, _ = json.JSONDecoder().raw_decode(template[start:])
+        assert "automation_suitability" not in packet["assessment"]
+        for term in (
+            "flash",
+            "inexpensive",
+            "model routing",
+            "automation:",
+            "expert",
+            "hold",
         ):
-            assert condition in prompt
-        assert "unknown or missing evidence means hold" in prompt
-        assert (
-            "never an implementation candidate merely because closure looks small"
-            in prompt
-        )
+            assert term not in template.lower()
+        assert "Assess complexity independently of readiness and risk" in template
 
     def test_structured_example_is_parseable_and_additive(self, preset: dict) -> None:
         import json
@@ -228,7 +231,26 @@ class TestEvidenceAndRoutingContract:
             "description_quality",
             "risk",
             "implementation_readiness",
-            "automation_suitability",
         ):
             assert packet["assessment"][field]["value"].startswith("unknown")
         assert packet["evidence_baseline"]["checkout_revision"] is None
+
+
+@pytest.mark.parametrize(
+    "filename", [PRESET_FILE, "011-automated-issue-implementation.yaml"]
+)
+def test_presets_do_not_classify_work_for_implementation_models(filename: str) -> None:
+    """Assessment and implementation prompts do not contain a model rubric."""
+    data = yaml.safe_load((PRESETS_DIR / filename).read_text())
+    template = data["prompt_template"].lower()
+    for forbidden in (
+        "flash",
+        "inexpensive",
+        "automation_suitability",
+        "automation:",
+        "model routing",
+    ):
+        assert forbidden not in template
+    tools = {entry["name"] for entry in data["allowed_mcp_tools"]}
+    assert "update_flow" not in tools
+    assert "create_flow" not in tools

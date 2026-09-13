@@ -51,7 +51,7 @@ retrying. Other valid issues in the batch continue.
 - `assessment`: existing kind, complexity with rationale/confidence, missing context,
   acceptance, code/test pointers, dependencies and human-review readiness.
 - Additive assessment objects: `description_quality`, `implementation_readiness`,
-  `risk` and `automation_suitability`, each with a `value` and `rationale`.
+  and `risk`, each with a `value` and `rationale`.
   `complexity_scope` identifies remaining work or a historical umbrella.
 - `evidence_baseline`: observed `issue_updated_at`, `checkout_revision`,
   `related_work` and `evidence_limits`. Missing revisions stay null; a PR entry
@@ -69,14 +69,13 @@ The new fields use these advisory values:
 | `description_quality.value` | `unknown`, `clear`, `needs_improvement` |
 | `implementation_readiness.value` | `unknown`, `ready`, `needs_spec`, `blocked`, `in_progress`, `needs_verification` |
 | `risk.value` | `unknown`, `low`, `medium`, `high` |
-| `automation_suitability.value` | `unknown`, `flash_candidate`, `expert`, `hold` |
 | `complexity_scope` | `remaining_change`, `historical_umbrella`, `unknown` |
 
-These fields do not change the flow schema or grant routing authority. Unknown
-suitability is conservatively reported as `hold`. New label proposals remain
-empty. Existing consumers can continue reading the original fields.
+These fields do not change the flow schema. Unsupported assessments stay unknown
+with an explanation of the missing evidence. New label proposals remain empty.
+Existing consumers can continue reading the original fields.
 
-## Evidence and inexpensive-model pickup
+## Evidence and implementation readiness
 
 A clear issue can be complex, risky, already implemented or under active review.
 Triage reconciles linked PR state and current source with remaining acceptance
@@ -86,19 +85,18 @@ verification, even when updating or closing the issue would take little effort.
 
 The generic preset has no checkout by default. Its tools do not enumerate every
 project PR or the label catalogue. When those limits prevent confirming remaining
-work or overlap, it records the limitation and holds the automation recommendation.
+work or overlap, it records the limitation and leaves unsupported assessments unknown.
 It does not fabricate code pointers, tests or a missing implementation. Operators
 can provide a checkout and scoped evidence appropriate to their own projects.
 
-A flash candidate needs all of: localized known implementation, low complexity,
-low consequence of failure, complete actionable criteria, no active overlapping
-work and a runnable decisive local check. A missing design, dependency, source
-baseline or validation path prevents that recommendation. Expert implementation
-is a recommendation for ready work with higher complexity or risk. It does not
-resolve missing specifications. Neither recommendation applies labels, starts a
-run or chooses a model. See the [Preloop repository policy](issue-readiness-policy.md)
-for one project-specific label mapping and [model routing](model-routing.md) for
-controller-owned selection.
+Readiness describes whether the remaining work is specified and testable.
+Complexity describes the implementation effort and interactions; risk describes
+the consequence of a wrong change. A missing design, dependency, source baseline
+or validation path is recorded directly in the readiness assessment. Good prose
+or low complexity alone does not establish readiness. See the
+[Preloop repository policy](issue-readiness-policy.md) for one project-specific
+mapping of complexity, readiness and risk to labels. End users decide which
+implementation flow and model, if any, to use; the presets do not recommend them.
 
 ## Implementation freshness
 
