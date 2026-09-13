@@ -39,6 +39,7 @@ import {
   timeRangeShortLabel,
 } from '../../utils/time-range';
 import '../../components/view-header.ts';
+import { formatProviderLookupSummary } from '../../components/reprice-job-status';
 import '../../components/time-range-select.ts';
 import '../../components/budget-policy-editor.ts';
 import '../../components/budget-health-card.ts';
@@ -146,11 +147,6 @@ const DATE_RANGE_OPTIONS: { value: DateRangePreset; label: string }[] = [
 
 @customElement('cost-view')
 export class CostView extends AuthedElement {
-  // Async reprice follow-up: check the summary every 5s for up to about a
-  // minute, then stop and say so instead of polling forever.
-  private static readonly REPRICE_POLL_INTERVAL_MS = 5000;
-  private static readonly REPRICE_POLL_MAX_ATTEMPTS = 12;
-
   @state() private summary: CostAnalyticsSummaryResponse | null = null;
   @state() private previousRangeSummary: CostAnalyticsSummaryResponse | null =
     null;
@@ -187,6 +183,8 @@ export class CostView extends AuthedElement {
   // Reprice action (billing flag): re-derives cost for unpriced rows in the
   // selected window from stored tokens and current prices.
   @state() private repricing = false;
+  @state() private repriceJobId: string | null = null;
+  @state() private repricePending = false;
   @state() private repriceNotice: string | null = null;
   // Reconciliation tab (provider_billing_reconciliation flag).
   @state() private reconciliation: CostReconciliationResponse | null = null;
@@ -884,30 +882,30 @@ export class CostView extends AuthedElement {
   // Re-price unpriced usage rows in the current window from stored tokens and
   // the current price catalog/overrides, then reload the summary.
   private async handleReprice() {
+    if (this.repricing || this.repricePending) return;
     this.repricing = true;
     this.repriceNotice = null;
+    this.repriceJobId = null;
     try {
       const range = this.getDateParams();
-      const previousUnpriced = this.summary?.unpriced_requests ?? 0;
       const result = await repriceCost({
         start_date: range.startDate,
         end_date: range.endDate,
         only_unpriced: true,
       });
       if (result.submitted_async) {
-        this.repriceNotice =
-          'Repricing is running in the background. Checking for results...';
-        await this.pollRepriceOutcome(previousUnpriced);
-        await this.load();
-        const remaining = this.summary?.unpriced_requests ?? 0;
-        this.repriceNotice = this.repriceOutcomeNotice(
-          previousUnpriced,
-          remaining
-        );
+        this.repriceJobId = result.job_id ?? null;
+        this.repricePending = Boolean(this.repriceJobId);
+        if (!this.repriceJobId) {
+          this.repriceNotice =
+            'Repricing accepted in the background. This server provides no job status, so completion cannot be confirmed. Refresh the page later to see current costs.';
+        }
       } else {
+        this.repricePending = false;
         this.repriceNotice =
           `Reprice finished: ${result.rows_updated ?? 0} of ` +
-          `${result.rows_examined ?? 0} requests priced.`;
+          `${result.rows_examined ?? 0} requests updated. ` +
+          formatProviderLookupSummary(result.provider_lookup);
         await this.load();
       }
     } catch (error) {
@@ -918,55 +916,19 @@ export class CostView extends AuthedElement {
     }
   }
 
-  // The async reprice path (windows over 7 days) acknowledges before anything
-  // is scanned, so the response carries no counts. Poll the summary on a
-  // bounded interval and stop early once the unpriced count moves; the notice
-  // is computed from the reloaded summary afterwards, not from this poll.
-  private async pollRepriceOutcome(previousUnpriced: number): Promise<void> {
-    for (
-      let attempt = 0;
-      attempt < CostView.REPRICE_POLL_MAX_ATTEMPTS;
-      attempt++
-    ) {
-      await new Promise((resolve) =>
-        window.setTimeout(resolve, CostView.REPRICE_POLL_INTERVAL_MS)
-      );
-      try {
-        const summary = await getCostAnalyticsSummary(this.getDateParams());
-        if ((summary.unpriced_requests ?? 0) !== previousUnpriced) {
-          return;
-        }
-      } catch {
-        // A failed poll is not a failed reprice; keep watching.
-      }
-    }
-  }
-
-  // In a fixed window the unpriced count can only DECREASE via pricing, so a
-  // lower remaining count is the precise partial-success signal even when
-  // the job finished after the last poll. Live traffic can add unpriced rows
-  // during the poll window, so an equal-or-higher count reads as no change
-  // (a negative "requests priced" would be nonsense).
-  private repriceOutcomeNotice(
-    previousUnpriced: number,
-    remaining: number
-  ): string {
-    if (remaining === 0) {
-      return 'Reprice finished: every request in this window now has a cost estimate.';
-    }
-    if (remaining < previousUnpriced) {
-      return (
-        `Reprice finished: ${this.formatNumber(previousUnpriced - remaining)} ` +
-        `requests priced, ${this.formatNumber(remaining)} still unpriced. ` +
-        'Set a price override for the models named below, then reprice again.'
-      );
-    }
-    return (
-      'No change after checking for about a minute. If the models named ' +
-      'below are missing from the price catalog, repricing cannot price ' +
-      'them: set a price override (a $0 price is fine for free models), ' +
-      'then reprice again.'
-    );
+  private renderRepriceStatus() {
+    return this.repriceJobId
+      ? html`<reprice-job-status
+          .jobId=${this.repriceJobId}
+          @reprice-paused=${() => {
+            this.repricePending = false;
+          }}
+          @reprice-complete=${() => {
+            this.repricePending = false;
+            void this.load();
+          }}
+        ></reprice-job-status>`
+      : this.repriceNotice;
   }
 
   // Route from the unpriced banner into the existing price-override dialog
@@ -1325,14 +1287,14 @@ export class CostView extends AuthedElement {
   private renderUnpricedNotice() {
     const unpricedRequests = this.summary?.unpriced_requests ?? 0;
     if (!unpricedRequests) {
-      return this.repriceNotice
+      return this.repriceNotice || this.repriceJobId
         ? html`<sl-alert
-            variant="success"
+            variant=${this.repriceNotice?.startsWith('Reprice finished:') ? 'success' : 'primary'}
             open
             closable
             role="status"
             @sl-after-hide=${() => (this.repriceNotice = null)}
-            >${this.repriceNotice}</sl-alert
+            >${this.renderRepriceStatus()}</sl-alert
           >`
         : nothing;
     }
@@ -1347,8 +1309,7 @@ export class CostView extends AuthedElement {
         ${
           unpricedModels.length
             ? html`<div class="unpriced-models">
-                These models are missing from the price catalog, so their cost
-                cannot be estimated automatically:
+                These models have historical usage without a cost estimate:
                 ${unpricedModels.map(
                   (entry, index) =>
                     html`${index > 0 ? ', ' : ''}<code>${entry.model}</code>
@@ -1360,8 +1321,8 @@ export class CostView extends AuthedElement {
         ${
           unpricedModels.length && this.modelPriceOverridesEnabled
             ? html`<div>
-                Set a price override (a $0 price is fine for free models), then
-                reprice.
+                Check the prices for these models, then reprice. Set a $0
+                override only for models you know are free.
               </div>`
             : nothing
         }
@@ -1372,6 +1333,7 @@ export class CostView extends AuthedElement {
                 variant="warning"
                 outline
                 .loading=${this.repricing}
+                ?disabled=${this.repricePending}
                 @click=${() => void this.handleReprice()}
                 >Reprice now</sl-button
               >`
@@ -1388,7 +1350,7 @@ export class CostView extends AuthedElement {
               >`
             : nothing
         }
-        ${this.repriceNotice ? html`<div>${this.repriceNotice}</div>` : nothing}
+        ${this.renderRepriceStatus()}
       </sl-alert>
     `;
   }

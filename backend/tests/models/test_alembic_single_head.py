@@ -180,4 +180,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert operator_notes.down_revision == "20260910_audit_chain"
     control_connection = script.get_revision("20260912_control_connection")
     assert control_connection.down_revision == "20260910_operator_notes"
-    assert script.get_heads() == ["20260912_control_connection"]
+    repricing_job = script.get_revision("20260913_repricing_job")
+    assert repricing_job.down_revision == "20260912_control_connection"
+    assert script.get_heads() == ["20260913_repricing_job"]

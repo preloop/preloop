@@ -343,6 +343,13 @@ class PreloopSyncNatsWorker:
                     # renewing until that drain finishes, then ack/nak below.
                     async with _webhook_progress(msg):
                         stats = await func(*payload.get("args", []), **call_kwargs)
+                elif task_name == "reprice_gateway_usage_task":
+                    from preloop.api.loop_safety import run_db_off_loop
+
+                    async with _webhook_progress(msg):
+                        stats = await run_db_off_loop(
+                            lambda: func(*payload.get("args", []), **call_kwargs)
+                        )
                 elif inspect.iscoroutinefunction(func):
                     stats = await func(*payload.get("args", []), **call_kwargs)
                 else:

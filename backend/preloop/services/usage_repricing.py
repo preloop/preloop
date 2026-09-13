@@ -22,20 +22,22 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Optional, Sequence, Union
 
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_ai_model, crud_api_usage
-from preloop.models.models.ai_model import AIModel
+from preloop.models import models
 from preloop.services.model_price_catalog import lookup_model_price_now
 from preloop.services.model_pricing import (
+    CostEstimate,
     _iter_litellm_model_candidates,
     estimate_ai_model_usage_cost_detailed,
 )
 from preloop.services.pricing_overrides import resolve_pricing_override
+from preloop.services.openrouter_generation_cost import OpenRouterGenerationCostLookup
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,7 @@ class RepriceResult:
     cost_before: float = 0.0
     cost_after: float = 0.0
     dry_run: bool = False
+    provider_lookup: dict[str, int] = field(default_factory=dict)
 
 
 def _pricing_observed_at(meta_data: Any, fallback: datetime) -> datetime:
@@ -74,6 +77,24 @@ def _pricing_observed_at(meta_data: Any, fallback: datetime) -> datetime:
             # usage row's timestamp below, as for missing or naive snapshots.
             pass
     return fallback
+
+
+def _pricing_metadata(
+    meta: dict[str, Any], estimate: CostEstimate, override: Optional[dict]
+) -> dict[str, Any]:
+    """Keep historical pricing provenance consistent with the resolved cost."""
+    patch: dict[str, Any] = {
+        "pricing_snapshot": estimate.pricing_snapshot,
+        "pricing_override_id": override.get("id")
+        if override and estimate.source == "override"
+        else None,
+    }
+    budget = meta.get("budget")
+    if isinstance(budget, dict):
+        # Preserve the request-time decision and limits; only its price
+        # availability is superseded by this analytics repair.
+        patch["budget"] = {**budget, "pricing_available": estimate.cost is not None}
+    return patch
 
 
 def reprice_single_row(
@@ -121,7 +142,12 @@ def reprice_single_row(
         pricing_override=pricing_override,
         observed_at=_pricing_observed_at(meta, row.timestamp),
     )
-    if estimate.cost == row.estimated_cost and estimate.source == row.cost_source:
+    pricing_meta = _pricing_metadata(meta, estimate, pricing_override)
+    if (
+        estimate.cost == row.estimated_cost
+        and estimate.source == row.cost_source
+        and all(meta.get(key) == value for key, value in pricing_meta.items())
+    ):
         return False
 
     crud_api_usage.update_cost_fields(
@@ -134,7 +160,7 @@ def reprice_single_row(
             "previous_estimated_cost": row.estimated_cost,
             "previous_cost_source": row.cost_source,
             "repriced_by": "live_price_lookup",
-            "pricing_snapshot": estimate.pricing_snapshot,
+            **pricing_meta,
         },
     )
     if row.flow_execution_id is not None:
@@ -146,7 +172,9 @@ def reprice_single_row(
 
 
 def sync_execution_rollups(
-    db: Session, execution_ids: Sequence[Union[uuid.UUID, str]]
+    db: Session,
+    execution_ids: Sequence[Union[uuid.UUID, str]],
+    progress: Optional[Callable[[], None]] = None,
 ) -> int:
     """Refresh stored per-execution cost rollups after repricing.
 
@@ -165,6 +193,8 @@ def sync_execution_rollups(
 
     synced = 0
     for execution_id in execution_ids:
+        if progress:
+            progress()
         try:
             if sync_execution_cost_rollup(db, str(execution_id)):
                 synced += 1
@@ -186,6 +216,7 @@ def reprice_gateway_usage(
     only_unpriced: bool = True,
     dry_run: bool = False,
     batch_size: int = 500,
+    progress: Optional[Callable[[], None]] = None,
 ) -> RepriceResult:
     """Re-price gateway usage rows in a time window.
 
@@ -194,6 +225,11 @@ def reprice_gateway_usage(
     (two queries per execution). This keeps the heal path on the exact same
     code and semantics as the live rollup sync at the price of O(N)
     round-trips — acceptable for an operator-triggered backfill.
+
+    The in-request path, including dry-run, may spend up to ``max_calls``
+    provider reads (default 50) recovering unresolved OpenRouter generation
+    costs. The durable worker uses the same budget so a preview matches the
+    committed pass.
 
     Args:
         db: Database session.
@@ -208,12 +244,14 @@ def reprice_gateway_usage(
             are never rewritten in either mode.
         dry_run: Compute and report without persisting.
         batch_size: Rows fetched per query page.
+        progress: Optional worker lease check before each row and rollup.
 
     Returns:
         Aggregate counts and the before/after cost totals for examined rows.
     """
     result = RepriceResult(dry_run=dry_run)
-    model_cache: Dict[str, Optional[AIModel]] = {}
+    generation_lookup = OpenRouterGenerationCostLookup(db, account_id=str(account_id))
+    model_cache: Dict[str, Optional[models.AIModel]] = {}
     override_cache: Dict[str, Optional[dict]] = {}
     # Models already offered to the live upstream lookup, so a backfill over
     # thousands of rows performs at most one lookup per model, not per row.
@@ -229,6 +267,8 @@ def reprice_gateway_usage(
         only_unpriced=only_unpriced,
         batch_size=batch_size,
     ):
+        if progress:
+            progress()
         result.rows_examined += 1
         result.cost_before += float(row.estimated_cost or 0.0)
 
@@ -299,8 +339,24 @@ def reprice_gateway_usage(
                     "Live price lookup failed while repricing model %s", model_id
                 )
 
+        provider_meta_patch: dict[str, Any] = {}
+        if estimate.cost is None:
+            generation = generation_lookup.lookup(ai_model=ai_model, usage_row=row)
+            if generation is not None:
+                estimate = CostEstimate(cost=generation.cost, source="provider")
+                provider_meta_patch = {
+                    "usage_details": {
+                        **(usage_details or {}),
+                        **generation.usage_details,
+                    },
+                    "provider_cost_lookup": generation.provenance,
+                }
+
+        pricing_meta = _pricing_metadata(meta, estimate, pricing_override)
         unchanged = (
-            estimate.cost == row.estimated_cost and estimate.source == row.cost_source
+            estimate.cost == row.estimated_cost
+            and estimate.source == row.cost_source
+            and all(meta.get(key) == value for key, value in pricing_meta.items())
         )
         if unchanged:
             result.cost_after += float(row.estimated_cost or 0.0)
@@ -311,6 +367,8 @@ def reprice_gateway_usage(
         if dry_run:
             continue
 
+        if progress:
+            progress()
         crud_api_usage.update_cost_fields(
             db,
             api_usage_id=row.id,
@@ -320,7 +378,8 @@ def reprice_gateway_usage(
                 "repriced_at": repriced_at,
                 "previous_estimated_cost": row.estimated_cost,
                 "previous_cost_source": row.cost_source,
-                "pricing_snapshot": estimate.pricing_snapshot,
+                **pricing_meta,
+                **provider_meta_patch,
             },
             commit=False,
         )
@@ -342,8 +401,10 @@ def reprice_gateway_usage(
             crud_api_usage.list_execution_ids_with_gateway_usage(
                 db, account_id=account_id, start=start, end=end
             ),
+            progress=progress,
         )
 
+    result.provider_lookup = dict(generation_lookup.summary)
     logger.info(
         "Repriced gateway usage for account %s: examined=%s updated=%s "
         "skipped=%s cost %.6f -> %.6f (dry_run=%s)",

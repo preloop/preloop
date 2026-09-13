@@ -69,3 +69,42 @@ canonical spend bucket. User-scoped policies apply to spending attributed to
 agents owned by that user; they do not cover every directly authenticated call.
 An alias rename preserves legacy model-ID policy applicability to the current
 model bucket; it does not migrate historical spend from the former alias.
+
+### Historical repricing jobs
+
+The billing repricing endpoint runs windows up to seven days in a worker
+thread. Larger windows create an account-scoped `RepricingJob` and publish its
+ID to the durable NATS JetStream queue. Acceptance requires a publish
+acknowledgement. The response includes `job_id` and `status_url`; clients poll
+`GET /api/v1/billing/cost/reprice/{job_id}` for `queued`, `running`, `succeeded`,
+or `failed`, instead of inferring completion from aggregate cost counts.
+The status endpoint requires `manage_budgets` and returns 404 across accounts.
+
+The worker runs off the NATS event loop and renews message progress every
+minute. A database claim renews during scanning and execution rollup repair;
+after five minutes without progress, another delivery can recover the claim.
+Attempt numbers fence stale workers. A live duplicate remains unacknowledged,
+and terminal deliveries are idempotent. Three abandoned attempts terminate
+with an error. Caught failures are terminal and require a new submission.
+Some batches may already have committed when a job fails or is recovered;
+reported counters belong to the latest attempt, and `stalled` flags queued or
+running jobs whose progress is overdue. Job records currently have no automatic
+retention pruning.
+
+Repricing uses currently active account overrides retroactively, preserves
+provider, reconciled, imported, and subscription costs, and never rewrites
+budget spending. Explicitly unavailable pricing metadata is eligible even when
+a legacy row already contains zero cost. Both bulk and single-row repair
+update override provenance and pricing availability when cost and source are
+unchanged. Existing request-time budget decisions and limits are preserved.
+
+Unresolved rows backed by a trusted OpenRouter model also attempt a bounded
+read of `https://openrouter.ai/api/v1/generation` using the stored
+`upstream_request_id` and account-scoped API credentials. The pass makes at
+most 50 calls with a three-second request timeout and a 30-second cumulative
+lookup budget. It memoizes generation results, suppresses failed credentials,
+and stops requests after a rate limit. Recovered per-request costs are tagged
+`provider` with retrieval provenance; explicit zero is valid. Missing IDs,
+unavailable records, ambiguous costs, and exhausted lookup budgets remain
+unpriced. Dry runs can preview these provider reads without changing usage.
+The `provider_lookup` response counters explain recovery and unresolved work.

@@ -108,6 +108,17 @@ describe('AIModelDetailView', () => {
           });
         }
 
+        if (url.includes('/api/v1/billing/cost/reprice/')) {
+          return new Response(
+            JSON.stringify({
+              id: 'job-1',
+              status: 'succeeded',
+              rows_examined: 10,
+              rows_updated: 8,
+              rows_skipped: 2,
+            })
+          );
+        }
         if (url.includes('/api/v1/billing/cost/reprice')) {
           repriceCalls.push(init?.body ? JSON.parse(String(init.body)) : null);
           return new Response(JSON.stringify(repriceResponse), {
@@ -927,7 +938,7 @@ describe('AIModelDetailView', () => {
     ).to.not.exist;
   });
 
-  it('says a backgrounded reprice is still running rather than counting rows', async () => {
+  it('leaves legacy async completion unconfirmed', async () => {
     featureFlags = { model_price_overrides: true };
     repriceResponse = {
       submitted_async: true,
@@ -956,8 +967,34 @@ describe('AIModelDetailView', () => {
     const result = pricingCard(element)
       .querySelector('[data-testid="reprice-result"]')!
       .textContent!.replace(/\s+/g, ' ');
-    expect(result).to.contain('running in the background');
+    expect(result).to.contain('completion cannot be confirmed');
     expect(result).to.not.contain('0 of 0');
+  });
+
+  it('tracks asynchronous past-usage repricing through its job status', async () => {
+    featureFlags = { model_price_overrides: true };
+    repriceResponse = { submitted_async: true, job_id: 'job-1' };
+    const element = await mountModel();
+    await saveAPrice(element);
+    (
+      pricingCard(element).querySelector(
+        '[data-testid="apply-past-usage"]'
+      ) as HTMLElement
+    ).click();
+    await waitUntil(() =>
+      Boolean(
+        pricingCard(element)
+          .querySelector('reprice-job-status')
+          ?.shadowRoot?.textContent?.includes('succeeded')
+      )
+    );
+    const text =
+      pricingCard(element).querySelector('reprice-job-status')!.shadowRoot!
+        .textContent!;
+    expect(text).to.contain('8 of 10 requests updated, 2 skipped');
+    expect(text).to.contain('job-1');
+    expect(repriceCalls).to.have.length(1);
+    expect(repriceCalls[0].only_unpriced).to.equal(false);
   });
 
   it('refuses a negative price instead of sending it', async () => {

@@ -547,3 +547,323 @@ def test_reprice_single_row_refuses_protected_sources(db_session, test_user, sou
     db_session.refresh(row)
     assert row.estimated_cost == 0.5
     assert row.cost_source == source
+
+
+@pytest.mark.parametrize("source", ["unpriced", "override", "model_config"])
+@pytest.mark.parametrize("single", [False, True])
+def test_reprice_repairs_free_override_metadata(
+    db_session, test_user, source, single
+) -> None:
+    """A historic zero still needs provenance and pricing availability healed."""
+    from preloop.models.crud import crud_model_price_override
+
+    ai_model = _create_model(db_session, test_user)
+    override = crud_model_price_override.create_for_account(
+        db_session,
+        account_id=test_user.account_id,
+        obj_in={
+            "ai_model_id": ai_model.id,
+            "model_alias": "openai/gpt-5",
+            "input_price_per_1k": 0.0,
+            "output_price_per_1k": 0.0,
+            "is_active": True,
+        },
+    )
+    row = _log_unpriced_row(db_session, test_user, ai_model)
+    row.estimated_cost = 0.0
+    row.cost_source = source
+    row.meta_data = {
+        "pricing_override_id": None,
+        "budget": {"pricing_available": False, "allowed": True, "spent": 4.2},
+    }
+    db_session.commit()
+    start, end = _window()
+    if single:
+        assert usage_repricing.reprice_single_row(db_session, api_usage_id=row.id)
+    else:
+        result = reprice_gateway_usage(
+            db_session, account_id=test_user.account_id, start=start, end=end
+        )
+        assert result.rows_updated == 1
+    db_session.refresh(row)
+    assert row.estimated_cost == 0.0
+    assert row.cost_source == "override"
+    assert row.meta_data["pricing_override_id"] == str(override.id)
+    assert row.meta_data["budget"] == {
+        "pricing_available": True,
+        "allowed": True,
+        "spent": 4.2,
+    }
+    assert not usage_repricing.reprice_single_row(db_session, api_usage_id=row.id)
+
+
+def test_free_alias_backfill_leaves_dynamic_route_unpriced(
+    db_session, test_user, monkeypatch
+) -> None:
+    """Free aliases heal the aggregate; dynamic routing remains unresolved."""
+    from preloop.models.crud import crud_model_price_override
+
+    monkeypatch.setattr(usage_repricing, "lookup_model_price_now", lambda _: False)
+    free_rows = []
+    for index in range(5):
+        alias = f"openai-compatible/custom-free-{index}"
+        model = _create_model(db_session, test_user)
+        model.provider_name = "openai-compatible"
+        model.model_identifier = f"custom-free-{index}"
+        model.meta_data = {}
+        db_session.commit()
+        override = crud_model_price_override.create_for_account(
+            db_session,
+            account_id=test_user.account_id,
+            obj_in={
+                "ai_model_id": model.id,
+                "model_alias": alias,
+                "input_price_per_1k": 0.0,
+                "output_price_per_1k": 0.0,
+                "is_active": True,
+            },
+        )
+        for _ in range(35):
+            row = _log_unpriced_row(db_session, test_user, model)
+            row.model_alias = alias
+            row.meta_data = {"budget": {"pricing_available": False}}
+            db_session.commit()
+            free_rows.append((row, str(override.id)))
+    dynamic = _create_model(db_session, test_user)
+    dynamic.provider_name = "openai-compatible"
+    dynamic.model_identifier = "openrouter/auto-beta"
+    dynamic.meta_data = {}
+    db_session.commit()
+    dynamic_rows = [_log_unpriced_row(db_session, test_user, dynamic) for _ in range(5)]
+    for row in dynamic_rows:
+        row.model_alias = "openrouter/auto-beta"
+    db_session.commit()
+    start, end = _window()
+    summary_kwargs = dict(
+        account_id=str(test_user.account_id), start_date=start, end_date=end
+    )
+    assert (
+        crud_api_usage.get_gateway_usage_summary(db_session, **summary_kwargs)[
+            "unpriced_requests"
+        ]
+        == 180
+    )
+    preview = reprice_gateway_usage(
+        db_session,
+        account_id=test_user.account_id,
+        start=start,
+        end=end,
+        dry_run=True,
+        batch_size=20,
+    )
+    assert preview.rows_updated == 175
+    assert (
+        crud_api_usage.get_gateway_usage_summary(db_session, **summary_kwargs)[
+            "unpriced_requests"
+        ]
+        == 180
+    )
+    applied = reprice_gateway_usage(
+        db_session, account_id=test_user.account_id, start=start, end=end, batch_size=20
+    )
+    assert applied.rows_updated == 175
+    assert (
+        crud_api_usage.get_gateway_usage_summary(db_session, **summary_kwargs)[
+            "unpriced_requests"
+        ]
+        == 5
+    )
+    for row, override_id in free_rows:
+        db_session.refresh(row)
+        assert row.estimated_cost == 0.0
+        assert row.meta_data["pricing_override_id"] == override_id
+        assert row.meta_data["budget"]["pricing_available"] is True
+    for row in dynamic_rows:
+        db_session.refresh(row)
+        assert row.estimated_cost is None
+        assert row.cost_source == "unpriced"
+    assert (
+        reprice_gateway_usage(
+            db_session, account_id=test_user.account_id, start=start, end=end
+        ).rows_updated
+        == 0
+    )
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_reprice_recovers_per_request_actuals_without_free_route_override(
+    db_session, test_user, monkeypatch, dry_run
+) -> None:
+    """Generation actuals repair eligible dynamic requests without inventing $0."""
+    from types import SimpleNamespace
+
+    model = _create_model(db_session, test_user)
+    model.provider_name = "openai-compatible"
+    model.model_identifier = "openrouter/auto-beta"
+    model.api_endpoint = "https://openrouter.ai/api/v1"
+    model.meta_data = {}
+    db_session.commit()
+    rows = [_log_unpriced_row(db_session, test_user, model) for _ in range(3)]
+    for index, row in enumerate(rows):
+        row.model_alias = "openrouter/auto-beta"
+        row.upstream_request_id = f"gen-example-{index}"
+        row.meta_data = {
+            "budget": {"pricing_available": False, "allowed": True},
+            "usage_details": {"prompt_tokens": 1000},
+        }
+    db_session.commit()
+    monkeypatch.setattr(usage_repricing, "lookup_model_price_now", lambda _: False)
+    monkeypatch.setattr(
+        usage_repricing,
+        "estimate_ai_model_usage_cost_detailed",
+        lambda *a, **k: CostEstimate(cost=None, source="unpriced"),
+    )
+    actuals = {str(rows[0].id): 0.025, str(rows[1].id): 0.0}
+
+    class Lookup:
+        def __init__(self, db, *, account_id):
+            assert account_id == str(test_user.account_id)
+            self.summary = {"attempted": 0, "recovered": 0}
+
+        def lookup(self, *, ai_model, usage_row):
+            self.summary["attempted"] += 1
+            cost = actuals.get(str(usage_row.id))
+            if cost is None:
+                return None
+            self.summary["recovered"] += 1
+            generation_id = usage_row.upstream_request_id
+            return SimpleNamespace(
+                cost=cost,
+                usage_details={"cost": cost},
+                provenance={
+                    "generation_id": generation_id,
+                    "source": "openrouter_generation",
+                },
+            )
+
+    monkeypatch.setattr(usage_repricing, "OpenRouterGenerationCostLookup", Lookup)
+    start, end = _window()
+    result = reprice_gateway_usage(
+        db_session,
+        account_id=test_user.account_id,
+        start=start,
+        end=end,
+        dry_run=dry_run,
+    )
+    assert result.rows_updated == 2
+    assert result.provider_lookup == {"attempted": 3, "recovered": 2}
+    for index, row in enumerate(rows):
+        db_session.refresh(row)
+        if dry_run or index == 2:
+            assert row.estimated_cost is None
+            assert row.cost_source == "unpriced"
+        else:
+            assert row.estimated_cost == actuals[str(row.id)]
+            assert row.cost_source == "provider"
+            assert row.meta_data["budget"] == {
+                "pricing_available": True,
+                "allowed": True,
+            }
+            assert (
+                row.meta_data["provider_cost_lookup"]["generation_id"]
+                == f"gen-example-{index}"
+            )
+            assert row.meta_data["usage_details"]["prompt_tokens"] == 1000
+            assert row.meta_data["usage_details"]["cost"] == actuals[str(row.id)]
+    if not dry_run:
+        second = reprice_gateway_usage(
+            db_session,
+            account_id=test_user.account_id,
+            start=start,
+            end=end,
+            only_unpriced=False,
+        )
+        assert second.rows_updated == 0
+        assert second.rows_skipped == 2
+        assert second.provider_lookup == {"attempted": 1, "recovered": 0}
+
+
+def test_reprice_generation_lookup_uses_stored_request_id(
+    db_session, test_user, monkeypatch
+) -> None:
+    """The real recovery helper reads the persisted upstream generation ID."""
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from preloop.services import openrouter_generation_cost
+
+    model = _create_model(db_session, test_user)
+    model.provider_name = "openai-compatible"
+    model.model_identifier = "openrouter/auto-beta"
+    model.api_endpoint = "https://openrouter.ai/api/v1"
+    model.meta_data = {}
+    row = _log_unpriced_row(db_session, test_user, model)
+    row.model_alias = "openrouter/auto-beta"
+    row.upstream_request_id = "gen-synthetic-recovery"
+    db_session.commit()
+    monkeypatch.setattr(usage_repricing, "lookup_model_price_now", lambda _: False)
+    monkeypatch.setattr(
+        usage_repricing,
+        "estimate_ai_model_usage_cost_detailed",
+        lambda *a, **k: CostEstimate(cost=None, source="unpriced"),
+    )
+    secret_service = SimpleNamespace(
+        resolve_ai_model_credentials=Mock(
+            return_value=SimpleNamespace(
+                credential_type="api_key", value="synthetic-key"
+            )
+        )
+    )
+    monkeypatch.setattr(
+        openrouter_generation_cost, "get_secret_service", lambda: secret_service
+    )
+    response = Mock(status_code=200)
+    response.json.return_value = {
+        "data": {"id": row.upstream_request_id, "total_cost": 0.02, "is_byok": False}
+    }
+    get = Mock(return_value=response)
+    monkeypatch.setattr(openrouter_generation_cost.requests, "get", get)
+    start, end = _window()
+    result = reprice_gateway_usage(
+        db_session, account_id=test_user.account_id, start=start, end=end
+    )
+    assert result.rows_updated == 1
+    assert result.provider_lookup["attempted"] == 1
+    assert result.provider_lookup["recovered"] == 1
+    db_session.refresh(row)
+    assert row.estimated_cost == 0.02
+    assert row.cost_source == "provider"
+    assert (
+        row.meta_data["provider_cost_lookup"]["generation_id"]
+        == "gen-synthetic-recovery"
+    )
+    assert get.call_args.kwargs["params"] == {"id": "gen-synthetic-recovery"}
+    assert get.call_args.kwargs["allow_redirects"] is False
+    assert (
+        secret_service.resolve_ai_model_credentials.call_args.kwargs["allow_refresh"]
+        is False
+    )
+
+
+def test_reprice_does_not_scan_another_accounts_usage(db_session, test_user) -> None:
+    """The account window excludes another tenant even with a shared model ID."""
+    from types import SimpleNamespace
+    from preloop.models.crud import crud_account
+
+    model = _create_model(db_session, test_user, pricing={"input_price_per_1k": 0.01})
+    own = _log_unpriced_row(db_session, test_user, model)
+    other = crud_account.create(
+        db_session, obj_in={"organization_name": "Other Org", "is_active": True}
+    )
+    foreign = _log_unpriced_row(
+        db_session, SimpleNamespace(id=test_user.id, account_id=other.id), model
+    )
+    start, end = _window()
+    result = reprice_gateway_usage(
+        db_session, account_id=test_user.account_id, start=start, end=end
+    )
+    assert result.rows_examined == result.rows_updated == 1
+    db_session.refresh(own)
+    db_session.refresh(foreign)
+    assert own.estimated_cost is not None
+    assert foreign.estimated_cost is None
+    assert foreign.cost_source == "unpriced"

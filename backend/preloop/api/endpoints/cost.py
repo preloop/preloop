@@ -242,6 +242,7 @@ def reprice_account_gateway_usage(
         cost_before=result.cost_before,
         cost_after=result.cost_after,
         dry_run=result.dry_run,
+        provider_lookup=result.provider_lookup,
     )
 
 

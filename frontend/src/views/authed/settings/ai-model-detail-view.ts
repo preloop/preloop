@@ -14,6 +14,7 @@ import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import '../../../components/view-header.ts';
+import { formatProviderLookupSummary } from '../../../components/reprice-job-status';
 import '../../../components/time-range-select.ts';
 import '../../../components/resource-actions.ts';
 import '../../../components/budget-policy-editor.ts';
@@ -176,6 +177,12 @@ export class AIModelDetailView extends LitElement {
 
   @state()
   private repricing = false;
+
+  @state()
+  private repriceJobId: string | null = null;
+
+  @state()
+  private repricePending = false;
 
   @state()
   private repriceNotice: string | null = null;
@@ -1116,10 +1123,11 @@ export class AIModelDetailView extends LitElement {
    */
   private async applyToPastUsage(): Promise<void> {
     const since = this.repriceSince;
-    if (!since || this.repricing) {
+    if (!since || this.repricing || this.repricePending) {
       return;
     }
     this.repricing = true;
+    this.repriceJobId = null;
     this.repriceError = null;
     this.repriceNotice = null;
     try {
@@ -1129,14 +1137,23 @@ export class AIModelDetailView extends LitElement {
         only_unpriced: false,
       });
       if (result.submitted_async) {
-        this.repriceNotice =
-          'Repricing is running in the background. Costs update as it works through the window.';
+        this.repriceJobId = result.job_id ?? null;
+        this.repricePending = Boolean(this.repriceJobId);
+        if (!this.repriceJobId) {
+          this.repriceNotice =
+            'Repricing accepted in the background. This server provides no job status, so completion cannot be confirmed. Refresh the page later to see current costs.';
+        }
       } else {
+        this.repricePending = false;
         const updated = Number(result.rows_updated || 0).toLocaleString();
         const examined = Number(result.rows_examined || 0).toLocaleString();
         this.repriceNotice = `Repriced ${updated} of ${examined} rows since ${this.formatDate(
           since
         )}.`;
+        const providerNotice = formatProviderLookupSummary(
+          result.provider_lookup
+        );
+        if (providerNotice) this.repriceNotice += ` ${providerNotice}`;
       }
     } catch (error) {
       this.repriceError =
@@ -1161,9 +1178,23 @@ export class AIModelDetailView extends LitElement {
           size="small"
           data-testid="apply-past-usage"
           ?loading=${this.repricing}
+          ?disabled=${this.repricePending}
           @click=${() => void this.applyToPastUsage()}
           >Apply to past usage since ${since}</sl-button
         >
+        ${
+          this.repriceJobId
+            ? html`<reprice-job-status
+                .jobId=${this.repriceJobId}
+                @reprice-paused=${() => {
+                  this.repricePending = false;
+                }}
+                @reprice-complete=${() => {
+                  this.repricePending = false;
+                }}
+              ></reprice-job-status>`
+            : ''
+        }
         ${
           this.repriceNotice
             ? html`<div

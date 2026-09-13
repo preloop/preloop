@@ -75,6 +75,7 @@ import type {
   CostReconciliationResponse,
   ProviderBillingConnection,
   RepriceResponse,
+  RepriceJobStatus,
   ToolUsageStatsResponse,
   AIModelPriceQuote,
   AIModelPricingResponse,
@@ -988,6 +989,21 @@ export async function repriceCost(data: {
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(extractErrorMessage(errorData, 'Failed to reprice usage'));
+  }
+  return response.json();
+}
+
+export async function getRepriceJobStatus(
+  jobId: string
+): Promise<RepriceJobStatus> {
+  const response = await fetchWithAuth(
+    `/api/v1/billing/cost/reprice/${encodeURIComponent(jobId)}`
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Unable to check repricing status')
+    );
   }
   return response.json();
 }

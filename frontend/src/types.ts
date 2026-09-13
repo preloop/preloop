@@ -1331,6 +1331,9 @@ export interface CostReconciliationResponse {
 }
 
 export interface RepriceResponse {
+  provider_lookup?: Record<string, number> | null;
+  job_id?: string | null;
+  status_url?: string | null;
   submitted_async: boolean;
   // Null when submitted_async: nothing was scanned in-request, which is
   // different from "the window contained 0 rows".
@@ -2122,4 +2125,23 @@ export interface WebhookCatalogue {
   tolerance_seconds: number;
   max_attempts: number;
   retry_delays_seconds: number[];
+}
+
+export interface RepriceJobStatus {
+  provider_lookup?: Record<string, number> | null;
+  id: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  attempts?: number;
+  stalled?: boolean;
+  heartbeat_at?: string | null;
+  rows_examined: number | null;
+  rows_updated: number | null;
+  rows_skipped: number | null;
+  cost_before: number | null;
+  cost_after: number | null;
+  dry_run: boolean;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
 }

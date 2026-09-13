@@ -4,6 +4,7 @@ import sinon from 'sinon';
 import '../../components/view-header.ts';
 import './cost-view.ts';
 import { CostView } from './cost-view';
+import { RepriceJobStatusElement } from '../../components/reprice-job-status';
 import { invalidateApiCaches } from '../../api';
 
 describe('CostView', () => {
@@ -14,6 +15,7 @@ describe('CostView', () => {
   // Per-test feature flags; banner tests enable the override UI.
   let featuresPayload: Record<string, unknown>;
   // Per-test reprice POST response; set by banner tests.
+  let jobStatus: Record<string, unknown>;
   let repriceResult: Record<string, unknown>;
   // Optional per-test hooks: onReprice runs when the reprice POST arrives,
   // summaryResponder (when set) replaces the summary payload per fetch.
@@ -88,6 +90,13 @@ describe('CostView', () => {
     featuresPayload = { billing: true };
     onReprice = null;
     summaryResponder = null;
+    jobStatus = {
+      id: 'job-1',
+      status: 'succeeded',
+      rows_examined: 2,
+      rows_updated: 1,
+      rows_skipped: 1,
+    };
     repriceResult = {
       submitted_async: false,
       rows_examined: 0,
@@ -101,6 +110,9 @@ describe('CostView', () => {
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
 
+      if (url.includes('/api/v1/billing/cost/reprice/')) {
+        return new Response(JSON.stringify(jobStatus));
+      }
       if (url.includes('/api/v1/billing/cost/reprice')) {
         onReprice?.();
         return new Response(JSON.stringify(repriceResult), {
@@ -867,30 +879,9 @@ describe('CostView', () => {
       ],
     };
 
-    let originalInterval: number;
-    let originalAttempts: number;
-
     beforeEach(() => {
-      // Shrink the async poll so tests do not wait real minutes. The
-      // statics are readonly at compile time only; restore them after.
-      const viewClass = CostView as unknown as {
-        REPRICE_POLL_INTERVAL_MS: number;
-        REPRICE_POLL_MAX_ATTEMPTS: number;
-      };
-      originalInterval = viewClass.REPRICE_POLL_INTERVAL_MS;
-      originalAttempts = viewClass.REPRICE_POLL_MAX_ATTEMPTS;
-      viewClass.REPRICE_POLL_INTERVAL_MS = 1;
       featuresPayload = { billing: true, model_price_overrides: true };
       summaryPayload = { ...summary, ...unpricedSummary };
-    });
-
-    afterEach(() => {
-      const viewClass = CostView as unknown as {
-        REPRICE_POLL_INTERVAL_MS: number;
-        REPRICE_POLL_MAX_ATTEMPTS: number;
-      };
-      viewClass.REPRICE_POLL_INTERVAL_MS = originalInterval;
-      viewClass.REPRICE_POLL_MAX_ATTEMPTS = originalAttempts;
     });
 
     async function loadView(): Promise<CostView> {
@@ -921,7 +912,7 @@ describe('CostView', () => {
       expect(text).to.contain('2');
       expect(text).to.contain('6,000');
       expect(text).to.contain('openai-compatible/muse-spark');
-      expect(text).to.contain('missing from the price catalog');
+      expect(text).to.contain('historical usage without a cost estimate');
       expect(bannerButton(element, 'Reprice now')).to.exist;
     });
 
@@ -953,6 +944,7 @@ describe('CostView', () => {
         submitted_async: false,
         rows_examined: 2,
         rows_updated: 2,
+        provider_lookup: { recovered: 2 },
       };
       // The reprice "works": after the POST the window is fully priced.
       onReprice = () => {
@@ -980,8 +972,15 @@ describe('CostView', () => {
       });
       await element.updateComplete;
 
-      const state = element as unknown as { repriceNotice: string | null };
-      expect(state.repriceNotice).to.contain('2 of 2 requests priced');
+      const state = element as unknown as {
+        repriceNotice: string | null;
+        repricePending: boolean;
+      };
+      expect(state.repricePending).to.equal(false);
+      expect(state.repriceNotice).to.contain('2 of 2 requests updated');
+      expect(state.repriceNotice).to.contain(
+        'Provider cost lookup: 2 recovered'
+      );
 
       // The reloaded summary has nothing unpriced: the warning banner is
       // replaced by the success notice.
@@ -989,178 +988,130 @@ describe('CostView', () => {
       const success = element.shadowRoot?.querySelector(
         'sl-alert[variant="success"]'
       );
-      expect(success?.textContent).to.contain('2 of 2 requests priced');
+      expect(success?.textContent).to.contain('2 of 2 requests updated');
     });
 
-    it('async reprice polls the summary, then reloads and reports', async () => {
+    it('async completion uses job counts even when aggregate counts do not change', async () => {
       repriceResult = {
         ...repriceResult,
         submitted_async: true,
-        rows_examined: null,
-        rows_updated: null,
-        rows_skipped: null,
-      };
-      // The background worker finishes before the first poll: from the
-      // second summary fetch on, the window comes back fully priced.
-      let summaryFetches = 0;
-      summaryResponder = () => {
-        summaryFetches += 1;
-        return summaryFetches > 1
-          ? {
-              ...summaryPayload,
-              unpriced_requests: 0,
-              unpriced_tokens: 0,
-              unpriced_models: [],
-            }
-          : summaryPayload;
+        job_id: 'job-1',
       };
       const element = await loadView();
-
-      const reprice = bannerButton(element, 'Reprice now');
-      expect(reprice).to.exist;
-      (reprice as HTMLElement).click();
-
-      await waitUntil(() => {
-        const state = element as unknown as {
-          repriceNotice: string | null;
-          repricing: boolean;
-        };
-        return (
-          !state.repricing && state.repriceNotice?.includes('Reprice finished')
-        );
-      });
-      await element.updateComplete;
-
-      const state = element as unknown as { repriceNotice: string | null };
-      expect(state.repriceNotice).to.contain(
-        'every request in this window now has a cost estimate'
+      (bannerButton(element, 'Reprice now') as HTMLElement).click();
+      await waitUntil(() =>
+        Boolean(
+          element.shadowRoot
+            ?.querySelector('reprice-job-status')
+            ?.shadowRoot?.textContent?.includes('succeeded')
+        )
       );
-      // The summary was polled and then reloaded, not left stale.
-      expect(summaryFetches).to.be.greaterThan(1);
-      expect(banner(element)).to.not.exist;
-    });
-
-    it('async reprice with no change says so instead of claiming success', async () => {
-      const viewClass = CostView as unknown as {
-        REPRICE_POLL_MAX_ATTEMPTS: number;
-      };
-      viewClass.REPRICE_POLL_MAX_ATTEMPTS = 3;
-      repriceResult = {
-        ...repriceResult,
-        submitted_async: true,
-        rows_examined: null,
-        rows_updated: null,
-        rows_skipped: null,
-      };
-      const element = await loadView();
-
-      const reprice = bannerButton(element, 'Reprice now');
-      expect(reprice).to.exist;
-      (reprice as HTMLElement).click();
-
-      await waitUntil(() => {
-        const state = element as unknown as {
-          repriceNotice: string | null;
-          repricing: boolean;
-        };
-        return !state.repricing && state.repriceNotice?.includes('No change');
-      });
-      await element.updateComplete;
-
-      const state = element as unknown as { repriceNotice: string | null };
-      expect(state.repriceNotice).to.contain('price override');
-      // The banner stays, still naming the unpriceable model.
-      expect(banner(element)?.textContent).to.contain(
-        'openai-compatible/muse-spark'
-      );
-    });
-
-    it('async reprice never reports a negative priced count', async () => {
-      repriceResult = {
-        ...repriceResult,
-        submitted_async: true,
-        rows_examined: null,
-        rows_updated: null,
-        rows_skipped: null,
-      };
-      // Live traffic adds unpriced rows during the poll window: the count
-      // moves (2 -> 5), so the poll stops early, but nothing was priced.
-      let summaryFetches = 0;
-      summaryResponder = () => {
-        summaryFetches += 1;
-        return summaryFetches > 1
-          ? { ...summaryPayload, unpriced_requests: 5, unpriced_tokens: 9000 }
-          : summaryPayload;
-      };
-      const element = await loadView();
-
-      const reprice = bannerButton(element, 'Reprice now');
-      expect(reprice).to.exist;
-      (reprice as HTMLElement).click();
-
-      await waitUntil(() => {
-        const state = element as unknown as {
-          repriceNotice: string | null;
-          repricing: boolean;
-        };
-        return !state.repricing && state.repriceNotice?.includes('No change');
-      });
-      await element.updateComplete;
-
-      const state = element as unknown as { repriceNotice: string | null };
-      expect(state.repriceNotice).to.not.match(/-\d+ requests priced/);
-      expect(state.repriceNotice).to.contain('price override');
-      // The banner reloads to the grown count, still naming the model.
-      expect(banner(element)?.textContent).to.contain('5');
-    });
-
-    it('async reprice finishing after the last poll still reports the decrease', async () => {
-      const viewClass = CostView as unknown as {
-        REPRICE_POLL_MAX_ATTEMPTS: number;
-      };
-      viewClass.REPRICE_POLL_MAX_ATTEMPTS = 3;
-      repriceResult = {
-        ...repriceResult,
-        submitted_async: true,
-        rows_examined: null,
-        rows_updated: null,
-        rows_skipped: null,
-      };
-      // Every poll sees the stale count, so the poll times out; the worker
-      // finishes before the final reload, which shows one of the two
-      // requests got priced. The notice must come from the reloaded
-      // summary, not from the poll's early-stop signal.
-      let summaryFetches = 0;
-      summaryResponder = () => {
-        summaryFetches += 1;
-        // Initial load, previous-range fetch and 3 polls see the stale
-        // count; the final reload (fetch 6) sees the decrease.
-        return summaryFetches > 5
-          ? { ...summaryPayload, unpriced_requests: 1, unpriced_tokens: 2000 }
-          : summaryPayload;
-      };
-      const element = await loadView();
-
-      const reprice = bannerButton(element, 'Reprice now');
-      expect(reprice).to.exist;
-      (reprice as HTMLElement).click();
-
-      await waitUntil(() => {
-        const state = element as unknown as {
-          repriceNotice: string | null;
-          repricing: boolean;
-        };
-        return (
-          !state.repricing && state.repriceNotice?.includes('Reprice finished')
-        );
-      });
-      await element.updateComplete;
-
-      const state = element as unknown as { repriceNotice: string | null };
-      expect(state.repriceNotice).to.contain('1 requests priced');
-      expect(state.repriceNotice).to.contain('1 still unpriced');
-      // One row remains unpriced, so the banner stays up.
+      const text =
+        element.shadowRoot!.querySelector('reprice-job-status')!.shadowRoot!
+          .textContent!;
+      expect(text).to.contain('1 of 2 requests updated, 1 skipped');
+      expect(text).to.contain('job-1');
       expect(banner(element)).to.exist;
+    });
+
+    it('shows worker failure without advising another override', async () => {
+      repriceResult = {
+        ...repriceResult,
+        submitted_async: true,
+        job_id: 'job-1',
+      };
+      jobStatus = {
+        ...jobStatus,
+        status: 'failed',
+        error: 'Repricing interrupted.',
+      };
+      const element = await loadView();
+      (bannerButton(element, 'Reprice now') as HTMLElement).click();
+      await waitUntil(() =>
+        Boolean(
+          element.shadowRoot
+            ?.querySelector('reprice-job-status')
+            ?.shadowRoot?.textContent?.includes('failed')
+        )
+      );
+      const text =
+        element.shadowRoot!.querySelector('reprice-job-status')!.shadowRoot!
+          .textContent!;
+      expect(text).to.contain('Repricing interrupted.');
+      expect(text).not.to.contain('override');
+    });
+
+    it('clears the pending lock when observation pauses, keeping the job id', async () => {
+      const timing = RepriceJobStatusElement as unknown as {
+        POLL_INTERVAL_MS: number;
+        POLL_MAX_ATTEMPTS: number;
+      };
+      const defaults = {
+        interval: timing.POLL_INTERVAL_MS,
+        attempts: timing.POLL_MAX_ATTEMPTS,
+      };
+      timing.POLL_INTERVAL_MS = 1;
+      timing.POLL_MAX_ATTEMPTS = 2;
+      jobStatus = { id: 'job-1', status: 'running' };
+      repriceResult = {
+        ...repriceResult,
+        submitted_async: true,
+        job_id: 'job-1',
+      };
+      try {
+        const element = await loadView();
+        (bannerButton(element, 'Reprice now') as HTMLElement).click();
+        await waitUntil(() =>
+          Boolean(
+            element.shadowRoot
+              ?.querySelector('reprice-job-status')
+              ?.shadowRoot?.textContent?.includes('Automatic checks stopped')
+          )
+        );
+        await element.updateComplete;
+        const state = element as unknown as {
+          repricePending: boolean;
+          repriceJobId: string | null;
+        };
+        expect(state.repricePending).to.equal(false);
+        expect(state.repriceJobId).to.equal('job-1');
+        const button = bannerButton(
+          element,
+          'Reprice now'
+        ) as HTMLButtonElement;
+        expect(button.disabled).to.equal(false);
+        expect(
+          element.shadowRoot!.querySelector('reprice-job-status')!.shadowRoot!
+            .textContent
+        ).to.contain('job-1');
+      } finally {
+        timing.POLL_INTERVAL_MS = defaults.interval;
+        timing.POLL_MAX_ATTEMPTS = defaults.attempts;
+      }
+    });
+
+    it('legacy async acceptance never claims completion from the aggregate', async () => {
+      repriceResult = { ...repriceResult, submitted_async: true };
+      const element = await loadView();
+      const summaryCallsBefore = fetchStub
+        .getCalls()
+        .filter((call) =>
+          String(call.args[0]).includes('/api/v1/cost/summary')
+        ).length;
+      (bannerButton(element, 'Reprice now') as HTMLElement).click();
+      await waitUntil(() => Boolean((element as any).repriceNotice));
+      await element.updateComplete;
+      expect(banner(element)?.textContent).to.contain(
+        'completion cannot be confirmed'
+      );
+      expect(banner(element)?.textContent).not.to.contain('Reprice finished');
+      expect(
+        fetchStub
+          .getCalls()
+          .filter((call) =>
+            String(call.args[0]).includes('/api/v1/cost/summary')
+          ).length
+      ).to.equal(summaryCallsBefore);
     });
 
     it('override CTA does not pre-fill the coalesced unknown model', async () => {

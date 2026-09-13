@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -325,12 +325,29 @@ class RepriceResponse(BaseModel):
     """
 
     submitted_async: bool = False
+    provider_lookup: Optional[dict[str, int]] = None
+    job_id: Optional[UUID] = None
+    status_url: Optional[str] = None
     rows_examined: Optional[int] = None
     rows_updated: Optional[int] = None
     rows_skipped: Optional[int] = None
     cost_before: Optional[float] = None
     cost_after: Optional[float] = None
     dry_run: bool = False
+
+
+class RepriceJobResponse(RepriceResponse):
+    """Durable outcome; counters cover the latest worker attempt only."""
+
+    id: UUID
+    status: Literal["queued", "running", "succeeded", "failed"]
+    attempts: int
+    error: Optional[str] = None
+    stalled: bool = False
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    heartbeat_at: Optional[datetime] = None
 
 
 class LedgerBackfillBucket(BaseModel):

@@ -22403,6 +22403,24 @@ components:
           type: boolean
           title: Submitted Async
           default: false
+        provider_lookup:
+          anyOf:
+          - additionalProperties:
+              type: integer
+            type: object
+          - type: 'null'
+          title: Provider Lookup
+        job_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Job Id
+        status_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status Url
         rows_examined:
           anyOf:
           - type: integer
