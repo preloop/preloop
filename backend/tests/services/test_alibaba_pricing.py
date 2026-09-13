@@ -5,11 +5,22 @@ from unittest.mock import patch
 import pytest
 
 from preloop.models import models
+from preloop.services.alibaba_price_catalog import (
+    ingest_native_models,
+    reset_live_state_for_tests,
+)
 from preloop.services.ai_model_pricing import _catalog_entry
 from preloop.services.model_pricing import (
     CostEstimate,
     estimate_ai_model_usage_cost_detailed,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_alibaba_overlay() -> None:
+    reset_live_state_for_tests()
+    yield
+    reset_live_state_for_tests()
 
 
 def _model(model: str = "qwen3.8-max", **kwargs: str) -> models.AIModel:
@@ -44,6 +55,7 @@ def _estimate(
         ("glm-5.2", 0.0184),
         ("kimi-k2.7-code", 0.0135),
         ("kimi-k3", 0.045),
+        ("qwen3.8-flash", 0.00197),
     ],
 )
 def test_singapore_headline_list_costs(model: str, expected: float) -> None:
@@ -236,3 +248,111 @@ def test_snapshot_with_gateway_alias_prices_observed_uncached_usage() -> None:
     # Reasoning is included in the 69 output tokens, not added again.
     assert result.cost == pytest.approx(0.000558)
     assert result.source == "catalog"
+
+
+def test_seed_covers_current_singapore_chat_skus() -> None:
+    from preloop.services.alibaba_pricing import _SEED
+
+    assert "qwen3.8-flash" in _SEED
+    assert "qwen3.5-flash" in _SEED
+    assert "qwen-plus" in _SEED
+    assert len(_SEED) >= 80
+
+
+def test_live_native_overlay_prices_cache_on_usd_site() -> None:
+    ingest_native_models(
+        [
+            {
+                "model": "qwen3.8-max",
+                "prices": [
+                    {
+                        "range_name": "Default",
+                        "prices": [
+                            {
+                                "type": "input_token",
+                                "price": "2",
+                                "price_unit": "Per 1M tokens",
+                            },
+                            {
+                                "type": "output_token",
+                                "price": "6",
+                                "price_unit": "Per 1M tokens",
+                            },
+                            {
+                                "type": "input_token_cache",
+                                "price": "0.25",
+                                "price_unit": "Per 1M tokens",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+        region="singapore-international",
+    )
+    result = _estimate(
+        _model(),
+        {
+            "_preloop_cache_mode": "implicit",
+            "prompt_tokens_details": {"cached_tokens": 5000},
+        },
+    )
+    # 5k standard at $2 + 5k cached at $0.25 + 1k output at $6 per 1M.
+    assert result.source == "catalog"
+    assert result.cost == pytest.approx(0.01725)
+
+
+def test_whole_request_tier_is_selected_not_the_lowest() -> None:
+    ingest_native_models(
+        [
+            {
+                "model": "tiered-chat",
+                "prices": [
+                    {
+                        "range_name": "0<Token<=32k",
+                        "prices": [
+                            {
+                                "type": "input_token",
+                                "price": "1",
+                                "price_unit": "Per 1M tokens",
+                            },
+                            {
+                                "type": "output_token",
+                                "price": "2",
+                                "price_unit": "Per 1M tokens",
+                            },
+                        ],
+                    },
+                    {
+                        "range_name": "32k<Input<=256k",
+                        "prices": [
+                            {
+                                "type": "input_token",
+                                "price": "4",
+                                "price_unit": "Per 1M tokens",
+                            },
+                            {
+                                "type": "output_token",
+                                "price": "8",
+                                "price_unit": "Per 1M tokens",
+                            },
+                        ],
+                    },
+                ],
+            }
+        ],
+        region="singapore-international",
+    )
+    model = _model("tiered-chat")
+    low = estimate_ai_model_usage_cost_detailed(
+        model, prompt_tokens=10_000, completion_tokens=0, total_tokens=10_000
+    )
+    mid = estimate_ai_model_usage_cost_detailed(
+        model, prompt_tokens=100_000, completion_tokens=0, total_tokens=100_000
+    )
+    over = estimate_ai_model_usage_cost_detailed(
+        model, prompt_tokens=300_000, completion_tokens=0, total_tokens=300_000
+    )
+    assert low.cost == pytest.approx(0.01)
+    assert mid.cost == pytest.approx(0.4)
+    assert over.cost is None

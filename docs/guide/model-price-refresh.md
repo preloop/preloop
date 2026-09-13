@@ -5,6 +5,12 @@ model-discovery scheduler adds provider model identifiers; it does not refresh
 existing prices. The vendored catalog supplies default estimates. Missing models
 can trigger a live LiteLLM/OpenRouter lookup, but that path does not periodically
 update existing prices. Most providers' model-list endpoints do not return prices.
+Alibaba Cloud Model Studio is an exception: native `GET /api/v1/models` includes
+USD list tariffs. Preloop seeds Singapore International chat SKUs from the public
+pricing page and refreshes that overlay when Fetch Models, Fetch price, or an
+unpriced Alibaba usage row looks up the native catalog. The weekly review should
+re-check the public pricing page and, when a native catalog dump is attached as
+evidence, regenerate `services/data/alibaba_international_prices.json`.
 
 ## Reviewed prices without an application deployment
 

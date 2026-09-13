@@ -60,18 +60,21 @@ Token counts come from provider usage when available. Reasoning tokens are a
 breakdown of completion tokens and are not charged a second time. Cache-read
 and cache-creation counts retain the provider's detailed usage.
 
-Catalog dollar values are **estimates**, not invoices. Preloop uses only verified
-model, region, tier and currency combinations. It does not substitute a native
-DeepSeek, Z.ai or Moonshot price for an Alibaba-hosted model. Unknown combinations
-remain unpriced unless an operator supplies an intentional override.
+Catalog dollar values are **estimates**, not invoices. Preloop uses Singapore
+International USD list tariffs from the public pricing page as a seed covering
+current chat SKUs, then overlays live native `GET /api/v1/models` prices when
+Fetch Models, Fetch price, or an unpriced-row lookup succeeds. It does not
+substitute a native DeepSeek, Z.ai or Moonshot price for an Alibaba-hosted
+model. Beijing and other CNY sites stay unpriced in USD accounting. Time-banded
+SKUs and non-token units (image, audio) stay unpriced unless an operator supplies
+an override.
 
-The supported catalog currently covers specific Singapore International standard
-text tariffs, including `qwen3.8-max` and its exact `qwen3.8-max-0902` snapshot.
 See [Alibaba's model pricing](https://www.alibabacloud.com/help/en/model-studio/model-pricing)
-for published rates. Other regions, unverified tiers, and ambiguous cache tariffs
-(including Qwen 3.8 Max cache tariffs without confirmed currency) remain unpriced.
-Trial credits, negotiated discounts, asynchronous discounts, cache storage fees,
-and the final account bill are not inferred from token counts or a model listing.
+for published rates and [List models](https://www.alibabacloud.com/help/en/model-studio/list-models)
+for the native catalog. Cache rows from that USD native response are used as
+estimates; they are still not invoices. Trial credits, negotiated discounts,
+asynchronous discounts, cache storage fees, and the final account bill are not
+inferred from token counts or a model listing.
 Use Alibaba's billing console for actual charges and credit balances.
 Cost reconciliation shows unpriced requests and tokens; aggregate estimated
 spend totals include only known prices and can understate total spend.
