@@ -901,6 +901,7 @@ export class CostView extends AuthedElement {
             'Repricing accepted in the background. This server provides no job status, so completion cannot be confirmed. Refresh the page later to see current costs.';
         }
       } else {
+        this.repricePending = false;
         this.repriceNotice =
           `Reprice finished: ${result.rows_updated ?? 0} of ` +
           `${result.rows_examined ?? 0} requests updated. ` +
@@ -919,8 +920,10 @@ export class CostView extends AuthedElement {
     return this.repriceJobId
       ? html`<reprice-job-status
           .jobId=${this.repriceJobId}
+          @reprice-paused=${() => {
+            this.repricePending = false;
+          }}
           @reprice-complete=${() => {
-            if (!this.repricePending) return;
             this.repricePending = false;
             void this.load();
           }}

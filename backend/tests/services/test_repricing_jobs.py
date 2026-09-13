@@ -1,11 +1,12 @@
 """Durable worker outcomes, redelivery fencing, and abandoned-claim recovery."""
 
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 
 from preloop.models.crud import crud_repricing_job
-from preloop.services.usage_repricing import RepriceResult
+from preloop.services.usage_repricing import RepriceResult, sync_execution_rollups
 from preloop.sync import tasks
 
 
@@ -152,3 +153,72 @@ def test_failed_heartbeat_rolls_back_pending_edits(db_session, job):
     assert not crud_repricing_job.heartbeat(db_session, **kwargs, attempt=2)
     db_session.refresh(job)
     assert job.error is None
+
+
+def test_progress_heartbeat_uses_claimed_attempt(db_session, job, worker, monkeypatch):
+    clock = [0.0]
+    heartbeats: list[int] = []
+    monkeypatch.setattr("time.monotonic", lambda: clock[0])
+    real_heartbeat = crud_repricing_job.heartbeat
+
+    def heartbeat(db: Any, *, job_id: str, account_id: str, attempt: int) -> bool:
+        heartbeats.append(attempt)
+        return real_heartbeat(db, job_id=job_id, account_id=account_id, attempt=attempt)
+
+    monkeypatch.setattr(crud_repricing_job, "heartbeat", heartbeat)
+
+    def reprice(db: Any, **kwargs: Any) -> RepriceResult:
+        clock[0] = 60
+        kwargs["progress"]()
+        return RepriceResult(rows_examined=1, rows_updated=1)
+
+    monkeypatch.setattr(
+        "preloop.services.usage_repricing.reprice_gateway_usage", reprice
+    )
+    assert worker(**_kwargs(job))["rows_updated"] == 1
+    db_session.refresh(job)
+    assert heartbeats == [1]
+    assert job.status == "succeeded"
+    assert job.attempts == 1
+
+
+def test_false_heartbeat_fails_job_without_returning_counters(
+    db_session, job, worker, monkeypatch
+):
+    clock = [0.0]
+    monkeypatch.setattr("time.monotonic", lambda: clock[0])
+
+    def heartbeat(*args: Any, **kwargs: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(crud_repricing_job, "heartbeat", heartbeat)
+
+    def reprice(db: Any, **kwargs: Any) -> RepriceResult:
+        clock[0] = 60
+        kwargs["progress"]()
+        return RepriceResult(rows_updated=9)
+
+    monkeypatch.setattr(
+        "preloop.services.usage_repricing.reprice_gateway_usage", reprice
+    )
+    with pytest.raises(RuntimeError, match="lease was superseded"):
+        worker(**_kwargs(job))
+    db_session.refresh(job)
+    assert job.status == "failed"
+    assert job.result is None
+
+
+def test_progress_is_invoked_on_the_rollup_loop(db_session, monkeypatch):
+    ticks: list[str] = []
+
+    def noop_rollup(db: Any, execution_id: str) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        "preloop.services.execution_metrics.sync_execution_cost_rollup",
+        noop_rollup,
+    )
+    sync_execution_rollups(
+        db_session, ["exec-1", "exec-2"], progress=lambda: ticks.append("rollup")
+    )
+    assert ticks == ["rollup", "rollup"]

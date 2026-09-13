@@ -15,6 +15,7 @@ import requests
 from sqlalchemy.orm import Session
 
 from preloop.models import models
+from preloop.services.litellm_routing import OPENROUTER_HOSTS, endpoint_host
 from preloop.services.secret_service import get_secret_service
 
 GENERATION_URL = "https://openrouter.ai/api/v1/generation"
@@ -191,14 +192,27 @@ class OpenRouterGenerationCostLookup:
 
     @staticmethod
     def _is_trusted_openrouter_model(ai_model: models.AIModel) -> bool:
+        """Whether this model may use stored OpenRouter credentials for recovery.
+
+        Host trust comes from ``endpoint_host()`` so host-only values such as
+        ``openrouter.ai/api/v1`` are eligible. A scheme, when present, must be
+        https; host-only endpoints are treated as https. Lookups still use
+        ``GENERATION_URL`` and never send the bearer to the configured endpoint.
+        """
         endpoint = (ai_model.api_endpoint or "").strip()
         if not endpoint:
             return (ai_model.provider_name or "").strip().lower() == "openrouter"
+        host = endpoint_host(endpoint)
+        if not any(
+            host == known or host.endswith(f".{known}") for known in OPENROUTER_HOSTS
+        ):
+            return False
+        raw = endpoint if "://" in endpoint else f"https://{endpoint}"
         try:
-            parsed = urlsplit(endpoint)
+            parsed = urlsplit(raw)
             return (
                 parsed.scheme == "https"
-                and parsed.hostname == "openrouter.ai"
+                and (parsed.hostname or "").lower() == host
                 and parsed.port in (None, 443)
                 and parsed.username is None
                 and parsed.password is None

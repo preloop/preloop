@@ -1144,6 +1144,7 @@ export class AIModelDetailView extends LitElement {
             'Repricing accepted in the background. This server provides no job status, so completion cannot be confirmed. Refresh the page later to see current costs.';
         }
       } else {
+        this.repricePending = false;
         const updated = Number(result.rows_updated || 0).toLocaleString();
         const examined = Number(result.rows_examined || 0).toLocaleString();
         this.repriceNotice = `Repriced ${updated} of ${examined} rows since ${this.formatDate(
@@ -1185,6 +1186,9 @@ export class AIModelDetailView extends LitElement {
           this.repriceJobId
             ? html`<reprice-job-status
                 .jobId=${this.repriceJobId}
+                @reprice-paused=${() => {
+                  this.repricePending = false;
+                }}
                 @reprice-complete=${() => {
                   this.repricePending = false;
                 }}

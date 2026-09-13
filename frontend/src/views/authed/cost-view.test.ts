@@ -4,6 +4,7 @@ import sinon from 'sinon';
 import '../../components/view-header.ts';
 import './cost-view.ts';
 import { CostView } from './cost-view';
+import { RepriceJobStatusElement } from '../../components/reprice-job-status';
 import { invalidateApiCaches } from '../../api';
 
 describe('CostView', () => {
@@ -971,7 +972,11 @@ describe('CostView', () => {
       });
       await element.updateComplete;
 
-      const state = element as unknown as { repriceNotice: string | null };
+      const state = element as unknown as {
+        repriceNotice: string | null;
+        repricePending: boolean;
+      };
+      expect(state.repricePending).to.equal(false);
       expect(state.repriceNotice).to.contain('2 of 2 requests updated');
       expect(state.repriceNotice).to.contain(
         'Provider cost lookup: 2 recovered'
@@ -1034,6 +1039,55 @@ describe('CostView', () => {
           .textContent!;
       expect(text).to.contain('Repricing interrupted.');
       expect(text).not.to.contain('override');
+    });
+
+    it('clears the pending lock when observation pauses, keeping the job id', async () => {
+      const timing = RepriceJobStatusElement as unknown as {
+        POLL_INTERVAL_MS: number;
+        POLL_MAX_ATTEMPTS: number;
+      };
+      const defaults = {
+        interval: timing.POLL_INTERVAL_MS,
+        attempts: timing.POLL_MAX_ATTEMPTS,
+      };
+      timing.POLL_INTERVAL_MS = 1;
+      timing.POLL_MAX_ATTEMPTS = 2;
+      jobStatus = { id: 'job-1', status: 'running' };
+      repriceResult = {
+        ...repriceResult,
+        submitted_async: true,
+        job_id: 'job-1',
+      };
+      try {
+        const element = await loadView();
+        (bannerButton(element, 'Reprice now') as HTMLElement).click();
+        await waitUntil(() =>
+          Boolean(
+            element.shadowRoot
+              ?.querySelector('reprice-job-status')
+              ?.shadowRoot?.textContent?.includes('Automatic checks stopped')
+          )
+        );
+        await element.updateComplete;
+        const state = element as unknown as {
+          repricePending: boolean;
+          repriceJobId: string | null;
+        };
+        expect(state.repricePending).to.equal(false);
+        expect(state.repriceJobId).to.equal('job-1');
+        const button = bannerButton(
+          element,
+          'Reprice now'
+        ) as HTMLButtonElement;
+        expect(button.disabled).to.equal(false);
+        expect(
+          element.shadowRoot!.querySelector('reprice-job-status')!.shadowRoot!
+            .textContent
+        ).to.contain('job-1');
+      } finally {
+        timing.POLL_INTERVAL_MS = defaults.interval;
+        timing.POLL_MAX_ATTEMPTS = defaults.attempts;
+      }
     });
 
     it('legacy async acceptance never claims completion from the aggregate', async () => {

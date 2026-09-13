@@ -153,13 +153,16 @@ describe('reprice-job-status', () => {
   });
 
   it('stops automatic checks while queued and allows one explicit status refresh', async () => {
+    const paused: unknown[] = [];
     const element = await mount();
+    element.addEventListener('reprice-paused', (event) => paused.push(event));
     await waitUntil(() =>
       content(element).includes('Automatic checks stopped')
     );
     expect(content(element)).to.contain('Completion is unconfirmed');
     expect(content(element)).not.to.contain('succeeded');
     expect(fetchStub.callCount).to.equal(3);
+    expect(paused).to.have.length(1);
     payload = {
       ...payload,
       status: 'succeeded',

@@ -84,15 +84,23 @@ export class RepriceJobStatusElement extends LitElement {
       );
       if (generation !== this.generation || !this.isConnected) return;
     }
-    this.checking = false;
-    this.paused = !this.terminal;
+    this.endObservation();
   }
 
   private async refresh(): Promise<void> {
     this.checking = true;
     await this.check(this.generation);
+    this.endObservation();
+  }
+
+  private endObservation(): void {
     this.checking = false;
     this.paused = !this.terminal;
+    if (this.paused) {
+      this.dispatchEvent(
+        new CustomEvent('reprice-paused', { detail: this.job })
+      );
+    }
   }
 
   private get outcome(): string {

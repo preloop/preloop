@@ -196,6 +196,29 @@ def test_explicit_openrouter_default_origin_is_supported(
     assert setup.lookup.lookup(ai_model=setup.model, usage_row=setup.row) is not None
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "openrouter.ai/api/v1",
+        "https://openrouter.ai/api/v1",
+        "https://openrouter.ai:443/api/v1",
+    ],
+)
+def test_https_and_host_only_openrouter_origins_are_trusted(
+    setup: SimpleNamespace, endpoint: str
+) -> None:
+    setup.model.api_endpoint = endpoint
+    setup.model.provider_name = "openai-compatible"
+    assert setup.lookup.lookup(ai_model=setup.model, usage_row=setup.row) is not None
+    setup.fetch.assert_called_once_with(
+        recovery.GENERATION_URL,
+        params={"id": "gen-example-1"},
+        headers={"Authorization": "Bearer example-provider-key"},
+        timeout=3.0,
+        allow_redirects=False,
+    )
+
+
 @pytest.mark.parametrize("status", [301, 302, 404, 500])
 def test_unavailable_and_redirect_responses_are_not_retried(
     setup: SimpleNamespace, status: int

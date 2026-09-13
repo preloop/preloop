@@ -226,6 +226,11 @@ def reprice_gateway_usage(
     code and semantics as the live rollup sync at the price of O(N)
     round-trips — acceptable for an operator-triggered backfill.
 
+    The in-request path, including dry-run, may spend up to ``max_calls``
+    provider reads (default 50) recovering unresolved OpenRouter generation
+    costs. The durable worker uses the same budget so a preview matches the
+    committed pass.
+
     Args:
         db: Database session.
         account_id: Account whose rows are repriced.
