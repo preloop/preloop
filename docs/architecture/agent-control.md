@@ -3,13 +3,57 @@
 Agent Control is the audited operator channel to managed agents such as OpenClaw and Hermes. This chapter covers the control WebSocket, CLI/desktop enrollment, and mobile/watch voice contact.
 
 The control WebSocket runs authentication, heartbeat, command persistence and
-disconnect cleanup in short worker-thread database sessions. It detaches identity
-fields and copies command envelopes before socket or NATS waits, so an idle socket
-does not reserve a database connection. Delivery callbacks use separate sessions;
-DB phases for a connection are serialized and cancellation drains the active
-worker before releasing that serialization lock. Database capacity errors remain
-transient failures rather than invalid credentials. API readiness detects an
-unresponsive pod before the database-independent liveness restart window.
+disconnect cleanup in short worker-owned database sessions. Only frozen scalar
+identity and copied command envelopes leave a worker; no ORM object crosses the
+thread boundary. Idle sockets do not reserve database connections. Each socket's
+DB phases are serialized, and cancellation drains its active worker before
+another phase starts. Socket and NATS I/O happen after the session closes.
+
+A nullable `managed_agent.control_connection_id` UUID records the current socket
+generation independently of its durable runtime identity session. Every inbound
+message and every delivery read/mark locks the managed agent, then checks the
+current generation, active credential, active account/owner and agent lifecycle before
+runtime or command writes. Suspending or decommissioning invalidates the
+generation. Disconnect clears heartbeat, mode and the matching runtime binding
+atomically only if it still owns that generation, including across API replicas.
+Revoked sockets may clean up their own presence but cannot retire a replacement.
+Runtime-session churn does not revoke the durable agent credential. The account
+active check is a scoped read rather than a row lock, avoiding a new lock order
+with account lifecycle operations; a suspension racing that read is rejected by
+the next control unit.
+
+PostgreSQL control transactions set local lock and statement timeouts (1.5s and
+5s); pooled connections retain their normal settings afterwards. A failed inbound
+transaction closes with code 1013 so the runtime can reconnect; replaced or
+revoked connections close with code 4000 to avoid an eviction reconnect loop.
+The engine's pool checkout timeout remains separately configured. Database
+capacity errors during authentication remain operational failures.
+
+Local delivery, reconnect replay and NATS callbacks use persisted account/agent
+command envelopes, revalidating ownership before delivery and again before its
+mark. Producers snapshot delivery identity and release their post-commit read
+transaction before awaiting the guarded sender, so concurrent command requests
+and in-session question notices leave pool capacity for delivery. Release refuses
+pending caller writes instead of committing or discarding them. Replacement can occur between a completed read and socket I/O; that old
+socket cannot subsequently acknowledge or mark the new connection's work.
+Delivery remains at least once: adapters must deduplicate by stable command ID
+before irreversible effects. No database lock is held across the network to
+claim exactly-once execution. Unknown/peer command results are rejected and
+repeated final results do not duplicate activity history. The server owns result
+identity, source and role metadata even when the runtime supplies those keys.
+
+Apply migration `20260912_control_connection` before deploying this code. Old
+replicas do not enforce generation checks, so complete the application rollout
+and reconnect old control sockets before relying on the new fencing guarantee.
+Local registration serializes the database claim and registry handoff; eviction
+close attempts have a one-second deadline so an unresponsive old socket cannot
+hold unrelated handshakes indefinitely.
+
+The disposable PostgreSQL acceptance suite is
+`backend/tests/api/test_control_postgres_acceptance.py`. It uses real sockets and
+a pool of two, an independent lock-holding session, separate managers, and local
+synthetic credentials. Set `PRELOOP_DISABLE_TELEMETRY=true` and `DATABASE_URL` to a
+migrated disposable PostgreSQL database (UTC), then run that file with pytest.
 
 ## Agent Control
 *   **Purpose:** Agent Control gives autonomous agents such as OpenClaw and Hermes a single, audited channel for online presence, operator messages, status updates, interruption, and future voice-originated contact.

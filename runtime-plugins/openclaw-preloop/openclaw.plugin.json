@@ -83,6 +83,13 @@
       "session_source_id": {
         "type": "string",
         "description": "Preloop session source id issued at bootstrap."
+      },
+      "tool_approval_timeout_seconds": {
+        "type": "integer",
+        "minimum": 30,
+        "maximum": 86400,
+        "default": 86400,
+        "description": "Workflow wait budget in seconds. HTTP adds 15s headroom. Defaults to 24h to cover rule-selected workflows; shorter budgets fail closed on timeout unless fail-open is explicit."
       }
     }
   }

@@ -6,11 +6,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from ..models.agent_control_command import AgentControlCommand
+from preloop.models import models
+
 from .base import CRUDBase
+
+AgentControlCommand = models.AgentControlCommand
 
 
 class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
@@ -81,7 +84,7 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
             query = query.filter(
                 AgentControlCommand.managed_agent_id == managed_agent_id
             )
-        return query.first()
+        return query.populate_existing().first()
 
     def mark_delivered(
         self,
@@ -94,20 +97,28 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
         commit: bool = True,
     ) -> Optional[AgentControlCommand]:
         """Transition a pending command to delivered (idempotent)."""
-        record = self.get_by_command_id(
+        query = db.query(AgentControlCommand).filter(
+            AgentControlCommand.account_id == account_id,
+            AgentControlCommand.command_id == command_id,
+            AgentControlCommand.status == "pending",
+            AgentControlCommand.kind == "command",
+        )
+        if managed_agent_id is not None:
+            query = query.filter(
+                AgentControlCommand.managed_agent_id == managed_agent_id
+            )
+        query.update(
+            {"status": "delivered", "delivered_at": delivered_at},
+            synchronize_session="fetch",
+        )
+        if commit:
+            db.commit()
+        return self.get_by_command_id(
             db,
             account_id=account_id,
             command_id=command_id,
             managed_agent_id=managed_agent_id,
         )
-        if record is None:
-            return None
-        if record.status == "pending":
-            record.status = "delivered"
-            record.delivered_at = delivered_at
-            if commit:
-                db.commit()
-        return record
 
     def mark_acked(
         self,
@@ -125,23 +136,34 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
         different agent when ``managed_agent_id`` is set) so callers can
         log and continue — acks are tolerant, never errors.
         """
-        record = self.get_by_command_id(
+        query = db.query(AgentControlCommand).filter(
+            AgentControlCommand.account_id == account_id,
+            AgentControlCommand.command_id == command_id,
+            AgentControlCommand.status.in_(["pending", "delivered"]),
+            AgentControlCommand.kind == "command",
+        )
+        if managed_agent_id is not None:
+            query = query.filter(
+                AgentControlCommand.managed_agent_id == managed_agent_id
+            )
+        query.update(
+            {
+                "status": "acked",
+                "acked_at": acked_at,
+                "delivered_at": func.coalesce(
+                    AgentControlCommand.delivered_at, acked_at
+                ),
+            },
+            synchronize_session="fetch",
+        )
+        if commit:
+            db.commit()
+        return self.get_by_command_id(
             db,
             account_id=account_id,
             command_id=command_id,
             managed_agent_id=managed_agent_id,
         )
-        if record is None:
-            return None
-        if record.status in {"pending", "delivered"}:
-            record.status = "acked"
-            record.acked_at = acked_at
-            if record.delivered_at is None:
-                # An ack implies delivery even if the delivery mark was lost.
-                record.delivered_at = acked_at
-            if commit:
-                db.commit()
-        return record
 
     def mark_failed(
         self,
@@ -154,26 +176,32 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
         commit: bool = True,
     ) -> Optional[AgentControlCommand]:
         """Mark a command as failed when no delivery channel was available."""
-        record = self.get_by_command_id(
+        query = db.query(AgentControlCommand).filter(
+            AgentControlCommand.account_id == account_id,
+            AgentControlCommand.command_id == command_id,
+            AgentControlCommand.kind == "command",
+        )
+        if managed_agent_id is not None:
+            query = query.filter(
+                AgentControlCommand.managed_agent_id == managed_agent_id
+            )
+        query.filter(AgentControlCommand.status == "pending").update(
+            {"status": "failed", "last_error": error}, synchronize_session="fetch"
+        )
+        query.filter(
+            or_(
+                AgentControlCommand.last_error.is_(None),
+                AgentControlCommand.last_error != error,
+            )
+        ).update({"last_error": error}, synchronize_session="fetch")
+        if commit:
+            db.commit()
+        return self.get_by_command_id(
             db,
             account_id=account_id,
             command_id=command_id,
             managed_agent_id=managed_agent_id,
         )
-        if record is None:
-            return None
-        if record.status == "pending":
-            record.status = "failed"
-            record.last_error = error
-            if commit:
-                db.commit()
-        elif record.last_error != error:
-            # Preserve terminal status; only refresh the diagnostic when it
-            # changed so repeated failure marks stay cheap.
-            record.last_error = error
-            if commit:
-                db.commit()
-        return record
 
     def get_undelivered_for_agent(
         self,
@@ -181,6 +209,7 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
         *,
         managed_agent_id: Union[uuid.UUID, str],
         now: datetime,
+        account_id: Optional[Union[uuid.UUID, str]] = None,
         limit: int = 100,
     ) -> List[AgentControlCommand]:
         """List pending, unexpired commands for redelivery in send order.
@@ -188,9 +217,11 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
         ``limit`` caps how many envelopes are loaded per reconnect so a
         long offline period cannot flood the WebSocket or RAM.
         """
+        query = db.query(AgentControlCommand)
+        if account_id is not None:
+            query = query.filter(AgentControlCommand.account_id == account_id)
         return (
-            db.query(AgentControlCommand)
-            .filter(
+            query.filter(
                 AgentControlCommand.managed_agent_id == managed_agent_id,
                 AgentControlCommand.kind == "command",
                 AgentControlCommand.status == "pending",
@@ -241,18 +272,23 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
         db: Session,
         *,
         now: datetime,
+        account_id: Optional[Union[uuid.UUID, str]] = None,
+        managed_agent_id: Optional[Union[uuid.UUID, str]] = None,
         commit: bool = True,
     ) -> int:
         """Mark pending commands past their expires_at as expired."""
-        expired = (
-            db.query(AgentControlCommand)
-            .filter(
-                AgentControlCommand.status == "pending",
-                AgentControlCommand.expires_at.isnot(None),
-                AgentControlCommand.expires_at <= now,
+        query = db.query(AgentControlCommand)
+        if account_id is not None:
+            query = query.filter(AgentControlCommand.account_id == account_id)
+        if managed_agent_id is not None:
+            query = query.filter(
+                AgentControlCommand.managed_agent_id == managed_agent_id
             )
-            .update({"status": "expired"}, synchronize_session="fetch")
-        )
+        expired = query.filter(
+            AgentControlCommand.status == "pending",
+            AgentControlCommand.expires_at.isnot(None),
+            AgentControlCommand.expires_at <= now,
+        ).update({"status": "expired"}, synchronize_session="fetch")
         if commit:
             db.commit()
         return int(expired)

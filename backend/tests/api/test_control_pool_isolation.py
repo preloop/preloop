@@ -119,7 +119,13 @@ async def test_redelivery_releases_connection_before_socket_send(
         managed_agent_session_source_type="test",
         managed_agent_session_source_id="source",
     )
-    record = MagicMock(command_id="command", envelope={"message_id": "command"})
+    record = MagicMock(
+        command_id="command",
+        envelope={"type": "command", "message_id": "command"},
+        kind="command",
+        status="pending",
+        expires_at=None,
+    )
 
     def load(db: Session, **kwargs: Any) -> list[Any]:
         db.connection()
@@ -132,13 +138,21 @@ async def test_redelivery_releases_connection_before_socket_send(
     monkeypatch.setattr(
         agent_control.crud_agent_control_command, "get_undelivered_for_agent", load
     )
+    monkeypatch.setattr(
+        agent_control.control_connection, "authorize", MagicMock(return_value=True)
+    )
+    monkeypatch.setattr(
+        agent_control.crud_agent_control_command,
+        "get_by_command_id",
+        lambda db, **kwargs: load(db)[0],
+    )
     marked = MagicMock()
     monkeypatch.setattr(
-        agent_control.crud_agent_control_command, "mark_delivered_many", marked
+        agent_control.crud_agent_control_command, "mark_delivered", marked
     )
 
     async def send(envelope: dict[str, Any]) -> None:
-        assert envelope == {"message_id": "command"}
+        assert envelope == {"type": "command", "message_id": "command"}
         assert engine.pool.checkedout() == 0
 
     with Session(engine) as dependency:
@@ -187,3 +201,41 @@ async def test_cancelled_control_phase_drains_worker_before_next_phase() -> None
     assert sessions[0] is not sessions[1]
     assert engine.pool.checkedout() == 0
     engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_stalled_eviction_close_cannot_pin_global_registration(
+    monkeypatch: Any,
+) -> None:
+    """A dead socket must not prevent unrelated agents from registering."""
+    from preloop.api.endpoints import agent_control as control
+
+    monkeypatch.setattr(control, "EVICTION_CLOSE_TIMEOUT_SECONDS", 0.02)
+    manager = control.AgentControlConnectionManager()
+    close_started = asyncio.Event()
+
+    async def stalled_close(**kwargs: Any) -> None:
+        close_started.set()
+        await asyncio.Event().wait()
+
+    old_socket = AsyncMock()
+    old_socket.close.side_effect = stalled_close
+    await manager.connect(managed_agent_id="synthetic-agent", websocket=old_socket)
+
+    async def register(agent_id: str) -> str:
+        async with manager.registration_lock:
+            return await manager.connect(
+                managed_agent_id=agent_id, websocket=AsyncMock()
+            )
+
+    replacement = asyncio.create_task(register("synthetic-agent"))
+    await asyncio.wait_for(close_started.wait(), 1)
+    unrelated = asyncio.create_task(register("unrelated-agent"))
+    try:
+        await asyncio.wait_for(asyncio.gather(replacement, unrelated), 0.5)
+        assert manager.snapshot("unrelated-agent")["online"]
+        assert manager.snapshot("synthetic-agent")["online"]
+    finally:
+        for task in (replacement, unrelated):
+            task.cancel()
+        await asyncio.gather(replacement, unrelated, return_exceptions=True)
