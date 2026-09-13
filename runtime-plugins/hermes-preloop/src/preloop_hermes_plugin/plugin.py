@@ -49,12 +49,13 @@ _T = TypeVar("_T")
 # The handler below accepts both calling conventions defensively.
 HOOK_EVENT_PRE_TOOL_CALL = "pre_tool_call"
 PERMISSION_CHECK_PATH = "/api/v1/agents/permission-check"
-# Backend blocks up to ~300s waiting for a mobile/watch decision; give it slack.
-PERMISSION_CHECK_TIMEOUT_SECONDS = 310.0
+# Cover the supported workflow range, including unknown rule-selected workflows.
+MAX_APPROVAL_WAIT_SECONDS = 86_400
+PERMISSION_HTTP_HEADROOM_SECONDS = 15.0
 # Outer deadline for the sync bridge. Strictly greater than the HTTP timeout so
 # the aiohttp timeout fires first and produces a precise error message; this is
 # only a backstop against the coroutine wedging somewhere other than the socket.
-BRIDGE_TIMEOUT_SECONDS = PERMISSION_CHECK_TIMEOUT_SECONDS + 15.0
+BRIDGE_HEADROOM_SECONDS = 15.0
 
 
 class _BridgeLoop:
@@ -145,7 +146,7 @@ class HermesPreloopPlugin:
         self.client: AgentControlClient | None = None
         self._control_settings: tuple[AgentControlConfig, dict[str, Any]] | None = None
         # Outer deadline for the sync bridge; overridable in tests.
-        self._bridge_timeout_seconds = BRIDGE_TIMEOUT_SECONDS
+        self._bridge_timeout_seconds: float | None = None
 
     def load_config(self) -> AgentControlConfig:
         """Load the `preloop.control` block from Hermes configuration."""
@@ -241,9 +242,8 @@ class HermesPreloopPlugin:
         dedicated event loop thread, so the decision is available as a plain
         dict by the time Hermes inspects the return value.
 
-        Every failure mode -- timeout, transport error, malformed response, or
-        an unexpected exception anywhere beneath this call -- resolves to a
-        block unless the operator explicitly opted into ``fail_open``. Hermes
+        Only transport/timeouts and HTTP 5xx may use explicit ``fail_open``.
+        Configuration, authentication and protocol errors always block. Hermes
         swallows hook exceptions and treats them as "allow", so this method
         must never propagate one.
 
@@ -255,9 +255,19 @@ class HermesPreloopPlugin:
             A block envelope to veto the tool call, or ``None`` to allow it.
         """
         try:
+            _, approval = self._load_control_settings()
+            _validate_approval_settings(approval)
+            if not approval.get("enabled", True):
+                return None
+            # Resolve before constructing the coroutine to avoid leaking it if
+            # config validation fails.
+            timeout = self._approval_bridge_timeout_seconds()
+        except Exception as exc:
+            return _block(f"Preloop approval configuration invalid: {exc}")
+        try:
             return _bridge.run(
                 self.pre_tool_call(payload, **kwargs),
-                timeout=self._bridge_timeout_seconds,
+                timeout=timeout,
             )
         except Exception as exc:
             logger.warning(
@@ -265,9 +275,20 @@ class HermesPreloopPlugin:
                 kwargs.get("tool_name") or payload,
                 exc,
             )
-            if self._fail_open_safe():
+            if _is_availability_failure(exc) and self._fail_open_safe():
                 return None
             return _block(f"Preloop approval unavailable: {exc}")
+
+    def _permission_timeout_seconds(self) -> float:
+        """Return the configured workflow budget plus HTTP completion headroom."""
+        _, approval = self._load_control_settings()
+        return _resolve_permission_timeout(approval)
+
+    def _approval_bridge_timeout_seconds(self) -> float:
+        """Keep the host bridge alive beyond the underlying HTTP request."""
+        if self._bridge_timeout_seconds is not None:
+            return self._bridge_timeout_seconds
+        return self._permission_timeout_seconds() + BRIDGE_HEADROOM_SECONDS
 
     def _fail_open_safe(self) -> bool:
         """Resolve ``fail_open`` without ever raising.
@@ -360,11 +381,23 @@ class HermesPreloopPlugin:
         client_decision: str | None = "ask",
     ) -> dict[str, Any] | None:
         """Call the Preloop permission-check endpoint and map the decision."""
-        config, approval = self._load_control_settings()
-        if not approval.get("enabled", True):
-            return None
-        fail_open = _resolve_fail_open(approval)
-        url = _permission_check_url(config.control_ws_url)
+        try:
+            config, approval = self._load_control_settings()
+            _validate_approval_settings(approval)
+            if not approval.get("enabled", True):
+                return None
+            fail_open = _resolve_fail_open(approval)
+            self._permission_timeout_seconds()
+            url = _permission_check_url(config.control_ws_url)
+            if (
+                not config.bearer_token
+                or "\n" in config.bearer_token
+                or "\r" in config.bearer_token
+            ):
+                raise ValueError("A valid runtime bearer credential is required")
+        except (ValueError, TypeError, OSError, yaml.YAMLError) as exc:
+            return _block(f"Preloop approval configuration invalid: {exc}")
+
         body: dict[str, Any] = {
             "source": "hermes",
             "tool_name": tool_name,
@@ -380,12 +413,13 @@ class HermesPreloopPlugin:
             "Content-Type": "application/json",
         }
         try:
+            self._permission_timeout_seconds()
             data = await self._request_decision(url, body, headers)
         except Exception as exc:  # network/timeout/HTTP error
             logger.warning(
                 "Preloop permission check failed for tool %s: %s", tool_name, exc
             )
-            if fail_open:
+            if fail_open and _is_availability_failure(exc):
                 return None
             return _block(f"Preloop approval unavailable: {exc}")
 
@@ -395,11 +429,16 @@ class HermesPreloopPlugin:
                 "Preloop permission check returned a non-object body for tool %s",
                 tool_name,
             )
-            if fail_open:
-                return None
             return _block("Preloop approval unavailable: malformed response")
 
-        decision = str(data.get("decision") or "").strip().lower()
+        decision = data.get("decision")
+        if (
+            decision not in ("allow", "deny")
+            or ("reason" in data and not isinstance(data["reason"], str))
+            or ("timed_out" in data and type(data["timed_out"]) is not bool)
+            or (data.get("timed_out") is True and decision != "deny")
+        ):
+            return _block("Preloop approval unavailable: malformed decision")
         if decision == "deny":
             reason = str(data.get("reason") or "Denied by Preloop approval")
             return _block(reason)
@@ -409,7 +448,7 @@ class HermesPreloopPlugin:
         self, url: str, body: dict[str, Any], headers: dict[str, str]
     ) -> dict[str, Any]:
         """POST the permission-check request and return the decoded response."""
-        timeout = aiohttp.ClientTimeout(total=PERMISSION_CHECK_TIMEOUT_SECONDS)
+        timeout = aiohttp.ClientTimeout(total=self._permission_timeout_seconds())
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 url, json=body, headers=headers, timeout=timeout
@@ -423,7 +462,10 @@ class HermesPreloopPlugin:
             block = self._read_control_block()
             config = AgentControlConfig.from_control_block(block)
             raw_approval = block.get("tool_approval")
+            if "tool_approval" in block and not isinstance(raw_approval, dict):
+                raise ValueError("tool_approval must be an object")
             approval = raw_approval if isinstance(raw_approval, dict) else {}
+            _validate_approval_settings(approval)
             self._control_settings = (config, approval)
         return self._control_settings
 
@@ -450,6 +492,12 @@ class HermesPreloopPlugin:
             raise ValueError("preloop.control.control_ws_url is required")
         if not config.bearer_token:
             raise ValueError("preloop.control.bearer_token is required")
+        approval = block.get("tool_approval")
+        if "tool_approval" in block and not isinstance(approval, dict):
+            raise ValueError("tool_approval must be an object")
+        approval = approval if isinstance(approval, dict) else {}
+        _validate_approval_settings(approval)
+        _resolve_permission_timeout(approval)
 
     def login(self, base_url: str) -> None:
         """Bootstrap Preloop auth and write Hermes Agent Control config."""
@@ -634,6 +682,8 @@ def _websocket_url(base_url: str) -> str:
 def _permission_check_url(control_ws_url: str) -> str:
     """Derive the permission-check HTTP URL from the control WebSocket URL."""
     parsed = parse.urlparse(control_ws_url)
+    if parsed.scheme not in {"ws", "wss", "http", "https"} or not parsed.netloc:
+        raise ValueError("Control endpoint must be an absolute HTTP(S) or WS(S) URL")
     scheme = "https" if parsed.scheme in {"wss", "https"} else "http"
     return f"{scheme}://{parsed.netloc}{PERMISSION_CHECK_PATH}"
 
@@ -654,12 +704,37 @@ def _block(reason: str) -> dict[str, Any]:
     }
 
 
+def _validate_approval_settings(approval: dict[str, Any]) -> None:
+    """Reject ambiguous booleans instead of treating strings as consent."""
+    for key in ("enabled", "fail_open"):
+        if key in approval and type(approval[key]) is not bool:
+            raise ValueError(f"tool_approval.{key} must be a boolean")
+
+
+def _is_availability_failure(exc: Exception) -> bool:
+    """Fail-open covers transport/timeouts and server availability only."""
+    if isinstance(exc, aiohttp.ClientResponseError):
+        return 500 <= exc.status < 600
+    return isinstance(exc, (aiohttp.ClientConnectionError, TimeoutError, OSError))
+
+
+def _resolve_permission_timeout(approval: dict[str, Any]) -> float:
+    """Validate the workflow wait budget and add HTTP completion headroom."""
+    value = approval.get("timeout_seconds", MAX_APPROVAL_WAIT_SECONDS)
+    if type(value) is not int or not 30 <= value <= MAX_APPROVAL_WAIT_SECONDS:
+        raise ValueError(
+            "tool_approval.timeout_seconds must be an integer from 30 to 86400"
+        )
+    return value + PERMISSION_HTTP_HEADROOM_SECONDS
+
+
 def _resolve_fail_open(approval: dict[str, Any]) -> bool:
     """Decide fail-open behavior from env override or the config flag."""
+    _validate_approval_settings(approval)
     env = os.getenv("PRELOOP_TOOL_APPROVAL_FAIL_OPEN")
     if env is not None:
         return env.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(approval.get("fail_open", False))
+    return approval.get("fail_open", False) is True
 
 
 def _coerce_optional_str(value: Any) -> str | None:

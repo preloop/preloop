@@ -3,9 +3,12 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -30,10 +33,16 @@ const (
 	permissionSourceOpenCode = "opencode"
 )
 
-// defaultApprovalHookTimeoutSeconds is used when onboarding could not resolve
-// the account's default approval-workflow timeout. It must stay aligned with
-// the nginx permission-check proxy_read_timeout.
+// defaultApprovalHookTimeoutSeconds is the legacy OpenCode onboarding fallback.
+// Command hooks use the maximum supported workflow budget below.
 const defaultApprovalHookTimeoutSeconds = 1800
+
+// A native rule can select a workflow that differs from the account default.
+// Keep the client alive for the supported maximum; the server owns expiry.
+const maxApprovalWorkflowTimeoutSeconds = 86400
+
+// The host must give the HTTP client time to receive and render its result.
+const approvalHookProcessHeadroomSeconds = 30
 
 // permissionCheckHTTPHeadroom is added on top of the workflow timeout so the
 // server-side deny-on-expiry fires before the HTTP client gives up.
@@ -47,36 +56,32 @@ const permissionCheckPath = "/api/v1/agents/permission-check"
 // permissionCheckRequest is the request body for permissionCheckPath. Only
 // tool_name is required by the backend; everything else is optional context.
 type permissionCheckRequest struct {
-	Source         string                 `json:"source"`
-	ToolName       string                 `json:"tool_name"`
-	ToolInput      map[string]interface{} `json:"tool_input,omitempty"`
-	SessionID      string                 `json:"session_id,omitempty"`
-	Cwd            string                 `json:"cwd,omitempty"`
-	AgentReasoning string                 `json:"agent_reasoning,omitempty"`
-	ClientDecision string                 `json:"client_decision,omitempty"`
+	Source          string                 `json:"source"`
+	ToolName        string                 `json:"tool_name"`
+	ToolInput       map[string]interface{} `json:"tool_input,omitempty"`
+	SessionID       string                 `json:"session_id,omitempty"`
+	Cwd             string                 `json:"cwd,omitempty"`
+	AgentReasoning  string                 `json:"agent_reasoning,omitempty"`
+	ClientDecision  string                 `json:"client_decision,omitempty"`
+	EvaluationPhase string                 `json:"evaluation_phase,omitempty"`
 }
 
 // permissionCheckResponse is the (blocking) response from permissionCheckPath.
 type permissionCheckResponse struct {
-	Decision  string `json:"decision"`
-	Reason    string `json:"reason"`
-	RequestID string `json:"request_id"`
-	// TimedOut is true when the deny is only the expiry of an unanswered
-	// approval, not a human's judgement. Adapters that support a native
-	// "ask" verdict surface the local prompt instead of hard-denying.
+	Decision     string  `json:"decision"`
+	Reason       string  `json:"reason"`
+	RequestID    string  `json:"request_id"`
+	OperatorNote *string `json:"operator_note,omitempty"`
+	// TimedOut distinguishes unanswered approval expiry from explicit denial.
+	// Both remain deny: a local prompt cannot replace required central approval.
 	TimedOut bool `json:"timed_out,omitempty"`
 }
 
 // hookDecision is the normalized outcome the adapter maps into each agent's
 // native hook response format.
 //
-// Behavior "ask" defers to the agent's own local permission prompt: the human
-// gate is preserved, just served locally instead of through Preloop. It is
-// used when Preloop cannot decide (approval timed out unanswered, Preloop
-// unreachable, credential missing) — a local human prompt is strictly safer
-// than fail-open and strictly less disruptive than hard-denying work the
-// operator is sitting right next to. An explicit human/policy deny from
-// Preloop is NEVER downgraded to ask.
+// Central enforcement returns allow or deny. The renderer also understands
+// native "ask" envelopes for callers that explicitly need a local prompt.
 type hookDecision struct {
 	Behavior string // "allow", "deny", or "ask"
 	Reason   string
@@ -123,20 +128,6 @@ func (cred permissionHookCredential) safeReadAutoAllowEnabled(defaultOn bool) bo
 	return defaultOn
 }
 
-// sourceSupportsAskFallback reports whether the agent's hook response schema
-// has a native "ask" verdict that re-surfaces the agent's own local prompt.
-// Claude Code's PreToolUse permissionDecision and Cursor's permission field
-// both accept "ask"; Codex's PermissionRequest decision only accepts
-// allow/deny, so Codex keeps the deny/fail-open defaults.
-func sourceSupportsAskFallback(source string) bool {
-	switch source {
-	case permissionSourceClaudeCode, permissionSourceCursor:
-		return true
-	default:
-		return false
-	}
-}
-
 var agentsPermissionHookCmd = &cobra.Command{
 	Use:    "permission-hook",
 	Short:  "Bridge a native agent tool-permission prompt to Preloop approvals",
@@ -157,10 +148,11 @@ func init() {
 		"",
 		"agent source: claude_code, codex_cli, or cursor",
 	)
+	agentsPermissionHookCmd.Flags().String("hook-event", "", "Codex event: PreToolUse or PermissionRequest (default PermissionRequest)")
 	agentsPermissionHookCmd.Flags().Bool(
 		"fail-open",
 		false,
-		"on network/hook hard-failure, allow the call instead of denying it (default deny)",
+		"allow only transport/timeouts or HTTP 5xx failures; never authentication, invalid responses, or returned denies",
 	)
 }
 
@@ -171,16 +163,41 @@ func runAgentsPermissionHook(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--source must be one of claude_code, codex_cli, cursor")
 	}
 
-	raw, err := io.ReadAll(cmd.InOrStdin())
-	if err != nil {
-		// We could not even read the event: emit the safe default so the agent
-		// still receives a parseable decision.
-		decision := failureDecision(source, failOpen, "failed to read hook event from stdin")
+	hookEvent := mustFlagString(cmd, "hook-event")
+	if hookEvent != "" && (source != permissionSourceCodexCLI || (hookEvent != "PreToolUse" && hookEvent != "PermissionRequest")) {
+		return fmt.Errorf("--hook-event is only supported for Codex PreToolUse or PermissionRequest")
+	}
+	writeDecision := func(decision hookDecision) error {
+		if source == permissionSourceCodexCLI && hookEvent == "PreToolUse" {
+			return writeCodexPreToolUseDecision(cmd.OutOrStdout(), decision)
+		}
 		return writeHookDecision(cmd.OutOrStdout(), source, decision)
 	}
-
-	decision := resolvePermissionDecision(source, raw, failOpen)
-	return writeHookDecision(cmd.OutOrStdout(), source, decision)
+	raw, err := io.ReadAll(cmd.InOrStdin())
+	if err != nil {
+		return writeDecision(failureDecision(source, false, "failed to read hook event from stdin"))
+	}
+	if source == permissionSourceCodexCLI {
+		var event map[string]interface{}
+		if err := json.Unmarshal(raw, &event); err != nil {
+			return writeDecision(failureDecision(source, false, "invalid hook event JSON"))
+		}
+		if event == nil {
+			return writeDecision(failureDecision(source, false, "hook event must be an object"))
+		}
+		actual := firstStringField(event, "hook_event_name")
+		expected := firstNonEmptyString(hookEvent, "PermissionRequest")
+		if actual != "" && actual != expected {
+			return writeDecision(failureDecision(source, false, "hook event does not match installed handler"))
+		}
+		// The installed handler fixes the phase even if an event omits its name.
+		event["hook_event_name"] = expected
+		raw, err = json.Marshal(event)
+		if err != nil {
+			return writeDecision(failureDecision(source, false, "invalid hook event"))
+		}
+	}
+	return writeDecision(resolvePermissionDecision(source, raw, failOpen))
 }
 
 func mustFlagString(cmd *cobra.Command, name string) string {
@@ -229,8 +246,7 @@ func envTruthy(value string) bool {
 // resolvePermissionDecision maps the stdin event to a permission-check request,
 // calls the endpoint, and returns the normalized decision. On any hard failure
 // it returns the configured safe default (deny, or allow when --fail-open),
-// except that a call the client's own config would auto-allow/deny is honored
-// locally even if Preloop is unreachable.
+// except that local deny remains terminal without a network request.
 func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDecision {
 	// Cursor loads ~/.claude/settings.json PreToolUse hooks as third-party
 	// hooks (Settings → Rules → Include third-party configs). A Claude Code
@@ -255,10 +271,10 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 
 	req, err := buildPermissionRequest(source, raw, permissionHookCredential{})
 	if err != nil {
-		return failureDecision(source, failOpen, err.Error())
+		return failureDecision(source, false, err.Error())
 	}
 	if strings.TrimSpace(req.ToolName) == "" {
-		return failureDecision(source, failOpen, "hook event did not identify a tool")
+		return failureDecision(source, false, "hook event did not identify a tool")
 	}
 
 	cred, err := resolvePermissionHookCredential(source)
@@ -266,7 +282,7 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 		// Re-evaluate with empty cred for Cursor (still honors sandbox/allowlist
 		// from local policy files) before falling back.
 		req, _ = buildPermissionRequest(source, raw, permissionHookCredential{})
-		return clientFallbackDecision(req, source, failOpen, fmt.Sprintf(
+		return clientFallbackDecision(req, source, false, fmt.Sprintf(
 			"no Preloop credential found for %s (expected under ~/.preloop/agents/). %s",
 			permissionSourceDisplayName(source),
 			permissionHookRemediation(source),
@@ -277,12 +293,13 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 	// prefer onboarded policy paths when present.
 	req, err = buildPermissionRequest(source, raw, cred)
 	if err != nil {
-		return failureDecision(source, failOpen, err.Error())
+		return failureDecision(source, false, err.Error())
 	}
 
-	// Honor the agent's own policy locally — no round-trip for allow/deny.
+	// A local deny is terminal. Local allow is context for central native rules,
+	// which may deny or require approval even when the host would allow.
 	switch strings.ToLower(strings.TrimSpace(req.ClientDecision)) {
-	case "allow", "deny":
+	case "deny":
 		return clientFallbackDecision(req, source, failOpen, "")
 	}
 
@@ -293,7 +310,8 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 
 	resp, err := callPermissionCheck(baseURL, cred.Token, req, permissionCheckTimeoutFor(cred))
 	if err != nil {
-		return clientFallbackDecision(req, source, failOpen, fmt.Sprintf(
+		var unavailable *permissionCheckUnavailableError
+		return clientFallbackDecision(req, source, failOpen && errors.As(err, &unavailable), fmt.Sprintf(
 			"could not reach Preloop at %s: %v. %s",
 			strings.TrimRight(baseURL, "/")+permissionCheckPath,
 			err,
@@ -306,20 +324,8 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 		behavior = "allow"
 	}
 	reason := strings.TrimSpace(resp.Reason)
-	// An unanswered (timed-out/expired) approval is not a human judgement.
-	// Where the agent's hook schema supports it, hand the prompt back to the
-	// agent's own local UI so the operator sitting at the terminal still gets
-	// asked instead of the call being hard-denied. Explicit human/policy
-	// denies are never downgraded.
-	if behavior == "deny" && resp.TimedOut && sourceSupportsAskFallback(source) {
-		return hookDecision{
-			Behavior: "ask",
-			Reason: firstNonEmptyString(
-				reason,
-				"Preloop approval request went unanswered; asking locally.",
-			),
-		}
-	}
+	// Returned denials, including approval expiry, are never downgraded to
+	// local ask or widened by --fail-open.
 	if reason == "" {
 		if behavior == "allow" {
 			reason = "Approved via Preloop."
@@ -424,22 +430,18 @@ func cursorToolHasDedicatedBeforeHook(event map[string]interface{}, toolName str
 // permission-check call: workflow timeout + headroom.
 func permissionCheckTimeoutFor(cred permissionHookCredential) time.Duration {
 	seconds := cred.TimeoutSeconds
-	if seconds <= 0 {
-		seconds = defaultApprovalHookTimeoutSeconds
+	if seconds <= 0 || seconds > maxApprovalWorkflowTimeoutSeconds {
+		seconds = maxApprovalWorkflowTimeoutSeconds
 	}
 	return time.Duration(seconds)*time.Second + permissionCheckHTTPHeadroom
 }
 
-// clientFallbackDecision honors the client's own auto-allow/auto-deny even when
-// Preloop cannot be reached, so onboarding the approval hook never breaks calls
-// the agent's config would have permitted (or refused) on its own. Only
-// would-ask calls fall through to the safe default.
+// clientFallbackDecision preserves local deny on any failure; otherwise the
+// default is closed unless the operator explicitly enabled --fail-open.
 func clientFallbackDecision(
 	req permissionCheckRequest, source string, failOpen bool, reason string,
 ) hookDecision {
 	switch strings.ToLower(strings.TrimSpace(req.ClientDecision)) {
-	case "allow":
-		return hookDecision{Behavior: "allow", Reason: "Allowed by the agent's own configuration."}
 	case "deny":
 		return hookDecision{Behavior: "deny", Reason: "Denied by the agent's own configuration."}
 	default:
@@ -447,13 +449,9 @@ func clientFallbackDecision(
 	}
 }
 
-// failureDecision is the verdict when Preloop cannot decide (unreachable,
-// missing credential, malformed event). Preference order:
-//
-//  1. --fail-open           -> allow (explicit operator opt-in)
-//  2. schema supports "ask" -> hand back to the agent's local prompt: the
-//     human gate is preserved, served locally instead of through Preloop
-//  3. otherwise             -> deny (fail closed; Codex has no ask verdict)
+// failureDecision fails closed when Preloop cannot decide. --fail-open is an
+// explicit availability-failure opt-out, never an override of a returned deny.
+// Callers pass true only after classifying an eligible transport/HTTP 5xx error.
 func failureDecision(source string, failOpen bool, reason string) hookDecision {
 	if failOpen {
 		return hookDecision{
@@ -461,12 +459,7 @@ func failureDecision(source string, failOpen bool, reason string) hookDecision {
 			Reason:   "Preloop approval hook fail-open enabled: " + reason,
 		}
 	}
-	if sourceSupportsAskFallback(source) {
-		return hookDecision{
-			Behavior: "ask",
-			Reason:   "Preloop unavailable; asking locally: " + reason,
-		}
-	}
+
 	return hookDecision{
 		Behavior: "deny",
 		Reason:   "Preloop approval hook denied by default: " + reason,
@@ -535,8 +528,12 @@ func buildPermissionRequest(
 	case permissionSourceCodexCLI:
 		req.ToolName = firstStringField(event, "tool_name")
 		req.ToolInput = coerceToolInput(event["tool_input"])
-		// Codex's PermissionRequest only fires for would-prompt calls, so we
-		// treat everything as "ask" (omit client_decision).
+		// PreToolUse is a central rules gate before Codex makes its own
+		// permission decision. Never claim client allow from its invocation.
+		// PermissionRequest retains automatic remote escalation separately.
+		if firstStringField(event, "hook_event_name") == "PreToolUse" {
+			req.EvaluationPhase = "pre_tool_use"
+		}
 	case permissionSourceCursor:
 		// beforeMCPExecution carries tool_name + tool_input; beforeShellExecution
 		// carries a bare shell command with no tool name.
@@ -665,6 +662,25 @@ func firstStringField(event map[string]interface{}, keys ...string) string {
 	return ""
 }
 
+// permissionCheckUnavailableError is the only failure eligible for fail-open.
+// Authentication, validation, protocol and malformed response errors stay closed.
+type permissionCheckUnavailableError struct{ err error }
+
+func (e *permissionCheckUnavailableError) Error() string { return e.err.Error() }
+func (e *permissionCheckUnavailableError) Unwrap() error { return e.err }
+func permissionTransportError(err error) error {
+	original := err
+	var requestError *url.Error
+	if errors.As(err, &requestError) {
+		err = requestError.Err
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return &permissionCheckUnavailableError{err: original}
+	}
+	return original
+}
+
 // callPermissionCheck POSTs the request to the permission-check endpoint with a
 // long timeout (the endpoint blocks for human approval). A dedicated client is
 // used because the shared api.Client enforces a short 30s timeout.
@@ -693,26 +709,70 @@ func callPermissionCheck(
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return permissionCheckResponse{}, fmt.Errorf("request failed: %w", err)
+		return permissionCheckResponse{}, fmt.Errorf("request failed: %w", permissionTransportError(err))
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
+	// A returned HTTP denial is authoritative even when its body is broken.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		statusErr := fmt.Errorf("API error (status %d)", resp.StatusCode)
+		if resp.StatusCode >= 500 && resp.StatusCode < 600 {
+			return permissionCheckResponse{}, &permissionCheckUnavailableError{err: statusErr}
+		}
+		return permissionCheckResponse{}, statusErr
+	}
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return permissionCheckResponse{}, fmt.Errorf("failed to read response: %w", err)
+		return permissionCheckResponse{}, fmt.Errorf("failed to read permission response: %w", err)
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return permissionCheckResponse{}, fmt.Errorf(
-			"API error (status %d): %s",
-			resp.StatusCode,
-			strings.TrimSpace(string(responseBody)),
-		)
-	}
-	var decoded permissionCheckResponse
-	if err := json.Unmarshal(responseBody, &decoded); err != nil {
+
+	// Decode only canonical documented fields. Unknown fields remain forward
+	// compatible; aliases must not overwrite an authoritative canonical deny.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(responseBody, &fields); err != nil {
 		return permissionCheckResponse{}, fmt.Errorf("failed to decode response: %w", err)
 	}
+	var decoded permissionCheckResponse
+	destinations := map[string]interface{}{
+		"decision": &decoded.Decision, "reason": &decoded.Reason, "timed_out": &decoded.TimedOut,
+		"request_id": &decoded.RequestID, "operator_note": &decoded.OperatorNote,
+	}
+	for name, destination := range destinations {
+		raw, present := fields[name]
+		if !present {
+			continue
+		}
+		if (name == "decision" || name == "reason" || name == "timed_out") && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return permissionCheckResponse{}, fmt.Errorf("invalid null permission response field: %s", name)
+		}
+		if err := json.Unmarshal(raw, destination); err != nil {
+			return permissionCheckResponse{}, fmt.Errorf("invalid permission response field %s: %w", name, err)
+		}
+	}
+	if decoded.Decision != "allow" && decoded.Decision != "deny" {
+		return permissionCheckResponse{}, fmt.Errorf("invalid permission response decision")
+	}
+	if decoded.TimedOut && decoded.Decision == "allow" {
+		return permissionCheckResponse{}, fmt.Errorf("invalid permission response: expired approval cannot allow")
+	}
 	return decoded, nil
+}
+
+// A central allow clears only our veto. Empty output leaves Codex's native
+// permissions intact, unlike a PermissionRequest allow that approves its prompt.
+func writeCodexPreToolUseDecision(out io.Writer, decision hookDecision) error {
+	payload := map[string]interface{}{}
+	if decision.Behavior != "allow" {
+		payload["hookSpecificOutput"] = map[string]interface{}{
+			"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": decision.Reason,
+		}
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, string(data))
+	return err
 }
 
 // writeHookDecision renders the normalized decision into the agent-specific

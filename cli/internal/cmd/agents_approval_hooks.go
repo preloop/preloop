@@ -224,6 +224,25 @@ func workspaceRootForAgent(agent AgentConfig) string {
 	return filepath.Dir(abs)
 }
 
+// Preserve an existing valid explicit cap when refreshing credentials/deadlines.
+// Legacy account-workflow snapshots are indistinguishable from operator caps, so
+// re-onboard does not raise the wait to 24h. Operators raise it by setting
+// timeout_seconds in permission_hook.json (then re-onboard so the host deadline
+// matches).
+func existingApprovalHookWaitBudget(agent AgentConfig) int {
+	path, err := permissionHookCredentialPath(agent)
+	if err == nil {
+		data, readErr := os.ReadFile(path)
+		if readErr == nil {
+			var existing permissionHookCredential
+			if json.Unmarshal(data, &existing) == nil && existing.TimeoutSeconds > 0 && existing.TimeoutSeconds <= maxApprovalWorkflowTimeoutSeconds {
+				return existing.TimeoutSeconds
+			}
+		}
+	}
+	return maxApprovalWorkflowTimeoutSeconds
+}
+
 // installApprovalHooks writes the per-agent credential file and registers the
 // native pre-tool hook for the agent. It is idempotent: re-running replaces our
 // existing entries rather than duplicating them.
@@ -242,7 +261,8 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 		return installOpenCodeApprovalPlugin(agent, baseURL, token, out)
 	}
 
-	timeoutSeconds := resolveApprovalHookTimeoutSeconds()
+	timeoutSeconds := existingApprovalHookWaitBudget(agent)
+	hostTimeoutSeconds := timeoutSeconds + approvalHookProcessHeadroomSeconds
 	workspaceRoot := workspaceRootForAgent(agent)
 	policyPaths := discoverAgentPolicyPaths(source, workspaceRoot)
 
@@ -260,12 +280,16 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 
 	switch source {
 	case permissionSourceClaudeCode:
-		if err := upsertNestedCommandHook(configPath, "PreToolUse", "*", command, timeoutSeconds); err != nil {
+		if err := upsertNestedCommandHook(configPath, "PreToolUse", "*", command, hostTimeoutSeconds); err != nil {
 			return err
 		}
 	case permissionSourceCodexCLI:
-		// Codex's hooks.json uses the same nested matcher/hooks shape as Claude.
-		if err := upsertNestedCommandHook(configPath, "PermissionRequest", "*", command, timeoutSeconds); err != nil {
+		// Independent gates: central rules before execution, then remote
+		// handling of any permission prompt Codex's own policy still requires.
+		if err := upsertNestedCommandHook(configPath, "PreToolUse", "*", command+" --hook-event PreToolUse", hostTimeoutSeconds); err != nil {
+			return err
+		}
+		if err := upsertNestedCommandHook(configPath, "PermissionRequest", "*", command, hostTimeoutSeconds); err != nil {
 			return err
 		}
 	case permissionSourceCursor:
@@ -277,15 +301,16 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 			configPath,
 			[]string{"beforeShellExecution", "beforeMCPExecution", "preToolUse"},
 			command,
-			timeoutSeconds,
+			hostTimeoutSeconds,
 		); err != nil {
 			return err
 		}
 	}
 
 	if out != nil {
-		fmt.Fprintf(out, "  Mobile approvals: installed %s hook (%s)\n", source, configPath)                                                //nolint:errcheck
-		fmt.Fprintf(out, "  Approval wait timeout: %ds (re-run onboard --approvals after changing the workflow timeout)\n", timeoutSeconds) //nolint:errcheck
+		fmt.Fprintf(out, "  Mobile approvals: installed %s hook (%s)\n", source, configPath)                                                                                   //nolint:errcheck
+		fmt.Fprintf(out, "  Approval wait budget: %ds (re-onboard preserves existing timeout_seconds in permission_hook.json; raise it there, up to 86400)\n", timeoutSeconds) //nolint:errcheck
+		fmt.Fprintln(out, "  Central policy: checks local allows; denies on unavailable or expired approval (no local prompt fallback).")                                      //nolint:errcheck
 		printAgentPolicySummary(out, source, policyPaths, workspaceRoot)
 		if source == permissionSourceClaudeCode {
 			// Cursor loads ~/.claude/settings.json as third-party hooks; the
@@ -370,7 +395,7 @@ func printAgentPolicySummary(out io.Writer, source string, policyPaths []string,
 			firstNonEmptyString(policy.DefaultMode, "(unset)"),
 		)
 	case permissionSourceCodexCLI:
-		fmt.Fprintln(out, "  Mobile approvals: Codex PermissionRequest only fires for would-prompt calls") //nolint:errcheck
+		fmt.Fprintln(out, "  Central native rules: Codex PreToolUse; mobile host prompts: PermissionRequest (independent gates)") //nolint:errcheck
 	}
 }
 
@@ -397,6 +422,9 @@ func removeApprovalHooks(agent AgentConfig, out io.Writer) error {
 			return err
 		}
 	case permissionSourceCodexCLI:
+		if err := removeNestedCommandHook(configPath, "PreToolUse", true); err != nil {
+			return err
+		}
 		if err := removeNestedCommandHook(configPath, "PermissionRequest", true); err != nil {
 			return err
 		}

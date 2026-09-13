@@ -189,8 +189,8 @@ func TestResolvePermissionDecisionFailDefault(t *testing.T) {
 	}
 
 	failOpen := resolvePermissionDecision(permissionSourceCodexCLI, raw, true)
-	if failOpen.Behavior != "allow" {
-		t.Errorf("expected allow with fail-open, got %q", failOpen.Behavior)
+	if failOpen.Behavior != "deny" {
+		t.Errorf("missing credential must deny even with fail-open, got %q", failOpen.Behavior)
 	}
 }
 
@@ -268,7 +268,7 @@ func TestIsCursorHostInvokingClaudeHook(t *testing.T) {
 	}
 }
 
-func TestResolvePermissionDecisionClientFallbackAllow(t *testing.T) {
+func TestResolvePermissionDecisionLocalAllowNeedsCentralCredential(t *testing.T) {
 	home := t.TempDir()
 	testenv.SetHome(t, home)
 	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
@@ -277,15 +277,15 @@ func TestResolvePermissionDecisionClientFallbackAllow(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	// Config auto-allows this command, but there is no reachable Preloop
-	// credential -> we should still honor the client's own allow.
+	// credential -> central policy cannot be evaluated, so fail closed.
 	settings := `{"permissions":{"allow":["Bash(ls)"]}}`
 	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(settings), 0644); err != nil {
 		t.Fatalf("write settings: %v", err)
 	}
 	raw := []byte(`{"tool_name":"Bash","tool_input":{"command":"ls"}}`)
 	decision := resolvePermissionDecision(permissionSourceClaudeCode, raw, false)
-	if decision.Behavior != "allow" {
-		t.Errorf("expected client-config allow fallback, got %q (%s)", decision.Behavior, decision.Reason)
+	if decision.Behavior != "deny" {
+		t.Errorf("expected deny without central decision, got %q (%s)", decision.Behavior, decision.Reason)
 	}
 }
 
@@ -568,7 +568,7 @@ func TestPermissionCheckTimeoutFor(t *testing.T) {
 	}
 
 	got = permissionCheckTimeoutFor(permissionHookCredential{})
-	want = time.Duration(defaultApprovalHookTimeoutSeconds)*time.Second + permissionCheckHTTPHeadroom
+	want = time.Duration(maxApprovalWorkflowTimeoutSeconds)*time.Second + permissionCheckHTTPHeadroom
 	if got != want {
 		t.Fatalf("default timeout = %v, want %v", got, want)
 	}
@@ -929,74 +929,38 @@ func TestFailureDecisionReasonsAreActionable(t *testing.T) {
 	}
 }
 
-// Claude Code and Cursor have a native "ask" verdict, so a Preloop hard
-// failure hands the prompt back to the agent's local UI instead of denying;
-// Codex (no ask verdict) stays fail-closed, and --fail-open still wins.
-func TestFailureDecisionAskFallbackBySource(t *testing.T) {
+// All adapters fail closed unless the operator opts out of hard failures.
+func TestFailureDecisionBySource(t *testing.T) {
 	t.Parallel()
-	if got := failureDecision(permissionSourceClaudeCode, false, "boom"); got.Behavior != "ask" {
-		t.Errorf("claude_code failure should ask locally, got %q", got.Behavior)
-	}
-	if got := failureDecision(permissionSourceCursor, false, "boom"); got.Behavior != "ask" {
-		t.Errorf("cursor failure should ask locally, got %q", got.Behavior)
-	}
-	if got := failureDecision(permissionSourceCodexCLI, false, "boom"); got.Behavior != "deny" {
-		t.Errorf("codex failure should fail closed, got %q", got.Behavior)
-	}
-	if got := failureDecision(permissionSourceClaudeCode, true, "boom"); got.Behavior != "allow" {
-		t.Errorf("fail-open should win over ask fallback, got %q", got.Behavior)
+	for _, source := range []string{permissionSourceClaudeCode, permissionSourceCursor, permissionSourceCodexCLI} {
+		if got := failureDecision(source, false, "boom"); got.Behavior != "deny" {
+			t.Errorf("%s must fail closed: %+v", source, got)
+		}
+		if got := failureDecision(source, true, "boom"); got.Behavior != "allow" {
+			t.Errorf("%s fail-open must allow: %+v", source, got)
+		}
 	}
 }
 
-// A timed-out (unanswered) Preloop approval re-surfaces the agent's local
-// prompt on ask-capable adapters; an explicit human deny never does.
-func TestResolvePermissionDecisionTimeoutAskFallback(t *testing.T) {
-	home := t.TempDir()
-	testenv.SetHome(t, home)
-	overrideManagedSettingsPath(t, filepath.Join(t.TempDir(), "absent.json"))
-
-	respond := func(resp permissionCheckResponse) *httptest.Server {
-		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_ = json.NewEncoder(w).Encode(resp)
-		}))
-	}
-	raw := []byte(`{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x"}}`)
-
-	// Timed out -> ask locally (Claude Code).
-	server := respond(permissionCheckResponse{
-		Decision: "deny", Reason: "Approval request timed out", TimedOut: true,
-	})
-	writeTestPermissionCredential(t, home, "claude-agent", permissionHookCredential{
-		BaseURL: server.URL, Token: "agt_test", Source: permissionSourceClaudeCode,
-	})
-	decision := resolvePermissionDecision(permissionSourceClaudeCode, raw, false)
-	server.Close()
-	if decision.Behavior != "ask" {
-		t.Errorf("timed-out approval should fall back to local ask, got %q (%s)", decision.Behavior, decision.Reason)
-	}
-
-	// Explicit human deny -> deny, never downgraded.
-	server = respond(permissionCheckResponse{Decision: "deny", Reason: "Declined on watch"})
-	writeTestPermissionCredential(t, home, "claude-agent", permissionHookCredential{
-		BaseURL: server.URL, Token: "agt_test", Source: permissionSourceClaudeCode,
-	})
-	decision = resolvePermissionDecision(permissionSourceClaudeCode, raw, false)
-	server.Close()
-	if decision.Behavior != "deny" || decision.Reason != "Declined on watch" {
-		t.Errorf("human deny must stay deny, got %+v", decision)
-	}
-
-	// Codex has no ask verdict: a timed-out approval stays deny.
-	server = respond(permissionCheckResponse{
-		Decision: "deny", Reason: "Approval request timed out", TimedOut: true,
-	})
-	writeTestPermissionCredential(t, home, "codex-agent", permissionHookCredential{
-		BaseURL: server.URL, Token: "agt_test", Source: permissionSourceCodexCLI,
-	})
-	decision = resolvePermissionDecision(permissionSourceCodexCLI, raw, false)
-	server.Close()
-	if decision.Behavior != "deny" {
-		t.Errorf("codex timeout must stay deny, got %q", decision.Behavior)
+// Expiry is a returned denial, not a transport failure eligible for fail-open.
+func TestResolvePermissionDecisionTimeoutStaysDeny(t *testing.T) {
+	for _, source := range []string{permissionSourceClaudeCode, permissionSourceCursor, permissionSourceCodexCLI} {
+		t.Run(source, func(t *testing.T) {
+			home := t.TempDir()
+			testenv.SetHome(t, home)
+			overrideManagedSettingsPath(t, filepath.Join(home, "absent.json"))
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(permissionCheckResponse{Decision: "deny", Reason: "Approval expired", TimedOut: true})
+			}))
+			defer server.Close()
+			writeTestPermissionCredential(t, home, "agent", permissionHookCredential{BaseURL: server.URL, Token: "agt_synthetic", Source: source})
+			for _, failOpen := range []bool{false, true} {
+				decision := resolvePermissionDecision(source, []byte(`{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/example"}}`), failOpen)
+				if decision.Behavior != "deny" || decision.Reason != "Approval expired" {
+					t.Errorf("failOpen=%t: %+v", failOpen, decision)
+				}
+			}
+		})
 	}
 }
 
@@ -1412,7 +1376,7 @@ func TestOpenCodeApprovalHooksPreserveEnrollmentControlBlock(t *testing.T) {
 // preToolUse event must be answered locally, without a permission-check POST,
 // so one command raises exactly one approval request. Native file tools keep
 // their preToolUse gating: an out-of-workspace Write still posts, and an
-// in-workspace Write is auto-allowed locally by isLocalWorkspaceEdit.
+// in-workspace Write posts its local allow for central policy evaluation.
 func TestResolvePermissionDecisionCursorPreToolUseDedupe(t *testing.T) {
 	home := t.TempDir()
 	testenv.SetHome(t, home)
@@ -1506,11 +1470,12 @@ func TestResolvePermissionDecisionCursorPreToolUseDedupe(t *testing.T) {
 			wantToolName: "Write",
 		},
 		{
-			name:         "preToolUse Write inside workspace is auto-allowed locally",
+			name:         "preToolUse Write inside workspace posts local allow",
 			raw:          `{"hook_event_name":"preToolUse","tool_name":"Write","tool_input":{"file_path":"/repo/src/a.ts"},"cwd":"/repo","workspace_roots":["/repo"]}`,
 			wantBehavior: "allow",
-			wantReason:   "Allowed by the agent's own configuration.",
-			wantPosts:    0,
+			wantReason:   "approved on watch",
+			wantPosts:    1,
+			wantToolName: "Write",
 		},
 		{
 			name:         "preToolUse Delete outside workspace still posts",

@@ -564,6 +564,20 @@ def test_agent_control_ws_command_result_is_persisted(
     assert runtime_session is not None
     assert managed_agent is not None
 
+    crud_agent_control_command.create_command(
+        db_session,
+        account_id=test_user.account_id,
+        managed_agent_id=managed_agent.id,
+        runtime_session_id=runtime_session.id,
+        command_id="cmd-result-1",
+        envelope={"type": "command", "message_id": "cmd-result-1"},
+    )
+    crud_agent_control_command.mark_delivered(
+        db_session,
+        account_id=test_user.account_id,
+        command_id="cmd-result-1",
+        delivered_at=datetime.now(UTC),
+    )
     crud_runtime_session_activity.log_agent_control_message(
         db_session,
         account_id=test_user.account_id,

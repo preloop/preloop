@@ -35,8 +35,11 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any, List, Mapping, Optional
 
+from preloop.api.loop_safety import run_db_off_loop
+from preloop.models.crud import agent_control_connection as control_connection
 from preloop.models.crud import (
     crud_agent_control_command,
     crud_managed_agent,
@@ -314,21 +317,23 @@ async def _deliver(
             expires_at=command_expiry,
         )
 
+        # Snapshot all history/delivery identity before ending the producer's
+        # read transaction. The guarded socket sender needs its own connection.
+        delivery_agent_id = str(agent.id)
+        delivery_account_id = str(agent.account_id)
+        history_session_id = runtime_session_id or (
+            str(agent.runtime_session_id) if agent.runtime_session_id else None
+        )
+        await run_db_off_loop(partial(control_connection.release_read_transaction, db))
         subject: Optional[str] = None
         # send_to_agent returns False when this pod does not hold the
         # agent's WebSocket; NATS fan-out below covers peer pods.
         delivered = await manager.send_to_agent(
-            managed_agent_id=str(agent.id), envelope=envelope
+            managed_agent_id=delivery_agent_id, envelope=envelope
         )
-        if delivered:
-            crud_agent_control_command.mark_delivered(
-                db,
-                account_id=str(agent.account_id),
-                command_id=envelope.message_id,
-                managed_agent_id=str(agent.id),
-                delivered_at=datetime.now(UTC),
-            )
-        else:
+        # The accepting socket's sender owns the generation-guarded mark.
+        # A producer must not mark after a replacement wins during delivery.
+        if not delivered:
             # The agent's WebSocket may be held by a peer pod: fan out via
             # NATS and leave the row pending; the holding pod marks delivery.
             subject = await _publish_command_to_peers(envelope)
@@ -336,13 +341,10 @@ async def _deliver(
         reached = delivered or subject is not None
         # Record the audited turn on the ASKING session (not the agent's
         # current binding) so the question shows up in that session's history.
-        history_session_id = runtime_session_id or (
-            str(agent.runtime_session_id) if agent.runtime_session_id else None
-        )
         if history_session_id is not None:
             crud_runtime_session_activity.log_agent_control_message(
                 db,
-                account_id=agent.account_id,
+                account_id=delivery_account_id,
                 runtime_session_id=history_session_id,
                 message=text,
                 status="delivered"
@@ -350,7 +352,7 @@ async def _deliver(
                 else ("queued" if reached else "failed"),
                 metadata={
                     "command_id": envelope.message_id,
-                    "managed_agent_id": str(agent.id),
+                    "managed_agent_id": delivery_agent_id,
                     "kind": QUESTION_NOTICE_KIND,
                     "approval_request_id": str(approval_request_id),
                     "local_delivery": delivered,

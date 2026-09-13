@@ -284,6 +284,69 @@ leases executions whose runner pool matches this runner's id, name, or
 labels, streams logs, and honors halt. Ctrl-C unregisters. Persist the
 runner id and token in `~/.preloop/runner.json`.
 
+
+### Native approval hooks and central policy
+
+Onboard Claude Code, Cursor, or Codex CLI with `--approvals` to install the
+supported native permission hooks. **Compatibility change:** installed hooks
+now send locally allowed calls to Preloop for native-rule evaluation. Local
+deny stays deny without a network request. A local allow with no matching
+central rule remains allow without a human prompt; a matching native rule can
+deny it or require approval. Existing Cursor safe-read and workspace policies
+supply client context and no longer bypass central rules.
+
+If Preloop is unavailable, the credential is missing, or a remote approval
+expires, the hook denies the call. Claude/Cursor no longer fall back to a local
+prompt, because it cannot enforce the central rule. The existing hook-command
+`--fail-open` flag explicitly allows transport failures/timeouts and HTTP 5xx
+unavailability. Missing credentials, HTTP 4xx (including authentication and rate
+denials), malformed responses, and returned server/human/policy denials or
+approval expiry stay closed.
+The server governance setting `native_tool_approvals=off` disables automatic
+human escalation, while matching native rules still apply. Offboarding removes
+the installed approval hooks and their credentials.
+
+New installs get a 24-hour wait budget, covering the maximum workflow duration even
+when an agent or native rule selects a different workflow from the account
+default. The server returns as soon as it decides or the workflow expires. The
+HTTP timeout adds 15 seconds; the host hook deadline adds 30 seconds. Re-onboard
+existing hooks to refresh credentials and hook command deadlines. Re-onboarding
+preserves an existing wait budget and does not raise it to 24 hours. Any
+`timeout_seconds` in `(0, 86400]` in
+`~/.preloop/agents/<agent>/permission_hook.json` is kept, including older
+account-workflow snapshots. To raise the budget, set `timeout_seconds` in that
+file (86400 for the current ceiling) and re-onboard so the host deadline matches.
+A shorter budget can deny before a longer workflow completes. Host-enforced
+limits and proxy timeouts can still cut a request short. OpenCode plugin
+onboarding retains its separate account-workflow timeout configuration.
+
+Coverage follows the host's actual hook events: Claude Code uses `PreToolUse`;
+Cursor uses `beforeShellExecution`, `beforeMCPExecution`, and `preToolUse`, with
+deduplication only while the corresponding dedicated hook is installed. Cursor
+invocations of Claude's third-party hook remain separate: onboard Cursor itself
+to govern those calls. Codex installs both `PreToolUse` and `PermissionRequest`.
+Its pre-tool check
+uses `evaluation_phase=pre_tool_use` without claiming a local policy allow:
+central rules may deny or require approval, while no matching rule adds no
+prompt. A central allow returns neutral `{}`, leaving Codex's own permission
+checks intact. `PermissionRequest` independently routes any native host prompt
+through Preloop. When both a central rule and the host require approval, two
+separate approval gates can appear. The documented PermissionRequest event has
+no `tool_use_id`, so no approval is cached or reused across those events.
+
+Current [Codex hook documentation](https://developers.openai.com/codex/hooks/)
+covers shell/unified exec, `apply_patch`, MCP, and most local function tools.
+Hosted tools and specialized paths can be outside coverage; `write_stdin` does
+not run a fresh pre-tool hook for an existing session. Re-onboard existing Codex
+installations to add PreToolUse, and install a backend supporting the new phase
+before upgrading the hook configuration. These guarantees require the host to
+run and honor its trusted hooks; an operator who removes or bypasses them opts
+out.
+
+Re-onboarding OpenClaw/Hermes preserves valid operator approval enable/fail-open
+settings and 30–86400 second wait caps, while refreshing tokens, identity, and
+endpoints. Invalid old values are not copied into the new configuration.
+
 ## Configuration
 
 The CLI stores configuration in `~/.preloop/config.yaml`:

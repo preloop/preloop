@@ -152,7 +152,7 @@ Undo anything with `preloop agents restore hermes` or
 Concretely, for the approval path: the `pre_tool_call` hook intercepts the call
 and asks Preloop for a decision. Preloop matches your policy, sees this needs a
 human, and pushes a notification with the full command to your phone. The tool
-call blocks for up to ~300 seconds while you decide. You deny it; Hermes gets
+call waits for the selected approval workflow while you decide. You deny it; Hermes gets
 the block plus your reason, and the agent carries on with something else.
 
 ## Configuration
@@ -179,6 +179,7 @@ preloop:
 |---|---|---|
 | `tool_approval.enabled` | `true` | Set to `false` to turn the native tool-call gate off entirely |
 | `tool_approval.fail_open` | `false` | Fail-closed by default: if Preloop is unreachable, the tool call is **blocked**. Set `true` only if you accept ungoverned execution during an outage |
+| `tool_approval.timeout_seconds` | `86400` | Workflow wait budget, an integer from 30 to 86400 seconds; HTTP adds 15 seconds and the synchronous hook bridge adds another 15 seconds |
 | `PRELOOP_TOOL_APPROVAL_FAIL_OPEN` | unset | Environment override for `fail_open` (`1`/`true`/`yes`/`on`) |
 
 ### How a decision is made
@@ -191,11 +192,30 @@ Preloop and lets your policy decide:
    a written justification, expressed as YAML + CEL. Most calls resolve without
    ever bothering you.
 2. **A human decides, if the policy says so.** Notification to mobile, watch,
-   Slack, Mattermost, email, or webhook; the tool call blocks up to ~300s.
+   Slack, Mattermost, email, or webhook; the tool waits for the selected workflow.
 3. **The result is recorded** in the same audit trail as MCP tool calls.
 
-A `deny` decision blocks the tool and hands Hermes the reason. Anything else
-lets it run.
+Only a valid `allow` response lets the tool run. A `deny` decision blocks the tool
+and hands Hermes the reason, including expired approvals (`timed_out: true`).
+Fail-open never overrides a returned deny. Only transport errors/timeouts and
+HTTP 5xx can use explicit fail-open. HTTP 4xx (including 401/403), malformed
+decisions, missing credentials and invalid configuration always block.
+`enabled` and `fail_open` must be actual YAML booleans; quoted strings such as
+`"false"` are invalid and never opt into ungoverned execution.
+
+The default wait budget covers workflows up to 24 hours, including a workflow
+selected by a central rule. It does not change the workflow expiry: a five-minute
+workflow still expires after five minutes. A shorter configured budget must
+cover every workflow this agent can select; reaching the HTTP or bridge deadline
+follows the failure behavior above. Missing config uses the new default; invalid
+values block by default and are rejected by `verify`.
+
+Bundled standalone and Helm nginx configurations allow 86460 seconds only on
+`/api/v1/agents/permission-check`. Other ingress/load-balancer and Hermes host
+limits must also permit the chosen wait. Coverage is limited to calls delivered
+to Hermes' `pre_tool_call` hook. Disabling the plugin gate skips central policy;
+Preloop's server-side approvals-off setting only disables human escalation and
+does not bypass an explicit central require-approval rule.
 
 ## Manual Test Without Preloop CLI
 
