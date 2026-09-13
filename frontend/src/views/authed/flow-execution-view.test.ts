@@ -1545,6 +1545,82 @@ describe('FlowExecutionView', () => {
       expect(calls[1]).to.not.contain('metadata_only');
     });
 
+    for (const status of ['SUCCEEDED', 'RUNNING', 'WAITING_FOR_HUMAN']) {
+      it(`keeps a cancelled model request out of the ${status} run failure banner`, async () => {
+        const element = await load('exec-failed');
+        await waitUntil(() => (element as any).gatewayEvents.length > 0);
+        (element as any).execution = {
+          ...(element as any).execution,
+          status,
+          error_message: null,
+          failure_category: null,
+        };
+        (element as any).gatewayEvents = [
+          {
+            ...(element as any).gatewayEvents[0],
+            payload: {
+              ...(element as any).gatewayEvents[0].payload,
+              api_usage_id: 'usage-cancelled',
+              status_code: 499,
+              error_detail: 'client disconnected before stream completion',
+            },
+          },
+          // A previous provider failure must not become the run's verdict
+          // either. This also exercises the status gate independently of 499.
+          (element as any).gatewayEvents[0],
+        ];
+        await element.updateComplete;
+
+        expect(
+          element.shadowRoot!.querySelector('[data-testid="error-line"]') ===
+            null
+        ).to.equal(true);
+        // The request remains available in the timeline for diagnosis.
+        expect((element as any).gatewayEvents[0].payload.status_code).to.equal(
+          499
+        );
+      });
+    }
+
+    it('preserves the execution failure when a request was also cancelled', async () => {
+      const element = await load('exec-failed');
+      await waitUntil(() => (element as any).gatewayEvents.length > 0);
+      (element as any).execution = {
+        ...(element as any).execution,
+        failure_category: 'no_confirmation',
+        error_message: 'Agent exited without confirming completion',
+      };
+      (element as any).gatewayEvents = [
+        {
+          ...(element as any).gatewayEvents[0],
+          payload: {
+            ...(element as any).gatewayEvents[0].payload,
+            status_code: 499,
+            error_detail: 'client disconnected before stream completion',
+          },
+        },
+      ];
+      await element.updateComplete;
+
+      expect(
+        element
+          .shadowRoot!.querySelector('[data-testid="error-line"]')!
+          .textContent!.trim()
+      ).to.equal('Agent exited without confirming completion');
+
+      // Cancellation filtering must not suppress an actual execution error.
+      (element as any).execution = {
+        ...(element as any).execution,
+        error_message: 'Execution failed: HTTP 499 from model provider',
+      };
+      await element.updateComplete;
+      expect(
+        element
+          .shadowRoot!.querySelector('[data-testid="error-line"]')!
+          .textContent!.trim()
+      ).to.equal('Execution failed: HTTP 499 from model provider');
+    });
+
     it('leads the error line with the gateway message, not the log prefix', async () => {
       const element = await load('exec-failed');
       await waitUntil(
