@@ -250,6 +250,14 @@ def test_snapshot_with_gateway_alias_prices_observed_uncached_usage() -> None:
     assert result.source == "catalog"
 
 
+def test_optional_rate_rejects_nan() -> None:
+    from preloop.services.alibaba_pricing import _optional_rate
+
+    assert _optional_rate(float("nan")) is None
+    assert _optional_rate("nan") is None
+    assert _optional_rate(0.25) == 0.25
+
+
 def test_seed_covers_current_singapore_chat_skus() -> None:
     from preloop.services.alibaba_pricing import _SEED
 

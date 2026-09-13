@@ -48,6 +48,32 @@ def test_beijing_and_classic_us_have_no_usd_native_target() -> None:
     assert native_catalog_target(classic_us) is None
 
 
+def test_parse_skips_nan_token_prices() -> None:
+    nan_price = parse_native_model(
+        {
+            "model": "nan-model",
+            "prices": [
+                {
+                    "range_name": "Default",
+                    "prices": [
+                        {
+                            "type": "input_token",
+                            "price": "nan",
+                            "price_unit": "Per 1M tokens",
+                        },
+                        {
+                            "type": "output_token",
+                            "price": "2",
+                            "price_unit": "Per 1M tokens",
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    assert nan_price is None
+
+
 def test_parse_skips_image_and_time_banded_rows() -> None:
     image = parse_native_model(
         {

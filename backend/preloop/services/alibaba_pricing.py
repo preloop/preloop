@@ -13,6 +13,7 @@ native DeepSeek/Z.ai/Moonshot price for an Alibaba-hosted model.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -128,7 +129,7 @@ def _optional_rate(value: Any) -> float | None:
         rate = float(value)
     except (TypeError, ValueError):
         return None
-    if rate < 0 or rate != rate:  # noqa: PLR0124 - NaN
+    if rate < 0 or math.isnan(rate):
         return None
     return rate
 

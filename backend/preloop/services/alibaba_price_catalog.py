@@ -13,6 +13,7 @@ accounting. Time-banded rows are skipped until a dedicated adapter exists.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import threading
 from typing import Any, Iterable
@@ -173,7 +174,7 @@ def _tariff_from_price_group(group: dict[str, Any]) -> Tariff | None:
             amount = float(item.get("price"))
         except (TypeError, ValueError):
             continue
-        if amount < 0 or amount != amount:  # noqa: PLR0124 - NaN
+        if amount < 0 or math.isnan(amount):
             continue
         parsed[kind] = amount
     if "input" not in parsed or "output" not in parsed:
