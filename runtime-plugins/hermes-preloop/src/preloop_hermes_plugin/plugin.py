@@ -395,8 +395,9 @@ class HermesPreloopPlugin:
                 or "\r" in config.bearer_token
             ):
                 raise ValueError("A valid runtime bearer credential is required")
-        except (ValueError, TypeError, OSError) as exc:
+        except (ValueError, TypeError, OSError, yaml.YAMLError) as exc:
             return _block(f"Preloop approval configuration invalid: {exc}")
+
         body: dict[str, Any] = {
             "source": "hermes",
             "tool_name": tool_name,

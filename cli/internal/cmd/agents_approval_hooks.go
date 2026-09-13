@@ -225,7 +225,10 @@ func workspaceRootForAgent(agent AgentConfig) string {
 }
 
 // Preserve an existing valid explicit cap when refreshing credentials/deadlines.
-// Legacy account-workflow snapshots are indistinguishable from operator caps.
+// Legacy account-workflow snapshots are indistinguishable from operator caps, so
+// re-onboard does not raise the wait to 24h. Operators raise it by setting
+// timeout_seconds in permission_hook.json (then re-onboard so the host deadline
+// matches).
 func existingApprovalHookWaitBudget(agent AgentConfig) int {
 	path, err := permissionHookCredentialPath(agent)
 	if err == nil {
@@ -305,9 +308,9 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 	}
 
 	if out != nil {
-		fmt.Fprintf(out, "  Mobile approvals: installed %s hook (%s)\n", source, configPath)                                                     //nolint:errcheck
-		fmt.Fprintf(out, "  Approval wait budget: %ds (server workflow controls expiry; host deadline includes 30s headroom)\n", timeoutSeconds) //nolint:errcheck
-		fmt.Fprintln(out, "  Central policy: checks local allows; denies on unavailable or expired approval (no local prompt fallback).")        //nolint:errcheck
+		fmt.Fprintf(out, "  Mobile approvals: installed %s hook (%s)\n", source, configPath)                                                                                   //nolint:errcheck
+		fmt.Fprintf(out, "  Approval wait budget: %ds (re-onboard preserves existing timeout_seconds in permission_hook.json; raise it there, up to 86400)\n", timeoutSeconds) //nolint:errcheck
+		fmt.Fprintln(out, "  Central policy: checks local allows; denies on unavailable or expired approval (no local prompt fallback).")                                      //nolint:errcheck
 		printAgentPolicySummary(out, source, policyPaths, workspaceRoot)
 		if source == permissionSourceClaudeCode {
 			// Cursor loads ~/.claude/settings.json as third-party hooks; the

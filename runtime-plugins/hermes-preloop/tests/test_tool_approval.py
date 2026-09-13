@@ -445,6 +445,22 @@ def test_sync_hook_fails_closed_on_unreadable_config() -> None:
     assert _hermes_directive(result) == "block"
 
 
+@pytest.mark.asyncio
+async def test_async_path_fails_closed_on_malformed_yaml(tmp_path: Path) -> None:
+    """Malformed YAML must fail closed on the awaitable path, not raise."""
+    config = tmp_path / "hermes.yaml"
+    config.write_text("preloop: { control: [unterminated\n", encoding="utf-8")
+    instance = HermesPreloopPlugin(config_path=config)
+
+    result = await instance.pre_tool_call(
+        {"tool_name": "terminal", "tool_input": {"command": "ls"}}
+    )
+
+    assert result is not None
+    assert result["action"] == "block"
+    assert "configuration invalid" in result["message"]
+
+
 def test_unreadable_config_never_fails_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

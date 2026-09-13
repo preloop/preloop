@@ -306,17 +306,19 @@ The server governance setting `native_tool_approvals=off` disables automatic
 human escalation, while matching native rules still apply. Offboarding removes
 the installed approval hooks and their credentials.
 
-Command hooks installed by this version have a 24-hour wait budget, covering the
-maximum workflow duration even when an agent or native rule selects a different
-workflow from the account default. The server returns as soon as it decides or
-the workflow expires. The HTTP timeout adds 15 seconds; the host hook deadline
-adds 30 seconds. Re-onboard existing hooks to refresh those deadlines. Existing valid credential
-wait budgets are preserved, including older account-workflow snapshots. A positive
-`timeout_seconds` in `~/.preloop/agents/<agent>/permission_hook.json` can set a
-shorter client budget (values above 86400 are capped); such a budget can deny
-before a longer workflow completes. Host-enforced limits and proxy timeouts can
-still cut a request short. OpenCode plugin onboarding retains its separate
-account-workflow timeout configuration.
+New installs get a 24-hour wait budget, covering the maximum workflow duration even
+when an agent or native rule selects a different workflow from the account
+default. The server returns as soon as it decides or the workflow expires. The
+HTTP timeout adds 15 seconds; the host hook deadline adds 30 seconds. Re-onboard
+existing hooks to refresh credentials and hook command deadlines. Re-onboarding
+preserves an existing wait budget and does not raise it to 24 hours. Any
+`timeout_seconds` in `(0, 86400]` in
+`~/.preloop/agents/<agent>/permission_hook.json` is kept, including older
+account-workflow snapshots. To raise the budget, set `timeout_seconds` in that
+file (86400 for the current ceiling) and re-onboard so the host deadline matches.
+A shorter budget can deny before a longer workflow completes. Host-enforced
+limits and proxy timeouts can still cut a request short. OpenCode plugin
+onboarding retains its separate account-workflow timeout configuration.
 
 Coverage follows the host's actual hook events: Claude Code uses `PreToolUse`;
 Cursor uses `beforeShellExecution`, `beforeMCPExecution`, and `preToolUse`, with
