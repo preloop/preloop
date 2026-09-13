@@ -74,6 +74,21 @@ class PriceFetchUnavailableError(RuntimeError):
     """The provider publishes prices but this model is not among them."""
 
 
+def _alibaba_refresh_error(status: object) -> str:
+    """User-facing Fetch price copy for a failed native-catalog refresh."""
+    from preloop.services.alibaba_price_catalog import CatalogRefreshStatus
+
+    if status is CatalogRefreshStatus.no_credentials:
+        return "Alibaba Cloud Model Studio credentials are not configured"
+    if status is CatalogRefreshStatus.host_mismatch:
+        return (
+            "This model's credentials are not sent to a different Alibaba catalog host"
+        )
+    if status is CatalogRefreshStatus.empty:
+        return "Alibaba Cloud Model Studio's price catalog listed no token tariffs"
+    return "Alibaba Cloud Model Studio's price catalog could not be reached"
+
+
 def provider_label(provider_name: Optional[str]) -> str:
     """Return a display name for a provider, falling back to the raw value."""
     provider = (provider_name or "").strip().lower()
@@ -364,6 +379,7 @@ def fetch_provider_pricing(ai_model: AIModel) -> AIModelPriceQuote:
     """
     from preloop.services import alibaba_pricing
     from preloop.services.alibaba_price_catalog import (
+        CatalogRefreshStatus,
         native_catalog_target,
         refresh_from_model,
     )
@@ -374,10 +390,9 @@ def fetch_provider_pricing(ai_model: AIModel) -> AIModelPriceQuote:
             raise PriceFetchUnsupportedError(
                 f"{provider_label(ai_model.provider_name)} does not publish prices"
             )
-        if not refresh_from_model(ai_model):
-            raise PriceFetchUnavailableError(
-                "Alibaba Cloud Model Studio's price catalog could not be reached"
-            )
+        status = refresh_from_model(ai_model)
+        if status is not CatalogRefreshStatus.ingested:
+            raise PriceFetchUnavailableError(_alibaba_refresh_error(status))
         catalog = _catalog_entry(ai_model)
         if catalog is None:
             raise PriceFetchUnavailableError(

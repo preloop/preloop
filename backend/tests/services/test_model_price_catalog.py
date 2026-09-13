@@ -194,6 +194,56 @@ def test_schedule_price_lookup_uses_bounded_executor(monkeypatch) -> None:
     assert "executor-test-model" in model_price_catalog._pending_lookups
 
 
+def test_alibaba_negative_cache_is_scoped_to_usd_region(monkeypatch) -> None:
+    """A US-East miss must not suppress Singapore self-heal for the same SKU."""
+    from types import SimpleNamespace
+
+    from preloop.services.alibaba_price_catalog import CatalogRefreshStatus
+
+    model_price_catalog.reset_lookup_state_for_tests()
+    monkeypatch.setenv("TESTING", "false")
+
+    class _Settings:
+        model_price_live_lookup_enabled = True
+
+    import preloop.config as config_mod
+
+    monkeypatch.setattr(config_mod, "settings", _Settings())
+    monkeypatch.setattr(
+        "preloop.services.alibaba_price_catalog.refresh_from_model",
+        lambda ai_model: CatalogRefreshStatus.unreachable,
+    )
+    submitted: list[object] = []
+
+    def _fake_submit(fn):
+        submitted.append(fn)
+        fn()
+        return object()
+
+    monkeypatch.setattr(model_price_catalog._LOOKUP_EXECUTOR, "submit", _fake_submit)
+
+    us_model = SimpleNamespace(
+        provider_name="qwen",
+        model_identifier="qwen3.8-flash",
+        api_endpoint="https://ws.us-east-1.maas.aliyuncs.com/compatible-mode/v1",
+        meta_data=None,
+        model_parameters=None,
+    )
+    sg_model = SimpleNamespace(
+        provider_name="qwen",
+        model_identifier="qwen3.8-flash",
+        api_endpoint="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        meta_data=None,
+        model_parameters=None,
+    )
+    assert model_price_catalog.schedule_price_lookup(ai_model=us_model) is True
+    assert "alibaba:united-states:qwen3.8-flash" in model_price_catalog._negative_cache
+    submitted.clear()
+    assert model_price_catalog.schedule_price_lookup(ai_model=us_model) is False
+    assert model_price_catalog.schedule_price_lookup(ai_model=sg_model) is True
+    assert submitted  # Singapore still scheduled
+
+
 # ---------------------------------------------------------------------------
 # OpenRouter marketplace pricing (models absent from litellm's map)
 # ---------------------------------------------------------------------------

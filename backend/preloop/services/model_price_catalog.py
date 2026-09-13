@@ -530,13 +530,17 @@ def schedule_price_lookup(*, ai_model: Any, api_usage_id: Optional[str] = None) 
         return False
 
     from preloop.services import alibaba_pricing
-    from preloop.services.alibaba_price_catalog import native_catalog_target
+    from preloop.services.alibaba_price_catalog import native_catalog_target, region_key
     from preloop.services.model_pricing import _iter_litellm_model_candidates
 
     if alibaba_pricing.is_alibaba(ai_model):
-        if native_catalog_target(ai_model) is None:
+        target = native_catalog_target(ai_model)
+        if target is None:
             return False
-        dedupe_key = f"alibaba:{(ai_model.model_identifier or '').strip() or 'unknown'}"
+        dedupe_key = (
+            f"alibaba:{region_key(target[1])}:"
+            f"{(ai_model.model_identifier or '').strip() or 'unknown'}"
+        )
         log_token = _model_log_token(dedupe_key)
         now = time.monotonic()
         with _lookup_lock:
@@ -550,13 +554,16 @@ def schedule_price_lookup(*, ai_model: Any, api_usage_id: Optional[str] = None) 
             _pending_lookups.add(dedupe_key)
 
         def _run_alibaba() -> None:
-            from preloop.services.alibaba_price_catalog import refresh_from_model
+            from preloop.services.alibaba_price_catalog import (
+                CatalogRefreshStatus,
+                refresh_from_model,
+            )
 
             try:
                 matched = refresh_from_model(ai_model)
-                if matched and api_usage_id:
+                if matched is CatalogRefreshStatus.ingested and api_usage_id:
                     _reprice_usage_row(api_usage_id)
-                elif not matched:
+                elif matched is not CatalogRefreshStatus.ingested:
                     with _lookup_lock:
                         _negative_cache[dedupe_key] = time.monotonic()
             except Exception:  # noqa: BLE001 - background best-effort

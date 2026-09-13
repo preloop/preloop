@@ -4,10 +4,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from preloop.models import models
 from preloop.models.crud import crud_ai_model
 from preloop.models.models.model_price_override import ModelPriceOverride
 from preloop.services import ai_model_pricing, model_price_catalog
 from preloop.services.alibaba_price_catalog import (
+    CatalogRefreshStatus,
     ingest_native_models,
     reset_live_state_for_tests,
 )
@@ -298,7 +300,7 @@ def test_alibaba_fetch_is_offered_on_singapore_and_uses_native_catalog(
     assert ai_model_pricing.provider_supports_price_fetch(model) is True
     monkeypatch.setattr(
         "preloop.services.alibaba_price_catalog.refresh_from_model",
-        lambda ai_model: True,
+        lambda ai_model: CatalogRefreshStatus.ingested,
     )
     ingest_native_models(
         [
@@ -329,6 +331,28 @@ def test_alibaba_fetch_is_offered_on_singapore_and_uses_native_catalog(
     assert quote.price.input_per_1m == pytest.approx(0.15)
     assert quote.price.output_per_1m == pytest.approx(0.47)
     assert quote.source_url.endswith("/api/v1/models")
+
+
+def test_alibaba_fetch_distinguishes_catalog_refresh_failures(monkeypatch):
+    model = models.AIModel(
+        provider_name="qwen",
+        model_identifier="qwen3.8-flash",
+        api_endpoint="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    )
+    cases = (
+        (CatalogRefreshStatus.no_credentials, "credentials"),
+        (CatalogRefreshStatus.unreachable, "could not be reached"),
+        (CatalogRefreshStatus.empty, "no token tariffs"),
+        (CatalogRefreshStatus.host_mismatch, "different"),
+    )
+    for status, needle in cases:
+        monkeypatch.setattr(
+            "preloop.services.alibaba_price_catalog.refresh_from_model",
+            lambda ai_model, current=status: current,
+        )
+        with pytest.raises(ai_model_pricing.PriceFetchUnavailableError) as excinfo:
+            ai_model_pricing.fetch_provider_pricing(model)
+        assert needle in str(excinfo.value)
 
 
 def test_alibaba_fetch_is_not_offered_for_beijing(db_session, test_user):

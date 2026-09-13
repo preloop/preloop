@@ -16,6 +16,7 @@ import logging
 import math
 import re
 import threading
+from enum import Enum
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
@@ -46,6 +47,17 @@ _lock = threading.Lock()
 _live: dict[str, dict[str, Tariff]] = {}
 
 
+class CatalogRefreshStatus(str, Enum):
+    """Outcome of a native-catalog overlay refresh."""
+
+    ingested = "ingested"
+    no_target = "no_target"
+    no_credentials = "no_credentials"
+    host_mismatch = "host_mismatch"
+    unreachable = "unreachable"
+    empty = "empty"
+
+
 def reset_live_state_for_tests() -> None:
     """Drop the in-process overlay (test isolation only)."""
     with _lock:
@@ -55,10 +67,12 @@ def reset_live_state_for_tests() -> None:
 def native_catalog_target(ai_model: models.AIModel) -> tuple[str, str] | None:
     """Return the documented native catalog URL and service_site, or none.
 
-    Singapore classic and Singapore workspace keys use the documented
-    classic Singapore native host. US workspace native is the workspace
-    host itself. Classic ``dashscope-us`` has no documented native catalog
-    URL and is not guessed.
+    Singapore classic keys use the documented classic Singapore native host.
+    Singapore workspace hosts still name that documented catalog URL so
+    Fetch price can explain a host mismatch; refresh will not send a
+    workspace key there. US workspace native is the workspace host itself.
+    Classic ``dashscope-us`` has no documented native catalog URL and is not
+    guessed.
     """
     if not is_alibaba(ai_model):
         return None
@@ -96,28 +110,38 @@ def ingest_native_models(
     entries: Iterable[Any],
     *,
     region: str = "singapore-international",
+    replace: bool = False,
 ) -> int:
-    """Merge native catalog rows into the in-process overlay.
+    """Merge or replace native catalog rows in the in-process overlay.
+
+    Partial discovery ingest (Fetch Models) merges so a later page can
+    add SKUs without dropping earlier ones. A complete native download
+    passes ``replace=True`` to wholesale-replace the region bucket so SKUs
+    that left the catalog drop.
 
     Args:
         entries: ``output.models`` objects from one or more pages.
         region: Overlay key, normally ``singapore-international``.
+        replace: When True, the region bucket becomes exactly these tariffs.
 
     Returns:
         Count of models with a usable USD token tariff.
     """
-    accepted = 0
+    incoming: dict[str, Tariff] = {}
+    for entry in entries:
+        tariff = parse_native_model(entry)
+        if tariff is None:
+            continue
+        ident = str(entry.get("model") or "").strip()
+        if not ident:
+            continue
+        incoming[ident] = tariff
+    accepted = len(incoming)
     with _lock:
-        bucket = _live.setdefault(region, {})
-        for entry in entries:
-            tariff = parse_native_model(entry)
-            if tariff is None:
-                continue
-            ident = str(entry.get("model") or "").strip()
-            if not ident:
-                continue
-            bucket[ident] = tariff
-            accepted += 1
+        if replace:
+            _live[region] = incoming
+        else:
+            _live.setdefault(region, {}).update(incoming)
     return accepted
 
 
@@ -229,25 +253,54 @@ def _parse_range_upper(range_name: str) -> int | None:
     return int(value)
 
 
-def refresh_from_model(ai_model: models.AIModel) -> bool:
+def _credential_host_matches_catalog(
+    ai_model: models.AIModel, catalog_url: str
+) -> bool:
+    """True when this model's configured host is the catalog we would call."""
+    catalog_host = (urlparse(catalog_url).hostname or "").lower()
+    return bool(catalog_host) and _host(ai_model) == catalog_host
+
+
+def refresh_from_model(ai_model: models.AIModel) -> CatalogRefreshStatus:
     """Fetch the native catalog with this model's key and refresh the overlay.
 
+    Credentials are sent only when the model's configured host matches the
+    catalog URL. A complete download wholesale-replaces that region's
+    overlay; a failed or truncated download leaves existing SKUs in place
+    (discovery still merges).
+
     Returns:
-        True when at least one token tariff was ingested.
+        Why the refresh ingested, failed, or stayed empty.
     """
     target = native_catalog_target(ai_model)
     if target is None:
-        return False
+        return CatalogRefreshStatus.no_target
     url, service_site = target
+    if not _credential_host_matches_catalog(ai_model, url):
+        logger.debug(
+            "Alibaba native catalog refresh skipped: credentials belong to "
+            "a different host than %s",
+            urlparse(url).hostname,
+        )
+        return CatalogRefreshStatus.host_mismatch
     api_key = _api_key(ai_model)
     if not api_key:
-        return False
+        return CatalogRefreshStatus.no_credentials
     try:
-        entries = _download_catalog(url, api_key, service_site)
+        entries, complete = _download_catalog(url, api_key, service_site)
     except Exception:  # noqa: BLE001 - overlay refresh is best-effort
         logger.debug("Alibaba native catalog refresh failed", exc_info=True)
-        return False
-    return ingest_native_models(entries, region=region_key(service_site)) > 0
+        return CatalogRefreshStatus.unreachable
+    accepted = ingest_native_models(
+        entries,
+        region=region_key(service_site),
+        replace=complete,
+    )
+    if accepted > 0:
+        return CatalogRefreshStatus.ingested
+    if complete:
+        return CatalogRefreshStatus.empty
+    return CatalogRefreshStatus.unreachable
 
 
 def install_live_tariff(region: str, model_id: str, tariff: Tariff) -> None:
@@ -260,12 +313,21 @@ def _download_catalog(
     url: str,
     api_key: str,
     service_site: str,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], bool]:
+    """Download native catalog pages.
+
+    Returns:
+        ``(entries, complete)``. ``complete`` is True only when pagination
+        reached a documented end. Auth, ``success: false``, and safety
+        stops yield no entries and ``complete=False`` so the overlay is
+        not wiped.
+    """
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.hostname:
-        return []
+        return [], False
     models_out: list[dict[str, Any]] = []
     seen_pages: set[tuple[str, ...]] = set()
+    complete = False
     with httpx.Client(timeout=NATIVE_TIMEOUT_SECONDS, follow_redirects=False) as client:
         for page_no in range(1, _MAX_PAGES + 1):
             response = client.get(
@@ -280,16 +342,16 @@ def _download_catalog(
                 },
             )
             if response.status_code in {401, 403}:
-                return []
+                return [], False
             response.raise_for_status()
             body = response.json()
             if not isinstance(body, dict) or body.get("success") is not True:
-                return []
+                return [], False
             output = body.get("output")
             if not isinstance(output, dict) or not isinstance(
                 output.get("models"), list
             ):
-                return []
+                return [], False
             entries = [row for row in output["models"] if isinstance(row, dict)]
             page_ids = tuple(str(row.get("model") or "") for row in entries)
             if page_ids in seen_pages:
@@ -298,10 +360,20 @@ def _download_catalog(
             models_out.extend(entries)
             total = output.get("total")
             if not entries or (type(total) is int and page_no * _PAGE_SIZE >= total):
+                complete = True
                 break
             if len(entries) < _PAGE_SIZE and type(total) is not int:
+                complete = True
                 break
-    return models_out
+    return models_out, complete
+
+
+def _legacy_api_key(ai_model: models.AIModel) -> str | None:
+    """Return a non-empty legacy ``ai_model.api_key``, if present."""
+    legacy = getattr(ai_model, "api_key", None)
+    if isinstance(legacy, str) and legacy.strip():
+        return legacy.strip()
+    return None
 
 
 def _api_key(ai_model: models.AIModel) -> str | None:
@@ -320,11 +392,5 @@ def _api_key(ai_model: models.AIModel) -> str | None:
             return resolved.value.strip()
     except Exception:  # noqa: BLE001 - optional secret backends
         logger.debug("Alibaba catalog could not resolve credentials", exc_info=True)
-        legacy = getattr(ai_model, "api_key", None)
-        if isinstance(legacy, str) and legacy.strip():
-            return legacy.strip()
-        return None
-    legacy = getattr(ai_model, "api_key", None)
-    if isinstance(legacy, str) and legacy.strip():
-        return legacy.strip()
-    return None
+        return _legacy_api_key(ai_model)
+    return _legacy_api_key(ai_model)
