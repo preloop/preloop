@@ -4,9 +4,15 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from preloop.models import models
 from preloop.models.crud import crud_ai_model
 from preloop.models.models.model_price_override import ModelPriceOverride
 from preloop.services import ai_model_pricing, model_price_catalog
+from preloop.services.alibaba_price_catalog import (
+    CatalogRefreshStatus,
+    ingest_native_models,
+    reset_live_state_for_tests,
+)
 
 
 def _model(db_session, account_id, **overrides):
@@ -278,3 +284,83 @@ def test_a_malformed_catalog_request_price_reads_as_unpriced(
     assert pricing.source == "catalog"
     assert pricing.price.input_per_1m == 1.0
     assert pricing.price.request_price is None
+
+
+def test_alibaba_fetch_is_offered_on_singapore_and_uses_native_catalog(
+    db_session, test_user, monkeypatch
+):
+    reset_live_state_for_tests()
+    model = _model(
+        db_session,
+        test_user.account_id,
+        provider_name="qwen",
+        model_identifier="qwen3.8-flash",
+        api_endpoint="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    )
+    assert ai_model_pricing.provider_supports_price_fetch(model) is True
+    monkeypatch.setattr(
+        "preloop.services.alibaba_price_catalog.refresh_from_model",
+        lambda ai_model: CatalogRefreshStatus.ingested,
+    )
+    ingest_native_models(
+        [
+            {
+                "model": "qwen3.8-flash",
+                "prices": [
+                    {
+                        "range_name": "Default",
+                        "prices": [
+                            {
+                                "type": "input_token",
+                                "price": "0.15",
+                                "price_unit": "Per 1M tokens",
+                            },
+                            {
+                                "type": "output_token",
+                                "price": "0.47",
+                                "price_unit": "Per 1M tokens",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+        region="singapore-international",
+    )
+    quote = ai_model_pricing.fetch_provider_pricing(model)
+    assert quote.price.input_per_1m == pytest.approx(0.15)
+    assert quote.price.output_per_1m == pytest.approx(0.47)
+    assert quote.source_url.endswith("/api/v1/models")
+
+
+def test_alibaba_fetch_distinguishes_catalog_refresh_failures(monkeypatch):
+    model = models.AIModel(
+        provider_name="qwen",
+        model_identifier="qwen3.8-flash",
+        api_endpoint="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    )
+    cases = (
+        (CatalogRefreshStatus.no_credentials, "credentials"),
+        (CatalogRefreshStatus.unreachable, "could not be reached"),
+        (CatalogRefreshStatus.empty, "no token tariffs"),
+        (CatalogRefreshStatus.host_mismatch, "different"),
+    )
+    for status, needle in cases:
+        monkeypatch.setattr(
+            "preloop.services.alibaba_price_catalog.refresh_from_model",
+            lambda ai_model, current=status: current,
+        )
+        with pytest.raises(ai_model_pricing.PriceFetchUnavailableError) as excinfo:
+            ai_model_pricing.fetch_provider_pricing(model)
+        assert needle in str(excinfo.value)
+
+
+def test_alibaba_fetch_is_not_offered_for_beijing(db_session, test_user):
+    model = _model(
+        db_session,
+        test_user.account_id,
+        provider_name="qwen",
+        model_identifier="qwen3.8-flash",
+        api_endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+    assert ai_model_pricing.provider_supports_price_fetch(model) is False

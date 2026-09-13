@@ -37,9 +37,10 @@ logger = logging.getLogger(__name__)
 
 #: Providers that publish machine-readable prices Preloop can read back.
 #: OpenRouter's ``GET /api/v1/models`` carries a ``pricing`` block per model;
-#: this is the set of implemented adapters, not an assertion that other
-#: providers have no machine-readable retail catalogs.
-PRICE_FETCH_PROVIDERS = {"openrouter"}
+#: Alibaba Model Studio's native catalog carries ``prices`` per model on USD
+#: sites. This is the set of implemented adapters, not an assertion that
+#: other providers have no machine-readable retail catalogs.
+PRICE_FETCH_PROVIDERS = {"openrouter", "qwen", "dashscope"}
 
 #: Shown when a provider does not publish prices.
 PROVIDER_LABELS = {
@@ -50,6 +51,8 @@ PROVIDER_LABELS = {
     "bedrock": "Bedrock",
     "azure": "Azure OpenAI",
     "openrouter": "OpenRouter",
+    "qwen": "Alibaba Cloud Model Studio",
+    "dashscope": "Alibaba Cloud Model Studio",
     "deepseek": "DeepSeek",
     "mistral": "Mistral",
     "groq": "Groq",
@@ -71,6 +74,21 @@ class PriceFetchUnavailableError(RuntimeError):
     """The provider publishes prices but this model is not among them."""
 
 
+def _alibaba_refresh_error(status: object) -> str:
+    """User-facing Fetch price copy for a failed native-catalog refresh."""
+    from preloop.services.alibaba_price_catalog import CatalogRefreshStatus
+
+    if status is CatalogRefreshStatus.no_credentials:
+        return "Alibaba Cloud Model Studio credentials are not configured"
+    if status is CatalogRefreshStatus.host_mismatch:
+        return (
+            "This model's credentials are not sent to a different Alibaba catalog host"
+        )
+    if status is CatalogRefreshStatus.empty:
+        return "Alibaba Cloud Model Studio's price catalog listed no token tariffs"
+    return "Alibaba Cloud Model Studio's price catalog could not be reached"
+
+
 def provider_label(provider_name: Optional[str]) -> str:
     """Return a display name for a provider, falling back to the raw value."""
     provider = (provider_name or "").strip().lower()
@@ -85,6 +103,11 @@ def provider_supports_price_fetch(ai_model: AIModel) -> bool:
     An OpenAI-compatible model pointed at OpenRouter's base URL counts: the
     endpoint is what answers, not the label somebody typed.
     """
+    from preloop.services import alibaba_pricing
+    from preloop.services.alibaba_price_catalog import native_catalog_target
+
+    if alibaba_pricing.is_alibaba(ai_model):
+        return native_catalog_target(ai_model) is not None
     provider = (ai_model.provider_name or "").strip().lower()
     if provider in PRICE_FETCH_PROVIDERS:
         return True
@@ -354,6 +377,38 @@ def fetch_provider_pricing(ai_model: AIModel) -> AIModelPriceQuote:
         PriceFetchUnavailableError: the provider answered but not about this model,
             or its price list could not be reached.
     """
+    from preloop.services import alibaba_pricing
+    from preloop.services.alibaba_price_catalog import (
+        CatalogRefreshStatus,
+        native_catalog_target,
+        refresh_from_model,
+    )
+
+    if alibaba_pricing.is_alibaba(ai_model):
+        target = native_catalog_target(ai_model)
+        if target is None:
+            raise PriceFetchUnsupportedError(
+                f"{provider_label(ai_model.provider_name)} does not publish prices"
+            )
+        status = refresh_from_model(ai_model)
+        if status is not CatalogRefreshStatus.ingested:
+            raise PriceFetchUnavailableError(_alibaba_refresh_error(status))
+        catalog = _catalog_entry(ai_model)
+        if catalog is None:
+            raise PriceFetchUnavailableError(
+                "Alibaba Cloud Model Studio does not list a price "
+                "for this model identifier"
+            )
+        model_key, entry = catalog
+        return AIModelPriceQuote(
+            ai_model_id=str(ai_model.id),
+            provider_name=ai_model.provider_name,
+            source_url=target[0],
+            model_key=model_key.split("/", 1)[-1],
+            price=_price_from_catalog_entry(entry),
+            fetched_at=datetime.now(timezone.utc),
+        )
+
     if not provider_supports_price_fetch(ai_model):
         raise PriceFetchUnsupportedError(
             f"{provider_label(ai_model.provider_name)} does not publish prices"

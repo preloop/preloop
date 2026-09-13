@@ -903,6 +903,16 @@ async def _get_qwen_native_models(api_key: str) -> ModelDiscoveryResult:
                     ):
                         return _fallback([], ERROR_EMPTY_RESPONSE)
                     entries = output["models"]
+                    try:
+                        from preloop.services.alibaba_price_catalog import (
+                            ingest_native_models,
+                        )
+
+                        ingest_native_models(entries, region="singapore-international")
+                    except Exception:  # noqa: BLE001 - listing must not fail
+                        logger.debug(
+                            "Alibaba native price ingest skipped", exc_info=True
+                        )
                     page_ids = tuple(
                         str(entry.get("model", ""))
                         for entry in entries

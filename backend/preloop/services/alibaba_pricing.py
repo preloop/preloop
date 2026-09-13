@@ -1,27 +1,35 @@
 """Region-scoped Alibaba Model Studio list-price estimates, never invoice cost.
 
-Standard USD prices: https://www.alibabacloud.com/help/en/model-studio/model-pricing
-(Singapore, International, retrieved 2026-09-11). The native catalog API does
-not declare currency. Its observed Qwen3.8 cache prices are deliberately NOT
-used until their currency is confirmed; matching the standard input/output
-numbers alone does not prove currency for every other billing item.
+Singapore International USD seed: ``data/alibaba_international_prices.json``,
+from the public pricing page. The native ``GET /api/v1/models`` overlay
+(see ``alibaba_price_catalog``) keeps that map current, including cache rows
+from the same USD site response. Chat completions still report tokens only.
 
-Other regions, unknown snapshots, time bands and unverified cache rates remain
-unpriced. Do not substitute the same model's native-provider price. Coupons,
-account discounts and free quota belong to delayed invoice reconciliation.
+Beijing and other CNY sites stay unpriced in USD accounting. Time-banded
+SKUs stay unpriced until a dedicated adapter exists. Do not substitute a
+native DeepSeek/Z.ai/Moonshot price for an Alibaba-hosted model.
 """
 
+from __future__ import annotations
+
+import json
+import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from preloop.models import models
 from preloop.services.litellm_routing import is_openrouter_model
 
+SEED_PATH = (
+    Path(__file__).resolve().parent / "data" / "alibaba_international_prices.json"
+)
+
 
 @dataclass(frozen=True)
 class Tariff:
-    """Verified USD amounts per million tokens for one serving tariff."""
+    """USD amounts per million tokens for one serving tariff or tier."""
 
     input: float
     output: float
@@ -29,21 +37,7 @@ class Tariff:
     explicit_read: float | None = None
     creation: float | None = None
     max_input: int | None = None
-
-
-_SINGAPORE: dict[str, Tariff] = {
-    "qwen3.8-max": Tariff(2, 6, max_input=1_000_000),
-    # Snapshot standard prices are documented; cache rates are not assumed
-    # identical to the moving alias without separate verification.
-    "qwen3.8-max-0902": Tariff(2, 6, max_input=1_000_000),
-    "deepseek-v4-pro": Tariff(2.4, 4.8),
-    "deepseek-v4-flash": Tariff(0.2, 0.4, implicit_read=0.04),
-    "glm-5.2": Tariff(1.4, 4.4, implicit_read=0.35),
-    "kimi-k2.7-code": Tariff(0.95, 4),
-    "kimi-k3": Tariff(3, 15),
-}
-# Cache ratios for DeepSeek Flash (20%) and GLM5.2 (25%):
-# https://www.alibabacloud.com/help/en/model-studio/context-cache (2026-09-11).
+    tiers: tuple["Tariff", ...] = ()
 
 
 def _host(ai_model: models.AIModel) -> str:
@@ -73,14 +67,114 @@ def is_alibaba(ai_model: models.AIModel) -> bool:
     )
 
 
-def tariff_for(ai_model: models.AIModel) -> Tariff | None:
-    """Resolve only an exact SKU on a verified Singapore International host."""
+def usd_region(ai_model: models.AIModel) -> str | None:
+    """Return the USD overlay/seed region, or none when currency is unverified."""
     host = _host(ai_model)
-    if host != "dashscope-intl.aliyuncs.com" and not host.endswith(
+    if host == "dashscope-intl.aliyuncs.com" or host.endswith(
         ".ap-southeast-1.maas.aliyuncs.com"
     ):
+        return "singapore-international"
+    if host.endswith(".us-east-1.maas.aliyuncs.com"):
+        return "united-states"
+    return None
+
+
+def _tariff_from_seed_entry(entry: dict[str, Any]) -> Tariff | None:
+    raw_tiers = entry.get("tiers")
+    if not isinstance(raw_tiers, list) or not raw_tiers:
         return None
-    return _SINGAPORE.get((ai_model.model_identifier or "").strip())
+    implicit = _optional_rate(entry.get("implicit_read"))
+    explicit = _optional_rate(entry.get("explicit_read"))
+    creation = _optional_rate(entry.get("creation"))
+    parsed: list[Tariff] = []
+    for row in raw_tiers:
+        if not isinstance(row, dict):
+            continue
+        try:
+            inp = float(row["input"])
+            out = float(row["output"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if inp < 0 or out < 0:
+            continue
+        max_input = row.get("max_input")
+        parsed.append(
+            Tariff(
+                input=inp,
+                output=out,
+                implicit_read=_optional_rate(row.get("implicit_read")) or implicit,
+                explicit_read=_optional_rate(row.get("explicit_read")) or explicit,
+                creation=_optional_rate(row.get("creation")) or creation,
+                max_input=int(max_input) if isinstance(max_input, int) else None,
+            )
+        )
+    if not parsed:
+        return None
+    first = parsed[0]
+    return Tariff(
+        input=first.input,
+        output=first.output,
+        implicit_read=first.implicit_read,
+        explicit_read=first.explicit_read,
+        creation=first.creation,
+        max_input=first.max_input,
+        tiers=tuple(parsed) if len(parsed) > 1 else (),
+    )
+
+
+def _optional_rate(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return None
+    if rate < 0 or math.isnan(rate):
+        return None
+    return rate
+
+
+def _load_seed() -> dict[str, Tariff]:
+    try:
+        payload = json.loads(SEED_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+    models_raw = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models_raw, dict):
+        return {}
+    loaded: dict[str, Tariff] = {}
+    for ident, entry in models_raw.items():
+        if not isinstance(ident, str) or not isinstance(entry, dict):
+            continue
+        tariff = _tariff_from_seed_entry(entry)
+        if tariff is not None:
+            loaded[ident.strip()] = tariff
+    return loaded
+
+
+_SEED = _load_seed()
+
+
+def tariff_for(ai_model: models.AIModel) -> Tariff | None:
+    """Resolve an exact SKU on a USD Alibaba host.
+
+    Live native-catalog overlay wins. The Singapore International seed covers
+    models before the first refresh. Other USD regions require a live overlay.
+    """
+    region = usd_region(ai_model)
+    if region is None:
+        return None
+    ident = (ai_model.model_identifier or "").strip()
+    if not ident:
+        return None
+    from preloop.services.alibaba_price_catalog import live_tariff
+
+    live = live_tariff(ai_model)
+    if live is not None:
+        return live
+    if region == "singapore-international":
+        return _SEED.get(ident)
+    return None
 
 
 def catalog_entry(ai_model: models.AIModel) -> tuple[str, dict[str, Any]] | None:
@@ -88,6 +182,7 @@ def catalog_entry(ai_model: models.AIModel) -> tuple[str, dict[str, Any]] | None
     tariff = tariff_for(ai_model)
     if tariff is None:
         return None
+    region = usd_region(ai_model) or "singapore-international"
     entry: dict[str, Any] = {
         "input_cost_per_token": tariff.input / 1_000_000,
         "output_cost_per_token": tariff.output / 1_000_000,
@@ -99,7 +194,34 @@ def catalog_entry(ai_model: models.AIModel) -> tuple[str, dict[str, Any]] | None
         tariff.implicit_read,
     ):
         entry["cache_read_input_token_cost"] = tariff.implicit_read / 1_000_000
-    return f"alibaba/singapore-international/{ai_model.model_identifier}", entry
+    prefix = (
+        "alibaba/native-catalog" if _is_live(ai_model, tariff) else f"alibaba/{region}"
+    )
+    return f"{prefix}/{ai_model.model_identifier}", entry
+
+
+def _is_live(ai_model: models.AIModel, tariff: Tariff) -> bool:
+    from preloop.services.alibaba_price_catalog import live_tariff
+
+    live = live_tariff(ai_model)
+    return live is tariff
+
+
+def select_tier(tariff: Tariff, prompt_tokens: int) -> Tariff | None:
+    """Pick the whole-request input-length tier, or none if out of range."""
+    if tariff.tiers:
+        matching = [
+            tier
+            for tier in tariff.tiers
+            if tier.max_input is None or prompt_tokens <= tier.max_input
+        ]
+        if not matching:
+            return None
+        matching.sort(key=lambda tier: tier.max_input or 10**18)
+        return matching[0]
+    if tariff.max_input is not None and prompt_tokens > tariff.max_input:
+        return None
+    return tariff
 
 
 def estimate(
@@ -115,8 +237,11 @@ def estimate(
     already include reasoning tokens, which must never be added a second time.
     The internal cache-mode tag comes from the forwarded request, not the model.
     """
-    tariff = tariff_for(ai_model)
-    if tariff is None or (tariff.max_input and prompt_tokens > tariff.max_input):
+    resolved = tariff_for(ai_model)
+    if resolved is None:
+        return None
+    tariff = select_tier(resolved, prompt_tokens)
+    if tariff is None:
         return None
     usage = usage_details or {}
     details = usage.get("prompt_tokens_details") or {}
