@@ -247,3 +247,73 @@ def test_blog_feed_is_served_as_rss(configs: dict[str, str]) -> None:
             f"{name} feed location sets default_type without an empty `types {{ }}` "
             "block, so nginx's mime.types wins and the feed is served as text/xml."
         )
+
+
+@pytest.mark.parametrize(
+    "url",
+    ("/admin/", "/admin/accounts", "/admin/accounts/example-id", "/admin/users"),
+)
+def test_admin_deep_links_serve_the_admin_spa(
+    configs: dict[str, str], url: str
+) -> None:
+    """Reloading an admin route must not boot the main console application."""
+    for name, config in configs.items():
+        body = _resolve(config, url)
+        assert body is not None
+        assert re.search(r"try_files\s+\$uri\s+\$uri/\s+/admin/index\.html;", body), (
+            f"{name}: {url} does not fall back to the admin SPA"
+        )
+
+
+def test_admin_root_redirect_preserves_query(configs: dict[str, str]) -> None:
+    for name, config in configs.items():
+        body = _resolve(config, "/admin")
+        assert body is not None
+        assert "return 308 /admin/$is_args$args;" in body, name
+
+
+def test_admin_shell_is_uncached_and_missing_build_returns_404(
+    configs: dict[str, str],
+) -> None:
+    """An OSS image without admin assets must not enter a fallback cycle."""
+    for name, config in configs.items():
+        body = _resolve(config, "/admin/index.html")
+        assert body is not None
+        assert "try_files $uri =404;" in body, name
+        assert 'Cache-Control "no-cache, no-store, must-revalidate"' in body, name
+
+
+@pytest.mark.parametrize(
+    "url", ("/admin/assets/app.js", "/admin/assets/app.css", "/admin/assets/font.woff2")
+)
+def test_missing_admin_assets_do_not_return_spa_html(
+    configs: dict[str, str], url: str
+) -> None:
+    for name, config in configs.items():
+        body = _resolve(config, url)
+        assert body is not None
+        assert "try_files $uri =404;" in body, name
+        assert "immutable" in body, name
+
+
+def test_admin_api_still_uses_the_backend(configs: dict[str, str]) -> None:
+    for name, config in configs.items():
+        body = _resolve(config, "/api/v1/admin/accounts")
+        assert body is not None
+        assert "proxy_pass $api_backend;" in body, name
+        assert "try_files" not in body, name
+
+
+def test_permission_check_has_scoped_workflow_timeout(configs: dict[str, str]) -> None:
+    """The 24h native approval budget must survive both proxy deployments."""
+    for name, config in configs.items():
+        body = _resolve(config, "/api/v1/agents/permission-check")
+        assert body is not None
+        assert "proxy_pass $api_backend;" in body, name
+        assert "proxy_read_timeout 86460s;" in body, name
+        assert "proxy_send_timeout 86460s;" in body, name
+        assert "proxy_connect_timeout 10s;" in body, name
+        for url in ("/api/v1/agents/permission-check/other", "/api/v1/accounts"):
+            generic_body = _resolve(config, url)
+            assert generic_body is not None
+            assert "proxy_read_timeout 300s;" in generic_body, name

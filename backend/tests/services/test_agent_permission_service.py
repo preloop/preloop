@@ -1364,3 +1364,131 @@ def test_workflow_pin_join_executes_on_real_database(db_session, test_user):
     ).first()
     assert row is not None
     assert row[1] is None
+
+
+@pytest.mark.asyncio
+async def test_client_allow_without_matching_rule_never_creates_human_approval() -> (
+    None
+):
+    """Forwarding local allows must not introduce new human prompts."""
+    with (
+        patch(
+            "preloop.services.agent_permission_service.get_async_db_session"
+        ) as get_session,
+        patch("preloop.services.approval_service.ApprovalService") as service_class,
+        patch(
+            "preloop.models.crud.tool_configuration."
+            "get_tool_config_by_name_and_source_async",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.apply_native_access_rules",
+            new=AsyncMock(return_value=None),
+        ) as evaluate,
+    ):
+        get_session.return_value.__aenter__.return_value = AsyncMock()
+        result = await request_agent_permission(
+            **_permission_kwargs(client_decision="allow")
+        )
+
+    assert result == ("allow", "", None, False)
+    evaluate.assert_awaited_once()
+    service_class.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", [None, "allow", "deny"])
+async def test_pre_tool_use_evaluates_rules_without_claiming_host_allow(
+    action: str | None,
+) -> None:
+    """An early central check never invents a native host decision or prompt."""
+    db = AsyncMock()
+    result = None if action is None else (action, "Native rule", None, None)
+    with (
+        patch(
+            "preloop.services.agent_permission_service.get_async_db_session"
+        ) as session,
+        patch(
+            "preloop.models.crud.tool_configuration.get_tool_config_by_name_and_source_async",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.apply_native_access_rules",
+            new=AsyncMock(return_value=result),
+        ) as rules,
+        patch("preloop.services.approval_service.ApprovalService") as approvals,
+        patch("preloop.services.agent_permission_service.resolve_workflow") as workflow,
+    ):
+        session.return_value.__aenter__.return_value = db
+        decision, _reason, request_id, timed_out = await request_agent_permission(
+            **_permission_kwargs(source="codex_cli", client_decision=None),
+            evaluation_phase="pre_tool_use",
+        )
+    assert decision == ("deny" if action == "deny" else "allow")
+    assert request_id is None
+    assert timed_out is False
+    rules.assert_awaited_once()
+    approvals.assert_not_called()
+    workflow.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_use_never_widens_client_deny() -> None:
+    """The rule-only phase must still honor an explicit host deny."""
+    with patch(
+        "preloop.services.agent_permission_service.get_async_db_session"
+    ) as session:
+        result = await request_agent_permission(
+            **_permission_kwargs(client_decision="deny"),
+            evaluation_phase="pre_tool_use",
+        )
+    assert result == ("deny", "Denied by client policy", None, False)
+    session.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["approved", "declined", "expired"])
+async def test_pre_tool_use_require_approval_keeps_human_gate(status: str) -> None:
+    """The rule-only phase bypasses only the no-rule automatic escalation."""
+    account_id = str(uuid.uuid4())
+    workflow = models.ApprovalWorkflow(
+        id=uuid.uuid4(),
+        account_id=account_id,
+        name="Synthetic workflow",
+        approval_type=DEFAULT_APPROVAL_TYPE,
+        is_default=True,
+        timeout_seconds=300,
+    )
+    db = _enforced_db(workflow)
+    config = MagicMock()
+    config.id = uuid.uuid4()
+    approval = MagicMock()
+    approval.id = uuid.uuid4()
+    approval.status = status
+    approval.approver_comment = "Synthetic decision"
+    with (
+        patch(
+            "preloop.services.agent_permission_service.get_async_db_session"
+        ) as session,
+        patch(
+            "preloop.models.crud.tool_configuration.get_tool_config_by_name_and_source_async",
+            new=AsyncMock(return_value=config),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.apply_native_access_rules",
+            new=AsyncMock(return_value=("require_approval", "Native rule", None, None)),
+        ),
+        patch("preloop.services.approval_service.ApprovalService") as service_cls,
+    ):
+        session.return_value.__aenter__.return_value = db
+        service = AsyncMock()
+        service.create_and_notify.return_value = approval
+        service_cls.return_value = service
+        result = await request_agent_permission(
+            **_permission_kwargs(account_id=account_id, source="codex_cli"),
+            evaluation_phase="pre_tool_use",
+        )
+    assert result[0] == ("allow" if status == "approved" else "deny")
+    assert result[2] == str(approval.id)
+    assert result[3] is (status == "expired")
+    service.create_and_notify.assert_awaited_once()
