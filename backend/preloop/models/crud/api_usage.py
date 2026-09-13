@@ -446,7 +446,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             only_unpriced: Restrict to rows without a resolved cost: NULL
                 ``estimated_cost`` (however tagged) plus rows explicitly
                 tagged ``cost_source='unpriced'`` that carry a stray numeric
-                cost (legacy $0 writes), so those anomalies heal too.
+                cost (legacy $0 writes), plus explicit false pricing
+                availability metadata, so those anomalies heal too.
             batch_size: Rows fetched per query.
 
         Yields:
@@ -465,6 +466,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                     or_(
                         ApiUsage.estimated_cost.is_(None),
                         ApiUsage.cost_source == "unpriced",
+                        ApiUsage.meta_data["budget"]["pricing_available"].astext
+                        == "false",
                     )
                 )
             if last_id is not None:

@@ -127,6 +127,7 @@ from .oauth_token import CRUDOAuthToken, crud_oauth_token
 from . import tool_approval_condition
 from . import notification_preferences
 from .optimization_job import CRUDOptimizationJob
+from .repricing_job import crud_repricing_job
 from .policy_snapshot import CRUDPolicySnapshot, crud_policy_snapshot
 from .runtime_session import CRUDRuntimeSession
 from .runtime_session_activity import CRUDRuntimeSessionActivity
@@ -339,6 +340,7 @@ __all__ = [
     "crud_runtime_session_optimization_result",
     "CRUDOptimizationJob",
     "crud_optimization_job",
+    "crud_repricing_job",
     "CRUDBudgetPolicy",
     "CRUDBudgetSpendActivity",
     "crud_budget_policy",

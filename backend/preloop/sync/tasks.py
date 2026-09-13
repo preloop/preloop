@@ -285,20 +285,52 @@ def reprice_gateway_usage_task(
     end: str,
     only_unpriced: bool = True,
     dry_run: bool = False,
+    job_id: str | None = None,
 ) -> dict[str, object] | None:
-    """Re-price gateway usage rows for one account in a time window.
+    """Run durable repricing; retain legacy task payload compatibility.
 
-    Dispatched over NATS (function name in the task payload). ``start`` and
-    ``end`` are ISO-8601 timestamps.
+    The NATS handler offloads this function and renews message progress.
+    The DB lease fences duplicate deliveries and recovers crashed workers.
+    Caught failures are terminal; a new submission retries partial repairs.
     """
-    from datetime import datetime
+    from dataclasses import asdict
+    from time import monotonic
 
+    from preloop.models.crud import crud_repricing_job
     from preloop.services.model_price_catalog import load_catalog
     from preloop.services.usage_repricing import reprice_gateway_usage
 
-    load_catalog()
-    db = next(get_db_session())
+    db_generator = get_db_session()
+    db = next(db_generator)
+    attempt = None
     try:
+        if job_id:
+            crud_repricing_job.fail_exhausted(db, job_id=job_id, account_id=account_id)
+            job = crud_repricing_job.claim(db, job_id=job_id, account_id=account_id)
+            if job is None:
+                existing = crud_repricing_job.get(db, id=job_id, account_id=account_id)
+                if existing is None or existing.status in ("succeeded", "failed"):
+                    return None
+                # Do not ACK a live duplicate: if its owner subsequently dies,
+                # the message must remain available for lease recovery.
+                raise RuntimeError("Repricing job is already being processed")
+            attempt = job.attempts
+            request = job.request
+            start, end = request["start_date"], request["end_date"]
+            only_unpriced = request.get("only_unpriced", True)
+            dry_run = request.get("dry_run", False)
+        last_heartbeat = monotonic()
+
+        def progress() -> None:
+            nonlocal last_heartbeat
+            if job_id and attempt is not None and monotonic() - last_heartbeat >= 60:
+                if not crud_repricing_job.heartbeat(
+                    db, job_id=job_id, account_id=account_id, attempt=attempt
+                ):
+                    raise RuntimeError("Repricing worker lease was superseded")
+                last_heartbeat = monotonic()
+
+        load_catalog()
         result = reprice_gateway_usage(
             db,
             account_id=account_id,
@@ -306,25 +338,34 @@ def reprice_gateway_usage_task(
             end=datetime.fromisoformat(end),
             only_unpriced=only_unpriced,
             dry_run=dry_run,
+            progress=progress,
         )
-        return {
-            "rows_examined": result.rows_examined,
-            "rows_updated": result.rows_updated,
-            "rows_skipped": result.rows_skipped,
-            "cost_before": result.cost_before,
-            "cost_after": result.cost_after,
-            "dry_run": result.dry_run,
-        }
-    except Exception as e:
-        logger.error(
-            "Error repricing usage for account %s: %s",
-            account_id,
-            e,
-            exc_info=True,
-        )
-        return None
+        payload = asdict(result)
+        if job_id and attempt is not None:
+            if not crud_repricing_job.finish(
+                db,
+                job_id=job_id,
+                account_id=account_id,
+                attempt=attempt,
+                result=payload,
+            ):
+                raise RuntimeError("Repricing worker lease was superseded")
+        return payload
+    except Exception:
+        db.rollback()
+        if job_id and attempt is not None:
+            crud_repricing_job.finish(
+                db,
+                job_id=job_id,
+                account_id=account_id,
+                attempt=attempt,
+                error="Repricing failed. Some usage may already have been repriced. Retry repricing.",
+            )
+        logger.exception("Error repricing usage for account %s", account_id)
+        raise
     finally:
         db.close()
+        db_generator.close()
 
 
 def ingest_provider_billing(account_id: str | None = None) -> object | None:
