@@ -5,10 +5,12 @@ preloop.tools.builtin_defs (and BUILTIN_TOOLS in tools.py).
 """
 
 import logging
+from copy import deepcopy
 from typing import Any, Literal, Optional
 from uuid import UUID
 
 from fastmcp import Context
+from fastmcp.tools import FunctionTool
 
 from preloop.services.approval_helper import require_approval
 from preloop.services.dynamic_fastmcp import (
@@ -19,6 +21,8 @@ from preloop.services.dynamic_fastmcp import (
     create_dynamic_mcp_server,
 )
 from preloop.tools.builtin_defs import (
+    APPLY_ISSUE_TRIAGE_TOOL,
+    GET_ISSUE_TRIAGE_CONTEXT_TOOL,
     ASK_USER_TOOL,
     PERMISSION_PROMPT_TOOL,
     REQUEST_APPROVAL_TOOL,
@@ -121,6 +125,82 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
 
         result = await mcp_router.get_issue(issue)
         return result.model_dump_json()
+
+    async def get_issue_triage_context(
+        issue: str, ctx: Optional[Context] = None
+    ) -> str:
+        """Apply the configured approval policy before scoped triage access."""
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+
+        user_context = get_current_user_context()
+        if not user_context:
+            return "Error: No user context available"
+        arguments = {"issue": issue}
+        approved, error = await require_approval(
+            tool_name="get_issue_triage_context",
+            tool_source="builtin",
+            account_id=user_context.account_id,
+            arguments=arguments,
+            ctx=ctx,
+            workflow_id=_rule_workflow_id_var.get(None),
+            correlation_id=_correlation_id_var.get(None),
+            justification=_justification_var.get(None),
+        )
+        if not approved:
+            return error
+        result = await mcp_router.get_issue_triage_context(**arguments)
+        return result.model_dump_json()
+
+    get_issue_triage_context_tool = FunctionTool.from_function(
+        get_issue_triage_context,
+        description=GET_ISSUE_TRIAGE_CONTEXT_TOOL["description"],
+    )
+    get_issue_triage_context_tool.parameters = deepcopy(
+        GET_ISSUE_TRIAGE_CONTEXT_TOOL["schema"]
+    )
+    mcp.add_tool(get_issue_triage_context_tool)
+
+    async def apply_issue_triage(
+        issue: str,
+        expected_revision: str,
+        assessment: str,
+        complexity_label: str | None = None,
+        title: str | None = None,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        """Apply the configured approval policy before scoped triage access."""
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+
+        user_context = get_current_user_context()
+        if not user_context:
+            return "Error: No user context available"
+        arguments = {
+            "issue": issue,
+            "expected_revision": expected_revision,
+            "assessment": assessment,
+            "complexity_label": complexity_label,
+            "title": title,
+        }
+        approved, error = await require_approval(
+            tool_name="apply_issue_triage",
+            tool_source="builtin",
+            account_id=user_context.account_id,
+            arguments=arguments,
+            ctx=ctx,
+            workflow_id=_rule_workflow_id_var.get(None),
+            correlation_id=_correlation_id_var.get(None),
+            justification=_justification_var.get(None),
+        )
+        if not approved:
+            return error
+        result = await mcp_router.apply_issue_triage(**arguments)
+        return result.model_dump_json()
+
+    apply_issue_triage_tool = FunctionTool.from_function(
+        apply_issue_triage, description=APPLY_ISSUE_TRIAGE_TOOL["description"]
+    )
+    apply_issue_triage_tool.parameters = deepcopy(APPLY_ISSUE_TRIAGE_TOOL["schema"])
+    mcp.add_tool(apply_issue_triage_tool)
 
     # Register Tool 2: create_issue
     @mcp.tool()

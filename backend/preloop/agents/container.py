@@ -116,50 +116,6 @@ RESULT_ARTIFACT_PATH = "/workspace/result.json"
 MAX_RESULT_ARTIFACT_BYTES = 256 * 1024
 
 
-def _legacy_result_publication_guard() -> str:
-    """Honor explicit failed reports without treating agent output as attestation."""
-    return f"""
-if ! python3 - <<'PRELOOP_RESULT_GUARD'
-import json
-import os
-import stat
-import sys
-
-def refuse(reason):
-    print("PRELOOP_PUBLICATION_REFUSED " + reason)
-    sys.exit(1)
-
-try:
-    fd = os.open({RESULT_ARTIFACT_PATH!r}, os.O_RDONLY | os.O_NONBLOCK)
-except FileNotFoundError:
-    # Older flows need not produce a result artifact.
-    sys.exit(0)
-except OSError:
-    refuse("result_unreadable")
-try:
-    with os.fdopen(fd, "rb") as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-            refuse("result_not_regular")
-        raw = stream.read({MAX_RESULT_ARTIFACT_BYTES} + 1)
-    if len(raw) > {MAX_RESULT_ARTIFACT_BYTES}:
-        refuse("result_oversized")
-    result = json.loads(raw)
-    if not isinstance(result, dict):
-        refuse("result_not_object")
-except (OSError, ValueError, RecursionError):
-    refuse("result_invalid")
-# Keep aligned with RESULT_ARTIFACT_FAILURE_STATUSES in flow_orchestrator.
-# Eval status "fail" is a completed assessment, not an execution failure.
-status = result.get("status")
-if isinstance(status, str) and status.strip().lower() in {{"failure", "failed", "error"}}:
-    refuse("reported_failure")
-PRELOOP_RESULT_GUARD
-then
-    exit 1
-fi
-""".strip()
-
-
 # Directory inside the agent container where audit-style presets write their
 # evidence pack (see backend/presets/004..006). Captured as a tar.gz archive.
 EVIDENCE_DIR_PATH = "/workspace/evidence"
@@ -210,6 +166,8 @@ _GIT_CONFIG_PATH_ALIASES = {
 WRITE_PR_PAYLOAD_PY = (
     inspect.getsource(pr_metadata)
     + r"""
+import os
+import stat
 import sys
 
 out_path, head, base, kind = sys.argv[1:5]
@@ -220,11 +178,15 @@ head_sha = sys.argv[9] if len(sys.argv) > 9 else ""
 
 def _read(path):
     try:
-        with open(path, "rb") as stream:
-            raw = stream.read(MAX_ARTIFACT_BYTES + 1)
-        return raw if len(raw) <= MAX_ARTIFACT_BYTES else None
-    except OSError:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return b"invalid artifact"
+            return stream.read(MAX_ARTIFACT_BYTES + 1)
+    except FileNotFoundError:
         return None
+    except OSError:
+        return b"unreadable artifact"
 
 
 def _text(path):
@@ -239,8 +201,9 @@ commit_body = _text("/tmp/preloop-commit-pr-body.txt")
 if commit_count > 1:
     commit_title = f"[Preloop] {flow_name}" if flow_name else commit_title
     commit_body = "**Commits:**\n" + _text("/tmp/preloop-commit-pr-list.txt")
+raw_result = _read("/workspace/result.json")
 title, body, warnings = select_metadata(
-    _read("/workspace/result.json"),
+    raw_result,
     configured_title=_text("/tmp/preloop-flow-pr-title.txt"),
     configured_body=_text("/tmp/preloop-flow-pr-body.txt"),
     commit_title=commit_title,
@@ -255,6 +218,11 @@ if execution_link and head_sha:
 elif execution_link:
     # Compatibility for callers predating the explicit published SHA argument.
     body += f"\n\nAutomated changes from Preloop flow: [{flow_name}]({execution_link})"
+reason = result_failure_reason(raw_result)
+if reason and execution_link:
+    body = merge_failure_notice(body, failure_notice(reason, execution_link))
+elif reason:
+    body += "\n\nExecution incomplete: " + reason
 if kind == "gitlab":
     payload = {"title": title, "description": body, "source_branch": head, "target_branch": base}
 else:
@@ -262,6 +230,76 @@ else:
 Path(out_path).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 """
 )
+
+
+def _existing_pr_failure_update_shell(
+    *, kind: str, api_url: str, authorization: str, branch: str
+) -> str:
+    """Refresh only the failure disclosure when branch lookup finds an open PR."""
+    script = (
+        inspect.getsource(pr_metadata)
+        + r"""
+import sys
+lookup_path, payload_path, update_path, kind, branch = sys.argv[1:]
+try:
+    with open(lookup_path, "rb") as stream:
+        raw = stream.read(MAX_ARTIFACT_BYTES + 1)
+    if len(raw) > MAX_ARTIFACT_BYTES:
+        raise ValueError("lookup response too large")
+    candidates = json.loads(raw)
+    if not isinstance(candidates, list):
+        raise ValueError("lookup response is not a list")
+    with open(payload_path, "rb") as stream:
+        payload_raw = stream.read(MAX_ARTIFACT_BYTES + 1)
+    if len(payload_raw) > MAX_ARTIFACT_BYTES:
+        raise ValueError("payload too large")
+    payload = json.loads(payload_raw)
+    field = "description" if kind == "gitlab" else "body"
+    notices = re.findall(
+        r"<!-- preloop:failure:([0-9a-f-]{36}):start -->.*?<!-- preloop:failure:\1:end -->",
+        payload[field], re.DOTALL,
+    )
+    if not notices:
+        sys.exit(0)
+    candidates = [item for item in candidates if isinstance(item, dict) and (
+        item.get("source_branch") if kind == "gitlab" else (item.get("head") or {}).get("ref")
+    ) == branch]
+    if len(candidates) != 1:
+        raise ValueError("lookup did not identify one source branch")
+    existing = candidates[0]
+    number = existing.get("iid" if kind == "gitlab" else "number")
+    if type(number) is not int or number <= 0:
+        raise ValueError("invalid PR number")
+    body = existing.get(field) or ""
+    if not isinstance(body, str):
+        raise ValueError("invalid existing description")
+    for execution_id in notices:
+        start = f"<!-- preloop:failure:{execution_id}:start -->"
+        end = f"<!-- preloop:failure:{execution_id}:end -->"
+        notice = payload[field].split(start, 1)[1].split(end, 1)[0]
+        body = merge_failure_notice(body, start + notice + end)
+    Path(update_path).write_text(json.dumps({field: body}), encoding="utf-8")
+    print(number)
+except (OSError, ValueError, KeyError, TypeError, RecursionError):
+    print("PRELOOP_PR_METADATA_WARNING: could not refresh existing failure disclosure", file=sys.stderr)
+"""
+    )
+    update_path = f"{EVIDENCE_DIR_PATH}/pr-failure-update.json"
+    method = "PUT" if kind == "gitlab" else "PATCH"
+    return f"""
+      python3 - {PR_LOOKUP_FILE} {PR_PAYLOAD_FILE} {update_path} {kind} {shlex.quote(branch)} > {update_path}.number <<'PRELOOP_FAILURE_UPDATE'
+{script}
+PRELOOP_FAILURE_UPDATE
+      PRELOOP_UPDATE_NUMBER=$(cat {update_path}.number)
+      if [ -n "$PRELOOP_UPDATE_NUMBER" ] && [ -s {update_path} ]; then
+        curl -fsS -o /dev/null -X {method} \
+          -H "{authorization}" \
+          -H 'Content-Type: application/json' \
+          --data-binary @{update_path} \
+          "{api_url}/$PRELOOP_UPDATE_NUMBER" \
+          || echo "PRELOOP_PR_METADATA_WARNING: failed to update existing failure disclosure"
+      fi
+"""
 
 
 def build_github_pr_capture_shell(
@@ -286,6 +324,7 @@ def build_github_pr_capture_shell(
         "https://api.github.com/repos/{owner}/{repo}/pulls?state=open&head={owner}:{branch}" \\
         || echo "PR lookup by head branch failed"
       PR_URL=$({grep_pr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
+      {_existing_pr_failure_update_shell(kind="github", api_url=f"https://api.github.com/repos/{owner}/{repo}/pulls", authorization=f"Authorization: token {token_ref}", branch=branch)}
     fi
     if [ -n "$PR_URL" ]; then
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$PR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"github\\"}}"
@@ -314,6 +353,7 @@ def build_gitlab_mr_capture_shell(
         "https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests?state=opened&source_branch={branch}" \\
         || echo "MR lookup by source branch failed"
       MR_URL=$({grep_mr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
+      {_existing_pr_failure_update_shell(kind="gitlab", api_url=f"https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests", authorization=f"PRIVATE-TOKEN: {token_ref}", branch=branch)}
     fi
     if [ -n "$MR_URL" ]; then
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$MR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"gitlab\\"}}"
@@ -4559,6 +4599,14 @@ true
             post_commands = []
 
             for idx, repo_config in enumerate(repositories):
+                publication_base = safe_source
+                if safe_source == safe_target:
+                    publication_base = _validated_git_ref(
+                        self._resolve_resume_base_branch(git_config, repo_config)
+                    )
+                    if not publication_base or publication_base == safe_target:
+                        self.logger.warning("Cannot identify a distinct PR base branch")
+                        continue
                 # Get clone path - handle absolute vs relative paths
                 clone_path = repo_config.get("clone_path", f"/workspace-{idx + 1}")
                 if clone_path.startswith("/"):
@@ -4609,6 +4657,10 @@ true
                     # would miss. Branch names are validated above; do not
                     # shlex.quote mid-token (that yields origin/'feat/x').
                     f'COMMIT_COUNT=$(git rev-list --count origin/{safe_target}..HEAD 2>/dev/null || git rev-list --count {safe_source}..{safe_target} 2>/dev/null || echo "0")',
+                    "PUSH_COMMIT_COUNT=$COMMIT_COUNT",
+                    # Already-pushed commits still need a review surface.
+                    f'BRANCH_COMMIT_COUNT=$(git rev-list --count {publication_base}..HEAD 2>/dev/null || git rev-list --count origin/{publication_base}..HEAD 2>/dev/null || echo "0")',
+                    'if [ "$BRANCH_COMMIT_COUNT" -gt "$COMMIT_COUNT" ]; then COMMIT_COUNT=$BRANCH_COMMIT_COUNT; fi',
                     'if [ "$COMMIT_COUNT" -gt "0" ]; then',
                     f'  echo "Found $COMMIT_COUNT commits on {safe_target}, pushing..."',
                     f"  mkdir -p {EVIDENCE_DIR_PATH}",
@@ -4622,10 +4674,9 @@ true
                         f"2>/dev/null || true"
                     ),
                     f'  echo "Wrote git recovery artifacts under {EVIDENCE_DIR_PATH}"',
-                    # A CLI can exit zero after reporting failure. Preserve
-                    # recovery first, then refuse inline publication. Isolated
-                    # export above remains available for controller handling.
-                    _legacy_result_publication_guard(),
+                    # A verifier authorizes a new push. Already-published work
+                    # still needs its PR and failure disclosure without a push.
+                    'if [ "$PUSH_COMMIT_COUNT" -gt "0" ]; then',
                 ]
 
                 # Publication gate (issue #428): before anything leaves the
@@ -4662,7 +4713,9 @@ true
                     ]
                 )
 
-                # Add PR/MR creation if enabled
+                repo_post_commands.append("fi")
+
+                # Add PR/MR creation if enabled, including already-pushed work.
                 if create_pr and token:
                     pr_create_cmd = self._build_pr_or_mr_create_shell(
                         execution_context=execution_context,
@@ -4672,7 +4725,7 @@ true
                         host_kind=host_kind,
                         repo_url=repo_url,
                         safe_target=safe_target,
-                        safe_source=safe_source,
+                        safe_source=publication_base,
                     )
                     if pr_create_cmd:
                         repo_post_commands.append(pr_create_cmd)

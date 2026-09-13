@@ -2,8 +2,15 @@
 
 This policy names the labels used to assess issues in `preloop/preloop`.
 It is project policy, not a label taxonomy imposed by the generic triage preset.
-An authorized maintainer creates or updates labels; triage only proposes observed
-existing labels. Priority and component labels remain independent.
+Triage updates the issue assessment and applies its complexity label through the
+scoped provider tool. Readiness and risk remain assessments in the issue body;
+this repository also uses the labels below for maintainer-led reviews. Priority
+and component labels remain independent.
+
+The generic triage preset reuses an existing project complexity scheme. It creates
+the standard complexity family below only when none exists in a complete catalogue.
+Ambiguous schemes or missing evidence remain explicit; they do not authorize a
+new competing taxonomy.
 
 ## Assessment labels
 

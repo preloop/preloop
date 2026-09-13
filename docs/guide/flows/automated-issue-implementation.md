@@ -111,6 +111,16 @@ environment digest, profile version, commit and tree) lands in
 `/workspace/evidence/verification/` inside the evidence pack, and the
 compact verdict is stored on the execution result.
 
+A failed implementation report does not discard useful commits. On the ordinary
+post-execution path, commits that pass the configured push gate receive their
+configured PR/MR with the failure reason and an execution link. Already-pushed
+branches, including resumed branches, receive the PR or an updated failure
+notice without another push. Existing PR prose is preserved; the wrapper updates
+only its own notice. Automatically added issue references use `Refs` for failed
+or incomplete reports. The execution remains failed. This path requires the
+agent CLI to reach its post-execution script; it does not change nonzero CLI crash
+recovery or isolated controller publication authorization.
+
 A denied publication fails the execution with the commits and evidence kept
 recoverable (the workspace snapshot and the `verification_failed` /
 `verification_blocked` failure categories tell you which kind of gap it

@@ -1,27 +1,56 @@
 # Issue Triage Assistant preset
 
-Assesses a new or updated issue, reuses labels that already exist on the
-project, and posts a compact triage comment. This first slice is
-**proposals only**: it does not rewrite the issue, create follow-up issues,
-apply labels, or start implementation.
+Triage improves the issue itself and applies its complexity tag. It records
+remaining scope, acceptance, evidence, risks and missing decisions in a replaceable
+section of the issue body. A developer can pick up the issue without reading the
+flow execution output.
 
 The preset ships as `backend/presets/001-issue-triage-assistant.yaml`
-(slug `issue-triage-assistant`).
+(slug `issue-triage-assistant`) and runs for `issue_opened` and `issue_updated`.
 
-## What it does
+## How it updates an issue
 
-| Step | Owner |
-| --- | --- |
-| Match `issue_opened` and `issue_updated` (legacy `issue.opened` clones still match) | flow trigger |
-| Ignore Preloop-bot `issue_updated` loops; human title/body edits still run | flow trigger |
-| Refresh the issue, inspect linked PRs and nearby project context | agent (`get_issue`, `get_pull_request`, `search_issues`) |
-| Propose existing labels; leave missing taxonomy unknown | agent |
-| Post one comment marked `<!-- preloop-triage -->` | agent (`add_comment`) |
-| Write `/workspace/result.json` | agent |
+1. `get_issue_triage_context` reads fresh provider content and a complete, bounded
+   label catalogue for the authorized project. It supplies an expected revision
+   and the permitted complexity scheme.
+2. The agent reconciles linked PRs and available source evidence with the original
+   acceptance. It assesses description quality, readiness, complexity and risk
+   independently, and selects an exact label from the returned scheme.
+3. `apply_issue_triage` writes the assessment and applies that complexity label.
+   It preserves human text outside the managed section and changes labels through
+   provider deltas, removing only obsolete siblings in the selected family.
+4. The tool reads the provider state back and synchronizes the observed issue
+   through CRUD. Its receipt identifies completed operations, conflicts and
+   partial failures. `result.json` records that diagnostic receipt.
 
-The agent has no `create_issue` or `update_issue` tool. GitHub's issue
-update replaces the full label set, so this slice never applies labels from
-the prompt.
+Existing complexity schemes take precedence. Supported vocabulary includes explicit
+complexity, effort, size or difficulty families and unambiguous standalone schemes.
+If no scheme exists, the service establishes `complexity:low`, `complexity:medium`
+and `complexity:high`. An ambiguous or truncated catalogue is not evidence that no
+scheme exists. If complexity cannot be estimated, the issue can still receive its
+assessment with the missing information, but the run reports the absent tag as
+incomplete. It never invents an estimate to fill a field.
+
+The write tool requires the existing `edit_issues` permission and follows normal
+MCP availability and approval policies. Project and tracker identity come from
+account-scoped stored records. The preset does not use broad issue mutation tools,
+change assignees or dispatch labels, create follow-up issues, or start implementation.
+The first provider adapters support GitHub and GitLab. Other providers report an
+unsupported operation rather than claiming an update.
+
+The service checks the issue baseline before mutations and verifies the final
+state. These are optimistic checks, not atomic provider compare-and-swap. A stale
+baseline requires fresh context and re-evaluation. Partial failures retain the
+observed provider state and operation receipts; retrying must account for writes
+that already succeeded. Human edits during the provider read/write window remain
+a documented limitation.
+
+Automatic triage suppresses matching self-generated updates using server-written
+receipts, expected edit fields and provider snapshots. Final receipts also match
+the observed provider update time; pending write expectations expire. Marker text
+alone does not suppress an event. Manual runs and unrelated flows remain eligible,
+as do assignment, reopening and later human edits. Rapid human edits can still
+enqueue multiple runs; this is not durable per-revision coalescing.
 
 ## Manual runs
 
@@ -44,90 +73,57 @@ was created, its ID, status and link remain in the response with a warning. The
 console shows these warnings and run links; inspect an existing run before
 retrying. Other valid issues in the batch continue.
 
-## Result packet
+## Diagnostic result
 
-`result.json` keeps a bounded assessment separate from provider label names:
+Success requires an apply receipt of `updated` or `unchanged`, the confirmed
+complexity tag and successful local synchronization. An assessment only in output
+is not successful triage. Conflicts, missing complexity and partial failures use
+`status: error` with a reason and recovery information.
 
-- `assessment`: existing kind, complexity with rationale/confidence, missing context,
-  acceptance, code/test pointers, dependencies and human-review readiness.
-- Additive assessment objects: `description_quality`, `implementation_readiness`,
-  and `risk`, each with a `value` and `rationale`.
-  `complexity_scope` identifies remaining work or a historical umbrella.
-- `evidence_baseline`: observed `issue_updated_at`, `checkout_revision`,
-  `related_work` and `evidence_limits`. Missing revisions stay null; a PR entry
-  records its observed URL/state/revision and the acceptance it covers.
-- `observed_labels` / `proposed_labels` (existing names only) / `new_label_proposals`
-- `policy_notes`: whether project policy was found; never invent labels
+The packet includes `issue_updated`, `applied_complexity_label`, and `application`
+with the actual status, operations and cache outcome. An unchanged issue sets
+`issue_updated: false`. Existing diagnostic assessment fields remain available:
 
-The original `complexity` vocabulary remains `unknown | small | medium | large`.
-Small maps to low complexity, large to high. The original `readiness` field remains
-`unknown | blocked | ready_for_human_review`; it is not a dispatch signal.
-The new fields use these advisory values:
-
-| Field | Values |
+| Field | Values or content |
 | --- | --- |
-| `description_quality.value` | `unknown`, `clear`, `needs_improvement` |
-| `implementation_readiness.value` | `unknown`, `ready`, `needs_spec`, `blocked`, `in_progress`, `needs_verification` |
-| `risk.value` | `unknown`, `low`, `medium`, `high` |
-| `complexity_scope` | `remaining_change`, `historical_umbrella`, `unknown` |
+| `assessment.complexity` | `unknown`, `small`, `medium`, `large`; separate from the provider label name |
+| `assessment.readiness` | `unknown`, `blocked`, `ready_for_human_review` |
+| `assessment.description_quality` | `unknown`, `clear`, `needs_improvement`, with reasons |
+| `assessment.implementation_readiness` | `unknown`, `ready`, `needs_spec`, `blocked`, `in_progress`, `needs_verification`, with reasons |
+| `assessment.risk` | `unknown`, `low`, `medium`, `high`, with reasons |
+| `assessment.complexity_scope` | `remaining_change`, `historical_umbrella`, `unknown` |
+| `evidence_baseline` | Observed issue update time, checkout revision, related work and evidence limits |
 
-These fields do not change the flow schema. Unsupported assessments stay unknown
-with an explanation of the missing evidence. New label proposals remain empty.
-Existing consumers can continue reading the original fields.
+These diagnostic fields do not replace the assessment on the issue. Small means
+low complexity and large means high, but the applied name follows the project's
+scheme. A merged PR proves code landed; it does not prove all acceptance or
+deployment conditions passed. An acceptance-only tracker needs verification even
+when updating or closing it would take little effort.
 
-## Evidence and implementation readiness
+The preset has no checkout by default. Its tools can read explicitly linked PRs,
+but do not enumerate every project PR. Missing source or provider evidence stays
+explicit; triage does not fabricate code pointers, test commands or remaining
+implementation. Operators can provide scoped source evidence for their projects.
+See the [Preloop repository policy](issue-readiness-policy.md) for the complexity,
+readiness and risk labels used in this repository. End users choose any subsequent
+implementation flow and model; neither preset recommends them.
 
-A clear issue can be complex, risky, already implemented or under active review.
-Triage reconciles linked PR state and current source with remaining acceptance
-before recommending pickup. A merged PR proves code landed; it does not prove
-all acceptance or deployment conditions passed. An acceptance-only tracker needs
-verification, even when updating or closing the issue would take little effort.
+## Implementation freshness and publication
 
-The generic preset has no checkout by default. Its tools do not enumerate every
-project PR or the label catalogue. When those limits prevent confirming remaining
-work or overlap, it records the limitation and leaves unsupported assessments unknown.
-It does not fabricate code pointers, tests or a missing implementation. Operators
-can provide a checkout and scoped evidence appropriate to their own projects.
+Preset 011 refreshes the original issue and uses the controller-bound PR during
+continuations. It reconciles current source, acceptance and linked work, preserves
+unpushed work on divergence, and implements only remaining in-scope behavior.
+Already-satisfied, overlapping or blocked work gets an honest failure report
+without a manufactured commit.
 
-Readiness describes whether the remaining work is specified and testable.
-Complexity describes the implementation effort and interactions; risk describes
-the consequence of a wrong change. A missing design, dependency, source baseline
-or validation path is recorded directly in the readiness assessment. Good prose
-or low complexity alone does not establish readiness. See the
-[Preloop repository policy](issue-readiness-policy.md) for one project-specific
-mapping of complexity, readiness and risk to labels. End users decide which
-implementation flow and model, if any, to use; the presets do not recommend them.
+Useful commits from a failed implementation remain reviewable. In the inline
+publication path, a failed result report does not veto publication: a pushed
+branch receives its configured PR/MR with the failure reason and execution link.
+Partial work references the issue instead of automatically claiming to close it.
+Publishing a PR does not turn a failed execution into a successful one. The
+separate configured verifier still controls pre-push checks. This metadata path
+does not recover every CLI crash or change isolated publication authorization.
 
-## Implementation freshness
-
-Preset 011 refreshes the original issue even when its trigger packet looks
-complete. A continuation uses the controller-bound PR and original criteria,
-checks current source and linked PRs, and preserves unpushed work on divergence.
-It implements only remaining in-scope behavior, with targeted tests, while retaining
-the trusted verifier's required checks. Unknown scope expansion takes the existing
-critical-decision path instead of becoming speculative work.
-
-If there is no actionable implementation, active overlapping work or an unresolved
-blocker, the agent reports the existing `status: failure` completion outcome with
-an advisory `reason_code` (`already_satisfied`, `overlapping_work`, `blocked`, or
-`scope_expansion`). It does not manufacture an empty commit or success PR metadata.
-The report also adds `evidence_baseline` with observed issue/repository revisions,
-related work and remaining acceptance. These are report fields, not new execution
-states. The shared legacy publication path also refuses explicit failed or invalid
-result artifacts after preserving recovery data, even when the CLI exits zero.
-Missing artifacts retain legacy compatibility; a successful report still cannot
-bypass the trusted verification gate. A satisfied issue is not automatically closed. A partial implementation
-uses a reference to the issue rather than a closing directive.
-
-Changing preset files alone does not deploy or synchronize saved flows. The normal
-preset synchronization can propagate uncustomized fields to linked flows; customized
-flows retain the update-review path and notifications. Review that behavior before
-running synchronization. These changes do not enable isolated publication mode or
-automatically assign an issue to an implementation flow.
-
-## Not in this slice
-
-- Atomic managed-label apply
-- Durable per-revision coalescing (rapid human edits can still enqueue more than one run)
-- Model/harness routing
-- Automatic implementation handoff or an `agent-ready` default
+Changing preset files does not synchronize saved flows. The normal synchronization
+path can update uncustomized fields on linked flows; customized flows retain their
+update-review path. These changes do not enable an automatic implementation handoff.

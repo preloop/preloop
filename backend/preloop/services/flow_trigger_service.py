@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 import logging
 import threading
 import uuid
@@ -8,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
 
-from preloop.models.crud import crud_flow, crud_flow_execution
+from preloop.models.crud import crud_flow, crud_flow_execution, crud_issue
 from preloop.models.models import Flow
 from preloop.models.models.flow_execution import FlowExecution
 from preloop.services.model_routing import (
@@ -33,6 +34,7 @@ from preloop.services.webhook_delivery_dedupe import (
 )
 from preloop.utils.workspace_seed import attach_workspace_file_paths
 from preloop.models.db.session import get_session_factory
+from preloop.schemas.issue_triage import provider_revision
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,19 @@ def _label_names_from_payload(payload: Dict[str, Any]) -> List[str]:
         _add(obj_attrs.get("labels"))
     _add(payload.get("label"))
     return names
+
+
+def _triage_timestamp(value: Any) -> Optional[datetime]:
+    """Parse provider timestamps without treating a timezone-less value as UTC."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(
+            value.replace(" UTC", "+00:00").replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 class FlowDispatchError(Exception):
@@ -1061,6 +1076,109 @@ class FlowTriggerService:
 
         return False
 
+    def _is_triage_self_update(self, flow: Flow, event_data: Dict[str, Any]) -> bool:
+        """Match a complete issue snapshot to trusted triage write receipts.
+
+        PAT-backed writes may have a human sender. Only automatic triage flows
+        are coalesced, and marker text alone never establishes a self-update.
+        Pending exact snapshots expire; a verified final snapshot may persist.
+        """
+        if event_data.get("type") != "issue_updated":
+            return False
+        selected_tools = flow.allowed_mcp_tools
+        if not isinstance(selected_tools, list) or not any(
+            isinstance(tool, dict)
+            and tool.get("name") == "apply_issue_triage"
+            and tool.get("source") in (None, "builtin")
+            and not tool.get("mcp_server_id")
+            and not tool.get("server_id")
+            for tool in selected_tools
+        ):
+            return False
+        account_id = event_data.get("account_id")
+        tracker_id = event_data.get("tracker_id")
+        if not account_id or not tracker_id:
+            return False
+        payload = event_data.get("payload")
+        if not isinstance(payload, dict):
+            return False
+        source = event_data.get("source")
+        changes = payload.get("changes")
+        if not isinstance(changes, dict) or not changes:
+            return False
+        if source == "github":
+            if payload.get("action") != "edited" or not set(changes) <= {
+                "title",
+                "body",
+            }:
+                return False
+            subject = payload.get("issue")
+            body_key, url_key = "body", "html_url"
+        elif source == "gitlab":
+            if payload.get("object_kind") != "issue":
+                return False
+            subject = payload.get("object_attributes")
+            body_key, url_key = "description", "url"
+            substantive = {"title", "description", "labels"}
+            if (
+                not isinstance(subject, dict)
+                or subject.get("action") != "update"
+                or not set(changes) & substantive
+                or not set(changes) <= substantive | {"updated_at", "updated_by_id"}
+            ):
+                return False
+        else:
+            return False
+        if not isinstance(subject, dict) or body_key not in subject:
+            return False
+        title, body = subject.get("title"), subject.get(body_key)
+        url, state = subject.get(url_key), subject.get("state")
+        if body is None:
+            body = ""
+        if not all(isinstance(value, str) for value in (title, body, url, state)):
+            return False
+        labels = subject.get("labels", payload.get("labels"))
+        if not isinstance(labels, list):
+            return False
+        names: List[str] = []
+        for label in labels:
+            name = _label_name(label)
+            if name is None:
+                return False
+            names.append(name)
+        issue = crud_issue.get_by_external_url(
+            self.db, external_url=url, account_id=str(account_id)
+        )
+        if issue is None or str(issue.tracker_id) != str(tracker_id):
+            return False
+        if event_data.get("project_id") and str(issue.project_id) != str(
+            event_data["project_id"]
+        ):
+            return False
+        receipt = (issue.meta_data or {}).get("preloop_triage")
+        if not isinstance(receipt, dict):
+            return False
+        revision = provider_revision(
+            title, body, names, "open" if state == "opened" else state
+        )
+        observed_time = _triage_timestamp(subject.get("updated_at"))
+        recorded_time = _triage_timestamp(receipt.get("provider_updated_at"))
+        if revision == receipt.get("provider_revision"):
+            # A later human event can return to identical content. Do not
+            # fall back to pending intent when its verified time differs.
+            return observed_time is not None and observed_time == recorded_time
+        expected = receipt.get("expected_revisions")
+        expires_at = receipt.get("expires_at")
+        if (
+            not isinstance(expected, list)
+            or len(expected) > 8
+            or revision not in expected
+            or not isinstance(expires_at, str)
+        ):
+            return False
+        expiry = _triage_timestamp(expires_at)
+        return expiry is not None and expiry > datetime.now(timezone.utc)
+
     async def process_event(self, event_data: Dict[str, Any]):
         """
         Process an incoming event and trigger any matching flows.
@@ -1147,6 +1265,13 @@ class FlowTriggerService:
                     logger.warning(
                         f"Skipping disabled flow '{flow.name}' ({flow.id}). "
                         f"To enable this flow, set is_enabled=true via the API or UI."
+                    )
+                    continue
+
+                if self._is_triage_self_update(flow, event_data):
+                    logger.info(
+                        "Skipping triage flow %s for its recorded issue update",
+                        flow.id,
                     )
                     continue
 

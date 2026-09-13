@@ -51,6 +51,8 @@ from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import require_permission
 
 from preloop.tools.builtin_defs import (
+    APPLY_ISSUE_TRIAGE_TOOL,
+    GET_ISSUE_TRIAGE_CONTEXT_TOOL,
     ASK_USER_TOOL,
     PERMISSION_PROMPT_TOOL,
     REQUEST_APPROVAL_TOOL,
@@ -64,6 +66,8 @@ router = APIRouter()
 # Define builtin tools metadata
 # NOTE: Implementations live in initialize_mcp.py; shared defs in builtin_defs.py
 BUILTIN_TOOLS = [
+    GET_ISSUE_TRIAGE_CONTEXT_TOOL,
+    APPLY_ISSUE_TRIAGE_TOOL,
     REQUEST_APPROVAL_TOOL,
     ASK_USER_TOOL,
     PERMISSION_PROMPT_TOOL,

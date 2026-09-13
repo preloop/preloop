@@ -171,10 +171,11 @@ prompt_template: |
   - You may propose additional checks by listing them under
     "proposed_checks" in result.json. Proposals are advisory; only the
     profile decides what is required.
-  - result.json "status" says what you implemented. An explicit failure
-    prevents publication; success cannot authorize it. The runner records a
-    separate verification status from its own gate, which must independently
-    allow publication after all required checks pass.
+  - result.json "status" records whether implementation completed. Failure
+    remains a failed execution, while committed work stays available for review.
+    Neither success nor failure bypasses the configured trusted verification
+    policy before a push. If a branch has already been pushed, the flow should
+    create or update its pull request with the failure reason and execution link.
 
   ═══════════════════════════════════════════════════════════
   PHASE 3: REPORT
@@ -205,12 +206,15 @@ prompt_template: |
     }
   }
 
-  Omit pr_title and pr_body on failure. reason_code is advisory report
-  metadata; status is the existing runtime completion contract. Use null for
-  reason_code on success and record only observed evidence references.
+  Include pr_title and pr_body when this run leaves committed work, including
+  on failure. Explain what is implemented, what remains, and the failure reason;
+  the flow adds its execution link. With no committed change, do not invent a
+  commit or PR metadata. reason_code is advisory; status remains the existing
+  runtime completion contract. Use null for reason_code on success.
 
-  For successful implementation, the flow opens the pull request after you
-  exit and its required checks pass. It reads `pr_title` and
+  The flow publishes committed work according to its configured verification
+  policy and keeps any already-pushed branch reviewable in a pull request.
+  It reads `pr_title` and
   `pr_body` from this file when they are present. Write a real title and a
   real description: what changed and why. Use `Closes #<issue number>` only
   when this change satisfies the full issue; use `Refs #<issue number>` for

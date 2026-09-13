@@ -284,10 +284,10 @@ class TestVerificationGate:
 
     def test_prompt_distinguishes_implemented_from_verified(self, preset):
         prompt = _norm(preset["prompt_template"])
-        assert 'result.json "status" says what you implemented' in prompt
-        assert "An explicit failure prevents publication" in prompt
-        assert "success cannot authorize it" in prompt
-        assert "must independently allow publication" in prompt
+        assert 'result.json "status" records whether implementation completed' in prompt
+        assert "Failure remains a failed execution" in prompt
+        assert "Neither success nor failure bypasses" in prompt
+        assert "If a branch has already been pushed" in prompt
 
     def test_prompt_points_unrunnable_checks_at_skipped(self, preset):
         prompt = _norm(preset["prompt_template"])
@@ -397,7 +397,10 @@ class TestFreshnessContract:
             in prompt
         )
         assert "Do not create an empty commit" in prompt
-        assert "Omit pr_title and pr_body on failure" in prompt
+        assert (
+            "Include pr_title and pr_body when this run leaves committed work" in prompt
+        )
+        assert "including on failure" in prompt
         assert "Never report success for work you did not do" in prompt
 
     def test_bounded_work_preserves_trusted_gate(self, prompt: str) -> None:

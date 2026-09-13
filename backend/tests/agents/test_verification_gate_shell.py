@@ -457,6 +457,9 @@ class TestLegacyReportedOutcome:
         profile: dict | None = None,
         isolated: bool = False,
         checkpoint_enabled: bool = True,
+        provider: str = "github",
+        existing: bool = False,
+        resume: bool = False,
     ) -> subprocess.CompletedProcess:
         import os
         import shlex
@@ -480,15 +483,37 @@ class TestLegacyReportedOutcome:
             'if [ "$1" = push ]; then exit 0; fi\n'
             f'exec {shlex.quote(real_git)} "$@"\n'
         )
+        import sys
+
+        url = (
+            "https://github.com/example/widgets/pull/1"
+            if provider == "github"
+            else "https://gitlab.example.com/example/widgets/-/merge_requests/1"
+        )
+        response = {
+            "number": 1,
+            "iid": 1,
+            "html_url": url,
+            "web_url": url,
+            "head": {"ref": "preloop/issue-1"},
+            "source_branch": "preloop/issue-1",
+            "body": "Human introduction\n",
+            "description": "Human introduction\n",
+        }
         (executable_dir / "curl").write_text(
-            "#!/bin/sh\n"
-            f"echo called >> {shlex.quote(str(provider_calls))}\n"
-            'while [ "$#" -gt 0 ]; do\n'
-            '  if [ "$1" = -o ]; then shift; output="$1"; fi\n'
-            "  shift\n"
-            "done\n"
-            'printf \'{"number":1,"html_url":"https://github.com/example/widgets/pull/1"}\' > "$output"\n'
-            "printf 201\n"
+            f"#!{sys.executable}\n"
+            "import json, pathlib, sys\n"
+            f"calls = pathlib.Path({str(provider_calls)!r})\n"
+            "args = sys.argv[1:]\n"
+            "method = args[args.index('-X') + 1] if '-X' in args else 'GET'\n"
+            "with calls.open('a') as stream: stream.write(method + '\\n')\n"
+            "output = args[args.index('-o') + 1]\n"
+            f"response = {response!r}\n"
+            f"existing = {existing!r}\n"
+            "if method == 'GET': response = [response]\n"
+            "elif method == 'POST' and existing: response = {'message': 'already exists'}\n"
+            "pathlib.Path(output).write_text(json.dumps(response))\n"
+            "print('422' if method == 'POST' and existing else '201', end='')\n"
         )
         for executable in executable_dir.iterdir():
             executable.chmod(0o755)
@@ -497,7 +522,11 @@ class TestLegacyReportedOutcome:
             "create_pull_request": True,
             "repositories": [
                 {
-                    "repository_url": "https://github.com/example/widgets.git",
+                    "repository_url": (
+                        "https://github.com/example/widgets.git"
+                        if provider == "github"
+                        else "https://gitlab.example.com/example/widgets.git"
+                    ),
                     "clone_path": str(repo.repo),
                     "tracker_id": "tracker-1",
                 }
@@ -508,11 +537,13 @@ class TestLegacyReportedOutcome:
         if isolated:
             config["publication_mode"] = "isolated"
         context = {
+            "execution_id": "08095fd6-f861-4939-997d-2600d1ec5a80",
+            "trigger_event_data": {"issue": {"number": 1}},
             "git_clone_config": config,
             "_git_target_branch": "preloop/issue-1",
-            "_git_source_branch": "main",
+            "_git_source_branch": "preloop/issue-1" if resume else "main",
             "git_credentials_map": {
-                "tracker-1": {"token": "fake-token", "tracker_type": "github"}
+                "tracker-1": {"token": "fake-token", "tracker_type": provider}
             },
         }
         if checkpoint_enabled:
@@ -537,6 +568,7 @@ class TestLegacyReportedOutcome:
         monkeypatch.setenv("PRELOOP_DISABLE_TELEMETRY", "true")
         env = {**repo.env, **executor._git_credential_env(context)}
         env["PATH"] = str(executable_dir) + os.pathsep + env["PATH"]
+        (repo.repo.parent / "post-execution.sh").write_text(script)
         result = subprocess.run(
             ["bash", "-c", script], env=env, capture_output=True, text=True, timeout=60
         )
@@ -544,33 +576,97 @@ class TestLegacyReportedOutcome:
         return result
 
     @pytest.mark.parametrize("status", ["failure", "failed", "error", " ERROR "])
-    def test_cli_zero_with_failure_never_pushes_or_calls_provider(
-        self, repo: GateRepo, monkeypatch: pytest.MonkeyPatch, status: str
+    @pytest.mark.parametrize("provider", ["github", "gitlab"])
+    def test_cli_zero_with_failure_publishes_reason_and_execution_link(
+        self,
+        repo: GateRepo,
+        monkeypatch: pytest.MonkeyPatch,
+        status: str,
+        provider: str,
     ) -> None:
         repo.add_file("feature.py")
         repo.commit()
         result = self.run_generated(
-            repo, monkeypatch, json.dumps({"status": status}).encode()
+            repo,
+            monkeypatch,
+            json.dumps(
+                {"status": status, "reason": "The integration test still fails."}
+            ).encode(),
+            provider=provider,
         )
-        assert result.returncode != 0, result.stdout + result.stderr
-        assert "PRELOOP_PUBLICATION_REFUSED" in result.stdout
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "push origin" in (repo.repo.parent / "git-calls").read_text()
+        payload = json.loads(
+            (repo.repo.parent / "workspace/evidence/pr-payload.json").read_text()
+        )
+        body = payload["body" if provider == "github" else "description"]
+        assert "The integration test still fails." in body
+        assert "Execution incomplete" in body
+        assert "/console/flows/executions/08095fd6-f861-4939-997d-2600d1ec5a80" in body
+        assert "Refs #1" in body and "Closes #1" not in body
+        assert (
+            json.loads((repo.repo.parent / "workspace/result.json").read_text())[
+                "status"
+            ]
+            == status
+        )
+        assert (repo.repo.parent / "provider-calls").read_text().strip() == "POST"
+
+    @pytest.mark.parametrize("provider", ["github", "gitlab"])
+    @pytest.mark.parametrize("resume", [False, True])
+    def test_already_pushed_commits_refresh_existing_failure_notice(
+        self,
+        repo: GateRepo,
+        monkeypatch: pytest.MonkeyPatch,
+        provider: str,
+        resume: bool,
+    ) -> None:
+        repo.add_file("feature.py")
+        repo.commit()
+        repo._git("update-ref", "refs/remotes/origin/preloop/issue-1", "HEAD")
+        result = self.run_generated(
+            repo,
+            monkeypatch,
+            b'{"status":"failure","reason":"Tests are failing"}',
+            provider=provider,
+            existing=True,
+            resume=resume,
+            profile=dict(PROFILE, unknown_default=[_check_that_fails(repo.evidence)]),
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "PRELOOP_PR_OPENED" in result.stdout
         assert "push origin" not in (repo.repo.parent / "git-calls").read_text()
-        assert not (repo.repo.parent / "provider-calls").exists()
+        assert not (
+            repo.repo.parent / "workspace/evidence/verification/evidence.json"
+        ).exists()
+        payload = json.loads(
+            (repo.repo.parent / "workspace/evidence/pr-failure-update.json").read_text()
+        )
+        body = payload["body" if provider == "github" else "description"]
+        assert body.startswith("Human introduction\n")
+        assert "Tests are failing" in body
+        assert "/console/flows/executions/08095fd6-f861-4939-997d-2600d1ec5a80" in body
+        calls = (repo.repo.parent / "provider-calls").read_text().splitlines()
+        assert calls == ["POST", "GET", "PATCH" if provider == "github" else "PUT"]
 
     @pytest.mark.parametrize(
         "outcome",
         [b"{", b"[]", b"x" * (262144 + 1)],
         ids=["malformed", "non-object", "oversized"],
     )
-    def test_invalid_result_blocks_publication(
+    def test_invalid_result_publishes_with_incomplete_diagnostic(
         self, repo: GateRepo, monkeypatch: pytest.MonkeyPatch, outcome: bytes
     ) -> None:
         repo.add_file("feature.py")
         repo.commit()
         result = self.run_generated(repo, monkeypatch, outcome)
-        assert result.returncode != 0, result.stdout + result.stderr
-        assert "push origin" not in (repo.repo.parent / "git-calls").read_text()
-        assert not (repo.repo.parent / "provider-calls").exists()
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "push origin" in (repo.repo.parent / "git-calls").read_text()
+        payload = json.loads(
+            (repo.repo.parent / "workspace/evidence/pr-payload.json").read_text()
+        )
+        assert "completion could not be confirmed" in payload["body"]
+        assert "Refs #1" in payload["body"]
 
     @pytest.mark.parametrize(
         "outcome", [None, b'{"status":"success"}', b'{"status":"fail"}']
@@ -624,8 +720,8 @@ class TestLegacyReportedOutcome:
         result = self.run_generated(
             repo, monkeypatch, b'{"status":"failure"}', checkpoint_enabled=False
         )
-        assert result.returncode != 0
+        assert result.returncode == 0, result.stdout + result.stderr
         assert (repo.repo.parent / "workspace/evidence/branch.bundle").exists()
         assert (repo.repo.parent / "workspace/evidence/branch.patch").exists()
-        assert "push origin" not in (repo.repo.parent / "git-calls").read_text()
-        assert not (repo.repo.parent / "provider-calls").exists()
+        assert "push origin" in (repo.repo.parent / "git-calls").read_text()
+        assert (repo.repo.parent / "provider-calls").exists()
