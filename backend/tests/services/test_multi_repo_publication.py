@@ -653,11 +653,6 @@ async def test_prepare_hosted_multi_repo_mints_per_repo_read_leases(
         },
         "trigger_event_data": {},
     }
-    read = PublicationLease(
-        "read-only",
-        FIRMWARE,
-        datetime.now(timezone.utc) + timedelta(minutes=10),
-    )
     repo_info = {
         FIRMWARE: "example/firmware",
         APP: "example/companion-app",

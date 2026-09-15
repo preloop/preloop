@@ -2132,7 +2132,7 @@ export class DashboardView extends AuthedElement {
   ) {
     this.fetchingBudget = true;
     try {
-      const [budgetAgents, featuresRes] = await Promise.all([
+      const [budgetAgents] = await Promise.all([
         options.sharedAgents
           ? Promise.resolve(options.sharedAgents)
           : this.managedAgents.length > 0

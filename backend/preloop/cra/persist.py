@@ -352,7 +352,6 @@ def apply_cra_persist_boundary(
         # the operator is not sent after a verdict the platform already fixed.
         reported = revalidated
 
-    error = UNSUPPORTED_ERROR
     safe_failures = failure_strings(reported.failures)
     joined = " ".join(safe_failures).lower()
     if any("no result.json" in item or "no schema" in item for item in safe_failures):

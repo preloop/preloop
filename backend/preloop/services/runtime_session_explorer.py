@@ -787,7 +787,10 @@ class RuntimeSessionExplorerService:
         if meter is not None and meter.applies(model):
             if self._owns_db_session:
                 self.db.expire_on_commit = False
-                release_gateway_session(self.db, preserve=(model,))
+                release_gateway_session(self.db)
+            # EE hosted-spend prepare/applies read already-loaded AIModel
+            # scalars only (account_id, meta_data). expire_on_commit=False
+            # keeps those after close; do not touch relationships here.
             reservation = meter.prepare(
                 self.db,
                 account_id=account_id,

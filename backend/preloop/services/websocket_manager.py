@@ -710,6 +710,7 @@ async def nats_consumer(manager: "WebSocketManager"):
             try:
                 await log_worker_task
             except asyncio.CancelledError:
+                # Expected after log_worker_task.cancel() during shutdown.
                 pass
 
 

@@ -11,7 +11,6 @@ from preloop.api.auth.jwt import (
 )
 
 __all__ = [
-    "auth_router",
     "get_current_user",
     "get_current_active_user",
     "oauth2_scheme",

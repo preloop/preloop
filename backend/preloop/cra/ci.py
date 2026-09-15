@@ -237,6 +237,7 @@ def json_request(
             try:
                 _read_bounded(exc, MAX_ERROR_BODY_BYTES)
             except CraCIError:
+                # Body already bounded; keep the original HTTPError status.
                 pass
         headers_map = {
             k.lower(): v for k, v in (exc.headers.items() if exc.headers else [])

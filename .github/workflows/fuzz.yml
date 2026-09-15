@@ -44,7 +44,7 @@ jobs:
       FUZZ_SECONDS: ${{ github.event_name == 'pull_request' && '60' || '600' }}
 
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -55,7 +55,7 @@ jobs:
           cache: false
 
       - name: Restore trusted fuzz corpus
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.GOCACHE }}/fuzz
           key: fuzz-v1-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('cli/go.mod', 'cli/go.sum') }}
@@ -94,7 +94,7 @@ jobs:
       # PR code via pull_request_target or give a fuzz job write permissions.
       - name: Save trusted coverage corpus
         if: success() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.GOCACHE }}/fuzz
           key: fuzz-v1-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('cli/go.mod', 'cli/go.sum') }}

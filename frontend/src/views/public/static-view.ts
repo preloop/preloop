@@ -21,10 +21,17 @@ export class StaticView extends LitElement {
         flex-direction: column;
         min-height: 100vh;
       }
+      /* The padding is part of the 100% width: as a content-box the column
+         measured viewport + 2 * padding and clipped the right edge of every
+         line on a phone. The max-width includes the same padding so the
+         reading column stays 760px on a desktop. */
       main {
         flex: 1;
-        padding: 3.5rem 1.5rem 5rem;
-        max-width: 760px;
+        box-sizing: border-box;
+        --reading-column-width: 760px;
+        --page-gutter: 1.5rem;
+        padding: 3.5rem var(--page-gutter) 5rem;
+        max-width: calc(var(--reading-column-width) + 2 * var(--page-gutter));
         margin: 0 auto;
         width: 100%;
       }

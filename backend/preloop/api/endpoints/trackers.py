@@ -1,7 +1,7 @@
 """Trackers router for registering and managing issue trackers."""
 
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from pydantic import UUID4, BaseModel, ConfigDict, Field
@@ -48,6 +48,54 @@ from preloop.utils.permissions import require_permission
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Auth types that authenticate through an OAuth App installation instead of a
+# stored API token.
+OAUTH_AUTH_TYPES = ("github_app", "oauth_app")
+
+
+def _apply_tracker_auth(
+    tracker: Tracker, request_data: TrackerTestRequest
+) -> Dict[str, Any]:
+    """Resolve the credentials an existing tracker uses for a test request.
+
+    The add/edit modal sends ``api_key: "unchanged"`` together with the tracker
+    id. For API-token trackers the stored token is substituted. For OAuth App
+    trackers there is no token: the client must be built the same way the
+    scanner and ``get_tracker_client`` build it, with ``auth_type`` and the
+    provider installation id so the factory uses installation tokens.
+
+    Args:
+        tracker: The persisted tracker the request refers to.
+        request_data: The incoming test request; ``api_key`` is updated in place.
+
+    Returns:
+        Extra ``connection_details`` entries carrying the installation binding
+        (empty for API-token trackers).
+
+    Raises:
+        HTTPException: If an OAuth App tracker lost its installation binding.
+    """
+    if tracker.auth_type in OAUTH_AUTH_TYPES:
+        installation = tracker.oauth_installation
+        if installation is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Tracker is bound to an OAuth App installation that no "
+                    "longer exists. Delete and re-create the tracker."
+                ),
+            )
+        # Installation tokens are minted from the installation id; there is no
+        # API key to send.
+        request_data.api_key = ""
+        return {
+            "auth_type": tracker.auth_type,
+            "github_installation_id": installation.external_id,
+        }
+    if request_data.api_key == "unchanged":
+        request_data.api_key = tracker.resolved_api_key
+    return {}
 
 
 def _unique_tracker_name(db: Session, *, base_name: str, account_id: str) -> str:
@@ -733,6 +781,7 @@ async def test_connection_and_list_orgs(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="User account not found"
         )
 
+    auth_details: Dict[str, Any] = {}
     if test_data.tracker_id:
         # Use CRUD layer to get tracker
         tracker = crud_tracker.get_by_id_and_account(
@@ -743,8 +792,7 @@ async def test_connection_and_list_orgs(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Tracker not found or access denied",
             )
-        if test_data.api_key == "unchanged":
-            test_data.api_key = tracker.resolved_api_key
+        auth_details = _apply_tracker_auth(tracker, test_data)
     try:
         client = await create_tracker_client(
             tracker_type=test_data.tracker_type.value,
@@ -753,6 +801,7 @@ async def test_connection_and_list_orgs(
             connection_details={
                 "url": str(test_data.url) if test_data.url else None,
                 **(test_data.connection_details or {}),
+                **auth_details,
             },
         )
         if not client:
@@ -815,6 +864,7 @@ async def list_projects_for_org(
         f"User {current_user.username} listing projects for org {project_data.organization_identifier} "
         f"in tracker type {project_data.tracker_type.value}"
     )
+    auth_details: Dict[str, Any] = {}
     if project_data.tracker_id:
         # Use CRUD layer to get tracker
         tracker = crud_tracker.get_by_id_and_account(
@@ -825,8 +875,7 @@ async def list_projects_for_org(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Tracker not found or access denied",
             )
-        if project_data.api_key == "unchanged":
-            project_data.api_key = tracker.resolved_api_key
+        auth_details = _apply_tracker_auth(tracker, project_data)
     try:
         if project_data.url and not project_data.url.endswith("/"):
             project_data.url = project_data.url + "/"
@@ -837,6 +886,7 @@ async def list_projects_for_org(
             connection_details={
                 "url": str(project_data.url) if project_data.url else None,
                 **(project_data.connection_details or {}),
+                **auth_details,
             },
         )
         if not client:

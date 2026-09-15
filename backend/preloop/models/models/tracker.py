@@ -192,6 +192,15 @@ class Tracker(Base):
         return self.oauth_installation_id
 
     @property
+    def github_installation_target_login(self) -> Optional[str]:
+        """Login of the account the bound OAuth App installation targets.
+
+        ``None`` for API-token trackers or when the installation was removed.
+        """
+        installation = self.oauth_installation
+        return installation.target_name if installation is not None else None
+
+    @property
     def resolved_api_key(self) -> str:
         """Return the tracker API key/token, decrypting the SecretReference.
 

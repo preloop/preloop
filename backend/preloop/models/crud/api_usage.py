@@ -4,8 +4,18 @@ from datetime import datetime, timedelta, timezone
 import logging
 from types import SimpleNamespace
 import uuid
-from typing import Any, Dict, List, Optional, Sequence, Union
-from sqlalchemy import Float, String, and_, case, cast, func, or_, select
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
+from sqlalchemy import (
+    Float,
+    String,
+    and_,
+    case,
+    cast,
+    func,
+    literal_column,
+    or_,
+    select,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
@@ -1282,6 +1292,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         flow_execution_id: Optional[str] = None,
         api_key_id: Optional[str] = None,
         ai_model_ids: Optional[Sequence[str]] = None,
+        failed_since: Optional[Mapping[str, datetime]] = None,
         limit: Optional[int] = 20,
     ) -> List[Dict[str, Any]]:
         """Group gateway usage by model.
@@ -1300,6 +1311,12 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 SQL, before the row limit, so callers that need a total for a
                 known set of models cannot lose rows to the limit. An empty
                 sequence yields no rows.
+            failed_since: Optional mapping of model id to a moment to count
+                failures after. The console uses it to answer "how many times
+                has this failed since it was marked fixed?" without a second
+                pass over the usage table: the count is another conditional
+                SUM in this aggregate, so it costs no extra query. Models
+                absent from the mapping get ``0``.
             limit: Maximum number of grouped rows, ordered by request count
                 descending. Pass ``None`` to return every group — required by
                 callers that SUM the result (e.g. spend caps), since a
@@ -1309,8 +1326,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         Returns:
             One dict per (model, alias, provider) group with request counts,
             token totals, estimated cost, how many of those requests carried no
-            price, how many were priced at exactly zero, how many failed, and
-            when the model was last called.
+            price, how many were priced at exactly zero, how many failed, when
+            the model was last called, when it last failed, and how many of the
+            failures came after the ``failed_since`` moment for that model.
         """
         # A request with no price and a request priced at zero look identical
         # in a cost total and mean opposite things: the first is a hole in the
@@ -1328,6 +1346,28 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             ApiUsage.estimated_cost == 0,
             ApiUsage.total_tokens > 0,
         )
+        failed_condition = ApiUsage.status_code >= 400
+        # One OR branch per model the caller asked about, which is bounded by
+        # the models on the page. Without a mapping the column is a constant,
+        # so the plan is exactly what it was before this argument existed.
+        if failed_since:
+            failed_since_condition = and_(
+                failed_condition,
+                or_(
+                    *[
+                        and_(
+                            ApiUsage.ai_model_id == model_id,
+                            ApiUsage.timestamp > moment,
+                        )
+                        for model_id, moment in failed_since.items()
+                    ]
+                ),
+            )
+            failed_since_column = func.coalesce(
+                func.sum(case((failed_since_condition, 1), else_=0)), 0
+            )
+        else:
+            failed_since_column = literal_column("0")
         query = db.query(
             ApiUsage.ai_model_id,
             ApiUsage.model_alias,
@@ -1347,10 +1387,17 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             func.coalesce(func.sum(case((zero_priced_condition, 1), else_=0)), 0).label(
                 "zero_priced_request_count"
             ),
-            func.coalesce(
-                func.sum(case((ApiUsage.status_code >= 400, 1), else_=0)), 0
-            ).label("failed_request_count"),
+            func.coalesce(func.sum(case((failed_condition, 1), else_=0)), 0).label(
+                "failed_request_count"
+            ),
+            failed_since_column.label("failed_request_count_since"),
             func.max(ApiUsage.timestamp).label("last_request_at"),
+            # The newest failure, which is what the console fingerprints an
+            # "attention" item with: one more failure after a dismissal
+            # changes this value and brings the item back.
+            func.max(case((failed_condition, ApiUsage.timestamp), else_=None)).label(
+                "last_failure_at"
+            ),
             *cache_split_columns(),
         ).filter(
             # Aggregate by model identity; aliases that share ai_model_id still
@@ -1406,7 +1453,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 "unpriced_request_count": int(row.unpriced_request_count or 0),
                 "zero_priced_request_count": int(row.zero_priced_request_count or 0),
                 "failed_request_count": int(row.failed_request_count or 0),
+                "failed_request_count_since": int(row.failed_request_count_since or 0),
                 "last_request_at": row.last_request_at,
+                "last_failure_at": row.last_failure_at,
                 **cache_split_from_row(row),
             }
             for row in rows

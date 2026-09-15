@@ -17,6 +17,12 @@ export interface Tracker {
   url?: string | null;
   last_validation?: string | null;
   last_updated?: string;
+  /** 'api_token' (default), 'github_app' or 'oauth_app'. */
+  auth_type?: string;
+  /** Internal id of the bound OAuth App installation (OAuth auth types only). */
+  oauth_installation_id?: string | null;
+  /** Login of the account the bound installation targets (OAuth auth types only). */
+  github_installation_target_login?: string | null;
   scope_rules?: Array<{
     scope_type: string;
     rule_type: string;

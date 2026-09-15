@@ -585,3 +585,347 @@ describe('AIModelsView', () => {
     expect(format.formatCurrency(0)).to.equal('$0.00');
   });
 });
+
+/**
+ * The Models page used to count and flag every model with a failure in the
+ * window, ignoring the dismissals the Overview and the attention inbox honour.
+ * A model marked fixed kept its red badge for as long as the window remembered
+ * the failure, which is what taught people to ignore the badge.
+ */
+describe('AIModelsView attention dismissals', () => {
+  let fetchStub: sinon.SinonStub;
+  let connectStub: sinon.SinonStub;
+  let subscribeStub: sinon.SinonStub;
+  let dismissalsResponse: any[];
+  let dismissalsSupported: boolean;
+  let dismissalWrites: { url: string; method: string; body: any }[];
+  let overviewRequests: string[];
+  let lastFailureAt: string;
+  let failedRequestsSince: number;
+  let extraAliasFailures: {
+    alias: string;
+    last_failure_at: string;
+    failed_requests: number;
+    failed_requests_since: number | null;
+  }[];
+
+  const json = (data: unknown) =>
+    new Response(JSON.stringify(data), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  const overviewRow = (failedSinceAsked: boolean) => ({
+    ai_model_id: 'model-1',
+    model_name: 'Reviewer model',
+    provider_name: 'example-provider',
+    model_identifier: 'example-model-1',
+    model_alias: 'example/reviewer',
+    is_default: false,
+    total_requests: 40,
+    successful_requests: 31,
+    failed_requests: 9,
+    token_usage: {
+      prompt_tokens: 100,
+      completion_tokens: 100,
+      total_tokens: 200,
+    },
+    estimated_cost: 1.5,
+    unpriced_request_count: 0,
+    active_session_count: 0,
+    last_request_at: '2026-09-14T10:00:00Z',
+    last_failure_at: lastFailureAt,
+    last_failure_alias: 'example/reviewer',
+    failed_requests_since: failedSinceAsked ? failedRequestsSince : null,
+    alias_failures: [
+      {
+        alias: 'example/reviewer',
+        last_failure_at: lastFailureAt,
+        failed_requests: 9,
+        failed_requests_since: failedSinceAsked ? failedRequestsSince : null,
+      },
+      ...extraAliasFailures,
+    ],
+    pricing_source: 'catalog',
+  });
+
+  beforeEach(() => {
+    localStorage.removeItem('preloop.models.view_mode');
+    localStorage.setItem('accessToken', 'test-access-token');
+    dismissalsResponse = [];
+    dismissalsSupported = true;
+    dismissalWrites = [];
+    overviewRequests = [];
+    lastFailureAt = '2026-09-14T09:00:00Z';
+    failedRequestsSince = 2;
+    extraAliasFailures = [];
+
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+
+        if (url.startsWith('/api/v1/attention/dismissals')) {
+          if (!dismissalsSupported) {
+            return new Response('{"detail":"Not Found"}', { status: 404 });
+          }
+          const method = (init?.method || 'GET').toUpperCase();
+          if (method === 'GET') {
+            return json({ items: dismissalsResponse });
+          }
+          const body = JSON.parse(String(init!.body));
+          dismissalWrites.push({ url, method, body });
+          const record = {
+            id: 'dismissal-1',
+            item_id: decodeURIComponent(url.split('/').pop()!),
+            fingerprint: body.fingerprint,
+            reason: body.reason,
+            snooze_until: null,
+            dismissed_by_user_id: 'user-1',
+            dismissed_by_username: 'Jane Doe',
+            created_at: '2026-09-14T09:30:00Z',
+          };
+          dismissalsResponse = [record];
+          return json(record);
+        }
+
+        if (url === '/api/v1/ai-models') {
+          return json([
+            {
+              id: 'model-1',
+              name: 'Reviewer model',
+              provider_name: 'example-provider',
+              model_identifier: 'example-model-1',
+              meta_data: {
+                gateway: { enabled: true, model_alias: 'example/reviewer' },
+              },
+              is_default: false,
+              created_at: '2026-09-01T10:00:00Z',
+              updated_at: '2026-09-14T10:00:00Z',
+            },
+          ]);
+        }
+
+        if (url.startsWith('/api/v1/ai-models/overview')) {
+          overviewRequests.push(url);
+          return json({
+            period_start: '2026-08-15T00:00:00Z',
+            period_end: '2026-09-14T23:59:59Z',
+            models: [overviewRow(url.includes('failed_since'))],
+          });
+        }
+
+        return new Response(
+          JSON.stringify({ detail: `Unhandled request: ${url}` }),
+          { status: 500, headers: { 'Content-Type': 'application/json' } }
+        );
+      });
+
+    connectStub = sinon.stub(unifiedWebSocketManager, 'connect').resolves();
+    subscribeStub = sinon
+      .stub(unifiedWebSocketManager, 'subscribe')
+      .callsFake(() => () => undefined);
+  });
+
+  afterEach(() => {
+    fetchStub.restore();
+    connectStub.restore();
+    subscribeStub.restore();
+    localStorage.clear();
+  });
+
+  const mount = async (): Promise<AIModelsView> => {
+    const element = (await fixture(
+      html`<ai-models-view></ai-models-view>`
+    )) as AIModelsView;
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'AI models view did not finish loading'
+    );
+    await element.updateComplete;
+    return element;
+  };
+
+  const healthBadge = (element: AIModelsView) =>
+    element.shadowRoot!.querySelector(
+      'tr[data-model-id="model-1"] sl-badge.status-chip'
+    ) as HTMLElement;
+
+  it('flags a failing model nobody has acknowledged', async () => {
+    const element = await mount();
+
+    expect((element as any).modelsNeedingAttentionCount).to.equal(1);
+    expect(healthBadge(element).textContent!.trim()).to.equal('Attention');
+    // Nothing is acknowledged, so there is no "since" count to ask for.
+    expect(overviewRequests.some((url) => url.includes('failed_since'))).to.be
+      .false;
+  });
+
+  it('does not flag a model whose failures were marked fixed', async () => {
+    dismissalsResponse = [
+      {
+        id: 'dismissal-1',
+        item_id: 'model:example/reviewer',
+        fingerprint: `last:${lastFailureAt}`,
+        reason: 'fixed',
+        snooze_until: null,
+        dismissed_by_user_id: 'user-1',
+        dismissed_by_username: 'Jane Doe',
+        created_at: '2026-09-14T09:30:00Z',
+      },
+    ];
+
+    const element = await mount();
+
+    expect((element as any).modelsNeedingAttentionCount).to.equal(0);
+    const badge = healthBadge(element);
+    expect(badge.textContent!.trim()).to.equal('Healthy');
+    // The claim stays checkable: the badge says when it was made.
+    expect(badge.getAttribute('title')).to.contain('Marked fixed');
+    // An acknowledged model offers no second dismissal.
+    expect(
+      element.shadowRoot!.querySelector('[data-testid="dismiss-model-1"]')
+    ).to.equal(null);
+  });
+
+  it('still counts an acknowledged model that has unpriced requests', async () => {
+    dismissalsResponse = [
+      {
+        id: 'dismissal-1',
+        item_id: 'model:example/reviewer',
+        fingerprint: `last:${lastFailureAt}`,
+        reason: 'fixed',
+        snooze_until: null,
+        dismissed_by_user_id: 'user-1',
+        dismissed_by_username: 'Jane Doe',
+        created_at: '2026-09-14T09:30:00Z',
+      },
+    ];
+    const element = await mount();
+    const overview = new Map((element as any).modelOverview);
+    overview.set('model-1', {
+      ...(overview.get('model-1') as any),
+      unpriced_request_count: 4,
+    });
+    (element as any).modelOverview = overview;
+    await element.updateComplete;
+
+    // Dismissing a failure says nothing about a missing price.
+    expect((element as any).modelsNeedingAttentionCount).to.equal(1);
+  });
+
+  it('flags the model again after a newer failure and counts only the new ones', async () => {
+    dismissalsResponse = [
+      {
+        id: 'dismissal-1',
+        item_id: 'model:example/reviewer',
+        // Acknowledged an older failure than the one the window now reports.
+        fingerprint: 'last:2026-09-13T08:00:00Z',
+        reason: 'fixed',
+        snooze_until: null,
+        dismissed_by_user_id: 'user-1',
+        dismissed_by_username: 'Jane Doe',
+        created_at: '2026-09-13T08:30:00Z',
+      },
+    ];
+
+    const element = await mount();
+    await waitUntil(
+      () =>
+        Boolean(
+          element.shadowRoot!.querySelector(
+            '[data-testid="since-marker-model-1"]'
+          )
+        ),
+      'the failures-since line never rendered'
+    );
+
+    expect((element as any).modelsNeedingAttentionCount).to.equal(1);
+    expect(healthBadge(element).textContent!.trim()).to.equal('Attention');
+    const since = element.shadowRoot!.querySelector(
+      '[data-testid="since-marker-model-1"]'
+    )!;
+    // The news is what arrived after the fix, not the window's whole tally.
+    expect(since.textContent!.replace(/\s+/g, ' ')).to.contain(
+      '2 failed since fix'
+    );
+    const splitRequest = overviewRequests.find((url) =>
+      url.includes('failed_since')
+    )!;
+    expect(splitRequest).to.exist;
+    expect(decodeURIComponent(splitRequest)).to.contain(
+      'failed_since=model-1:2026-09-13T08:00:00Z'
+    );
+  });
+
+  it('keeps a two-alias row flagged after only the newest alias is dismissed', async () => {
+    extraAliasFailures = [
+      {
+        alias: 'example/reviewer-old',
+        last_failure_at: '2026-09-13T08:00:00Z',
+        failed_requests: 4,
+        failed_requests_since: null,
+      },
+    ];
+    dismissalsResponse = [
+      {
+        id: 'dismissal-1',
+        item_id: 'model:example/reviewer',
+        fingerprint: `last:${lastFailureAt}`,
+        reason: 'fixed',
+        snooze_until: null,
+        dismissed_by_user_id: 'user-1',
+        dismissed_by_username: 'Jane Doe',
+        created_at: '2026-09-14T09:30:00Z',
+      },
+    ];
+
+    const element = await mount();
+
+    expect((element as any).modelsNeedingAttentionCount).to.equal(1);
+    expect(healthBadge(element).textContent!.trim()).to.equal('Attention');
+  });
+
+  it('dismisses a row with the item id and fingerprint the inbox uses', async () => {
+    const element = await mount();
+
+    const menu = element.shadowRoot!.querySelector(
+      'tr[data-model-id="model-1"] .dismiss-dropdown sl-menu'
+    )!;
+    menu.dispatchEvent(
+      new CustomEvent('sl-select', { detail: { item: { value: 'snoozed' } } })
+    );
+    await waitUntil(
+      () => dismissalWrites.length > 0,
+      'the dismissal was never written'
+    );
+
+    expect(dismissalWrites[0].method).to.equal('PUT');
+    // The id and fingerprint the inbox derives for the same failures, so a
+    // dismissal made here is honoured there.
+    expect(decodeURIComponent(dismissalWrites[0].url)).to.contain(
+      'model:example/reviewer'
+    );
+    expect(dismissalWrites[0].body).to.deep.equal({
+      fingerprint: `last:${lastFailureAt}`,
+      reason: 'snoozed',
+      snooze_days: 7,
+    });
+
+    await waitUntil(
+      () => healthBadge(element).textContent!.trim() === 'Healthy',
+      'the row stayed flagged after being snoozed'
+    );
+  });
+
+  it('offers no dismiss control against a server without the endpoint', async () => {
+    dismissalsSupported = false;
+
+    const element = await mount();
+
+    expect(healthBadge(element).textContent!.trim()).to.equal('Attention');
+    expect(
+      element.shadowRoot!.querySelector('[data-testid="dismiss-model-1"]')
+    ).to.equal(null);
+  });
+});

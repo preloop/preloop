@@ -15,11 +15,20 @@ import '@shoelace-style/shoelace/dist/components/tree-item/tree-item.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import { consoleDialogStyles } from '../styles/console-dialog';
+import type { Tracker } from './tracker-item.ts';
 
 @customElement('add-tracker-modal')
 export class AddTrackerModal extends LitElement {
   @property({ type: Object })
   tracker: any = null;
+
+  /**
+   * Trackers already on this account, when the parent view has them.
+   * Used to annotate installations that already back a tracker. Does not
+   * hide options or block creating a second tracker on the same installation.
+   */
+  @property({ type: Array })
+  existingTrackers: Tracker[] = [];
 
   /**
    * @internal
@@ -80,6 +89,15 @@ export class AddTrackerModal extends LitElement {
   @state()
   private authMethod: 'api_token' | 'github_app' = 'api_token';
 
+  /**
+   * GitHub App installations already registered on this account. Offered as
+   * a picker when adding a tracker so an App that is already installed on the
+   * target account (GitHub shows its Configure page and never calls our setup
+   * callback) can still be bound.
+   */
+  @state()
+  private installations: api.GitHubInstallation[] = [];
+
   // Properties passed from trackers-view after GitHub OAuth callback
   @property({ type: String })
   githubInstallationId: string | null = null;
@@ -116,13 +134,15 @@ export class AddTrackerModal extends LitElement {
       this.trackerUrl = this.tracker.url;
       this.trackerToken = 'unchanged';
       this.trackerUsername = this.tracker.connection_details?.username;
-      this.authMethod = this.tracker.auth_type || 'api_token';
-      // For GitHub App auth, initialize installation ID from tracker
-      if (
-        this.tracker.auth_type === 'github_app' &&
-        this.tracker.oauth_installation_id
-      ) {
-        this.githubInstallationId = String(this.tracker.oauth_installation_id);
+      this.authMethod = this.isOAuthAuthType(this.tracker.auth_type)
+        ? 'github_app'
+        : 'api_token';
+      // An existing App tracker keeps its installation binding; the backend
+      // resolves it from the tracker id, so no installation id is needed here
+      // (oauth_installation_id is our internal UUID, not GitHub's id).
+      if (this.authMethod === 'github_app') {
+        this.githubTargetLogin =
+          this.tracker.github_installation_target_login ?? null;
       }
       this.selectedOrgs = this.tracker.scope_rules
         .filter(
@@ -167,6 +187,14 @@ export class AddTrackerModal extends LitElement {
     }
   }
 
+  private isOAuthAuthType(authType: string | undefined | null): boolean {
+    return authType === 'github_app' || authType === 'oauth_app';
+  }
+
+  private get isEditingAppTracker(): boolean {
+    return !!this.tracker && this.authMethod === 'github_app';
+  }
+
   async checkGitHubAppAvailability() {
     try {
       const authMethods = await this._api.getTrackerAuthMethods();
@@ -177,6 +205,52 @@ export class AddTrackerModal extends LitElement {
       console.error('Failed to check GitHub App availability:', error);
       this.githubAppConfigured = false;
     }
+    if (this.githubAppConfigured && !this.tracker) {
+      await this.loadExistingInstallations();
+    }
+  }
+
+  private async loadExistingInstallations() {
+    try {
+      this.installations = await this._api.getGitHubInstallations();
+    } catch (error) {
+      console.error('Failed to load GitHub App installations:', error);
+      this.installations = [];
+    }
+  }
+
+  private selectExistingInstallation(installationId: string) {
+    const installation = this.installations.find(
+      (inst) => String(inst.installation_id) === installationId
+    );
+    if (!installation) {
+      return;
+    }
+    this.errorMessage = '';
+    this.trackerType = 'github';
+    this.trackerUrl = 'https://github.com';
+    this.authMethod = 'github_app';
+    this.githubInstallationId = String(installation.installation_id);
+    this.githubTargetLogin = installation.target_login;
+    if (!this.trackerName) {
+      this.trackerName = `GitHub - ${installation.target_login}`;
+    }
+  }
+
+  private installationAlreadyTracking(
+    installation: api.GitHubInstallation
+  ): boolean {
+    return this.existingTrackers.some(
+      (tracker) => tracker.oauth_installation_id === installation.id
+    );
+  }
+
+  private installationLabel(installation: api.GitHubInstallation): string {
+    const label = `${installation.target_login} (${installation.target_type})`;
+    if (this.installationAlreadyTracking(installation)) {
+      return `${label} (already tracking)`;
+    }
+    return label;
   }
   firstUpdated() {
     // Reset state when modal is shown
@@ -349,61 +423,98 @@ export class AddTrackerModal extends LitElement {
           : ''
       }
       ${
-        this.authMethod === 'github_app' && this.githubInstallationId
+        this.isEditingAppTracker
           ? html`
-              <sl-alert variant="success" open>
-                <sl-icon slot="icon" name="check-circle"></sl-icon>
-                Connected to GitHub as
-                <strong>${this.githubTargetLogin}</strong>
+              <sl-alert variant="neutral" open>
+                <sl-icon slot="icon" name="github"></sl-icon>
+                Authenticates through the GitHub App installation
+                ${
+                  this.githubTargetLogin
+                    ? html`for <strong>${this.githubTargetLogin}</strong>`
+                    : ''
+                }.
+                No API token is needed.
               </sl-alert>
             `
-          : this.trackerType === 'github' &&
-              this.githubAppConfigured &&
-              !this.tracker
+          : this.authMethod === 'github_app' && this.githubInstallationId
             ? html`
-                <div style="margin-bottom: 1rem;">
-                  <sl-button
-                    variant="primary"
-                    size="large"
-                    @click=${this.startGitHubOAuth}
-                    .loading=${this.isLoading}
-                    style="width: 100%;"
-                  >
-                    <sl-icon slot="prefix" name="github"></sl-icon>
-                    Connect with GitHub
-                  </sl-button>
-                  <p
-                    style="text-align: center; margin: 0.75rem 0 0.5rem 0; color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-small);"
-                  >
-                    Recommended: One-click OAuth connection
-                  </p>
-                </div>
-                <details style="margin-bottom: 1rem;">
-                  <summary
-                    style="cursor: pointer; color: var(--sl-color-neutral-600); font-size: var(--sl-font-size-small);"
-                  >
-                    Or use an API token instead
-                  </summary>
+                <sl-alert variant="success" open>
+                  <sl-icon slot="icon" name="check-circle"></sl-icon>
+                  Connected to GitHub as
+                  <strong>${this.githubTargetLogin}</strong>
+                </sl-alert>
+              `
+            : this.trackerType === 'github' &&
+                this.githubAppConfigured &&
+                !this.tracker
+              ? html`
+                  <div style="margin-bottom: 1rem;">
+                    <sl-button
+                      variant="primary"
+                      size="large"
+                      @click=${this.startGitHubOAuth}
+                      .loading=${this.isLoading}
+                      style="width: 100%;"
+                    >
+                      <sl-icon slot="prefix" name="github"></sl-icon>
+                      Connect with GitHub
+                    </sl-button>
+                    <p
+                      style="text-align: center; margin: 0.75rem 0 0.5rem 0; color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-small);"
+                    >
+                      Recommended: One-click OAuth connection
+                    </p>
+                    ${
+                      this.installations.length > 0
+                        ? html`
+                            <sl-select
+                              label="Use an existing installation"
+                              name="installation"
+                              placeholder="Select an installation"
+                              help-text="The GitHub App is already installed on these accounts."
+                              @sl-change=${(e: any) =>
+                                this.selectExistingInstallation(
+                                  String(e.target.value)
+                                )}
+                            >
+                              ${this.installations.map(
+                                (inst) => html`
+                                  <sl-option value="${inst.installation_id}">
+                                    ${this.installationLabel(inst)}
+                                  </sl-option>
+                                `
+                              )}
+                            </sl-select>
+                          `
+                        : ''
+                    }
+                  </div>
+                  <details style="margin-bottom: 1rem;">
+                    <summary
+                      style="cursor: pointer; color: var(--sl-color-neutral-600); font-size: var(--sl-font-size-small);"
+                    >
+                      Or use an API token instead
+                    </summary>
+                    <sl-input
+                      type="password"
+                      label="API Key"
+                      name="api_key"
+                      .value=${this.trackerToken}
+                      @sl-input=${(e: any) => (this.trackerToken = e.target.value)}
+                      style="margin-top: 0.5rem;"
+                    ></sl-input>
+                  </details>
+                `
+              : html`
                   <sl-input
                     type="password"
                     label="API Key"
                     name="api_key"
                     .value=${this.trackerToken}
                     @sl-input=${(e: any) => (this.trackerToken = e.target.value)}
-                    style="margin-top: 0.5rem;"
+                    required
                   ></sl-input>
-                </details>
-              `
-            : html`
-                <sl-input
-                  type="password"
-                  label="API Key"
-                  name="api_key"
-                  .value=${this.trackerToken}
-                  @sl-input=${(e: any) => (this.trackerToken = e.target.value)}
-                  required
-                ></sl-input>
-              `
+                `
       }
     `;
   }
@@ -506,6 +617,33 @@ export class AddTrackerModal extends LitElement {
     }
 
     try {
+      if (this.isEditingAppTracker) {
+        // Editing an App tracker: the backend resolves the tracker's own
+        // installation from the tracker id and lists the owners it can see,
+        // so the scope tree only offers ids that match its scope rules.
+        const response = await this._api.validateTrackerToken(
+          this.trackerType,
+          'unchanged',
+          this.trackerUrl,
+          this.trackerUsername,
+          this.tracker.id
+        );
+        if (!response.success) {
+          this.errorMessage = response.message.split('\n')[0];
+          return;
+        }
+        if (!response.orgs || response.orgs.length === 0) {
+          // An empty tree would let Save write scope_rules: [] and wipe the
+          // tracker's scope. Keep the existing rules and explain instead.
+          this.errorMessage =
+            'This installation has no accessible repositories; grant the App access on GitHub first.';
+          return;
+        }
+        this.orgs = response.orgs;
+        this.step = 2;
+        return;
+      }
+
       // For GitHub App auth, complete the installation and save directly
       // Users already select org/repo access during GitHub App installation
       if (this.authMethod === 'github_app' && this.githubInstallationId) {
@@ -514,29 +652,31 @@ export class AddTrackerModal extends LitElement {
           installation_id: this.githubInstallationId,
         });
 
-        // For GitHub App, fetch installations to build scope rules automatically
+        // One tracker is bound to one installation: scope it to that
+        // installation's owner only, not to every installation on the account.
         const installations = await this._api.getGitHubInstallations();
+        const bound = installations.filter(
+          (inst) =>
+            String(inst.installation_id) === String(this.githubInstallationId)
+        );
+        if (bound.length === 0) {
+          this.errorMessage = `GitHub App installation ${this.githubInstallationId} is not registered on this account.`;
+          return;
+        }
         // Use target_id (GitHub org/user ID) as the identifier for scope rules
-        this.orgs = installations.map((inst) => ({
+        this.orgs = bound.map((inst) => ({
           id: String(inst.target_id),
           name: inst.target_login,
           type: inst.target_type,
         }));
 
-        // Auto-select all orgs from the installation (user already selected during GitHub App setup)
+        // Auto-select the installation owner (user already selected access during GitHub App setup)
         this.selectedOrgs = {};
         for (const org of this.orgs) {
           this.selectedOrgs[org.id] = true;
         }
 
-        // Skip step 2 and save directly for new GitHub App trackers
-        if (!this.tracker) {
-          await this.handleSave();
-          return;
-        }
-
-        // For editing existing trackers, show step 2
-        this.step = 2;
+        await this.handleSave();
       } else {
         // Standard API token flow
         const response = await this._api.validateTrackerToken(
@@ -637,11 +777,19 @@ export class AddTrackerModal extends LitElement {
     });
 
     selectedItems.forEach((item) => {
-      const project = item.getAttribute('value');
+      const value = item.getAttribute('value');
+      if (!value) return;
       const org = item.parentElement?.getAttribute('value');
-      if (!org || !project) return;
+      if (!org) {
+        // Top-level item: an organization without project children
+        // (GitHub App trackers scope at the installation owner level).
+        if (value in newSelectedProjects) {
+          newSelectedOrgs[value] = true;
+        }
+        return;
+      }
       newSelectedOrgs[org] = true;
-      newSelectedProjects[org][project] = true;
+      newSelectedProjects[org][value] = true;
     });
 
     this.selectedOrgs = newSelectedOrgs;
@@ -767,10 +915,13 @@ export class AddTrackerModal extends LitElement {
     };
 
     // Add auth-specific fields
-    if (this.authMethod === 'github_app' && this.githubInstallationId) {
+    if (this.authMethod === 'github_app') {
       trackerData.auth_type = 'github_app';
-      trackerData.github_installation_id = this.githubInstallationId;
-      // No API key needed for GitHub App auth
+      // No API key needed for GitHub App auth. On edit the tracker keeps its
+      // existing installation binding, so only new trackers send the id.
+      if (!this.tracker && this.githubInstallationId) {
+        trackerData.github_installation_id = this.githubInstallationId;
+      }
     } else {
       trackerData.auth_type = 'api_token';
       trackerData.api_key = this.trackerToken;

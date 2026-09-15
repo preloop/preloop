@@ -105,7 +105,7 @@ class SecurityMaintenanceService:
     ) -> None:
         self.db = db
         self.account_id = account_id
-        self._now = now or (lambda: _utc_now())
+        self._now = now or _utc_now
 
     def _dispatch_claim_stale_seconds(self) -> int:
         """Reuse the flow-execution claim interval for dispatch leases."""
@@ -1126,13 +1126,15 @@ class SecurityMaintenanceService:
                 progress.baseline_after_id if progress is not None else None
             )
             baselines = self._sweep_page(
-                lambda after_id: crud_security_maintenance.list_pending_baseline_releases(
-                    self.db,
-                    account_id=self.account_id,
-                    now=self._now(),
-                    stale_after_seconds=self._dispatch_claim_stale_seconds(),
-                    limit=SWEEP_LIMIT,
-                    after_id=after_id,
+                lambda after_id: (
+                    crud_security_maintenance.list_pending_baseline_releases(
+                        self.db,
+                        account_id=self.account_id,
+                        now=self._now(),
+                        stale_after_seconds=self._dispatch_claim_stale_seconds(),
+                        limit=SWEEP_LIMIT,
+                        after_id=after_id,
+                    )
                 ),
                 after_id=baseline_after,
             )
@@ -1690,7 +1692,7 @@ class SecurityMaintenanceService:
     async def _open_approval(self, item_id: UUID) -> None:
         tool_id = None
         workflow = None
-        timeout = DEFAULT_APPROVAL_TIMEOUT
+        timeout: int | None = None
         tool_args: dict[str, Any] = {}
         execution_id: str | None = None
         async with crud_security_maintenance.locked(
@@ -1731,7 +1733,7 @@ class SecurityMaintenanceService:
                     "timeout_seconds": release.escalation_after_seconds,
                 },
             }
-        if workflow is None or tool_id is None:
+        if workflow is None or tool_id is None or timeout is None:
             return
         service = self._approval_service()
         try:

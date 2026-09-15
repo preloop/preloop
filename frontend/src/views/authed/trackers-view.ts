@@ -190,8 +190,12 @@ export class TrackersView extends LitElement {
   @state()
   private trackerCount: number | null = null;
 
+  @state()
+  private accountTrackers: Tracker[] = [];
+
   private _handleTrackersChanged(event: CustomEvent) {
     this.trackerCount = event.detail.count ?? 0;
+    this.accountTrackers = event.detail.trackers ?? [];
   }
 
   private _dismissGitHubError() {
@@ -244,6 +248,7 @@ export class TrackersView extends LitElement {
               ? html`<add-tracker-modal
                   .githubInstallationId=${this.githubInstallationId}
                   .githubTargetLogin=${this.githubTargetLogin}
+                  .existingTrackers=${this.accountTrackers}
                   @tracker-added=${this._handleTrackerAdded}
                   @close-modal=${this._closeAddTrackerForm}
                 ></add-tracker-modal>`

@@ -17,10 +17,7 @@ describe('CostView', () => {
   // Per-test reprice POST response; set by banner tests.
   let jobStatus: Record<string, unknown>;
   let repriceResult: Record<string, unknown>;
-  // Optional per-test hooks: onReprice runs when the reprice POST arrives,
-  // summaryResponder (when set) replaces the summary payload per fetch.
   let onReprice: (() => void) | null;
-  let summaryResponder: (() => Record<string, unknown>) | null;
 
   const summary = {
     period_start: '2026-03-01T00:00:00Z',
@@ -89,7 +86,6 @@ describe('CostView', () => {
     summaryPayload = { ...summary };
     featuresPayload = { billing: true };
     onReprice = null;
-    summaryResponder = null;
     jobStatus = {
       id: 'job-1',
       status: 'succeeded',
@@ -127,8 +123,7 @@ describe('CostView', () => {
         });
       }
       if (url.includes('/api/v1/cost/summary')) {
-        const payload = summaryResponder ? summaryResponder() : summaryPayload;
-        return new Response(JSON.stringify(payload), {
+        return new Response(JSON.stringify(summaryPayload), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });

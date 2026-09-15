@@ -999,7 +999,6 @@ async def managed_agent_control_websocket(
     connection_id = ""
     command_subscription = None
     now = datetime.now(UTC)
-    last_presence_at = now
     try:
         async with manager.registration_lock:
             if not await database.run(

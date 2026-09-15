@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.orm.attributes import flag_modified
 
 from ..models.tracker import Tracker, TrackerType
@@ -233,9 +233,14 @@ class CRUDTracker(CRUDBase[Tracker]):
     def get_for_account(
         self, db: Session, *, account_id: str, skip: int = 0, limit: int = 100
     ) -> List[Tracker]:
-        """Get trackers for an account."""
+        """Get trackers for an account.
+
+        Eager-loads ``oauth_installation`` so tracker responses can expose
+        ``github_installation_target_login`` without an N+1 lazy SELECT.
+        """
         return (
             db.query(Tracker)
+            .options(joinedload(Tracker.oauth_installation))
             .filter(Tracker.account_id == str(account_id))
             .filter(Tracker.is_deleted.is_(False))  # Exclude soft-deleted trackers
             .offset(skip)
@@ -433,9 +438,15 @@ class CRUDTracker(CRUDBase[Tracker]):
         account_id: str,
         include_deleted: bool = False,
     ) -> Optional[Tracker]:
-        """Get tracker by ID for a specific account."""
-        query = db.query(Tracker).filter(
-            Tracker.id == str(id), Tracker.account_id == account_id
+        """Get tracker by ID for a specific account.
+
+        Eager-loads ``oauth_installation`` so tracker responses can expose
+        ``github_installation_target_login`` without a follow-up SELECT.
+        """
+        query = (
+            db.query(Tracker)
+            .options(joinedload(Tracker.oauth_installation))
+            .filter(Tracker.id == str(id), Tracker.account_id == account_id)
         )
         if not include_deleted:
             query = query.filter(Tracker.is_deleted.is_(False))

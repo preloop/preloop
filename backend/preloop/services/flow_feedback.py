@@ -67,7 +67,7 @@ def register_thread(
     flow = crud_flow.get(db, id=execution.flow_id)
     policy = feedback_policy(flow)
     if flow is None or not flow.account_id or policy is None:
-        return
+        return None
     details = execution.trigger_event_details or {}
     if details.get("_thread_id"):
         return None

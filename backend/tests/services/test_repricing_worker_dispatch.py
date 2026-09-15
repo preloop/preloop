@@ -105,9 +105,9 @@ async def test_repricing_dispatch_renews_until_sync_work_finishes(
         release.set()
         if outcome == "cancel":
             with pytest.raises(asyncio.CancelledError):
-                await consuming
+                assert await consuming is None
         else:
-            await consuming
+            assert await consuming is None
     assert finished.is_set()
     assert msg.ack.await_count == int(outcome == "success")
     assert msg.nak.await_count == int(outcome == "cancel")

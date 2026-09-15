@@ -3573,7 +3573,6 @@ class TestPublicReviewFindings:
     async def test_sweep_selects_claimable_baselines_with_keyset(
         self, db_session, world, test_user
     ) -> None:
-        service, *_rest = world
         audit_flow = world[4]
         now = datetime.now(UTC).replace(tzinfo=None)
         stale = now - timedelta(seconds=DEFAULT_DISPATCH_CLAIM_STALE_SECONDS + 5)
@@ -3889,7 +3888,6 @@ class TestSweepProgress:
             sweep_security_maintenance,
         )
 
-        _service, *_rest = world
         audit_flow = world[4]
         executions = []
         for n in range(1, 6):

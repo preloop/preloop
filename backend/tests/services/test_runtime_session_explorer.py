@@ -613,6 +613,44 @@ def test_call_interaction_summary_model_bounds_provider_timeout(service):
     assert kwargs["num_retries"] == 0
 
 
+def test_owned_interaction_summary_releases_session_without_preserve(monkeypatch):
+    db = MagicMock()
+    service = RuntimeSessionExplorerService(db=db, owns_db_session=True)
+    model = _make_ai_model()
+    completion = MagicMock()
+    completion.choices = [MagicMock()]
+    completion.choices[0].message.content = '{"title": "T", "summary": "S"}'
+    reservation = MagicMock()
+    reservation.invoke.return_value = completion
+    meter = MagicMock()
+    meter.applies.return_value = True
+    meter.prepare.return_value = reservation
+    released: list[tuple] = []
+
+    def _release(session, *args, **kwargs):
+        released.append((session, args, kwargs))
+
+    monkeypatch.setattr(
+        "preloop.models.db.gateway_session.release_gateway_session", _release
+    )
+    monkeypatch.setattr(
+        "preloop.plugins.get_plugin_manager",
+        lambda: MagicMock(get_service=lambda _name: meter),
+    )
+    monkeypatch.setattr(service, "_to_litellm_model", lambda _model: "openai/gpt-5")
+    monkeypatch.setattr(
+        rse_mod,
+        "build_aux_kwargs",
+        lambda _model, _creds, *, call_site_kwargs: dict(call_site_kwargs),
+    )
+    result = service._call_interaction_summary_model(
+        model, {"api_key": "sk-test"}, payload={}, account_id=uuid.uuid4()
+    )
+    assert result["title"] == "T"
+    assert released == [(db, (), {})]
+    meter.prepare.assert_called_once()
+
+
 # --- summarize_account_runtime_session_interaction -------------------------
 
 

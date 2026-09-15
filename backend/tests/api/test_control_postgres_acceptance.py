@@ -500,7 +500,7 @@ async def test_cancelled_persistence_drains_and_replacement_survives_retirement(
             assert not task.done() and not next_phase.done()
             released.set()
             with pytest.raises(asyncio.CancelledError):
-                await task
+                assert await task is None
             assert await next_phase
             assert not await database.run(
                 lambda db: control._retire_control_presence(db, old)

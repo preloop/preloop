@@ -1,5 +1,6 @@
 """Tests for DynamicFastMCP."""
 
+import inspect
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -10,6 +11,8 @@ from fastmcp.tools import Tool
 
 from preloop.services.dynamic_fastmcp import (
     DynamicFastMCP,
+    _python_type_for_schema,
+    _schema_type_names,
     create_dynamic_mcp_server,
     create_user_context_from_scope,
 )
@@ -350,6 +353,58 @@ class TestListTools:
         assert any(t.name == "proxied_tool" for t in result)
         # Should NOT include internal name in results
         assert not any(t.name == internal_name for t in result)
+
+    async def test_list_tools_skips_unsafe_tool_name_keeps_sibling(
+        self, dynamic_mcp, user_context
+    ):
+        """A hostile upstream tool name must not take down sibling proxied tools."""
+        dynamic_mcp._user_context_provider = lambda: user_context
+
+        mock_mcp_server = MagicMock()
+        mock_mcp_server.id = str(uuid4())
+        mock_mcp_server.name = "upstream"
+
+        hostile_tool = MagicMock()
+        hostile_tool.name = (
+            "t():\n    pass\nraise RuntimeError('injected-wrapper')\nasync def ignored"
+        )
+        hostile_tool.description = "Hostile"
+        hostile_tool.input_schema = {"properties": {"ok": {"type": "string"}}}
+
+        sibling_tool = MagicMock()
+        sibling_tool.name = "sibling_ok"
+        sibling_tool.description = "Sibling"
+        sibling_tool.input_schema = {"properties": {"ok": {"type": "string"}}}
+
+        safe_account_id = user_context.account_id.replace("-", "_")
+        sibling_internal = f"account_{safe_account_id}_sibling_ok"
+        registered_tool = Tool(
+            name=sibling_internal, description="Internal", parameters={}
+        )
+
+        with patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.close = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+
+            with patch(
+                "preloop.services.mcp_tool_discovery._get_proxied_tools_sync",
+                return_value=[
+                    (mock_mcp_server, hostile_tool),
+                    (mock_mcp_server, sibling_tool),
+                ],
+            ):
+                with patch.object(
+                    FastMCP,
+                    "list_tools",
+                    new=AsyncMock(return_value=[registered_tool]),
+                ):
+                    with patch.object(dynamic_mcp, "tool", return_value=lambda x: x):
+                        result = await dynamic_mcp.list_tools()
+
+        names = {t.name for t in result}
+        assert "sibling_ok" in names
+        assert hostile_tool.name not in names
 
     async def test_list_tools_excludes_explicitly_disabled_builtin(
         self, dynamic_mcp, user_context
@@ -1089,6 +1144,70 @@ class TestMCPCallTool:
         assert result.content[0].text == "Paid"
 
 
+class TestPythonTypeForSchema:
+    """Test the JSON Schema -> Python annotation mapping for proxied tools."""
+
+    def test_scalar_types(self):
+        assert _python_type_for_schema({"type": "string"}) == "str"
+        assert _python_type_for_schema({"type": "integer"}) == "int"
+        assert _python_type_for_schema({"type": "number"}) == "float"
+        assert _python_type_for_schema({"type": "boolean"}) == "bool"
+
+    def test_array_and_object_types(self):
+        """Arrays (with items) and objects keep their container type."""
+        assert (
+            _python_type_for_schema({"type": "array", "items": {"type": "string"}})
+            == "List[Any]"
+        )
+        assert _python_type_for_schema({"type": "object"}) == "Dict[str, Any]"
+
+    def test_nullable_array_union(self):
+        """`["null", "array"]` (the upstream shape in issue #616) stays an array."""
+        assert (
+            _python_type_for_schema(
+                {"type": ["null", "array"], "items": {"type": "string"}}
+            )
+            == "Optional[List[Any]]"
+        )
+
+    def test_anyof_nullable_array(self):
+        assert (
+            _python_type_for_schema({"anyOf": [{"type": "array"}, {"type": "null"}]})
+            == "Optional[List[Any]]"
+        )
+
+    def test_union_of_scalars(self):
+        assert (
+            _python_type_for_schema({"type": ["string", "integer"]})
+            == "Union[str, int]"
+        )
+
+    def test_unknown_or_missing_type_is_permissive(self):
+        """Unrecognized shapes must not be narrowed to `str`."""
+        assert _python_type_for_schema({}) == "Any"
+        assert _python_type_for_schema({"type": "null"}) == "Any"
+        assert _python_type_for_schema({"type": "frobnicate"}) == "Any"
+        assert _python_type_for_schema({"type": ["null", "frobnicate"]}) == "Any"
+
+    def test_schema_type_names_de_duplicates(self):
+        """Union forms keep declaration order but drop duplicate type names."""
+        assert _schema_type_names({"type": ["null", "array", "array"]}) == [
+            "null",
+            "array",
+        ]
+        assert _schema_type_names(
+            {"anyOf": [{"type": "array"}, {"type": "array"}, {"type": "null"}]}
+        ) == ["array", "null"]
+        assert _schema_type_names(
+            {
+                "oneOf": [
+                    {"type": ["string", "string"]},
+                    {"type": "integer"},
+                ]
+            }
+        ) == ["string", "integer"]
+
+
 class TestCreateProxiedToolWrapper:
     """Test _create_proxied_tool_wrapper method."""
 
@@ -1149,6 +1268,488 @@ class TestCreateProxiedToolWrapper:
         )
 
         assert callable(wrapper)
+
+    async def test_wrapper_accepts_array_arguments(self, dynamic_mcp, user_context):
+        """Array arguments declared as `["null", "array"]` pass internal validation."""
+        wrapper = dynamic_mcp._create_proxied_tool_wrapper(
+            tool_name="example_directory_lookup",
+            server_id="server-123",
+            account_id=user_context.account_id,
+            description="Example directory lookup",
+            input_schema={
+                "properties": {
+                    "user_keys": {
+                        "type": ["null", "array"],
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["user_keys"],
+            },
+        )
+
+        tool = Tool.from_function(wrapper)
+
+        # Without a user context the wrapper short-circuits with "Access
+        # denied"; reaching that branch at all proves FastMCP accepted the
+        # array argument instead of rejecting it as an invalid string.
+        result = await tool.run({"user_keys": ["Example User"]})
+
+        assert "Access denied" in result.content[0].text
+
+    async def test_wrapper_forwards_array_arguments_unchanged(
+        self, dynamic_mcp, user_context, monkeypatch
+    ):
+        """Arrays reach the approval/upstream call with list values intact."""
+        dynamic_mcp.set_user_context_provider(lambda: user_context)
+        captured = {}
+
+        async def fake_require_approval(**kwargs):
+            captured.update(kwargs)
+            return False, "Denied by test"
+
+        monkeypatch.setattr(
+            "preloop.services.approval_helper.require_approval",
+            fake_require_approval,
+        )
+
+        wrapper = dynamic_mcp._create_proxied_tool_wrapper(
+            tool_name="example_directory_lookup",
+            server_id="server-123",
+            account_id=user_context.account_id,
+            description="Example directory lookup",
+            input_schema={
+                "properties": {
+                    "user_keys": {
+                        "type": ["null", "array"],
+                        "items": {"type": "string"},
+                    },
+                    "labels": {"type": "array", "items": {"type": "string"}},
+                    "limit": {"type": "integer"},
+                },
+                "required": ["user_keys"],
+            },
+        )
+
+        tool = Tool.from_function(wrapper)
+        await tool.run(
+            {"user_keys": ["Example User"], "labels": ["a", "b"], "limit": 5}
+        )
+
+        assert captured["arguments"]["user_keys"] == ["Example User"]
+        assert captured["arguments"]["labels"] == ["a", "b"]
+        assert captured["arguments"]["limit"] == 5
+
+    async def test_wrapper_accepts_untyped_object_argument(
+        self, dynamic_mcp, user_context
+    ):
+        """A parameter with no declared type is forwarded instead of rejected."""
+        wrapper = dynamic_mcp._create_proxied_tool_wrapper(
+            tool_name="example_tool",
+            server_id="server-123",
+            account_id=user_context.account_id,
+            description="Example tool",
+            input_schema={
+                "properties": {"payload": {"description": "free-form"}},
+                "required": ["payload"],
+            },
+        )
+
+        tool = Tool.from_function(wrapper)
+        result = await tool.run({"payload": {"anything": [1, 2, 3]}})
+        assert "Access denied" in result.content[0].text
+
+    async def test_wrapper_skips_invalid_identifier_param_names(
+        self, dynamic_mcp, user_context
+    ):
+        """Hyphenated and spaced property keys are omitted, not interpolated."""
+        wrapper = dynamic_mcp._create_proxied_tool_wrapper(
+            tool_name="safe_tool",
+            server_id="server-123",
+            account_id=user_context.account_id,
+            description="Safe tool",
+            input_schema={
+                "properties": {
+                    "user-keys": {"type": "array"},
+                    "foo bar": {"type": "string"},
+                    "safe_param": {"type": "string"},
+                },
+                "required": ["safe_param"],
+            },
+        )
+
+        assert callable(wrapper)
+        parameters = inspect.signature(wrapper).parameters
+        assert "safe_param" in parameters
+        assert "user-keys" not in parameters
+        assert "foo bar" not in parameters
+        assert "ctx" in parameters
+
+        tool = Tool.from_function(wrapper)
+        result = await tool.run({"safe_param": "ok"})
+        assert "Access denied" in result.content[0].text
+
+    async def test_wrapper_skips_injection_like_param_name(
+        self, dynamic_mcp, user_context
+    ):
+        """A property key that would inject statements is not exec'd."""
+        injection = (
+            "x):\n    pass\nraise RuntimeError('injected-wrapper')\nasync def _ignore(y"
+        )
+        wrapper = dynamic_mcp._create_proxied_tool_wrapper(
+            tool_name="safe_tool",
+            server_id="server-123",
+            account_id=user_context.account_id,
+            description="Safe tool",
+            input_schema={
+                "properties": {
+                    injection: {"type": "string"},
+                    "safe_param": {"type": "string"},
+                },
+                "required": ["safe_param"],
+            },
+        )
+
+        assert callable(wrapper)
+        parameters = inspect.signature(wrapper).parameters
+        assert "safe_param" in parameters
+        assert injection not in parameters
+
+    async def test_wrapper_skips_keyword_param_name(self, dynamic_mcp, user_context):
+        """Python keywords are omitted from the generated signature."""
+        wrapper = dynamic_mcp._create_proxied_tool_wrapper(
+            tool_name="safe_tool",
+            server_id="server-123",
+            account_id=user_context.account_id,
+            description="Safe tool",
+            input_schema={
+                "properties": {
+                    "class": {"type": "string"},
+                    "safe_param": {"type": "string"},
+                },
+                "required": ["safe_param"],
+            },
+        )
+
+        assert callable(wrapper)
+        parameters = inspect.signature(wrapper).parameters
+        assert "safe_param" in parameters
+        assert "class" not in parameters
+
+    async def test_wrapper_skips_reserved_local_params(self, dynamic_mcp, user_context):
+        """Reserved generated-body names, including duplicate ctx, are omitted."""
+        wrapper = dynamic_mcp._create_proxied_tool_wrapper(
+            tool_name="safe_tool",
+            server_id="server-123",
+            account_id=user_context.account_id,
+            description="Safe tool",
+            input_schema={
+                "properties": {
+                    "arguments": {"type": "object"},
+                    "user_context": {"type": "object"},
+                    "param_name": {"type": "string"},
+                    "value": {"type": "string"},
+                    "ctx": {"type": "string"},
+                    "tool_name": {"type": "string"},
+                    "param_names": {"type": "array"},
+                    "safe_param": {"type": "string"},
+                },
+                "required": ["safe_param"],
+            },
+        )
+
+        assert callable(wrapper)
+        parameter_names = list(inspect.signature(wrapper).parameters)
+        assert "safe_param" in parameter_names
+        assert "arguments" not in parameter_names
+        assert "user_context" not in parameter_names
+        assert "param_name" not in parameter_names
+        assert "value" not in parameter_names
+        assert "tool_name" not in parameter_names
+        assert "param_names" not in parameter_names
+        assert parameter_names.count("ctx") == 1
+
+    async def test_wrapper_skips_exec_namespace_tool_name_and_param_names(
+        self, dynamic_mcp, user_context, monkeypatch
+    ):
+        """A tool_name or param_names property must not shadow exec globals.
+
+        Without this guard a caller-supplied ``tool_name`` is forwarded to
+        ``require_approval`` and ``call_tool``, and a caller-supplied
+        ``param_names`` list replaces the generated collection loop.
+        """
+        dynamic_mcp.set_user_context_provider(lambda: user_context)
+        captured = {}
+
+        async def fake_require_approval(**kwargs):
+            captured.update(kwargs)
+            return False, "Denied by test"
+
+        monkeypatch.setattr(
+            "preloop.services.approval_helper.require_approval",
+            fake_require_approval,
+        )
+
+        wrapper = dynamic_mcp._create_proxied_tool_wrapper(
+            tool_name="safe_tool",
+            server_id="server-123",
+            account_id=user_context.account_id,
+            description="Safe tool",
+            input_schema={
+                "properties": {
+                    "tool_name": {"type": "string"},
+                    "param_names": {"type": "array"},
+                    "safe_param": {"type": "string"},
+                },
+                "required": ["safe_param"],
+            },
+        )
+
+        assert callable(wrapper)
+        parameter_names = list(inspect.signature(wrapper).parameters)
+        assert "safe_param" in parameter_names
+        assert "tool_name" not in parameter_names
+        assert "param_names" not in parameter_names
+
+        tool = Tool.from_function(wrapper)
+        await tool.run({"safe_param": "ok"})
+
+        assert captured["tool_name"] == "safe_tool"
+        assert captured["arguments"]["safe_param"] == "ok"
+        assert "tool_name" not in captured["arguments"]
+        assert "param_names" not in captured["arguments"]
+
+    async def test_wrapper_aliases_builtin_colliding_param_names(
+        self, dynamic_mcp, user_context, monkeypatch
+    ):
+        """A type or next property is aliased and still forwarded as itself."""
+        dynamic_mcp.set_user_context_provider(lambda: user_context)
+        captured = {}
+
+        async def fake_require_approval(**kwargs):
+            captured.update(kwargs)
+            return False, "Denied by test"
+
+        monkeypatch.setattr(
+            "preloop.services.approval_helper.require_approval",
+            fake_require_approval,
+        )
+
+        wrapper = dynamic_mcp._create_proxied_tool_wrapper(
+            tool_name="safe_tool",
+            server_id="server-123",
+            account_id=user_context.account_id,
+            description="Safe tool",
+            input_schema={
+                "properties": {
+                    "type": {"type": "string"},
+                    "next": {"type": "string"},
+                    "safe_param": {"type": "string"},
+                },
+                "required": ["type", "next", "safe_param"],
+            },
+        )
+
+        assert callable(wrapper)
+        parameter_names = list(inspect.signature(wrapper).parameters)
+        assert "safe_param" in parameter_names
+        assert "type" not in parameter_names
+        assert "next" not in parameter_names
+        assert "type_" in parameter_names
+        assert "next_" in parameter_names
+
+        result = await wrapper(
+            type_="issue",
+            next_="cursor",
+            safe_param="ok",
+            ctx=object(),
+        )
+        assert isinstance(result, str)
+        assert captured["tool_name"] == "safe_tool"
+        assert captured["arguments"]["type"] == "issue"
+        assert captured["arguments"]["next"] == "cursor"
+        assert captured["arguments"]["safe_param"] == "ok"
+
+    def _aliased_type_wrapper(self, dynamic_mcp, user_context):
+        """Create a registered wrapper whose schema has a ``type`` property."""
+        wrapper = dynamic_mcp._create_proxied_tool_wrapper(
+            tool_name="safe_tool",
+            server_id="server-123",
+            account_id=user_context.account_id,
+            description="Safe tool",
+            input_schema={
+                "properties": {"type": {"type": "string"}},
+                "required": ["type"],
+            },
+        )
+        assert callable(wrapper)
+        safe_account_id = user_context.account_id.replace("-", "_")
+        internal_name = f"account_{safe_account_id}_safe_tool"
+        return wrapper, internal_name
+
+    def test_remap_wrapper_arguments_is_idempotent(self, dynamic_mcp, user_context):
+        """Translated-path remap then re-entry remap must keep alias keys."""
+        _wrapper, internal_name = self._aliased_type_wrapper(dynamic_mcp, user_context)
+        once = dynamic_mcp._remap_wrapper_arguments(internal_name, {"type": "issue"})
+        twice = dynamic_mcp._remap_wrapper_arguments(internal_name, once)
+        assert once == {"type_": "issue"}
+        assert twice == once
+
+    def test_remap_prefers_original_key_over_alias(self, dynamic_mcp, user_context):
+        """A stray alias key must not replace the in-spec original value."""
+        _wrapper, internal_name = self._aliased_type_wrapper(dynamic_mcp, user_context)
+        original_first = dynamic_mcp._remap_wrapper_arguments(
+            internal_name, {"type": "real", "type_": "stray"}
+        )
+        alias_first = dynamic_mcp._remap_wrapper_arguments(
+            internal_name, {"type_": "stray", "type": "real"}
+        )
+        assert original_first == {"type_": "real"}
+        assert alias_first == {"type_": "real"}
+
+    async def test_call_tool_forwards_original_type_key(
+        self, dynamic_mcp, user_context, monkeypatch
+    ):
+        """Client key ``type`` reaches upstream as ``type`` via call_tool."""
+        from fastmcp.tools.tool import ToolResult
+
+        dynamic_mcp.set_user_context_provider(lambda: user_context)
+        captured_upstream = {}
+
+        async def fake_upstream_call(name, arguments):
+            captured_upstream["name"] = name
+            captured_upstream["arguments"] = arguments
+            return [types.TextContent(type="text", text="ok")]
+
+        client = MagicMock()
+        client.call_tool = AsyncMock(side_effect=fake_upstream_call)
+        pool = MagicMock(get_client=AsyncMock(return_value=client))
+        mock_db = MagicMock()
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.get_db",
+            lambda: iter([mock_db]),
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.kill_switch_service.tools_halted",
+            lambda db, account_id: False,
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+            lambda *args, **kwargs: [],
+        )
+        monkeypatch.setattr(
+            "preloop.models.db.session.get_async_db_session",
+            lambda: mock_session,
+        )
+        monkeypatch.setattr(
+            "preloop.services.policy_evaluator.evaluate_policy_async",
+            AsyncMock(return_value=("allow", None, None)),
+        )
+        monkeypatch.setattr(
+            dynamic_mcp,
+            "list_tools",
+            AsyncMock(
+                return_value=[Tool(name="safe_tool", description="Safe", parameters={})]
+            ),
+        )
+        monkeypatch.setattr(
+            "preloop.services.approval_helper.require_approval",
+            AsyncMock(return_value=(True, None)),
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.crud_mcp_server.get",
+            MagicMock(
+                return_value=MagicMock(
+                    name="upstream",
+                    url="http://example.test",
+                    auth_type="none",
+                    auth_config={},
+                    transport="http",
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.get_mcp_client_pool",
+            lambda: pool,
+        )
+        monkeypatch.setattr(
+            dynamic_mcp,
+            "_halt_dispatch_denial",
+            AsyncMock(return_value=None),
+        )
+
+        # Bind the wrapper after get_db / pool patches so exec namespace sees them.
+        wrapper, internal_name = self._aliased_type_wrapper(dynamic_mcp, user_context)
+        dynamic_mcp.tool()(wrapper)
+        dynamic_mcp._registered_proxied_tools.add(internal_name)
+        dynamic_mcp._proxied_tool_servers["safe_tool"] = "server-123"
+
+        result = await dynamic_mcp.call_tool("safe_tool", {"type": "issue"})
+
+        assert captured_upstream["name"] == "safe_tool"
+        assert captured_upstream["arguments"] == {"type": "issue"}
+        assert isinstance(result, ToolResult)
+        assert "ok" in result.content[0].text
+        assert "missing" not in result.content[0].text.lower()
+        assert "validation" not in result.content[0].text.lower()
+
+    @pytest.mark.parametrize(
+        "reserved_tool_name",
+        ["self", "logger", "ctx", "value"],
+    )
+    def test_wrapper_accepts_reserved_locals_as_tool_names(
+        self, dynamic_mcp, user_context, reserved_tool_name
+    ):
+        """Reserved wrapper locals are valid tool names; they cannot shadow."""
+        wrapper = dynamic_mcp._create_proxied_tool_wrapper(
+            tool_name=reserved_tool_name,
+            server_id="server-123",
+            account_id=user_context.account_id,
+            description="Reserved-looking tool name",
+            input_schema={"properties": {"ok": {"type": "string"}}},
+        )
+        assert callable(wrapper)
+        assert "ok" in inspect.signature(wrapper).parameters
+
+    @pytest.mark.parametrize(
+        "unsafe_name",
+        [
+            "user-keys",
+            "foo bar",
+            "class",
+            (
+                "t():\n    pass\nraise RuntimeError('injected-wrapper')\n"
+                "async def ignored"
+            ),
+        ],
+    )
+    def test_wrapper_rejects_unsafe_tool_name_without_exec(
+        self, dynamic_mcp, user_context, unsafe_name
+    ):
+        """Hostile or non-identifier tool names are skipped and do not exec."""
+        assert (
+            dynamic_mcp._create_proxied_tool_wrapper(
+                tool_name=unsafe_name,
+                server_id="server-123",
+                account_id=user_context.account_id,
+                description="Hostile",
+                input_schema={"properties": {"ok": {"type": "string"}}},
+            )
+            is None
+        )
+
+        sibling = dynamic_mcp._create_proxied_tool_wrapper(
+            tool_name="sibling_ok",
+            server_id="server-123",
+            account_id=user_context.account_id,
+            description="Sibling",
+            input_schema={"properties": {"ok": {"type": "string"}}},
+        )
+        assert callable(sibling)
+        assert "ok" in inspect.signature(sibling).parameters
 
 
 class TestHelperFunctions:

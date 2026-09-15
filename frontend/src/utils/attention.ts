@@ -711,6 +711,40 @@ export function errorHeadline(text: string | null | undefined): string {
   return firstLine(text);
 }
 
+/**
+ * How gateway failures are grouped into one item: by the alias the failing
+ * call carried, falling back to the provider.
+ *
+ * Exported because the Models page and the model detail page have to arrive
+ * at the same item id from a usage summary rather than from a list of
+ * failures. Two spellings of this rule would mean a dismissal made on one
+ * page is invisible on the others, which is the bug this exists to prevent.
+ */
+export function modelAttentionKey(
+  modelAlias: string | null | undefined,
+  providerName: string | null | undefined
+): string {
+  return modelAlias || providerName || 'Unknown model';
+}
+
+/** The attention item id for one model's gateway failures. */
+export function modelAttentionItemId(
+  modelAlias: string | null | undefined,
+  providerName: string | null | undefined
+): string {
+  return `model:${modelAttentionKey(modelAlias, providerName)}`;
+}
+
+/**
+ * Why a model item is showing: its newest failure. One more failure after a
+ * dismissal changes this and brings the item back.
+ */
+export function modelAttentionFingerprint(
+  lastFailureAt: string | null | undefined
+): string {
+  return `last:${lastFailureAt || ''}`;
+}
+
 function modelItems(
   failures: GatewayUsageSearchResultItem[],
   now: Date
@@ -728,7 +762,7 @@ function modelItems(
     if (failure.outcome === 'success') {
       continue;
     }
-    const key = failure.model_alias || failure.provider_name || 'Unknown model';
+    const key = modelAttentionKey(failure.model_alias, failure.provider_name);
     const existing = groups.get(key) || {
       count: 0,
       lastAt: null as string | null,
@@ -748,7 +782,7 @@ function modelItems(
   }
 
   return Array.from(groups.entries()).map(([key, group]) => ({
-    id: `model:${key}`,
+    id: modelAttentionItemId(key, null),
     kind: 'model' as const,
     severity: 'warning' as const,
     title: key,
@@ -761,7 +795,7 @@ function modelItems(
       : '/console/ai-models',
     at: group.lastAt,
     // The newest failure: another one after a dismissal shows the model again.
-    fingerprint: `last:${group.lastAt || ''}`,
+    fingerprint: modelAttentionFingerprint(group.lastAt),
     dismissable: true,
     evidence: {
       modelFailures: [...group.failures]
@@ -1139,23 +1173,35 @@ export function sortAttentionItems(items: AttentionItem[]): AttentionItem[] {
 }
 
 /**
- * Is this dismissal still hiding this item? Same item, same fingerprint, and
- * (for a snooze) not yet expired. Anything else and the item comes back on its
- * own, which is the point: dismissing is "quiet until it changes", not "never
- * tell me again".
+ * Is this dismissal still hiding something showing for this reason? Same
+ * fingerprint, and (for a snooze) not yet expired. Anything else and the item
+ * comes back on its own, which is the point: dismissing is "quiet until it
+ * changes", not "never tell me again".
+ *
+ * Exported so pages that derive one item from a summary rather than from the
+ * whole inbox (the Models page, the model detail page) match a dismissal by
+ * this rule and not by one of their own.
  */
-function dismissalHides(
+export function dismissalHidesFingerprint(
   dismissal: AttentionDismissalRecord,
-  item: AttentionItem,
+  fingerprint: string,
   now: Date
 ): boolean {
-  if (dismissal.fingerprint !== item.fingerprint) {
+  if (dismissal.fingerprint !== fingerprint) {
     return false;
   }
   if (dismissal.snooze_until) {
     return timestampOf(dismissal.snooze_until) > now.getTime();
   }
   return true;
+}
+
+function dismissalHides(
+  dismissal: AttentionDismissalRecord,
+  item: AttentionItem,
+  now: Date
+): boolean {
+  return dismissalHidesFingerprint(dismissal, item.fingerprint, now);
 }
 
 export function deriveAttentionItems(inputs: AttentionInputs): AttentionResult {

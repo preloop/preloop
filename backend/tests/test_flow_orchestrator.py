@@ -1481,7 +1481,6 @@ class TestFlowExecutionOrchestrator:
     ):
         """Test handling user stop command."""
         import asyncio
-        import json
 
         # Mock agent executor
         mock_executor = AsyncMock()
@@ -1542,7 +1541,6 @@ class TestFlowExecutionOrchestrator:
     ):
         """Test handling unknown command type."""
         import asyncio
-        import json
 
         mock_executor = AsyncMock()
         mock_executor.start = AsyncMock(return_value="session-123")

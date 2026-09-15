@@ -48,6 +48,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the next time the flow is saved from the console. This matches the existing
   treatment of `notifications.on_failure.attention_item`.
 
+### Fixed
+
+- GitHub App trackers keep their installation binding when edited. The
+  edit modal used to run the API-token path: `POST
+  /api/v1/trackers/test-and-list-orgs` built a token client for a tracker
+  whose `auth_type` is `github_app`, offered the `personal` login instead of
+  the installation's numeric owner ids, and saving replaced the scope rules
+  with ones that matched no project. Both `test-and-list-orgs` and
+  `list-projects-for-org` now build the client from the tracker's
+  installation (same as the scanner) when `tracker_id` refers to an App
+  tracker. `TrackerResponse` gains `auth_type`, `oauth_installation_id` and
+  `github_installation_target_login` so the console can tell App trackers
+  from token trackers; the edit form no longer asks for a token. A new
+  App tracker is scoped to the installation being bound only, not to every
+  installation on the account. When the App is already installed on the
+  target account (GitHub shows its Configure page and never calls the setup
+  callback), the add form offers a "Use an existing installation" picker
+  next to "Connect with GitHub".
+
 ### Changed
 
 - Helm gateway Deployments set `PRELOOP_SERVICE_ROLE=gateway` (API pods

@@ -12,8 +12,6 @@ state for its scope and the audit record of the latest activation
 
 from __future__ import annotations
 
-from typing import Optional
-
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
@@ -21,8 +19,6 @@ from sqlalchemy.dialects.postgresql import UUID
 # revision identifiers, used by Alembic.
 revision = "20260906_account_halt"
 down_revision = "20260906_flow_feedback"
-branch_labels: Optional[str] = None
-depends_on: Optional[str] = None
 
 
 def upgrade() -> None:

@@ -6,7 +6,9 @@ import {
   invalidateApiCaches,
   AuthedElement,
   getFlowExecutions,
+  listProjectsForOrg,
   uploadAvatar,
+  validateTrackerToken,
 } from './api.js';
 import { customElement } from 'lit/decorators.js';
 
@@ -508,6 +510,62 @@ describe('api', () => {
         message = (e as Error).message;
       }
       expect(message).to.equal('Failed to upload avatar (502)');
+    });
+  });
+
+  describe('tracker connection helpers', () => {
+    const errorResponse = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+    const messageOf = async (call: Promise<unknown>) => {
+      try {
+        await call;
+      } catch (e: unknown) {
+        return (e as Error).message;
+      }
+      return '';
+    };
+
+    it('validateTrackerToken surfaces the FastAPI detail string', async () => {
+      fetchStub.resolves(
+        errorResponse({
+          detail: 'Tracker is bound to an installation that no longer exists.',
+        })
+      );
+
+      expect(
+        await messageOf(validateTrackerToken('github', 'unchanged'))
+      ).to.equal('Tracker is bound to an installation that no longer exists.');
+    });
+
+    it('validateTrackerToken falls back to message, then a generic error', async () => {
+      fetchStub.resolves(errorResponse({ message: 'Custom message' }));
+      expect(
+        await messageOf(validateTrackerToken('github', 'unchanged'))
+      ).to.equal('Custom message');
+
+      fetchStub.resolves(errorResponse({}));
+      expect(
+        await messageOf(validateTrackerToken('github', 'unchanged'))
+      ).to.equal('Failed to validate token');
+    });
+
+    it('listProjectsForOrg surfaces the FastAPI detail string', async () => {
+      fetchStub.resolves(
+        errorResponse({ detail: 'Tracker not found or access denied' })
+      );
+
+      expect(
+        await messageOf(listProjectsForOrg('github', 'unchanged', '9001'))
+      ).to.equal('Tracker not found or access denied');
+
+      fetchStub.resolves(errorResponse({}));
+      expect(
+        await messageOf(listProjectsForOrg('github', 'unchanged', '9001'))
+      ).to.equal('Failed to list projects for organization');
     });
   });
 });

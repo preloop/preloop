@@ -970,9 +970,16 @@ class TestDecideRequestsBatchPermission:
         """Serve the copied router with the session dependencies stubbed."""
         app = FastAPI()
         app.include_router(module.router, prefix="/api/v1")
-        app.dependency_overrides[get_current_active_user] = lambda: user
+
+        def _current_user():
+            return user
+
+        def _sync_session():
+            return Session()
+
+        app.dependency_overrides[get_current_active_user] = _current_user
         # Unbound, so the RBAC query builds without touching a database.
-        app.dependency_overrides[get_db_session] = lambda: Session()
+        app.dependency_overrides[get_db_session] = _sync_session
         app.dependency_overrides[module._async_db_session] = lambda: AsyncMock()
         # Surface an unhandled error as the 500 a caller would actually see.
         return TestClient(app, raise_server_exceptions=False)

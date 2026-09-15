@@ -73,14 +73,25 @@ class MergeLink:
 class LifecycleProvider(Protocol):
     """Implementations must re-read authority and use additive label updates."""
 
-    async def issue(self, number: int) -> IssueSnapshot: ...
-    async def merged_links(self, number: int) -> list[MergeLink]: ...
-    async def require_ready_label(self, label: str) -> None: ...
-    async def add_ready_label(self, number: int, label: str, revision: str) -> None: ...
-    async def upsert_comment(self, number: int, marker: str, body: str) -> str: ...
+    async def issue(self, number: int) -> IssueSnapshot:
+        """Return the current issue snapshot."""
+
+    async def merged_links(self, number: int) -> list[MergeLink]:
+        """Return merge links attached to the issue."""
+
+    async def require_ready_label(self, label: str) -> None:
+        """Fail closed when the ready label is not available."""
+
+    async def add_ready_label(self, number: int, label: str, revision: str) -> None:
+        """Add the ready label without replacing existing labels."""
+
+    async def upsert_comment(self, number: int, marker: str, body: str) -> str:
+        """Create or replace the marked comment and return its identity."""
+
     async def ensure_follow_up(
         self, number: int, marker: str, title: str, body: str
-    ) -> str: ...
+    ) -> str:
+        """Create the follow-up issue once and return its identity."""
 
 
 class GitHubRequests(Protocol):
@@ -92,7 +103,8 @@ class GitHubRequests(Protocol):
         endpoint: str,
         data: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
-    ) -> Any: ...
+    ) -> Any:
+        """Issue an authenticated tracker request."""
 
 
 class GitHubLifecycleProvider:

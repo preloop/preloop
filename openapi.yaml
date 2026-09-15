@@ -7767,6 +7767,26 @@ paths:
             format: date-time
           - type: 'null'
           title: End Date
+      - name: failed_since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          description: 'Repeatable ''<ai_model_id>:<ISO-8601 timestamp>'' pair. Each
+            pair asks for that model''s failed_requests_since: how many of its failures
+            in this window are newer than the timestamp. The console passes the moment
+            an operator marked the model fixed, so a row can say ''2 failed since
+            fix'' instead of repeating the whole window''s total.'
+          title: Failed Since
+        description: 'Repeatable ''<ai_model_id>:<ISO-8601 timestamp>'' pair. Each
+          pair asks for that model''s failed_requests_since: how many of its failures
+          in this window are newer than the timestamp. The console passes the moment
+          an operator marked the model fixed, so a row can say ''2 failed since fix''
+          instead of repeating the whole window''s total.'
       responses:
         '200':
           description: Successful Response
@@ -7909,6 +7929,19 @@ paths:
             format: date-time
           - type: 'null'
           title: End Date
+      - name: failed_since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Count this model's failures newer than this moment into failed_requests_since.
+            The console passes the moment the model was marked fixed.
+          title: Failed Since
+        description: Count this model's failures newer than this moment into failed_requests_since.
+          The console passes the moment the model was marked fixed.
       responses:
         '200':
           description: Successful Response
@@ -11679,6 +11712,37 @@ paths:
       - bearerAuth: []
 components:
   schemas:
+    AIModelAliasFailure:
+      properties:
+        alias:
+          type: string
+          title: Alias
+          description: Alias the failing calls carried (the provider name when they
+            carried none), which is how the console groups gateway failures.
+        last_failure_at:
+          type: string
+          format: date-time
+          title: Last Failure At
+          description: Newest failed request for this alias in the window. The console
+            fingerprints a dismissed attention item with it.
+        failed_requests:
+          type: integer
+          title: Failed Requests
+          description: Failed requests for this alias in the window
+          default: 0
+        failed_requests_since:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Failed Requests Since
+          description: Failures for this alias newer than this model's failed_since
+            query parameter. Null when the caller asked for no such moment.
+      type: object
+      required:
+      - alias
+      - last_failure_at
+      title: AIModelAliasFailure
+      description: One alias-group of failures, matching how the inbox keys a model.
     AIModelCatalogSyncProviderResult:
       properties:
         provider:
@@ -11941,6 +12005,36 @@ components:
           type: integer
           title: Failed Requests
           default: 0
+        last_failure_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Failure At
+          description: Timestamp of the most recent failed gateway request in the
+            window, which the console fingerprints a dismissed 'needs attention' item
+            with
+        last_failure_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Failure Alias
+          description: Alias the most recent failed request carried (the provider
+            name when it carried none)
+        failed_requests_since:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Failed Requests Since
+          description: Failures newer than the failed_since query parameter. Null
+            when the caller asked for no such moment.
+        alias_failures:
+          items:
+            $ref: '#/components/schemas/AIModelAliasFailure'
+          type: array
+          title: Alias Failures
+          description: Per-alias failure groups for this model, one item per inbox
+            key. The page is Attention if any group is unacknowledged.
         token_usage:
           $ref: '#/components/schemas/GatewayTokenUsage'
         estimated_cost:
@@ -12027,6 +12121,36 @@ components:
           - type: 'null'
           title: Last Request At
           description: Timestamp of the most recent gateway request
+        last_failure_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Failure At
+          description: Timestamp of the most recent failed gateway request in the
+            window. The console fingerprints a dismissed 'needs attention' item with
+            it, so one more failure brings the item back.
+        last_failure_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Failure Alias
+          description: Alias the most recent failed request carried (the provider
+            name when it carried none), which is how the console groups gateway failures.
+        failed_requests_since:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Failed Requests Since
+          description: Failures newer than this model's failed_since query parameter.
+            Null when the caller asked for no such moment.
+        alias_failures:
+          items:
+            $ref: '#/components/schemas/AIModelAliasFailure'
+          type: array
+          title: Alias Failures
+          description: Per-alias failure groups for this model, one item per inbox
+            key. The row is Attention if any group is unacknowledged.
         pricing_source:
           type: string
           enum:
@@ -26011,6 +26135,27 @@ components:
           type: array
           title: Scope Rules
           description: List of scope rules for the tracker
+        auth_type:
+          type: string
+          title: Auth Type
+          description: 'How the tracker authenticates: ''api_token'', ''github_app''
+            or ''oauth_app'''
+          default: api_token
+        oauth_installation_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Oauth Installation Id
+          description: OAuth App installation this tracker is bound to (OAuth auth
+            types only)
+        github_installation_target_login:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Github Installation Target Login
+          description: Login of the account the bound installation targets (OAuth
+            auth types only)
         degraded_projects:
           items:
             type: string

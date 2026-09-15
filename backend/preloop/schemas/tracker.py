@@ -135,6 +135,18 @@ class TrackerResponse(TrackerBase):
     scope_rules: List[TrackerScopeRuleResponse] = Field(
         default_factory=list, description="List of scope rules for the tracker"
     )
+    auth_type: str = Field(
+        "api_token",
+        description="How the tracker authenticates: 'api_token', 'github_app' or 'oauth_app'",
+    )
+    oauth_installation_id: Optional[UUID] = Field(
+        None,
+        description="OAuth App installation this tracker is bound to (OAuth auth types only)",
+    )
+    github_installation_target_login: Optional[str] = Field(
+        None,
+        description="Login of the account the bound installation targets (OAuth auth types only)",
+    )
 
     model_config = {"from_attributes": True}
 

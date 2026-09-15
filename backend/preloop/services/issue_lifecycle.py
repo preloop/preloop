@@ -20,7 +20,8 @@ from preloop.services.issue_lifecycle_provider import (
 class EnvironmentCapabilities(Protocol):
     """The environment service owns image approval and runnable command names."""
 
-    async def blockers(self, profile: str, commands: list[str]) -> list[str]: ...
+    async def blockers(self, profile: str, commands: list[str]) -> list[str]:
+        """Return commands the environment cannot run."""
 
 
 class IssueLifecycleService:

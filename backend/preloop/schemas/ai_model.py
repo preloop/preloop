@@ -428,6 +428,35 @@ class AIModelCatalogSyncResponse(BaseModel):
     dry_run: bool = False
 
 
+class AIModelAliasFailure(BaseModel):
+    """One alias-group of failures, matching how the inbox keys a model."""
+
+    alias: str = Field(
+        ...,
+        description=(
+            "Alias the failing calls carried (the provider name when they "
+            "carried none), which is how the console groups gateway failures."
+        ),
+    )
+    last_failure_at: datetime = Field(
+        ...,
+        description=(
+            "Newest failed request for this alias in the window. The "
+            "console fingerprints a dismissed attention item with it."
+        ),
+    )
+    failed_requests: int = Field(
+        0, description="Failed requests for this alias in the window"
+    )
+    failed_requests_since: Optional[int] = Field(
+        None,
+        description=(
+            "Failures for this alias newer than this model's failed_since "
+            "query parameter. Null when the caller asked for no such moment."
+        ),
+    )
+
+
 class AIModelOverviewItem(BaseModel):
     """One row of the Models page: what this model did in the window."""
 
@@ -452,6 +481,36 @@ class AIModelOverviewItem(BaseModel):
     )
     last_request_at: Optional[datetime] = Field(
         None, description="Timestamp of the most recent gateway request"
+    )
+    last_failure_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "Timestamp of the most recent failed gateway request in the "
+            "window. The console fingerprints a dismissed 'needs attention' "
+            "item with it, so one more failure brings the item back."
+        ),
+    )
+    last_failure_alias: Optional[str] = Field(
+        None,
+        description=(
+            "Alias the most recent failed request carried (the provider name "
+            "when it carried none), which is how the console groups gateway "
+            "failures."
+        ),
+    )
+    failed_requests_since: Optional[int] = Field(
+        None,
+        description=(
+            "Failures newer than this model's failed_since query parameter. "
+            "Null when the caller asked for no such moment."
+        ),
+    )
+    alias_failures: List[AIModelAliasFailure] = Field(
+        default_factory=list,
+        description=(
+            "Per-alias failure groups for this model, one item per inbox "
+            "key. The row is Attention if any group is unacknowledged."
+        ),
     )
     pricing_source: Literal["override", "model_config", "catalog", "none"] = Field(
         "none", description="Where this model's effective price comes from"
@@ -483,6 +542,35 @@ class AIModelGatewayUsageSummaryResponse(BaseModel):
     total_requests: int = 0
     successful_requests: int = 0
     failed_requests: int = 0
+    last_failure_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "Timestamp of the most recent failed gateway request in the "
+            "window, which the console fingerprints a dismissed 'needs "
+            "attention' item with"
+        ),
+    )
+    last_failure_alias: Optional[str] = Field(
+        None,
+        description=(
+            "Alias the most recent failed request carried (the provider name "
+            "when it carried none)"
+        ),
+    )
+    failed_requests_since: Optional[int] = Field(
+        None,
+        description=(
+            "Failures newer than the failed_since query parameter. Null when "
+            "the caller asked for no such moment."
+        ),
+    )
+    alias_failures: List[AIModelAliasFailure] = Field(
+        default_factory=list,
+        description=(
+            "Per-alias failure groups for this model, one item per inbox "
+            "key. The page is Attention if any group is unacknowledged."
+        ),
+    )
     token_usage: GatewayTokenUsage
     estimated_cost: float = 0.0
     requests_by_day: List[GatewayUsageByDay] = Field(default_factory=list)

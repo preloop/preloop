@@ -5,8 +5,12 @@ import { repeat } from 'lit/directives/repeat.js';
 import {
   getAIModels,
   getAIModelsOverview,
+  getAttentionDismissals,
+  dismissAttentionItem,
   updateAIModel,
   deleteAIModel,
+  DISMISSALS_UNSUPPORTED,
+  type AttentionDismissal,
 } from '../../../api';
 import type { AIModel, AIModelOverviewItem } from '../../../types';
 
@@ -19,6 +23,9 @@ import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
+import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
+import '@shoelace-style/shoelace/dist/components/menu/menu.js';
+import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '../../../components/add-ai-model-modal';
 import '../../../components/list-toolbar';
 import '../../../components/resource-actions';
@@ -32,6 +39,11 @@ import {
 } from '../../../components/list-selection';
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
 import { formatRelativeTime } from '../../../utils/date';
+import {
+  markerSinceLabel,
+  modelAttentionState,
+  type ModelAttentionState,
+} from '../../../utils/model-attention';
 import {
   effectiveViewMode,
   loadViewMode,
@@ -121,6 +133,26 @@ export class AIModelsView extends LitElement {
 
   @state()
   private modelOverview = new Map<string, AIModelOverviewItem>();
+
+  /**
+   * Failures this account has already acknowledged, as the Overview and
+   * /console/attention read them. Without these the page kept flagging models
+   * an operator had marked fixed, for as long as the window remembered the
+   * failure.
+   */
+  @state()
+  private dismissals: AttentionDismissal[] = [];
+
+  /** False against a server without the endpoint: no controls, no errors. */
+  @state()
+  private dismissalsSupported = false;
+
+  /** The row whose dismiss menu is mid-flight. */
+  @state()
+  private dismissBusyModelId: string | null = null;
+
+  @state()
+  private dismissError: string | null = null;
 
   /**
    * Fleet spend in the window before this one. Loaded after first paint so a
@@ -446,14 +478,20 @@ export class AIModelsView extends LitElement {
       // One request for the page, whatever the fleet size. The per-model
       // endpoints stay for the detail view: a burst of them is what emptied
       // the API connection pool on 2026-09-03.
-      const [models, overview] = await Promise.all([
+      const [models, overview, dismissals] = await Promise.all([
         getAIModels(),
         getAIModelsOverview(this.getOverviewParams()),
+        // A console that cannot read dismissals still has a Models page; it
+        // just flags everything, as it did before.
+        getAttentionDismissals().catch(() => DISMISSALS_UNSUPPORTED),
       ]);
       this.models = models;
+      this.dismissalsSupported = dismissals !== DISMISSALS_UNSUPPORTED;
+      this.dismissals = dismissals === DISMISSALS_UNSUPPORTED ? [] : dismissals;
       this.modelOverview = new Map(
         overview.models.map((item) => [item.ai_model_id, item])
       );
+      await this.loadFailuresSinceMarkers();
       // Not on realtime refreshes: five subscriptions feed this method, and
       // the prior 30 day window changes at most once a day. A third request
       // per socket message is how the pool emptied on 2026-09-03.
@@ -484,6 +522,82 @@ export class AIModelsView extends LitElement {
       startDate: startDate.toISOString(),
       endDate: endDate.toISOString(),
     };
+  }
+
+  /**
+   * A model whose acknowledged failure has been overtaken by a newer one is
+   * flagged again, and the honest number to show then is how many failures
+   * arrived after the acknowledgement, not how many the window holds.
+   *
+   * Only the API can split a window at a moment, so ask it again with the
+   * `failed_since` pairs; only for rows that have a stale marker, which is
+   * rare, so the common load stays at the requests it already made.
+   */
+  private async loadFailuresSinceMarkers(): Promise<void> {
+    const pairs: string[] = [];
+    for (const item of this.modelOverview.values()) {
+      const state = this.attentionStateFor(item);
+      if (state.status === 'failing' && state.markerFailureAt) {
+        pairs.push(`${item.ai_model_id}:${state.markerFailureAt}`);
+      }
+    }
+    if (pairs.length === 0) {
+      return;
+    }
+    try {
+      const split = await getAIModelsOverview({
+        ...this.getOverviewParams(),
+        failedSinceByModel: pairs,
+      });
+      const counts = new Map(
+        split.models.map((item) => [
+          item.ai_model_id,
+          item.failed_requests_since,
+        ])
+      );
+      // Merge rather than replace: the rest of the page is already painted
+      // from the first answer, and the two windows are the same.
+      const merged = new Map(this.modelOverview);
+      for (const [modelId, failedSince] of counts) {
+        const item = merged.get(modelId);
+        if (item && typeof failedSince === 'number') {
+          merged.set(modelId, {
+            ...item,
+            failed_requests_since: failedSince,
+          });
+        }
+      }
+      this.modelOverview = merged;
+    } catch {
+      // A missing split is not worth a banner: the row still says Attention,
+      // it just cannot add "N failed since fix".
+    }
+  }
+
+  /** Where one model stands, by the rule the Overview and the inbox use. */
+  private attentionStateFor(
+    item: AIModelOverviewItem | undefined
+  ): ModelAttentionState {
+    return modelAttentionState(
+      {
+        failureAlias: item?.last_failure_alias,
+        providerName: item?.provider_name,
+        failedRequests: item?.failed_requests || 0,
+        lastFailureAt: item?.last_failure_at,
+        failedRequestsSince: item?.failed_requests_since,
+        aliasFailures: (item?.alias_failures || []).map((group) => ({
+          failureAlias: group.alias,
+          lastFailureAt: group.last_failure_at,
+          failedRequests: group.failed_requests,
+          failedRequestsSince: group.failed_requests_since,
+        })),
+      },
+      this.dismissals
+    );
+  }
+
+  private attentionStateForModel(modelId: string): ModelAttentionState {
+    return this.attentionStateFor(this.getModelOverview(modelId));
   }
 
   private async loadPriorFleetSpend(): Promise<void> {
@@ -543,10 +657,17 @@ export class AIModelsView extends LitElement {
    * A model needs a person when its calls fail or when the calls it did serve
    * carry no price, which is the pair the stat card now names out loud
    * instead of hiding a second fact under "models with traffic".
+   *
+   * Failures somebody already marked fixed, expected or snoozed do not count
+   * until something fails again: that is what dismissing one means on the
+   * Overview, and a count that disagreed with the Overview's was the bug.
+   * Unpriced requests are not dismissable and are counted as before.
    */
   private get modelsNeedingAttentionCount(): number {
     return [...this.modelOverview.values()].filter(
-      (item) => item.failed_requests > 0 || item.unpriced_request_count > 0
+      (item) =>
+        this.attentionStateFor(item).status === 'failing' ||
+        item.unpriced_request_count > 0
     ).length;
   }
 
@@ -611,21 +732,34 @@ export class AIModelsView extends LitElement {
     if (!overview || overview.total_requests === 0) {
       return 'neutral';
     }
-    if (overview.failed_requests > 0) {
+    if (this.attentionStateFor(overview).status === 'failing') {
       return 'warning';
     }
     return 'success';
   }
 
+  /**
+   * "Healthy" covers an acknowledged failure too: the operator said this one
+   * is handled, and the marker's date is on the badge's tooltip so the claim
+   * stays checkable.
+   */
   private getHealthLabel(modelId: string): string {
     const overview = this.getModelOverview(modelId);
     if (!overview || overview.total_requests === 0) {
       return 'Idle';
     }
-    if (overview.failed_requests > 0) {
+    if (this.attentionStateFor(overview).status === 'failing') {
       return 'Attention';
     }
     return 'Healthy';
+  }
+
+  /** The tooltip that says why a model with failures reads as healthy. */
+  private getHealthTitle(modelId: string): string {
+    const state = this.attentionStateForModel(modelId);
+    return state.status === 'marked' && state.markerLabel
+      ? state.markerLabel
+      : '';
   }
 
   private getPricingSourceLabel(modelId: string): string {
@@ -825,6 +959,19 @@ export class AIModelsView extends LitElement {
       <div class="column-layout narrow">
         <div class="main-column">
           <div class="page">
+            ${
+              this.dismissError
+                ? html`
+                    <sl-alert variant="warning" open>
+                      <sl-icon
+                        slot="icon"
+                        name="exclamation-triangle"
+                      ></sl-icon>
+                      ${this.dismissError}
+                    </sl-alert>
+                  `
+                : null
+            }
             ${
               this.isLoading || this.error || this.models.length === 0
                 ? null
@@ -1153,12 +1300,14 @@ export class AIModelsView extends LitElement {
 
   private renderHealthCell(model: AIModel) {
     const overview = this.getModelOverview(model.id);
+    const state = this.attentionStateFor(overview);
     return html`
       <div class="cell-stack">
         <div class="badge-row">
           <sl-badge
             class="status-chip"
             variant=${this.getHealthVariant(model.id)}
+            title=${this.getHealthTitle(model.id)}
             pill
           >
             ${this.getHealthLabel(model.id)}
@@ -1178,8 +1327,90 @@ export class AIModelsView extends LitElement {
           ${this.formatCompactNumber(overview?.successful_requests)} successful
           · ${this.formatCompactNumber(overview?.failed_requests)} failed
         </div>
+        ${this.renderSinceMarker(model.id, state)}
+        ${this.renderDismiss(model.id, state)}
       </div>
     `;
+  }
+
+  /**
+   * After an acknowledged failure is overtaken, the count that matters is the
+   * one since the acknowledgement: "2 failed since fix" is news, "9 failed"
+   * mostly repeats what the operator already dealt with.
+   */
+  private renderSinceMarker(modelId: string, state: ModelAttentionState) {
+    if (state.status !== 'failing' || state.failuresSinceMarker === null) {
+      return null;
+    }
+    const reason = state.dismissal?.reason;
+    return html`
+      <div class="cell-secondary" data-testid=${`since-marker-${modelId}`}>
+        ${this.formatCompactNumber(state.failuresSinceMarker)} failed
+        ${markerSinceLabel(reason)}
+      </div>
+    `;
+  }
+
+  /**
+   * The same three answers, the same call and the same fingerprint as the
+   * inbox, so a model dismissed here is quiet there and the other way round.
+   */
+  private renderDismiss(modelId: string, state: ModelAttentionState) {
+    if (!this.dismissalsSupported || !state.dismissable) {
+      return null;
+    }
+    return html`
+      <div
+        class="row-actions"
+        @click=${(event: Event) => event.stopPropagation()}
+      >
+        <sl-dropdown class="dismiss-dropdown" hoist>
+          <sl-button
+            slot="trigger"
+            size="small"
+            caret
+            data-testid=${`dismiss-${modelId}`}
+            ?loading=${this.dismissBusyModelId === modelId}
+            >Dismiss</sl-button
+          >
+          <sl-menu
+            @sl-select=${(event: CustomEvent<{ item: { value: string } }>) =>
+              void this.dismissModel(
+                modelId,
+                state,
+                event.detail.item.value as 'expected' | 'snoozed' | 'fixed'
+              )}
+          >
+            <sl-menu-item value="expected"
+              >Expected, keep quiet until it changes</sl-menu-item
+            >
+            <sl-menu-item value="snoozed">Snooze 7 days</sl-menu-item>
+            <sl-menu-item value="fixed">Fixed</sl-menu-item>
+          </sl-menu>
+        </sl-dropdown>
+      </div>
+    `;
+  }
+
+  private async dismissModel(
+    modelId: string,
+    state: ModelAttentionState,
+    reason: 'expected' | 'snoozed' | 'fixed'
+  ): Promise<void> {
+    this.dismissBusyModelId = modelId;
+    this.dismissError = null;
+    try {
+      await dismissAttentionItem(state.itemId, {
+        fingerprint: state.fingerprint,
+        reason,
+        snooze_days: reason === 'snoozed' ? 7 : undefined,
+      });
+      await this.fetchModels({ preserveLoadingState: true });
+    } catch {
+      this.dismissError = 'Could not dismiss that model. Try again.';
+    } finally {
+      this.dismissBusyModelId = null;
+    }
   }
 
   private renderUsageCell(model: AIModel) {
@@ -1271,6 +1502,7 @@ export class AIModelsView extends LitElement {
             <sl-badge
               class="status-chip"
               variant=${this.getHealthVariant(model.id)}
+              title=${this.getHealthTitle(model.id)}
               pill
             >
               ${this.getHealthLabel(model.id)}
@@ -1295,7 +1527,15 @@ export class AIModelsView extends LitElement {
             )}
             est.
           </div>
+          ${this.renderSinceMarker(
+            model.id,
+            this.attentionStateForModel(model.id)
+          )}
           <div class="model-card-actions">
+            ${this.renderDismiss(
+              model.id,
+              this.attentionStateForModel(model.id)
+            )}
             ${this.renderModelActions(model)}
           </div>
         </div>

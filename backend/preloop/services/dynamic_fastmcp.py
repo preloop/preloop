@@ -9,10 +9,11 @@ Phase 1B: Added support for proxied tools from external MCP servers.
 import asyncio
 import copy
 import json
+import keyword
 import logging
 import uuid
 from contextvars import ContextVar
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
 from fastmcp import FastMCP
 from fastmcp.tools import Tool
@@ -264,6 +265,232 @@ def apply_output_filters(
         return result_items
 
 
+#: Python annotations used for the wrapped function signature of a proxied
+#: tool. FastMCP validates ``tools/call`` arguments against that signature, so
+#: entries must accept every value the upstream ``inputSchema`` allows --
+#: anything rejected here never reaches the upstream server.
+_JSON_SCHEMA_PYTHON_TYPES: Dict[str, str] = {
+    "string": "str",
+    "integer": "int",
+    "number": "float",
+    "boolean": "bool",
+    "array": "List[Any]",
+    "object": "Dict[str, Any]",
+}
+
+
+def _schema_type_names(param_def: Dict[str, Any]) -> List[str]:
+    """Collect the primitive JSON Schema type names a property allows.
+
+    Handles both ``"type": "array"`` and the union form upstream servers
+    commonly emit for nullable properties, ``"type": ["null", "array"]``, as
+    well as ``anyOf``/``oneOf`` alternatives.
+
+    Args:
+        param_def: JSON Schema fragment for a single tool parameter.
+
+    Returns:
+        De-duplicated type names in declaration order; empty when the schema
+        does not declare a primitive type.
+    """
+    raw_type = param_def.get("type")
+    if isinstance(raw_type, str):
+        return [raw_type]
+    if isinstance(raw_type, list):
+        names = [t for t in raw_type if isinstance(t, str)]
+        return list(dict.fromkeys(names))
+
+    # `anyOf`/`oneOf` are the other common way nullable unions are expressed.
+    for key in ("anyOf", "oneOf"):
+        alternatives = param_def.get(key)
+        if not isinstance(alternatives, list):
+            continue
+        names: List[str] = []
+        for alternative in alternatives:
+            if not isinstance(alternative, dict):
+                continue
+            alternative_type = alternative.get("type")
+            if isinstance(alternative_type, str):
+                names.append(alternative_type)
+            elif isinstance(alternative_type, list):
+                names.extend(t for t in alternative_type if isinstance(t, str))
+        if names:
+            return list(dict.fromkeys(names))
+
+    return []
+
+
+def _python_type_for_schema(param_def: Dict[str, Any]) -> str:
+    """Map a JSON Schema parameter to a Python annotation.
+
+    The annotation feeds the generated wrapper signature that FastMCP uses to
+    validate proxied ``tools/call`` arguments, so it must be at least as
+    permissive as the schema advertised in ``tools/list``. Unknown or
+    unrepresentable shapes fall back to ``Any`` (forwarded unchanged) instead
+    of the previous ``str`` default, which rejected every array argument whose
+    schema used a union type such as ``["null", "array"]``.
+
+    Args:
+        param_def: JSON Schema fragment for a single tool parameter.
+
+    Returns:
+        A Python annotation expression, e.g. ``str``, ``List[Any]`` or
+        ``Optional[List[Any]]``.
+    """
+    type_names = _schema_type_names(param_def)
+    if not type_names:
+        return "Any"
+
+    nullable = "null" in type_names
+    mapped: List[str] = []
+    for type_name in type_names:
+        if type_name == "null":
+            continue
+        python_type = _JSON_SCHEMA_PYTHON_TYPES.get(type_name)
+        if python_type is None:
+            # A shape we cannot express (e.g. a custom keyword); accept
+            # anything rather than block a call the upstream would allow.
+            return "Any"
+        if python_type not in mapped:
+            mapped.append(python_type)
+
+    if not mapped:
+        # Only `null` was declared, so any value is acceptable.
+        return "Any"
+    if len(mapped) == 1:
+        base = mapped[0]
+        return f"Optional[{base}]" if nullable else base
+    union = ", ".join(mapped)
+    return f"Optional[Union[{union}]]" if nullable else f"Union[{union}]"
+
+
+def _optional_annotation(annotation: str) -> str:
+    """Wrap an annotation in ``Optional[...]`` unless it already allows None.
+
+    Args:
+        annotation: Python annotation expression.
+
+    Returns:
+        The annotation, made nullable exactly once.
+    """
+    if annotation == "Any":
+        return annotation
+    if annotation.startswith("Optional["):
+        return annotation
+    return f"Optional[{annotation}]"
+
+
+#: Keys supplied to ``exec()`` when generating a proxied-tool wrapper. The
+#: generated body reads these as globals (``tool_name``, ``param_names``,
+#: ``account_id``, ...). An upstream property with the same name would become
+#: a function parameter and shadow the trusted value for the whole body.
+_WRAPPER_NAMESPACE_KEYS = (
+    "self",
+    "account_id",
+    "tool_name",
+    "server_id",
+    "param_names",
+    "logger",
+    "get_db",
+    "crud_mcp_server",
+    "get_mcp_client_pool",
+    "apply_output_filters",
+    "Optional",
+    "Union",
+    "Any",
+    "List",
+    "Dict",
+    "Context",
+    "_rule_workflow_id_var",
+    "_correlation_id_var",
+)
+
+#: Locals assigned in the generated wrapper body before argument collection.
+#: Colliding parameter names would make ``locals().get(param_name)`` forward
+#: the body's own object instead of the caller-supplied argument.
+_RESERVED_WRAPPER_BODY_LOCALS = frozenset(
+    {"ctx", "arguments", "user_context", "param_name", "value"}
+)
+
+#: Builtins the generated wrapper body calls. An upstream property with one
+#: of these names would become a parameter and shadow the builtin (``type(ctx)``
+#: becomes ``TypeError``). They must not be interpolated raw; alias instead.
+_WRAPPER_BODY_BUILTINS = (
+    "type",
+    "next",
+    "list",
+    "str",
+    "isinstance",
+    "getattr",
+    "hasattr",
+    "locals",
+    "Exception",
+)
+
+_RESERVED_WRAPPER_LOCALS = (
+    frozenset(_WRAPPER_NAMESPACE_KEYS)
+    | _RESERVED_WRAPPER_BODY_LOCALS
+    | frozenset(_WRAPPER_BODY_BUILTINS)
+)
+
+_WRAPPER_BODY_BUILTIN_SET = frozenset(_WRAPPER_BODY_BUILTINS)
+
+
+def _is_safe_tool_identifier(name: str) -> bool:
+    """Return whether *name* is safe as a proxied tool name in ``internal_name``.
+
+    Tool names are interpolated only inside the ``account_<id>_`` prefix, so
+    they cannot shadow wrapper locals, namespace globals, or builtins. Only
+    identifier syntax and keywords matter here.
+
+    Args:
+        name: Candidate tool name from an upstream MCP server.
+
+    Returns:
+        True if *name* may be used in a generated wrapper function name.
+    """
+    return isinstance(name, str) and name.isidentifier() and not keyword.iskeyword(name)
+
+
+def _is_safe_generated_identifier(name: str) -> bool:
+    """Return whether *name* is safe to interpolate raw as a parameter name.
+
+    Upstream ``tools/list`` names are attacker-controlled. Generated wrappers
+    ``exec()`` a function whose signature interpolates those names, so anything
+    that is not a non-keyword identifier, that collides with locals in the
+    generated body, that shadows an exec-namespace global, or that shadows a
+    builtin the body calls, must not be interpolated raw.
+
+    Args:
+        name: Candidate parameter name from an upstream MCP server.
+
+    Returns:
+        True if *name* may be interpolated into generated Python source.
+    """
+    return _is_safe_tool_identifier(name) and name not in _RESERVED_WRAPPER_LOCALS
+
+
+def _unused_wrapper_alias(base: str, taken: set[str]) -> str:
+    """Return a unique identifier derived from *base* that is safe to interpolate.
+
+    Args:
+        base: Original upstream parameter name (a wrapper-body builtin).
+        taken: Names already used by the schema or earlier aliases.
+
+    Returns:
+        A unique alias such as ``type_`` or ``type__``.
+    """
+    candidate = f"{base}_"
+    while (
+        candidate in taken
+        or candidate in _RESERVED_WRAPPER_LOCALS
+        or keyword.iskeyword(candidate)
+        or not candidate.isidentifier()
+    ):
+        candidate = f"{candidate}_"
+    return candidate
+
+
 class DynamicFastMCP(FastMCP):
     """FastMCP extension with per-user dynamic tool filtering.
 
@@ -283,6 +510,8 @@ class DynamicFastMCP(FastMCP):
         self._proxied_tool_server_names: Dict[str, str] = {}
         # Track registered proxied tools to avoid re-registration
         self._registered_proxied_tools: set = set()
+        # original schema key -> generated wrapper parameter name
+        self._proxied_param_aliases: Dict[str, Dict[str, str]] = {}
         logger.info("DynamicFastMCP initialized")
 
     def set_user_context_provider(self, provider: Callable[[], Optional[UserContext]]):
@@ -435,6 +664,14 @@ class DynamicFastMCP(FastMCP):
             proxied_tool_map = {}  # Track original_name -> internal_name mapping
 
             for mcp_server, mcp_tool in proxied_tools_data:
+                if not _is_safe_tool_identifier(mcp_tool.name):
+                    logger.warning(
+                        "Skipping proxied tool with unsafe name %r; "
+                        "not interpolating into generated wrapper source",
+                        mcp_tool.name,
+                    )
+                    continue
+
                 # Create internal name with namespace (sanitize account_id)
                 safe_account_id = user_context.account_id.replace("-", "_")
                 internal_name = f"account_{safe_account_id}_{mcp_tool.name}"
@@ -452,13 +689,23 @@ class DynamicFastMCP(FastMCP):
                     )
 
                     # Create wrapper function with approval and streaming
-                    wrapper = self._create_proxied_tool_wrapper(
-                        tool_name=mcp_tool.name,
-                        server_id=str(mcp_server.id),
-                        account_id=user_context.account_id,
-                        description=mcp_tool.description or "",
-                        input_schema=mcp_tool.input_schema,
-                    )
+                    try:
+                        wrapper = self._create_proxied_tool_wrapper(
+                            tool_name=mcp_tool.name,
+                            server_id=str(mcp_server.id),
+                            account_id=user_context.account_id,
+                            description=mcp_tool.description or "",
+                            input_schema=mcp_tool.input_schema,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Skipping proxied tool %r: wrapper creation failed",
+                            mcp_tool.name,
+                            exc_info=True,
+                        )
+                        continue
+                    if wrapper is None:
+                        continue
 
                     # Register with FastMCP using @mcp.tool() decorator
                     self.tool()(wrapper)
@@ -666,7 +913,7 @@ class DynamicFastMCP(FastMCP):
         account_id: str,
         description: str,
         input_schema: dict,
-    ):
+    ) -> Optional[Callable[..., Any]]:
         """Factory to create wrapper functions for proxied tools with approval and streaming.
 
         Creates a function with explicit parameters based on the input_schema.
@@ -680,9 +927,17 @@ class DynamicFastMCP(FastMCP):
             input_schema: Tool input schema (JSON Schema)
 
         Returns:
-            Async wrapper function with Context support and explicit parameters
+            Async wrapper function with Context support and explicit parameters,
+            or ``None`` if *tool_name* is not a safe tool identifier.
         """
         from fastmcp import Context
+
+        if not _is_safe_tool_identifier(tool_name):
+            logger.warning(
+                "Skipping proxied tool wrapper for unsafe tool name %r",
+                tool_name,
+            )
+            return None
 
         # Create internal name with namespace to avoid collisions
         # Sanitize account_id for Python identifier (replace hyphens with underscores)
@@ -693,36 +948,53 @@ class DynamicFastMCP(FastMCP):
         properties = input_schema.get("properties", {})
         required_params = set(input_schema.get("required", []))
 
-        # Build parameter list dynamically
+        # Build parameter list dynamically. ``param_names`` stores
+        # ``(alias, original)`` so builtins can be interpolated as aliases
+        # while ``arguments[original]`` still forwards the upstream key.
         req_params = []
         opt_params = []
         param_names = []
+        taken_names = set(properties) if isinstance(properties, dict) else set()
 
         for param_name, param_def in properties.items():
-            param_names.append(param_name)
-            param_type = param_def.get("type", "string")
-
-            # Map JSON Schema types to Python type names
-            if param_type == "string":
-                type_str = "str"
-            elif param_type == "integer":
-                type_str = "int"
-            elif param_type == "number":
-                type_str = "float"
-            elif param_type == "boolean":
-                type_str = "bool"
-            elif param_type == "array":
-                type_str = "list"
-            elif param_type == "object":
-                type_str = "dict"
+            if not _is_safe_tool_identifier(param_name):
+                logger.warning(
+                    "Skipping unsafe parameter name %r on proxied tool %r",
+                    param_name,
+                    tool_name,
+                )
+                continue
+            if param_name in _WRAPPER_BODY_BUILTIN_SET:
+                alias = _unused_wrapper_alias(param_name, taken_names)
+                taken_names.add(alias)
+                logger.info(
+                    "Aliasing builtin-colliding parameter %r to %r on tool %r",
+                    param_name,
+                    alias,
+                    tool_name,
+                )
+            elif not _is_safe_generated_identifier(param_name):
+                logger.warning(
+                    "Skipping unsafe parameter name %r on proxied tool %r",
+                    param_name,
+                    tool_name,
+                )
+                continue
             else:
-                type_str = "str"  # Default to string
+                alias = param_name
+            param_names.append((alias, param_name))
+            if not isinstance(param_def, dict):
+                param_def = {}
+
+            # Mirror the advertised JSON Schema instead of flattening complex
+            # shapes (arrays, unions, objects) to `str`.
+            type_str = _python_type_for_schema(param_def)
 
             # Add Optional if not required
             if param_name not in required_params:
-                opt_params.append(f"{param_name}: Optional[{type_str}] = None")
+                opt_params.append(f"{alias}: {_optional_annotation(type_str)} = None")
             else:
-                req_params.append(f"{param_name}: {type_str}")
+                req_params.append(f"{alias}: {type_str}")
 
         # Add Context parameter at the end
         opt_params.append("ctx: Optional[Context] = None")
@@ -731,7 +1003,7 @@ class DynamicFastMCP(FastMCP):
         params = req_params + opt_params
         params_str = ", ".join(params)
 
-        # Create the wrapper function using exec (yes, it's safe here - we control the input)
+        # Names interpolated below were validated as safe generated identifiers.
         wrapper_code = f"""
 async def {internal_name}({params_str}) -> str:
     # DEBUG: Log Context availability
@@ -748,12 +1020,12 @@ async def {internal_name}({params_str}) -> str:
         )
         return "Access denied: Tool not available"
 
-    # Collect all arguments
+    # Collect all arguments. ``param_names`` is ``(alias, original)``.
     arguments = {{}}
     for param_name in param_names:
-        value = locals().get(param_name)
+        value = locals().get(param_name[0])
         if value is not None:
-            arguments[param_name] = value
+            arguments[param_name[1]] = value
 
     # Read justification from context var — _call_tool() already stripped it
     # from arguments and stored it in _justification_var.
@@ -861,8 +1133,9 @@ async def {internal_name}({params_str}) -> str:
         return f"Error executing tool '{{tool_name}}': {{cause}}"
 """
 
-        # Create local namespace with required variables
-        namespace = {
+        # Create local namespace with required variables. Keys must match
+        # ``_WRAPPER_NAMESPACE_KEYS`` so the identifier guard cannot drift.
+        namespace_values = {
             "self": self,
             "account_id": account_id,
             "tool_name": tool_name,
@@ -874,10 +1147,19 @@ async def {internal_name}({params_str}) -> str:
             "get_mcp_client_pool": get_mcp_client_pool,
             "apply_output_filters": apply_output_filters,
             "Optional": Optional,
+            "Union": Union,
+            "Any": Any,
+            "List": List,
+            "Dict": Dict,
             "Context": Context,
             "_rule_workflow_id_var": _rule_workflow_id_var,
             "_correlation_id_var": _correlation_id_var,
         }
+        if namespace_values.keys() != set(_WRAPPER_NAMESPACE_KEYS):
+            raise RuntimeError(
+                "wrapper namespace values must match _WRAPPER_NAMESPACE_KEYS"
+            )
+        namespace = {key: namespace_values[key] for key in _WRAPPER_NAMESPACE_KEYS}
 
         # Execute the code to create the function
         exec(wrapper_code, namespace)
@@ -888,12 +1170,49 @@ async def {internal_name}({params_str}) -> str:
         # Store original name and owner for reference
         wrapper._display_name = tool_name  # type: ignore
         wrapper._account_id = account_id  # type: ignore
+        original_to_alias = {original: alias for alias, original in param_names}
+        self._proxied_param_aliases[internal_name] = original_to_alias
 
         logger.info(
-            f"Created wrapper function for {tool_name} with parameters: {param_names}"
+            "Created wrapper function for %s with parameters: %s",
+            tool_name,
+            [original for _, original in param_names],
         )
 
         return wrapper
+
+    def _remap_wrapper_arguments(
+        self, internal_name: str, arguments: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Rewrite client keys to generated aliases before FastMCP dispatch.
+
+        When both an original key and its alias are present, the original
+        key's value wins so a stray alias cannot replace the in-spec value.
+        Remapping an already-aliased dict is a no-op (idempotent).
+
+        Args:
+            internal_name: Registered wrapper name (``account_<id>_<tool>``).
+            arguments: Client-facing ``tools/call`` arguments.
+
+        Returns:
+            Arguments keyed by wrapper parameter names, or *arguments* when
+            no alias map exists.
+        """
+        aliases = self._proxied_param_aliases.get(internal_name)
+        if not arguments or not aliases:
+            return arguments
+        mapped: Dict[str, Any] = {}
+        originals_applied: set[str] = set()
+        for key, value in arguments.items():
+            target = aliases.get(key, key)
+            if target != key:
+                mapped[target] = value
+                originals_applied.add(target)
+                continue
+            if target in originals_applied:
+                continue
+            mapped[target] = value
+        return mapped
 
     async def call_tool(
         self,
@@ -968,7 +1287,7 @@ async def {internal_name}({params_str}) -> str:
             )
             return await super().call_tool(
                 name,
-                arguments,
+                self._remap_wrapper_arguments(name, arguments),
                 version=version,
                 run_middleware=run_middleware,
                 task_meta=task_meta,
@@ -1326,12 +1645,14 @@ async def {internal_name}({params_str}) -> str:
         # Client calls "calculate_fibonacci", we translate to "account_123_calculate_fibonacci"
         client_tool_name = name
         translation_token = None
+        dispatch_arguments = arguments
         if name in self._proxied_tool_servers:
             safe_account_id = user_context.account_id.replace("-", "_")
             internal_name = f"account_{safe_account_id}_{name}"
             logger.info(f"Translating proxied tool name: {name} -> {internal_name}")
             # Modify target name for the FastMCP router
             name = internal_name
+            dispatch_arguments = self._remap_wrapper_arguments(internal_name, arguments)
             translation_token = _is_proxy_translation_var.set(True)
         else:
             # Builtin tool - call with original name
@@ -1346,7 +1667,7 @@ async def {internal_name}({params_str}) -> str:
         try:
             result = await super().call_tool(
                 name,
-                arguments,
+                dispatch_arguments,
                 version=version,
                 run_middleware=run_middleware,
                 task_meta=task_meta,
@@ -1611,7 +1932,9 @@ async def {internal_name}({params_str}) -> str:
         if name in self._registered_proxied_tools:
             translation_token = _is_proxy_translation_var.set(True)
         try:
-            return await super().call_tool(name, arguments or {})
+            return await super().call_tool(
+                name, self._remap_wrapper_arguments(name, arguments or {})
+            )
         finally:
             if translation_token is not None:
                 _is_proxy_translation_var.reset(translation_token)

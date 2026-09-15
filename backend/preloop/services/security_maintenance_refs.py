@@ -526,7 +526,7 @@ def _frozen_checkout_shas(
             archive = None
         else:
             policy = checkout_observation_policy(flow, execution)
-            if policy is not None:
+            if archive is not None and policy is not None:
                 from preloop.services.multi_repo_publication import (
                     observed_checkout_shas,
                 )

@@ -56,6 +56,29 @@ def test_freeze_derives_real_commit_and_preserves_independent_bytes(
     assert (destination / "branch.bundle").stat().st_mode & 0o222 == 0
 
 
+def test_read_regular_file_closes_fd_when_fdopen_raises_base_exception(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "branch.bundle").write_bytes(b"payload")
+    closed: list[int] = []
+    real_close = os.close
+    file_fd: dict[str, int] = {}
+
+    def close(fd: int) -> None:
+        closed.append(fd)
+        real_close(fd)
+
+    def fdopen(fd: int, mode: str):
+        file_fd["fd"] = fd
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("preloop.services.publication_worker.os.close", close)
+    monkeypatch.setattr("preloop.services.publication_worker.os.fdopen", fdopen)
+    with pytest.raises(KeyboardInterrupt):
+        read_regular_file(tmp_path, "branch.bundle", 10)
+    assert file_fd["fd"] in closed
+
+
 @pytest.mark.parametrize("kind", ["symlink", "hardlink", "fifo", "oversize"])
 def test_fixed_input_rejects_filesystem_aliases_and_special_files(tmp_path, kind):
     target = tmp_path / "branch.bundle"

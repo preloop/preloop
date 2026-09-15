@@ -609,6 +609,17 @@ export interface GatewayUsageSummaryParams {
   endDate?: string;
   runtimePrincipalId?: string;
   includeBreakdown?: boolean;
+  /**
+   * One model's "failures since" moment, ISO 8601, for the per-model summary.
+   * Asks the API how many of the window's failures arrived after the moment a
+   * failure was acknowledged, so the page can say "2 failed since fix".
+   */
+  failedSince?: string;
+  /**
+   * The same question for the batch overview, one `<ai_model_id>:<ISO>` pair
+   * per model. Only models with an acknowledged failure need to be listed.
+   */
+  failedSinceByModel?: string[];
 }
 
 export interface GatewayUsageSearchParams extends GatewayUsageSummaryParams {
@@ -690,6 +701,14 @@ function buildGatewayUsageQuery(params: GatewayUsageSearchParams = {}): string {
 
   if (params.includeBreakdown !== undefined) {
     queryParams.set('include_breakdown', String(params.includeBreakdown));
+  }
+
+  if (params.failedSince) {
+    queryParams.set('failed_since', params.failedSince);
+  }
+
+  for (const pair of params.failedSinceByModel || []) {
+    queryParams.append('failed_since', pair);
   }
 
   if (typeof params.limit === 'number') {
@@ -2158,7 +2177,11 @@ export async function validateTrackerToken(
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.message || 'Failed to validate token');
+    // FastAPI HTTPException bodies carry `detail`; keep `message` for
+    // older/non-standard error shapes.
+    throw new Error(
+      errorData.detail ?? errorData.message ?? 'Failed to validate token'
+    );
   }
   return response.json();
 }
@@ -2196,7 +2219,9 @@ export async function listProjectsForOrg(
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
-      errorData.message || 'Failed to list projects for organization'
+      errorData.detail ??
+        errorData.message ??
+        'Failed to list projects for organization'
     );
   }
   return response.json();

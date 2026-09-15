@@ -7,7 +7,10 @@ import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
+import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
+import '@shoelace-style/shoelace/dist/components/menu/menu.js';
+import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
@@ -23,6 +26,10 @@ import '../../../components/add-ai-model-modal';
 import {
   createModelPriceOverride,
   deleteAIModel,
+  dismissAttentionItem,
+  getAttentionDismissals,
+  DISMISSALS_UNSUPPORTED,
+  type AttentionDismissal,
   extractErrorMessage,
   fetchAIModelPricingFromProvider,
   fetchWithAuth,
@@ -50,6 +57,11 @@ import type {
 } from '../../../types';
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
 import consoleStyles from '../../../styles/console-styles.css?inline';
+import {
+  markerSinceLabel,
+  modelAttentionState,
+  type ModelAttentionState,
+} from '../../../utils/model-attention';
 import {
   formatTimeRangeWindow,
   resolveTimeRange,
@@ -94,6 +106,24 @@ export class AIModelDetailView extends LitElement {
 
   @state()
   private summary: AIModelGatewayUsageSummaryResponse | null = null;
+
+  /**
+   * Failures this account has acknowledged, read with the same call the
+   * Overview and the inbox use so all three pages agree about which model is
+   * still asking for a person.
+   */
+  @state()
+  private dismissals: AttentionDismissal[] = [];
+
+  /** False against a server without the endpoint: no controls, no errors. */
+  @state()
+  private dismissalsSupported = false;
+
+  @state()
+  private dismissBusy = false;
+
+  @state()
+  private dismissError: string | null = null;
 
   @state()
   private sessions: AIModelRuntimeSessionListResponse | null = null;
@@ -753,7 +783,7 @@ export class AIModelDetailView extends LitElement {
 
     try {
       const params = this.buildSummaryParams();
-      const [summary, sessions, interactions] = await Promise.all([
+      const [summary, sessions, interactions, dismissals] = await Promise.all([
         getAIModelGatewayUsageSummary(this.modelId, params),
         getAIModelRuntimeSessions(this.modelId, {
           ...params,
@@ -765,11 +795,17 @@ export class AIModelDetailView extends LitElement {
           query: this.interactionQuery.trim() || undefined,
           limit: 10,
         }),
+        // A console that cannot read dismissals still has a detail page; it
+        // just offers no dismiss control, as it did before.
+        getAttentionDismissals().catch(() => DISMISSALS_UNSUPPORTED),
       ]);
       this.summary = summary;
       this.sessions = sessions;
       this.interactions = interactions;
       this.interactionsError = null;
+      this.dismissalsSupported = dismissals !== DISMISSALS_UNSUPPORTED;
+      this.dismissals = dismissals === DISMISSALS_UNSUPPORTED ? [] : dismissals;
+      await this.loadFailuresSinceMarker();
     } catch (error) {
       this.error =
         error instanceof Error
@@ -783,6 +819,55 @@ export class AIModelDetailView extends LitElement {
       this.updating = false;
       this.refreshInFlight = false;
       this.runPendingReload();
+    }
+  }
+
+  /** Where this model stands, by the rule the Overview and the inbox use. */
+  private get attentionState(): ModelAttentionState {
+    return modelAttentionState(
+      {
+        // The alias the failed calls carried, never the alias configured
+        // today: a key of our own invention would not match the dismissal the
+        // inbox stores for the same failures.
+        failureAlias: this.summary?.last_failure_alias,
+        providerName: this.summary?.provider_name,
+        failedRequests: this.summary?.failed_requests || 0,
+        lastFailureAt: this.summary?.last_failure_at,
+        failedRequestsSince: this.summary?.failed_requests_since,
+        aliasFailures: (this.summary?.alias_failures || []).map((group) => ({
+          failureAlias: group.alias,
+          lastFailureAt: group.last_failure_at,
+          failedRequests: group.failed_requests,
+          failedRequestsSince: group.failed_requests_since,
+        })),
+      },
+      this.dismissals
+    );
+  }
+
+  /**
+   * When an acknowledged failure has been overtaken, ask the API to count
+   * only the failures that arrived after the acknowledgement. Rare, so the
+   * usual load keeps the requests it already made.
+   */
+  private async loadFailuresSinceMarker(): Promise<void> {
+    const state = this.attentionState;
+    if (!this.modelId || state.status !== 'failing' || !state.markerFailureAt) {
+      return;
+    }
+    try {
+      const split = await getAIModelGatewayUsageSummary(this.modelId, {
+        ...this.buildSummaryParams(),
+        failedSince: state.markerFailureAt,
+      });
+      if (typeof split.failed_requests_since === 'number' && this.summary) {
+        this.summary = {
+          ...this.summary,
+          failed_requests_since: split.failed_requests_since,
+        };
+      }
+    } catch {
+      // The page still says Attention; it just cannot add "N failed since".
     }
   }
 
@@ -1678,6 +1763,98 @@ export class AIModelDetailView extends LitElement {
     `;
   }
 
+  /**
+   * The failure line the Models page and the inbox also show, with the same
+   * three answers behind the same call, so acknowledging a model here quiets
+   * it everywhere. A model with no failures in the window says nothing.
+   */
+  private renderAttentionLine() {
+    const state = this.attentionState;
+    if (state.status === 'quiet') {
+      return null;
+    }
+    const marked = state.status === 'marked';
+    return html`
+      <div class="badge-row" data-testid="model-attention">
+        <sl-badge
+          class="status-chip"
+          pill
+          variant=${marked ? 'success' : 'warning'}
+          title=${marked && state.markerLabel ? state.markerLabel : ''}
+        >
+          ${marked ? 'Healthy' : 'Attention'}
+        </sl-badge>
+        ${
+          state.failuresSinceMarker !== null
+            ? html`<span class="meta-line" data-testid="since-marker">
+                ${this.formatNumber(state.failuresSinceMarker)} failed
+                ${markerSinceLabel(state.dismissal?.reason)}
+              </span>`
+            : null
+        }
+        ${this.renderDismiss(state)}
+      </div>
+      ${
+        this.dismissError
+          ? html`<div class="meta-line" data-testid="dismiss-error">
+              ${this.dismissError}
+            </div>`
+          : null
+      }
+    `;
+  }
+
+  private renderDismiss(state: ModelAttentionState) {
+    if (!this.dismissalsSupported || !state.dismissable) {
+      return null;
+    }
+    return html`
+      <sl-dropdown hoist>
+        <sl-button
+          slot="trigger"
+          size="small"
+          caret
+          data-testid="dismiss-model"
+          ?loading=${this.dismissBusy}
+          >Dismiss</sl-button
+        >
+        <sl-menu
+          @sl-select=${(event: CustomEvent<{ item: { value: string } }>) =>
+            void this.dismissModel(
+              state,
+              event.detail.item.value as 'expected' | 'snoozed' | 'fixed'
+            )}
+        >
+          <sl-menu-item value="expected"
+            >Expected, keep quiet until it changes</sl-menu-item
+          >
+          <sl-menu-item value="snoozed">Snooze 7 days</sl-menu-item>
+          <sl-menu-item value="fixed">Fixed</sl-menu-item>
+        </sl-menu>
+      </sl-dropdown>
+    `;
+  }
+
+  private async dismissModel(
+    state: ModelAttentionState,
+    reason: 'expected' | 'snoozed' | 'fixed'
+  ): Promise<void> {
+    this.dismissBusy = true;
+    this.dismissError = null;
+    try {
+      await dismissAttentionItem(state.itemId, {
+        fingerprint: state.fingerprint,
+        reason,
+        snooze_days: reason === 'snoozed' ? 7 : undefined,
+      });
+      await this.loadData({ preserveLoadingState: true });
+    } catch {
+      this.dismissError = 'Could not dismiss this model. Try again.';
+    } finally {
+      this.dismissBusy = false;
+    }
+  }
+
   private renderSummarySection() {
     if (!this.summary) {
       return html`
@@ -1690,6 +1867,7 @@ export class AIModelDetailView extends LitElement {
 
     return html`
       <div class="stack">
+        ${this.renderAttentionLine()}
         <!-- A hairline strip, not four filled boxes inside a card
              (DESIGN.md "Depth limit: two"). The tracked period moved into the
              card header: a date-time is not a stat. -->

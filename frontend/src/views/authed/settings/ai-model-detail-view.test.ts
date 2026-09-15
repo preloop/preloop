@@ -1264,3 +1264,302 @@ describe('AIModelDetailView', () => {
     expect(element.shadowRoot?.textContent).to.contain('Usage summary');
   });
 });
+
+/**
+ * The detail page reported the window's failure count and nothing else, so a
+ * failure acknowledged on the Overview still read as an open problem here, and
+ * there was nowhere to acknowledge one while looking at the evidence for it.
+ */
+describe('AIModelDetailView attention dismissals', () => {
+  let fetchStub: sinon.SinonStub;
+  let connectStub: sinon.SinonStub;
+  let subscribeStub: sinon.SinonStub;
+  let dismissalsResponse: any[];
+  let dismissalWrites: { url: string; method: string; body: any }[];
+  let summaryRequests: string[];
+  let lastFailureAt: string;
+  let extraAliasFailures: {
+    alias: string;
+    last_failure_at: string;
+    failed_requests: number;
+    failed_requests_since: number | null;
+  }[];
+
+  const json = (data: unknown) =>
+    new Response(JSON.stringify(data), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    dismissalsResponse = [];
+    dismissalWrites = [];
+    summaryRequests = [];
+    lastFailureAt = '2026-09-14T09:00:00Z';
+    extraAliasFailures = [];
+
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+
+        if (url.startsWith('/api/v1/attention/dismissals')) {
+          const method = (init?.method || 'GET').toUpperCase();
+          if (method === 'GET') {
+            return json({ items: dismissalsResponse });
+          }
+          const body = JSON.parse(String(init!.body));
+          dismissalWrites.push({ url, method, body });
+          const record = {
+            id: 'dismissal-1',
+            item_id: decodeURIComponent(url.split('/').pop()!),
+            fingerprint: body.fingerprint,
+            reason: body.reason,
+            snooze_until: null,
+            dismissed_by_user_id: 'user-1',
+            dismissed_by_username: 'Jane Doe',
+            created_at: '2026-09-14T09:30:00Z',
+          };
+          dismissalsResponse = [record];
+          return json(record);
+        }
+
+        if (url.startsWith('/api/v1/ai-models/model-1/summary')) {
+          summaryRequests.push(url);
+          return json({
+            ai_model_id: 'model-1',
+            model_name: 'Reviewer model',
+            provider_name: 'example-provider',
+            model_identifier: 'example-model-1',
+            period_start: '2026-08-15T00:00:00Z',
+            period_end: '2026-09-14T23:59:59Z',
+            total_requests: 20,
+            successful_requests: 11,
+            failed_requests: 9,
+            last_failure_at: lastFailureAt,
+            last_failure_alias: 'example/reviewer',
+            failed_requests_since: url.includes('failed_since') ? 2 : null,
+            alias_failures: [
+              {
+                alias: 'example/reviewer',
+                last_failure_at: lastFailureAt,
+                failed_requests: 9,
+                failed_requests_since: url.includes('failed_since') ? 2 : null,
+              },
+              ...extraAliasFailures,
+            ],
+            token_usage: {
+              prompt_tokens: 100,
+              completion_tokens: 100,
+              total_tokens: 200,
+            },
+            estimated_cost: 1.5,
+            requests_by_day: [],
+            usage_by_session: [],
+          });
+        }
+
+        if (url.startsWith('/api/v1/ai-models/model-1/runtime-sessions')) {
+          return json({ total: 0, limit: 10, offset: 0, items: [] });
+        }
+
+        if (url.startsWith('/api/v1/ai-models/model-1/interactions')) {
+          return json({ total: 0, limit: 10, offset: 0, items: [] });
+        }
+
+        if (url.includes('/api/v1/ai-models/model-1/pricing')) {
+          return json({
+            ai_model_id: 'model-1',
+            model_alias: 'example/reviewer',
+            provider_name: 'example-provider',
+            source: 'catalog',
+            price: {
+              input_per_1m: 3,
+              output_per_1m: 15,
+              cached_input_per_1m: null,
+              blended_per_1m: null,
+              request_price: null,
+            },
+            currency: 'USD',
+            override_id: null,
+            effective_from: null,
+            effective_until: null,
+            catalog_key: 'example/reviewer',
+            fetch_supported: false,
+            fetch_provider_label: 'Example provider',
+          });
+        }
+
+        if (url.includes('/api/v1/ai-models/model-1')) {
+          return json({
+            id: 'model-1',
+            name: 'Reviewer model',
+            provider_name: 'example-provider',
+            model_identifier: 'example-model-1',
+            has_api_key: true,
+            meta_data: {
+              gateway: { enabled: true, model_alias: 'example/reviewer' },
+            },
+            is_default: false,
+            created_at: '2026-09-01T10:00:00Z',
+            updated_at: '2026-09-14T10:00:00Z',
+          });
+        }
+
+        if (url.endsWith('/api/v1/features')) {
+          return json({ features: {} });
+        }
+
+        // Anything the page loads around the summary (policies, agents, the
+        // session observer) answers empty: this suite is about the failure
+        // line, not about those panels.
+        return json({ items: [], total: 0 });
+      });
+
+    connectStub = sinon.stub(unifiedWebSocketManager, 'connect').resolves();
+    subscribeStub = sinon
+      .stub(unifiedWebSocketManager, 'subscribe')
+      .callsFake(() => () => undefined);
+  });
+
+  afterEach(() => {
+    fetchStub.restore();
+    connectStub.restore();
+    subscribeStub.restore();
+    localStorage.clear();
+  });
+
+  const mount = async (): Promise<AIModelDetailView> => {
+    const element = (await fixture(
+      html`<ai-model-detail-view modelId="model-1"></ai-model-detail-view>`
+    )) as AIModelDetailView;
+    await waitUntil(
+      () => !(element as any).loading,
+      'the model detail view did not finish loading'
+    );
+    await element.updateComplete;
+    return element;
+  };
+
+  const attentionBadge = (element: AIModelDetailView) =>
+    element.shadowRoot!.querySelector(
+      '[data-testid="model-attention"] sl-badge'
+    ) as HTMLElement;
+
+  it('dismisses this model with the item id and fingerprint the inbox uses', async () => {
+    const element = await mount();
+
+    expect(attentionBadge(element).textContent!.trim()).to.equal('Attention');
+    const menu = element.shadowRoot!.querySelector(
+      '[data-testid="model-attention"] sl-menu'
+    )!;
+    menu.dispatchEvent(
+      new CustomEvent('sl-select', { detail: { item: { value: 'fixed' } } })
+    );
+    await waitUntil(
+      () => dismissalWrites.length > 0,
+      'the dismissal was never written'
+    );
+
+    expect(dismissalWrites[0].method).to.equal('PUT');
+    expect(decodeURIComponent(dismissalWrites[0].url)).to.contain(
+      'model:example/reviewer'
+    );
+    expect(dismissalWrites[0].body).to.deep.equal({
+      fingerprint: `last:${lastFailureAt}`,
+      reason: 'fixed',
+    });
+
+    await waitUntil(
+      () => attentionBadge(element).textContent!.trim() === 'Healthy',
+      'the page stayed flagged after the failure was marked fixed'
+    );
+    expect(attentionBadge(element).getAttribute('title')).to.contain(
+      'Marked fixed'
+    );
+    expect(
+      element.shadowRoot!.querySelector('[data-testid="dismiss-model"]')
+    ).to.equal(null);
+  });
+
+  it('keeps a two-alias page flagged until every alias item is dismissed', async () => {
+    extraAliasFailures = [
+      {
+        alias: 'example/reviewer-old',
+        last_failure_at: '2026-09-13T08:00:00Z',
+        failed_requests: 4,
+        failed_requests_since: null,
+      },
+    ];
+    dismissalsResponse = [
+      {
+        id: 'dismissal-1',
+        item_id: 'model:example/reviewer',
+        fingerprint: `last:${lastFailureAt}`,
+        reason: 'fixed',
+        snooze_until: null,
+        dismissed_by_user_id: 'user-1',
+        dismissed_by_username: 'Jane Doe',
+        created_at: '2026-09-14T09:30:00Z',
+      },
+    ];
+
+    let element = await mount();
+    expect(attentionBadge(element).textContent!.trim()).to.equal('Attention');
+
+    dismissalsResponse = [
+      ...dismissalsResponse,
+      {
+        id: 'dismissal-2',
+        item_id: 'model:example/reviewer-old',
+        fingerprint: 'last:2026-09-13T08:00:00Z',
+        reason: 'fixed',
+        snooze_until: null,
+        dismissed_by_user_id: 'user-1',
+        dismissed_by_username: 'Jane Doe',
+        created_at: '2026-09-14T09:35:00Z',
+      },
+    ];
+    element = await mount();
+    expect(attentionBadge(element).textContent!.trim()).to.equal('Healthy');
+  });
+
+  it('counts only the failures newer than an overtaken marker', async () => {
+    dismissalsResponse = [
+      {
+        id: 'dismissal-1',
+        item_id: 'model:example/reviewer',
+        fingerprint: 'last:2026-09-13T08:00:00Z',
+        reason: 'fixed',
+        snooze_until: null,
+        dismissed_by_user_id: 'user-1',
+        dismissed_by_username: 'Jane Doe',
+        created_at: '2026-09-13T08:30:00Z',
+      },
+    ];
+
+    const element = await mount();
+    await waitUntil(
+      () =>
+        Boolean(
+          element.shadowRoot!.querySelector('[data-testid="since-marker"]')
+        ),
+      'the failures-since line never rendered'
+    );
+
+    expect(attentionBadge(element).textContent!.trim()).to.equal('Attention');
+    const since = element.shadowRoot!.querySelector(
+      '[data-testid="since-marker"]'
+    )!;
+    expect(since.textContent!.replace(/\s+/g, ' ')).to.contain(
+      '2 failed since fix'
+    );
+    const splitRequest = summaryRequests.find((url) =>
+      url.includes('failed_since')
+    )!;
+    expect(decodeURIComponent(splitRequest)).to.contain(
+      'failed_since=2026-09-13T08:00:00Z'
+    );
+  });
+});

@@ -1370,10 +1370,31 @@ export interface AIModelGatewayUsageSummaryResponse {
   total_requests: number;
   successful_requests: number;
   failed_requests: number;
+  /** Newest failed request in the window; a dismissal is fingerprinted with it. */
+  last_failure_at?: string | null;
+  /** Alias that failure carried, which is how the console groups failures. */
+  last_failure_alias?: string | null;
+  /** Failures newer than the requested `failed_since`, null when unasked. */
+  failed_requests_since?: number | null;
+  /**
+   * Per-alias failure groups, one inbox item each. The page is Attention
+   * if any of these is still unacknowledged.
+   */
+  alias_failures?: AIModelAliasFailure[];
   token_usage: GatewayTokenUsage;
   estimated_cost: number;
   requests_by_day: GatewayUsageByDay[];
   usage_by_session: GatewayUsageBySession[];
+}
+
+export interface AIModelAliasFailure {
+  /** Alias the failing calls carried, which is how the console groups failures. */
+  alias: string;
+  /** Newest failed request for this alias; a dismissal is fingerprinted with it. */
+  last_failure_at: string;
+  failed_requests: number;
+  /** Failures newer than this model's `failed_since` pair, null when unasked. */
+  failed_requests_since?: number | null;
 }
 
 export interface AIModelOverviewItem {
@@ -1391,6 +1412,17 @@ export interface AIModelOverviewItem {
   unpriced_request_count: number;
   active_session_count: number;
   last_request_at: string | null;
+  /** Newest failed request in the window; a dismissal is fingerprinted with it. */
+  last_failure_at?: string | null;
+  /** Alias that failure carried, which is how the console groups failures. */
+  last_failure_alias?: string | null;
+  /** Failures newer than this model's `failed_since` pair, null when unasked. */
+  failed_requests_since?: number | null;
+  /**
+   * Per-alias failure groups, one inbox item each. The Models row is
+   * Attention if any of these is still unacknowledged.
+   */
+  alias_failures?: AIModelAliasFailure[];
   pricing_source: 'override' | 'model_config' | 'catalog' | 'none';
 }
 

@@ -31,6 +31,7 @@ def test_get_for_account(crud_tracker, mock_db_session):
 
     mock_query = MagicMock()
     mock_db_session.query.return_value = mock_query
+    mock_query.options.return_value = mock_query
     mock_query.filter.return_value = mock_query
     mock_query.offset.return_value = mock_query
     mock_query.limit.return_value = mock_query

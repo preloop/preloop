@@ -1,7 +1,7 @@
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Literal, Optional, Tuple
 
 from fastapi import (
@@ -60,6 +60,7 @@ from preloop.services.ai_model_pricing import (
 )
 from preloop.services.model_gateway_usage import (
     ModelGatewayUsageService,
+    _alias_failures,
     normalize_usage_period,
 )
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
@@ -102,6 +103,56 @@ def _gateway_alias(ai_model: AIModel) -> Optional[str]:
     return None
 
 
+#: Upper bound on ``failed_since`` pairs. One pair per model on the page is
+#: the shape the console sends, and each pair is one more OR branch in the
+#: aggregate, so an unbounded list is an unbounded query.
+MAX_FAILED_SINCE_PAIRS = 200
+
+
+def _parse_failed_since(pairs: Optional[List[str]]) -> Dict[str, datetime]:
+    """Parse ``<ai_model_id>:<timestamp>`` pairs into a mapping.
+
+    The id is a UUID and carries no colon, so the pair splits on the first
+    one and the rest is the timestamp (which has several).
+
+    Args:
+        pairs: Raw query values, or None.
+
+    Returns:
+        Mapping of model id to the moment its failures should be counted from.
+
+    Raises:
+        HTTPException: 422 when a pair is malformed or there are too many.
+    """
+    if not pairs:
+        return {}
+    if len(pairs) > MAX_FAILED_SINCE_PAIRS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"At most {MAX_FAILED_SINCE_PAIRS} failed_since pairs",
+        )
+    parsed: Dict[str, datetime] = {}
+    for pair in pairs:
+        model_id, separator, raw_moment = pair.partition(":")
+        if not separator or not model_id.strip() or not raw_moment.strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="failed_since must be '<ai_model_id>:<timestamp>'",
+            )
+        try:
+            moment = datetime.fromisoformat(raw_moment.strip().replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"failed_since timestamp is not ISO-8601: {raw_moment}",
+            ) from exc
+        if moment.tzinfo is None:
+            # Same reading as the window bounds: a naive timestamp is UTC.
+            moment = moment.replace(tzinfo=timezone.utc)
+        parsed[model_id.strip()] = moment
+    return parsed
+
+
 def _collapse_usage_by_model(usage_rows: List[Dict]) -> Dict[str, Dict]:
     """Sum the per-alias usage groups into one total per model.
 
@@ -114,7 +165,9 @@ def _collapse_usage_by_model(usage_rows: List[Dict]) -> Dict[str, Dict]:
 
     Returns:
         Mapping of model id to summed counters, with the latest
-        ``last_request_at`` across that model's aliases.
+        ``last_request_at`` across that model's aliases, the latest
+        ``last_failure_at`` and the alias that failure was recorded under,
+        plus the raw per-alias rows ``_alias_failures`` folds.
     """
     totals: Dict[str, Dict] = {}
     for row in usage_rows:
@@ -131,7 +184,11 @@ def _collapse_usage_by_model(usage_rows: List[Dict]) -> Dict[str, Dict]:
                 "estimated_cost": 0.0,
                 "unpriced_request_count": 0,
                 "failed_request_count": 0,
+                "failed_request_count_since": 0,
                 "last_request_at": None,
+                "last_failure_at": None,
+                "last_failure_alias": None,
+                "failure_groups": [],
             },
         )
         for key in (
@@ -142,6 +199,7 @@ def _collapse_usage_by_model(usage_rows: List[Dict]) -> Dict[str, Dict]:
             "estimated_cost",
             "unpriced_request_count",
             "failed_request_count",
+            "failed_request_count_since",
         ):
             total[key] += row.get(key) or 0
         last_request_at = row.get("last_request_at")
@@ -150,6 +208,21 @@ def _collapse_usage_by_model(usage_rows: List[Dict]) -> Dict[str, Dict]:
             or last_request_at > total["last_request_at"]
         ):
             total["last_request_at"] = last_request_at
+        last_failure_at = row.get("last_failure_at")
+        if last_failure_at is not None and (
+            total["last_failure_at"] is None
+            or last_failure_at > total["last_failure_at"]
+        ):
+            # The alias travels with the timestamp: the console groups gateway
+            # failures by the alias the request carried, so a model renamed at
+            # the gateway is named on the console the way the failing calls
+            # named it, not the way it is configured today.
+            total["last_failure_at"] = last_failure_at
+            total["last_failure_alias"] = row.get("model_alias") or row.get(
+                "provider_name"
+            )
+        # Same groups the detail summary folds: one inbox key per alias.
+        total["failure_groups"].append(row)
     return totals
 
 
@@ -217,6 +290,17 @@ def list_ai_models(
 def get_ai_models_overview(
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
+    failed_since: Optional[List[str]] = Query(
+        None,
+        description=(
+            "Repeatable '<ai_model_id>:<ISO-8601 timestamp>' pair. Each pair "
+            "asks for that model's failed_requests_since: how many of its "
+            "failures in this window are newer than the timestamp. The "
+            "console passes the moment an operator marked the model fixed, "
+            "so a row can say '2 failed since fix' instead of repeating the "
+            "whole window's total."
+        ),
+    ),
     db: Session = Depends(get_db_session),
     current_user: User = Depends(get_current_active_user),
 ) -> AIModelsOverviewResponse:
@@ -238,6 +322,14 @@ def get_ai_models_overview(
         )
 
     model_ids = [str(model.id) for model in models]
+    known_ids = set(model_ids)
+    # Pairs for models this account does not have are dropped rather than
+    # rejected: a stale console tab is not a bad request.
+    failed_since_by_model = {
+        model_id: moment
+        for model_id, moment in _parse_failed_since(failed_since).items()
+        if model_id in known_ids
+    }
     # ``limit=None``: this is a total per model, and a request-count-ordered
     # truncation would silently zero the quietest models on the page.
     usage_rows = crud_api_usage.get_gateway_usage_by_model(
@@ -246,6 +338,7 @@ def get_ai_models_overview(
         start_date=period_start,
         end_date=period_end,
         ai_model_ids=model_ids,
+        failed_since=failed_since_by_model or None,
         limit=None,
     )
     usage_by_model = _collapse_usage_by_model(usage_rows)
@@ -266,6 +359,11 @@ def get_ai_models_overview(
         usage = usage_by_model.get(model_id)
         requests = usage["request_count"] if usage else 0
         failed = usage["failed_request_count"] if usage else 0
+        asked_since = model_id in failed_since_by_model
+        alias_failures = _alias_failures(
+            usage["failure_groups"] if usage else [],
+            asked_since=asked_since,
+        )
         items.append(
             AIModelOverviewItem(
                 ai_model_id=model_id,
@@ -282,6 +380,14 @@ def get_ai_models_overview(
                 unpriced_request_count=usage["unpriced_request_count"] if usage else 0,
                 active_session_count=active_sessions.get(model_id, 0),
                 last_request_at=usage["last_request_at"] if usage else None,
+                last_failure_at=usage["last_failure_at"] if usage else None,
+                last_failure_alias=usage["last_failure_alias"] if usage else None,
+                failed_requests_since=(
+                    usage["failed_request_count_since"]
+                    if usage and asked_since
+                    else None
+                ),
+                alias_failures=alias_failures,
                 pricing_source=(
                     pricing[model_id].source if model_id in pricing else "none"
                 ),
@@ -320,6 +426,14 @@ def get_ai_model_usage_summary(
     model_id: uuid.UUID,
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
+    failed_since: Optional[datetime] = Query(
+        None,
+        description=(
+            "Count this model's failures newer than this moment into "
+            "failed_requests_since. The console passes the moment the model "
+            "was marked fixed."
+        ),
+    ),
     db: Session = Depends(get_db_session),
     current_user: User = Depends(get_current_active_user),
 ) -> AIModelGatewayUsageSummaryResponse:
@@ -331,6 +445,7 @@ def get_ai_model_usage_summary(
         ai_model=db_model,
         start_date=start_date,
         end_date=end_date,
+        failed_since=failed_since,
     )
 
 

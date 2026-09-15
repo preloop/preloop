@@ -1247,3 +1247,84 @@ def test_gateway_usage_summary_reports_unknown_cache_hit_ratio(
     assert totals["cache_read_tokens"] == 0
     assert totals["cache_write_tokens"] == 0
     assert totals["cache_hit_ratio"] is None
+
+
+def test_ai_model_summary_reports_failure_marker_fields(client, db_session, test_user):
+    """The detail page needs the same failure marker the Models page uses.
+
+    Without ``last_failure_at`` the detail page cannot fingerprint a
+    dismissal the way the Overview does, so a dismissal made on one page
+    would not be honoured on the other.
+    """
+    model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Detail Model",
+            "provider_name": "openai",
+            "model_identifier": "gpt-5",
+        },
+        account_id=test_user.account_id,
+    )
+    db_session.commit()
+
+    now = datetime.now(UTC)
+    for minutes_ago, status_code in ((240, 500), (200, 500), (30, 503)):
+        usage = crud_api_usage.log_gateway_request(
+            db_session,
+            endpoint="/openai/v1/responses",
+            method="POST",
+            status_code=status_code,
+            duration=0.2,
+            user_id=str(test_user.id),
+            account_id=str(test_user.account_id),
+            ai_model_id=str(model.id),
+            model_alias="openai/gpt-5",
+            provider_name="openai",
+            prompt_tokens=1,
+            completion_tokens=0,
+            total_tokens=1,
+            estimated_cost=0.01,
+        )
+        usage.timestamp = now - timedelta(minutes=minutes_ago)
+        db_session.add(usage)
+    db_session.commit()
+
+    marked_fixed_at = now - timedelta(minutes=120)
+    response = client.get(
+        f"/api/v1/ai-models/{model.id}/summary",
+        params={"failed_since": marked_fixed_at.isoformat()},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["failed_requests"] == 3
+    assert body["failed_requests_since"] == 1
+    assert body["last_failure_alias"] == "openai/gpt-5"
+    assert body["last_failure_at"] is not None
+    assert [group["alias"] for group in body["alias_failures"]] == ["openai/gpt-5"]
+    assert body["alias_failures"][0]["failed_requests"] == 3
+
+
+def test_ai_model_summary_leaves_failures_since_null_when_unasked(
+    client, db_session, test_user
+):
+    """No ``failed_since`` means no count, not a zero that reads as "none"."""
+    model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Unasked Model",
+            "provider_name": "openai",
+            "model_identifier": "gpt-5",
+        },
+        account_id=test_user.account_id,
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/v1/ai-models/{model.id}/summary")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["failed_requests_since"] is None
+    assert body["last_failure_at"] is None
+    assert body["last_failure_alias"] is None
+    assert body["alias_failures"] == []

@@ -187,7 +187,7 @@ async def test_lifecycle_hook_database_wait_stays_off_application_loop(
     finally:
         if terminal:
             with pytest.raises(ValueError, match="lifecycle_issue_not_found"):
-                await task
+                assert await task is None
         else:
             assert await task == (False, None)
 
