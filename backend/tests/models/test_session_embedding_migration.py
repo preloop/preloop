@@ -17,22 +17,29 @@ from sqlalchemy import inspect, text
 from preloop.models import models
 from preloop.models.models.session_search_document import EMBEDDING_DIMENSIONS
 
-MIGRATION_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "preloop/models/alembic/versions/20260915_session_embedding.py"
-)
+VERSIONS = Path(__file__).resolve().parents[2] / "preloop/models/alembic/versions"
+MIGRATION_PATH = VERSIONS / "20260915_session_embedding.py"
+#: The opt in table's shape is these two migrations together, so the model
+#: comparison below has to run both.
+SCOPE_MIGRATION_PATH = VERSIONS / "20260916_session_embedding_scope.py"
 INDEX_NAME = "ix_session_search_document_embedding"
 
 
-def _rerun_migration(db_session) -> None:
-    spec = importlib.util.spec_from_file_location(
-        "session_embedding_migration", MIGRATION_PATH
-    )
+def _load(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
+    return migration
+
+
+def _rerun_migration(db_session) -> None:
+    migration = _load(MIGRATION_PATH, "session_embedding_migration")
+    scope_migration = _load(SCOPE_MIGRATION_PATH, "session_embedding_scope_migration")
     with Operations.context(MigrationContext.configure(db_session.connection())):
+        scope_migration.downgrade()
         migration.downgrade()
         migration.upgrade()
+        scope_migration.upgrade()
 
 
 def _index_definition(db_session, name: str) -> str:
@@ -100,12 +107,10 @@ def test_upgrade_creates_the_opt_in_table_matching_the_model(db_session):
 
 def test_downgrade_removes_the_vector_index_and_columns(db_session):
     """A rollback leaves the keyword corpus intact and the vectors gone."""
-    spec = importlib.util.spec_from_file_location(
-        "session_embedding_migration", MIGRATION_PATH
-    )
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
+    migration = _load(MIGRATION_PATH, "session_embedding_migration")
+    scope_migration = _load(SCOPE_MIGRATION_PATH, "session_embedding_scope_migration")
     with Operations.context(MigrationContext.configure(db_session.connection())):
+        scope_migration.downgrade()
         migration.downgrade()
 
     columns = {

@@ -20,7 +20,10 @@ from preloop.models.crud import (
     crud_session_search_document,
 )
 from preloop.models.crud.session_search_document import SessionSearchChunk
-from preloop.models.models.session_embedding_setting import PROVIDER_OPENAI_COMPATIBLE
+from preloop.models.models.session_embedding_setting import (
+    EMBEDDING_SCOPE_FULL,
+    PROVIDER_OPENAI_COMPATIBLE,
+)
 from preloop.models.models.session_search_document import (
     EMBEDDING_DIMENSIONS,
     EMBEDDING_STATE_PENDING,
@@ -151,6 +154,9 @@ def test_a_queued_account_is_embedded_on_the_workers_own_session(db_session, tes
         provider=PROVIDER_OPENAI_COMPATIBLE,
         model_identifier="text-embedding-3-small",
         base_url="https://embeddings.example.com/v1",
+        # This test is about the queue, and its fixture is transcript
+        # chunks, so it names the scope that embeds them.
+        scope=EMBEDDING_SCOPE_FULL,
     )
     db_session.commit()
 
@@ -421,6 +427,9 @@ def test_drain_continues_an_account_that_exceeds_one_batch(
         provider=PROVIDER_OPENAI_COMPATIBLE,
         model_identifier="text-embedding-3-small",
         base_url="https://embeddings.example.com/v1",
+        # This test is about the queue, and its fixture is transcript
+        # chunks, so it names the scope that embeds them.
+        scope=EMBEDDING_SCOPE_FULL,
     )
     db_session.commit()
     monkeypatch.setattr(settings, "session_embedding_batch_size", 2, raising=False)

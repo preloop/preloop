@@ -7,6 +7,10 @@ per account, absent or ``enabled = False`` until somebody turns it on, and
 enabling requires naming the provider and the model the text is about to be
 sent to.
 
+The row also carries how much of a session may be embedded: ``scope`` is
+``summaries_only`` by default and ``full`` when an account asks for recall
+over whole transcripts. Keyword search reads the whole corpus either way.
+
 The deployment keeps a kill switch of its own
 (``SESSION_EMBEDDING_ENABLED``). Both must say yes. The kill switch stops
 embedding only: keyword indexing into the corpus is a separate setting and
@@ -31,7 +35,10 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
-from .session_search_document import EMBEDDING_DIMENSIONS
+from .session_search_document import (
+    EMBEDDING_DIMENSIONS,
+    SOURCE_KIND_SESSION_SUMMARY,
+)
 
 if TYPE_CHECKING:
     from .account import Account
@@ -45,6 +52,40 @@ PROVIDER_OPENAI_COMPATIBLE = "openai_compatible"
 PROVIDER_LOCAL = "local"
 
 EMBEDDING_PROVIDERS = (PROVIDER_OPENAI_COMPATIBLE, PROVIDER_LOCAL)
+
+#: Embed only the chunks that describe the session as a whole: its generated
+#: title and summary. One short chunk per session, which is the text a person
+#: searches by ("the session where we debugged the pool"), at a fortieth of
+#: the storage and provider spend of the transcript behind it.
+EMBEDDING_SCOPE_SUMMARIES_ONLY = "summaries_only"
+#: Embed every chunk the corpus holds, transcripts included. The opt in an
+#: account makes when it wants recall of what was actually said, and accepts
+#: what that costs.
+EMBEDDING_SCOPE_FULL = "full"
+
+EMBEDDING_SCOPES = (EMBEDDING_SCOPE_SUMMARIES_ONLY, EMBEDDING_SCOPE_FULL)
+
+#: Source kinds a scope admits, or ``None`` for "every kind". The worker asks
+#: this rather than testing the scope inline, so a scope added without saying
+#: what it embeds cannot silently mean "everything".
+SCOPE_SOURCE_KINDS: dict[str, Optional[tuple[str, ...]]] = {
+    EMBEDDING_SCOPE_SUMMARIES_ONLY: (SOURCE_KIND_SESSION_SUMMARY,),
+    EMBEDDING_SCOPE_FULL: None,
+}
+
+
+def source_kinds_for_scope(scope: Optional[str]) -> Optional[tuple[str, ...]]:
+    """Source kinds a scope embeds, or ``None`` when it embeds all of them.
+
+    An unknown value is read as the default rather than as "everything": a
+    row that somehow carries a scope this build does not know embeds less
+    than asked, never more.
+    """
+    cleaned = (scope or EMBEDDING_SCOPE_SUMMARIES_ONLY).strip()
+    if cleaned not in SCOPE_SOURCE_KINDS:
+        cleaned = EMBEDDING_SCOPE_SUMMARIES_ONLY
+    return SCOPE_SOURCE_KINDS[cleaned]
+
 
 #: Reason codes recorded on the row when a run could not do its work. These
 #: are degraded states, not errors: the chunks stay pending and the next run
@@ -99,6 +140,18 @@ class SessionEmbeddingSetting(Base):
         default=EMBEDDING_DIMENSIONS,
         server_default=str(EMBEDDING_DIMENSIONS),
     )
+    #: What the worker is allowed to embed for this account. Defaults to
+    #: :data:`EMBEDDING_SCOPE_SUMMARIES_ONLY`, because embedding every
+    #: transcript chunk is bounded by the daily cap but is still the wrong
+    #: default: a 1536 wide vector is about 6 KB, so a session of about 40
+    #: chunks is about 240 KB of vectors before the index. Keyword search
+    #: keeps covering the whole corpus either way.
+    scope: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=EMBEDDING_SCOPE_SUMMARIES_ONLY,
+        server_default=EMBEDDING_SCOPE_SUMMARIES_ONLY,
+    )
     #: Per account daily spend ceiling in USD. NULL falls back to the
     #: deployment default.
     daily_cap_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -124,8 +177,14 @@ class SessionEmbeddingSetting(Base):
             return None
         return f"{self.provider}:{self.model_identifier}@{self.dimensions}"
 
+    @property
+    def embedded_source_kinds(self) -> Optional[tuple[str, ...]]:
+        """Source kinds this account's scope admits, ``None`` for all of them."""
+        return source_kinds_for_scope(self.scope)
+
     def __repr__(self) -> str:
         return (
             f"<SessionEmbeddingSetting(account_id={self.account_id}, "
-            f"enabled={self.enabled}, provider={self.provider})>"
+            f"enabled={self.enabled}, provider={self.provider}, "
+            f"scope={self.scope})>"
         )

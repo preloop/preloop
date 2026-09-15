@@ -159,7 +159,8 @@ account-scoped, with a stored tsvector. Keyword writes ride the source
 transaction. Vectors live on the same row (`embedding`, `embedding_model`,
 `embedded_at`) and are filled later by a capped worker. `session_embedding_setting`
 is one row per account, off by default; enabling names the provider, model and
-https endpoint. The shared `SESSION_EMBEDDING_API_KEY` is sent only to URLs on
+https endpoint, and `scope` says how much of a session is embedded
+(`summaries_only`, the default, or `full`). The shared `SESSION_EMBEDDING_API_KEY` is sent only to URLs on
 `SESSION_EMBEDDING_API_KEY_BASE_URLS`.
 
 Reads go through `POST /api/v1/runtime-sessions/search`. `keyword` ranks on the

@@ -24,6 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer could not do: a partial coverage notice when the corpus stops inside
   the range being searched, and the endpoint's degraded marker when semantic
   ranking did not run.
+- Session embedding scope. `session_embedding_setting` carries `scope`,
+  `summaries_only` by default for new accounts and for every row that
+  existed before the column. Under it the worker claims only a session's
+  own title and summary chunk, which is about one short chunk per session
+  instead of the roughly 40 a transcript produces, so 10k sessions cost
+  about 60 MB of vectors rather than about 2.4 GB plus the index.
+  `full` embeds every chunk, under the same daily cap. Changing the scope
+  in either direction touches no vector that exists: narrowing stops new
+  transcript chunks from the next pass, widening hands the untouched
+  backlog back to the worker. Keyword search still reads the whole corpus.
+  Read and write it at `GET` and `PUT
+  /api/v1/runtime-sessions/settings/embedding`; an unknown scope is a 422.
 - `search_sessions` built-in tool. An agent searches the runtime session
   corpus before repeating work: ranked results, one trimmed snippet per
   session, a match reason and the endpoint's degraded markers. Scope is the
