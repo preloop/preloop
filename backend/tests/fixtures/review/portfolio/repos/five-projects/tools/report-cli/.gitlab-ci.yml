@@ -1,0 +1,3 @@
+report-cli-tests:
+  script:
+    - go test ./...
