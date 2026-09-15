@@ -400,3 +400,272 @@ def test_session_summary_is_indexed_where_it_is_written(db_session, test_user):
         source_kind=SOURCE_KIND_SESSION_SUMMARY,
     )
     assert [row.id for row in hits] == [chunks[0].id]
+    assert chunks[0].account_id == test_user.account_id
+    assert str(chunks[0].runtime_session_id) == str(session.id)
+    assert chunks[0].occurred_at is not None
+
+
+def test_regenerated_title_replaces_the_single_summary_chunk(db_session, test_user):
+    """A second title for the same session rewrites its one chunk."""
+    session = _session(db_session, test_user.account_id, source_id="session-regen")
+    crud_runtime_session.update_session_title(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(session.id),
+        title="First attempt",
+        summary="The agent drafted the migration plan.",
+        commit=False,
+    )
+
+    crud_runtime_session.update_session_title(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(session.id),
+        title="Second attempt",
+        summary="The agent rewrote the migration plan and ran it.",
+        commit=False,
+    )
+
+    chunks = crud_session_search_document.list_for_source(
+        db_session,
+        source_kind=SOURCE_KIND_SESSION_SUMMARY,
+        source_id=str(session.id),
+    )
+    assert len(chunks) == 1
+    assert "title: Second attempt" in chunks[0].content
+    assert "First attempt" not in chunks[0].content
+    assert "rewrote the migration plan" in chunks[0].content
+
+
+def test_regenerating_identical_text_writes_nothing(db_session, test_user):
+    """An unchanged regeneration leaves the stored chunk exactly as it was."""
+    session = _session(db_session, test_user.account_id, source_id="session-same")
+    crud_runtime_session.update_session_title(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(session.id),
+        title="Stable title",
+        summary="The agent reconciled the ledger.",
+        commit=False,
+    )
+    before = crud_session_search_document.list_for_source(
+        db_session,
+        source_kind=SOURCE_KIND_SESSION_SUMMARY,
+        source_id=str(session.id),
+    )
+    assert len(before) == 1
+    before_id = before[0].id
+    before_hash = before[0].content_hash
+    before_occurred_at = before[0].occurred_at
+
+    crud_runtime_session.update_session_title(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(session.id),
+        title="Stable title",
+        summary="The agent reconciled the ledger.",
+        commit=False,
+    )
+
+    after = crud_session_search_document.list_for_source(
+        db_session,
+        source_kind=SOURCE_KIND_SESSION_SUMMARY,
+        source_id=str(session.id),
+    )
+    assert len(after) == 1
+    assert after[0].id == before_id
+    assert after[0].content_hash == before_hash
+    assert after[0].occurred_at == before_occurred_at
+
+
+def test_cleared_title_and_summary_leave_no_stale_chunk(db_session, test_user):
+    """Clearing what described a session removes its chunk instead of emptying it."""
+    session = _session(db_session, test_user.account_id, source_id="session-cleared")
+    crud_runtime_session.update_session_title(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(session.id),
+        title="Temporary title",
+        summary="The agent inspected the staging queue.",
+        commit=False,
+    )
+    assert (
+        len(
+            crud_session_search_document.list_for_source(
+                db_session,
+                source_kind=SOURCE_KIND_SESSION_SUMMARY,
+                source_id=str(session.id),
+            )
+        )
+        == 1
+    )
+
+    crud_runtime_session.update_session_title(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(session.id),
+        title="",
+        summary="",
+        commit=False,
+    )
+
+    assert (
+        crud_session_search_document.list_for_source(
+            db_session,
+            source_kind=SOURCE_KIND_SESSION_SUMMARY,
+            source_id=str(session.id),
+        )
+        == []
+    )
+
+
+def test_cleared_summary_keeps_the_title_and_drops_the_summary_text(
+    db_session, test_user
+):
+    """A cleared summary stops answering searches for its own words."""
+    session = _session(db_session, test_user.account_id, source_id="session-summary")
+    crud_runtime_session.update_session_title(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(session.id),
+        title="Queue inspection",
+        summary="The agent found an orphaned dispatch record.",
+        commit=False,
+    )
+
+    crud_runtime_session.update_session_title(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(session.id),
+        title="Queue inspection",
+        summary="",
+        commit=False,
+    )
+
+    chunks = crud_session_search_document.list_for_source(
+        db_session,
+        source_kind=SOURCE_KIND_SESSION_SUMMARY,
+        source_id=str(session.id),
+    )
+    assert len(chunks) == 1
+    assert "title: Queue inspection" in chunks[0].content
+    assert "orphaned dispatch record" not in chunks[0].content
+
+
+def test_title_written_as_none_for_an_undescribed_session_writes_nothing(
+    db_session, test_user
+):
+    """A title job that produced nothing leaves the corpus untouched."""
+    session = _session(db_session, test_user.account_id, source_id="session-none")
+
+    crud_runtime_session.update_session_title(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(session.id),
+        title=None,
+        title_request_count=4,
+        commit=False,
+    )
+
+    assert (
+        crud_session_search_document.list_for_source(
+            db_session,
+            source_kind=SOURCE_KIND_SESSION_SUMMARY,
+            source_id=str(session.id),
+        )
+        == []
+    )
+
+
+def test_summary_chunk_failure_keeps_the_title_write(db_session, test_user, caplog):
+    """A raising corpus writer is logged and the title still persists."""
+    session = _session(db_session, test_user.account_id, source_id="session-broken")
+
+    with patch.object(
+        crud_session_search_document,
+        "replace_source_chunks",
+        side_effect=RuntimeError("corpus is unavailable"),
+    ):
+        with caplog.at_level(logging.WARNING):
+            updated = crud_runtime_session.update_session_title(
+                db_session,
+                account_id=str(test_user.account_id),
+                runtime_session_id=str(session.id),
+                title="Survives the corpus",
+                summary="The agent shipped the change anyway.",
+                commit=False,
+            )
+
+    assert updated is not None
+    assert any(
+        "Session search indexing failed" in record.message for record in caplog.records
+    )
+    stored = crud_runtime_session.get_account_session(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(session.id),
+    )
+    assert stored.title == "Survives the corpus"
+    assert stored.summary == "The agent shipped the change anyway."
+    assert (
+        crud_session_search_document.list_for_source(
+            db_session,
+            source_kind=SOURCE_KIND_SESSION_SUMMARY,
+            source_id=str(session.id),
+        )
+        == []
+    )
+
+
+def test_summary_indexing_error_outside_the_writer_keeps_the_title_write(
+    db_session, test_user, caplog
+):
+    """Even a failure before the writer's own swallow never fails a title."""
+    session = _session(db_session, test_user.account_id, source_id="session-raise")
+
+    with patch.object(
+        session_search_index,
+        "index_session_summary",
+        side_effect=RuntimeError("indexing module is broken"),
+    ):
+        with caplog.at_level(logging.WARNING):
+            updated = crud_runtime_session.update_session_title(
+                db_session,
+                account_id=str(test_user.account_id),
+                runtime_session_id=str(session.id),
+                title="Still written",
+                summary="The agent finished the run.",
+                commit=False,
+            )
+
+    assert updated is not None
+    assert updated.title == "Still written"
+    assert any(
+        "Session summary indexing failed" in record.message for record in caplog.records
+    )
+
+
+def test_cleanup_failure_is_logged_and_swallowed(db_session, test_user, caplog):
+    """A failing stale-chunk delete never fails the title write either."""
+    session = _session(db_session, test_user.account_id, source_id="session-cleanup")
+
+    with patch.object(
+        crud_session_search_document,
+        "delete_for_source",
+        side_effect=RuntimeError("corpus is unavailable"),
+    ):
+        with caplog.at_level(logging.WARNING):
+            updated = crud_runtime_session.update_session_title(
+                db_session,
+                account_id=str(test_user.account_id),
+                runtime_session_id=str(session.id),
+                title="",
+                summary="",
+                commit=False,
+            )
+
+    assert updated is not None
+    assert any(
+        "Session summary chunk cleanup failed" in record.message
+        for record in caplog.records
+    )

@@ -18,6 +18,7 @@ from preloop.models.crud.session_search_document import (
     SessionSearchChunk,
 )
 from preloop.models.models.session_search_document import (
+    SOURCE_KIND_SESSION_SUMMARY,
     SOURCE_KIND_TOOL_CALL,
     SOURCE_KIND_TRANSCRIPT_MESSAGE,
 )
@@ -492,3 +493,39 @@ def test_a_time_range_filter_narrows_the_answer(client, db_session, test_user):
     assert payload["total"] == 1
     assert payload["results"][0]["matched_chunk_count"] == 1
     assert payload["results"][0]["snippets"][0]["source_id"] == "ranged-late"
+
+
+def test_a_session_is_found_by_a_word_only_its_summary_carries(
+    client, db_session, test_user
+):
+    """The generated summary is searchable end to end, transcript aside."""
+    session = _session(db_session, test_user.account_id, "summary-only")
+    _write(
+        db_session,
+        test_user.account_id,
+        session,
+        "step 4128 finished with exit code 0",
+        source_id="summary-only-message",
+    )
+    crud_runtime_session.update_session_title(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(session.id),
+        title="Nightly reconciliation",
+        summary="The agent reconciled the invoices and retried one payout.",
+        commit=False,
+    )
+    db_session.flush()
+
+    response = client.post(SEARCH_URL, json={"query": "payout"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [row["runtime_session_id"] for row in payload["results"]] == [
+        str(session.id)
+    ]
+    snippets = payload["results"][0]["snippets"]
+    assert [snippet["source_kind"] for snippet in snippets] == [
+        SOURCE_KIND_SESSION_SUMMARY
+    ]
+    assert snippets[0]["source_id"] == str(session.id)
