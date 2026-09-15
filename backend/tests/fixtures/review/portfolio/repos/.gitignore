@@ -1,0 +1,9 @@
+# These directories are the whole point of the fixture repositories below:
+# the discovery walk in backend/presets/017-portfolio-review.yaml must
+# refuse to descend into them, and a test can only assert that if they are
+# in the checkout. The repository root .gitignore excludes them because a
+# real .venv, node_modules or build directory is a local artifact; these
+# are synthetic traps holding one manifest each, so re-include them.
+!.venv/
+!node_modules/
+!build/
