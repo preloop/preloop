@@ -800,6 +800,7 @@ def _register_control_plane_routes(
         security_maintenance,
         security_screen,
         session_optimization,
+        session_saved_searches,
         session_search,
         tools,
         trackers,
@@ -1084,6 +1085,15 @@ def _register_control_plane_routes(
     # out of access logs; see the module docstring.
     app.include_router(
         session_search.router,
+        prefix="/api/v1",
+        tags=["Runtime Sessions"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    # Saved searches for that endpoint. They sit under the search path, not
+    # beside it, because a two segment sibling of /runtime-sessions would be
+    # matched as a session id by the account router first.
+    app.include_router(
+        session_saved_searches.router,
         prefix="/api/v1",
         tags=["Runtime Sessions"],
         dependencies=[Depends(get_current_active_user)],

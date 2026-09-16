@@ -33,6 +33,7 @@ from ..models import (
     RuntimeSessionReplayRun,
     RuntimeSessionOptimizationResult,
     SessionEmbeddingSetting,
+    SessionSavedSearch,
     SessionSearchDocument,
 )
 from .account import CRUDAccount
@@ -148,6 +149,10 @@ from .session_search_backfill_state import (
     CRUDSessionSearchBackfillState,
     crud_session_search_backfill_state,
 )
+from .session_saved_search import (
+    CRUDSessionSavedSearch,
+    SessionSavedSearchNameConflictError,
+)
 from .session_search_document import (
     CRUDSessionSearchDocument,
     SessionSearchChunk,
@@ -201,6 +206,7 @@ crud_runtime_session = CRUDRuntimeSession(RuntimeSession)
 crud_runtime_session_activity = CRUDRuntimeSessionActivity(RuntimeSessionActivity)
 crud_session_search_document = CRUDSessionSearchDocument(SessionSearchDocument)
 crud_session_embedding_setting = CRUDSessionEmbeddingSetting(SessionEmbeddingSetting)
+crud_session_saved_search = CRUDSessionSavedSearch(SessionSavedSearch)
 crud_runtime_session_optimization_action = CRUDRuntimeSessionOptimizationAction(
     RuntimeSessionOptimizationAction
 )
@@ -298,7 +304,9 @@ __all__ = [
     "crud_session_search_backfill_state",
     "crud_session_search_document",
     "crud_session_embedding_setting",
+    "crud_session_saved_search",
     "SessionEmbeddingConfigError",
+    "SessionSavedSearchNameConflictError",
     "SessionSearchChunk",
     "crud_managed_agent",
     "crud_managed_agent_ai_model_binding",

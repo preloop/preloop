@@ -35,6 +35,7 @@ from preloop.models.crud.session_search_document import (
     MATCH_REASON_BOTH,
     MATCH_REASON_KEYWORD,
     MATCH_REASON_SEMANTIC,
+    MIN_SEMANTIC_SIMILARITY,
     MatchReason,
 )
 
@@ -46,6 +47,27 @@ KEYWORD_FUSION_WEIGHT = 1.0
 
 #: Weight of the vector list in the fused score.
 SEMANTIC_FUSION_WEIGHT = 1.0
+
+
+def ranking_identity() -> str:
+    """Name the ranking constants currently in force.
+
+    Derived from the constants rather than hand versioned, so tuning one of
+    them changes the identity whether or not anybody remembers to bump a
+    number. A caller that stored an older identity (a saved search, issue
+    #673) can then say its ordering is no longer the one it was saved under,
+    which is the most that can honestly be claimed while these constants are
+    unvalidated.
+
+    Returns:
+        A short stable string, safe to store and to compare for equality
+        only. It is not ordered and carries no meaning beyond "same" or
+        "different".
+    """
+    return (
+        f"rrf-k={RRF_K:g};kw={KEYWORD_FUSION_WEIGHT:g};"
+        f"sem={SEMANTIC_FUSION_WEIGHT:g};floor={MIN_SEMANTIC_SIMILARITY:g}"
+    )
 
 
 class VectorHit(Protocol):

@@ -32,6 +32,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports what it dropped. Default-off, so a flow selects it in its allow-list
   or an account enables it on the Tools page, and an access rule that denies it
   stops the call. Docs at `docs/guide/agent-session-search.md`.
+- Saved session searches. `POST/GET/PATCH/DELETE
+  /api/v1/runtime-sessions/search/saved` and
+  `POST /api/v1/runtime-sessions/search/saved/{id}/run` store a query, mode,
+  filters and snippet preferences under a name and re-run them, under the same
+  `view_runtime_sessions` permission the search endpoint takes. Nothing about
+  a past answer is stored. A saved search is private until its author shares
+  it with the account, and only its author may rename, edit, share or delete
+  it. A run reports every saved filter that no longer resolves (a deleted
+  flow, a rotated api key, a key the filter schema no longer defines) and
+  still applies the ones it can, rather than silently widening the search; it
+  also says whether the ranking constants have moved since the search was
+  saved, which is reported rather than pinned. A saved mode that cannot run
+  today comes back as the search endpoint's degraded answer, not an error.
+  See `docs/guide/session-saved-searches.md`.
 - Semantic and hybrid ranking on `POST /api/v1/runtime-sessions/search`.
   `mode` accepts `keyword`, `semantic` or `hybrid`. The vector half only
   scores chunks stamped with the model that embedded the query, and the two
