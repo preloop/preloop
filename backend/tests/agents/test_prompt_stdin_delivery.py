@@ -321,3 +321,48 @@ class TestPromptArrivesOnStdin:
         analysis = analyze_agent_failure(logs)
         assert "prompt did not reach the container" in analysis.message
         assert analysis.transient is False
+
+    def test_missing_chunk_classifies_as_a_prompt_delivery_failure(self):
+        """The empty-chunk echo has the same verdict as a truncated file."""
+        logs = (
+            "PRELOOP_LAUNCH_PAYLOAD_MISSING PRELOOP_AGENT_PROMPT_0 for agent prompt\n"
+        )
+        analysis = analyze_agent_failure(logs)
+        assert "prompt did not reach the container" in analysis.message
+        assert analysis.transient is False
+
+    def test_quoted_marker_name_is_not_a_delivery_failure(self):
+        """A log that names the marker without the guard echo is not this fault.
+
+        Review fixtures and prompts can quote PRELOOP_PROMPT_NOT_DELIVERED.
+        That must not steal a real 429 and mark the run non-transient.
+        """
+        logs = (
+            "Flow Execution Started\n"
+            f'assert "{PROMPT_NOT_DELIVERED_MARKER}" in completed.stderr\n'
+            "Attempt 1 failed with status 429. Retrying with backoff...\n"
+            "Attempt 2 failed with status 429. Max attempts reached.\n"
+        )
+        analysis = analyze_agent_failure(logs)
+        assert "prompt did not reach the container" not in analysis.message
+        assert analysis.transient is True
+        assert analysis.upstream_status == 429
+
+    def test_bare_transport_marker_is_not_a_delivery_failure(self):
+        """Chunk-transport names without sizes or a variable are not echoes."""
+        logs = (
+            "discussed PRELOOP_LAUNCH_PAYLOAD_MISSING in review\n"
+            "PRELOOP_LAUNCH_PAYLOAD_TRUNCATED mentioned without sizes\n"
+        )
+        analysis = analyze_agent_failure(logs)
+        assert "prompt did not reach the container" not in analysis.message
+
+    def test_recovery_and_nudge_reinvoke_the_delivery_guard(self):
+        """Later stdin re-invocations refuse an empty prompt the same way."""
+        gemini = gemini_script(SMALL_PROMPT)
+        opencode = opencode_script(SMALL_PROMPT)
+        assert "recovery prompt at" in gemini
+        assert "recovery prompt at" in opencode
+        assert "completion nudge prompt at" in opencode
+        assert PROMPT_NOT_DELIVERED_MARKER in gemini
+        assert PROMPT_NOT_DELIVERED_MARKER in opencode

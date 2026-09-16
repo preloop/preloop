@@ -528,13 +528,16 @@ def _scan_setup_failure(logs_text: str) -> Optional[AgentFailureAnalysis]:
 # container-side guard and the chunk transport print these markers instead; a
 # run that carries one failed before the model was ever called, and no retry
 # of the same payload can help.
-_PROMPT_DELIVERY_MARKERS = (
-    PROMPT_NOT_DELIVERED_MARKER,
-    "PRELOOP_LAUNCH_PAYLOAD_MISSING",
-    "PRELOOP_LAUNCH_PAYLOAD_TRUNCATED",
-)
+#
+# Match the rest of the actual echo, not the marker name alone. A fixture,
+# review note, or prompt that quotes PRELOOP_PROMPT_NOT_DELIVERED would
+# otherwise steal a 429 or transport retry and mark it non-transient.
 _PROMPT_DELIVERY_LINE_RE = re.compile(
-    rf"^.*(?:{'|'.join(re.escape(marker) for marker in _PROMPT_DELIVERY_MARKERS)}).*$",
+    r"^.*(?:"
+    rf"{re.escape(PROMPT_NOT_DELIVERED_MARKER)} .+ is missing or empty"
+    r"|PRELOOP_LAUNCH_PAYLOAD_MISSING \S+ for "
+    r"|PRELOOP_LAUNCH_PAYLOAD_TRUNCATED .+got \d+ bytes, expected \d+"
+    r").*$",
     re.MULTILINE,
 )
 
