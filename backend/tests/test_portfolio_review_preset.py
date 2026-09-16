@@ -507,14 +507,68 @@ class TestPresetDefinition:
         assert plan.destination_path == "PORTFOLIO.md"
         assert plan.branch == "preloop/report/portfolio"
 
-    def test_nothing_is_ever_filed(self):
-        """Approving a follow up is not filing it: this preset has no
-        write tools, so the filed counters are pinned at zero."""
+    def test_the_agent_never_files_an_issue_itself(self):
+        """Approving a follow up is not filing it. The agent has no write
+        tool, so it writes "no issue" on every row and the platform
+        rewrites those fields from what it actually filed (issue #687)."""
         norm = _norm(_prompt())
-        assert "NOTHING IS EVER FILED BY THIS PRESET" in norm
-        assert "rollup.issues_filed is always 0" in norm
-        assert "follow_ups[].filed is always false" in norm
-        assert "Approving is not filing and you never claim otherwise" in norm
+        assert "YOU NEVER FILE ANYTHING" in norm
+        assert "approving is not filing" in norm
+        assert (
+            'write "filed": false, "filed_issue": null and '
+            "rollup.issues_filed 0 on every row without exception" in norm
+        )
+        assert "Claiming an issue you did not create" in norm
+
+    def test_files_the_approved_follow_ups_without_granting_a_write_tool(self):
+        """Issue #687: approved rows become tracker issues, and the preset
+        that produces them still has no write tool on its allowlist. A
+        later edit that adds one fails here."""
+        data = _load_preset()
+        filing = data["git_clone_config"]["follow_up_filing"]
+        assert filing["enabled"] is True
+        # The tracker project comes from flow configuration: null here means
+        # the project of the repository the flow clones.
+        assert filing["project_id"] is None
+        assert "preloop" in filing["labels"]
+        assert filing["max_issues"] == 25
+        # The agent gains nothing from filing being configured.
+        assert data["allowed_mcp_servers"] == []
+        assert data["allowed_mcp_tools"] == [{"name": "ask_user"}]
+        tools = [entry.get("name") for entry in data["allowed_mcp_tools"]]
+        assert "create_issue" not in tools
+        # The tool is named in the prompt exactly once, to forbid it.
+        assert _prompt().count("create_issue") == 1
+        assert "you never call create_issue, you never have it" in _norm(_prompt())
+
+    def test_the_filing_config_is_a_valid_git_clone_config(self):
+        """Loaded through the schema the API uses, so a broken filing block
+        fails here rather than at run time."""
+        from preloop.models.schemas.flow import GitCloneConfig
+        from preloop.services.follow_up_filing import resolve_follow_up_filing
+
+        config = GitCloneConfig.model_validate(_load_preset()["git_clone_config"])
+        plan = resolve_follow_up_filing(config.model_dump())
+        assert plan is not None
+        assert plan.enabled is True
+        assert plan.project_id is None
+        assert plan.max_issues == 25
+        assert "portfolio-review" in plan.labels
+
+    def test_the_prompt_says_filing_is_not_the_agents_job(self):
+        norm = _norm(_prompt())
+        assert "THE PLATFORM FILES THE APPROVED FOLLOW UPS, NOT YOU" in norm
+        assert "one issue per approved row" in norm
+        assert "you never call create_issue, you never have it" in norm
+        assert "Those three fields belong to the platform" in norm
+
+    def test_the_report_says_when_nothing_was_filed(self):
+        """An expired gate or an empty approval is disclosed in the cover,
+        not left as an empty box the reader has to interpret."""
+        norm = _norm(_prompt())
+        assert "WHEN NOTHING WAS APPROVED THE BOX SAYS SO IN ONE SENTENCE" in norm
+        assert "the gate expired at its deadline (name the deadline)" in norm
+        assert "An empty box is not allowed to be silent" in norm
 
     def test_out_of_scope_is_stated(self):
         """Delegation, the security lens and modernisation are all out."""

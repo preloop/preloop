@@ -18654,6 +18654,123 @@ components:
             attention item after a terminal execution. Leave unset for no notifications.
       type: object
       title: FlowUpdate
+    FollowUpFiling-Input:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+          description: Whether approved follow ups in the run's result are filed as
+            tracker issues after the agent has exited
+          default: false
+        project_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Project Id
+          description: Tracker project the issues are filed into. Defaults to the
+            project of the repository this flow clones, then the project that triggered
+            the run
+        labels:
+          items:
+            type: string
+          type: array
+          maxItems: 10
+          title: Labels
+          description: Labels applied to every filed issue
+        max_issues:
+          type: integer
+          maximum: 100.0
+          minimum: 1.0
+          title: Max Issues
+          description: Ceiling on issues filed by one run, so a misconfigured portfolio
+            cannot empty itself into a tracker
+          default: 25
+      additionalProperties: false
+      type: object
+      title: FollowUpFiling
+      description: 'File the follow ups a human approved as issues in the tracker.
+
+
+        Same argument as :class:`ReportPublication`, applied to the other output
+
+        of a review: the agent holds no write tool, and the approved rows are
+
+        turned into issues by the control plane after the agent has exited, using
+
+        the account''s configured tracker credential. Issue #687.
+
+
+        It lives beside ``report_publication`` because both describe what the
+
+        platform does with a run''s outputs against the repository the flow is
+
+        configured for, and because ``repositories[].project_id`` is where the
+
+        tracker project is read from when this block does not name one.
+
+
+        ``extra=''forbid''``: a misspelled key here is an issue filed somewhere
+
+        else, or not at all.'
+    FollowUpFiling-Output:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+          description: Whether approved follow ups in the run's result are filed as
+            tracker issues after the agent has exited
+          default: false
+        project_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Project Id
+          description: Tracker project the issues are filed into. Defaults to the
+            project of the repository this flow clones, then the project that triggered
+            the run
+        labels:
+          items:
+            type: string
+          type: array
+          maxItems: 10
+          title: Labels
+          description: Labels applied to every filed issue
+        max_issues:
+          type: integer
+          maximum: 100.0
+          minimum: 1.0
+          title: Max Issues
+          description: Ceiling on issues filed by one run, so a misconfigured portfolio
+            cannot empty itself into a tracker
+          default: 25
+      additionalProperties: false
+      type: object
+      title: FollowUpFiling
+      description: 'File the follow ups a human approved as issues in the tracker.
+
+
+        Same argument as :class:`ReportPublication`, applied to the other output
+
+        of a review: the agent holds no write tool, and the approved rows are
+
+        turned into issues by the control plane after the agent has exited, using
+
+        the account''s configured tracker credential. Issue #687.
+
+
+        It lives beside ``report_publication`` because both describe what the
+
+        platform does with a run''s outputs against the repository the flow is
+
+        configured for, and because ``repositories[].project_id`` is where the
+
+        tracker project is read from when this block does not name one.
+
+
+        ``extra=''forbid''``: a misspelled key here is an issue filed somewhere
+
+        else, or not at all.'
     GatewayBudgetSummary:
       properties:
         monthly_limit_usd:
@@ -19407,6 +19524,12 @@ components:
           - type: 'null'
           description: Publish the document this run generated as a pull request,
             after the agent has exited and without giving it write tools
+        follow_up_filing:
+          anyOf:
+          - $ref: '#/components/schemas/FollowUpFiling-Input'
+          - type: 'null'
+          description: File the follow ups a human approved in this run as tracker
+            issues, after the agent has exited and without giving it write tools
       type: object
       title: GitCloneConfig
       description: Configuration for git clone operations before agent execution.
@@ -19520,6 +19643,12 @@ components:
           - type: 'null'
           description: Publish the document this run generated as a pull request,
             after the agent has exited and without giving it write tools
+        follow_up_filing:
+          anyOf:
+          - $ref: '#/components/schemas/FollowUpFiling-Output'
+          - type: 'null'
+          description: File the follow ups a human approved in this run as tracker
+            issues, after the agent has exited and without giving it write tools
       type: object
       title: GitCloneConfig
       description: Configuration for git clone operations before agent execution.

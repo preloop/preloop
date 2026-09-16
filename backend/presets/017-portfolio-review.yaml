@@ -6,9 +6,12 @@ description: >-
   and build descriptors only, asks a human which ones to review, runs the
   Docs Currency Review lens inline for the selected ones, aggregates the
   results into a portfolio report and asks which follow ups to keep.
+  The follow ups the human keeps are filed as tracker issues, one per
+  row, by the platform after the agent has exited.
   Everything runs inline in one execution: no child executions, no
-  security lens, no modernisation. Strictly read-only apart from the
-  built-in ask_user question channel: emits /workspace/result.json
+  security lens, no modernisation. The agent itself is strictly
+  read-only apart from the built-in ask_user question channel: it emits
+  /workspace/result.json
   (preloop.review.portfolio/v1) plus an evidence pack under
   /workspace/evidence/ opening on the review family's one-minute verdict
   cover. Both questions are batched, park the run rather than holding a
@@ -53,6 +56,17 @@ prompt_template: |
   write to the checkout. Your part is unchanged, and it is the whole
   contract: the report file must exist and be complete when you finish,
   because the file on disk is what gets published.
+
+  THE PLATFORM FILES THE APPROVED FOLLOW UPS, NOT YOU. When the flow
+  enables follow up filing, the platform turns the rows a human
+  approved in PHASE 6 into tracker issues AFTER you have exited, one
+  issue per approved row, using the account's tracker credential. That
+  is a platform step with no tool and no credential on your side: you
+  never call create_issue, you never have it, and you never claim an
+  issue exists. Your part is to record approval accurately, which means
+  writing every follow up with "filed": false and "filed_issue": null
+  and leaving rollup.issues_filed at 0. Those three fields belong to the
+  platform, which overwrites them with what it actually filed.
 
   Trigger payload (webhook, schedule, or manual trigger):
   {{trigger_event.payload}}
@@ -367,10 +381,16 @@ prompt_template: |
   been. An approved follow up is one that came back in the approved
   array, and approval is recorded, not executed.
 
-  NOTHING IS EVER FILED BY THIS PRESET. It has no write tools: approved
-  follow ups are a list in result.json for a human or a later flow to
-  act on, so rollup.issues_filed is always 0 and follow_ups[].filed is
-  always false. Approving is not filing and you never claim otherwise.
+  YOU NEVER FILE ANYTHING. You have no write tools, and approving is not
+  filing. Record the human's decision on the row (status, note,
+  approved_by, approved_at) and write "filed": false, "filed_issue":
+  null and rollup.issues_filed 0 on every row without exception. When
+  the flow enables follow up filing, the platform files one issue per
+  approved row after you exit, keyed on the follow up id, and rewrites
+  those three fields from what it actually created; a follow up that
+  already has an issue from an earlier run is not filed twice. Claiming
+  an issue you did not create, or could not have created, is a lie the
+  platform will overwrite: write the false and let it.
 
   ═══════════════════════════════════════════════════════════
   PHASE 7: EVIDENCE PACK AND REPORT (MANDATORY)
@@ -397,7 +417,13 @@ prompt_template: |
       BOX 3 — "What you should do next week". A short, concrete, ordered
       list of the approved follow ups, highest severity first. No legal
       advice, no certification, and no modernisation plan: name the
-      project, the finding and its pointer, nothing more.
+      project, the finding and its pointer, nothing more. SAY WHAT
+      HAPPENS TO THEM: approved rows are handed to the platform to file
+      as tracker issues, one per row, after this run exits. WHEN NOTHING
+      WAS APPROVED THE BOX SAYS SO IN ONE SENTENCE and names the reason:
+      the gate expired at its deadline (name the deadline), the human
+      approved none, or there were no candidates. An empty box is not
+      allowed to be silent, and you never write that an issue was filed.
     HONESTY RAIL. The cover may only summarize projects, rows, findings
     and coverage already present in the body of this report or the other
     evidence files. No new claims. Strictly one page.
@@ -434,7 +460,7 @@ prompt_template: |
     "selection": { "source": "human" | "auto_below_threshold" | "payload" | "expired_default", "auto_select_threshold": <int>, "inline_cap": <int>, "selected": [ "<project path>" ], "over_inline_cap": [ "<project path>" ] },
     "questions": [ { "phase": "selection" | "follow_ups", "asked": true|false, "status": "answered" | "expired" | "declined" | "not_asked", "reason": "<why it was not asked, else null>", "request_id": "<platform id or null>", "expires_at": "<ISO 8601 or null>", "answered_by": "<platform identity or null>", "answered_at": "<ISO 8601 or null>", "items": [ "<row id>" ], "selectable_ids": [ "<id the input schema offered>" ] } ],
     "projects": [ { "path": "...", "lens": "docs-currency-review", "lens_schema": "preloop.review.docscurrency/v1" | null, "lens_status": "ran" | "not_run", "not_run_reason": "<required when not_run, else null>", "verdict": "pass" | "pass_with_findings" | "fail" | null, "health": "healthy" | "findings" | "failing" | "unknown", "counts": { "holds": 0, "drifted": 0, "not_checkable": 0, "high": 0, "medium": 0, "low": 0 }, "result_artifact": "evidence/projects/<slug>/result.json" | null } ],
-    "follow_ups": [ { "id": "portfolio:<project path>:<slug>", "project": "...", "title": "...", "severity": "high|medium|low", "evidence": "<path:line>", "rank": <int>, "status": "approved" | "unapproved", "note": "<the human's note, else null>", "approved_by": "<platform identity or null>", "approved_at": "<ISO 8601 or null>", "filed": false } ],
+    "follow_ups": [ { "id": "portfolio:<project path>:<slug>", "project": "...", "title": "...", "severity": "high|medium|low", "evidence": "<path:line>", "rank": <int>, "status": "approved" | "unapproved", "note": "<the human's note, else null>", "approved_by": "<platform identity or null>", "approved_at": "<ISO 8601 or null>", "child_execution_id": null, "filed": false, "filed_issue": null } ],
     "coverage": { "projects_discovered": <int>, "projects_selected": <int>, "projects_reviewed": <int>, "plan_completed": true|false, "not_reviewed": [ { "path": "...", "reason": "..." } ] },
     "rollup": { "by_health": { "healthy": 0, "findings": 0, "failing": 0, "unknown": 0 }, "by_severity": { "high": 0, "medium": 0, "low": 0 }, "follow_ups_total": 0, "follow_ups_approved": 0, "issues_filed": 0 },
     "verdict": "pass" | "pass_with_findings" | "fail",
@@ -457,6 +483,12 @@ prompt_template: |
     not_reviewed is empty, and every project's health is "healthy".
     Everything else, including any "unknown" project, any "findings"
     project and any truncated coverage, is "pass_with_findings".
+  - PLATFORM OWNED FIELDS. "filed", "filed_issue" and
+    rollup.issues_filed describe what the platform did after you exited.
+    You always write false, null and 0; the platform rewrites them from
+    the issues it actually filed, and adds its own receipt. Setting
+    "child_execution_id" is for a delegating run that had children: this
+    preset runs inline, so it is null.
   - THE REGISTER CANNOT UPGRADE THE VERDICT. Healthy rows, approved
     follow ups, a high healthy-to-failing ratio and positive prose never
     raise it. A project nobody reviewed is not evidence of health, an
@@ -520,6 +552,21 @@ git_clone_config:
     # preloop/report/portfolio, derived from this path and stable across runs.
     destination_path: PORTFOLIO.md
     commit_message: Update the portfolio review report
+  # Issue #687: the third output of the run. The rows a human approved at the
+  # PHASE 6 gate become tracker issues, one per row, filed by the platform
+  # after the agent has exited and keyed on the stable follow up id, so a
+  # re-run of the same portfolio does not file the same follow up twice. The
+  # agent still has no write tool. The issues land in the project of the
+  # repository this flow clones unless project_id names another one; a flow
+  # with no project configured files nothing and records why.
+  follow_up_filing:
+    enabled: true
+    project_id: null
+    labels:
+      - preloop
+      - portfolio-review
+      - follow-up
+    max_issues: 25
 trigger_config: null
 # Discovery plus up to eight inline lens runs in one execution. The
 # hour-long default cuts a real portfolio run off mid-lens.

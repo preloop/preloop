@@ -32,6 +32,10 @@ RESERVED_RESULT_FIELDS = (
     # from the post-execution marker. An agent with no write tools cannot
     # author a receipt for a pull request it could not have opened.
     "report_publication",
+    # Issue #687: the follow up filing receipt is written by the platform from
+    # the issues it actually created. An agent with no write tools cannot
+    # author a receipt for issues it could not have filed.
+    "follow_up_filing",
 )
 EVIDENCE_UPLOAD_OUTCOMES = frozenset({"uploaded", "failed", "absent"})
 TERMINAL_EXECUTION_STATUSES = frozenset(

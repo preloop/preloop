@@ -5,7 +5,7 @@ import asyncio
 import shlex
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import re
 
 from sqlalchemy.orm import Session
@@ -86,6 +86,18 @@ from preloop.services.flow_execution_logger import FlowExecutionLogger
 from preloop.services.flow_runtime_token import (
     create_flow_runtime_token,
     revoke_flow_runtime_tokens,
+)
+from preloop.services.follow_up_filing import (
+    FOLLOW_UP_FILING_RESULT_KEY,
+    FilingContext,
+    FollowUpFilingError,
+    apply_filing_to_result,
+    approved_follow_ups,
+    blocked_outcome,
+    file_follow_ups,
+    filing_blocked_reason,
+    load_filed_follow_ups,
+    resolve_follow_up_filing,
 )
 from preloop.services.report_publication import (
     REPORT_PUBLICATION_MARKER,
@@ -3768,6 +3780,177 @@ class FlowExecutionOrchestrator:
                 self._report_publication = parsed
         return self._report_publication
 
+    def _follow_up_filing_project_id(self, plan: Any) -> str:
+        """The tracker project the approved follow ups are filed into.
+
+        Configuration only, in the order an operator would expect: the block's
+        own ``project_id``, then the project of the repository this flow
+        clones, then the project that triggered the run. Two different
+        repository projects is an ambiguity this refuses to resolve by
+        guessing: filing into the wrong tracker is worse than not filing.
+        """
+        if plan.project_id:
+            return str(plan.project_id)
+
+        config = getattr(self.flow, "git_clone_config", None) or {}
+        repositories = config.get("repositories") if isinstance(config, dict) else None
+        candidates = {
+            str(entry.get("project_id"))
+            for entry in (repositories or [])
+            if isinstance(entry, dict) and entry.get("project_id")
+        }
+        if len(candidates) == 1:
+            return candidates.pop()
+        if len(candidates) > 1:
+            raise FollowUpFilingError(
+                "project_ambiguous",
+                "the flow clones repositories from more than one project",
+            )
+
+        trigger_project_id = (self.trigger_event_data or {}).get("project_id") or (
+            getattr(self.flow, "trigger_project_ids", None) or [None]
+        )[0]
+        if trigger_project_id:
+            return str(trigger_project_id)
+        raise FollowUpFilingError(
+            "project_missing",
+            "no tracker project is configured for this flow",
+        )
+
+    async def _follow_up_filing_target(self, plan: Any) -> Tuple[Any, str, str]:
+        """A tracker client, the project key to file into, and the tracker type."""
+        from preloop.api.common import get_tracker_client
+        from preloop.models.crud import crud_project
+
+        project_id = self._follow_up_filing_project_id(plan)
+        project = crud_project.get(self.db, id=project_id)
+        if not project or not getattr(project, "organization_id", None):
+            raise FollowUpFilingError(
+                "project_missing",
+                f"project {project_id} is unknown or has no organization",
+            )
+
+        users = crud_user.get_by_account(
+            self.db, account_id=self.flow.account_id, limit=1
+        )
+        if not users:
+            raise FollowUpFilingError(
+                "credentials_unavailable",
+                "the account has no user whose tracker credential could be used",
+            )
+
+        try:
+            client = await get_tracker_client(
+                organization_id=project.organization_id,
+                project_id=project.id,
+                db=self.db,
+                current_user=users[0],
+            )
+        except Exception as error:
+            raise FollowUpFilingError(
+                "tracker_unavailable",
+                f"no tracker client for project {project_id}",
+            ) from error
+        if client is None:
+            raise FollowUpFilingError(
+                "tracker_unavailable",
+                f"no tracker client for project {project_id}",
+            )
+
+        tracker_type = str(
+            getattr(client, "tracker_type", None) or type(client).__name__
+        )
+        return client, str(project.identifier), tracker_type
+
+    def _follow_up_filing_context(self, result: Dict[str, Any]) -> FilingContext:
+        """What every filed issue quotes about where it came from."""
+        git = result.get("git") if isinstance(result.get("git"), dict) else {}
+        artifacts = (
+            result.get("artifacts") if isinstance(result.get("artifacts"), dict) else {}
+        )
+        return FilingContext(
+            execution_id=str(getattr(self.execution_log, "id", "")) or None,
+            flow_name=getattr(self.flow, "name", None),
+            repository=git.get("remote"),
+            commit=git.get("commit"),
+            report_path=artifacts.get("report"),
+        )
+
+    async def _file_approved_follow_ups(self, merged_result: Any) -> None:
+        """Turn the follow ups a human approved into tracker issues (#687).
+
+        Runs on the terminal path, after the agent process is gone, so the
+        flow that read the projects never held ``create_issue``. It cannot
+        fail the execution: the review already succeeded and its report is
+        already written, so every problem here becomes a receipt on the
+        result and a warning on the timeline.
+        """
+        if not isinstance(merged_result, dict) or not self.flow:
+            return
+        plan = resolve_follow_up_filing(getattr(self.flow, "git_clone_config", None))
+        if plan is None:
+            return
+
+        try:
+            rows = approved_follow_ups(merged_result)
+            blocked = filing_blocked_reason(merged_result, rows)
+            if blocked is not None:
+                # An expired gate and an empty approval both file nothing, and
+                # the result says which one rather than staying silent.
+                apply_filing_to_result(merged_result, blocked_outcome(blocked))
+                self.execution_logger.log_milestone(
+                    FOLLOW_UP_FILING_RESULT_KEY,
+                    dict(merged_result[FOLLOW_UP_FILING_RESULT_KEY]),
+                )
+                return
+
+            try:
+                client, project_key, tracker_type = await self._follow_up_filing_target(
+                    plan
+                )
+            except FollowUpFilingError as error:
+                apply_filing_to_result(merged_result, blocked_outcome(error.reason))
+                await self._emit_execution_warning(
+                    f"{len(rows)} approved follow up(s) were not filed: {error}.",
+                    details={"reason": error.reason},
+                )
+                return
+
+            ledger = load_filed_follow_ups(
+                self.db,
+                flow_id=self.flow.id,
+                exclude_execution_id=getattr(self.execution_log, "id", None),
+            )
+            outcome = await file_follow_ups(
+                client=client,
+                project_key=project_key,
+                rows=rows,
+                context=self._follow_up_filing_context(merged_result),
+                plan=plan,
+                already_filed=ledger,
+                tracker=tracker_type,
+            )
+            receipt = apply_filing_to_result(merged_result, outcome)
+            self.execution_logger.log_milestone(
+                FOLLOW_UP_FILING_RESULT_KEY, dict(receipt)
+            )
+            logger.info(
+                "Follow up filing: %s filed, %s already filed, %s failed",
+                outcome.filed,
+                outcome.already_filed,
+                outcome.failed,
+            )
+            if outcome.failed:
+                await self._emit_execution_warning(
+                    f"{outcome.failed} approved follow up(s) could not be filed; "
+                    f"{outcome.filed} were. The tracker error is in the execution logs.",
+                    details={"reason": "tracker_error"},
+                )
+        except Exception:
+            # Filing is the last thing a successful review does. It never
+            # turns that review into a failed execution.
+            logger.exception("Filing the approved follow ups failed")
+
     def _resolve_verification_evidence(self) -> Optional[Dict[str, Any]]:
         """Gate evidence from the live stream, or from the stored log tail.
 
@@ -6365,6 +6548,15 @@ class FlowExecutionOrchestrator:
                     merged_result=merged_result,
                 )
                 return
+
+            # Follow up filing (issue #687): the other output of a review the
+            # agent has no tool to deliver. The rows a human approved at the
+            # gate become tracker issues here, on the control plane, after the
+            # agent process has exited and after the park check above, so a
+            # run still waiting for its answer files nothing. A run that did
+            # not succeed files nothing either: its result is not evidence.
+            if final_status == "SUCCEEDED":
+                await self._file_approved_follow_ups(merged_result)
 
             await self._update_execution_log(
                 status=final_status,

@@ -22,7 +22,10 @@ the [Portfolio Review preset](portfolio-review.md) discovers the projects
 in such a repository from manifests only, asks a human which ones to
 review, runs the Docs Currency Review lens inline for the selected ones,
 and aggregates them into `preloop.review.portfolio/v1`. It reuses the
-lens below unchanged rather than restating it.
+lens below unchanged rather than restating it. Its agent is read only on
+the same terms as the four: what leaves that run (the report as a pull
+request, the approved follow ups as issues) is written by the platform
+after the agent has exited, never by a tool on its allowlist.
 
 They are a **family sharing one skeleton**, not one parameterized preset:
 the four lenses have different required inputs, different failure modes

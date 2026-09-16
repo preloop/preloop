@@ -586,7 +586,9 @@
           "note",
           "approved_by",
           "approved_at",
-          "filed"
+          "child_execution_id",
+          "filed",
+          "filed_issue"
         ],
         "properties": {
           "id": {
@@ -640,8 +642,17 @@
               "null"
             ]
           },
+          "child_execution_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "filed": {
             "const": false
+          },
+          "filed_issue": {
+            "type": "null"
           }
         },
         "allOf": [

@@ -129,6 +129,78 @@ class ReportPublication(BaseModel):
         return self
 
 
+class FollowUpFiling(BaseModel):
+    """File the follow ups a human approved as issues in the tracker.
+
+    Same argument as :class:`ReportPublication`, applied to the other output
+    of a review: the agent holds no write tool, and the approved rows are
+    turned into issues by the control plane after the agent has exited, using
+    the account's configured tracker credential. Issue #687.
+
+    It lives beside ``report_publication`` because both describe what the
+    platform does with a run's outputs against the repository the flow is
+    configured for, and because ``repositories[].project_id`` is where the
+    tracker project is read from when this block does not name one.
+
+    ``extra='forbid'``: a misspelled key here is an issue filed somewhere
+    else, or not at all.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether approved follow ups in the run's result are filed as "
+            "tracker issues after the agent has exited"
+        ),
+    )
+    project_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Tracker project the issues are filed into. Defaults to the "
+            "project of the repository this flow clones, then the project "
+            "that triggered the run"
+        ),
+    )
+    labels: List[str] = Field(
+        default_factory=lambda: ["preloop", "portfolio-review", "follow-up"],
+        max_length=10,
+        description="Labels applied to every filed issue",
+    )
+    max_issues: int = Field(
+        default=25,
+        ge=1,
+        le=100,
+        description=(
+            "Ceiling on issues filed by one run, so a misconfigured portfolio "
+            "cannot empty itself into a tracker"
+        ),
+    )
+
+    @field_serializer("project_id")
+    def serialize_project_id(self, value: Optional[UUID]) -> Optional[str]:
+        """Serialize the project id to a string."""
+        return str(value) if value is not None else None
+
+    @field_validator("labels")
+    @classmethod
+    def validate_labels(cls, value: List[str]) -> List[str]:
+        """Labels are short, non-empty and deduplicated."""
+        cleaned: List[str] = []
+        for label in value:
+            text = (label or "").strip()
+            if not text:
+                raise ValueError("follow_up_filing.labels may not contain empty labels")
+            if len(text) > 50:
+                raise ValueError(
+                    "follow_up_filing.labels entries may not exceed 50 characters"
+                )
+            if text not in cleaned:
+                cleaned.append(text)
+        return cleaned
+
+
 class GitCloneConfig(BaseModel):
     """Configuration for git clone operations before agent execution."""
 
@@ -207,6 +279,14 @@ class GitCloneConfig(BaseModel):
         description=(
             "Publish the document this run generated as a pull request, "
             "after the agent has exited and without giving it write tools"
+        ),
+    )
+
+    follow_up_filing: Optional[FollowUpFiling] = Field(
+        default=None,
+        description=(
+            "File the follow ups a human approved in this run as tracker "
+            "issues, after the agent has exited and without giving it write tools"
         ),
     )
 

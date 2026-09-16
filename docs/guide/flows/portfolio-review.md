@@ -5,8 +5,8 @@ project**. This preset sits one layer above them: it takes a repository
 full of independently built projects, discovers what is actually in
 there, asks a human which projects are worth a review, runs the [Docs
 Currency Review](repo-review-presets.md#docs-currency-review) lens inline
-for the selected ones, aggregates the results, and asks which follow ups
-to keep.
+for the selected ones, aggregates the results, asks which follow ups to
+keep, and files the ones the human kept as tracker issues.
 
 It answers the question nobody can answer about an inherited estate:
 **which of these things is a liability**. Everything runs inline in one
@@ -23,6 +23,7 @@ cover.
 | Lens it runs | Docs Currency Review (`preloop.review.docscurrency/v1`), inline, unchanged |
 | Write tools | none, apart from the built-in `ask_user` question channel |
 | Report publication | platform step after the agent exits: `PORTFOLIO.md` on `preloop/report/portfolio`, as a pull request |
+| Follow up filing | platform step after the agent exits: one issue per approved follow up, keyed on the follow up id |
 | Inline project cap | `max_inline_projects`, default 5, hard cap 8 |
 
 ## What it is not
@@ -42,10 +43,13 @@ cover.
   human approved. The one pull request a run can produce contains that
   report and nothing else, and the agent does not open it (see
   [Where the report lands](#where-the-report-lands)).
-- **Not a filer.** The preset has no write tools, so approving a follow
-  up records the approval; it does not open anything.
-  `rollup.issues_filed` is always `0` and `follow_ups[].filed` is always
-  `false`.
+- **Not a filer, in the agent.** The preset has no write tools: the agent
+  records an approval, it does not act on one, and it always writes
+  `filed: false`, `filed_issue: null` and `rollup.issues_filed: 0`. The
+  approved rows do become tracker issues, but that happens on the
+  platform side after the agent has exited, and it is the platform that
+  rewrites those three fields (see
+  [Where the follow ups land](#where-the-follow-ups-land)).
 - **Not cross-repository.** One repository per run, like every other
   preset in the family.
 
@@ -334,6 +338,96 @@ retries on the same branch, and a run whose push landed but whose pull
 request call did not (`pull_request_unavailable`) opens the pull request
 on its next attempt.
 
+## Where the follow ups land
+
+A ranked list of follow ups nobody acts on is a spreadsheet. The rows a
+human approved at the second question therefore leave the run as
+**tracker issues, one issue per approved row**, in rank order.
+
+The agent does not file them. It has no `create_issue`, and giving it
+one is exactly the wrong blast radius for a flow that just read dozens
+of untrusted projects. Filing is a **platform step after the agent
+process has exited**, using the account's configured tracker credential,
+and it reads the same `result.json` everyone else reads: a row is filed
+because it says `status: "approved"`, not because the agent asked for
+anything.
+
+```yaml
+git_clone_config:
+  follow_up_filing:
+    enabled: true
+    # project_id: <uuid>   # defaults to the project of the cloned repository
+    labels: [preloop, portfolio-review, follow-up]
+    max_issues: 25
+```
+
+The tracker project comes from flow configuration, in this order: the
+block's own `project_id`, then the project of the repository the flow
+clones, then the project that triggered the run. Two repositories from
+two different projects is an ambiguity the platform refuses to resolve
+by guessing: it files nothing and records `project_ambiguous`.
+
+### What one issue contains
+
+Each issue is one unit of work, shaped so the
+[automated issue implementation](automated-issue-implementation.md)
+preset (`backend/presets/011-automated-issue-implementation.yaml`) can
+pick it up without following a link: the title is
+`<project path>: <follow up title>`, and the body carries the priority,
+the note the human typed at the gate, the project path inside the
+portfolio, the repository and commit the review read, the evidence
+pointer, the originating execution (the child execution when a
+delegating run produced the row, `none` for an inline run), the stable
+follow up id, and a "Done when" section. Labels default to `preloop`,
+`portfolio-review`, `follow-up`, plus `priority:<severity>`.
+
+### The same follow up is never filed twice
+
+The follow up id (`portfolio:<project path>:<slug>`) is stable across
+runs by construction, and that is the idempotency key. Before filing,
+the platform reads the filings recorded by earlier executions of the
+same flow; a follow up already in that ledger is reported as
+`already_filed`, with the issue the earlier run created, and no tracker
+call is made for it. A portfolio reviewed every month therefore
+accumulates issues for new findings only, and an unresolved finding
+keeps pointing at the issue it already has.
+
+### When nothing is filed, or filing fails
+
+Nothing is filed when the gate expired, when the human approved nothing,
+or when there were no candidates, and the run says which of the three it
+was rather than staying silent. The receipt lands under
+`follow_up_filing`:
+
+```json
+{ "outcome": "partial", "reason": "", "considered": 3,
+  "filed": 2, "already_filed": 0, "failed": 1, "not_filed": 0,
+  "tracker": "github", "project": "widgets",
+  "rows": [ { "id": "portfolio:services/api:readme-drift",
+              "outcome": "filed", "reason": "",
+              "issue": { "key": "WIDGETS-8", "url": "https://..." } } ] }
+```
+
+`outcome` is one of `filed`, `partial`, `nothing_filed` or `failed`.
+`reason` comes from a closed list, so it is a diagnosis and never a
+tracker error string: `gate_expired`, `nothing_approved`,
+`no_follow_ups`, `not_a_portfolio_result`, `project_missing`,
+`project_ambiguous`, `tracker_unavailable`, `tracker_error`,
+`credentials_unavailable`, `already_filed`, `duplicate_follow_up`,
+`limit_reached`, `invalid_row`, `filing_disabled`. The tracker's own
+message stays in the execution log.
+
+A tracker error on one row does not abort the rest: the remaining rows
+are still filed, and the failed row is reported as not filed with its
+reason. Filing cannot fail the run either: the review and its report
+already happened.
+
+Each filed issue is written back onto its follow up row as
+`filed: true` and `filed_issue`, and `rollup.issues_filed` counts the
+follow ups that have an issue. Those fields are platform owned: a row
+that claims an issue the platform did not file is reset to `false`,
+because a flow with no write tools could not have created it.
+
 ## Payload knobs
 
 | key | default | meaning |
@@ -357,11 +451,14 @@ on its next attempt.
   portfolio run, and the cover names them as unchecked.
 - An inline run cannot honestly review more than 8 projects; beyond that
   the report asks for delegation instead of pretending.
-- Approval is recorded, never executed: nothing in this preset files an
-  issue or edits a project. The agent opens no pull request either; the
-  single pull request a run can produce is opened by the platform after
-  the agent exits, contains only the report, and changes nothing about
-  the projects it describes.
+- Nothing the agent does writes anywhere: it edits no project, opens no
+  pull request and files no issue. The two things a run does write, the
+  report pull request and the follow up issues, are both platform steps
+  that run after the agent has exited, and neither of them changes a
+  line of the projects the review describes.
+- Filing is best effort in the same way publication is: a tracker that
+  refuses a row leaves a successful review with a recorded reason, and
+  the follow up keeps its stable id for the next run to retry.
 - Publication is best effort by design. It is not a delivery guarantee:
   a run can be a complete, successful review whose report never reached
   the repository, and the reason for that is recorded rather than
