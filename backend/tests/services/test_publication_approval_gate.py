@@ -189,15 +189,7 @@ def _private_case(
             "name": "private-gate",
             "token_hash": hash_runner_token("runner-token"),
             "status": "online",
-            "reported_status": "RUNNING",
             "last_heartbeat": datetime.now(timezone.utc),
-            "current_execution_id": execution.id,
-            "pending_job": {
-                "_publication": state,
-                "launch_version": 1,
-                "agent_type": "codex",
-                "execution_id": str(execution.id),
-            },
             "publication_capabilities": {
                 "connection_id": "conn",
                 "version": 1,
@@ -207,6 +199,18 @@ def _private_case(
         },
     )
     execution.runner_id = runner.id
+    assignment = crud_flow_runner.create_assignment(
+        db_session,
+        runner_id=runner.id,
+        execution_id=execution.id,
+        pending_job={
+            "_publication": state,
+            "launch_version": 1,
+            "agent_type": "codex",
+            "execution_id": str(execution.id),
+        },
+    )
+    assignment.reported_status = "RUNNING"
     db_session.commit()
 
     async def mint(

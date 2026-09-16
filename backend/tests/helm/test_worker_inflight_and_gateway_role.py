@@ -30,7 +30,7 @@ def _container_env(
 def test_values_default_flow_inflight_is_ten() -> None:
     values = load_values()
     assert resolve_values_path(values, "flowExecution.maxInflight") == 10
-    assert resolve_values_path(values, "flowExecution.maxRunningPerAccount") == 3
+    assert resolve_values_path(values, "flowExecution.maxRunningPerAccount") == 5
     assert resolve_values_path(values, "flowExecution.databasePool.size") == 10
     assert resolve_values_path(values, "flowExecution.databasePool.maxOverflow") == 4
 
@@ -41,7 +41,7 @@ def test_flow_execution_worker_sets_inflight_and_pool() -> None:
         name_contains="flow-execution",
     )
     assert env["FLOW_EXECUTION_MAX_INFLIGHT"]["value"] == "10"
-    assert env["FLOW_EXECUTION_MAX_RUNNING_PER_ACCOUNT"]["value"] == "3"
+    assert env["FLOW_EXECUTION_MAX_RUNNING_PER_ACCOUNT"]["value"] == "5"
     assert env["DATABASE_POOL_SIZE"]["value"] == "10"
     assert env["DATABASE_MAX_OVERFLOW"]["value"] == "4"
 

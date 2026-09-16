@@ -1585,11 +1585,11 @@ async def send_execution_command(
             # runner's process (and only builds an invalid Kubernetes
             # selector trying). Flag the halt so the runner stops the job
             # itself; its output already streams into flow_execution_log.
-            runner = crud_flow_runner.get(db, id=runner_id)
-            if runner:
-                runner.halt_requested = True
-                db.add(runner)
-                db.commit()
+            # Halt is per assignment: this runner may be running other jobs
+            # that nobody asked to stop.
+            if crud_flow_runner.request_halt(
+                db, runner_id=runner_id, execution_id=execution_id
+            ):
                 logger.info(
                     f"Requested halt on runner {runner_id} for execution {execution_id}"
                 )

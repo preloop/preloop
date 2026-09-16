@@ -221,25 +221,31 @@ def test_release_live_runner_ignores_stale_reconnect() -> None:
         _live.pop("rid", None)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "status", [None, "RUNNING", "unknown", "FAILED", "STOPPED", "SUCCEEDED"]
-)
-async def test_completion_confirms_stop_only_on_terminal_owner_ack(
-    monkeypatch: pytest.MonkeyPatch, status: str | None
-) -> None:
-    """Invalid completion packets retain the lease and durable halt intent."""
-    execution_id = uuid4()
+def _stub_leased_runner(execution_id: UUID) -> SimpleNamespace:
+    """A runner holding exactly one halted job, with the assignment API."""
+    assignment = SimpleNamespace(
+        execution_id=execution_id,
+        pending_job=None,
+        halt_requested=True,
+        reported_status="RUNNING",
+    )
     runner = SimpleNamespace(
         id=uuid4(),
         account_id=uuid4(),
-        current_execution_id=execution_id,
-        pending_job=None,
-        halt_requested=True,
         status="online",
-        reported_status="RUNNING",
         publication_capabilities=None,
+        assignments=[assignment],
+        capacity=1,
+        free_slots=0,
     )
+    runner.assignment_for = lambda wanted, runner=runner: next(
+        (row for row in runner.assignments if row.execution_id == wanted), None
+    )
+    return runner
+
+
+def _stub_capability_writer(runner: SimpleNamespace):
+    """In-memory stand-in for the compare-and-swap capability write."""
 
     def set_publication_capabilities(
         db: object,
@@ -250,24 +256,41 @@ async def test_completion_confirms_stop_only_on_terminal_owner_ack(
         offline: bool = False,
         clear_lease: bool = False,
         execution_id: UUID | None = None,
-        reported_status: str | None = None,
         commit: bool = True,
     ) -> bool:
-        """In-memory stand-in for the compare-and-swap capability write."""
         current = (runner.publication_capabilities or {}).get("connection_id")
         if expected_connection_id is not None and current != expected_connection_id:
             return False
-        if execution_id is not None and runner.current_execution_id != execution_id:
+        if (
+            clear_lease
+            and execution_id is not None
+            and runner.assignment_for(execution_id) is None
+        ):
             return False
         runner.publication_capabilities = capabilities
         if clear_lease:
-            runner.pending_job = None
-            runner.current_execution_id = None
-            runner.halt_requested = False
+            runner.assignments = [
+                row
+                for row in runner.assignments
+                if execution_id is not None and row.execution_id != execution_id
+            ]
             runner.status = "offline" if offline else "online"
-            if reported_status is not None:
-                runner.reported_status = reported_status
         return True
+
+    return set_publication_capabilities
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status", [None, "RUNNING", "unknown", "FAILED", "STOPPED", "SUCCEEDED"]
+)
+async def test_completion_confirms_stop_only_on_terminal_owner_ack(
+    monkeypatch: pytest.MonkeyPatch, status: str | None
+) -> None:
+    """Invalid completion packets retain the lease and durable halt intent."""
+    execution_id = uuid4()
+    runner = _stub_leased_runner(execution_id)
+    set_publication_capabilities = _stub_capability_writer(runner)
 
     execution = SimpleNamespace(
         id=execution_id,
@@ -317,12 +340,11 @@ async def test_completion_confirms_stop_only_on_terminal_owner_ack(
 
     if status in {"SUCCEEDED", "FAILED", "STOPPED"}:
         confirm.assert_called_once()
-        assert runner.current_execution_id is None
-        assert runner.halt_requested is False
+        assert runner.assignments == []
     else:
         confirm.assert_not_called()
-        assert runner.current_execution_id == execution_id
-        assert runner.halt_requested is True
+        assert runner.assignment_for(execution_id) is not None
+        assert runner.assignment_for(execution_id).halt_requested is True
         assert execution.status == "RUNNING"
 
 
@@ -336,43 +358,8 @@ async def test_invalid_cra_completion_keeps_original_error_and_contract(
 ) -> None:
     """Malformed CRA on a failed/stopped complete keeps both failure reasons."""
     execution_id = uuid4()
-    runner = SimpleNamespace(
-        id=uuid4(),
-        account_id=uuid4(),
-        current_execution_id=execution_id,
-        pending_job=None,
-        halt_requested=True,
-        status="online",
-        reported_status="RUNNING",
-        publication_capabilities=None,
-    )
-
-    def set_publication_capabilities(
-        db: object,
-        *,
-        runner_id: UUID,
-        capabilities: dict | None,
-        expected_connection_id: str | None = None,
-        offline: bool = False,
-        clear_lease: bool = False,
-        execution_id: UUID | None = None,
-        reported_status: str | None = None,
-        commit: bool = True,
-    ) -> bool:
-        current = (runner.publication_capabilities or {}).get("connection_id")
-        if expected_connection_id is not None and current != expected_connection_id:
-            return False
-        if execution_id is not None and runner.current_execution_id != execution_id:
-            return False
-        runner.publication_capabilities = capabilities
-        if clear_lease:
-            runner.pending_job = None
-            runner.current_execution_id = None
-            runner.halt_requested = False
-            runner.status = "offline" if offline else "online"
-            if reported_status is not None:
-                runner.reported_status = reported_status
-        return True
+    runner = _stub_leased_runner(execution_id)
+    set_publication_capabilities = _stub_capability_writer(runner)
 
     execution = SimpleNamespace(
         id=execution_id,
@@ -518,34 +505,10 @@ async def test_invalid_log_batch_error_echoes_batch_id(
     """CLI needs the rejected identity to drop inflight and reclaim budget."""
     execution_id = uuid4()
     batch_id = str(uuid4())
-    runner = SimpleNamespace(
-        id=uuid4(),
-        account_id=uuid4(),
-        current_execution_id=execution_id,
-        pending_job=None,
-        halt_requested=False,
-        status="busy",
-        reported_status="RUNNING",
-        publication_capabilities=None,
-    )
-
-    def set_publication_capabilities(
-        db: object,
-        *,
-        runner_id: UUID,
-        capabilities: dict | None,
-        expected_connection_id: str | None = None,
-        offline: bool = False,
-        clear_lease: bool = False,
-        execution_id: UUID | None = None,
-        reported_status: str | None = None,
-        commit: bool = True,
-    ) -> bool:
-        current = (runner.publication_capabilities or {}).get("connection_id")
-        if expected_connection_id is not None and current != expected_connection_id:
-            return False
-        runner.publication_capabilities = capabilities
-        return True
+    runner = _stub_leased_runner(execution_id)
+    runner.status = "busy"
+    runner.assignments[0].halt_requested = False
+    set_publication_capabilities = _stub_capability_writer(runner)
 
     websocket = MagicMock()
     websocket.accept = AsyncMock()

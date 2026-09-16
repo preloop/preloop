@@ -100,14 +100,10 @@ func TestRunnerStreamsLogsBeforeAgentCanFinish(t *testing.T) {
 	}
 	defer conn.Close() //nolint:errcheck
 	interrupt := make(chan os.Signal, 1)
-	var running *exec.Cmd
-	var executionID string
-	var done <-chan leasedJobOutcome
-	var last *leasedJobOutcome
-	halt := false
+	jobs := newRunnerJobs(2)
 	stopped := make(chan error, 1)
 	go func() {
-		stopped <- runRunnerSession(conn, interrupt, io.Discard, &running, &executionID, &done, &halt, &atomic.Bool{}, &last)
+		stopped <- runRunnerSession(conn, interrupt, io.Discard, jobs)
 	}()
 	t.Cleanup(func() {
 		_ = os.WriteFile(release, nil, 0600)
@@ -274,20 +270,15 @@ func TestRunnerFinalLogFloodReplaysAfterLostAcknowledgements(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	finished := make(chan leasedJobOutcome, 1)
-	finished <- leasedJobOutcome{executionID: "execution-flood", status: "SUCCEEDED", result: map[string]any{"status": "success"}, logBuffer: &buffer}
-	var jobDone <-chan leasedJobOutcome = finished
-	var running *exec.Cmd
-	var executionID string
-	var last *leasedJobOutcome
-	halt := false
+	jobs := newRunnerJobs(2)
+	jobs.outcomes <- leasedJobOutcome{executionID: "execution-flood", status: "SUCCEEDED", result: map[string]any{"status": "success"}, logBuffer: &buffer}
 	interrupt := make(chan os.Signal, 1)
 	for i := 0; i < 2; i++ {
 		conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = runRunnerSession(conn, interrupt, io.Discard, &running, &executionID, &jobDone, &halt, &atomic.Bool{}, &last)
+		err = runRunnerSession(conn, interrupt, io.Discard, jobs)
 		_ = conn.Close()
 		if err == nil {
 			t.Fatal("expected disconnect")

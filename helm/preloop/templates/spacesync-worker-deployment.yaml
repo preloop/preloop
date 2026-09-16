@@ -146,7 +146,7 @@ spec:
             - name: FLOW_EXECUTION_MAX_INFLIGHT
               value: {{ $.Values.flowExecution.maxInflight | default 10 | quote }}
             - name: FLOW_EXECUTION_MAX_RUNNING_PER_ACCOUNT
-              value: {{ $.Values.flowExecution.maxRunningPerAccount | default 3 | quote }}
+              value: {{ $.Values.flowExecution.maxRunningPerAccount | default 5 | quote }}
             {{- end }}
             - name: FLOW_EXECUTION_MAX_WAIT_SECONDS
               value: {{ $.Values.flowExecution.maxWaitSeconds | default 3600 | quote }}

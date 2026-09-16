@@ -3,11 +3,15 @@ import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
+import '@shoelace-style/shoelace/dist/components/button/button.js';
+import '@shoelace-style/shoelace/dist/components/input/input.js';
+import type SlInput from '@shoelace-style/shoelace/dist/components/input/input.js';
 import '../../components/view-header.ts';
 import {
   getAccountOrganization,
   getRunners,
   updateAccountOrganization,
+  updateRunnerConcurrency,
   type RunnerRecord,
 } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
@@ -39,7 +43,20 @@ export class RunnersView extends LitElement {
   @state()
   private defaultError: string | null = null;
 
+  /** Runner whose slot count is being edited, if any. */
+  @state()
+  private editingConcurrencyFor: string | null = null;
+
+  @state()
+  private savingConcurrency = false;
+
+  @state()
+  private concurrencyError: string | null = null;
+
   private unsubscribe?: () => void;
+
+  /** Matches MAX_RUNNER_CONCURRENCY on the control plane. */
+  private static readonly maxConcurrency = 32;
 
   static styles = [
     unsafeCSS(consoleStyles),
@@ -117,6 +134,24 @@ export class RunnersView extends LitElement {
       }
       .default-pool sl-select {
         margin-bottom: var(--sl-spacing-2x-small);
+      }
+      .slots {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-2x-small);
+      }
+      .slot-edit {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-2x-small);
+      }
+      .slot-edit sl-input {
+        width: 5.5rem;
+      }
+      .executions {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
       }
     `,
   ];
@@ -245,6 +280,124 @@ export class RunnersView extends LitElement {
     }
   }
 
+  /** Slots dispatch may use: the process can lower the owner's ceiling. */
+  private capacityOf(row: RunnerRecord): number {
+    const capacity = row.capacity ?? row.concurrency ?? 1;
+    return Math.max(1, Number(capacity) || 1);
+  }
+
+  private runningIdsOf(row: RunnerRecord): string[] {
+    const ids = row.running_execution_ids;
+    if (ids && ids.length > 0) {
+      return ids;
+    }
+    return row.current_execution_id ? [row.current_execution_id] : [];
+  }
+
+  private async saveConcurrency(row: RunnerRecord, raw: string) {
+    const requested = Number.parseInt(raw, 10);
+    if (
+      !Number.isFinite(requested) ||
+      requested < 1 ||
+      requested > RunnersView.maxConcurrency
+    ) {
+      this.concurrencyError = `Choose between 1 and ${RunnersView.maxConcurrency} slots.`;
+      return;
+    }
+    this.savingConcurrency = true;
+    this.concurrencyError = null;
+    try {
+      const updated = await updateRunnerConcurrency(row.id, requested);
+      const index = this.runners.findIndex((entry) => entry.id === row.id);
+      if (index !== -1) {
+        this.runners = [
+          ...this.runners.slice(0, index),
+          { ...this.runners[index], ...updated },
+          ...this.runners.slice(index + 1),
+        ];
+      }
+      this.editingConcurrencyFor = null;
+    } catch (err) {
+      this.concurrencyError =
+        err instanceof Error ? err.message : 'Failed to update runner slots';
+    } finally {
+      this.savingConcurrency = false;
+    }
+  }
+
+  private renderSlots(row: RunnerRecord) {
+    const running = Math.max(0, Number(row.running_count ?? 0) || 0);
+    const capacity = this.capacityOf(row);
+    if (this.editingConcurrencyFor === row.id) {
+      return html`
+        <div class="slot-edit">
+          <sl-input
+            type="number"
+            size="small"
+            min="1"
+            max=${RunnersView.maxConcurrency}
+            value=${String(row.concurrency ?? capacity)}
+            ?disabled=${this.savingConcurrency}
+            @keydown=${(event: KeyboardEvent) => {
+              if (event.key === 'Enter') {
+                const input = event.currentTarget as SlInput;
+                void this.saveConcurrency(row, input.value);
+              }
+            }}
+          ></sl-input>
+          <sl-button
+            size="small"
+            variant="primary"
+            ?disabled=${this.savingConcurrency}
+            @click=${(event: Event) => {
+              const input = (
+                event.currentTarget as HTMLElement
+              ).parentElement?.querySelector('sl-input') as SlInput | null;
+              void this.saveConcurrency(row, input?.value ?? '');
+            }}
+            >Save</sl-button
+          >
+          <sl-button
+            size="small"
+            @click=${() => {
+              this.editingConcurrencyFor = null;
+              this.concurrencyError = null;
+            }}
+            >Cancel</sl-button
+          >
+        </div>
+        ${
+          this.concurrencyError
+            ? html`<div class="muted">${this.concurrencyError}</div>`
+            : nothing
+        }
+      `;
+    }
+    return html`
+      <div class="slots">
+        <span class="slot-count">${running} / ${capacity}</span>
+        <sl-button
+          size="small"
+          variant="text"
+          @click=${() => {
+            this.editingConcurrencyFor = row.id;
+            this.concurrencyError = null;
+          }}
+          >Edit</sl-button
+        >
+      </div>
+      ${
+        row.reported_concurrency != null &&
+        row.concurrency != null &&
+        row.reported_concurrency < row.concurrency
+          ? html`<div class="muted">
+              Runner process reports ${row.reported_concurrency}
+            </div>`
+          : nothing
+      }
+    `;
+  }
+
   render() {
     return html`
       <view-header
@@ -286,7 +439,8 @@ export class RunnersView extends LitElement {
                         <th>Host</th>
                         <th>Status</th>
                         <th>Last heartbeat</th>
-                        <th>Current execution</th>
+                        <th>Running / slots</th>
+                        <th>Executions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -336,14 +490,20 @@ export class RunnersView extends LitElement {
                                   : '-'
                               }
                             </td>
+                            <td>${this.renderSlots(row)}</td>
                             <td>
                               ${
-                                row.current_execution_id
-                                  ? html`<a
-                                      href="/console/flows/executions/${row.current_execution_id}"
-                                      >${row.current_execution_id.slice(0, 8)}…</a
-                                    >`
-                                  : html`<span class="muted">Idle</span>`
+                                this.runningIdsOf(row).length === 0
+                                  ? html`<span class="muted">Idle</span>`
+                                  : html`<div class="executions">
+                                      ${this.runningIdsOf(row).map(
+                                        (executionId) =>
+                                          html`<a
+                                            href="/console/flows/executions/${executionId}"
+                                            >${executionId.slice(0, 8)}…</a
+                                          >`
+                                      )}
+                                    </div>`
                               }
                             </td>
                           </tr>

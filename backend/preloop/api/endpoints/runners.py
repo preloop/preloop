@@ -130,6 +130,10 @@ def register_runner(
             if value := getattr(body, field):
                 updates[field] = value
         existing = crud_flow_runner.update(db, db_obj=existing, obj_in=updates)
+        if body.concurrency is not None:
+            existing = crud_flow_runner.set_reported_concurrency(
+                db, runner=existing, reported=body.concurrency
+            )
         emit_runner_updated(existing, db)
         return schemas.RunnerRegisterResponse(
             **_to_response(existing, db).model_dump(), token=token
@@ -151,10 +155,13 @@ def register_runner(
             "status": "online",
             "last_heartbeat": datetime.now(timezone.utc),
             "token_hash": hash_runner_token(token),
-            "halt_requested": False,
             "capabilities": capabilities,
         },
     )
+    if body.concurrency is not None:
+        row = crud_flow_runner.set_reported_concurrency(
+            db, runner=row, reported=body.concurrency
+        )
     emit_runner_updated(row, db)
     return schemas.RunnerRegisterResponse(
         **_to_response(row, db).model_dump(), token=token
@@ -184,6 +191,30 @@ def runner_fleet_summary(
     return schemas.RunnerFleetSummary(
         **crud_flow_runner.counts_for_account(db, account_id=current_user.account_id)
     )
+
+
+@router.patch("/runners/{runner_id}/concurrency", response_model=schemas.RunnerResponse)
+@require_permission("execute_flows")
+def update_runner_concurrency(
+    runner_id: UUID,
+    body: schemas.RunnerConcurrencyUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Set how many executions this runner may hold at once.
+
+    The stored value is a ceiling. A runner process started with a lower
+    ``--concurrency`` still lowers it while connected; raising it here does
+    not make someone's laptop run more than that process agreed to.
+    """
+    row = crud_flow_runner.get(
+        db, id=runner_id, account_id=str(current_user.account_id)
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Runner not found")
+    row = crud_flow_runner.set_concurrency(db, runner=row, concurrency=body.concurrency)
+    emit_runner_updated(row, db)
+    return _to_response(row, db)
 
 
 @router.get("/runners/{runner_id}", response_model=schemas.RunnerResponse)
@@ -279,40 +310,57 @@ def _authenticate_runner(db: Session, runner_id: UUID, token: str) -> FlowRunner
     return row
 
 
-def runner_needs_lease_token(runner: Any) -> bool:
+def runner_needs_lease_token(assignment: Any) -> bool:
     """True while a persisted lease has not yet started on the runner.
 
     Production is multi-replica: ``push_job_to_runner`` only hits the
-    socket if this process holds ``_live``, so an already-online idle
-    runner usually first sees a brand-new lease on the next 15s
-    heartbeat. Mint a token for that unstarted lease (``reported_status``
-    is ``None`` or ``PENDING``). Skip once the runner is mid-execution or
-    terminal so heartbeats do not churn keys.
+    socket if this process holds ``_live``, so a runner with a free slot
+    usually first sees a brand-new lease on the next 15s heartbeat. Mint a
+    token for that unstarted lease (``reported_status`` is ``None`` or
+    ``PENDING``). Skip once that job is mid-execution or terminal so
+    heartbeats do not churn keys.
+
+    Args:
+        assignment: One runner assignment, or anything exposing
+            ``reported_status``.
+
+    Returns:
+        True when the lease still needs a freshly minted token.
     """
-    status = str(getattr(runner, "reported_status", None) or "").strip().upper()
+    status = str(getattr(assignment, "reported_status", None) or "").strip().upper()
     return status in {"", "PENDING"}
 
 
 def job_for_heartbeat_ack(
     db: Session,
-    runner: Any,
+    assignment: Any,
+    *,
+    publication_capabilities: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Job copy for a heartbeat ack; mints only while the lease is unstarted."""
-    pending_job = getattr(runner, "pending_job", None)
+    """Job copy for a heartbeat ack; mints only while the lease is unstarted.
+
+    Args:
+        db: Database session.
+        assignment: The runner assignment being replayed.
+        publication_capabilities: The socket's current capability snapshot.
+
+    Returns:
+        A deliverable job copy, or None when nothing should be resent.
+    """
+    pending_job = getattr(assignment, "pending_job", None)
     if not pending_job:
         return None
     state = pending_job.get("_publication")
     if state and (
         state.get("phase") != "agent"
-        or not runner_needs_lease_token(runner)
-        or (getattr(runner, "publication_capabilities", None) or {}).get("helper_ready")
-        is not True
+        or not runner_needs_lease_token(assignment)
+        or (publication_capabilities or {}).get("helper_ready") is not True
     ):
         return None
     return job_for_runner_replay(
         db,
         pending_job=pending_job,
-        mint_token=runner_needs_lease_token(runner),
+        mint_token=runner_needs_lease_token(assignment),
     )
 
 
@@ -385,15 +433,44 @@ async def runner_ws(
     crud_flow_runner.set_publication_capabilities(
         db, runner_id=runner.id, capabilities={"connection_id": connection_id}
     )
-    publication = PrivatePublicationController(
-        db,
-        runner_id=runner.id,
-        account_id=runner.account_id,
-        connection_id=connection_id,
-    )
-    if runner.current_execution_id and (runner.pending_job or {}).get("_publication"):
-        publication.execution_id = runner.current_execution_id
-        publication.nonce = runner.pending_job["_publication"]["nonce"]
+    # One controller per job, not per socket: a runner may hold several
+    # executions at once and each publication has its own nonce, writer
+    # credential and expiry task.
+    publications: Dict[str, PrivatePublicationController] = {}
+
+    def publication_for(execution_id: Any) -> PrivatePublicationController:
+        """The controller for one execution on this socket, created on demand."""
+        key = str(execution_id)
+        controller = publications.get(key)
+        if controller is None:
+            controller = PrivatePublicationController(
+                db,
+                runner_id=runner.id,
+                account_id=runner.account_id,
+                connection_id=connection_id,
+            )
+            publications[key] = controller
+        return controller
+
+    async def close_publication(execution_id: Any) -> None:
+        """Close and forget one execution's controller."""
+        controller = publications.pop(str(execution_id), None)
+        if controller is not None:
+            await controller.close()
+
+    async def close_all_publications() -> None:
+        """Close every controller this socket opened."""
+        for key in list(publications):
+            controller = publications.pop(key, None)
+            if controller is not None:
+                await controller.close()
+
+    for assignment in list(runner.assignments or []):
+        state = (assignment.pending_job or {}).get("_publication")
+        if state:
+            controller = publication_for(assignment.execution_id)
+            controller.execution_id = assignment.execution_id
+            controller.nonce = state["nonce"]
     crud_flow_runner.touch_heartbeat(db, runner, status="online")
     hello: Dict[str, Any] = {
         "type": "hello",
@@ -401,16 +478,29 @@ async def runner_ws(
         "log_acknowledgements": True,
     }
     db.refresh(runner)
+    hello["concurrency"] = runner.capacity
     emit_runner_updated(runner, db)
-    if runner.pending_job and not runner.pending_job.get("_publication"):
-        hello["job"] = await prepare_runner_delivery(
-            db,
-            job_for_runner_replay(db, pending_job=runner.pending_job, mint_token=True),
-        )
-    if runner.halt_requested:
+    # Replay every held job. ``job`` is the first one so a single-slot CLI
+    # that predates concurrency still resumes; ``jobs`` carries them all.
+    replays = []
+    halts = []
+    for assignment in list(runner.assignments or []):
+        if assignment.halt_requested:
+            halts.append(str(assignment.execution_id))
+        job = assignment.pending_job
+        if job and not job.get("_publication"):
+            replays.append(
+                await prepare_runner_delivery(
+                    db, job_for_runner_replay(db, pending_job=job, mint_token=True)
+                )
+            )
+    if replays:
+        hello["job"] = replays[0]
+        hello["jobs"] = replays
+    if halts:
         hello["halt"] = True
-        if runner.current_execution_id:
-            hello["halt_execution_id"] = str(runner.current_execution_id)
+        hello["halt_execution_id"] = halts[0]
+        hello["halt_execution_ids"] = halts
     await websocket.send_json(hello)
 
     try:
@@ -430,11 +520,13 @@ async def runner_ws(
                 )
                 break
             if msg_type.startswith("publication_"):
+                execution_id = _parse_runner_execution_id(raw.get("execution_id"))
+                controller = publication_for(execution_id)
                 try:
-                    reply = await publication.handle(raw)
+                    reply = await controller.handle(raw)
                     await websocket.send_json(reply)
                 except (PublicationError, ValueError):
-                    await publication.close()
+                    await close_publication(execution_id)
                     await websocket.send_json(
                         {
                             "type": "error",
@@ -471,43 +563,70 @@ async def runner_ws(
                 )
                 if not updated_capability:
                     break
-                if runner.halt_requested:
-                    await publication.close()
-                status = "busy" if runner.current_execution_id else "online"
+                reported = raw.get("concurrency")
+                if isinstance(reported, int) and not isinstance(reported, bool):
+                    crud_flow_runner.set_reported_concurrency(
+                        db, runner=runner, reported=reported
+                    )
+                for assignment in list(runner.assignments or []):
+                    if assignment.halt_requested:
+                        await close_publication(assignment.execution_id)
                 if "host_exec_profiles" in raw:
                     runner.capabilities = normalize_host_exec_advertisements(raw)
-                crud_flow_runner.touch_heartbeat(db, runner, status=status)
+                # Busy means no free slot, not "holds a job": a runner with
+                # spare capacity must stay dispatchable while it works.
+                crud_flow_runner.touch_heartbeat(
+                    db, runner, status="busy" if runner.free_slots <= 0 else "online"
+                )
                 db.refresh(runner)
-                reply: Dict[str, Any] = {"type": "ack"}
-                heartbeat_job = job_for_heartbeat_ack(db, runner)
-                if heartbeat_job is not None:
-                    reply["job"] = (
+                reply: Dict[str, Any] = {"type": "ack", "concurrency": runner.capacity}
+                heartbeat_jobs = []
+                halts = []
+                for assignment in list(runner.assignments or []):
+                    if assignment.halt_requested:
+                        halts.append(str(assignment.execution_id))
+                    heartbeat_job = job_for_heartbeat_ack(
+                        db,
+                        assignment,
+                        publication_capabilities=runner.publication_capabilities,
+                    )
+                    if heartbeat_job is None:
+                        continue
+                    heartbeat_jobs.append(
                         await prepare_runner_delivery(db, heartbeat_job)
-                        if runner_needs_lease_token(runner)
+                        if runner_needs_lease_token(assignment)
                         else heartbeat_job
                     )
-                if runner.halt_requested:
+                if heartbeat_jobs:
+                    reply["job"] = heartbeat_jobs[0]
+                    reply["jobs"] = heartbeat_jobs
+                if halts:
                     reply["halt"] = True
-                    if runner.current_execution_id:
-                        reply["halt_execution_id"] = str(runner.current_execution_id)
+                    reply["halt_execution_id"] = halts[0]
+                    reply["halt_execution_ids"] = halts
                 await websocket.send_json(reply)
                 continue
 
             if msg_type == "status":
                 execution_id = _parse_runner_execution_id(raw.get("execution_id"))
-                if execution_id is None or execution_id != runner.current_execution_id:
+                assignment = (
+                    runner.assignment_for(execution_id)
+                    if execution_id is not None
+                    else None
+                )
+                if assignment is None:
                     await websocket.send_json({"type": "ack"})
                     continue
                 status = str(raw.get("status") or "RUNNING").upper()
                 if status not in {"PENDING", "STARTING", "RUNNING"}:
                     await websocket.send_json({"type": "ack"})
                     continue
-                runner.reported_status = status
+                assignment.reported_status = status
                 execution = crud_flow_execution.get(db, id=execution_id)
                 if execution:
                     execution.status = status
                     db.add(execution)
-                db.add(runner)
+                db.add(assignment)
                 db.commit()
                 await websocket.send_json({"type": "ack"})
                 continue
@@ -515,10 +634,12 @@ async def runner_ws(
             if msg_type == "logs":
                 execution_id = _parse_runner_execution_id(raw.get("execution_id"))
                 lines = raw.get("lines") or []
-                if (
-                    execution_id is not None
-                    and execution_id == runner.current_execution_id
-                ):
+                assignment = (
+                    runner.assignment_for(execution_id)
+                    if execution_id is not None
+                    else None
+                )
+                if assignment is not None:
                     try:
                         await persist_runner_logs(
                             db, execution_id, lines, raw.get("batch_id")
@@ -542,7 +663,7 @@ async def runner_ws(
                                 execution,
                                 line,
                                 isolated_publication=bool(
-                                    (runner.pending_job or {}).get("_publication")
+                                    (assignment.pending_job or {}).get("_publication")
                                 ),
                             )
                 # Marker helpers may flush or commit. End even a read-only
@@ -558,7 +679,7 @@ async def runner_ws(
                 continue
 
             if msg_type == "unregister":
-                await publication.close()
+                await close_all_publications()
                 if crud_flow_runner.set_publication_capabilities(
                     db,
                     runner_id=runner.id,
@@ -566,7 +687,6 @@ async def runner_ws(
                     expected_connection_id=connection_id,
                     offline=True,
                     clear_lease=True,
-                    execution_id=runner.current_execution_id,
                 ):
                     fresh_runner = crud_flow_runner.get_fresh(db, runner_id=runner_id)
                     if fresh_runner is not None:
@@ -576,7 +696,12 @@ async def runner_ws(
 
             if msg_type == "complete":
                 execution_id = _parse_runner_execution_id(raw.get("execution_id"))
-                if execution_id is None or execution_id != runner.current_execution_id:
+                assignment = (
+                    runner.assignment_for(execution_id)
+                    if execution_id is not None
+                    else None
+                )
+                if assignment is None:
                     await websocket.send_json({"type": "ack"})
                     continue
                 # A normalized failure is not runtime termination evidence.
@@ -594,8 +719,8 @@ async def runner_ws(
                 # Snapshot the leased job before close/clear_lease commit so
                 # evidence_direct_upload and isolated flags stay local.
                 leased_job = (
-                    deepcopy(runner.pending_job)
-                    if isinstance(runner.pending_job, Mapping)
+                    deepcopy(assignment.pending_job)
+                    if isinstance(assignment.pending_job, Mapping)
                     else None
                 )
                 status, completion_error, result = finalize_runner_completion(
@@ -644,7 +769,7 @@ async def runner_ws(
                             completion_error = (
                                 "Private publication completion was not acknowledged"
                             )
-                    await publication.close()
+                    await close_publication(execution_id)
                 # The monitor may have timed out or cancelled this execution
                 # before its owner finally reports exit. Confirm termination
                 # and release the lease without replacing that terminal result.
@@ -675,7 +800,6 @@ async def runner_ws(
                     expected_connection_id=connection_id,
                     clear_lease=True,
                     execution_id=execution_id,
-                    reported_status=status,
                     commit=False,
                 ):
                     db.rollback()
@@ -717,7 +841,7 @@ async def runner_ws(
         raise
     finally:
         try:
-            await publication.close()
+            await close_all_publications()
         except PublicationError:
             logger.warning(
                 "Private publication credential cleanup failed for runner %s", runner_id

@@ -206,10 +206,12 @@ class RemoteRunnerExecutor(AgentExecutor):
             return AgentStatus.PENDING
 
         runner_id = _runner_id_from_ref(session_reference)
-        if runner_id:
-            runner = crud_flow_runner.get(self.db, id=runner_id)
-            if runner and runner.reported_status:
-                return _map_status(runner.reported_status)
+        if runner_id and execution is not None:
+            assignment = crud_flow_runner.get_assignment(
+                self.db, runner_id=runner_id, execution_id=execution.id
+            )
+            if assignment is not None and assignment.reported_status:
+                return _map_status(assignment.reported_status)
         if execution:
             return _map_status(execution.status)
         return AgentStatus.PENDING

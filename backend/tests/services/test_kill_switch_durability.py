@@ -417,11 +417,17 @@ async def test_private_runner_request_is_not_stop_confirmation(
         name="halt-runner",
         token_hash="local-test",
         status="busy",
-        current_execution_id=execution.id,
-        halt_requested=True,
-        reported_status="RUNNING",
     )
     db_session.add(runner)
+    db_session.flush()
+    db_session.add(
+        models.FlowRunnerAssignment(
+            runner_id=runner.id,
+            execution_id=execution.id,
+            halt_requested=True,
+            reported_status="RUNNING",
+        )
+    )
     db_session.flush()
     execution.agent_session_reference = f"runner:{runner.id}:{execution.id}"
     execution.status = "RUNNING"

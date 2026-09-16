@@ -35,6 +35,12 @@ AUTO_RUNNER_POOL = "auto"
 HOSTED_RUNNER_NAME = "Preloop hosted"
 PRIVATE_RUNNER_FALLBACK_NAME = "Private runner"
 
+#: Every runtime reference that names a private runner starts with this.
+RUNNER_REFERENCE_PREFIX = "runner:"
+
+#: ``runner:queued:{pool}:{execution_id}`` has no runner yet.
+QUEUED_RUNNER_REFERENCE_PREFIX = "runner:queued:"
+
 
 def hash_runner_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -79,13 +85,12 @@ def _account_default_runner_pool(flow: Flow, db: Optional[Session]) -> Optional[
 
 
 def _has_online_private_runner(db: Session, account_id: Any) -> bool:
-    """True when the account has at least one idle private runner.
+    """True when the account has at least one private runner with a free slot.
 
-    ``find_matching(..., online_only=True)`` includes busy runners. Lease
-    only claims idle ones (``status == "online"`` and no ``pending_job``),
-    so a busy-only fleet must not count as available capacity: otherwise a
-    new unpinned flow queues for 15 minutes and fails instead of using
-    hosted compute.
+    ``find_matching(..., online_only=True)`` includes runners that are full.
+    Lease only claims a runner with a free slot, so a fully loaded fleet must
+    not count as available capacity: otherwise a new unpinned flow queues for
+    15 minutes and fails instead of using hosted compute.
     """
     if account_id is None:
         return False
@@ -98,8 +103,8 @@ def _has_online_private_runner(db: Session, account_id: Any) -> bool:
         db, account_id=account_id, pool=AUTO_RUNNER_POOL, online_only=True
     )
     return any(
-        getattr(row, "status", None) == "online"
-        and not getattr(row, "pending_job", None)
+        getattr(row, "status", None) in ("online", "busy")
+        and int(getattr(row, "free_slots", 0)) > 0
         for row in (matches or [])
     )
 
@@ -111,7 +116,7 @@ def runner_id_from_session_reference(ref: Optional[str]) -> Optional[UUID]:
     and return None. Non-strings are ignored so mocked endpoint tests stay
     hosted rather than querying the database.
     """
-    if not isinstance(ref, str) or not ref.startswith("runner:"):
+    if not isinstance(ref, str) or not ref.startswith(RUNNER_REFERENCE_PREFIX):
         return None
     parts = ref.split(":")
     if len(parts) >= 3 and parts[1] != "queued":
@@ -124,12 +129,55 @@ def runner_id_from_session_reference(ref: Optional[str]) -> Optional[UUID]:
 
 def pool_from_session_reference(ref: Optional[str]) -> Optional[str]:
     """Pool string from ``runner:queued:{pool}:{execution_id}``."""
-    if not isinstance(ref, str) or not ref.startswith("runner:"):
+    if not isinstance(ref, str) or not ref.startswith(RUNNER_REFERENCE_PREFIX):
         return None
     parts = ref.split(":")
     if len(parts) >= 4 and parts[1] == "queued" and parts[2].strip():
         return parts[2].strip()
     return None
+
+
+def is_runner_assigned_reference(ref: Optional[str]) -> bool:
+    """True when a private runner already holds this execution.
+
+    Assigned only: a queued reference is still waiting for a runner and
+    holds hosted-side state (a monitor, a queue timeout), so it is not a
+    private-runner assignment.
+    """
+    return runner_id_from_session_reference(ref) is not None
+
+
+def runner_assigned_execution_clause(
+    *,
+    reference_column: Any,
+    runner_id_column: Any,
+) -> Any:
+    """SQL form of :func:`is_runner_assigned_reference` for count queries.
+
+    Kept next to the string parser so the reference shape is written down
+    once. Two columns say the same thing from different ends: the runtime
+    reference is set by the executor, ``flow_execution.runner_id`` by the
+    lease, and a row with either is running on the account's own compute.
+
+    Args:
+        reference_column: ``FlowExecution.agent_session_reference`` column.
+        runner_id_column: ``FlowExecution.runner_id`` column.
+
+    Returns:
+        A SQLAlchemy boolean clause, true for runner-assigned executions.
+    """
+    from sqlalchemy import and_, or_
+
+    return or_(
+        runner_id_column.isnot(None),
+        and_(
+            # An unset reference must compare FALSE rather than NULL, or the
+            # negation of this clause would drop every hosted execution.
+            reference_column.isnot(None),
+            reference_column.like(f"{RUNNER_REFERENCE_PREFIX}%"),
+            ~reference_column.like(f"{QUEUED_RUNNER_REFERENCE_PREFIX}%"),
+        ),
+    )
 
 
 def derive_execution_runner(
@@ -241,9 +289,10 @@ def lease_job(
     """Assign a pending job to one matching online runner. None if queued.
 
     Candidates are re-fetched with ``SELECT ... FOR UPDATE SKIP LOCKED`` so
-    two concurrent leases cannot persist ``pending_job`` on the same row.
-    Credentials are stripped from the stored payload; the caller still holds
-    the original dict for the in-memory WebSocket push.
+    two concurrent leases cannot hand out the same free slot. A runner may
+    hold up to its capacity at once; ``find_matching`` already orders the
+    emptiest machine first. Credentials are stripped from the stored payload;
+    the caller still holds the original dict for the in-memory WebSocket push.
     """
     from preloop.models.crud import crud_flow_execution
 
@@ -257,15 +306,19 @@ def lease_job(
     matches = crud_flow_runner.find_matching(
         db, account_id=account_id, pool=pool, online_only=True
     )
-    idle = [row for row in matches if row.status == "online" and not row.pending_job]
+    available = [
+        row
+        for row in matches
+        if row.status in ("online", "busy") and row.free_slots > 0
+    ]
     required_profile = host_exec_profile_name(payload)
     stored = persistable_job_payload(payload)
-    for candidate in idle:
+    for candidate in available:
         if required_profile and not runner_has_host_exec_profile(
             candidate, required_profile, payload.get("model_identifier")
         ):
             continue
-        runner = crud_flow_runner.claim_idle(db, runner_id=candidate.id)
+        runner = crud_flow_runner.claim_free_slot(db, runner_id=candidate.id)
         if runner is None:
             continue
         if payload.get("_publication"):
@@ -284,12 +337,15 @@ def lease_job(
                 account_id=account_id,
                 nonce=payload["_publication"]["nonce"],
             )
-        runner.pending_job = stored
-        runner.current_execution_id = execution_id
-        runner.status = "busy"
-        runner.halt_requested = False
-        runner.reported_status = "PENDING"
-        db.add(runner)
+        assignment = crud_flow_runner.create_assignment(
+            db,
+            runner_id=runner.id,
+            execution_id=execution_id,
+            pending_job=stored,
+            commit=False,
+        )
+        assignment.reported_status = "PENDING"
+        db.add(assignment)
         db.commit()
         db.refresh(runner)
         emit_runner_updated(runner, db)
@@ -327,6 +383,7 @@ def runner_console_payload(
     """Fields the console runners table needs. Never includes the runner token."""
     heartbeat = runner.last_heartbeat
     execution_id = runner.current_execution_id
+    assignments = list(getattr(runner, "assignments", None) or [])
     return {
         "id": str(runner.id),
         "name": runner.name,
@@ -337,6 +394,10 @@ def runner_console_payload(
         "status": runner.status,
         "last_heartbeat": heartbeat.isoformat() if heartbeat is not None else None,
         "current_execution_id": str(execution_id) if execution_id else None,
+        "concurrency": int(getattr(runner, "concurrency", 0) or 0),
+        "capacity": int(getattr(runner, "capacity", 0) or 0),
+        "running_count": len(assignments),
+        "running_execution_ids": [str(row.execution_id) for row in assignments],
         "registered_by_user_id": (
             str(runner.registered_by_user_id) if runner.registered_by_user_id else None
         ),

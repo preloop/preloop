@@ -215,7 +215,9 @@ class CRUDFlowFeedback:
         if execution.runner_id:
             runner = db.get(models.FlowRunner, execution.runner_id)
             if runner is not None and runner.account_id == thread.account_id:
-                runner.halt_requested = True
+                assignment = runner.assignment_for(execution.id)
+                if assignment is not None:
+                    assignment.halt_requested = True
         db.commit()
         return execution.id
 

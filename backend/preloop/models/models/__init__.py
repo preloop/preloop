@@ -19,7 +19,12 @@ from .flow_artifact import FlowArtifact
 from .flow import Flow
 from .flow_feedback import FlowFeedback, FlowThread
 from .flow_execution import FlowExecution
-from .flow_runner import FlowRunner
+from .flow_runner import (
+    DEFAULT_RUNNER_CONCURRENCY,
+    MAX_RUNNER_CONCURRENCY,
+    FlowRunner,
+)
+from .flow_runner_assignment import FlowRunnerAssignment
 from .flow_execution_log import FlowExecutionLog
 from .gateway_usage_search_document import GatewayUsageSearchDocument
 from .webauthn_credential import WebAuthnCredential
@@ -157,6 +162,9 @@ __all__ = [
     "FlowArtifact",
     "FlowExecution",
     "FlowRunner",
+    "FlowRunnerAssignment",
+    "DEFAULT_RUNNER_CONCURRENCY",
+    "MAX_RUNNER_CONCURRENCY",
     "FlowExecutionLog",
     "GatewayUsageSearchDocument",
     "WebAuthnCredential",

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from sqlalchemy import JSON, func, or_
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -13,8 +13,14 @@ from preloop.models import models
 from .base import CRUDBase
 
 FlowRunner = models.FlowRunner
+FlowRunnerAssignment = models.FlowRunnerAssignment
 
 ONLINE_HEARTBEAT_TTL = timedelta(seconds=45)
+
+
+def runner_capacity(runner: models.FlowRunner) -> int:
+    """Slots this runner may fill: the owner's ceiling, lowered by the process."""
+    return int(getattr(runner, "capacity", models.DEFAULT_RUNNER_CONCURRENCY))
 
 
 class CRUDFlowRunner(CRUDBase[FlowRunner]):
@@ -39,40 +45,87 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         offline: bool = False,
         clear_lease: bool = False,
         execution_id: Optional[UUID] = None,
-        reported_status: Optional[str] = None,
         commit: bool = True,
     ) -> bool:
-        """CAS readiness changes so an old socket cannot clear a replacement."""
+        """CAS readiness changes so an old socket cannot clear a replacement.
+
+        ``clear_lease`` releases one slot: the assignment named by
+        ``execution_id``, or every assignment when no execution is named (an
+        unregister). Freeing a slot makes the runner ``online`` again unless
+        it is going ``offline``; a runner that still holds work stays busy.
+
+        Args:
+            db: Database session.
+            runner_id: Runner to update.
+            capabilities: Publication capability snapshot to store.
+            expected_connection_id: Only act while this socket is the live one.
+            offline: Mark the runner offline.
+            clear_lease: Release the named assignment (or all of them).
+            execution_id: Which assignment ``clear_lease`` releases.
+            commit: Commit, or only flush for a caller that owns the transaction.
+
+        Returns:
+            True when the compare-and-swap matched and the update applied.
+        """
         query = db.query(models.FlowRunner).filter(models.FlowRunner.id == runner_id)
         if expected_connection_id is not None:
             query = query.filter(
                 models.FlowRunner.publication_capabilities["connection_id"].astext
                 == expected_connection_id
             )
-        if execution_id is not None:
-            query = query.filter(models.FlowRunner.current_execution_id == execution_id)
+        if clear_lease and execution_id is not None:
+            # The lease being cleared must still be this runner's, or an old
+            # socket could release a slot a replacement already refilled.
+            query = query.filter(
+                models.FlowRunner.assignments.any(
+                    models.FlowRunnerAssignment.execution_id == execution_id
+                )
+            )
         values: Dict[Any, Any] = {
             models.FlowRunner.publication_capabilities: capabilities
         }
         if clear_lease:
-            values.update(
-                {
-                    models.FlowRunner.pending_job: None,
-                    models.FlowRunner.current_execution_id: None,
-                    models.FlowRunner.halt_requested: False,
-                    models.FlowRunner.status: "offline" if offline else "online",
-                }
-            )
-            if reported_status is not None:
-                values[models.FlowRunner.reported_status] = reported_status
+            values[models.FlowRunner.status] = "offline" if offline else "online"
         elif offline:
             values[models.FlowRunner.status] = "offline"
         updated = query.update(values, synchronize_session=False)
+        if updated and clear_lease:
+            assignments = db.query(models.FlowRunnerAssignment).filter(
+                models.FlowRunnerAssignment.runner_id == runner_id
+            )
+            if execution_id is not None:
+                assignments = assignments.filter(
+                    models.FlowRunnerAssignment.execution_id == execution_id
+                )
+            assignments.delete(synchronize_session=False)
+            db.expire_all()
+            if not offline:
+                self._sync_busy_status(db, runner_id=runner_id)
         if commit:
             db.commit()
         else:
             db.flush()
         return bool(updated)
+
+    def _sync_busy_status(self, db: Session, *, runner_id: UUID) -> None:
+        """Set ``busy``/``online`` from free slots, never from "has a job".
+
+        The count comes from a query rather than the loaded relationship: the
+        caller has usually just inserted or deleted an assignment, and a
+        cached collection would answer about the previous state.
+        """
+        runner = db.get(models.FlowRunner, runner_id)
+        if runner is None or runner.status == "offline":
+            return
+        used = (
+            db.query(func.count(models.FlowRunnerAssignment.id))
+            .filter(models.FlowRunnerAssignment.runner_id == runner_id)
+            .scalar()
+            or 0
+        )
+        runner.status = "busy" if int(used) >= runner_capacity(runner) else "online"
+        db.add(runner)
+        db.expire(runner, ["assignments"])
 
     def bind_publication_lease(
         self,
@@ -159,7 +212,7 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         nonce: str,
     ) -> Dict[str, Any]:
         """Read the live owner-bound publication state without retaining locks."""
-        runner, execution, state = self._locked_publication(
+        _, _, state = self._locked_publication(
             db,
             runner_id=runner_id,
             account_id=account_id,
@@ -178,7 +231,7 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         account_id: UUID,
         execution_id: UUID,
         nonce: str,
-    ) -> tuple[models.FlowRunner, models.FlowExecution, Dict[str, Any]]:
+    ) -> tuple[models.FlowRunnerAssignment, models.FlowExecution, Dict[str, Any]]:
         """Lock and validate the current lease and account-owned execution."""
         runner = (
             db.query(models.FlowRunner)
@@ -190,11 +243,8 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
             .with_for_update()
             .first()
         )
-        if (
-            runner is None
-            or runner.current_execution_id != execution_id
-            or runner.halt_requested
-        ):
+        assignment = runner.assignment_for(execution_id) if runner is not None else None
+        if runner is None or assignment is None or assignment.halt_requested:
             raise ValueError("Publication lease is stale or cancelled")
         execution = (
             db.query(models.FlowExecution)
@@ -217,7 +267,7 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         if execution.runner_id != runner_id:
             raise ValueError("Publication execution belongs to another runtime lease")
         state = (execution.result or {}).get("_private_publication")
-        leased = (runner.pending_job or {}).get("_publication")
+        leased = (assignment.pending_job or {}).get("_publication")
         if (
             not isinstance(state, dict)
             or not isinstance(leased, dict)
@@ -237,7 +287,7 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
             raise ValueError("Publication connection was replaced")
         if state.get("deadline", 0) <= datetime.now(timezone.utc).timestamp():
             raise ValueError("Publication deadline expired")
-        return runner, execution, state
+        return assignment, execution, state
 
     def transition_publication(
         self,
@@ -252,7 +302,7 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         receipt: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Compare and consume a phase atomically before any writer is minted."""
-        runner, execution, state = self._locked_publication(
+        assignment, execution, state = self._locked_publication(
             db,
             runner_id=runner_id,
             account_id=account_id,
@@ -265,9 +315,12 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         execution.result = {**(execution.result or {}), "_private_publication": updated}
         if receipt is not None:
             execution.result["trusted_publication"] = deepcopy(receipt)
-        runner.pending_job = {**(runner.pending_job or {}), "_publication": updated}
+        assignment.pending_job = {
+            **(assignment.pending_job or {}),
+            "_publication": updated,
+        }
         db.add(execution)
-        db.add(runner)
+        db.add(assignment)
         db.commit()
         return deepcopy(updated)
 
@@ -280,14 +333,17 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         nonce: str,
     ) -> None:
         """Invalidate an interrupted controller phase without deleting recovery."""
-        runner = (
-            db.query(models.FlowRunner)
-            .filter(models.FlowRunner.id == runner_id)
+        assignment = (
+            db.query(models.FlowRunnerAssignment)
+            .filter(
+                models.FlowRunnerAssignment.runner_id == runner_id,
+                models.FlowRunnerAssignment.execution_id == execution_id,
+            )
             .populate_existing()
             .with_for_update()
             .first()
         )
-        if runner is None or runner.current_execution_id != execution_id:
+        if assignment is None:
             db.commit()
             return
         execution = (
@@ -310,9 +366,12 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
                 **(execution.result or {}),
                 "_private_publication": state,
             }
-            runner.pending_job = {**(runner.pending_job or {}), "_publication": state}
+            assignment.pending_job = {
+                **(assignment.pending_job or {}),
+                "_publication": state,
+            }
             db.add(execution)
-            db.add(runner)
+            db.add(assignment)
         db.commit()
 
     def get_by_token_hash(
@@ -345,7 +404,11 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         pool: str,
         online_only: bool = True,
     ) -> List[FlowRunner]:
-        """Runners whose id, name, or labels match the pool string."""
+        """Runners whose id, name, or labels match the pool string.
+
+        Ordered by free slots, most first, so a dispatcher that walks the
+        list fills the emptiest machine before doubling up on a busy one.
+        """
         pool = (pool or "").strip()
         query = db.query(FlowRunner).filter(FlowRunner.account_id == account_id)
         if online_only:
@@ -357,11 +420,16 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
             )
         rows = query.all()
         pool_l = pool.lower()
-        if not pool or pool_l == "auto":
-            return rows
         if pool_l == "server":
             return []
-        return [row for row in rows if runner_matches_pool(row, pool)]
+        if pool and pool_l != "auto":
+            rows = [row for row in rows if runner_matches_pool(row, pool)]
+        # Most free slots first, so work spreads over the machines instead of
+        # stacking on whichever runner happens to be listed first. A runner
+        # with no free slot is busy; it stays in the list so the caller can
+        # still see it, but it sorts last and fails ``claim_free_slot``.
+        rows.sort(key=lambda row: (-row.free_slots, str(row.id)))
+        return rows
 
     def get_by_ids(self, db: Session, *, ids: List[UUID]) -> List[FlowRunner]:
         """Load many runners in one query.
@@ -380,28 +448,253 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
             return []
         return db.query(FlowRunner).filter(FlowRunner.id.in_(unique)).all()
 
-    def claim_idle(self, db: Session, *, runner_id: UUID) -> Optional[FlowRunner]:
-        """Lock one idle runner so concurrent leases cannot double-claim it.
+    def claim_free_slot(self, db: Session, *, runner_id: UUID) -> Optional[FlowRunner]:
+        """Lock one runner that still has a free slot.
 
-        ``SKIP LOCKED`` lets the caller try the next match when another
-        worker already holds this row.
+        The runner row is the lock for its own slots: counting assignments
+        under ``FOR UPDATE`` on the parent is what stops two dispatchers from
+        handing out the same last slot. ``SKIP LOCKED`` lets the caller move
+        on to the next match instead of queueing behind another worker.
+
+        Args:
+            db: Database session.
+            runner_id: Runner to lock.
+
+        Returns:
+            The locked runner when it is online with at least one free slot,
+            otherwise None.
         """
-        return (
+        runner = (
             db.query(FlowRunner)
             .filter(
                 FlowRunner.id == runner_id,
-                FlowRunner.status == "online",
-                # JSONB stores an assigned Python None as JSON null by default.
-                # Both representations mean there is no pending lease, including
-                # rows cleared by the runner completion/error handlers.
-                or_(
-                    FlowRunner.pending_job.is_(None),
-                    FlowRunner.pending_job == JSON.NULL,
-                ),
+                FlowRunner.status.in_(("online", "busy")),
             )
+            .populate_existing()
             .with_for_update(skip_locked=True)
             .first()
         )
+        if runner is None:
+            return None
+        used = (
+            db.query(func.count(FlowRunnerAssignment.id))
+            .filter(FlowRunnerAssignment.runner_id == runner_id)
+            .scalar()
+            or 0
+        )
+        if int(used) >= runner_capacity(runner):
+            return None
+        return runner
+
+    def create_assignment(
+        self,
+        db: Session,
+        *,
+        runner_id: UUID,
+        execution_id: UUID,
+        pending_job: Optional[Dict[str, Any]] = None,
+        commit: bool = True,
+    ) -> models.FlowRunnerAssignment:
+        """Fill one slot with one execution.
+
+        Args:
+            db: Database session.
+            runner_id: Runner taking the work.
+            execution_id: Execution being leased.
+            pending_job: Payload the runner receives on delivery.
+            commit: Commit, or only flush for a caller that owns the transaction.
+
+        Returns:
+            The stored assignment.
+        """
+        assignment = models.FlowRunnerAssignment(
+            runner_id=runner_id,
+            execution_id=execution_id,
+            pending_job=pending_job,
+            assigned_at=datetime.now(timezone.utc),
+        )
+        db.add(assignment)
+        db.flush()
+        self._sync_busy_status(db, runner_id=runner_id)
+        if commit:
+            db.commit()
+            db.refresh(assignment)
+        return assignment
+
+    def get_assignment(
+        self, db: Session, *, runner_id: UUID, execution_id: UUID
+    ) -> Optional[models.FlowRunnerAssignment]:
+        """One runner's assignment for one execution, or None."""
+        return (
+            db.query(FlowRunnerAssignment)
+            .filter(
+                FlowRunnerAssignment.runner_id == runner_id,
+                FlowRunnerAssignment.execution_id == execution_id,
+            )
+            .first()
+        )
+
+    def get_assignment_by_execution(
+        self, db: Session, *, execution_id: UUID
+    ) -> Optional[models.FlowRunnerAssignment]:
+        """Whichever runner holds this execution, if any."""
+        return (
+            db.query(FlowRunnerAssignment)
+            .filter(FlowRunnerAssignment.execution_id == execution_id)
+            .first()
+        )
+
+    def list_assignments(
+        self, db: Session, *, runner_id: UUID
+    ) -> List[models.FlowRunnerAssignment]:
+        """Every execution this runner currently holds, oldest first."""
+        return (
+            db.query(FlowRunnerAssignment)
+            .filter(FlowRunnerAssignment.runner_id == runner_id)
+            .order_by(FlowRunnerAssignment.assigned_at)
+            .all()
+        )
+
+    def release_assignment(
+        self,
+        db: Session,
+        *,
+        runner_id: UUID,
+        execution_id: Optional[UUID] = None,
+        commit: bool = True,
+    ) -> int:
+        """Free one slot, or every slot when no execution is named.
+
+        Args:
+            db: Database session.
+            runner_id: Runner holding the work.
+            execution_id: Execution to release; None releases all of them.
+            commit: Commit, or only flush for a caller that owns the transaction.
+
+        Returns:
+            How many assignments were removed.
+        """
+        query = db.query(FlowRunnerAssignment).filter(
+            FlowRunnerAssignment.runner_id == runner_id
+        )
+        if execution_id is not None:
+            query = query.filter(FlowRunnerAssignment.execution_id == execution_id)
+        removed = query.delete(synchronize_session=False)
+        db.expire_all()
+        if removed:
+            self._sync_busy_status(db, runner_id=runner_id)
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+        return int(removed)
+
+    def request_halt(self, db: Session, *, runner_id: UUID, execution_id: UUID) -> bool:
+        """Ask the runner to stop one of its jobs.
+
+        Halt is per assignment, not per runner: stopping one execution must
+        not interrupt the other jobs sharing the machine.
+
+        Args:
+            db: Database session.
+            runner_id: Runner holding the work.
+            execution_id: Execution to halt.
+
+        Returns:
+            True when an assignment was marked.
+        """
+        updated = (
+            db.query(FlowRunnerAssignment)
+            .filter(
+                FlowRunnerAssignment.runner_id == runner_id,
+                FlowRunnerAssignment.execution_id == execution_id,
+            )
+            .update(
+                {FlowRunnerAssignment.halt_requested: True},
+                synchronize_session=False,
+            )
+        )
+        db.commit()
+        return bool(updated)
+
+    def set_reported_status(
+        self,
+        db: Session,
+        *,
+        runner_id: UUID,
+        execution_id: UUID,
+        status: Optional[str],
+        commit: bool = True,
+    ) -> bool:
+        """Store what the runner says one of its jobs is doing."""
+        updated = (
+            db.query(FlowRunnerAssignment)
+            .filter(
+                FlowRunnerAssignment.runner_id == runner_id,
+                FlowRunnerAssignment.execution_id == execution_id,
+            )
+            .update(
+                {FlowRunnerAssignment.reported_status: status},
+                synchronize_session=False,
+            )
+        )
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+        return bool(updated)
+
+    def set_concurrency(
+        self,
+        db: Session,
+        *,
+        runner: FlowRunner,
+        concurrency: int,
+    ) -> FlowRunner:
+        """Set the owner's slot ceiling, clamped to the supported range.
+
+        Args:
+            db: Database session.
+            runner: Runner to edit.
+            concurrency: Requested ceiling.
+
+        Returns:
+            The refreshed runner.
+        """
+        runner.concurrency = max(
+            1, min(models.MAX_RUNNER_CONCURRENCY, int(concurrency))
+        )
+        db.add(runner)
+        db.commit()
+        db.refresh(runner)
+        if runner.status != "offline":
+            self._sync_busy_status(db, runner_id=runner.id)
+            db.commit()
+            db.refresh(runner)
+        return runner
+
+    def set_reported_concurrency(
+        self,
+        db: Session,
+        *,
+        runner: FlowRunner,
+        reported: Optional[int],
+        commit: bool = True,
+    ) -> FlowRunner:
+        """Record what a connected runner process says it can run at once."""
+        if reported is None:
+            runner.reported_concurrency = None
+        else:
+            runner.reported_concurrency = max(
+                1, min(models.MAX_RUNNER_CONCURRENCY, int(reported))
+            )
+        db.add(runner)
+        if commit:
+            db.commit()
+            db.refresh(runner)
+        else:
+            db.flush()
+        return runner
 
     def counts_for_instance(self, db: Session, *, instance_id: UUID) -> Dict[str, Any]:
         cutoff = datetime.now(timezone.utc) - ONLINE_HEARTBEAT_TTL

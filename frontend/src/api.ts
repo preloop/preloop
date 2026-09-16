@@ -3735,6 +3735,14 @@ export interface RunnerRecord {
   status: string;
   last_heartbeat?: string | null;
   current_execution_id?: string | null;
+  /** Slots the account allows on this runner. */
+  concurrency?: number | null;
+  /** Slots the connected runner process reports it can fill. */
+  reported_concurrency?: number | null;
+  /** The lower of the two: what dispatch may actually use. */
+  capacity?: number | null;
+  running_count?: number | null;
+  running_execution_ids?: string[] | null;
   registered_by_email?: string | null;
   registered_by_user_id?: string | null;
   capabilities?: {
@@ -3744,6 +3752,28 @@ export interface RunnerRecord {
       models?: string[];
     }>;
   } | null;
+}
+
+/** Raise or lower how many executions a runner may hold at once. */
+export async function updateRunnerConcurrency(
+  runnerId: string,
+  concurrency: number
+): Promise<RunnerRecord> {
+  const response = await fetchWithAuth(
+    `/api/v1/runners/${runnerId}/concurrency`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ concurrency }),
+    }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to update runner concurrency')
+    );
+  }
+  return response.json();
 }
 
 export async function sendCommandToExecution(

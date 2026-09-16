@@ -220,4 +220,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert session_parent.down_revision == "20260915_session_embedding"
     session_backfill = script.get_revision("20260915_session_backfill")
     assert session_backfill.down_revision == "20260915_session_parent"
-    assert script.get_heads() == ["20260915_session_backfill"]
+    runner_concurrency = script.get_revision("20260916_runner_concurrency")
+    assert runner_concurrency.down_revision == "20260915_session_backfill"
+    assert script.get_heads() == ["20260916_runner_concurrency"]

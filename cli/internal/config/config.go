@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -25,13 +26,35 @@ const (
 
 	// DefaultAPIURL is the default API endpoint.
 	DefaultAPIURL = "https://preloop.ai"
+
+	// DefaultRunnerConcurrency is how many executions a runner holds at
+	// once when nobody says otherwise. One slot makes a long review block
+	// every other flow routed to the machine; two is what an ordinary
+	// laptop or small VM can host without the jobs starving each other.
+	DefaultRunnerConcurrency = 2
+
+	// MaxRunnerConcurrency bounds what a runner may ask for. A runner is
+	// someone's workstation or small VM; an unbounded value is a mistake,
+	// not a plan. The control plane enforces the same ceiling.
+	MaxRunnerConcurrency = 32
+
+	// EnvRunnerConcurrency overrides runner.concurrency from the
+	// environment, for service units that cannot pass flags.
+	EnvRunnerConcurrency = "PRELOOP_RUNNER_CONCURRENCY"
 )
 
 // Config represents the CLI configuration.
 type Config struct {
-	AccessToken  string `mapstructure:"access_token"`
-	RefreshToken string `mapstructure:"refresh_token"`
-	APIURL       string `mapstructure:"api_url"`
+	AccessToken  string       `mapstructure:"access_token"`
+	RefreshToken string       `mapstructure:"refresh_token"`
+	APIURL       string       `mapstructure:"api_url"`
+	Runner       RunnerConfig `mapstructure:"runner"`
+}
+
+// RunnerConfig holds the `runner:` block of ~/.preloop/config.yaml.
+type RunnerConfig struct {
+	// Concurrency is how many executions `preloop runner fg` holds at once.
+	Concurrency int `mapstructure:"concurrency"`
 }
 
 // configPath returns the full path to the config file.
@@ -79,6 +102,7 @@ func Load() (*Config, error) {
 
 	// Set defaults
 	v.SetDefault("api_url", DefaultAPIURL)
+	v.SetDefault("runner.concurrency", DefaultRunnerConcurrency)
 
 	// Read config file (ignore error if file doesn't exist)
 	if err := v.ReadInConfig(); err != nil {
@@ -102,6 +126,23 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
+// RunnerConcurrency returns how many executions this host's runner should
+// hold at once: the environment override, then the config file, then the
+// default. Unreadable or nonsense values fall back to the default rather
+// than stopping a runner from starting.
+func RunnerConcurrency() int {
+	if raw := strings.TrimSpace(os.Getenv(EnvRunnerConcurrency)); raw != "" {
+		if value, err := strconv.Atoi(raw); err == nil && value > 0 {
+			return value
+		}
+	}
+	cfg, err := Load()
+	if err != nil || cfg.Runner.Concurrency <= 0 {
+		return DefaultRunnerConcurrency
+	}
+	return cfg.Runner.Concurrency
+}
+
 // Save writes the configuration to ~/.preloop/config.yaml.
 func Save(cfg *Config) error {
 	if err := ensureConfigDir(); err != nil {
@@ -116,6 +157,10 @@ func Save(cfg *Config) error {
 	v := viper.New()
 	v.SetConfigFile(cfgPath)
 	v.SetConfigType("yaml")
+
+	// Read first: writing three keys must not delete settings this
+	// function does not know about, such as runner.concurrency.
+	_ = v.ReadInConfig()
 
 	v.Set("access_token", cfg.AccessToken)
 	v.Set("refresh_token", cfg.RefreshToken)

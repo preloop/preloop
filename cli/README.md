@@ -344,6 +344,7 @@ release.
 
 ```bash
 preloop runner fg --labels local     # Foreground: register, heartbeat, lease jobs
+preloop runner fg --concurrency 4    # Hold four executions at once (default 2)
 preloop runner enable                # Install launchd / systemd / scheduled task
 preloop runner disable
 preloop runner start|stop|restart|status
@@ -353,6 +354,21 @@ preloop runner start|stop|restart|status
 leases executions whose runner pool matches this runner's id, name, or
 labels, streams logs, and honors halt. Ctrl-C unregisters. Persist the
 runner id and token in `~/.preloop/runner.json`.
+
+One runner runs several executions at once. Each job gets its own
+workspace, log stream and halt, so stopping one execution leaves the
+others running. The number of slots comes from `--concurrency`, then
+`PRELOOP_RUNNER_CONCURRENCY`, then `runner.concurrency` in
+`~/.preloop/config.yaml`, then the default of 2 (maximum 32):
+
+```yaml
+runner:
+  concurrency: 4
+```
+
+The account owner also sets a ceiling per runner on the console Runners
+page. A process that asks for less than the ceiling gets less; asking for
+more than the owner allows does not raise it.
 
 
 ### Native approval hooks and central policy

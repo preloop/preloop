@@ -13,7 +13,6 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"reflect"
-	"sync/atomic"
 
 	"github.com/gorilla/websocket"
 	"github.com/preloop/preloop/cli/internal/testenv"
@@ -655,15 +654,11 @@ FIXTURE_EXPORT
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	var running *exec.Cmd
-	var executionID string
-	var done <-chan leasedJobOutcome
-	var last *leasedJobOutcome
-	halt := false
+	jobs := newRunnerJobs(2)
 	interrupt := make(chan os.Signal, 1)
 	stopped := make(chan error, 1)
 	go func() {
-		stopped <- runRunnerSession(conn, interrupt, io.Discard, &running, &executionID, &done, &halt, &atomic.Bool{}, &last)
+		stopped <- runRunnerSession(conn, interrupt, io.Discard, jobs)
 	}()
 	limit := 5 * time.Second
 	if realDocker {
@@ -994,18 +989,15 @@ func TestIsolatedPublicationHostExecError(t *testing.T) {
 func TestBeginLeasedJobRejectsHostExecIsolatedPublication(t *testing.T) {
 	job := testPublicationJob()
 	job["host_exec_profile"] = "native"
-	var last *leasedJobOutcome
-	var running *exec.Cmd
-	var execID string
-	var jobDone <-chan leasedJobOutcome
-	halted := atomic.Bool{}
-	err := beginLeasedJob(nil, job, false, io.Discard, &running, &execID, &jobDone, &halted, &last, nil)
+	jobs := newRunnerJobs(2)
+	err := beginLeasedJob(nil, job, io.Discard, jobs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if running != nil || execID != "" || jobDone != nil {
+	if len(jobs.running) != 0 {
 		t.Fatal("host-exec routing started an isolated publication job")
 	}
+	last := jobs.completedOutcome("12345678-1234-1234-1234-123456789012")
 	if last == nil || last.status != "FAILED" || !strings.Contains(last.errMsg, "native host execution cannot use isolated publication") {
 		t.Fatalf("outcome = %#v", last)
 	}

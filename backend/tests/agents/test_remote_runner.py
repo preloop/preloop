@@ -132,7 +132,7 @@ async def test_fresh_queued_executor_reconstructs_complete_payload(
         model_output_summary=None,
         result=None,
     )
-    runner = SimpleNamespace(id=uuid4(), pending_job=None)
+    runner = SimpleNamespace(id=uuid4(), pending_job=None, free_slots=2)
     leased_payloads: list[dict[str, Any]] = []
     pushed_payloads: list[dict[str, Any]] = []
 
@@ -421,7 +421,7 @@ async def test_start_logs_do_not_include_token(
     token = "super-secret-runtime-token"
     api_key = "sk-live-openai-key-should-never-log"
     execution_id = uuid4()
-    runner = SimpleNamespace(id=uuid4(), pending_job=None)
+    runner = SimpleNamespace(id=uuid4(), pending_job=None, free_slots=2)
     monkeypatch.setattr(
         "preloop.agents.remote_runner.lease_job",
         lambda *args, **kwargs: runner,
@@ -510,7 +510,7 @@ def test_factory_uses_remote_runner_when_online_private_runner(
     monkeypatch.setattr(
         "preloop.services.runner_service.crud_flow_runner.find_matching",
         lambda db, **kwargs: [
-            SimpleNamespace(id=uuid4(), status="online", pending_job=None)
+            SimpleNamespace(id=uuid4(), status="online", free_slots=2)
         ],
     )
     executor = create_executor_for_execution(
@@ -570,18 +570,19 @@ async def test_stale_queued_reference_follows_persisted_assignment(
         error_message=None,
         end_time=None,
     )
-    runner = SimpleNamespace(
-        id=runner_id,
+    assignment = SimpleNamespace(
+        runner_id=runner_id,
+        execution_id=execution_id,
         halt_requested=False,
         reported_status=execution_status,
-        current_execution_id=execution_id,
     )
     monkeypatch.setattr(
         "preloop.agents.remote_runner.crud_flow_execution.get",
         lambda *a, **k: execution,
     )
     monkeypatch.setattr(
-        "preloop.agents.remote_runner.crud_flow_runner.get", lambda *a, **k: runner
+        "preloop.agents.remote_runner.crud_flow_runner.get_assignment",
+        lambda *a, **k: assignment,
     )
     lease = MagicMock()
     monkeypatch.setattr("preloop.agents.remote_runner.lease_job", lease)

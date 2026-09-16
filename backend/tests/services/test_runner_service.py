@@ -105,8 +105,25 @@ def test_resolve_runner_pool_auto_when_online_private_runner(
         crud_flow_runner,
         "find_matching",
         lambda db, **kwargs: [
-            SimpleNamespace(id=uuid4(), status="online", pending_job=None)
+            SimpleNamespace(id=uuid4(), status="online", free_slots=2)
         ],
+    )
+    assert resolve_runner_pool(flow, {}, db=MagicMock()) == AUTO_RUNNER_POOL
+
+
+def test_resolve_runner_pool_auto_when_private_runner_has_a_second_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A runner already working still has capacity when a slot is free."""
+    flow = SimpleNamespace(
+        runner_pool=None,
+        account_id=uuid4(),
+        account=SimpleNamespace(default_runner_pool=None),
+    )
+    monkeypatch.setattr(
+        crud_flow_runner,
+        "find_matching",
+        lambda db, **kwargs: [SimpleNamespace(id=uuid4(), status="busy", free_slots=1)],
     )
     assert resolve_runner_pool(flow, {}, db=MagicMock()) == AUTO_RUNNER_POOL
 
@@ -123,9 +140,7 @@ def test_resolve_runner_pool_hosted_when_only_private_runner_is_busy(
     monkeypatch.setattr(
         crud_flow_runner,
         "find_matching",
-        lambda db, **kwargs: [
-            SimpleNamespace(id=uuid4(), status="busy", pending_job={"id": "job"})
-        ],
+        lambda db, **kwargs: [SimpleNamespace(id=uuid4(), status="busy", free_slots=0)],
     )
     assert resolve_runner_pool(flow, {}, db=MagicMock()) is None
 
@@ -212,15 +227,9 @@ def test_persistable_job_payload_strips_account_api_token() -> None:
 def test_lease_job_claims_row_and_does_not_persist_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runner = SimpleNamespace(
-        id=uuid4(),
-        status="online",
-        pending_job=None,
-        current_execution_id=None,
-        halt_requested=False,
-        reported_status=None,
-    )
+    runner = SimpleNamespace(id=uuid4(), status="online", free_slots=2)
     claimed: list = []
+    created: list = []
 
     monkeypatch.setattr(
         crud_flow_runner,
@@ -228,11 +237,16 @@ def test_lease_job_claims_row_and_does_not_persist_token(
         lambda db, **kwargs: [runner],
     )
 
-    def _claim_idle(db, *, runner_id):
+    def _claim_free_slot(db, *, runner_id):
         claimed.append(runner_id)
         return runner
 
-    monkeypatch.setattr(crud_flow_runner, "claim_idle", _claim_idle)
+    def _create_assignment(db, **kwargs):
+        created.append(kwargs)
+        return SimpleNamespace(reported_status=None, **kwargs)
+
+    monkeypatch.setattr(crud_flow_runner, "claim_free_slot", _claim_free_slot)
+    monkeypatch.setattr(crud_flow_runner, "create_assignment", _create_assignment)
 
     db = MagicMock()
     execution_id = uuid4()
@@ -249,26 +263,18 @@ def test_lease_job_claims_row_and_does_not_persist_token(
     )
     assert result is runner
     assert claimed == [runner.id]
-    assert runner.pending_job is not None
-    assert "account_api_token" not in runner.pending_job
-    assert runner.pending_job["prompt"] == "do work"
-    assert runner.status == "busy"
-    assert runner.current_execution_id == execution_id
+    assert len(created) == 1
+    assert created[0]["execution_id"] == execution_id
+    assert "account_api_token" not in created[0]["pending_job"]
+    assert created[0]["pending_job"]["prompt"] == "do work"
     db.commit.assert_called()
 
 
 def test_lease_job_skips_locked_runner_and_claims_next(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    locked = SimpleNamespace(id=uuid4(), status="online", pending_job=None)
-    next_runner = SimpleNamespace(
-        id=uuid4(),
-        status="online",
-        pending_job=None,
-        current_execution_id=None,
-        halt_requested=False,
-        reported_status=None,
-    )
+    locked = SimpleNamespace(id=uuid4(), status="online", free_slots=1)
+    next_runner = SimpleNamespace(id=uuid4(), status="online", free_slots=1)
 
     monkeypatch.setattr(
         crud_flow_runner,
@@ -276,12 +282,17 @@ def test_lease_job_skips_locked_runner_and_claims_next(
         lambda db, **kwargs: [locked, next_runner],
     )
 
-    def _claim_idle(db, *, runner_id):
+    def _claim_free_slot(db, *, runner_id):
         if runner_id == locked.id:
             return None
         return next_runner
 
-    monkeypatch.setattr(crud_flow_runner, "claim_idle", _claim_idle)
+    monkeypatch.setattr(crud_flow_runner, "claim_free_slot", _claim_free_slot)
+    monkeypatch.setattr(
+        crud_flow_runner,
+        "create_assignment",
+        lambda db, **kwargs: SimpleNamespace(reported_status=None, **kwargs),
+    )
 
     result = lease_job(
         MagicMock(),
@@ -291,7 +302,6 @@ def test_lease_job_skips_locked_runner_and_claims_next(
         payload={"prompt": "do work"},
     )
     assert result is next_runner
-    assert next_runner.status == "busy"
 
 
 def test_lease_job_skips_runner_missing_host_exec_profile(
@@ -300,16 +310,13 @@ def test_lease_job_skips_runner_missing_host_exec_profile(
     missing = SimpleNamespace(
         id=uuid4(),
         status="online",
-        pending_job=None,
+        free_slots=1,
         capabilities={"host_exec_profiles": []},
     )
     matching = SimpleNamespace(
         id=uuid4(),
         status="online",
-        pending_job=None,
-        current_execution_id=None,
-        halt_requested=False,
-        reported_status=None,
+        free_slots=1,
         capabilities={
             "host_exec_profiles": [
                 {"name": "cursor-ask", "capabilities": ["host_exec", "cursor_cli"]}
@@ -322,12 +329,17 @@ def test_lease_job_skips_runner_missing_host_exec_profile(
         lambda db, **kwargs: [missing, matching],
     )
 
-    def _claim_idle(db, *, runner_id):
+    def _claim_free_slot(db, *, runner_id):
         if runner_id == matching.id:
             return matching
         raise AssertionError("must not claim a runner missing the advertised profile")
 
-    monkeypatch.setattr(crud_flow_runner, "claim_idle", _claim_idle)
+    monkeypatch.setattr(crud_flow_runner, "claim_free_slot", _claim_free_slot)
+    monkeypatch.setattr(
+        crud_flow_runner,
+        "create_assignment",
+        lambda db, **kwargs: SimpleNamespace(reported_status=None, **kwargs),
+    )
     result = lease_job(
         MagicMock(),
         account_id=uuid4(),
@@ -344,7 +356,7 @@ def test_lease_job_queues_when_no_runner_advertises_profile(
     runner = SimpleNamespace(
         id=uuid4(),
         status="online",
-        pending_job=None,
+        free_slots=1,
         capabilities={"host_exec_profiles": [{"name": "other"}]},
     )
     monkeypatch.setattr(
@@ -354,7 +366,7 @@ def test_lease_job_queues_when_no_runner_advertises_profile(
     )
     monkeypatch.setattr(
         crud_flow_runner,
-        "claim_idle",
+        "claim_free_slot",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("must not claim unmatched host-exec runner")
         ),

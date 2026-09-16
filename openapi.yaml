@@ -10658,6 +10658,49 @@ paths:
                 $ref: '#/components/schemas/RunnerFleetSummary'
       security:
       - bearerAuth: []
+  /api/v1/runners/{runner_id}/concurrency:
+    patch:
+      tags:
+      - Runners
+      summary: Update Runner Concurrency
+      description: 'Set how many executions this runner may hold at once.
+
+
+        The stored value is a ceiling. A runner process started with a lower
+
+        ``--concurrency`` still lowers it while connected; raising it here does
+
+        not make someone''s laptop run more than that process agreed to.'
+      operationId: update_runner_concurrency_api_v1_runners__runner_id__concurrency_patch
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunnerConcurrencyUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/runners/{runner_id}:
     get:
       tags:
@@ -17570,8 +17613,8 @@ components:
             name, or label; the literal 'auto' for any online private runner; or the
             literal 'server' for the hosted executor. When unset, the account default_runner_pool
             applies, then any online private runner, then the hosted executor. A trigger-time
-            `--runner` / `_runner` override takes precedence. If a chosen private
-            pool has no idle runner the job queues for 15 minutes then FAILS.
+            `--runner` / `_runner` override takes precedence. If no runner in a chosen
+            private pool has a free slot the job queues for 15 minutes then FAILS.
         timeout_seconds:
           anyOf:
           - type: integer
@@ -18356,8 +18399,8 @@ components:
             name, or label; the literal 'auto' for any online private runner; or the
             literal 'server' for the hosted executor. When unset, the account default_runner_pool
             applies, then any online private runner, then the hosted executor. A trigger-time
-            `--runner` / `_runner` override takes precedence. If a chosen private
-            pool has no idle runner the job queues for 15 minutes then FAILS.
+            `--runner` / `_runner` override takes precedence. If no runner in a chosen
+            private pool has a free slot the job queues for 15 minutes then FAILS.
         timeout_seconds:
           anyOf:
           - type: integer
@@ -18622,8 +18665,8 @@ components:
             name, or label; the literal 'auto' for any online private runner; or the
             literal 'server' for the hosted executor. When unset, the account default_runner_pool
             applies, then any online private runner, then the hosted executor. A trigger-time
-            `--runner` / `_runner` override takes precedence. If a chosen private
-            pool has no idle runner the job queues for 15 minutes then FAILS.
+            `--runner` / `_runner` override takes precedence. If no runner in a chosen
+            private pool has a free slot the job queues for 15 minutes then FAILS.
         timeout_seconds:
           anyOf:
           - type: integer
@@ -23839,6 +23882,18 @@ components:
       - kind
       title: RunPresetTarget
       description: Issue or pull-request target for an ad hoc preset run.
+    RunnerConcurrencyUpdate:
+      properties:
+        concurrency:
+          type: integer
+          maximum: 32.0
+          minimum: 1.0
+          title: Concurrency
+      type: object
+      required:
+      - concurrency
+      title: RunnerConcurrencyUpdate
+      description: Edit one runner's slot ceiling from the console.
     RunnerFleetSummary:
       properties:
         runner_count:
@@ -23906,6 +23961,13 @@ components:
           type: array
           maxItems: 64
           title: Host Exec Profiles
+        concurrency:
+          anyOf:
+          - type: integer
+            maximum: 32.0
+            minimum: 1.0
+          - type: 'null'
+          title: Concurrency
       type: object
       title: RunnerRegisterRequest
       description: Register or resume a runner for the logged-in account.
@@ -23969,6 +24031,29 @@ components:
             format: uuid
           - type: 'null'
           title: Current Execution Id
+        concurrency:
+          type: integer
+          title: Concurrency
+          default: 2
+        reported_concurrency:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Reported Concurrency
+        capacity:
+          type: integer
+          title: Capacity
+          default: 2
+        running_count:
+          type: integer
+          title: Running Count
+          default: 0
+        running_execution_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Running Execution Ids
         registered_by_email:
           anyOf:
           - type: string
@@ -24059,6 +24144,29 @@ components:
             format: uuid
           - type: 'null'
           title: Current Execution Id
+        concurrency:
+          type: integer
+          title: Concurrency
+          default: 2
+        reported_concurrency:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Reported Concurrency
+        capacity:
+          type: integer
+          title: Capacity
+          default: 2
+        running_count:
+          type: integer
+          title: Running Count
+          default: 0
+        running_execution_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Running Execution Ids
         registered_by_email:
           anyOf:
           - type: string

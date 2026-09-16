@@ -55,6 +55,8 @@ Precedence: `--token`/`--url` flags > `PRELOOP_TOKEN`/`PRELOOP_URL` env >
 preloop runner fg --labels local --name $(hostname)
 ```
 
+Add `--concurrency N` to run more than one execution at a time.
+
 You should see `Runner <name> (<id>) connecting...` then
 `Connected. Waiting for jobs.` The runner registers itself on first run
 and stores its identity in `~/.preloop/runner.json`; restarts resume the
@@ -85,7 +87,7 @@ preloop flow trigger <flow-id-or-name> --runner local --wait
 
 When stdin is not a TTY (CI), `flow trigger` waits by default, streams
 execution logs to stdout, and exits non-zero on FAILED / STOPPED /
-TIMEOUT. If a chosen private pool has no idle runner, the job queues
+TIMEOUT. If no runner in the chosen private pool has a free slot, the job queues
 for 15 minutes and then fails. Hosted compute is used only when no
 private runner is online, or when the flow or account default is
 `server`.
@@ -99,6 +101,8 @@ preloop runner status    # service state + last heartbeat + current execution
 ```
 
 `preloop runner stop`, `restart`, and `disable` do what they say.
+`preloop runner status` prints `running: <held>/<slots>` and one line per
+execution the runner currently holds.
 
 **Headless machines:** the unit is a systemd *user* service, so enable
 lingering once or it stops when your SSH session ends:
@@ -110,6 +114,42 @@ sudo loginctl enable-linger $USER
 The service reads credentials the same way the CLI does; make sure
 `~/.preloop/config.yaml` exists (via `preloop login`) for the user that
 runs the service, since the unit does not inherit your shell exports.
+
+## How many executions one runner runs
+
+A runner holds 2 executions at once by default. Each one gets its own
+workspace, its own log stream and its own halt: stopping one execution
+does not disturb the other. Set the number with `--concurrency`, the
+`PRELOOP_RUNNER_CONCURRENCY` environment variable (useful for service
+units), or the config file:
+
+```yaml
+# ~/.preloop/config.yaml
+runner:
+  concurrency: 4
+```
+
+The console Runners page shows `running / slots` per runner and lets an
+account owner edit the ceiling, up to 32. The two values are not the same
+promise: the stored ceiling is what the account allows, and a runner
+process that starts with a lower `--concurrency` lowers it while it is
+connected. It cannot raise it, because capacity on someone else's machine
+is not the runner's decision. A runner is dispatchable until its slots are
+full; `busy` now means no free slot rather than "holds a job".
+
+Pick a number the machine can actually serve. Concurrent agents share CPU,
+memory, disk and the Docker daemon, and each one may start containers of
+its own. Flows that bind fixed host ports (for example a `docker compose`
+file with `ports:`) collide when two of them run together; reach services
+by container-network name instead.
+
+## How runner work counts against your account
+
+A Preloop instance bounds how many executions one account may have admitted
+at once on shared hosted compute (`FLOW_EXECUTION_MAX_RUNNING_PER_ACCOUNT`,
+default 5). Work assigned to one of your own runners is bounded by that
+runner's capacity instead and does not count against the hosted allowance,
+so adding runners adds throughput rather than competing with it.
 
 ## What the runner executes
 

@@ -60,10 +60,12 @@ flowExecution:
   # babysit at once. The loop is wait-bound (poll/heartbeat/logs); this is a
   # semaphore, not "one NATS fetch equals one replica".
   maxInflight: 10
-  # How many executions one account may have admitted at once across the
-  # instance. Enforced at claim time. An account may override this through
+  # How many executions one account may have admitted at once on hosted
+  # compute, across the instance. Enforced at claim time. Executions assigned
+  # to one of the account's private runners are bounded by that runner's own
+  # concurrency and do not count here. An account may override this through
   # account.meta_data.flow_execution_max_running_per_account.
-  maxRunningPerAccount: 3
+  maxRunningPerAccount: 5
   # SQLAlchemy pool for the flow-execution pool only. Ten inflight monitors
   # take short-lived sessions around claim/heartbeat/status writes; the
   # generic worker 2+4 ceiling would stall the 8th concurrent monitor.
