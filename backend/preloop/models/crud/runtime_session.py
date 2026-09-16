@@ -893,7 +893,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             runtime_session_id: Runtime session to update.
             title: Short human-readable title, or ``None`` to leave unchanged.
             summary: Optional longer summary; updates ``summary_updated_at``
-                when provided.
+                when it differs from the stored one.
             title_request_count: Session request count captured when the title
                 was generated, used to drive the periodic refresh watermark.
             commit: Whether to commit the change.
@@ -908,7 +908,12 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             return None
         if title is not None:
             db_obj.title = title
-        if summary is not None:
+        if summary is not None and (
+            summary != db_obj.summary or db_obj.summary_updated_at is None
+        ):
+            # Only a changed summary moves the timestamp. A regeneration that
+            # produced the same sentence has not updated anything, and a
+            # moving timestamp would rewrite the search chunk for it.
             db_obj.summary = summary
             db_obj.summary_updated_at = datetime.now(UTC)
         if title_request_count is not None:
@@ -923,19 +928,27 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         # Search corpus chunk for the session's own title and summary.
         # Imported here rather than at module import time because the
         # indexing service imports the CRUD package; the writer swallows its
-        # own failures, so a broken corpus never loses a title.
-        from preloop.services.session_search_index import index_session_summary
+        # own failures, and the guard below catches anything raised before it
+        # reaches them, so a broken corpus never loses a title.
+        from preloop.services import session_search_index
 
-        index_session_summary(
-            db,
-            account_id=db_obj.account_id,
-            runtime_session_id=db_obj.id,
-            title=db_obj.title,
-            summary=db_obj.summary,
-            occurred_at=db_obj.summary_updated_at or db_obj.last_activity_at,
-            meta_data={"session_source_type": db_obj.session_source_type},
-            commit=commit,
-        )
+        try:
+            session_search_index.index_session_summary(
+                db,
+                account_id=db_obj.account_id,
+                runtime_session_id=db_obj.id,
+                title=db_obj.title,
+                summary=db_obj.summary,
+                occurred_at=db_obj.summary_updated_at or db_obj.last_activity_at,
+                meta_data={"session_source_type": db_obj.session_source_type},
+                commit=commit,
+            )
+        except Exception:  # noqa: BLE001 - a title is never lost over search
+            logger.warning(
+                "Session summary indexing failed for session %s",
+                runtime_session_id,
+                exc_info=True,
+            )
         return db_obj
 
     def get_account_session(

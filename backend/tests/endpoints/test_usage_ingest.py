@@ -838,6 +838,20 @@ class TestRuntimeSessions:
         # Summaries only: no transcript text was stored.
         assert session.activities == []
 
+        from preloop.models.crud import crud_session_search_document
+        from preloop.models.models.session_search_document import (
+            SOURCE_KIND_SESSION_SUMMARY,
+        )
+
+        chunks = crud_session_search_document.list_for_source(
+            db_session,
+            source_kind=SOURCE_KIND_SESSION_SUMMARY,
+            source_id=str(session.id),
+        )
+        assert len(chunks) == 1
+        assert "title: Count the Go files in cli" in chunks[0].content
+        assert "whole count" in chunks[0].content
+
         # A later default title never overrides a real one.
         later = self._lifecycle(
             "response",

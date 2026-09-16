@@ -89,6 +89,9 @@ def test_runtime_session_summary_refreshes_when_missing():
             "_generate_runtime_session_summary",
             return_value="Agent reviewed pricing changes",
         ),
+        patch(
+            "preloop.services.openai_gateway.index_session_summary",
+        ) as index_summary,
     ):
         service._maybe_refresh_runtime_session_summary(
             runtime_session=runtime_session,
@@ -100,6 +103,9 @@ def test_runtime_session_summary_refreshes_when_missing():
 
     service.db.execute.assert_called_once()
     service.db.commit.assert_called_once()
+    index_summary.assert_called_once()
+    assert index_summary.call_args.kwargs["summary"] == "Agent reviewed pricing changes"
+    assert index_summary.call_args.kwargs["runtime_session_id"] == runtime_session.id
 
 
 def test_runtime_session_summary_skips_recent_refresh():

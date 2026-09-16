@@ -50,6 +50,7 @@ from preloop.services.model_pricing import (
     normalize_external_model_name,
 )
 from preloop.services.session_search_index import (
+    index_session_summary,
     index_transcript_message,
     request_embedding,
 )
@@ -386,7 +387,9 @@ def sync_runtime_session_for_record(
 
     Title and summary come from record metadata: ``session_title`` always
     wins, ``session_title_default`` only fills an empty title, and
-    ``session_summary`` replaces the summary. An opt-in ``transcript`` is
+    ``session_summary`` replaces the summary. Those writes also reconcile
+    the session's ``session_summary`` search chunk, so a pushed title is
+    findable the same way a plugin title is. An opt-in ``transcript`` is
     stored separately via :func:`add_transcript_activities`, after the
     record's usage row landed.
 
@@ -461,23 +464,45 @@ def sync_runtime_session_for_record(
             session.runtime_principal_id = agent.session_source_id
             session.runtime_principal_name = agent.display_name
 
+    description_changed = False
     title = _metadata_text(record.metadata, "session_title", MAX_SESSION_TITLE_CHARS)
     default_title = _metadata_text(
         record.metadata, "session_title_default", MAX_SESSION_TITLE_CHARS
     )
     if title:
         session.title = title
+        description_changed = True
     elif default_title and not session.title:
         session.title = default_title
+        description_changed = True
     summary = _metadata_text(
         record.metadata, "session_summary", MAX_SESSION_SUMMARY_CHARS
     )
     if summary:
         session.summary = summary
         session.summary_updated_at = observed_at
+        description_changed = True
 
     db.add(session)
     db.flush()
+    if description_changed:
+        try:
+            index_session_summary(
+                db,
+                account_id=account_id,
+                runtime_session_id=session.id,
+                title=session.title,
+                summary=session.summary,
+                occurred_at=session.summary_updated_at or session.last_activity_at,
+                meta_data={"session_source_type": session.session_source_type},
+                commit=False,
+            )
+        except Exception:  # noqa: BLE001 - ingest is never lost over search
+            logger.warning(
+                "Session summary indexing failed for session %s",
+                session.id,
+                exc_info=True,
+            )
     return session
 
 

@@ -186,7 +186,10 @@ from preloop.services.gateway_usage_index_queue import (
     get_gateway_usage_index_queue,
 )
 from preloop.services.gateway_usage_search import GatewayUsageSearchService
-from preloop.services.session_search_index import index_gateway_interaction
+from preloop.services.session_search_index import (
+    index_gateway_interaction,
+    index_session_summary,
+)
 from preloop.services.model_content_policy import (
     enforce_request_policy,
     enforce_response_policy,
@@ -9540,6 +9543,7 @@ class OpenAIGatewayService:
         if not summary:
             return
 
+        stored_summary = summary[:1000]
         self.db.execute(
             text(
                 "UPDATE runtime_session "
@@ -9547,12 +9551,33 @@ class OpenAIGatewayService:
                 "WHERE id = :runtime_session_id"
             ),
             {
-                "summary": summary[:1000],
+                "summary": stored_summary,
                 "summary_updated_at": observed_at,
                 "runtime_session_id": runtime_session.id,
             },
         )
         self.db.commit()
+        try:
+            index_session_summary(
+                self.db,
+                account_id=self.auth_context.user.account_id,
+                runtime_session_id=runtime_session.id,
+                title=getattr(runtime_session, "title", None),
+                summary=stored_summary,
+                occurred_at=observed_at,
+                meta_data={
+                    "session_source_type": getattr(
+                        runtime_session, "session_source_type", None
+                    )
+                },
+                commit=True,
+            )
+        except Exception:  # noqa: BLE001 - a summary is never lost over search
+            logger.warning(
+                "Session summary indexing failed for session %s",
+                runtime_session.id,
+                exc_info=True,
+            )
 
     def _runtime_session_summary_state(
         self, runtime_session_id: Any

@@ -528,6 +528,48 @@ def index_operator_note(
     )
 
 
+def _drop_session_summary_chunks(
+    db: Session, *, runtime_session_id: Any, commit: bool
+) -> int:
+    """Remove a session's summary chunks, swallowing every failure.
+
+    Same discipline as :func:`write_source_chunks`: a savepoint so a failed
+    delete leaves the caller's transaction usable, and a warning instead of
+    an exception so a title write is never lost over the corpus.
+    """
+    if runtime_session_id is None:
+        return 0
+    try:
+        savepoint = db.begin_nested()
+        try:
+            removed = crud_session_search_document.delete_for_source(
+                db,
+                source_kind=SOURCE_KIND_SESSION_SUMMARY,
+                source_id=str(runtime_session_id),
+            )
+        except Exception:
+            if savepoint.is_active:
+                savepoint.rollback()
+            raise
+        else:
+            if savepoint.is_active:
+                savepoint.commit()
+        if removed and commit:
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+        return removed
+    except Exception:  # noqa: BLE001 - indexing never fails its caller
+        logger.warning(
+            "Session summary chunk cleanup failed for session %s",
+            runtime_session_id,
+            exc_info=True,
+        )
+        return 0
+
+
 def index_session_summary(
     db: Session,
     *,
@@ -539,14 +581,40 @@ def index_session_summary(
     meta_data: Optional[Dict[str, Any]] = None,
     commit: bool = False,
 ) -> List[SessionSearchDocument]:
-    """Index a session's own title and summary."""
+    """Index a session's own title and summary.
+
+    A session that has neither a title nor a summary has nothing that
+    describes it, so any chunk left by an earlier title is deleted instead of
+    being replaced by a header with no content. That is what keeps a cleared
+    summary, or a title write that never produced a title, from answering a
+    search with text the session no longer carries.
+
+    Content capture gates the summary line. A session with no title and a
+    summary that capture forbids would otherwise store only the kind header,
+    so that case is treated as empty and the stale chunk is dropped. The
+    title line is metadata and still writes when capture is off.
+
+    Cleanup still runs when the indexing kill switch is on. Writes do not.
+    A cleared session must not keep answering searches with text it no
+    longer carries, which is the same reason redaction deletes are not
+    gated on the switch.
+    """
+    title_text = (title or "").strip()
+    summary_text = (summary or "").strip()
     content_captured = bool(settings.model_gateway_capture_content)
+    if not title_text and not (summary_text and content_captured):
+        _drop_session_summary_chunks(
+            db, runtime_session_id=runtime_session_id, commit=commit
+        )
+        return []
+    if not indexing_enabled():
+        return []
     body = "\n".join(
         line
         for line in (
             f"kind: {SOURCE_KIND_SESSION_SUMMARY}",
-            f"title: {title}" if title else "",
-            f"summary: {summary}" if (summary and content_captured) else "",
+            f"title: {title_text}" if title_text else "",
+            f"summary: {summary_text}" if (summary_text and content_captured) else "",
         )
         if line
     )
