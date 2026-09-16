@@ -20,9 +20,10 @@ human-readable evidence pack under `/workspace/evidence/`.
 **A repository full of separate projects** is one layer above these four:
 the [Portfolio Review preset](portfolio-review.md) discovers the projects
 in such a repository from manifests only, asks a human which ones to
-review, runs the Docs Currency Review lens inline for the selected ones,
-and aggregates them into `preloop.review.portfolio/v1`. It reuses the
-lens below unchanged rather than restating it.
+review, then starts one child execution per selected project per lens
+(docs currency, code health, release security audit) and aggregates what
+they reported into `preloop.review.portfolio/v1`. It reuses the lenses
+below unchanged rather than restating them.
 
 They are a **family sharing one skeleton**, not one parameterized preset:
 the four lenses have different required inputs, different failure modes

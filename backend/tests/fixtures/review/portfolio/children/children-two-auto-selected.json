@@ -1,0 +1,195 @@
+{
+  "note": "synthetic fixture",
+  "scenario": "two-auto-selected",
+  "parent_execution_id": "a0b1c2d3-0000-4000-8000-000000000017",
+  "root_execution_id": "a0b1c2d3-0000-4000-8000-000000000017",
+  "calls": [
+    {
+      "project": "apps/checkout",
+      "lens": "docs-currency-review",
+      "made": true,
+      "reason": null,
+      "call": {
+        "tool": "run_flow",
+        "arguments": {
+          "flow": "docs-currency-review",
+          "payload": {
+            "target_repo_path": "/workspace/small-portfolio",
+            "project_path": "apps/checkout",
+            "depth": "standard"
+          },
+          "label": "apps/checkout|docs-currency-review",
+          "max_cost_usd": 2.0,
+          "timeout_seconds": 3600
+        }
+      },
+      "request": {
+        "messageId": "req-apps-checkout-docs-currency-review",
+        "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "data": {
+              "target_repo_path": "/workspace/small-portfolio",
+              "project_path": "apps/checkout",
+              "depth": "standard"
+            },
+            "mediaType": "application/json"
+          }
+        ],
+        "metadata": {
+          "preloop.ai/kind": "delegation_request",
+          "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+          "preloop.ai/rootExecutionId": null,
+          "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000016",
+          "preloop.ai/flowName": "docs-currency-review",
+          "preloop.ai/depth": 1
+        }
+      },
+      "child_execution_id": "c1d3e5a7-0000-4000-8000-000000000001"
+    },
+    {
+      "project": "apps/pricing",
+      "lens": "docs-currency-review",
+      "made": true,
+      "reason": null,
+      "call": {
+        "tool": "run_flow",
+        "arguments": {
+          "flow": "docs-currency-review",
+          "payload": {
+            "target_repo_path": "/workspace/small-portfolio",
+            "project_path": "apps/pricing",
+            "depth": "standard"
+          },
+          "label": "apps/pricing|docs-currency-review",
+          "max_cost_usd": 2.0,
+          "timeout_seconds": 3600,
+          "wait": true
+        }
+      },
+      "request": {
+        "messageId": "req-apps-pricing-docs-currency-review",
+        "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "data": {
+              "target_repo_path": "/workspace/small-portfolio",
+              "project_path": "apps/pricing",
+              "depth": "standard"
+            },
+            "mediaType": "application/json"
+          }
+        ],
+        "metadata": {
+          "preloop.ai/kind": "delegation_request",
+          "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+          "preloop.ai/rootExecutionId": null,
+          "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000016",
+          "preloop.ai/flowName": "docs-currency-review",
+          "preloop.ai/depth": 1
+        }
+      },
+      "child_execution_id": "c1d3e5a7-0000-4000-8000-000000000002"
+    }
+  ],
+  "children": {
+    "c1d3e5a7-0000-4000-8000-000000000001": {
+      "id": "c1d3e5a7-0000-4000-8000-000000000001",
+      "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "timestamp": "2026-09-16T10:58:00Z"
+      },
+      "metadata": {
+        "preloop.ai/kind": "delegation_task",
+        "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "preloop.ai/rootExecutionId": null,
+        "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000016",
+        "preloop.ai/flowName": "docs-currency-review",
+        "preloop.ai/depth": 1,
+        "preloop.ai/status": "SUCCEEDED",
+        "preloop.ai/executionId": "c1d3e5a7-0000-4000-8000-000000000001",
+        "preloop.ai/cost": 0.21,
+        "preloop.ai/tokens": 26100
+      },
+      "artifacts": [
+        {
+          "artifactId": "result-c1d3e5a7-0000-4000-8000-000000000001",
+          "name": "result.json",
+          "parts": [
+            {
+              "data": {
+                "schema": "preloop.review.docscurrency/v1",
+                "flow": "docs-currency-review",
+                "status": "success",
+                "verdict": "pass",
+                "counts": {
+                  "holds": 3,
+                  "drifted": 0,
+                  "not_checkable": 0,
+                  "high": 0,
+                  "medium": 0,
+                  "low": 0
+                },
+                "findings": [],
+                "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice.",
+                "note": "synthetic fixture: the child result envelope, abridged"
+              },
+              "mediaType": "application/json"
+            }
+          ]
+        }
+      ]
+    },
+    "c1d3e5a7-0000-4000-8000-000000000002": {
+      "id": "c1d3e5a7-0000-4000-8000-000000000002",
+      "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "timestamp": "2026-09-16T10:58:00Z"
+      },
+      "metadata": {
+        "preloop.ai/kind": "delegation_task",
+        "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "preloop.ai/rootExecutionId": null,
+        "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000016",
+        "preloop.ai/flowName": "docs-currency-review",
+        "preloop.ai/depth": 1,
+        "preloop.ai/status": "SUCCEEDED",
+        "preloop.ai/executionId": "c1d3e5a7-0000-4000-8000-000000000002",
+        "preloop.ai/cost": 0.19,
+        "preloop.ai/tokens": 24050
+      },
+      "artifacts": [
+        {
+          "artifactId": "result-c1d3e5a7-0000-4000-8000-000000000002",
+          "name": "result.json",
+          "parts": [
+            {
+              "data": {
+                "schema": "preloop.review.docscurrency/v1",
+                "flow": "docs-currency-review",
+                "status": "success",
+                "verdict": "pass",
+                "counts": {
+                  "holds": 2,
+                  "drifted": 0,
+                  "not_checkable": 0,
+                  "high": 0,
+                  "medium": 0,
+                  "low": 0
+                },
+                "findings": [],
+                "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice.",
+                "note": "synthetic fixture: the child result envelope, abridged"
+              },
+              "mediaType": "application/json"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Portfolio Review preset (`portfolio-review`). Discovers the
+  independently built projects in one repository from manifests and build
+  descriptors, asks a human which of them to review, then starts one
+  child execution per selected project per lens (docs currency, code
+  health, release security audit) and parks while they run. The report
+  aggregates the children's own result envelopes: per project the child
+  execution id, its state and its recorded cost. Projects a cap never
+  reached are listed under coverage and the run still completes. The
+  security lens runs only where the project ships an SBOM; elsewhere the
+  row reads `not_checkable` with the reason `no SBOM available` and buys
+  one "add SBOM generation" follow up. A lens that is not on the flow's
+  callable list is refused rather than skipped. Read-only: it files
+  nothing and opens nothing.
 - Callable-flows picker on the flow editor. When the delegation tool is
   on, the form lists the account's other flows (paging past the 100-row
   list default) and lets the operator choose which this flow may call,

@@ -1,0 +1,491 @@
+{
+  "note": "synthetic fixture",
+  "scenario": "child-cap",
+  "parent_execution_id": "a0b1c2d3-0000-4000-8000-000000000017",
+  "root_execution_id": "a0b1c2d3-0000-4000-8000-000000000017",
+  "calls": [
+    {
+      "project": "legacy/inventory-web",
+      "lens": "docs-currency-review",
+      "made": true,
+      "reason": null,
+      "call": {
+        "tool": "run_flow",
+        "arguments": {
+          "flow": "docs-currency-review",
+          "payload": {
+            "target_repo_path": "/workspace/sample-portfolio",
+            "project_path": "legacy/inventory-web",
+            "depth": "standard"
+          },
+          "label": "legacy/inventory-web|docs-currency-review",
+          "max_cost_usd": 2.0,
+          "timeout_seconds": 3600
+        }
+      },
+      "request": {
+        "messageId": "req-legacy-inventory-web-docs-currency-review",
+        "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "data": {
+              "target_repo_path": "/workspace/sample-portfolio",
+              "project_path": "legacy/inventory-web",
+              "depth": "standard"
+            },
+            "mediaType": "application/json"
+          }
+        ],
+        "metadata": {
+          "preloop.ai/kind": "delegation_request",
+          "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+          "preloop.ai/rootExecutionId": null,
+          "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000016",
+          "preloop.ai/flowName": "docs-currency-review",
+          "preloop.ai/depth": 1
+        }
+      },
+      "child_execution_id": "c1d3e5a7-0000-4000-8000-000000000001"
+    },
+    {
+      "project": "legacy/inventory-web",
+      "lens": "repo-code-health-review",
+      "made": true,
+      "reason": null,
+      "call": {
+        "tool": "run_flow",
+        "arguments": {
+          "flow": "repo-code-health-review",
+          "payload": {
+            "target_repo_path": "/workspace/sample-portfolio",
+            "project_path": "legacy/inventory-web",
+            "depth": "standard"
+          },
+          "label": "legacy/inventory-web|repo-code-health-review",
+          "max_cost_usd": 2.0,
+          "timeout_seconds": 3600
+        }
+      },
+      "request": {
+        "messageId": "req-legacy-inventory-web-repo-code-health-review",
+        "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "data": {
+              "target_repo_path": "/workspace/sample-portfolio",
+              "project_path": "legacy/inventory-web",
+              "depth": "standard"
+            },
+            "mediaType": "application/json"
+          }
+        ],
+        "metadata": {
+          "preloop.ai/kind": "delegation_request",
+          "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+          "preloop.ai/rootExecutionId": null,
+          "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000009",
+          "preloop.ai/flowName": "repo-code-health-review",
+          "preloop.ai/depth": 1
+        }
+      },
+      "child_execution_id": "c1d3e5a7-0000-4000-8000-000000000002"
+    },
+    {
+      "project": "services/billing-api",
+      "lens": "docs-currency-review",
+      "made": true,
+      "reason": null,
+      "call": {
+        "tool": "run_flow",
+        "arguments": {
+          "flow": "docs-currency-review",
+          "payload": {
+            "target_repo_path": "/workspace/sample-portfolio",
+            "project_path": "services/billing-api",
+            "depth": "standard"
+          },
+          "label": "services/billing-api|docs-currency-review",
+          "max_cost_usd": 2.0,
+          "timeout_seconds": 3600
+        }
+      },
+      "request": {
+        "messageId": "req-services-billing-api-docs-currency-review",
+        "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "data": {
+              "target_repo_path": "/workspace/sample-portfolio",
+              "project_path": "services/billing-api",
+              "depth": "standard"
+            },
+            "mediaType": "application/json"
+          }
+        ],
+        "metadata": {
+          "preloop.ai/kind": "delegation_request",
+          "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+          "preloop.ai/rootExecutionId": null,
+          "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000016",
+          "preloop.ai/flowName": "docs-currency-review",
+          "preloop.ai/depth": 1
+        }
+      },
+      "child_execution_id": "c1d3e5a7-0000-4000-8000-000000000003"
+    },
+    {
+      "project": "services/billing-api",
+      "lens": "repo-code-health-review",
+      "made": true,
+      "reason": "budget_exceeded: the call was refused before any child ran",
+      "call": {
+        "tool": "run_flow",
+        "arguments": {
+          "flow": "repo-code-health-review",
+          "payload": {
+            "target_repo_path": "/workspace/sample-portfolio",
+            "project_path": "services/billing-api",
+            "depth": "standard"
+          },
+          "label": "services/billing-api|repo-code-health-review",
+          "max_cost_usd": 2.0,
+          "timeout_seconds": 3600
+        }
+      },
+      "request": {
+        "messageId": "req-services-billing-api-repo-code-health-review",
+        "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "data": {
+              "target_repo_path": "/workspace/sample-portfolio",
+              "project_path": "services/billing-api",
+              "depth": "standard"
+            },
+            "mediaType": "application/json"
+          }
+        ],
+        "metadata": {
+          "preloop.ai/kind": "delegation_request",
+          "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+          "preloop.ai/rootExecutionId": null,
+          "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000009",
+          "preloop.ai/flowName": "repo-code-health-review",
+          "preloop.ai/depth": 1
+        }
+      },
+      "child_execution_id": "c1d3e5a7-0000-4000-8000-000000000004"
+    },
+    {
+      "project": "services/notifications",
+      "lens": "docs-currency-review",
+      "made": true,
+      "reason": null,
+      "call": {
+        "tool": "run_flow",
+        "arguments": {
+          "flow": "docs-currency-review",
+          "payload": {
+            "target_repo_path": "/workspace/sample-portfolio",
+            "project_path": "services/notifications",
+            "depth": "standard"
+          },
+          "label": "services/notifications|docs-currency-review",
+          "max_cost_usd": 2.0,
+          "timeout_seconds": 3600,
+          "wait": true
+        }
+      },
+      "request": {
+        "messageId": "req-services-notifications-docs-currency-review",
+        "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "data": {
+              "target_repo_path": "/workspace/sample-portfolio",
+              "project_path": "services/notifications",
+              "depth": "standard"
+            },
+            "mediaType": "application/json"
+          }
+        ],
+        "metadata": {
+          "preloop.ai/kind": "delegation_request",
+          "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+          "preloop.ai/rootExecutionId": null,
+          "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000016",
+          "preloop.ai/flowName": "docs-currency-review",
+          "preloop.ai/depth": 1
+        }
+      },
+      "child_execution_id": "c1d3e5a7-0000-4000-8000-000000000005"
+    },
+    {
+      "project": "services/notifications",
+      "lens": "repo-code-health-review",
+      "made": false,
+      "reason": "child cap",
+      "call": null,
+      "request": null,
+      "child_execution_id": null
+    },
+    {
+      "project": "libs/shared-utils",
+      "lens": "docs-currency-review",
+      "made": false,
+      "reason": "child cap",
+      "call": null,
+      "request": null,
+      "child_execution_id": null
+    },
+    {
+      "project": "libs/shared-utils",
+      "lens": "repo-code-health-review",
+      "made": false,
+      "reason": "child cap",
+      "call": null,
+      "request": null,
+      "child_execution_id": null
+    },
+    {
+      "project": "tools/report-cli",
+      "lens": "docs-currency-review",
+      "made": false,
+      "reason": "child cap",
+      "call": null,
+      "request": null,
+      "child_execution_id": null
+    },
+    {
+      "project": "tools/report-cli",
+      "lens": "repo-code-health-review",
+      "made": false,
+      "reason": "child cap",
+      "call": null,
+      "request": null,
+      "child_execution_id": null
+    }
+  ],
+  "children": {
+    "c1d3e5a7-0000-4000-8000-000000000001": {
+      "id": "c1d3e5a7-0000-4000-8000-000000000001",
+      "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "timestamp": "2026-09-16T10:58:00Z"
+      },
+      "metadata": {
+        "preloop.ai/kind": "delegation_task",
+        "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "preloop.ai/rootExecutionId": null,
+        "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000016",
+        "preloop.ai/flowName": "docs-currency-review",
+        "preloop.ai/depth": 1,
+        "preloop.ai/status": "SUCCEEDED",
+        "preloop.ai/executionId": "c1d3e5a7-0000-4000-8000-000000000001",
+        "preloop.ai/cost": 0.301,
+        "preloop.ai/tokens": 36400
+      },
+      "artifacts": [
+        {
+          "artifactId": "result-c1d3e5a7-0000-4000-8000-000000000001",
+          "name": "result.json",
+          "parts": [
+            {
+              "data": {
+                "schema": "preloop.review.docscurrency/v1",
+                "flow": "docs-currency-review",
+                "status": "success",
+                "verdict": "pass",
+                "counts": {
+                  "holds": 2,
+                  "drifted": 0,
+                  "not_checkable": 0,
+                  "high": 0,
+                  "medium": 0,
+                  "low": 0
+                },
+                "findings": [],
+                "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice.",
+                "note": "synthetic fixture: the child result envelope, abridged"
+              },
+              "mediaType": "application/json"
+            }
+          ]
+        }
+      ]
+    },
+    "c1d3e5a7-0000-4000-8000-000000000002": {
+      "id": "c1d3e5a7-0000-4000-8000-000000000002",
+      "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "timestamp": "2026-09-16T10:58:00Z"
+      },
+      "metadata": {
+        "preloop.ai/kind": "delegation_task",
+        "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "preloop.ai/rootExecutionId": null,
+        "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000009",
+        "preloop.ai/flowName": "repo-code-health-review",
+        "preloop.ai/depth": 1,
+        "preloop.ai/status": "SUCCEEDED",
+        "preloop.ai/executionId": "c1d3e5a7-0000-4000-8000-000000000002",
+        "preloop.ai/cost": 0.552,
+        "preloop.ai/tokens": 61200
+      },
+      "artifacts": [
+        {
+          "artifactId": "result-c1d3e5a7-0000-4000-8000-000000000002",
+          "name": "result.json",
+          "parts": [
+            {
+              "data": {
+                "schema": "preloop.review.codehealth/v1",
+                "flow": "repo-code-health-review",
+                "status": "success",
+                "verdict": "pass_with_findings",
+                "counts": {
+                  "high": 0,
+                  "medium": 1,
+                  "low": 2
+                },
+                "findings": [
+                  {
+                    "id": "app-java-god-class",
+                    "severity": "medium",
+                    "title": "App.java holds request routing, persistence and formatting in one class",
+                    "evidence": "legacy/inventory-web/src/main/java/App.java:1"
+                  }
+                ],
+                "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice.",
+                "note": "synthetic fixture: the child result envelope, abridged"
+              },
+              "mediaType": "application/json"
+            }
+          ]
+        }
+      ]
+    },
+    "c1d3e5a7-0000-4000-8000-000000000003": {
+      "id": "c1d3e5a7-0000-4000-8000-000000000003",
+      "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "timestamp": "2026-09-16T10:58:00Z"
+      },
+      "metadata": {
+        "preloop.ai/kind": "delegation_task",
+        "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "preloop.ai/rootExecutionId": null,
+        "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000016",
+        "preloop.ai/flowName": "docs-currency-review",
+        "preloop.ai/depth": 1,
+        "preloop.ai/status": "SUCCEEDED",
+        "preloop.ai/executionId": "c1d3e5a7-0000-4000-8000-000000000003",
+        "preloop.ai/cost": 0.248,
+        "preloop.ai/tokens": 29800
+      },
+      "artifacts": [
+        {
+          "artifactId": "result-c1d3e5a7-0000-4000-8000-000000000003",
+          "name": "result.json",
+          "parts": [
+            {
+              "data": {
+                "schema": "preloop.review.docscurrency/v1",
+                "flow": "docs-currency-review",
+                "status": "success",
+                "verdict": "pass",
+                "counts": {
+                  "holds": 3,
+                  "drifted": 0,
+                  "not_checkable": 0,
+                  "high": 0,
+                  "medium": 0,
+                  "low": 0
+                },
+                "findings": [],
+                "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice.",
+                "note": "synthetic fixture: the child result envelope, abridged"
+              },
+              "mediaType": "application/json"
+            }
+          ]
+        }
+      ]
+    },
+    "c1d3e5a7-0000-4000-8000-000000000004": {
+      "id": "c1d3e5a7-0000-4000-8000-000000000004",
+      "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+      "status": {
+        "state": "TASK_STATE_REJECTED",
+        "timestamp": "2026-09-16T10:58:00Z"
+      },
+      "metadata": {
+        "preloop.ai/kind": "delegation_task",
+        "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "preloop.ai/rootExecutionId": null,
+        "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000009",
+        "preloop.ai/flowName": "repo-code-health-review",
+        "preloop.ai/depth": 1,
+        "preloop.ai/status": "REFUSED",
+        "preloop.ai/refusalReason": "budget_exceeded"
+      },
+      "artifacts": []
+    },
+    "c1d3e5a7-0000-4000-8000-000000000005": {
+      "id": "c1d3e5a7-0000-4000-8000-000000000005",
+      "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "timestamp": "2026-09-16T10:58:00Z"
+      },
+      "metadata": {
+        "preloop.ai/kind": "delegation_task",
+        "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "preloop.ai/rootExecutionId": null,
+        "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000016",
+        "preloop.ai/flowName": "docs-currency-review",
+        "preloop.ai/depth": 1,
+        "preloop.ai/status": "SUCCEEDED",
+        "preloop.ai/executionId": "c1d3e5a7-0000-4000-8000-000000000005",
+        "preloop.ai/cost": 0.226,
+        "preloop.ai/tokens": 28050
+      },
+      "artifacts": [
+        {
+          "artifactId": "result-c1d3e5a7-0000-4000-8000-000000000005",
+          "name": "result.json",
+          "parts": [
+            {
+              "data": {
+                "schema": "preloop.review.docscurrency/v1",
+                "flow": "docs-currency-review",
+                "status": "success",
+                "verdict": "pass",
+                "counts": {
+                  "holds": 2,
+                  "drifted": 0,
+                  "not_checkable": 0,
+                  "high": 0,
+                  "medium": 0,
+                  "low": 0
+                },
+                "findings": [],
+                "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice.",
+                "note": "synthetic fixture: the child result envelope, abridged"
+              },
+              "mediaType": "application/json"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

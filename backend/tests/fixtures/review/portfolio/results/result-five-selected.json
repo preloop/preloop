@@ -17,7 +17,13 @@
     "root_path": ".",
     "max_depth": 3,
     "auto_select_threshold": 3,
-    "max_inline_projects": 5,
+    "lenses": [
+      "docs-currency-review"
+    ],
+    "max_projects": 5,
+    "max_children": 20,
+    "max_cost_usd_per_child": 2.0,
+    "child_timeout_seconds": 3600,
     "depth": "standard",
     "eol_runtimes": [
       {
@@ -100,7 +106,9 @@
             "no_licence",
             "eol_runtime"
           ]
-        }
+        },
+        "sbom_paths": [],
+        "has_sbom": false
       },
       {
         "path": "services/billing-api",
@@ -120,7 +128,7 @@
         ],
         "last_commit_date": "2025-05-02",
         "commits_12m": 0,
-        "file_count": 4,
+        "file_count": 5,
         "has_readme": true,
         "has_architecture_doc": false,
         "has_ci": false,
@@ -137,7 +145,11 @@
             "no_licence",
             "eol_runtime"
           ]
-        }
+        },
+        "sbom_paths": [
+          "services/billing-api/sbom.cdx.json"
+        ],
+        "has_sbom": true
       },
       {
         "path": "services/notifications",
@@ -172,7 +184,9 @@
             "no_ci",
             "no_tests_dir"
           ]
-        }
+        },
+        "sbom_paths": [],
+        "has_sbom": false
       },
       {
         "path": "libs/shared-utils",
@@ -205,7 +219,9 @@
             "no_architecture_doc",
             "no_licence"
           ]
-        }
+        },
+        "sbom_paths": [],
+        "has_sbom": false
       },
       {
         "path": "tools/report-cli",
@@ -235,20 +251,22 @@
           "score": 0,
           "band": "low",
           "reasons": []
-        }
+        },
+        "sbom_paths": [],
+        "has_sbom": false
       }
     ]
   },
   "selection": {
     "source": "human",
     "auto_select_threshold": 3,
-    "inline_cap": 8,
+    "project_cap": 5,
     "selected": [
       "legacy/inventory-web",
       "services/billing-api",
       "services/notifications"
     ],
-    "over_inline_cap": []
+    "over_project_cap": []
   },
   "questions": [
     {
@@ -296,102 +314,160 @@
       ]
     }
   ],
+  "fan_out": {
+    "lenses": [
+      "docs-currency-review"
+    ],
+    "lenses_refused": [],
+    "child_cap": 20,
+    "max_cost_usd_per_child": 2.0,
+    "children_planned": 3,
+    "children_started": 3,
+    "children_over_cap": [],
+    "parked": true,
+    "wait_expired": []
+  },
   "projects": [
     {
       "path": "legacy/inventory-web",
-      "lens": "docs-currency-review",
-      "lens_schema": "preloop.review.docscurrency/v1",
-      "lens_status": "ran",
-      "not_run_reason": null,
-      "verdict": "fail",
-      "health": "failing",
-      "counts": {
-        "holds": 1,
-        "drifted": 2,
-        "not_checkable": 0,
-        "high": 1,
-        "medium": 1,
-        "low": 0
-      },
-      "result_artifact": "evidence/projects/legacy-inventory-web/result.json"
+      "status": "failing",
+      "cost_usd": 0.412,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": "preloop.review.docscurrency/v1",
+          "lens_status": "ran",
+          "reason": null,
+          "verdict": "fail",
+          "health": "failing",
+          "counts": {
+            "holds": 1,
+            "drifted": 2,
+            "not_checkable": 0,
+            "high": 1,
+            "medium": 1,
+            "low": 0
+          },
+          "child": {
+            "execution_id": "c1d3e5a7-0000-4000-8000-000000000001",
+            "state": "SUCCEEDED",
+            "cost_usd": 0.412,
+            "label": "legacy/inventory-web|docs-currency-review"
+          },
+          "result_artifact": "evidence/projects/legacy-inventory-web/docs-currency-review/result.json"
+        }
+      ]
     },
     {
       "path": "services/billing-api",
-      "lens": "docs-currency-review",
-      "lens_schema": "preloop.review.docscurrency/v1",
-      "lens_status": "ran",
-      "not_run_reason": null,
-      "verdict": "pass_with_findings",
-      "health": "findings",
-      "counts": {
-        "holds": 2,
-        "drifted": 1,
-        "not_checkable": 1,
-        "high": 0,
-        "medium": 1,
-        "low": 0
-      },
-      "result_artifact": "evidence/projects/services-billing-api/result.json"
+      "status": "findings",
+      "cost_usd": 0.265,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": "preloop.review.docscurrency/v1",
+          "lens_status": "ran",
+          "reason": null,
+          "verdict": "pass_with_findings",
+          "health": "findings",
+          "counts": {
+            "holds": 2,
+            "drifted": 1,
+            "not_checkable": 1,
+            "high": 0,
+            "medium": 1,
+            "low": 0
+          },
+          "child": {
+            "execution_id": "c1d3e5a7-0000-4000-8000-000000000002",
+            "state": "SUCCEEDED",
+            "cost_usd": 0.265,
+            "label": "services/billing-api|docs-currency-review"
+          },
+          "result_artifact": "evidence/projects/services-billing-api/docs-currency-review/result.json"
+        }
+      ]
     },
     {
       "path": "services/notifications",
-      "lens": "docs-currency-review",
-      "lens_schema": "preloop.review.docscurrency/v1",
-      "lens_status": "ran",
-      "not_run_reason": null,
-      "verdict": "pass",
-      "health": "healthy",
-      "counts": {
-        "holds": 2,
-        "drifted": 0,
-        "not_checkable": 0,
-        "high": 0,
-        "medium": 0,
-        "low": 0
-      },
-      "result_artifact": "evidence/projects/services-notifications/result.json"
+      "status": "healthy",
+      "cost_usd": 0.198,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": "preloop.review.docscurrency/v1",
+          "lens_status": "ran",
+          "reason": null,
+          "verdict": "pass",
+          "health": "healthy",
+          "counts": {
+            "holds": 2,
+            "drifted": 0,
+            "not_checkable": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": {
+            "execution_id": "c1d3e5a7-0000-4000-8000-000000000003",
+            "state": "SUCCEEDED",
+            "cost_usd": 0.198,
+            "label": "services/notifications|docs-currency-review"
+          },
+          "result_artifact": "evidence/projects/services-notifications/docs-currency-review/result.json"
+        }
+      ]
     },
     {
       "path": "libs/shared-utils",
-      "lens": "docs-currency-review",
-      "lens_schema": null,
-      "lens_status": "not_run",
-      "not_run_reason": "not selected by the human",
-      "verdict": null,
-      "health": "unknown",
-      "counts": {
-        "holds": 0,
-        "drifted": 0,
-        "not_checkable": 0,
-        "high": 0,
-        "medium": 0,
-        "low": 0
-      },
-      "result_artifact": null
+      "status": "unknown",
+      "cost_usd": 0.0,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": null,
+          "lens_status": "not_run",
+          "reason": "not selected by the human",
+          "verdict": null,
+          "health": "unknown",
+          "counts": {
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": null,
+          "result_artifact": null
+        }
+      ]
     },
     {
       "path": "tools/report-cli",
-      "lens": "docs-currency-review",
-      "lens_schema": null,
-      "lens_status": "not_run",
-      "not_run_reason": "not selected by the human",
-      "verdict": null,
-      "health": "unknown",
-      "counts": {
-        "holds": 0,
-        "drifted": 0,
-        "not_checkable": 0,
-        "high": 0,
-        "medium": 0,
-        "low": 0
-      },
-      "result_artifact": null
+      "status": "unknown",
+      "cost_usd": 0.0,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": null,
+          "lens_status": "not_run",
+          "reason": "not selected by the human",
+          "verdict": null,
+          "health": "unknown",
+          "counts": {
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": null,
+          "result_artifact": null
+        }
+      ]
     }
   ],
   "follow_ups": [
     {
       "id": "portfolio:legacy/inventory-web:mvn-tomcat-run",
       "project": "legacy/inventory-web",
+      "lens": "docs-currency-review",
       "title": "INSTALL.md documents 'mvn tomcat:run'; the pom declares no tomcat plugin",
       "severity": "high",
       "evidence": "legacy/inventory-web/INSTALL.md:11",
@@ -405,6 +481,7 @@
     {
       "id": "portfolio:legacy/inventory-web:inventory-db-url",
       "project": "legacy/inventory-web",
+      "lens": "docs-currency-review",
       "title": "INSTALL.md names INVENTORY_DB_URL; the code reads INVENTORY_DATABASE_URL",
       "severity": "medium",
       "evidence": "legacy/inventory-web/INSTALL.md:15",
@@ -418,6 +495,7 @@
     {
       "id": "portfolio:services/billing-api:billing-api-token",
       "project": "services/billing-api",
+      "lens": "docs-currency-review",
       "title": "README names BILLING_API_TOKEN; no code in the project reads it",
       "severity": "medium",
       "evidence": "services/billing-api/README.md:7",
@@ -433,6 +511,8 @@
     "projects_discovered": 5,
     "projects_selected": 3,
     "projects_reviewed": 3,
+    "lens_runs_planned": 3,
+    "lens_runs_completed": 3,
     "plan_completed": true,
     "not_reviewed": [
       {
@@ -459,7 +539,13 @@
     },
     "follow_ups_total": 3,
     "follow_ups_approved": 2,
-    "issues_filed": 0
+    "issues_filed": 0,
+    "children_started": 3,
+    "children_succeeded": 3,
+    "children_failed": 0,
+    "children_refused": 0,
+    "children_expired": 0,
+    "children_cost_usd": 0.875
   },
   "verdict": "fail",
   "checks": [
@@ -474,6 +560,12 @@
       "passed": true,
       "skipped": false,
       "details": "1 batched question, 5 rows, answered at 2026-09-16T10:41:00Z"
+    },
+    {
+      "name": "fan_out_completed",
+      "passed": true,
+      "skipped": false,
+      "details": "3 child executions started, 3 completed, 0 failed, 0 refused, 0 expired, 0.875 USD"
     },
     {
       "name": "follow_up_question_answered",
@@ -499,7 +591,8 @@
     "register": "evidence/projects-register.md",
     "findings": "evidence/findings.json",
     "inventory": "evidence/inventory.json",
-    "questions": "evidence/questions.json"
+    "questions": "evidence/questions.json",
+    "children": "evidence/children.json"
   },
   "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice.",
   "note": "synthetic fixture"

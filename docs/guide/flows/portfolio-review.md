@@ -1,16 +1,15 @@
-# Portfolio Review preset (many projects, one repository, one execution)
+# Portfolio Review preset (many projects, one repository, one fan out)
 
 The [full-repo review presets](repo-review-presets.md) each review **one
 project**. This preset sits one layer above them: it takes a repository
 full of independently built projects, discovers what is actually in
-there, asks a human which projects are worth a review, runs the [Docs
-Currency Review](repo-review-presets.md#docs-currency-review) lens inline
-for the selected ones, aggregates the results, and asks which follow ups
-to keep.
+there, asks a human which projects are worth a review, **starts one child
+execution per selected project per lens**, parks itself while they run,
+aggregates what they reported, and asks which follow ups to keep.
 
 It answers the question nobody can answer about an inherited estate:
-**which of these things is a liability**. Everything runs inline in one
-execution and ends by writing `/workspace/result.json`
+**which of these things is a liability**. The parent does discovery,
+delegation and aggregation, and ends by writing `/workspace/result.json`
 (`preloop.review.portfolio/v1`) plus an evidence pack under
 `/workspace/evidence/` that opens on the family's one-minute verdict
 cover.
@@ -20,22 +19,22 @@ cover.
 | Preset file | `backend/presets/017-portfolio-review.yaml` |
 | Flow slug | `portfolio-review` |
 | Result schema | `preloop.review.portfolio/v1` |
-| Lens it runs | Docs Currency Review (`preloop.review.docscurrency/v1`), inline, unchanged |
-| Write tools | none, apart from the built-in `ask_user` question channel |
-| Inline project cap | `max_inline_projects`, default 5, hard cap 8 |
+| Lenses it may start | Docs Currency Review, Repo Code Health Review, Release Security Audit, and nothing else |
+| Platform tools | `ask_user` (questions), `run_flow` (start a lens), `get_execution` (read a child back), none of them a write tool |
+| Project cap | `max_projects`, default 5, hard cap 12 |
+| Child cap | `max_children`, default 20, hard cap 25 |
 
 ## What it is not
 
-- **Not a delegator.** There are no child executions and no fan out: one
-  execution does discovery, the lens runs and the aggregation. Above the
-  inline cap the report says plainly that delegation is required and the
-  remaining projects land in `coverage.not_reviewed` with reason
-  `inline cap`, rather than being reviewed badly.
-- **Not a security review.** SBOM, vulnerability matching, secrets
-  hygiene and CI hardening stay with the
-  [security audit presets](security-audit-presets.md); something
-  security-shaped gets one referral finding with a `file:line` pointer,
-  never a value.
+- **Not a reviewer.** The parent never reads project source code and
+  never forms an opinion about it. A project's reputation in a run is
+  whatever a child lens reported, plus the facts discovery recorded.
+- **Not a security review.** Vulnerability matching, SBOM verification,
+  secrets hygiene and CI hardening belong to the
+  [security audit presets](security-audit-presets.md), which this preset
+  may **start as a child** for a project that has an SBOM. Something
+  security-shaped noticed outside a child's report gets one referral
+  finding with a `file:line` pointer, never a value.
 - **Not a modernisation plan.** Nothing is fixed, upgraded, refactored or
   rewritten, and no pull request is opened. The output is a report and a
   ranked list of follow ups a human approved.
@@ -78,9 +77,17 @@ Three rules keep the list honest, applied in this order:
 
 Per project the run records `path`, `stacks`, `manifests`, declared
 `runtimes` (read only out of named manifest keys, never guessed),
-`last_commit_date`, `commits_12m`, `file_count`, and the five booleans
+`last_commit_date`, `commits_12m`, `file_count`, the five booleans
 `has_readme`, `has_architecture_doc`, `has_ci`, `has_tests_dir`,
-`has_licence`.
+`has_licence`, and the SBOM facts `sbom_paths` / `has_sbom`.
+
+SBOMs are found by name, from a closed list (`*.spdx.json`, `*.cdx.json`,
+`*.spdx`, `bom.json`, `sbom*.json`, `sbom*.xml`), **project-local only**:
+a sibling project's SBOM is not this project's SBOM, and a
+repository-root SBOM belongs to no project. Nothing here generates,
+reconstructs or infers an SBOM from a manifest or a lockfile; this family
+verifies SBOMs and never writes them. That one boolean decides whether
+the security lens can run at all (Phase 4).
 
 ## Phase 2: the triage hint is a fact, not a score
 
@@ -170,29 +177,120 @@ all fail closed, in the way each question can afford:
 Neither question is ever re-asked, and silence is never read as "review
 everything".
 
-## Phases 4 and 5: the lens runs unchanged, health is derived
+## Phase 4: the fan out, one child per project per lens
 
-For each selected project in rank order the run executes the Docs
-Currency Review lens **exactly as `016-docs-currency-review.yaml`
-defines it**, with `project_path` set to that project and `depth` passed
-through. The lens is reused, not restated: its five claim types, its
-recorded searches, its prose-quality ban and its verdict rules are the
-definition. Each per-project result lands at
-`evidence/projects/<slug>/result.json`.
+The callable lenses are exactly these, and a payload cannot add to the
+list:
 
-Aggregation keeps one row per **discovered** project, not per reviewed
-project, and health is derived from the lens verdict:
+| lens slug | result schema | cost ceiling per child |
+| --- | --- | --- |
+| `docs-currency-review` | `preloop.review.docscurrency/v1` | 2.0 USD |
+| `repo-code-health-review` | `preloop.review.codehealth/v1` | 3.0 USD |
+| `release-security-audit` | `preloop.cra.releaseaudit/v1` | 3.0 USD |
 
-| lens | health |
+Payload `lenses` picks a subset (default `["docs-currency-review"]`). **A
+lens absent from that list is refused, never silently skipped**: it is
+recorded in `fan_out.lenses_refused` with reason `not on the callable
+list` and named in the report. The platform enforces the same rule server
+side, so a call to a flow this one may not start comes back as a record
+with state `TASK_STATE_REJECTED` and refusal reason `flow_not_callable`.
+Same answer, recorded the same way.
+
+The plan is deterministic: for each selected project **in rank order**,
+for each chosen lens in declared order, one call. A run that hits a
+ceiling has therefore done the worthwhile work first, not a random
+prefix of it. Each call is:
+
+```
+run_flow(flow: "<lens slug>",
+         payload: {"target_repo_path": "...", "project_path": "<the path
+                   discovery recorded>", "depth": "<unchanged>"},
+         label: "<project path>|<lens slug>",
+         max_cost_usd: <max_cost_usd_per_child>,
+         timeout_seconds: <child_timeout_seconds>)
+```
+
+That payload and nothing else: no model or harness overrides, no extra
+instructions, no restatement of the lens. **`wait: true` goes on the last
+call only** (a wait per call would serialise a fan out), which parks the
+parent on `WAITING_FOR_CHILDREN` with no container and no budget while
+the children work. The parent resumes **once** for the fan out, with the
+full completion records in its trigger payload, and never starts the same
+children again.
+
+### The security lens needs an SBOM
+
+It is planned for a project only where discovery recorded one
+(`has_sbom` true). Otherwise **no child is started**: the project's
+security row is `lens_status: not_checkable` with the reason `no SBOM
+available`. The word is `not_checkable`, never "skipped": a skipped check
+reads as a choice and this is a missing input. Such a row is never a
+pass, never leaves a project healthy, and becomes exactly one follow up
+(below) rather than a blank.
+
+### Ceilings are coverage statements, not failures
+
+| ceiling | value |
 | --- | --- |
-| ran, `pass` | `healthy` |
-| ran, `pass_with_findings` | `findings` |
-| ran, `fail` | `failing` |
-| did not run | `unknown` |
+| direct children of one execution | 25 (`FLOW_DELEGATION_MAX_CHILDREN`) |
+| per lens, from this flow's callable list | 12 children |
+| delegation depth | a child of this run is depth 1, instance cap 2 |
+| cost | `max_cost_usd` per child, clamped by the callable entry, inside `FLOW_DELEGATION_MAX_TREE_USD` (50 USD) |
+| parked wait | `FLOW_DELEGATION_CHILD_WAIT_SECONDS` (6 hours), then an expired record per unfinished child |
 
-**A project whose lens did not run is never counted as healthy.** It is
-`unknown`, it appears in `coverage.not_reviewed` with its reason, and it
-holds the portfolio verdict below `pass`.
+Planned calls past the project cap or the child cap **are not made**:
+they are listed in `fan_out.children_over_cap`, every project that got no
+lens run lands in `coverage.not_reviewed` with reason `child cap` or
+`project cap`, `coverage.plan_completed` goes false, **and the report is
+finished anyway**. The run still completes, still writes every artifact,
+and says in the cover which projects it never reached. A refusal is an
+answer, not an error: it is recorded on the lens row, never retried and
+never worked around.
+
+## Phase 5: aggregation from the children's own envelopes
+
+One row per **discovered** project, each carrying one lens row per lens
+planned for it. A lens row is what a child reported, never what the
+parent thinks of the project: `lens`, `lens_schema`, `lens_status`,
+`reason`, `verdict`, `health`, counts, the child (execution id, state,
+`cost_usd`, label) and the result artifact path.
+
+| `lens_status` | meaning |
+| --- | --- |
+| `ran` | the child finished and its result envelope was read |
+| `failed` | the child failed, or its envelope is missing, unreadable or the wrong schema |
+| `refused` | the call was refused before anything ran, with the platform's reason |
+| `expired` | the child had not finished when the 6 hour wait deadline passed |
+| `not_checkable` | the lens could not run for want of an input: the security lens with no SBOM |
+| `not_run` | no call was planned or made: not selected, lens not chosen, a cap |
+
+Health is derived, never asserted: a `pass` verdict is `healthy`,
+`pass_with_findings` is `findings`, `fail` is `failing`, and **anything
+that did not run is `unknown`**. Project status follows in order:
+`failing` if any lens is failing, else `unknown` if any planned lens row
+is not `ran`, else `findings`, else `healthy`.
+
+**A failed child is reported as failed and never as healthy**, and it
+takes its project to `unknown` whatever the other lenses said. **A
+project no lens reviewed is never counted as healthy**: it is `unknown`,
+it appears in `coverage.not_reviewed` with its reason, and it holds the
+verdict below `pass`.
+
+Cost is the child's own record: a project's `cost_usd` is the sum of its
+children's recorded cost exactly as the completion records report it, a
+refused call contributes nothing, and a cost the records do not carry is
+`null` rather than a guess. `rollup.children_cost_usd` is the same sum
+over every child, and it is what this run **started**, not what the
+orchestrator itself spent.
+
+### The missing SBOM is a follow up, not a blank
+
+Every project whose security row is `not_checkable` emits **exactly
+one** follow up: id `portfolio:<project path>:add-sbom-generation`, title
+`add SBOM generation to this project's build`, lens
+`release-security-audit`, severity medium, with a `file:line` pointer at
+that project's own build manifest. One per project, never two, and never
+for a project whose SBOM was found.
 
 ## Verdict
 
@@ -220,20 +318,24 @@ state of the portfolio.
   findings.json                # every lens finding and follow up candidate
   inventory.json               # the phase-1 discovery facts
   questions.json               # both questions, their items, schemas, deadlines, answers
-  projects/<slug>/result.json  # the per-project lens result
+  children.json                # one row per planned call: the audit trail of the fan out
+  projects/<slug>/<lens>/result.json  # each child's own result envelope, verbatim
 ```
 
 The cover is the same three-box one-pager the rest of the family uses
 (What we checked / What we did not check / What you should do next
 week). Here the "what we did not check" box is load bearing: it names the
 discovered projects no lens ran on and why (not selected, the selection
-question expired at its deadline, the inline cap, a lens that could not
-run), the directories the walk excluded or truncated at the depth cap,
-and the lenses this preset does not run.
+question expired at its deadline, the project cap, the child cap), every
+child that failed, was refused or expired, every project whose security
+row is `not_checkable` for want of an SBOM, the directories the walk
+excluded or truncated at the depth cap, and the lenses this run did not
+start at all.
 
 `result.json` stays under **200 KB**, with every project row under 4 KB
-and every discovery row under 2 KB, so a 25 project portfolio still fits
-with detail moved into the evidence pack.
+(lens rows and child records included) and every discovery row under
+2 KB, so a 25 project portfolio still fits with detail moved into the
+evidence pack.
 
 ## Payload knobs
 
@@ -245,18 +347,28 @@ with detail moved into the evidence pack.
 | `exclude_paths` | - | extra prefixes to skip, added to the named exclusion list |
 | `auto_select_threshold` | `3` | below this many projects, nothing is asked |
 | `projects` | - | explicit selection, replaces the first question |
-| `max_inline_projects` | `5` | inline reviews this run, hard cap 8 |
-| `depth` | `standard` | passed through to each lens run |
+| `lenses` | `["docs-currency-review"]` | which callable lenses to run; a name off the list is refused |
+| `max_projects` | `5` | selected projects this run fans out for, hard cap 12 |
+| `max_children` | `20` | child executions this run starts, hard cap 25 |
+| `max_cost_usd_per_child` | `2.0` | cost asked per child; the callable entry lowers it, never raises it |
+| `child_timeout_seconds` | `3600` | window asked per child, clamped to this run's remaining time |
+| `depth` | `standard` | passed through to each child unchanged |
 | `eol_runtimes` | - | the only source for `eol_runtime` triage points |
 
 ## Honest limits
 
 - The triage hint ranks **neglect**, not quality: it has not read a line
   of the code it ranks, and it says so.
-- One lens runs here. Code health, architecture conformance, the
-  standards walk and the whole security family are not part of a
-  portfolio run, and the cover names them as unchecked.
-- An inline run cannot honestly review more than 8 projects; beyond that
-  the report asks for delegation instead of pretending.
+- Three lenses are callable here. Architecture conformance and the
+  standards walk are not, and the cover names them as unchecked.
+- The security lens only reports where an SBOM exists; everywhere else
+  the row reads `not_checkable` with its reason, and the run says so
+  rather than implying the project is clean.
+- Caps are real: 12 selected projects and 25 children per run. Beyond
+  them the report names the projects it never reached instead of
+  pretending to have covered them.
+- The parent reports what the children said. A child that failed,
+  expired or was refused leaves its project `unknown`, which is an
+  absence of evidence and never a clean bill of health.
 - Approval is recorded, never executed: nothing in this preset files an
   issue, opens a pull request or edits a file.

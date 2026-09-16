@@ -17,7 +17,13 @@
     "root_path": ".",
     "max_depth": 3,
     "auto_select_threshold": 3,
-    "max_inline_projects": 5,
+    "lenses": [
+      "docs-currency-review"
+    ],
+    "max_projects": 5,
+    "max_children": 20,
+    "max_cost_usd_per_child": 2.0,
+    "child_timeout_seconds": 3600,
     "depth": "standard",
     "eol_runtimes": [
       {
@@ -86,7 +92,9 @@
             "no_ci",
             "no_tests_dir"
           ]
-        }
+        },
+        "sbom_paths": [],
+        "has_sbom": false
       },
       {
         "path": "apps/pricing",
@@ -118,19 +126,21 @@
           "reasons": [
             "no_architecture_doc"
           ]
-        }
+        },
+        "sbom_paths": [],
+        "has_sbom": false
       }
     ]
   },
   "selection": {
     "source": "auto_below_threshold",
     "auto_select_threshold": 3,
-    "inline_cap": 8,
+    "project_cap": 5,
     "selected": [
       "apps/checkout",
       "apps/pricing"
     ],
-    "over_inline_cap": []
+    "over_project_cap": []
   },
   "questions": [
     {
@@ -158,42 +168,79 @@
       "selectable_ids": []
     }
   ],
+  "fan_out": {
+    "lenses": [
+      "docs-currency-review"
+    ],
+    "lenses_refused": [],
+    "child_cap": 20,
+    "max_cost_usd_per_child": 2.0,
+    "children_planned": 2,
+    "children_started": 2,
+    "children_over_cap": [],
+    "parked": true,
+    "wait_expired": []
+  },
   "projects": [
     {
       "path": "apps/checkout",
-      "lens": "docs-currency-review",
-      "lens_schema": "preloop.review.docscurrency/v1",
-      "lens_status": "ran",
-      "not_run_reason": null,
-      "verdict": "pass",
-      "health": "healthy",
-      "counts": {
-        "holds": 3,
-        "drifted": 0,
-        "not_checkable": 0,
-        "high": 0,
-        "medium": 0,
-        "low": 0
-      },
-      "result_artifact": "evidence/projects/apps-checkout/result.json"
+      "status": "healthy",
+      "cost_usd": 0.21,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": "preloop.review.docscurrency/v1",
+          "lens_status": "ran",
+          "reason": null,
+          "verdict": "pass",
+          "health": "healthy",
+          "counts": {
+            "holds": 3,
+            "drifted": 0,
+            "not_checkable": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": {
+            "execution_id": "c1d3e5a7-0000-4000-8000-000000000001",
+            "state": "SUCCEEDED",
+            "cost_usd": 0.21,
+            "label": "apps/checkout|docs-currency-review"
+          },
+          "result_artifact": "evidence/projects/apps-checkout/docs-currency-review/result.json"
+        }
+      ]
     },
     {
       "path": "apps/pricing",
-      "lens": "docs-currency-review",
-      "lens_schema": "preloop.review.docscurrency/v1",
-      "lens_status": "ran",
-      "not_run_reason": null,
-      "verdict": "pass",
-      "health": "healthy",
-      "counts": {
-        "holds": 4,
-        "drifted": 0,
-        "not_checkable": 0,
-        "high": 0,
-        "medium": 0,
-        "low": 0
-      },
-      "result_artifact": "evidence/projects/apps-pricing/result.json"
+      "status": "healthy",
+      "cost_usd": 0.19,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": "preloop.review.docscurrency/v1",
+          "lens_status": "ran",
+          "reason": null,
+          "verdict": "pass",
+          "health": "healthy",
+          "counts": {
+            "holds": 2,
+            "drifted": 0,
+            "not_checkable": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": {
+            "execution_id": "c1d3e5a7-0000-4000-8000-000000000002",
+            "state": "SUCCEEDED",
+            "cost_usd": 0.19,
+            "label": "apps/pricing|docs-currency-review"
+          },
+          "result_artifact": "evidence/projects/apps-pricing/docs-currency-review/result.json"
+        }
+      ]
     }
   ],
   "follow_ups": [],
@@ -201,6 +248,8 @@
     "projects_discovered": 2,
     "projects_selected": 2,
     "projects_reviewed": 2,
+    "lens_runs_planned": 2,
+    "lens_runs_completed": 2,
     "plan_completed": true,
     "not_reviewed": []
   },
@@ -218,7 +267,13 @@
     },
     "follow_ups_total": 0,
     "follow_ups_approved": 0,
-    "issues_filed": 0
+    "issues_filed": 0,
+    "children_started": 2,
+    "children_succeeded": 2,
+    "children_failed": 0,
+    "children_refused": 0,
+    "children_expired": 0,
+    "children_cost_usd": 0.4
   },
   "verdict": "pass",
   "checks": [
@@ -233,6 +288,12 @@
       "passed": true,
       "skipped": true,
       "details": "not asked: 2 projects is below the threshold of 3, so both were selected automatically"
+    },
+    {
+      "name": "fan_out_completed",
+      "passed": true,
+      "skipped": false,
+      "details": "2 child executions started, 2 completed, 0 failed, 0 refused, 0 expired, 0.4 USD"
     },
     {
       "name": "issues_filed",
@@ -252,7 +313,8 @@
     "register": "evidence/projects-register.md",
     "findings": "evidence/findings.json",
     "inventory": "evidence/inventory.json",
-    "questions": "evidence/questions.json"
+    "questions": "evidence/questions.json",
+    "children": "evidence/children.json"
   },
   "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice.",
   "note": "synthetic fixture"

@@ -1,0 +1,8 @@
+{
+  "note": "synthetic fixture",
+  "scenario": "first-question-expired",
+  "parent_execution_id": "a0b1c2d3-0000-4000-8000-000000000017",
+  "root_execution_id": "a0b1c2d3-0000-4000-8000-000000000017",
+  "calls": [],
+  "children": {}
+}

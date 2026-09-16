@@ -15,6 +15,7 @@
     "discovery",
     "selection",
     "questions",
+    "fan_out",
     "projects",
     "follow_ups",
     "coverage",
@@ -101,6 +102,8 @@
               "has_ci",
               "has_tests_dir",
               "has_licence",
+              "sbom_paths",
+              "has_sbom",
               "triage"
             ],
             "properties": {
@@ -229,6 +232,15 @@
                     }
                   }
                 }
+              },
+              "sbom_paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "has_sbom": {
+                "type": "boolean"
               }
             }
           }
@@ -241,9 +253,9 @@
       "required": [
         "source",
         "auto_select_threshold",
-        "inline_cap",
+        "project_cap",
         "selected",
-        "over_inline_cap"
+        "over_project_cap"
       ],
       "properties": {
         "source": {
@@ -258,18 +270,18 @@
           "type": "integer",
           "minimum": 1
         },
-        "inline_cap": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 8
-        },
         "selected": {
           "type": "array",
           "items": {
             "type": "string"
           }
         },
-        "over_inline_cap": {
+        "project_cap": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12
+        },
+        "over_project_cap": {
           "type": "array",
           "items": {
             "type": "string"
@@ -414,50 +426,16 @@
         "additionalProperties": false,
         "required": [
           "path",
-          "lens",
-          "lens_schema",
-          "lens_status",
-          "not_run_reason",
-          "verdict",
-          "health",
-          "counts",
-          "result_artifact"
+          "status",
+          "cost_usd",
+          "lenses"
         ],
         "properties": {
           "path": {
             "type": "string",
             "minLength": 1
           },
-          "lens": {
-            "const": "docs-currency-review"
-          },
-          "lens_schema": {
-            "enum": [
-              "preloop.review.docscurrency/v1",
-              null
-            ]
-          },
-          "lens_status": {
-            "enum": [
-              "ran",
-              "not_run"
-            ]
-          },
-          "not_run_reason": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "verdict": {
-            "enum": [
-              "pass",
-              "pass_with_findings",
-              "fail",
-              null
-            ]
-          },
-          "health": {
+          "status": {
             "enum": [
               "healthy",
               "findings",
@@ -465,109 +443,342 @@
               "unknown"
             ]
           },
-          "counts": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "holds",
-              "drifted",
-              "not_checkable",
-              "high",
-              "medium",
-              "low"
-            ],
-            "properties": {
-              "holds": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "drifted": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "not_checkable": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "high": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "medium": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "low": {
-                "type": "integer",
-                "minimum": 0
-              }
-            }
-          },
-          "result_artifact": {
+          "cost_usd": {
             "type": [
-              "string",
+              "number",
               "null"
-            ]
-          }
-        },
-        "allOf": [
-          {
-            "if": {
+            ],
+            "minimum": 0
+          },
+          "lenses": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "lens",
+                "lens_schema",
+                "lens_status",
+                "reason",
+                "verdict",
+                "health",
+                "counts",
+                "child",
+                "result_artifact"
+              ],
               "properties": {
-                "lens_status": {
-                  "const": "not_run"
-                }
-              }
-            },
-            "then": {
-              "properties": {
-                "not_run_reason": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "verdict": {
-                  "type": "null"
-                },
-                "health": {
-                  "const": "unknown"
+                "lens": {
+                  "enum": [
+                    "docs-currency-review",
+                    "repo-code-health-review",
+                    "release-security-audit"
+                  ]
                 },
                 "lens_schema": {
-                  "type": "null"
-                }
-              }
-            }
-          },
-          {
-            "if": {
-              "properties": {
+                  "enum": [
+                    "preloop.review.docscurrency/v1",
+                    "preloop.review.codehealth/v1",
+                    "preloop.cra.releaseaudit/v1",
+                    null
+                  ]
+                },
                 "lens_status": {
-                  "const": "ran"
-                }
-              }
-            },
-            "then": {
-              "properties": {
+                  "enum": [
+                    "ran",
+                    "failed",
+                    "refused",
+                    "expired",
+                    "not_checkable",
+                    "not_run"
+                  ]
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "verdict": {
                   "enum": [
                     "pass",
                     "pass_with_findings",
-                    "fail"
+                    "fail",
+                    null
                   ]
                 },
                 "health": {
                   "enum": [
                     "healthy",
                     "findings",
-                    "failing"
+                    "failing",
+                    "unknown"
                   ]
                 },
-                "not_run_reason": {
-                  "type": "null"
+                "counts": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "high",
+                    "medium",
+                    "low"
+                  ],
+                  "properties": {
+                    "high": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "medium": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "low": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "holds": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "drifted": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "not_checkable": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                },
+                "child": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "additionalProperties": false,
+                  "required": [
+                    "execution_id",
+                    "state",
+                    "cost_usd",
+                    "label"
+                  ],
+                  "properties": {
+                    "execution_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "state": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "cost_usd": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "result_artifact": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
-              }
-            }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "lens_status": {
+                        "const": "ran"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "verdict": {
+                        "enum": [
+                          "pass",
+                          "pass_with_findings",
+                          "fail"
+                        ]
+                      },
+                      "health": {
+                        "enum": [
+                          "healthy",
+                          "findings",
+                          "failing"
+                        ]
+                      },
+                      "reason": {
+                        "type": "null"
+                      },
+                      "lens_schema": {
+                        "enum": [
+                          "preloop.review.docscurrency/v1",
+                          "preloop.review.codehealth/v1",
+                          "preloop.cra.releaseaudit/v1"
+                        ]
+                      },
+                      "result_artifact": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "child": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "lens_status": {
+                        "const": "failed"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "verdict": {
+                        "type": "null"
+                      },
+                      "health": {
+                        "const": "unknown"
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "child": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "lens_status": {
+                        "const": "refused"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "verdict": {
+                        "type": "null"
+                      },
+                      "health": {
+                        "const": "unknown"
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "lens_status": {
+                        "const": "expired"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "verdict": {
+                        "type": "null"
+                      },
+                      "health": {
+                        "const": "unknown"
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "child": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "lens_status": {
+                        "const": "not_checkable"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "lens": {
+                        "const": "release-security-audit"
+                      },
+                      "verdict": {
+                        "type": "null"
+                      },
+                      "health": {
+                        "const": "unknown"
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "child": {
+                        "type": "null"
+                      },
+                      "result_artifact": {
+                        "type": "null"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "lens_status": {
+                        "const": "not_run"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "verdict": {
+                        "type": "null"
+                      },
+                      "health": {
+                        "const": "unknown"
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "child": {
+                        "type": "null"
+                      },
+                      "lens_schema": {
+                        "type": "null"
+                      },
+                      "result_artifact": {
+                        "type": "null"
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "minItems": 1
           }
-        ]
+        }
       }
     },
     "follow_ups": {
@@ -578,6 +789,7 @@
         "required": [
           "id",
           "project",
+          "lens",
           "title",
           "severity",
           "evidence",
@@ -642,6 +854,13 @@
           },
           "filed": {
             "const": false
+          },
+          "lens": {
+            "enum": [
+              "docs-currency-review",
+              "repo-code-health-review",
+              "release-security-audit"
+            ]
           }
         },
         "allOf": [
@@ -695,6 +914,8 @@
         "projects_discovered",
         "projects_selected",
         "projects_reviewed",
+        "lens_runs_planned",
+        "lens_runs_completed",
         "plan_completed",
         "not_reviewed"
       ],
@@ -734,6 +955,14 @@
               }
             }
           }
+        },
+        "lens_runs_planned": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lens_runs_completed": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },
@@ -745,7 +974,13 @@
         "by_severity",
         "follow_ups_total",
         "follow_ups_approved",
-        "issues_filed"
+        "issues_filed",
+        "children_started",
+        "children_succeeded",
+        "children_failed",
+        "children_refused",
+        "children_expired",
+        "children_cost_usd"
       ],
       "properties": {
         "by_health": {
@@ -809,6 +1044,30 @@
         },
         "issues_filed": {
           "const": 0
+        },
+        "children_started": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children_succeeded": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children_failed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children_refused": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children_expired": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children_cost_usd": {
+          "type": "number",
+          "minimum": 0
         }
       }
     },
@@ -832,11 +1091,108 @@
         "register",
         "findings",
         "inventory",
-        "questions"
+        "questions",
+        "children"
       ]
     },
     "disclaimer": {
       "const": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice."
+    },
+    "fan_out": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lenses",
+        "lenses_refused",
+        "child_cap",
+        "max_cost_usd_per_child",
+        "children_planned",
+        "children_started",
+        "children_over_cap",
+        "parked",
+        "wait_expired"
+      ],
+      "properties": {
+        "lenses": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "docs-currency-review",
+              "repo-code-health-review",
+              "release-security-audit"
+            ]
+          },
+          "minItems": 1
+        },
+        "lenses_refused": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "lens",
+              "reason"
+            ],
+            "properties": {
+              "lens": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "child_cap": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 25
+        },
+        "max_cost_usd_per_child": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "children_planned": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children_started": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children_over_cap": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "project",
+              "lens"
+            ],
+            "properties": {
+              "project": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lens": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "parked": {
+          "type": "boolean"
+        },
+        "wait_expired": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     }
   }
 }

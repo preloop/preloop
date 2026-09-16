@@ -1,23 +1,32 @@
-"""Portfolio review orchestrator preset (017), running inline.
+"""Portfolio review orchestrator preset (017), fanning out to children.
 
 The layer above the full-repo review family: it discovers the projects
-in one repository, asks a human which of them to review, runs the docs
-currency lens (016) inline for the selected ones, aggregates, asks which
-follow ups to keep, and writes a portfolio report. It is NOT one of the
-four lenses, so test_repo_review_presets.py does not parametrize over
-it: it carries the built-in ask_user question channel on its allowlist
+in one repository, asks a human which of them to review, starts one
+child execution per selected project per lens, parks while they run,
+aggregates what their result envelopes said, asks which follow ups to
+keep, and writes a portfolio report. It is NOT one of the four lenses,
+so test_repo_review_presets.py does not parametrize over it: it carries
+the built-in ask_user, run_flow and get_execution tools on its allowlist
 and it samples projects rather than files. What it does inherit from the
 family is pinned here: no write tools, the one-minute verdict cover, the
-disclaimer, and the rule that the register can never upgrade a verdict.
+disclaimer, the not_checkable vocabulary, and the rule that the register
+can never upgrade a verdict.
 
 This module pins what is specific to the orchestrator:
 
 * discovery is deterministic and command only — the walk in this test
   re-runs the preset's own closed detector list, named exclusion list,
-  depth cap and nesting rule against the fixture repositories, so a
-  recorded project list cannot quietly stop being reproducible;
+  depth cap, nesting rule and SBOM lookup against the fixture
+  repositories, so a recorded project list cannot quietly stop being
+  reproducible;
 * the triage hint is computed from those facts alone, which is why the
   worst written project in the fixture repository ranks last;
+* the fan out: one child per selected project per lens, the payload each
+  child is started with, the callable list a lens has to be on, the caps
+  that stop a fan out and the coverage they have to declare;
+* the aggregation: a lens row is what a child reported, a failed,
+  refused, expired or not_checkable row is never healthy, and a
+  project's cost is its children's recorded cost;
 * the two question forms: batched, one call, the selectable ids drawn
   from discovery, and the auto-select threshold below which nothing is
   asked;
@@ -27,7 +36,9 @@ This module pins what is specific to the orchestrator:
 * the size budget a twenty five project portfolio has to fit in.
 
 Deterministic: parses the shipped YAML and the synthetic fixtures under
-fixtures/review/portfolio. No agent, no network, no control plane.
+fixtures/review/portfolio, and validates every child completion record
+against the frozen delegation shapes. No agent, no network, no control
+plane.
 """
 
 from __future__ import annotations
@@ -45,6 +56,7 @@ PRESET_FILE = "017-portfolio-review.yaml"
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "review" / "portfolio"
 REPOS_DIR = FIXTURES / "repos"
 RESULTS_DIR = FIXTURES / "results"
+CHILDREN_DIR = FIXTURES / "children"
 SCHEMA_FILE = FIXTURES / "schemas" / "portfolio-v1.json"
 
 SCHEMA_ID = "preloop.review.portfolio/v1"
@@ -52,6 +64,29 @@ FLOW_SLUG = "portfolio-review"
 PRESET_NAME = "Portfolio Review"
 LENS_SLUG = "docs-currency-review"
 LENS_SCHEMA_ID = "preloop.review.docscurrency/v1"
+SECURITY_LENS_SLUG = "release-security-audit"
+
+# The callable list the preset declares, and the schema each lens emits.
+# A lens outside this mapping cannot be started at all.
+LENS_SCHEMAS = {
+    "docs-currency-review": "preloop.review.docscurrency/v1",
+    "repo-code-health-review": "preloop.review.codehealth/v1",
+    "release-security-audit": "preloop.cra.releaseaudit/v1",
+}
+
+# The SBOM names PHASE 1 looks for, project-local, closed list.
+SBOM_GLOBS = (
+    "*.spdx.json",
+    "*.cdx.json",
+    "*.spdx",
+    "bom.json",
+    "sbom*.json",
+    "sbom*.xml",
+)
+
+NOT_CHECKABLE_REASON = "no SBOM available"
+SBOM_FOLLOW_UP_TITLE = "add SBOM generation to this project's build"
+SBOM_FOLLOW_UP_SLUG = "add-sbom-generation"
 
 DISCLAIMER = (
     "Machine-generated review evidence. Not a certification, audit opinion, "
@@ -62,12 +97,16 @@ THREE_DAYS = 259200
 RUN_DATE = date(2026, 9, 16)
 
 # One scenario per acceptance criterion: the repository is the input, the
-# result is the contracted output for it.
+# result is the contracted output for it, and the children file is the
+# fan out the platform recorded for that run.
 SCENARIOS = {
     "result-five-selected.json": "five-projects",
     "result-two-auto-selected.json": "two-projects",
     "result-first-question-expired.json": "five-projects",
     "result-second-question-expired.json": "five-projects",
+    "result-child-failed.json": "five-projects",
+    "result-child-cap.json": "five-projects",
+    "result-security-lenses.json": "five-projects",
 }
 
 # The preset's closed detector list, mirrored here so the walk below is
@@ -212,6 +251,13 @@ def _load_result(name: str) -> dict:
     return json.loads(path.read_text())
 
 
+def _load_children(name: str) -> dict:
+    """The fan out the platform recorded for one result fixture."""
+    path = CHILDREN_DIR / name.replace("result-", "children-")
+    assert path.exists(), f"Missing children fixture: {path}"
+    return json.loads(path.read_text())
+
+
 def _matching_detectors(names: list[str]) -> list[str]:
     """Detector filenames a directory listing matches, sorted."""
     matched = []
@@ -248,6 +294,20 @@ def _file_count(project: Path) -> int:
             continue
         total += 1
     return total
+
+
+def _sbom_paths(project: Path, root: Path) -> list[str]:
+    """SBOM artifacts under one project, by name only, project-local."""
+    found: set[str] = set()
+    for pattern in SBOM_GLOBS:
+        for path in project.rglob(pattern):
+            if not path.is_file():
+                continue
+            parts = path.relative_to(project).parts[:-1]
+            if any(part in EXCLUDED_DIRS for part in parts):
+                continue
+            found.add(path.relative_to(root).as_posix())
+    return sorted(found)
 
 
 def _facts(project: Path) -> dict:
@@ -301,6 +361,8 @@ def _walk(repo: str) -> dict:
                     "stacks": sorted({_stack_of(name) for name in manifests}),
                     "manifests": [f"{rel}/{name}" for name in manifests],
                     "file_count": _file_count(directory),
+                    "sbom_paths": _sbom_paths(directory, root),
+                    "has_sbom": bool(_sbom_paths(directory, root)),
                     **_facts(directory),
                 }
             )
@@ -367,22 +429,51 @@ def _triage(project: dict, eol_table: object) -> dict:
     return {"score": score, "band": band, "reasons": reasons}
 
 
+def _health(lens_row: dict) -> str:
+    """The health the preset derives from one lens row.
+
+    Only a lens that ran carries a verdict; everything else, a failed,
+    refused, expired or not_checkable row included, is unknown.
+    """
+    if lens_row["lens_status"] != "ran":
+        return "unknown"
+    return {
+        "pass": "healthy",
+        "pass_with_findings": "findings",
+        "fail": "failing",
+    }[lens_row["verdict"]]
+
+
+def _project_status(project: dict) -> str:
+    """The project status the preset's rules derive from its lens rows."""
+    healths = {_health(row) for row in project["lenses"]}
+    statuses = {row["lens_status"] for row in project["lenses"]}
+    if "failing" in healths:
+        return "failing"
+    if statuses - {"ran"}:
+        return "unknown"
+    if "findings" in healths:
+        return "findings"
+    return "healthy"
+
+
 def _verdict(result: dict) -> str:
     """The verdict the preset's own rules compute for a result.
 
     fail when any project is failing; pass only when every discovered
-    project was reviewed and every one of them is healthy; everything
-    else, an unknown project included, pass_with_findings.
+    project was reviewed by a lens that ran and every one of them is
+    healthy; everything else, an unknown project included,
+    pass_with_findings.
     """
     projects = result["projects"]
     coverage = result["coverage"]
-    if any(row["health"] == "failing" for row in projects):
+    if any(row["status"] == "failing" for row in projects):
         return "fail"
     if (
         projects
         and coverage["plan_completed"]
         and not coverage["not_reviewed"]
-        and all(row["health"] == "healthy" for row in projects)
+        and all(row["status"] == "healthy" for row in projects)
     ):
         return "pass"
     return "pass_with_findings"
@@ -395,30 +486,67 @@ def _question(result: dict, phase: str) -> dict:
 
 
 def _healthy_row(path: str) -> dict:
-    """A positive row: a project whose lens ran and passed."""
+    """A positive row: a project whose only lens ran and passed."""
+    slug = path.replace("/", "-")
     return {
         "path": path,
-        "lens": LENS_SLUG,
-        "lens_schema": LENS_SCHEMA_ID,
-        "lens_status": "ran",
-        "not_run_reason": None,
-        "verdict": "pass",
-        "health": "healthy",
-        "counts": {
-            "holds": 4,
-            "drifted": 0,
-            "not_checkable": 0,
-            "high": 0,
-            "medium": 0,
-            "low": 0,
-        },
-        "result_artifact": f"evidence/projects/{path.replace('/', '-')}/result.json",
+        "status": "healthy",
+        "cost_usd": 0.2,
+        "lenses": [
+            {
+                "lens": LENS_SLUG,
+                "lens_schema": LENS_SCHEMA_ID,
+                "lens_status": "ran",
+                "reason": None,
+                "verdict": "pass",
+                "health": "healthy",
+                "counts": {
+                    "holds": 4,
+                    "drifted": 0,
+                    "not_checkable": 0,
+                    "high": 0,
+                    "medium": 0,
+                    "low": 0,
+                },
+                "child": {
+                    "execution_id": f"child-{slug}",
+                    "state": "SUCCEEDED",
+                    "cost_usd": 0.2,
+                    "label": f"{path}|{LENS_SLUG}",
+                },
+                "result_artifact": (
+                    f"evidence/projects/{slug}/{LENS_SLUG}/result.json"
+                ),
+            }
+        ],
     }
 
 
+def _lens_rows(result: dict) -> list[tuple[str, dict]]:
+    """Every lens row in a result, paired with its project path."""
+    return [
+        (project["path"], row)
+        for project in result["projects"]
+        for row in project["lenses"]
+    ]
+
+
+def _child_records(children: dict) -> dict:
+    """Completion records keyed by child execution id."""
+    return children["children"]
+
+
+def _cost_of(record: dict) -> float | None:
+    return record["metadata"].get("preloop.ai/cost")
+
+
 @pytest.fixture(params=sorted(SCENARIOS), ids=str)
-def scenario(request) -> tuple[str, dict]:
-    return SCENARIOS[request.param], _load_result(request.param)
+def scenario(request) -> tuple[str, dict, dict]:
+    return (
+        SCENARIOS[request.param],
+        _load_result(request.param),
+        _load_children(request.param),
+    )
 
 
 class TestPresetDefinition:
@@ -443,21 +571,29 @@ class TestPresetDefinition:
         assert DISCLAIMER in data["prompt_template"]
 
     def test_declares_no_write_tools(self):
-        """The only platform tool is the built-in question channel: no
-        MCP server, no write tool, and a prompt that forbids every write
-        path including opening a pull request."""
+        """Three platform tools, none of them a write tool: the question
+        channel, the delegation call and the child read. No MCP server,
+        and a prompt that forbids every write path including opening a
+        pull request."""
         data = _load_preset()
         assert data["allowed_mcp_servers"] == []
-        assert data["allowed_mcp_tools"] == [{"name": "ask_user"}]
+        assert data["allowed_mcp_tools"] == [
+            {"name": "ask_user"},
+            {"name": "run_flow"},
+            {"name": "get_execution"},
+        ]
         norm = _norm(data["prompt_template"])
         assert "NO write tools" in norm
         assert "do not create issues, post comments, push commits" in norm
         assert "never run git commit or git push" in norm
         assert "Never modify tracked files" in norm
         assert (
-            "The ONLY platform tool on your allowlist is the built-in "
-            "ask_user, which is a question channel, not a write tool" in norm
+            "The ONLY platform tools on your allowlist are the built-in "
+            "ask_user, which is a question channel, run_flow, which starts "
+            "one of the read-only review lenses named on this flow's callable "
+            "list, and get_execution, which reads a child you started" in norm
         )
+        assert "None of the three writes anything outside Preloop" in norm
         assert "you never open a pull request" in norm
 
     def test_nothing_is_ever_filed(self):
@@ -470,25 +606,23 @@ class TestPresetDefinition:
         assert "Approving is not filing and you never claim otherwise" in norm
 
     def test_out_of_scope_is_stated(self):
-        """Delegation, the security lens and modernisation are all out."""
+        """Security work belongs to a lens, modernisation to nobody here."""
         norm = _norm(_prompt())
-        assert "SECURITY IS OUT OF SCOPE" in norm
+        assert "SECURITY IS ONE OF THE LENSES, NOT YOUR JOB" in norm
         assert "Release Security Audit" in norm
+        assert "You never do that work yourself" in norm
         assert "file ONE referral finding" in norm
         assert "NEVER a value" in norm
         assert "MODERNISATION IS OUT OF SCOPE" in norm
-        assert "no child executions, no delegation" in norm
-        assert (
-            "The security lens and the code health lens do not run in this "
-            "preset" in norm
-        )
+        assert "never fix, upgrade, refactor or rewrite anything" in norm
 
     def test_orchestrator_does_not_read_source(self):
         norm = _norm(_prompt())
         assert (
-            "Outside PHASE 4 you never read project source code and never "
-            "form an opinion about it" in norm
+            "YOU NEVER READ PROJECT SOURCE CODE AND NEVER FORM AN OPINION "
+            "ABOUT IT" in norm
         )
+        assert "the assessment itself belongs to the child executions" in norm
 
     def test_detector_list_is_the_one_the_preset_declares(self):
         """The walk in this module mirrors the preset's closed detector
@@ -588,18 +722,47 @@ class TestPresetDefinition:
         assert "You never decide from memory that a runtime is end of life" in norm
         assert "no delivered table means eol_runtime never fires" in norm
 
-    def test_the_lens_is_reused_not_restated(self):
+    def test_the_lenses_are_reused_not_restated(self):
+        """Each lens owns its claim types, severities and verdict rules;
+        this preset only decides which projects they run on."""
         norm = _norm(_prompt())
-        assert "backend/presets/016-docs-currency-review.yaml" in norm
-        assert "DO NOT RESTATE, VARY, RELAX OR EXTEND THAT LENS HERE" in norm
-        assert LENS_SCHEMA_ID in norm
+        for preset_file in (
+            "backend/presets/016-docs-currency-review.yaml",
+            "009-repo-code-health-review.yaml",
+            "006-release-security-audit.yaml",
+        ):
+            assert preset_file in norm, f"lens definition not cited: {preset_file}"
+        assert "DO NOT RESTATE, VARY, RELAX OR EXTEND A LENS" in norm
+        assert (
+            "this preset only decides which projects they run on and reports "
+            "what they said" in norm
+        )
+        for schema_id in LENS_SCHEMAS.values():
+            assert schema_id in norm, f"lens schema not named: {schema_id}"
 
-    def test_inline_cap_says_delegation_is_required_above_it(self):
+    def test_the_caps_are_declared_with_their_ceilings(self):
+        """A project cap and a child cap, each with the hard ceiling it
+        cannot be raised past, and a coverage statement rather than a
+        failure when one of them stops the fan out."""
         norm = _norm(_prompt())
-        assert "INLINE PROJECT CAP" in norm
-        assert "never more than 8 in one execution whatever the payload says" in norm
-        assert 'list the rest in coverage.not_reviewed with reason "inline cap"' in norm
-        assert "SAY PLAINLY IN THE REPORT THAT DELEGATION IS REQUIRED" in norm
+        assert (
+            "max_projects: how many selected projects this run fans out for, "
+            "default 5, hard cap 12 (PROJECT CAP, PHASE 4)" in norm
+        )
+        assert (
+            "max_children: the ceiling on child executions this run starts, "
+            "default 20, hard cap 25" in norm
+        )
+        assert "PROJECT CAP: max_projects selected projects" in norm
+        assert "CHILD CAP: max_children child executions" in norm
+        assert "Planned calls past either cap ARE NOT MADE" in norm
+        assert "record each of them in fan_out.children_over_cap" in norm
+        assert (
+            "put every project that got no lens run at all into "
+            'coverage.not_reviewed with reason "child cap" (or "project cap")' in norm
+        )
+        assert "set coverage.plan_completed false, and FINISH THE REPORT ANYWAY" in norm
+        assert "A ceiling is a coverage statement, not a failure" in norm
 
     def test_evidence_pack_and_one_page_cover(self):
         prompt = _prompt()
@@ -610,6 +773,16 @@ class TestPresetDefinition:
         assert "findings.json" in prompt
         assert "inventory.json" in prompt
         assert "questions.json" in prompt
+        assert "children.json" in prompt
+        assert (
+            "children.json: one row per planned call: project, lens, whether "
+            "it was made, the child execution id, its final state, its cost "
+            "and the refusal reason when there is one" in norm
+        )
+        assert (
+            "projects/<project slug>/<lens slug>/result.json: the child's own "
+            "result envelope, copied verbatim" in norm
+        )
         assert "MUST OPEN" in prompt
         assert "one-page cover" in prompt
         assert "at the TOP of the report" in norm
@@ -625,7 +798,19 @@ class TestPresetDefinition:
         assert "No new claims" in prompt
         assert "May not be empty if anything was out of scope" in norm
         assert "Strictly one page" in norm
-        assert "Release Security Audit family at minimum" in norm
+        assert (
+            "the lenses this run did not start at all: architecture, standards "
+            "compliance, and any lens the payload named that is not on the "
+            "callable list" in norm
+        )
+        assert (
+            "every child that failed, was refused or expired, every project "
+            "whose security row is not_checkable for want of an SBOM" in norm
+        )
+        assert (
+            "the fan out table (one row per planned call with its child "
+            "execution id, state and cost)" in norm
+        )
         assert "As your FINAL action, write /workspace/result.json" in prompt
 
     def test_completion_status_and_verdict_vocabulary(self):
@@ -640,18 +825,25 @@ class TestPresetDefinition:
     def test_verdict_rules_are_stated(self):
         norm = _norm(_prompt())
         assert "Verdict, computed from LENS RESULTS AND COVERAGE ONLY" in norm
-        assert '"fail" if any project\'s health is "failing"' in norm
+        assert '"fail" if any project\'s status is "failing"' in norm
         assert (
             '"pass" only when every discovered project was reviewed by a lens '
             "that ran" in norm
+        )
+        assert (
+            "any failed, refused or expired child and any truncated coverage, "
+            'is "pass_with_findings"' in norm
         )
         assert "THE REGISTER CANNOT UPGRADE THE VERDICT" in norm
         assert (
             "A project nobody reviewed is not evidence of health, an "
             'inventory-only run is never a "pass"' in norm
         )
-        assert "A PROJECT WHOSE LENS DID NOT RUN IS NEVER COUNTED AS HEALTHY" in norm
+        assert "A PROJECT NO LENS REVIEWED IS NEVER COUNTED AS HEALTHY" in norm
         assert "HEALTH IS DERIVED, NEVER ASSERTED" in norm
+        assert (
+            "A FAILED, REFUSED, EXPIRED OR NOT_CHECKABLE LENS IS NEVER A PASS" in norm
+        )
 
     def test_facts_and_judgment_stay_separated(self):
         prompt = _prompt()
@@ -662,7 +854,10 @@ class TestPresetDefinition:
         norm = _norm(_prompt())
         assert "SIZE BUDGET" in norm
         assert "under 200 KB" in norm
-        assert "every project row under 4 KB and every discovery row under 2 KB" in norm
+        assert (
+            "Keep every project row under 4 KB, lens rows and child records "
+            "included, and every discovery row under 2 KB" in norm
+        )
         assert "A 25 PROJECT PORTFOLIO MUST STILL FIT" in norm
         assert "null rather than inventing values" in norm
 
@@ -743,7 +938,11 @@ class TestQuestionForms:
     def test_the_first_safe_default_is_inventory_only(self):
         norm = _norm(_prompt())
         assert "SAFE DEFAULT ON EXPIRY: INVENTORY ONLY" in norm
-        assert "NO LENS RUNS, no follow up is ranked, no issue is opened" in norm
+        assert "NO CHILD IS STARTED, no follow up is ranked, no issue is opened" in norm
+        assert (
+            "every discovered project is reported with no lens row that ran "
+            'and status "unknown"' in norm
+        )
         assert "NAMES THE DEADLINE THAT PASSED" in norm
         assert (
             "Never re-ask, never assume a selection, never treat silence as "
@@ -801,12 +1000,12 @@ class TestResultSchema:
         assert extra == set(), f"schema invents fields the YAML does not name: {extra}"
 
     def test_result_validates_against_the_schema(self, scenario):
-        _, result = scenario
+        _, result, children = scenario
         schema = json.loads(SCHEMA_FILE.read_text())
         Draft202012Validator(schema).validate(result)
 
     def test_result_carries_every_required_key(self, scenario):
-        _, result = scenario
+        _, result, children = scenario
         missing = [key for key in _required_shape_keys() if key not in result]
         assert missing == [], f"result fixture missing required keys: {missing}"
         assert result["schema"] == SCHEMA_ID
@@ -815,7 +1014,7 @@ class TestResultSchema:
         assert result["disclaimer"] == DISCLAIMER
 
     def test_fixtures_are_synthetic(self, scenario):
-        repo, result = scenario
+        repo, result, children = scenario
         assert result["note"] == "synthetic fixture"
         blob = "\n".join(
             path.read_text()
@@ -829,7 +1028,7 @@ class TestDiscovery:
     """Deterministic, command only, and reproducible from the tree."""
 
     def test_the_recorded_projects_are_the_ones_the_walk_finds(self, scenario):
-        repo, result = scenario
+        repo, result, children = scenario
         walked = {row["path"]: row for row in _walk(repo)["projects"]}
         recorded = {row["path"]: row for row in result["discovery"]["projects"]}
         assert sorted(recorded) == sorted(walked)
@@ -904,7 +1103,7 @@ class TestDiscovery:
         assert rows["services/notifications"]["file_count"] == 5
 
     def test_declared_runtimes_are_read_out_of_the_manifest_they_cite(self, scenario):
-        repo, result = scenario
+        repo, result, children = scenario
         for row in result["discovery"]["projects"]:
             for runtime in row["runtimes"]:
                 source = REPOS_DIR / repo / runtime["source"]
@@ -914,7 +1113,7 @@ class TestDiscovery:
                 )
 
     def test_every_manifest_matches_a_detector(self, scenario):
-        _, result = scenario
+        _, result, children = scenario
         for row in result["discovery"]["projects"]:
             for manifest in row["manifests"]:
                 assert _matching_detectors([Path(manifest).name]), (
@@ -929,7 +1128,7 @@ class TestTriageHint:
     """Computed from deterministic facts, never from the code."""
 
     def test_the_recorded_hint_is_the_one_the_rules_compute(self, scenario):
-        _, result = scenario
+        _, result, children = scenario
         eol_table = result["discovery"]["eol_table"]
         for row in result["discovery"]["projects"]:
             assert row["triage"] == _triage(row, eol_table), (
@@ -937,7 +1136,7 @@ class TestTriageHint:
             )
 
     def test_the_rank_is_the_documented_ordering(self, scenario):
-        _, result = scenario
+        _, result, children = scenario
         rows = result["discovery"]["projects"]
         expected = sorted(
             rows,
@@ -973,7 +1172,7 @@ class TestTriageHint:
         assert stale["triage"]["band"] == "high"
 
     def test_the_hint_reasons_come_from_the_closed_vocabulary(self, scenario):
-        _, result = scenario
+        _, result, children = scenario
         allowed = {
             "stale_365",
             "stale_180",
@@ -1039,7 +1238,7 @@ class TestSelectionQuestion:
         assert result["coverage"]["projects_reviewed"] == 2
 
     def test_every_result_records_both_question_phases(self, scenario):
-        _, result = scenario
+        _, result, children = scenario
         assert [row["phase"] for row in result["questions"]] == [
             "selection",
             "follow_ups",
@@ -1079,8 +1278,20 @@ class TestFirstQuestionExpired:
         assert result["coverage"]["projects_reviewed"] == 0
         assert result["rollup"]["issues_filed"] == 0
         assert result["follow_ups"] == []
-        assert all(row["lens_status"] == "not_run" for row in result["projects"])
+        assert all(row["lens_status"] == "not_run" for _, row in _lens_rows(result))
         assert result["rollup"]["by_health"]["unknown"] == 5
+
+    def test_no_child_execution_was_started(self, result):
+        """The expiry is a safe default, not a fan out nobody asked for."""
+        children = _load_children("result-first-question-expired.json")
+        assert children["calls"] == []
+        assert children["children"] == {}
+        fan_out = result["fan_out"]
+        assert fan_out["children_planned"] == 0
+        assert fan_out["children_started"] == 0
+        assert fan_out["parked"] is False
+        assert result["rollup"]["children_started"] == 0
+        assert result["rollup"]["children_cost_usd"] == 0
 
     def test_an_inventory_is_never_a_pass(self, result):
         assert result["verdict"] == "pass_with_findings"
@@ -1126,7 +1337,7 @@ class TestFollowUps:
     """Candidates a lens finding supports, ranked, never filed."""
 
     def test_follow_ups_point_at_a_real_line_of_the_repository(self, scenario):
-        repo, result = scenario
+        repo, result, children = scenario
         for row in result["follow_ups"]:
             path, _, line_no = row["evidence"].rpartition(":")
             document = REPOS_DIR / repo / path
@@ -1136,19 +1347,54 @@ class TestFollowUps:
             assert 1 <= index <= len(lines), f"{row['id']}: line {index} out of range"
             assert lines[index - 1].strip(), f"{row['id']}: points at a blank line"
 
-    def test_follow_ups_belong_to_a_reviewed_project(self, scenario):
-        _, result = scenario
-        reviewed = {
-            row["path"] for row in result["projects"] if row["lens_status"] == "ran"
+    def test_follow_ups_belong_to_a_lens_row_that_reported(self, scenario):
+        """A follow up needs a lens row behind it: a lens that ran, or the
+        one exception the preset names, the security row that could not
+        run for want of an SBOM."""
+        _, result, children = scenario
+        rows: dict[tuple[str, str], dict] = {
+            (path, row["lens"]): row for path, row in _lens_rows(result)
         }
         for row in result["follow_ups"]:
-            assert row["project"] in reviewed, (
-                f"{row['id']}: follow up from a project no lens reviewed"
-            )
             assert row["id"].startswith(f"portfolio:{row['project']}:")
+            lens_row = rows.get((row["project"], row["lens"]))
+            assert lens_row is not None, (
+                f"{row['id']}: no {row['lens']} row for {row['project']}"
+            )
+            if row["id"].endswith(SBOM_FOLLOW_UP_SLUG):
+                assert lens_row["lens_status"] == "not_checkable"
+                continue
+            assert lens_row["lens_status"] == "ran", (
+                f"{row['id']}: follow up from a lens that did not run"
+            )
+
+    def test_every_follow_up_repeats_a_finding_a_child_reported(self, scenario):
+        """Aggregation, not authorship: each follow up is a finding out of
+        the child's own result envelope, pointer included."""
+        _, result, children = scenario
+        findings: dict[tuple[str, str], dict] = {}
+        for call in children["calls"]:
+            child = call["child_execution_id"]
+            if child is None:
+                continue
+            for artifact in _child_records(children)[child].get("artifacts", []):
+                envelope = artifact["parts"][0]["data"]
+                for finding in envelope.get("findings", []):
+                    findings[(call["project"], finding["id"])] = finding
+        for row in result["follow_ups"]:
+            slug = row["id"].rsplit(":", 1)[1]
+            if slug == SBOM_FOLLOW_UP_SLUG:
+                continue
+            finding = findings.get((row["project"], slug))
+            assert finding is not None, (
+                f"{row['id']}: no child of this run reported that finding"
+            )
+            assert row["title"] == finding["title"]
+            assert row["severity"] == finding["severity"]
+            assert row["evidence"] == finding["evidence"]
 
     def test_follow_ups_are_ranked_and_never_filed(self, scenario):
-        _, result = scenario
+        _, result, children = scenario
         ranks = [row["rank"] for row in result["follow_ups"]]
         assert ranks == sorted(ranks)
         assert len(set(ranks)) == len(ranks)
@@ -1159,51 +1405,66 @@ class TestFollowUps:
 class TestCoverageAndHealth:
     """A project nobody reviewed is never healthy."""
 
-    def test_a_project_whose_lens_did_not_run_is_unknown_and_uncovered(self, scenario):
-        _, result = scenario
+    def test_a_project_no_lens_reviewed_is_unknown_and_uncovered(self, scenario):
+        _, result, children = scenario
         not_reviewed = {
             row["path"]: row["reason"] for row in result["coverage"]["not_reviewed"]
         }
-        for row in result["projects"]:
-            if row["lens_status"] == "not_run":
-                assert row["health"] == "unknown"
-                assert row["verdict"] is None
-                assert row["not_run_reason"]
-                assert row["path"] in not_reviewed, (
-                    f"{row['path']}: lens did not run but coverage does not say so"
-                )
-                assert not_reviewed[row["path"]]
+        for project in result["projects"]:
+            ran = [row for row in project["lenses"] if row["lens_status"] == "ran"]
+            if ran:
+                continue
+            assert project["status"] == "unknown"
+            assert project["path"] in not_reviewed, (
+                f"{project['path']}: no lens ran but coverage does not say so"
+            )
+            assert not_reviewed[project["path"]]
 
     def test_one_project_row_per_discovered_project(self, scenario):
-        _, result = scenario
+        _, result, children = scenario
         discovered = [row["path"] for row in result["discovery"]["projects"]]
         assert sorted(row["path"] for row in result["projects"]) == sorted(discovered)
         assert result["coverage"]["projects_discovered"] == len(discovered)
         assert result["coverage"]["projects_reviewed"] == sum(
-            1 for row in result["projects"] if row["lens_status"] == "ran"
+            1
+            for project in result["projects"]
+            if any(row["lens_status"] == "ran" for row in project["lenses"])
+        )
+        assert result["coverage"]["lens_runs_completed"] == sum(
+            1 for _, row in _lens_rows(result) if row["lens_status"] == "ran"
         )
 
     def test_health_is_derived_from_the_lens_verdict(self, scenario):
-        _, result = scenario
-        mapping = {
-            "pass": "healthy",
-            "pass_with_findings": "findings",
-            "fail": "failing",
-            None: "unknown",
-        }
-        for row in result["projects"]:
-            assert row["health"] == mapping[row["verdict"]]
+        _, result, children = scenario
+        for path, row in _lens_rows(result):
+            assert row["health"] == _health(row), f"{path}: health is asserted"
             if row["lens_status"] == "ran":
-                assert row["lens"] == LENS_SLUG
-                assert row["lens_schema"] == LENS_SCHEMA_ID
+                assert row["lens_schema"] == LENS_SCHEMAS[row["lens"]]
                 assert row["result_artifact"]
+                assert row["reason"] is None
+            else:
+                assert row["verdict"] is None
+                assert row["health"] == "unknown"
+                assert row["reason"], f"{path}: {row['lens_status']} without a reason"
+
+    def test_project_status_is_derived_from_its_lens_rows(self, scenario):
+        _, result, children = scenario
+        for project in result["projects"]:
+            assert project["status"] == _project_status(project), (
+                f"{project['path']}: recorded status is not the derived one"
+            )
+            if project["status"] == "healthy":
+                assert all(
+                    row["lens_status"] == "ran" and row["verdict"] == "pass"
+                    for row in project["lenses"]
+                )
 
     def test_the_rollup_agrees_with_the_rows(self, scenario):
-        _, result = scenario
+        _, result, children = scenario
         by_health = result["rollup"]["by_health"]
         for health in ("healthy", "findings", "failing", "unknown"):
             assert by_health[health] == sum(
-                1 for row in result["projects"] if row["health"] == health
+                1 for row in result["projects"] if row["status"] == health
             )
         by_severity = result["rollup"]["by_severity"]
         for severity in ("high", "medium", "low"):
@@ -1216,7 +1477,7 @@ class TestCoverageAndHealth:
         )
 
     def test_the_verdict_is_the_one_the_rules_compute(self, scenario):
-        _, result = scenario
+        _, result, children = scenario
         assert result["verdict"] == _verdict(result)
 
     def test_a_complete_clean_portfolio_is_the_only_pass(self):
@@ -1243,25 +1504,25 @@ class TestVerdictHonesty:
         result["projects"].append(
             {
                 "path": "apps/legacy",
-                "lens": LENS_SLUG,
-                "lens_schema": None,
-                "lens_status": "not_run",
-                "not_run_reason": "inline cap",
-                "verdict": None,
-                "health": "unknown",
-                "counts": {
-                    "holds": 0,
-                    "drifted": 0,
-                    "not_checkable": 0,
-                    "high": 0,
-                    "medium": 0,
-                    "low": 0,
-                },
-                "result_artifact": None,
+                "status": "unknown",
+                "cost_usd": 0.0,
+                "lenses": [
+                    {
+                        "lens": LENS_SLUG,
+                        "lens_schema": None,
+                        "lens_status": "not_run",
+                        "reason": "child cap",
+                        "verdict": None,
+                        "health": "unknown",
+                        "counts": {"high": 0, "medium": 0, "low": 0},
+                        "child": None,
+                        "result_artifact": None,
+                    }
+                ],
             }
         )
         result["coverage"]["not_reviewed"].append(
-            {"path": "apps/legacy", "reason": "inline cap"}
+            {"path": "apps/legacy", "reason": "child cap"}
         )
         assert _verdict(result) == "pass_with_findings"
         result["projects"].extend(
@@ -1321,10 +1582,14 @@ class TestSizeBudget:
                 json.dumps(result["projects"][index % len(result["projects"])])
             )
             project_template["path"] = grown["path"]
-            if project_template["result_artifact"]:
-                project_template["result_artifact"] = (
-                    f"evidence/projects/{grown['path'].replace('/', '-')}/result.json"
-                )
+            slug = grown["path"].replace("/", "-")
+            for lens_row in project_template["lenses"]:
+                if lens_row["result_artifact"]:
+                    lens_row["result_artifact"] = (
+                        f"evidence/projects/{slug}/{lens_row['lens']}/result.json"
+                    )
+                if lens_row["child"]:
+                    lens_row["child"]["label"] = f"{grown['path']}|{lens_row['lens']}"
             project_rows.append(project_template)
             follow_ups.extend(
                 {
@@ -1352,7 +1617,7 @@ class TestSizeBudget:
         )
 
     def test_every_row_stays_inside_its_documented_budget(self, scenario):
-        _, result = scenario
+        _, result, children = scenario
         for row in result["projects"]:
             size = len(json.dumps(row).encode())
             assert size < self.PROJECT_ROW_CAP_BYTES, (
@@ -1365,8 +1630,596 @@ class TestSizeBudget:
             )
 
     def test_at_most_five_follow_ups_per_project(self, scenario):
-        _, result = scenario
+        _, result, children = scenario
         per_project: dict[str, int] = {}
         for row in result["follow_ups"]:
             per_project[row["project"]] = per_project.get(row["project"], 0) + 1
         assert all(count <= 5 for count in per_project.values()), per_project
+
+
+class TestFanOutDeclaration:
+    """What the preset promises about delegation, before any run."""
+
+    def test_the_callable_list_is_explicit(self):
+        """The flow names the lenses it may start, with a bound on each.
+        A lens outside the list cannot be started at all: the preset says
+        so, and the platform refuses the call in the same words."""
+        data = _load_preset()
+        callable_flows = data["callable_flows"]
+        assert [entry["flow"] for entry in callable_flows] == list(LENS_SCHEMAS)
+        for entry in callable_flows:
+            assert entry["max_children"] == 12
+            assert 0 < entry["max_usd_per_child"] <= 3.0
+        norm = _norm(data["prompt_template"])
+        assert "THE CALLABLE LENSES ARE EXACTLY THESE" in norm
+        assert "the payload cannot add to the list" in norm
+        for lens, schema_id in LENS_SCHEMAS.items():
+            assert f"{lens} -> {schema_id}" in norm, f"lens table missing {lens}"
+        assert "A LENS ABSENT FROM THAT LIST IS REFUSED, NEVER SILENTLY SKIPPED" in norm
+        assert (
+            'record it in fan_out.lenses_refused with reason "not on the '
+            'callable list"' in norm
+        )
+        assert "The platform enforces the same rule server side" in norm
+        assert "TASK_STATE_REJECTED" in norm
+        assert 'preloop.ai/refusalReason "flow_not_callable"' in norm
+
+    def test_the_child_payload_is_the_repository_project_and_depth(self):
+        """One call per project per lens, carrying the repository path
+        selector, the project path and the depth knob, and nothing else."""
+        norm = _norm(_prompt())
+        assert "ONE CHILD EXECUTION PER PROJECT PER LENS" in norm
+        assert (
+            'run_flow( flow: "<lens slug>", payload: {"target_repo_path": '
+            '"<the checkout this run used>", "project_path": "<the path '
+            'discovery recorded>", "depth": "<the depth knob, unchanged>"}, '
+            'label: "<project path>|<lens slug>", max_cost_usd: '
+            "<max_cost_usd_per_child, default 2.0>, timeout_seconds: "
+            "<child_timeout_seconds, default 3600>)" in norm
+        )
+        assert "THAT PAYLOAD AND NOTHING ELSE" in norm
+        assert "Never send model or harness overrides" in norm
+        assert "THE PLAN, DETERMINISTIC" in norm
+        assert (
+            "For each selected project IN RANK ORDER, for each chosen lens in "
+            "the declared order, one planned call" in norm
+        )
+
+    def test_one_wait_covers_the_whole_fan_out_and_parks_the_run(self):
+        norm = _norm(_prompt())
+        assert "Pass wait: true ON THE LAST CALL ONLY" in norm
+        assert "a wait per call would serialise a fan out" in norm
+        assert "wait: true suspends this execution on WAITING_FOR_CHILDREN" in norm
+        assert "the timeout budget pauses while they run" in norm
+        assert "RESUMED AFTER THE FLOWS YOU STARTED FINISHED" in norm
+        assert "the full records are in the trigger payload under children" in norm
+        assert "DO NOT START THESE FLOWS AGAIN" in norm
+        assert "You resume ONCE for the fan out" in norm
+        assert "A run parks more than once over its life" in norm
+        assert "TERMINAL IS NOT SUCCESSFUL" in norm
+
+    def test_a_refusal_is_an_answer_and_a_ceiling_is_declared(self):
+        norm = _norm(_prompt())
+        assert "A REFUSAL IS AN ANSWER, NOT AN ERROR" in norm
+        assert (
+            "record the reason on that lens row, never retry it, never work "
+            "around it, and never count the project as reviewed" in norm
+        )
+        assert "CEILINGS THIS PRESET EXPECTS" in norm
+        assert (
+            "direct children of one execution: 25 (FLOW_DELEGATION_MAX_CHILDREN)"
+            in norm
+        )
+        assert "this flow's callable list entry per lens: 12 children" in norm
+        assert "a child of this run is depth 1, the instance cap is 2" in norm
+        assert "FLOW_DELEGATION_MAX_TREE_USD (50 USD by default)" in norm
+        assert (
+            "a parked parent waits FLOW_DELEGATION_CHILD_WAIT_SECONDS (6 hours)" in norm
+        )
+        assert "Never present a ceiling as a failure and never hide one" in norm
+
+    def test_the_lens_status_vocabulary_is_closed_and_says_not_checkable(self):
+        norm = _norm(_prompt())
+        assert "LENS_STATUS, CLOSED VOCABULARY" in norm
+        for status in (
+            "ran",
+            "failed",
+            "refused",
+            "expired",
+            "not_checkable",
+            "not_run",
+        ):
+            assert f'"{status}"' in norm, f"lens status missing: {status}"
+        assert 'THE WORD IS "not_checkable", NEVER "skipped"' in norm
+        assert "a skipped check reads as a choice and this is a missing input" in norm
+
+    def test_the_security_lens_is_gated_on_an_sbom(self):
+        norm = _norm(_prompt())
+        assert "THE SECURITY LENS NEEDS AN SBOM" in norm
+        assert (
+            "It is planned for a project only when PHASE 1 recorded one under "
+            "that project path (has_sbom true)" in norm
+        )
+        assert "Otherwise NO CHILD IS STARTED for it" in norm
+        assert (
+            'lens_status "not_checkable" with a non empty reason, "no SBOM '
+            'available"' in norm
+        )
+        assert "A not_checkable row is never a pass" in norm
+        assert "THE MISSING SBOM IS A FOLLOW UP, NOT A BLANK" in norm
+        assert (
+            'id "portfolio:<project path>:add-sbom-generation", title "add SBOM '
+            "generation to this project's build\"" in norm
+        )
+        assert (
+            "ONE PER PROJECT, NEVER TWO, AND NEVER FOR A PROJECT WHOSE SBOM "
+            "WAS FOUND" in norm
+        )
+        assert "sbom_paths and has_sbom" in norm
+        for pattern in SBOM_GLOBS:
+            assert pattern in norm, f"SBOM name missing from the preset: {pattern}"
+        assert "SIBLING PROJECT'S SBOM IS NOT THIS PROJECT'S SBOM" in norm
+
+    def test_cost_is_the_child_s_own_record(self):
+        norm = _norm(_prompt())
+        assert "COST IS THE CHILD'S, NEVER AN ESTIMATE" in norm
+        assert (
+            "A project's cost_usd is the sum of the recorded cost of that "
+            "project's children, exactly as the completion records report it "
+            "(preloop.ai/cost)" in norm
+        )
+        assert "a refused call cost nothing and contributes nothing" in norm
+        assert "a cost the records do not carry is null, never a guess" in norm
+        assert "rollup.children_cost_usd is the same sum over every child" in norm
+
+
+class TestFanOut:
+    """The recorded fan out: one child per selected project per lens."""
+
+    def test_three_projects_one_lens_start_three_children(self):
+        """The first acceptance criterion: three selected projects and one
+        lens produce exactly three child executions, each carrying its own
+        project path in the payload."""
+        result = _load_result("result-five-selected.json")
+        children = _load_children("result-five-selected.json")
+        assert result["fan_out"]["lenses"] == [LENS_SLUG]
+        assert len(result["selection"]["selected"]) == 3
+        calls = [call for call in children["calls"] if call["made"]]
+        assert len(calls) == 3
+        assert len(_child_records(children)) == 3
+        assert result["fan_out"]["children_planned"] == 3
+        assert result["fan_out"]["children_started"] == 3
+        payload_paths = []
+        for call in calls:
+            arguments = call["call"]["arguments"]
+            assert arguments["flow"] == LENS_SLUG
+            assert set(arguments["payload"]) == {
+                "target_repo_path",
+                "project_path",
+                "depth",
+            }
+            assert (
+                arguments["payload"]["target_repo_path"]
+                == (result["inputs_declared"]["target_repo_path"])
+            )
+            assert arguments["payload"]["depth"] == result["inputs_declared"]["depth"]
+            assert arguments["label"] == f"{call['project']}|{LENS_SLUG}"
+            payload_paths.append(arguments["payload"]["project_path"])
+        assert sorted(payload_paths) == sorted(result["selection"]["selected"])
+
+    def test_one_call_per_selected_project_per_chosen_lens(self, scenario):
+        _, result, children = scenario
+        discovered = {row["path"] for row in result["discovery"]["projects"]}
+        planned = [(call["project"], call["lens"]) for call in children["calls"]]
+        assert len(planned) == len(set(planned)), "a project and lens pair was "
+        for project, lens in planned:
+            assert project in discovered
+            assert lens in LENS_SCHEMAS, f"{lens} is not on the callable list"
+            assert lens in result["fan_out"]["lenses"]
+        assert len(planned) == result["fan_out"]["children_planned"]
+        assert len(planned) == result["coverage"]["lens_runs_planned"]
+
+    def test_the_payload_of_every_call_is_the_documented_one(self, scenario):
+        _, result, children = scenario
+        for call in children["calls"]:
+            if not call["made"]:
+                assert call["call"] is None
+                continue
+            arguments = call["call"]["arguments"]
+            assert call["call"]["tool"] == "run_flow"
+            assert set(arguments["payload"]) == {
+                "target_repo_path",
+                "project_path",
+                "depth",
+            }
+            assert arguments["payload"]["project_path"] == call["project"]
+            assert (
+                arguments["max_cost_usd"]
+                <= (result["fan_out"]["max_cost_usd_per_child"])
+            )
+            assert arguments["timeout_seconds"] > 0
+
+    def test_only_the_last_call_waits(self, scenario):
+        """One wait covers the whole fan out; a wait per call would run
+        the children one after another."""
+        _, result, children = scenario
+        made = [call for call in children["calls"] if call["made"]]
+        waits = [
+            index
+            for index, call in enumerate(made)
+            if call["call"]["arguments"].get("wait")
+        ]
+        if not made:
+            assert waits == []
+            return
+        assert waits == [len(made) - 1], "wait: true is not on the last call only"
+        assert result["fan_out"]["parked"] is True
+
+    def test_the_parent_resumes_with_one_row_per_child(self, scenario):
+        """One aggregated lens row per child execution, no more and no
+        less, each naming the child it came from."""
+        _, result, children = scenario
+        records = _child_records(children)
+        rows_with_children = [
+            row for _, row in _lens_rows(result) if row["child"] is not None
+        ]
+        assert len(rows_with_children) == len(records)
+        seen = [row["child"]["execution_id"] for row in rows_with_children]
+        assert sorted(seen) == sorted(records)
+        assert len(set(seen)) == len(seen), "a child was aggregated twice"
+        for path, row in _lens_rows(result):
+            if row["child"] is None:
+                continue
+            assert row["child"]["label"] == f"{path}|{row['lens']}"
+
+    def test_the_counters_add_up(self, scenario):
+        _, result, children = scenario
+        fan_out = result["fan_out"]
+        rollup = result["rollup"]
+        assert fan_out["children_planned"] == (
+            fan_out["children_started"] + len(fan_out["children_over_cap"])
+        )
+        assert fan_out["children_started"] == len(_child_records(children))
+        assert rollup["children_started"] == fan_out["children_started"]
+        assert rollup["children_started"] == (
+            rollup["children_succeeded"]
+            + rollup["children_failed"]
+            + rollup["children_refused"]
+            + rollup["children_expired"]
+        )
+
+    def test_child_records_match_the_frozen_delegation_shapes(self, scenario):
+        """The fixtures are the platform's own records, not a restatement
+        of them: they validate against the delegation schemas of #633."""
+        from preloop.a2a.delegation import (
+            validate_delegation_request,
+            validate_delegation_task,
+        )
+
+        _, result, children = scenario
+        for record in _child_records(children).values():
+            validate_delegation_task(record)
+            assert record["metadata"]["preloop.ai/depth"] == 1
+        for call in children["calls"]:
+            if call["request"] is None:
+                continue
+            validate_delegation_request(call["request"])
+            assert call["request"]["metadata"]["preloop.ai/depth"] == 1
+
+    def test_the_child_state_on_a_row_is_the_state_the_record_reports(self, scenario):
+        _, result, children = scenario
+        records = _child_records(children)
+        for _path, row in _lens_rows(result):
+            if row["child"] is None:
+                continue
+            record = records[row["child"]["execution_id"]]
+            assert row["child"]["state"] == record["metadata"]["preloop.ai/status"]
+            assert row["child"]["cost_usd"] == _cost_of(record)
+
+
+class TestChildOutcomes:
+    """A child that failed is reported as failed, never as healthy."""
+
+    @pytest.fixture()
+    def result(self) -> dict:
+        return _load_result("result-child-failed.json")
+
+    @pytest.fixture()
+    def children(self) -> dict:
+        return _load_children("result-child-failed.json")
+
+    def test_a_failed_child_is_reported_as_failed_and_never_healthy(
+        self, result, children
+    ):
+        project = next(
+            row for row in result["projects"] if row["path"] == "services/billing-api"
+        )
+        row = next(
+            lens for lens in project["lenses"] if lens["lens_status"] == "failed"
+        )
+        record = _child_records(children)[row["child"]["execution_id"]]
+        assert record["status"]["state"] == "TASK_STATE_FAILED"
+        assert record["metadata"]["preloop.ai/status"] == "FAILED"
+        assert record.get("artifacts") == []
+        assert row["verdict"] is None
+        assert row["health"] == "unknown"
+        assert row["reason"]
+        assert row["child"]["execution_id"] in row["reason"]
+        assert project["status"] != "healthy"
+        assert project["status"] == "unknown"
+        assert result["rollup"]["children_failed"] == 1
+        assert result["verdict"] != "pass"
+
+    def test_a_failed_child_leaves_its_project_uncovered(self, result):
+        not_reviewed = {
+            row["path"]: row["reason"] for row in result["coverage"]["not_reviewed"]
+        }
+        assert "services/billing-api" in not_reviewed
+        assert "failed" in not_reviewed["services/billing-api"]
+        assert result["coverage"]["plan_completed"] is False
+        assert result["coverage"]["lens_runs_completed"] == 1
+
+    def test_an_expired_child_is_expired_not_missing(self, result, children):
+        project = next(
+            row for row in result["projects"] if row["path"] == "services/notifications"
+        )
+        row = project["lenses"][0]
+        assert row["lens_status"] == "expired"
+        assert row["health"] == "unknown"
+        assert row["reason"]
+        assert row["child"]["execution_id"] in result["fan_out"]["wait_expired"]
+        assert result["rollup"]["children_expired"] == 1
+        assert project["status"] == "unknown"
+
+    def test_the_run_still_completed(self, result):
+        assert result["status"] == "success"
+        assert result["artifacts"]["children"] == "evidence/children.json"
+        assert result["verdict"] == _verdict(result)
+
+
+class TestChildCap:
+    """A ceiling is a coverage statement, not a failure."""
+
+    @pytest.fixture()
+    def result(self) -> dict:
+        return _load_result("result-child-cap.json")
+
+    @pytest.fixture()
+    def children(self) -> dict:
+        return _load_children("result-child-cap.json")
+
+    def test_the_cap_stops_the_fan_out_at_the_declared_number(self, result, children):
+        fan_out = result["fan_out"]
+        assert fan_out["child_cap"] == 5
+        assert fan_out["children_planned"] == 10
+        assert fan_out["children_started"] == fan_out["child_cap"]
+        assert len(fan_out["children_over_cap"]) == 5
+        assert len(_child_records(children)) == fan_out["child_cap"]
+
+    def test_the_projects_it_never_reached_are_listed_under_coverage(self, result):
+        """The fourth acceptance criterion: every project the cap kept the
+        run away from is named, with the cap as the reason."""
+        not_reviewed = {
+            row["path"]: row["reason"] for row in result["coverage"]["not_reviewed"]
+        }
+        unreached = {
+            project["path"]
+            for project in result["projects"]
+            if not any(row["lens_status"] == "ran" for row in project["lenses"])
+        }
+        assert unreached == {"libs/shared-utils", "tools/report-cli"}
+        for path in unreached:
+            assert path in not_reviewed, f"{path} was never reached and is not listed"
+            assert not_reviewed[path] == "child cap"
+        for row in result["fan_out"]["children_over_cap"]:
+            lens_row = next(
+                lens
+                for project in result["projects"]
+                if project["path"] == row["project"]
+                for lens in project["lenses"]
+                if lens["lens"] == row["lens"]
+            )
+            assert lens_row["lens_status"] == "not_run"
+            assert lens_row["reason"] == "child cap"
+            assert lens_row["child"] is None
+
+    def test_the_run_still_succeeds_with_a_complete_report(self, result):
+        assert result["status"] == "success"
+        assert result["coverage"]["plan_completed"] is False
+        assert result["verdict"] == _verdict(result) == "pass_with_findings"
+        for artifact in (
+            "report",
+            "register",
+            "findings",
+            "inventory",
+            "questions",
+            "children",
+        ):
+            assert result["artifacts"][artifact], f"missing artifact: {artifact}"
+        assert len(result["projects"]) == result["coverage"]["projects_discovered"]
+
+    def test_a_refused_call_is_recorded_and_never_retried(self, result, children):
+        rows = [row for _, row in _lens_rows(result) if row["lens_status"] == "refused"]
+        assert len(rows) == 1
+        row = rows[0]
+        record = _child_records(children)[row["child"]["execution_id"]]
+        assert record["status"]["state"] == "TASK_STATE_REJECTED"
+        assert record["metadata"]["preloop.ai/refusalReason"] == "budget_exceeded"
+        assert "preloop.ai/cost" not in record["metadata"]
+        assert row["reason"].startswith("budget_exceeded")
+        assert row["health"] == "unknown"
+        assert row["child"]["cost_usd"] is None
+        assert result["rollup"]["children_refused"] == 1
+        attempts = [
+            call
+            for call in children["calls"]
+            if call["project"] == "services/billing-api"
+            and call["lens"] == "repo-code-health-review"
+        ]
+        assert len(attempts) == 1, "a refused call was retried"
+
+
+class TestSecurityLens:
+    """The lens that needs an SBOM, and the follow up an absence buys."""
+
+    @pytest.fixture()
+    def result(self) -> dict:
+        return _load_result("result-security-lenses.json")
+
+    @pytest.fixture()
+    def children(self) -> dict:
+        return _load_children("result-security-lenses.json")
+
+    def test_the_security_lens_runs_only_where_an_sbom_exists(self, result, children):
+        discovery = {row["path"]: row for row in result["discovery"]["projects"]}
+        for project in result["projects"]:
+            row = next(
+                lens for lens in project["lenses"] if lens["lens"] == SECURITY_LENS_SLUG
+            )
+            if project["path"] not in result["selection"]["selected"]:
+                assert row["lens_status"] == "not_run"
+                continue
+            if discovery[project["path"]]["has_sbom"]:
+                assert row["lens_status"] == "ran"
+                assert row["child"] is not None
+            else:
+                assert row["lens_status"] == "not_checkable"
+                assert row["child"] is None, "a child was spent with no SBOM to read"
+        started = {
+            (call["project"], call["lens"])
+            for call in children["calls"]
+            if call["made"]
+        }
+        for project, lens in started:
+            if lens == SECURITY_LENS_SLUG:
+                assert discovery[project]["has_sbom"] is True
+
+    def test_a_project_without_an_sbom_is_not_checkable_and_never_healthy(self, result):
+        """The fifth acceptance criterion, asserted on the literal string
+        the family uses: not_checkable, with a reason, never skipped."""
+        project = next(
+            row for row in result["projects"] if row["path"] == "legacy/inventory-web"
+        )
+        row = next(
+            lens for lens in project["lenses"] if lens["lens"] == SECURITY_LENS_SLUG
+        )
+        assert row["lens_status"] == "not_checkable"
+        assert row["reason"] == NOT_CHECKABLE_REASON
+        assert row["reason"].strip()
+        assert row["verdict"] is None
+        assert row["health"] == "unknown"
+        # The docs lens passed on this project: the missing SBOM is what
+        # keeps it out of the healthy column.
+        assert any(
+            lens["lens_status"] == "ran" and lens["verdict"] == "pass"
+            for lens in project["lenses"]
+        )
+        assert project["status"] == "unknown"
+        assert result["rollup"]["by_health"]["healthy"] == 0
+        # The vocabulary is the family's: a missing input is not a choice.
+        prose = json.dumps(
+            [result["projects"], result["coverage"], result["follow_ups"]]
+        ).lower()
+        assert "skipped" not in prose
+
+    def test_exactly_one_add_sbom_follow_up_for_the_project_without_one(self, result):
+        """The sixth acceptance criterion: one follow up, never two, and
+        none at all for the project that already ships an SBOM."""
+        discovery = {row["path"]: row for row in result["discovery"]["projects"]}
+        per_project: dict[str, list[dict]] = {}
+        for row in result["follow_ups"]:
+            if row["id"].endswith(SBOM_FOLLOW_UP_SLUG):
+                per_project.setdefault(row["project"], []).append(row)
+        assert list(per_project) == ["legacy/inventory-web"]
+        rows = per_project["legacy/inventory-web"]
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["id"] == "portfolio:legacy/inventory-web:add-sbom-generation"
+        assert row["title"] == SBOM_FOLLOW_UP_TITLE
+        assert row["lens"] == SECURITY_LENS_SLUG
+        assert row["severity"] == "medium"
+        assert row["filed"] is False
+        # Pointer discipline: the project's own build manifest, file:line.
+        path, _, line_no = row["evidence"].rpartition(":")
+        assert path in discovery["legacy/inventory-web"]["manifests"]
+        assert int(line_no) >= 1
+        assert discovery["services/billing-api"]["has_sbom"] is True
+        assert not [
+            follow_up
+            for follow_up in result["follow_ups"]
+            if follow_up["project"] == "services/billing-api"
+            and follow_up["id"].endswith(SBOM_FOLLOW_UP_SLUG)
+        ]
+
+    def test_a_lens_off_the_callable_list_is_refused_not_skipped(
+        self, result, children
+    ):
+        """The eighth acceptance criterion: the payload named a fourth
+        lens, and the run recorded a refusal rather than dropping it."""
+        refused = result["fan_out"]["lenses_refused"]
+        assert refused == [
+            {"lens": "standards-compliance-walk", "reason": "not on the callable list"}
+        ]
+        assert refused[0]["lens"] not in LENS_SCHEMAS
+        assert refused[0]["lens"] not in result["fan_out"]["lenses"]
+        assert not [
+            call for call in children["calls"] if call["lens"] == refused[0]["lens"]
+        ], "a lens off the callable list was called anyway"
+
+    def test_the_sbom_facts_are_the_ones_the_tree_holds(self, scenario):
+        """Discovery's SBOM lookup is project-local and name based: a
+        sibling's SBOM is not this project's SBOM."""
+        repo, result, children = scenario
+        walked = {row["path"]: row for row in _walk(repo)["projects"]}
+        for row in result["discovery"]["projects"]:
+            assert row["sbom_paths"] == walked[row["path"]]["sbom_paths"]
+            assert row["has_sbom"] is bool(row["sbom_paths"])
+            for path in row["sbom_paths"]:
+                assert path.startswith(f"{row['path']}/")
+                assert (REPOS_DIR / repo / path).is_file()
+
+
+class TestChildCost:
+    """Cost is the child's own record, never an estimate."""
+
+    def test_per_project_cost_is_the_recorded_cost_of_its_children(self, scenario):
+        """The seventh acceptance criterion, asserted against the
+        execution records rather than against the report's own prose."""
+        _, result, children = scenario
+        records = _child_records(children)
+        for project in result["projects"]:
+            expected = 0.0
+            for row in project["lenses"]:
+                if row["child"] is None:
+                    continue
+                cost = _cost_of(records[row["child"]["execution_id"]])
+                assert row["child"]["cost_usd"] == cost
+                expected += cost or 0.0
+            assert project["cost_usd"] == pytest.approx(expected), (
+                f"{project['path']}: cost is not the sum of its children's"
+            )
+
+    def test_the_rollup_cost_is_the_sum_over_every_child(self, scenario):
+        _, result, children = scenario
+        total = sum(
+            _cost_of(record) or 0.0 for record in _child_records(children).values()
+        )
+        assert result["rollup"]["children_cost_usd"] == pytest.approx(total)
+        assert result["rollup"]["children_cost_usd"] == pytest.approx(
+            sum(project["cost_usd"] or 0.0 for project in result["projects"])
+        )
+
+    def test_a_refused_call_contributes_no_cost(self):
+        result = _load_result("result-child-cap.json")
+        children = _load_children("result-child-cap.json")
+        refused = [
+            record
+            for record in _child_records(children).values()
+            if record["status"]["state"] == "TASK_STATE_REJECTED"
+        ]
+        assert refused
+        for record in refused:
+            assert "preloop.ai/cost" not in record["metadata"]
+        assert result["rollup"]["children_cost_usd"] == pytest.approx(
+            sum(_cost_of(record) or 0.0 for record in _child_records(children).values())
+        )
