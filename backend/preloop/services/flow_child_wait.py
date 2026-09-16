@@ -891,9 +891,10 @@ async def _start_resume_execution(
     """Create and dispatch the execution that continues a parked parent.
 
     The claim is marked consumed in the same transaction as the PENDING
-    insert, so a crash cannot leave a resume nobody linked or a claim the
-    sweep would use twice. Dispatch happens after the commit: a failed
-    dispatch must not roll that write back.
+    insert (``FlowExecutionCRUD.create`` flushes only; it does not
+    commit), so a failed ``mark_park_resumed`` rolls the insert back with
+    the claim and cannot leave an orphan PENDING row. Dispatch happens
+    after the commit: a failed dispatch must not roll that write back.
 
     The resume inherits the parked run's lineage (parent, root, depth) rather
     than starting a new tree: a parent that is itself somebody's child stays

@@ -305,7 +305,7 @@ The parent's record then declares the coverage it reached, under
   "decision": "stop_children_with_parent",
   "stopped_at": "2026-09-16T09:12:44+00:00",
   "children_total": 3,
-  "counts": {"completed": 1, "stopped": 2, "finished_first": 0, "left_running": 0},
+  "counts": {"completed": 1, "finished": 0, "stopped": 2, "finished_first": 0, "left_running": 0},
   "own_cost_usd": 0.5,
   "tree_cost_usd": 1.2
 }

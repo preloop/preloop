@@ -483,6 +483,9 @@ class TestStatusTransitions:
         assert "WAITING_FOR_HUMAN" in values.values()
         assert 140 in values.values()
         assert not any("end_time" in str(key) for key in values)
+        clause = db.filters[0]
+        assert "stop_requested_at IS NULL" in clause
+        assert "parked_at IS NULL" in clause
 
     def test_negative_compute_seconds_are_floored(self):
         db = _FakeDB(rowcounts=[1])

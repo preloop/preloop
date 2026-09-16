@@ -65,7 +65,9 @@ PARK_KIND_CHILDREN = "children"
 WAITING_FOR_CHILDREN_STATUS = "WAITING_FOR_CHILDREN"
 
 #: Shape version of the coverage block, for the same reason.
-COVERAGE_SCHEMA_VERSION = 1
+#: v2 splits already-terminal children into ``completed`` (SUCCEEDED)
+#: and ``finished`` (any other terminal status).
+COVERAGE_SCHEMA_VERSION = 2
 
 #: Largest tree one stop walks. The depth and fan out caps already bound a
 #: tree far below this, but they are settings, and a walk that trusts a
@@ -86,6 +88,18 @@ MAX_COVERAGE_CHILDREN = 200
 def is_terminal_status(status: Any) -> bool:
     """True when an execution can no longer change on its own."""
     return str(status or "").upper() in crud_flow_execution.TERMINAL_EXECUTION_STATUSES
+
+
+def already_ended_outcome(status: Any) -> str:
+    """How an already-terminal child is recorded on the coverage.
+
+    ``completed`` is reserved for a child that succeeded. Any other
+    terminal status (FAILED, TIMEOUT, STOPPED, cancelled) is ``finished``
+    so the counts and the milestone do not call a failure completed.
+    """
+    if str(status or "").upper() == "SUCCEEDED":
+        return "completed"
+    return "finished"
 
 
 def parked_on_children(execution: Any) -> bool:
@@ -284,6 +298,7 @@ def build_coverage(
         "children_total": len(rows),
         "counts": {
             "completed": counts.get("completed", 0),
+            "finished": counts.get("finished", 0),
             "stopped": counts.get("stopped", 0),
             "finished_first": counts.get("finished_first", 0),
             "left_running": counts.get("left_running", 0),
@@ -321,6 +336,15 @@ async def stop_tree_for_stopped_parent(
         started nothing, in which case nothing at all is written and the stop
         is exactly the single execution stop it has always been.
     """
+    existing = (getattr(parent, "trigger_event_details", None) or {}).get(
+        STOP_COVERAGE_KEY
+    )
+    if isinstance(existing, dict) and existing.get("decision") == DECISION:
+        # A second stop must not rewrite the first coverage: park_kind stays
+        # for audit, so parked_on_children stays true and a retry would
+        # otherwise walk a now-terminal tree and report stopped: 0.
+        return existing
+
     moment = now or datetime.now(UTC)
     descendants, truncated = collect_subtree(db, parent=parent, account_id=account_id)
     resume = _resume_execution_of(db, parent)
@@ -336,7 +360,11 @@ async def stop_tree_for_stopped_parent(
         status_before = str(getattr(execution, "status", "") or "")
         if is_terminal_status(status_before):
             rows.append(
-                _child_row(execution, outcome="completed", status=status_before)
+                _child_row(
+                    execution,
+                    outcome=already_ended_outcome(status_before),
+                    status=status_before,
+                )
             )
             continue
         stopped = False
@@ -378,6 +406,52 @@ async def stop_tree_for_stopped_parent(
         await _signal_runtime(db, execution, nats_client=nats_client)
         rows.append(_child_row(execution, outcome="stopped", status="STOPPED"))
 
+    try:
+        db.refresh(parent)
+    except Exception:  # pragma: no cover - detached or mocked row
+        logger.debug("Could not refresh %s after the tree walk", parent.id)
+    late = _resume_execution_of(db, parent)
+    if late is not None and all(str(late.id) != row["execution_id"] for row in rows):
+        late_status = str(getattr(late, "status", "") or "")
+        if is_terminal_status(late_status):
+            rows.append(
+                _child_row(
+                    late,
+                    outcome=already_ended_outcome(late_status),
+                    status=late_status,
+                )
+            )
+        else:
+            late_stopped = False
+            try:
+                late_stopped = crud_flow_execution.stop_for_parent_stop(
+                    db, execution_id=late.id, reason=reason, now=moment
+                )
+            except Exception:
+                logger.exception(
+                    "Could not stop late resume %s of parent %s",
+                    late.id,
+                    parent.id,
+                )
+            if late_stopped:
+                _record_on_child(db, late, parent_execution_id=parent.id)
+                await _signal_runtime(db, late, nats_client=nats_client)
+                rows.append(_child_row(late, outcome="stopped", status="STOPPED"))
+            else:
+                refreshed = crud_flow_execution.get(db, id=str(late.id), refresh=True)
+                status_after = str(getattr(refreshed, "status", late_status) or "")
+                rows.append(
+                    _child_row(
+                        refreshed if refreshed is not None else late,
+                        outcome=(
+                            "finished_first"
+                            if is_terminal_status(status_after)
+                            else "left_running"
+                        ),
+                        status=status_after,
+                    )
+                )
+
     own_cost = _execution_cost(parent)
     coverage = build_coverage(
         decided_at=moment,
@@ -404,7 +478,8 @@ async def stop_tree_for_stopped_parent(
                 "message": (
                     "Stopped with the flows it started: "
                     f"{coverage['counts']['stopped']} stopped, "
-                    f"{coverage['counts']['completed']} already finished, "
+                    f"{coverage['counts']['completed']} succeeded, "
+                    f"{coverage['counts']['finished']} already ended, "
                     f"{coverage['counts']['finished_first']} finished during "
                     f"the stop; tree cost ${coverage['tree_cost_usd']:.4f}"
                 ),
@@ -436,10 +511,10 @@ def close_children_park(
     it returns, a child reaching a terminal state cannot claim the park and
     the sweep cannot list the row. Returns True when this call closed the
     park; False when the row was not parked on children (a plain running
-    execution, or a park a child had already claimed).
+    execution, or a park a child had already claimed). Also seals the
+    pre-park window: a still-RUNNING row that has requested a children
+    park but has not been confirmed yet.
     """
-    if str(getattr(parent, "status", "") or "") != WAITING_FOR_CHILDREN_STATUS:
-        return False
     closed = crud_flow_execution.close_children_park_for_stop(
         db,
         execution_id=parent.id,

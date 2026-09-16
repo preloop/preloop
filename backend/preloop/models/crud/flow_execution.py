@@ -1579,6 +1579,9 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         """
         db.query(models.FlowExecution).filter(
             models.FlowExecution.id == execution_id,
+            models.FlowExecution.status.notin_(tuple(self.TERMINAL_EXECUTION_STATUSES)),
+            models.FlowExecution.stop_requested_at.is_(None),
+            models.FlowExecution.parked_at.is_(None),
         ).update(
             {
                 models.FlowExecution.status: self.parked_status_for_kind(kind),
@@ -1734,24 +1737,35 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
     ) -> bool:
         """Close a park on children because an operator stopped the parent.
 
-        One conditional UPDATE, and it is the whole race: it matches only a
-        row still sitting on ``WAITING_FOR_CHILDREN``, so a child that
-        finishes at the same instant either claims the park first (and this
-        returns False, the caller then stops the resume it created) or claims
-        nothing, because the row is already ``STOPPED``. Both orders leave
-        exactly one outcome and no second resume.
+        One conditional UPDATE, and it is the whole race: it matches a row
+        still sitting on ``WAITING_FOR_CHILDREN``, or a still-live row that
+        has requested a children park but has not been confirmed yet. A
+        child that finishes at the same instant either claims the park first
+        (and this returns False, the caller then stops the resume it
+        created) or claims nothing, because the row is already ``STOPPED``.
+        Both orders leave exactly one outcome and no second resume.
 
         The park row is closed rather than left claimable: the expiry is
         cleared so no sweep looks at it again, while ``park_request_id`` and
-        ``park_kind`` stay for the audit trail.
+        ``park_kind`` stay for the audit trail. ``stop_source`` stays NULL
+        on this row: the operator stopped the parent, which is the same
+        provenance as a plain stop. ``parent_stop`` is reserved for
+        children this stop ends.
         """
         moment = now or datetime.now(timezone.utc)
         count = (
             db.query(models.FlowExecution)
             .filter(
                 models.FlowExecution.id == execution_id,
-                models.FlowExecution.status == self.WAITING_FOR_CHILDREN_STATUS,
                 models.FlowExecution.resume_execution_id.is_(None),
+                or_(
+                    models.FlowExecution.status == self.WAITING_FOR_CHILDREN_STATUS,
+                    and_(
+                        models.FlowExecution.status == "RUNNING",
+                        models.FlowExecution.park_kind == self.PARK_KIND_CHILDREN,
+                        models.FlowExecution.parked_at.is_(None),
+                    ),
+                ),
             )
             .update(
                 {
@@ -1763,7 +1777,6 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                         models.FlowExecution.stop_requested_at, moment
                     ),
                     models.FlowExecution.stop_reason: reason[:500],
-                    models.FlowExecution.stop_source: self.STOP_SOURCE_PARENT_STOP,
                     models.FlowExecution.orchestrator_worker_id: None,
                     models.FlowExecution.orchestrator_claimed_at: None,
                     models.FlowExecution.orchestrator_heartbeat_at: None,

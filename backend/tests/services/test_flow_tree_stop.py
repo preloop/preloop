@@ -186,6 +186,8 @@ async def test_stopping_a_parent_parked_on_three_children_leaves_none_running(
     db_session.refresh(parent)
     assert parent.status == "STOPPED"
     assert parent.end_time is not None
+    assert parent.stop_source is None
+    assert parent.error_message == "Manually stopped by user"
     for child in children:
         db_session.refresh(child)
         assert child.status == "STOPPED", child.id
@@ -303,6 +305,7 @@ async def test_a_child_that_already_finished_keeps_its_status_and_cost(
     coverage = _coverage(db_session, parent)
     assert coverage["counts"] == {
         "completed": 1,
+        "finished": 0,
         "stopped": 1,
         "finished_first": 0,
         "left_running": 0,
@@ -477,9 +480,10 @@ async def test_the_stopped_parent_declares_its_coverage_and_the_tree_cost(
 
     coverage = _coverage(db_session, parent)
     assert coverage["decision"] == "stop_children_with_parent"
-    assert coverage["schema_version"] == 1
+    assert coverage["schema_version"] == 2
     assert coverage["children_total"] == 3
-    assert coverage["counts"]["completed"] == 2
+    assert coverage["counts"]["completed"] == 1
+    assert coverage["counts"]["finished"] == 1
     assert coverage["counts"]["stopped"] == 1
     assert coverage["counts"]["left_running"] == 0
     assert coverage["own_cost_usd"] == pytest.approx(0.5)
@@ -488,7 +492,7 @@ async def test_the_stopped_parent_declares_its_coverage_and_the_tree_cost(
 
     by_id = {row["execution_id"]: row for row in coverage["children"]}
     assert by_id[str(done.id)]["outcome"] == "completed"
-    assert by_id[str(failed.id)]["outcome"] == "completed"
+    assert by_id[str(failed.id)]["outcome"] == "finished"
     assert by_id[str(failed.id)]["status"] == "FAILED"
     assert by_id[str(running.id)]["outcome"] == "stopped"
     assert by_id[str(running.id)]["flow_name"] == "Repository Review"
@@ -553,6 +557,115 @@ async def test_a_run_that_never_waited_for_its_children_is_not_a_tree_stop(
     assert parent.status == "STOPPED"
     assert child.status == "RUNNING"
     assert _coverage(db_session, parent) is None
+
+
+async def test_stop_during_the_pre_park_window_stays_stopped(
+    client, db_session, parent, child_flow
+):
+    """A stop after request_park and before confirm_park must not resume.
+
+    parked_on_children is already true in this window. Closing only
+    WAITING_FOR_CHILDREN used to leave the request in place; the monitor
+    then confirmed WAITING_FOR_CHILDREN over STOPPED and the sweep spent
+    after a stop.
+    """
+    children = [
+        _child(db_session, child_flow, parent, label=f"shard {index}")
+        for index in range(2)
+    ]
+    wait_id = uuid.uuid4()
+    assert crud_flow_execution.request_park(
+        db_session,
+        execution_id=parent.id,
+        approval_request_id=wait_id,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        kind="children",
+    )
+    db_session.refresh(parent)
+    assert parent.status == "RUNNING"
+    assert parent.park_kind == "children"
+    assert parent.parked_at is None
+
+    _stop(client, parent)
+
+    db_session.refresh(parent)
+    assert parent.status == "STOPPED"
+    assert parent.stop_requested_at is not None
+    assert parent.park_expires_at is None
+    assert parent.stop_source is None
+    crud_flow_execution.confirm_park(
+        db_session,
+        execution_id=parent.id,
+        compute_seconds=30,
+        kind="children",
+    )
+    db_session.refresh(parent)
+    assert parent.status == "STOPPED"
+    assert parent.parked_at is None
+
+    counts = await sweep_child_parks()
+    assert counts["resumed"] == 0
+    db_session.refresh(parent)
+    assert parent.status == "STOPPED"
+    assert parent.resume_execution_id is None
+    for child in children:
+        db_session.refresh(child)
+        assert child.status == "STOPPED"
+
+
+async def test_a_second_stop_keeps_the_first_coverage(
+    client, db_session, parent, child_flow
+):
+    """A retry must not report the first stop's children as already finished."""
+    _child(db_session, child_flow, parent)
+    _park(db_session, parent)
+
+    _stop(client, parent)
+    first = _coverage(db_session, parent)
+    assert first["counts"]["stopped"] == 1
+
+    _stop(client, parent)
+    second = _coverage(db_session, parent)
+    assert second == first
+    assert second["counts"]["stopped"] == 1
+    assert second["counts"]["completed"] == 0
+
+
+async def test_a_mid_flight_resume_create_does_not_leave_a_pending_row(
+    db_session, parent, parent_flow
+):
+    """create flushes only; a failed consume rolls the PENDING insert back."""
+    from preloop.services.flow_child_wait import _start_resume_execution
+
+    _park(db_session, parent)
+    db_session.refresh(parent)
+    # The parent is parked, not RESUMING, so mark_park_resumed refuses.
+    with (
+        patch(
+            "preloop.services.flow_execution_dispatcher.dispatch_execute",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "preloop.services.flow_execution_dispatcher.flow_execution_worker_enabled",
+            return_value=True,
+        ),
+        patch(
+            "preloop.services.model_routing.prepare_execution_routing",
+            side_effect=lambda db, flow, details, **kwargs: details,
+        ),
+        pytest.raises(RuntimeError, match="not a live RESUMING claim"),
+    ):
+        await _start_resume_execution(
+            db_session, parent_flow, parent, details={"payload": {}}
+        )
+
+    # Resume rows carry the parked run's lineage, not a parent link to it.
+    pending = (
+        db_session.query(type(parent))
+        .filter_by(status="PENDING", flow_id=parent.flow_id)
+        .all()
+    )
+    assert pending == []
 
 
 # --- the pieces, directly --------------------------------------------------
