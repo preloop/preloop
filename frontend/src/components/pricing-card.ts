@@ -1,5 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
+import { formatPlanPrice } from '../pricing-format';
 
 interface Plan {
   id: string;
@@ -43,55 +44,20 @@ export class PricingCard extends LitElement {
    * person or the whole bracket uses it, so no `/user` unit is ever printed.
    * Seat counts belong in the comparison table, not in the price.
    *
-   * `price_label` wins outright when set (Enterprise says "from $30k/yr"),
-   * because a plan whose price is a floor must not be rendered as if it were
-   * an exact amount.
+   * The headline, unit and note all come from `formatPlanPrice`, which the
+   * server-side render calls too, so the crawler-visible string and the one
+   * the visitor reads are produced by the same rule.
    */
   private formatPrice(plan: Plan) {
     // The highlighted card paints a saturated gradient behind this text, so
     // the secondary line cannot keep the neutral grey it uses on a flat card:
     // grey on purple failed contrast and was unreadable in review.
     const subClass = this._isPopular() ? 'price-sub on-highlight' : 'price-sub';
-    if (plan.price_label) {
-      return html`
-        <div class="price-main">${plan.price_label}</div>
-        ${
-          plan.price_note
-            ? html`<div class=${subClass}>${plan.price_note}</div>`
-            : null
-        }
-      `;
-    }
-
-    if (plan.id === 'enterprise') {
-      return html`<div class="price-main">Custom</div>`;
-    }
-
-    const isMonthly = this.interval === 'month';
-    const amount = isMonthly ? plan.price_monthly : plan.price_annually;
-    const unit = isMonthly ? '/mo' : '/yr';
-
-    if (amount === null) {
-      return html`<div class="price-main">Custom</div>`;
-    }
-
-    if (amount === 0) {
-      return html`<div class="price-main">$0</div>
-        ${
-          plan.price_note
-            ? html`<div class=${subClass}>${plan.price_note}</div>`
-            : null
-        }`;
-    }
-
-    // Annual plans are prepaid at 2 months free. The saving is stated by the
-    // plan's own copy rather than derived here: a computed "~$X/mo" reads
-    // like a second, cheaper monthly price and invites the wrong comparison.
-    const note = isMonthly ? plan.price_note : plan.price_note_annual;
+    const { headline, unit, note } = formatPlanPrice(plan, this.interval);
 
     return html`
-      <div class="price-main">$${amount.toLocaleString('en-US')}</div>
-      <div class="unit">${unit}</div>
+      <div class="price-main">${headline}</div>
+      ${unit ? html`<div class="unit">${unit}</div>` : null}
       ${note ? html`<div class=${subClass}>${note}</div>` : null}
     `;
   }

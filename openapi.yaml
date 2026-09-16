@@ -25022,6 +25022,11 @@ components:
           - type: string
           - type: 'null'
           title: Session Reference
+        parent_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Parent Session Id
         runtime_principal_type:
           anyOf:
           - type: string

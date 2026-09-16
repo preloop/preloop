@@ -1328,3 +1328,48 @@ def test_ai_model_summary_leaves_failures_since_null_when_unasked(
     assert body["last_failure_at"] is None
     assert body["last_failure_alias"] is None
     assert body["alias_failures"] == []
+
+
+def test_runtime_session_api_exposes_parent_session_id(client, db_session, test_user):
+    """Lineage is on the session API, and null for the sessions that have none.
+
+    Every session predating the subagent work, and every harness that never
+    says what spawned a turn, reads back ``null`` here. That is the normal
+    answer, not a missing field, so the key is always present.
+    """
+    parent = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="opencode",
+        session_source_id="cred-1:ses_parent",
+        runtime_principal_type="opencode",
+        runtime_principal_id="cred-1",
+        started_at=test_user.created_at,
+        last_activity_at=test_user.created_at,
+    )
+    child = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="opencode",
+        session_source_id="cred-1:ses_child",
+        runtime_principal_type="opencode",
+        runtime_principal_id="cred-1",
+        started_at=test_user.created_at,
+        last_activity_at=test_user.created_at,
+        parent_session_id=parent.id,
+    )
+    db_session.commit()
+
+    list_body = client.get("/api/v1/runtime-sessions").json()
+    listed = {item["id"]: item for item in list_body["items"]}
+
+    assert listed[str(parent.id)]["parent_session_id"] is None
+    assert listed[str(child.id)]["parent_session_id"] == str(parent.id)
+
+    parent_detail = client.get(f"/api/v1/runtime-sessions/{parent.id}")
+    child_detail = client.get(f"/api/v1/runtime-sessions/{child.id}")
+
+    assert parent_detail.status_code == 200
+    assert child_detail.status_code == 200
+    assert parent_detail.json()["session"]["parent_session_id"] is None
+    assert child_detail.json()["session"]["parent_session_id"] == str(parent.id)

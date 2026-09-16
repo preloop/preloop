@@ -525,6 +525,126 @@ GET_EXECUTION_TOOL: Dict[str, Any] = {
 }
 
 
+#: Sessions one ``search_sessions`` call returns when the caller says nothing.
+#: Five is a handful an agent can actually read; a wider question is answered
+#: by ``total``, which says how many sessions matched, not by a longer page.
+SEARCH_SESSIONS_DEFAULT_LIMIT = 5
+
+#: Most sessions one call may ask for. The response size cap is the real
+#: bound (see services/agent_session_search.py); this one keeps a caller from
+#: paying for ranking work whose results the cap would drop anyway.
+SEARCH_SESSIONS_MAX_LIMIT = 20
+
+#: Scope vocabulary. ``own`` is the calling agent's own sessions and is the
+#: default; ``account`` is every session of the account and needs the grant
+#: the tool refuses without.
+SEARCH_SESSIONS_SCOPE_OWN = "own"
+SEARCH_SESSIONS_SCOPE_ACCOUNT = "account"
+SEARCH_SESSIONS_SCOPES = (
+    SEARCH_SESSIONS_SCOPE_OWN,
+    SEARCH_SESSIONS_SCOPE_ACCOUNT,
+)
+
+
+SEARCH_SESSIONS_TOOL: Dict[str, Any] = {
+    "name": "search_sessions",
+    "description": (
+        "Search what past sessions did, ranked by relevance, before "
+        "repeating the work: whether that migration already ran, what the "
+        "last run concluded, what this user was already asked. Scope is "
+        "your own sessions unless you say otherwise. Asking for scope "
+        "'account' without the operator grant is refused by name "
+        "(account_scope_not_granted), never quietly narrowed, so a result "
+        "set always means what you asked for. Results are compact on "
+        "purpose: per session its reference, when the match happened, one "
+        "snippet with the matching words marked, and why it matched. The "
+        "whole answer is capped so a search cannot flood your context; when "
+        "it is, truncated is true, results_omitted says how many were "
+        "dropped and total says how many sessions matched, so narrow the "
+        "query or the time range rather than paging. The degraded block "
+        "says what the ranking could not do: with semantic ranking off, a "
+        "miss is a keyword miss and not proof the work was never done. No "
+        "match is an empty results list, not an error."
+    ),
+    "source": "builtin",
+    # Default-off, like the other read tools added since #128: an agent that
+    # never asks the corpus a question should not pay this schema's
+    # tools/list context tax, and the corpus itself is opt-in per deployment.
+    # A flow opts in through its tool allow-list, an account through the
+    # Tools page.
+    "default_enabled": False,
+    "requires_tracker": False,
+    "required_tracker_types": [],
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "What to look for, parsed the way a search box is: a "
+                    'quoted phrase ("rolling restart") stays a phrase, `or` '
+                    "alternates and a leading `-` excludes. Terms, not a "
+                    "sentence: the corpus is transcript text, so the words "
+                    "an earlier run would have used beat a description of "
+                    "what you want."
+                ),
+                "minLength": 1,
+                "maxLength": 512,
+            },
+            "scope": {
+                "type": "string",
+                "enum": list(SEARCH_SESSIONS_SCOPES),
+                "description": (
+                    "Whose sessions to search. 'own' (the default) is the "
+                    "sessions you ran. 'account' is every session of the "
+                    "account and is refused unless an operator has granted "
+                    "it to you."
+                ),
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["keyword", "semantic", "hybrid"],
+                "description": (
+                    "Requested ranking. Anything other than keyword is "
+                    "answered with keyword results and a degraded marker "
+                    "saying semantic ranking is not enabled, rather than an "
+                    "error."
+                ),
+            },
+            "start_date": {
+                "type": "string",
+                "format": "date-time",
+                "description": (
+                    "Only content at or after this instant. ISO 8601 with a "
+                    "timezone offset; a value without one is refused."
+                ),
+            },
+            "end_date": {
+                "type": "string",
+                "format": "date-time",
+                "description": (
+                    "Only content strictly before this instant. ISO 8601 "
+                    "with a timezone offset; a value without one is refused."
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": SEARCH_SESSIONS_MAX_LIMIT,
+                "description": (
+                    "Sessions to return, at most "
+                    f"{SEARCH_SESSIONS_MAX_LIMIT} and "
+                    f"{SEARCH_SESSIONS_DEFAULT_LIMIT} by default. The "
+                    "response size cap can still return fewer."
+                ),
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+
 def builtin_tools_with_ask_user(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Return ``tools`` with ``ASK_USER_TOOL`` inserted after request_approval."""
     result: List[Dict[str, Any]] = []

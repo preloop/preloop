@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -71,6 +72,20 @@ func exitHelperErr(t *testing.T, code int) error {
 		t.Fatalf("helper exit code = %d, want %d", exitErr.ExitCode(), code)
 	}
 	return err
+}
+
+func TestProcessExitCodeHonoursACommandChosenStatus(t *testing.T) {
+	outcome := &exitCodeError{code: 2, message: "No sessions matched."}
+	if got := ProcessExitCode(outcome); got != 2 {
+		t.Fatalf("ProcessExitCode() = %d, want 2", got)
+	}
+	if outcome.Error() != "No sessions matched." {
+		t.Fatalf("the message must be the line already printed, got %q", outcome.Error())
+	}
+	wrapped := fmt.Errorf("searching sessions: %w", outcome)
+	if got := ProcessExitCode(wrapped); got != 2 {
+		t.Fatalf("a wrapped outcome must keep its status, got %d", got)
+	}
 }
 
 func TestWrapProcessExitLeavesNonChildErrors(t *testing.T) {

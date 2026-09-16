@@ -132,8 +132,8 @@ export interface PricingPlan {
   /**
    * Which pricing tab the plan belongs to. `cloud` plans are the hosted
    * subscriptions shown with the billing period toggle and the comparison
-   * table; `dedicated` plans are quoted (self-managed or dedicated) and are
-   * shown alongside the deployment options instead. An explicit value is
+   * table; `dedicated` plans are quoted (self-managed or dedicated) and
+   * belong on the Dedicated tab. An explicit value is
    * honoured so EE brands.yaml can route a plan without a catalog change.
    * When unset, a configured `catalog_path` tags the plan from the billing
    * catalog; otherwise the tab defaults to `cloud`.
@@ -169,23 +169,49 @@ export interface PricingComparison {
   groups: PricingComparisonGroup[];
 }
 
-export interface PricingDeploymentOption {
-  title: string;
-  description: string;
-  cta_text: string;
-  cta_url: string;
+/**
+ * The Dedicated tab: self-managed and quoted editions.
+ *
+ * These are not subscriptions in `plans.yaml`, so there is no catalog to
+ * generate them from and the brand states them directly. The shape is
+ * deliberately the same as the Cloud tab (cards plus one comparison table) so
+ * both tabs render through exactly the same code and cannot drift into two
+ * different layouts. Only the columns differ.
+ *
+ * No billing period applies here: an open-source edition is free and a quoted
+ * edition is agreed per year, so these plans carry a `price_label` rather
+ * than a monthly/annual pair.
+ *
+ * Replaces the old `deployment_options` list. That key is no longer read
+ * (unknown keys are ignored), so a leftover block renders nothing. Author
+ * this block in brands.yaml; the EE Preloop brand already ships it.
+ */
+export interface PricingDedicated {
+  /** Tab and section label. Defaults to "Dedicated". */
+  label?: string;
+  /** Optional one-line intro under the section heading. */
+  lead?: string;
+  plans: PricingPlan[];
+  comparison?: PricingComparison;
 }
 
 export interface PricingConfig {
-  deployment_options?: PricingDeploymentOption[];
   /** Optional catalog path relative to brands.yaml; required for EE cloud pricing. */
   catalog_path?: string;
   enabled?: boolean;
   title?: string;
   lead?: string;
+  /** Tab and section label for the hosted ladder. Defaults to "Cloud". */
+  cloud_label?: string;
   billing_toggle?: boolean;
   plans: PricingPlan[];
   comparison?: PricingComparison;
+  /**
+   * Dedicated tab (cards plus one comparison table). Replaces
+   * `deployment_options`. Omit only for a cloud-only brand; a leftover
+   * `deployment_options` key is ignored and will not render.
+   */
+  dedicated?: PricingDedicated;
   faqs?: PricingFAQ[];
 }
 

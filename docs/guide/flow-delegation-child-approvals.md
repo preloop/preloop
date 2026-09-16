@@ -26,10 +26,10 @@ Two things still have to be got right, and neither is approval routing:
 1. A parent must read a parked child's outcome through the execution that
    continued it (`flow_execution.resume_execution_id`), not off the parked row,
    which is closed with a terminal status and a null `result`.
-2. The execution that continues a parked run does not carry the lineage
-   columns of the run it continues, so a child that parks currently leaves the
-   delegation tree. That is the one defect this spike found, and it is filed as
-   a follow up.
+2. The execution that continues a parked run must carry the lineage columns of
+   the run it continues, or a child that parks leaves the delegation tree.
+   That is the one defect this spike found; it is fixed (see the follow up
+   below).
 
 ## What happens today
 
@@ -215,23 +215,22 @@ them:
 
 ## The follow up
 
-A continuation created for a parked run is created with only
-`flow_id`, `status` and `trigger_event_details`
-(`backend/preloop/services/approval_park.py:394`), so
-`parent_execution_id`, `root_execution_id` and `delegation_depth` fall back to
-null, null and 0. Today that is invisible, because nothing writes lineage yet.
-The moment delegation writes it, a child that parks on a question drops out of
-its tree: the console tree loses the branch, a cost rollup keyed on the root
-undercounts the continuation, and a depth cap stops counting the hops it
-already spent.
+A continuation created for a parked run used to be created with only
+`flow_id`, `status` and `trigger_event_details`, so `parent_execution_id`,
+`root_execution_id` and `delegation_depth` fell back to null, null and 0. That
+was invisible while nothing wrote lineage. The moment delegation writes it, a
+child that parks on a question would drop out of its tree: the console tree
+loses the branch, a cost rollup keyed on the root undercounts the
+continuation, and a depth cap stops counting the hops it already spent.
 
-The fix is small and is one pull request: carry the parked row's lineage
-unchanged onto the continuation. Unchanged, not incremented, because a
+The fix was small and is one pull request: `_start_resume_execution`
+(`backend/preloop/services/approval_park.py`) now carries the parked row's
+lineage unchanged onto the continuation. Unchanged, not incremented, because a
 continuation is the same logical child carrying on, not a new one: the park
 link is already expressed by `resume_execution_id`, and incrementing the depth
 would let a question a human answered consume a delegation hop.
 
-Filed as [#707](https://github.com/preloop/preloop/issues/707).
+Filed and fixed as [#707](https://github.com/preloop/preloop/issues/707).
 
 ## Pinned behaviour
 
@@ -244,5 +243,5 @@ so the recommendations cannot quietly stop being true:
   bounded by the account cap
 - `WAITING_FOR_HUMAN` maps to `TASK_STATE_INPUT_REQUIRED`, is not terminal and
   is not in the set of statuses that close a parked parent
-- a continuation is created with the parked run's trigger context and, today,
-  without its lineage; that last test is the one #707 flips
+- a continuation is created with the parked run's trigger context and with its
+  lineage carried across unchanged, including a root run that has none

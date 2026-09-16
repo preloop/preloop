@@ -159,9 +159,11 @@ export function applyPricingCatalog(
         price_monthly: monthly ?? null,
         price_annually: annual ?? null,
         price_label: isContact ? p.price_label : undefined,
+        // Both notes are left unset on purpose: `formatPlanPrice` derives the
+        // period line from these exact numbers, so the card, the SSR markup
+        // and the catalog can never state three different things.
         price_note: undefined,
-        price_note_annual:
-          isContact || !annual ? undefined : `${money(annual)} billed annually`,
+        price_note_annual: undefined,
         tagline:
           entry.id === 'free'
             ? 'Start with your own provider keys.'

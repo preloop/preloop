@@ -480,20 +480,59 @@ async function performFetchWithAuth(
 }
 
 /**
+ * What the checkout endpoint answered.
+ *
+ * The server always names its own outcome: `action` says what the client
+ * should do, `code` identifies the case for tests and logs, and `message` is
+ * a plain sentence written for the person who clicked. The client never
+ * invents a sentence when the server sent one. An older server may omit
+ * `message` on `refresh`; the helper fills a speakable fallback so the
+ * modal cannot go silent.
+ */
+export interface CheckoutOutcome {
+  /** `redirect`, `refresh`, or whatever a future server adds. */
+  action: string;
+  /** Stable machine-readable case, e.g. `subscription_exists`. */
+  code?: string;
+  /** Sentence to show the user. Server words when present. */
+  message: string;
+  /** Present for `redirect`; the page is already navigating. */
+  url?: string;
+}
+
+/**
+ * Event asking any mounted billing view to re-read the subscription summary.
+ *
+ * Reused verbatim from the plan comparison so there is one refresh signal in
+ * the app rather than two. Dispatched on `window` here because this module has
+ * no element to bubble from.
+ */
+export const BILLING_SUBSCRIPTION_CHANGED = 'billing-subscription-changed';
+
+let _checkoutInFlight = false;
+
+/**
  * Start a Stripe checkout from inside the console (upgrade-modal flow).
  *
  * ``returnTo`` must be a same-origin path; checkout-success reconciles the
  * subscription by session_id (webhook-independent) and redirects back there.
- * Single shared helper — the modal, pricing page, and any future upgrade
+ * Single shared helper: the modal, pricing page, and any future upgrade
  * button all call this, so plan/interval/return handling never drifts.
+ *
+ * Resolves for every outcome the server considers normal, including the ones
+ * that do not navigate: a caller that only awaits this call still gets a
+ * sentence to display. Only a refusal (non-2xx) or a body the client cannot
+ * act on throws, and then the thrown message is the server's own whenever it
+ * sent one.
+ *
+ * @returns The server's outcome, or `null` when a checkout is already running.
  */
-let _checkoutInFlight = false;
 export async function startCheckout(
   planId: string,
   interval: 'month' | 'year',
   returnTo?: string
-): Promise<void> {
-  if (_checkoutInFlight) return; // double-click guard: one Stripe tab
+): Promise<CheckoutOutcome | null> {
+  if (_checkoutInFlight) return null; // double-click guard: one Stripe tab
   _checkoutInFlight = true;
   try {
     const response = await fetchWithAuth(
@@ -523,12 +562,41 @@ export async function startCheckout(
             : 'Checkout is unavailable. Review the current plans or try again.';
       throw new Error(message);
     }
-    const result = await response.json();
-    if (result.action === 'redirect' && result.url) {
-      window.location.href = result.url;
-      return;
+    const result = await response.json().catch(() => ({}));
+    const message =
+      typeof result?.message === 'string' && result.message.trim()
+        ? result.message
+        : '';
+    const outcome: CheckoutOutcome = {
+      action: typeof result?.action === 'string' ? result.action : '',
+      code: typeof result?.code === 'string' ? result.code : undefined,
+      message,
+      url: typeof result?.url === 'string' ? result.url : undefined,
+    };
+    if (outcome.action === 'redirect' && outcome.url) {
+      window.location.href = outcome.url;
+      return outcome;
     }
-    throw new Error('Unexpected checkout response');
+    if (outcome.action === 'refresh') {
+      // Nothing to buy: the account already has what it was about to check
+      // out, so the stale view is the whole problem. Ask the billing views to
+      // re-read the summary and hand the sentence back instead of throwing,
+      // because this is a success for the user even though no tab opened.
+      // An older server omits `message`; do not let the dialog go silent.
+      if (!outcome.message) {
+        outcome.message =
+          'Your subscription is already up to date. Nothing was charged.';
+      }
+      window.dispatchEvent(new CustomEvent(BILLING_SUBSCRIPTION_CHANGED));
+      return outcome;
+    }
+    // An action this build cannot perform. The server still explained itself,
+    // and its sentence beats "Unexpected checkout response", which told the
+    // person who clicked nothing at all.
+    throw new Error(
+      message ||
+        'Checkout could not be started. Review the current plans or try again.'
+    );
   } finally {
     _checkoutInFlight = false;
   }

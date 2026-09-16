@@ -110,6 +110,15 @@ export class ConsoleShell extends LitElement {
   @state()
   private _upgradeError = '';
 
+  /**
+   * A non-error answer from checkout, in the server's own words.
+   *
+   * Kept apart from `_upgradeError` because "you already have this plan" is
+   * not a failure and must not be announced as one.
+   */
+  @state()
+  private _upgradeNotice = '';
+
   @state()
   private features: FeaturesResponse['features'] = {};
 
@@ -411,6 +420,7 @@ export class ConsoleShell extends LitElement {
   private async _startUpgradeCheckout() {
     this._upgradeStarting = true;
     this._upgradeError = '';
+    this._upgradeNotice = '';
     try {
       // Land back exactly where the gate was hit once checkout-success
       // reconciles the new subscription (webhook-independent).
@@ -419,14 +429,22 @@ export class ConsoleShell extends LitElement {
       // every gated feature. Features gated above it (RBAC, team approvals)
       // send the visitor to the plan list instead of this button, which is
       // why the modal keeps a "View plans" route alongside it.
-      await startCheckout(
+      const outcome = await startCheckout(
         UPGRADE_PLAN_ID,
         'month',
         window.location.pathname + window.location.search
       );
+      // A redirect is already navigating, so the modal keeps its spinner and
+      // this frame is about to be replaced. Every other answer means the
+      // person is still looking at this dialog and deserves to read why no
+      // tab opened, in the server's words.
+      if (outcome && outcome.action !== 'redirect') {
+        this._upgradeNotice = outcome.message;
+        this._upgradeStarting = false;
+      }
     } catch (error) {
       this._upgradeError =
-        error instanceof Error
+        error instanceof Error && error.message
           ? error.message
           : 'Checkout is unavailable. Review the current plans or try again.';
       this._upgradeStarting = false;
@@ -672,6 +690,11 @@ export class ConsoleShell extends LitElement {
               unlock it.`
         }
         ${this._upgradeError ? html`<p role="alert">${this._upgradeError}</p>` : nothing}
+        ${
+          this._upgradeNotice
+            ? html`<p role="status">${this._upgradeNotice}</p>`
+            : nothing
+        }
         <sl-button slot="footer" href="/console/settings/account">
           View plans
         </sl-button>

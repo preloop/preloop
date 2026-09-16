@@ -21,6 +21,7 @@ from preloop.models.crud import (
     crud_account_halt,
     crud_ai_model,
     crud_api_key,
+    crud_runtime_session,
 )
 from preloop.models.models.api_usage import ApiUsage
 from preloop.services.kill_switch import invalidate_kill_switch_cache
@@ -485,3 +486,180 @@ def test_embeddings_upstream_failure_records_error_row(
     assert rows[0].status_code == 502
     assert rows[0].meta_data["endpoint_kind"] == "embeddings"
     assert rows[0].error_class == "upstream_error"
+
+
+def _opencode_runtime_key(db_session, test_user):
+    """Durable OpenCode credential so native parent headers are trusted."""
+    api_key, presented_token = crud_api_key.create_runtime_key(
+        db_session,
+        name="OpenCode Durable Credential",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={
+            "credential_kind": "managed_agent_durable",
+            "runtime_principal": {
+                "type": "opencode",
+                "id": "opencode-64fd76044120",
+                "name": "opencode",
+            },
+        },
+    )
+    return api_key, presented_token
+
+
+def _create_chat_model(db_session, account_id):
+    return crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Gateway Chat Model",
+            "provider_name": "openai",
+            "model_identifier": "gpt-5",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openai/gpt-5",
+                    "provider_adapter": "preloop",
+                },
+                "pricing": {
+                    "input_price_per_1k": 0.01,
+                    "output_price_per_1k": 0.02,
+                },
+            },
+            "is_default": True,
+        },
+        account_id=account_id,
+    )
+
+
+def test_embeddings_pass_derived_parent_to_gateway_service(
+    app, client, db_session, test_user
+):
+    """`/v1/embeddings` must pass the same derived parent as chat and responses."""
+    api_key, _ = _opencode_runtime_key(db_session, test_user)
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user, api_key=api_key)
+    )
+
+    for headers, expected_session, expected_parent in (
+        (
+            {
+                "X-Session-Id": "ses_child",
+                "X-Parent-Session-Id": "ses_parent",
+            },
+            "ses_child",
+            "ses_parent",
+        ),
+        (
+            {
+                "X-Session-Id": "ses_child",
+                "X-Parent-Session-Id": "ses_parent",
+                "X-Preloop-Session-Id": "explicit-run",
+            },
+            "explicit-run",
+            None,
+        ),
+    ):
+        with patch(
+            "preloop.api.endpoints.openai_gateway.OpenAIGatewayService"
+        ) as service_cls:
+            service_cls.return_value.alias_collision_warning = None
+            service_cls.return_value.create_embedding.return_value = {
+                "object": "list",
+                "data": [],
+            }
+            response = client.post(
+                EMBEDDINGS_URL,
+                headers={"Authorization": "Bearer ignored", **headers},
+                json={"model": f"openai/{FIXTURE_MODEL}", "input": "hello"},
+            )
+
+        assert response.status_code == 200
+        kwargs = service_cls.call_args.kwargs
+        assert kwargs["client_session_id"] == expected_session
+        assert kwargs["client_parent_session_id"] == expected_parent
+
+
+def test_embedding_first_opencode_subagent_records_parent_over_http(
+    app, client, db_session, test_user
+):
+    """Embedding-first OpenCode subagent keeps X-Parent-Session-Id on the row.
+
+    A later chat turn on the same session must not leave parent_session_id NULL.
+    """
+    _create_embedding_model(db_session, test_user.account_id)
+    _create_chat_model(db_session, test_user.account_id)
+    api_key, _ = _opencode_runtime_key(db_session, test_user)
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user, api_key=api_key)
+    )
+    child_headers = {
+        "Authorization": "Bearer ignored",
+        "X-Session-Id": "ses_f599dfca1ffe933RP1BLey87Mr",
+        "X-Parent-Session-Id": "ses_f599e0060ffe4gLnO1q69ZcNFw",
+    }
+
+    with (
+        patch(LITELLM_EMBEDDING, return_value=_upstream_response()),
+        patch(
+            "preloop.services.openai_gateway.litellm.completion",
+            return_value={
+                "id": "chatcmpl_lineage",
+                "created": 1710000000,
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 3,
+                    "total_tokens": 8,
+                },
+            },
+        ),
+    ):
+        embedding_response = client.post(
+            EMBEDDINGS_URL,
+            headers=child_headers,
+            json={"model": f"openai/{FIXTURE_MODEL}", "input": "hello"},
+        )
+        chat_response = client.post(
+            "/openai/v1/chat/completions",
+            headers=child_headers,
+            json={
+                "model": "openai/gpt-5",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    assert embedding_response.status_code == 200
+    assert chat_response.status_code == 200
+    embedding_row = _usage_rows(db_session, test_user.account_id)[0]
+    child = crud_runtime_session.get_account_session(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(embedding_row.runtime_session_id),
+    )
+    assert child is not None
+    assert child.parent_session_id is not None
+    parent = crud_runtime_session.get_account_session(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(child.parent_session_id),
+    )
+    assert parent is not None
+    assert parent.session_source_id.endswith(":ses_f599e0060ffe4gLnO1q69ZcNFw")
+    chat_rows = (
+        db_session.query(ApiUsage)
+        .filter(
+            ApiUsage.account_id == test_user.account_id,
+            ApiUsage.endpoint == "/openai/v1/chat/completions",
+        )
+        .all()
+    )
+    assert len(chat_rows) == 1
+    assert str(chat_rows[0].runtime_session_id) == str(child.id)
+    db_session.refresh(child)
+    assert child.parent_session_id == parent.id

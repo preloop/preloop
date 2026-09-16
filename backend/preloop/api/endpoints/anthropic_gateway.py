@@ -8,6 +8,10 @@ from fastapi import APIRouter, Body, Depends, Header
 from sqlalchemy.orm import Session
 
 from preloop.models.db.session import get_db_session
+from preloop.services.agent_session_headers import (
+    CLAUDE_CODE_AGENT_ID_HEADER,
+    claude_code_session_lineage,
+)
 from preloop.services.model_gateway_auth import (
     ModelGatewayAuthContext,
     authenticate_bearer_token,
@@ -64,6 +68,9 @@ def create_message(
     x_claude_code_session_id: Optional[str] = Header(
         None, alias="X-Claude-Code-Session-Id"
     ),
+    x_claude_code_agent_id: Optional[str] = Header(
+        None, alias=CLAUDE_CODE_AGENT_ID_HEADER
+    ),
     anthropic_version: Optional[str] = Header(None, alias="anthropic-version"),
     anthropic_beta: Optional[str] = Header(None, alias="anthropic-beta"),
 ) -> Any:
@@ -79,13 +86,25 @@ def create_message(
     gets its own runtime session instead of every run on a machine collapsing
     onto one eternal session row. Preloop's own header still wins when both are
     present, so an explicit per-run id is never overridden.
+
+    A subagent's turns carry the parent's session id plus their own
+    ``X-Claude-Code-Agent-Id``, so they are keyed by both and record the
+    session they were spawned from (see
+    :func:`preloop.services.agent_session_headers.claude_code_session_lineage`).
+    A turn without that header is a parent turn and is keyed exactly as before.
     """
+    lineage = claude_code_session_lineage(
+        x_claude_code_session_id, x_claude_code_agent_id
+    )
     service = OpenAIGatewayService(
         db,
         auth_context,
         budget_enforcer=budget_enforcer,
         owns_db_session=True,
-        client_session_id=x_preloop_session_id or x_claude_code_session_id,
+        client_session_id=x_preloop_session_id or lineage.session_id,
+        client_parent_session_id=(
+            None if x_preloop_session_id else lineage.parent_session_id
+        ),
     )
     if payload.get("stream"):
         return GatewayStreamingResponse(

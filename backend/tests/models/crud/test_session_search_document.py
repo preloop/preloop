@@ -430,3 +430,25 @@ def test_deleting_source_orphans_skips_held_sessions(db_session, test_user):
         )
         == 0
     )
+
+
+def test_replace_source_chunks_reuses_supplied_existing_rows(db_session, test_user):
+    """The backfill walk can skip a second list_for_source on the same source."""
+    from unittest.mock import patch
+
+    session = _session(db_session, test_user.account_id)
+    stored = _write(db_session, test_user.account_id, session, "one")
+    with patch.object(type(crud_session_search_document), "list_for_source") as listed:
+        again = crud_session_search_document.replace_source_chunks(
+            db_session,
+            account_id=test_user.account_id,
+            runtime_session_id=session.id,
+            source_kind=SOURCE_KIND_TRANSCRIPT_MESSAGE,
+            source_id="message-1",
+            occurred_at=OCCURRED_AT,
+            chunks=_chunks("one"),
+            existing=stored,
+        )
+
+    listed.assert_not_called()
+    assert [row.id for row in again] == [row.id for row in stored]

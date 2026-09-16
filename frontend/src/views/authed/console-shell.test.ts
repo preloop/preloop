@@ -928,6 +928,99 @@ describe('ConsoleShell', () => {
       ).to.include('Refresh the plan comparison');
     });
 
+    /** Answer the checkout endpoint, leaving every other request alone. */
+    function answerCheckout(body: unknown, status = 200) {
+      fetchStub
+        .withArgs('/api/v1/billing/create-checkout-session', sinon.match.any)
+        .resolves(
+          new Response(JSON.stringify(body), {
+            status,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        );
+    }
+
+    it('shows the reason in the modal when there is nothing to check out', async () => {
+      // The founder's trial had already been replaced by a live subscription
+      // when he clicked. The click was correct, the modal was stale, and the
+      // dialog said "Unexpected checkout response".
+      const el = await openGate('session_titles');
+      answerCheckout({
+        action: 'refresh',
+        code: 'subscription_exists',
+        message:
+          'Your account already has a Pro subscription (status: active), so there is nothing to check out.',
+      });
+
+      await (el as any)._startUpgradeCheckout();
+      await el.updateComplete;
+
+      const notice = el.shadowRoot?.querySelector('[role="status"]');
+      expect(notice, 'expected the reason in the dialog').to.exist;
+      expect(notice?.textContent).to.contain('already has a Pro subscription');
+      expect(notice?.textContent).to.contain('status: active');
+      // Nothing failed, so nothing is announced as a failure.
+      expect(el.shadowRoot?.querySelector('[role="alert"]')).to.not.exist;
+      expect(copy(el)).to.not.contain('Unexpected checkout response');
+    });
+
+    it('shows a status line when a refresh answer has no server sentence', async () => {
+      const el = await openGate('session_titles');
+      answerCheckout({ action: 'refresh' });
+
+      await (el as any)._startUpgradeCheckout();
+      await el.updateComplete;
+
+      const notice = el.shadowRoot?.querySelector('[role="status"]');
+      expect(notice, 'expected a visible sentence').to.exist;
+      expect(notice?.textContent).to.contain('already up to date');
+      expect(el.shadowRoot?.querySelector('[role="alert"]')).to.not.exist;
+    });
+
+    it('stops the button spinning when checkout does not navigate', async () => {
+      const el = await openGate('session_titles');
+      answerCheckout({
+        action: 'refresh',
+        code: 'subscription_exists',
+        message:
+          'Your account already has a Pro subscription (status: active).',
+      });
+
+      await (el as any)._startUpgradeCheckout();
+      await el.updateComplete;
+
+      expect((el as any)._upgradeStarting).to.be.false;
+    });
+
+    it('repeats a deployment refusal verbatim, including the fix', async () => {
+      // 503 catalog_not_synced is the operator's instruction. Any rewording
+      // here turns a fixable deployment gap into a mystery.
+      const el = await openGate('session_titles');
+      const message =
+        'Pro is not available for purchase yet. Ask an administrator to sync the plan catalog.';
+      answerCheckout({ detail: { code: 'catalog_not_synced', message } }, 503);
+
+      await (el as any)._startUpgradeCheckout();
+      await el.updateComplete;
+
+      expect(
+        el.shadowRoot?.querySelector('[role="alert"]')?.textContent
+      ).to.equal(message);
+    });
+
+    it('explains an unreadable answer instead of naming its own confusion', async () => {
+      const el = await openGate('session_titles');
+      answerCheckout({});
+
+      await (el as any)._startUpgradeCheckout();
+      await el.updateComplete;
+
+      const text =
+        el.shadowRoot?.querySelector('[role="alert"]')?.textContent ?? '';
+      expect(text).to.not.contain('Unexpected checkout response');
+      expect(text).to.contain('Checkout could not be started');
+    });
+
     it('offers a route to the full plan list for higher-tier features', async () => {
       const el = await openGate('session_optimization');
       const link = el.shadowRoot?.querySelector(

@@ -73,6 +73,10 @@ describe('Public pricing from billing catalog', () => {
     const result = applyPricingCatalog(config, catalog());
     expect(result.plans[1].price_monthly).to.equal(10);
     expect(result.plans[1].price_annually).to.equal(100);
+    // The card derives the period line from these two numbers, so the catalog
+    // must not also hand it a pre-baked sentence that could disagree.
+    expect(result.plans[1].price_note).to.equal(undefined);
+    expect(result.plans[1].price_note_annual).to.equal(undefined);
     const row = result.comparison!.groups[0].rows.find(
       (r) => r.label === 'Analytics history'
     )!;
@@ -196,6 +200,44 @@ describe('Public pricing from billing catalog', () => {
       '/request-demo'
     );
   });
+  it('passes an authored dedicated block through untouched', () => {
+    // Editions are not in plans.yaml: there is no catalog to verify them
+    // against, so the brand's own block is the source of truth and the
+    // catalog step must not rewrite or drop it.
+    const dedicated = {
+      label: 'Dedicated',
+      plans: [
+        {
+          id: 'opensource',
+          name: 'Open Source',
+          price_monthly: 0,
+          price_annually: 0,
+          price_label: '$0',
+          features: [],
+        },
+      ],
+      comparison: {
+        title: 'Compare dedicated editions',
+        groups: [
+          {
+            title: 'Edition',
+            rows: [
+              { label: 'Deployment', values: { opensource: 'Self-hosted' } },
+            ],
+          },
+        ],
+      },
+    };
+    const result = applyPricingCatalog({ ...config, dedicated }, catalog());
+    expect(result.dedicated).to.deep.equal(dedicated);
+    // And it stays out of the cloud comparison columns.
+    for (const group of result.comparison!.groups) {
+      for (const row of group.rows) {
+        expect(Object.keys(row.values)).to.not.include('opensource');
+      }
+    }
+  });
+
   it('fails the build input instead of silently publishing a missing plan or entitlement', () => {
     const source = catalog();
     source.plans = source.plans.filter((p) => p.id !== 'pro');

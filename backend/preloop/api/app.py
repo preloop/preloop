@@ -346,6 +346,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             service_role,
         )
 
+    # Start the session search backfill sweeper (skip in testing mode). It
+    # walks existing session history into the search corpus, newest first,
+    # inside a row and wall-clock budget. Disabled unless
+    # SESSION_SEARCH_BACKFILL_ENABLED is set: reaching back through every
+    # account's history is an operator decision, not an upgrade side effect.
+    session_search_backfill_sweeper = None
+    if not is_testing and is_api_role and settings.session_search_backfill_enabled:
+        from preloop.services.session_search_backfill import (
+            get_session_search_backfill_sweeper,
+        )
+
+        session_search_backfill_sweeper = get_session_search_backfill_sweeper()
+        await session_search_backfill_sweeper.start()
+        logger.info("Session search backfill sweeper started.")
+    else:
+        logger.info(
+            "Session search backfill sweeper not started (enabled=%s, role=%s).",
+            settings.session_search_backfill_enabled,
+            service_role,
+        )
+
     # Start the audit chain sealer (skip in testing mode). It chains audit
     # rows written since the last pass. Off the request path on purpose: the
     # alternative is a per-account lock held for the duration of every audited
@@ -623,6 +644,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("Audit chain sealer stopped.")
         except Exception as e:
             logger.error(f"Error stopping audit chain sealer: {e}", exc_info=True)
+
+    # Stop the session search backfill sweeper. A pass in flight finishes the
+    # source it is chunking and stops; the watermark it already persisted is
+    # where the next process resumes, so an interrupted pass costs nothing.
+    if not is_testing and session_search_backfill_sweeper:
+        try:
+            await session_search_backfill_sweeper.stop()
+            logger.info("Session search backfill sweeper stopped.")
+        except Exception as e:
+            logger.error(
+                f"Error stopping session search backfill sweeper: {e}", exc_info=True
+            )
 
     # Stop the retention purge sweeper. A pass in flight finishes its current
     # batch and stops at the next check; batches are small on purpose so this

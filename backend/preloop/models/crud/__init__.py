@@ -144,6 +144,10 @@ from .session_embedding_setting import (
     CRUDSessionEmbeddingSetting,
     SessionEmbeddingConfigError,
 )
+from .session_search_backfill_state import (
+    CRUDSessionSearchBackfillState,
+    crud_session_search_backfill_state,
+)
 from .session_search_document import (
     CRUDSessionSearchDocument,
     SessionSearchChunk,
@@ -290,6 +294,8 @@ __all__ = [
     "issue_compliance_result",
     "crud_issue_set",
     "crud_gateway_usage_search_document",
+    "CRUDSessionSearchBackfillState",
+    "crud_session_search_backfill_state",
     "crud_session_search_document",
     "crud_session_embedding_setting",
     "SessionEmbeddingConfigError",

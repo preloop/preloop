@@ -15,6 +15,8 @@ import {
   listProjectsForOrg,
   uploadAvatar,
   validateTrackerToken,
+  startCheckout,
+  BILLING_SUBSCRIPTION_CHANGED,
 } from './api.js';
 import { customElement } from 'lit/decorators.js';
 
@@ -763,6 +765,152 @@ describe('api', () => {
       fetchStub.resolves(refusal({ detail: [] }));
       expect(await messageOf(updateFlow('flow-1', {}))).to.equal(
         'Failed to update flow'
+      );
+    });
+  });
+  describe('startCheckout', () => {
+    /**
+     * Every answer the server can give, and what the person who clicked sees.
+     *
+     * The console modal has no other source of words: whatever this function
+     * resolves or throws is what appears on screen. A body it cannot read used
+     * to become "Unexpected checkout response", which named neither the
+     * problem nor a way out.
+     */
+    const answer = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+    const messageOf = async (call: Promise<unknown>) => {
+      try {
+        await call;
+      } catch (e: unknown) {
+        return (e as Error).message;
+      }
+      return '';
+    };
+
+    it('resolves a refresh answer with the reason instead of throwing', async () => {
+      fetchStub.resolves(
+        answer({
+          action: 'refresh',
+          code: 'subscription_exists',
+          message:
+            'Your account already has a Pro subscription (status: active), so there is nothing to check out.',
+        })
+      );
+
+      const outcome = await startCheckout('pro', 'month');
+
+      expect(outcome?.action).to.equal('refresh');
+      expect(outcome?.code).to.equal('subscription_exists');
+      expect(outcome?.message).to.contain('already has a Pro subscription');
+    });
+
+    it('fills a speakable sentence when a refresh answer has no message', async () => {
+      // Older EE returns bare {action: "refresh"}. The modal assigns
+      // outcome.message to role=status; an empty string would render nothing.
+      fetchStub.resolves(answer({ action: 'refresh' }));
+
+      const outcome = await startCheckout('pro', 'month');
+
+      expect(outcome?.action).to.equal('refresh');
+      expect(outcome?.message).to.equal(
+        'Your subscription is already up to date. Nothing was charged.'
+      );
+    });
+
+    it('asks the billing views to re-read the summary on refresh', async () => {
+      // The whole point of a refresh answer: the screen is stale, not the
+      // account. Nothing reloads the summary unless this event is dispatched.
+      fetchStub.resolves(
+        answer({
+          action: 'refresh',
+          code: 'subscription_exists',
+          message: 'Already subscribed.',
+        })
+      );
+      let seen = 0;
+      const listener = () => {
+        seen += 1;
+      };
+      window.addEventListener(BILLING_SUBSCRIPTION_CHANGED, listener);
+
+      try {
+        await startCheckout('pro', 'month');
+      } finally {
+        window.removeEventListener(BILLING_SUBSCRIPTION_CHANGED, listener);
+      }
+
+      expect(seen).to.equal(1);
+    });
+
+    it('navigates and reports the outcome for a redirect', async () => {
+      // A hash keeps the assignment inside this page: a real Stripe URL would
+      // navigate the test runner away.
+      fetchStub.resolves(
+        answer({
+          action: 'redirect',
+          code: 'checkout_session_created',
+          url: '#stripe-checkout',
+          message: 'Opening secure checkout for Pro.',
+        })
+      );
+      const originalHash = window.location.hash;
+
+      try {
+        const outcome = await startCheckout('pro', 'month');
+        expect(outcome?.action).to.equal('redirect');
+        expect(outcome?.message).to.equal('Opening secure checkout for Pro.');
+        expect(window.location.hash).to.equal('#stripe-checkout');
+      } finally {
+        window.location.hash = originalHash;
+      }
+    });
+
+    it('surfaces the server sentence for an action it cannot perform', async () => {
+      fetchStub.resolves(
+        answer({
+          action: 'contact_sales',
+          code: 'sales_contact_required',
+          message: 'Enterprise is not sold through self-serve checkout.',
+        })
+      );
+
+      expect(await messageOf(startCheckout('enterprise', 'month'))).to.equal(
+        'Enterprise is not sold through self-serve checkout.'
+      );
+    });
+
+    it('never falls back to an opaque phrase when the body says nothing', async () => {
+      fetchStub.resolves(answer({}));
+
+      const message = await messageOf(startCheckout('pro', 'month'));
+
+      expect(message).to.not.contain('Unexpected checkout response');
+      expect(message).to.contain('Checkout could not be started');
+    });
+
+    it('passes a deployment refusal through in the server words', async () => {
+      // catalog_not_synced means the image shipped without a synced catalog.
+      // Rewording it hides the one instruction an operator needs.
+      fetchStub.resolves(
+        answer(
+          {
+            detail: {
+              code: 'catalog_not_synced',
+              message:
+                'Pro is not available for purchase yet. Ask an administrator to sync the plan catalog.',
+            },
+          },
+          503
+        )
+      );
+
+      expect(await messageOf(startCheckout('pro', 'month'))).to.equal(
+        'Pro is not available for purchase yet. Ask an administrator to sync the plan catalog.'
       );
     });
   });

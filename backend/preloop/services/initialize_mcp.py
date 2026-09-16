@@ -29,6 +29,8 @@ from preloop.tools.builtin_defs import (
     REQUEST_APPROVAL_TOOL,
     RESOLVE_SBOM_UPSTREAMS_TOOL,
     RUN_FLOW_TOOL,
+    SEARCH_SESSIONS_DEFAULT_LIMIT,
+    SEARCH_SESSIONS_TOOL,
     SEND_NOTE_TOOL,
     UPDATE_ISSUE_DESCRIPTION,
     UPDATE_ISSUE_SCHEMA,
@@ -1220,6 +1222,104 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
     # Same rule as run_flow: the catalog schema is the authority.
     get_execution_tool.parameters = deepcopy(GET_EXECUTION_TOOL["schema"])
     mcp.add_tool(get_execution_tool)
+
+    # Register Tool 7g: search_sessions (shared metadata:
+    # tools.builtin_defs.SEARCH_SESSIONS_TOOL). The session corpus as a tool
+    # (#658): the agent asks what past sessions did before repeating the
+    # work. Scope, the account wide grant, the response size cap and the
+    # compact result shape all live in
+    # preloop.services.agent_session_search, server side; the identity the
+    # scope is built from is the authenticated one, never an argument.
+    async def search_sessions(
+        query: str,
+        scope: str | None = None,
+        mode: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        limit: int = SEARCH_SESSIONS_DEFAULT_LIMIT,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        """Search past session content, ranked, scoped to the caller.
+
+        Args:
+            query: Search text in web search syntax.
+            scope: ``own`` (default) or ``account``, the latter needing a
+                grant an operator has to have made.
+            mode: Requested ranking mode; a mode the deployment cannot serve
+                is answered with keyword results and a degraded marker.
+            start_date: Optional lower bound, ISO 8601 with an offset.
+            end_date: Optional upper bound, ISO 8601 with an offset.
+            limit: Sessions to return, clamped to the documented maximum.
+            ctx: MCP context (injected by FastMCP).
+
+        Returns:
+            JSON: the compact, capped answer, or a refusal record naming the
+            rule that declined the call. A bad call is refused, never raised,
+            so the model can correct it on the next turn.
+        """
+        import json
+
+        from preloop.models.db.session import get_db_session
+        from preloop.services.agent_session_search import (
+            SEARCH_SESSIONS_TOOL_NAME,
+            search_for_agent,
+        )
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+
+        user_context = get_current_user_context()
+        if not user_context:
+            return "Error: No user context available"
+
+        approved, error = await require_approval(
+            tool_name=SEARCH_SESSIONS_TOOL_NAME,
+            tool_source="builtin",
+            account_id=user_context.account_id,
+            arguments={
+                "query": query,
+                "scope": scope,
+                "mode": mode,
+                "start_date": start_date,
+                "end_date": end_date,
+                "limit": limit,
+            },
+            ctx=ctx,
+            workflow_id=_rule_workflow_id_var.get(None),
+            correlation_id=_correlation_id_var.get(None),
+            justification=_justification_var.get(None),
+        )
+        if not approved:
+            return error
+
+        db = next(get_db_session())
+        try:
+            result = search_for_agent(
+                db,
+                account_id=user_context.account_id,
+                runtime_principal_id=getattr(
+                    user_context, "runtime_principal_id", None
+                ),
+                subject_context={
+                    "api_key_id": getattr(user_context, "api_key_id", None),
+                    "managed_agent_id": getattr(user_context, "managed_agent_id", None),
+                },
+                query=query,
+                scope=scope,
+                mode=mode,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+            )
+        finally:
+            db.close()
+        return json.dumps(result)
+
+    search_sessions_tool = FunctionTool.from_function(
+        search_sessions, description=SEARCH_SESSIONS_TOOL["description"]
+    )
+    # Same rule as run_flow and get_execution: the catalog schema is the
+    # authority, so the advertised shape cannot drift from the REST list.
+    search_sessions_tool.parameters = deepcopy(SEARCH_SESSIONS_TOOL["schema"])
+    mcp.add_tool(search_sessions_tool)
 
     # Register Tool 8: add_comment
     @mcp.tool()

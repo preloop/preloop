@@ -2,7 +2,10 @@ import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import '../../../components/view-header.ts';
-import { invalidateApiCaches } from '../../../api';
+import {
+  BILLING_SUBSCRIPTION_CHANGED,
+  invalidateApiCaches,
+} from '../../../api';
 import './account-view';
 import type { AccountView } from './account-view';
 
@@ -758,5 +761,73 @@ describe('AccountView', () => {
         .shadowRoot!.querySelector('.current-plan sl-button')
         ?.hasAttribute('disabled')
     ).to.equal(true);
+  });
+
+  function summaryGets(): number {
+    return fetchStub.getCalls().filter((call) => {
+      const url = String(call.args[0]);
+      const method = (call.args[1]?.method || 'GET').toUpperCase();
+      return url.includes('/api/v1/billing/summary') && method === 'GET';
+    }).length;
+  }
+
+  it('re-reads the billing summary when the checkout refresh event is on window', async () => {
+    fetchStub = createFetchStub({ billing: true });
+    const element = await fixture<AccountView>(
+      html`<account-view></account-view>`
+    );
+    await waitUntil(() => !(element as any)._loading, 'load');
+    await element.updateComplete;
+    const before = summaryGets();
+
+    window.dispatchEvent(new Event(BILLING_SUBSCRIPTION_CHANGED));
+    await waitUntil(
+      () => summaryGets() === before + 1,
+      'window dispatch should fetch summary once more'
+    );
+    expect(summaryGets()).to.equal(before + 1);
+  });
+
+  it('ignores a composed child event so the template binding is the only extra fetch', async () => {
+    fetchStub = createFetchStub({ billing: true });
+    const element = await fixture<AccountView>(
+      html`<account-view></account-view>`
+    );
+    await waitUntil(() => !(element as any)._loading, 'load');
+    await element.updateComplete;
+    const comparison = element.shadowRoot!.querySelector(
+      'billing-plan-comparison'
+    );
+    expect(comparison, 'expected the plan comparison').to.exist;
+    const before = summaryGets();
+
+    comparison!.dispatchEvent(
+      new CustomEvent(BILLING_SUBSCRIPTION_CHANGED, {
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await waitUntil(
+      () => summaryGets() === before + 1,
+      'template binding should fetch summary once'
+    );
+    expect(summaryGets()).to.equal(before + 1);
+  });
+
+  it('stops listening after disconnect so a window dispatch fetches nothing', async () => {
+    fetchStub = createFetchStub({ billing: true });
+    const element = await fixture<AccountView>(
+      html`<account-view></account-view>`
+    );
+    await waitUntil(() => !(element as any)._loading, 'load');
+    await element.updateComplete;
+    const before = summaryGets();
+
+    element.remove();
+    window.dispatchEvent(new Event(BILLING_SUBSCRIPTION_CHANGED));
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+    expect(summaryGets()).to.equal(before);
   });
 });

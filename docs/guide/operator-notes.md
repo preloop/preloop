@@ -202,13 +202,15 @@ worked out, never anything the calling agent asserted:
 | `args.note_target_relation` | `self`, `ancestor`, `same_tree`, `unrelated` or `no_lineage` |
 | `args.note_author_managed_agent_id`, `args.note_author_execution_id` | Who is asking, and from which run |
 | `args.note_target_managed_agent_id`, `args.note_target_runtime_session_id`, `args.note_target_execution_id` | What it wants to reach |
-| `args.text`, `args.agent_id`, `args.runtime_session_id`, `args.execution_id` | The call's own arguments, under the names the tool uses |
+| `args.text`, `args.agent_id`, `args.runtime_session_id`, `args.execution_id` | `text` is the caller's. On the grant path the id keys are the target as the platform resolved it, under the names the tool uses, and can be present even when the caller never named them. Key on the `note_*` facts, which name author and target unambiguously. |
 
 The grant evaluation uses the same subject context as the preceding `send_note`
 call: the caller's `api_key_id`, the caller's `runtime_session_id`, and the rest
 of that chain. Target identity lives only in the `note_*` facts, so an
 API-key-scoped rule is not skipped on the grant path and a rule against
-`runtime_session_id` still means the caller.
+`runtime_session_id` still means the caller. Top-level `execution_id` in the
+rule context is the author run only on grant evaluation. On a plain
+`send_note` call it is unbound.
 
 So a grant can be narrower than "anyone". `args.note_target_relation ==
 "same_tree"` lets runs in one delegation tree note each other and nothing

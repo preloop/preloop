@@ -883,6 +883,9 @@ class RuntimeSessionExplorerService:
             session_source_type=row["session_source_type"],
             session_source_id=row["session_source_id"],
             session_reference=row["session_reference"],
+            # Absent for callers that build a row without lineage, and None
+            # for the many sessions whose harness never names a parent.
+            parent_session_id=row.get("parent_session_id"),
             runtime_principal_type=row["runtime_principal_type"],
             runtime_principal_id=row["runtime_principal_id"],
             runtime_principal_name=row["runtime_principal_name"],

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import String, and_, case, cast, func, or_
+from sqlalchemy import String, and_, case, cast, func, or_, tuple_
 from sqlalchemy.orm import Session
 
 from ..models.api_usage import ApiUsage
@@ -84,6 +84,44 @@ class CRUDGatewayUsageSearchDocument(CRUDBase[GatewayUsageSearchDocument]):
         db.commit()
         db.refresh(db_obj)
         return db_obj
+
+    def list_session_documents_page(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        before_timestamp: Optional[datetime] = None,
+        before_api_usage_id: Optional[Any] = None,
+        limit: int = 100,
+    ) -> List[Tuple[ApiUsage, GatewayUsageSearchDocument]]:
+        """Return one page of a session's indexed interactions, newest first.
+
+        The join through usage rows is what makes this usable for a backfill:
+        the corpus row holds the sanitised text and the usage row holds the
+        account, the session and the timestamp the chunk is filed under.
+        """
+        stmt = (
+            db.query(ApiUsage, GatewayUsageSearchDocument)
+            .join(
+                GatewayUsageSearchDocument,
+                GatewayUsageSearchDocument.api_usage_id == ApiUsage.id,
+            )
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.runtime_session_id == runtime_session_id,
+            )
+        )
+        if before_timestamp is not None and before_api_usage_id is not None:
+            stmt = stmt.filter(
+                tuple_(ApiUsage.timestamp, ApiUsage.id)
+                < tuple_(before_timestamp, before_api_usage_id)
+            )
+        return (
+            stmt.order_by(ApiUsage.timestamp.desc(), ApiUsage.id.desc())
+            .limit(max(1, int(limit)))
+            .all()
+        )
 
     def search_account_documents(
         self,

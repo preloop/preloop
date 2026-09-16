@@ -975,6 +975,141 @@ class TestRuntimeSessions:
         )
         assert row.runtime_session_id is None
 
+    def test_parent_conversation_links_the_subagent_session_to_its_parent(
+        self, client, db_session, test_user
+    ):
+        """A hook that reports a subagent turn carries the lineage through.
+
+        The hook already reports which conversation spawned a worker; the
+        session row now says the same thing, so the parent is one id away
+        instead of a join through usage rows.
+        """
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        parent_turn = self._lifecycle("response", "conv-parent", "turn-parent", 10)
+        worker_turn = self._lifecycle(
+            "response",
+            "conv-worker",
+            "turn-worker",
+            9,
+            parent_conversation_id="conv-parent",
+        )
+        response = client.post(INGEST_URL, json=_payload([parent_turn, worker_turn]))
+        assert response.status_code == 200, response.text
+
+        parent = self._session(db_session, test_user.account_id, "conv-parent")
+        worker = self._session(db_session, test_user.account_id, "conv-worker")
+        assert parent is not None and worker is not None
+        assert parent.parent_session_id is None
+        assert worker.parent_session_id == parent.id
+
+    def test_already_parented_ingest_skips_the_parent_lookup(
+        self, client, db_session, test_user, monkeypatch
+    ):
+        """A follow-up turn on a parented session does not look the parent up."""
+        from preloop.services import usage_import
+
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        parent_turn = self._lifecycle("response", "conv-parent", "turn-parent", 10)
+        worker_turn = self._lifecycle(
+            "response",
+            "conv-worker",
+            "turn-worker",
+            9,
+            parent_conversation_id="conv-parent",
+        )
+        assert (
+            client.post(
+                INGEST_URL, json=_payload([parent_turn, worker_turn])
+            ).status_code
+            == 200
+        )
+
+        calls = {"n": 0}
+        original = usage_import._parent_session_id_for_record
+
+        def counting(*args, **kwargs):
+            calls["n"] += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(usage_import, "_parent_session_id_for_record", counting)
+        follow_up = self._lifecycle(
+            "response",
+            "conv-worker",
+            "turn-worker-2",
+            8,
+            parent_conversation_id="conv-parent",
+        )
+        assert client.post(INGEST_URL, json=_payload([follow_up])).status_code == 200
+        assert calls["n"] == 0
+
+    def test_parent_conversation_reported_before_the_parent_has_any_turn(
+        self, client, db_session, test_user
+    ):
+        """The worker can be flushed first; one parent row is created for it."""
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        worker_turn = self._lifecycle(
+            "response",
+            "conv-worker",
+            "turn-worker",
+            9,
+            parent_conversation_id="conv-parent-later",
+        )
+        assert client.post(INGEST_URL, json=_payload([worker_turn])).status_code == 200
+
+        worker = self._session(db_session, test_user.account_id, "conv-worker")
+        parent = self._session(db_session, test_user.account_id, "conv-parent-later")
+        assert parent is not None
+        assert worker.parent_session_id == parent.id
+
+        # The parent's own turn lands on that same row, not a second one.
+        parent_turn = self._lifecycle("response", "conv-parent-later", "turn-parent", 5)
+        assert client.post(INGEST_URL, json=_payload([parent_turn])).status_code == 200
+        assert (
+            db_session.query(RuntimeSession)
+            .filter(
+                RuntimeSession.account_id == test_user.account_id,
+                RuntimeSession.session_source_id == "conv-parent-later",
+            )
+            .count()
+            == 1
+        )
+
+    def test_records_without_a_parent_conversation_leave_a_null_parent(
+        self, client, db_session, test_user
+    ):
+        """Most hook records say nothing about lineage; null is the answer."""
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        turn = self._lifecycle("response", "conv-plain", "turn-plain", 5)
+        # A conversation naming itself as its parent is not a lineage either.
+        self_referential = self._lifecycle(
+            "response",
+            "conv-self",
+            "turn-self",
+            4,
+            parent_conversation_id="conv-self",
+        )
+        assert (
+            client.post(INGEST_URL, json=_payload([turn, self_referential])).status_code
+            == 200
+        )
+
+        assert (
+            self._session(
+                db_session, test_user.account_id, "conv-plain"
+            ).parent_session_id
+            is None
+        )
+        assert (
+            self._session(
+                db_session, test_user.account_id, "conv-self"
+            ).parent_session_id
+            is None
+        )
+
     def test_codex_source_registers_session(self, client, db_session, test_user):
         """A Codex rollout import registers the thread as a runtime session."""
         agent = _make_codex_agent(db_session, test_user.account_id)

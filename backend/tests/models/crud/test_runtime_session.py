@@ -174,10 +174,36 @@ def test_summary_columns_available_caches_per_bind(db_session) -> None:
     with patch("preloop.models.crud.runtime_session.inspect", inspect_mock):
         assert crud_runtime_session._summary_columns_available(db_session) is True
         assert crud_runtime_session._summary_columns_available(db_session) is True
+        assert crud_runtime_session._parent_session_id_available(db_session) is False
+        assert crud_runtime_session._parent_session_id_available(db_session) is False
 
     inspect_mock.assert_called_once_with(bind)
     assert inspector.get_columns.call_count == 1
     assert id(bind) in _summary_columns_cache
+
+
+def test_parent_session_id_is_probed_separately_from_summary_columns(
+    db_session,
+) -> None:
+    """parent_session_id landed later; a summary-migrated schema can still miss it."""
+    _summary_columns_cache.clear()
+    bind = db_session.get_bind() or db_session.bind
+    assert bind is not None
+    inspector = MagicMock()
+    inspector.get_columns.return_value = [
+        {"name": "summary"},
+        {"name": "summary_updated_at"},
+        {"name": "title"},
+        {"name": "title_request_count"},
+        {"name": "id"},
+    ]
+    inspect_mock = MagicMock(return_value=inspector)
+
+    with patch("preloop.models.crud.runtime_session.inspect", inspect_mock):
+        assert crud_runtime_session._summary_columns_available(db_session) is True
+        assert crud_runtime_session._parent_session_id_available(db_session) is False
+
+    inspect_mock.assert_called_once_with(bind)
 
 
 def _create_ai_model(db_session, account_id, name):

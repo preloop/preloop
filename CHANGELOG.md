@@ -22,6 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one "add SBOM generation" follow up. A lens that is not on the flow's
   callable list is refused rather than skipped. Read-only: it files
   nothing and opens nothing.
+- `models.crud.billing_preflight` reports the entitled half of the fleet:
+  entitled accounts per plan, how many of them sit at or over a given seat
+  or agent ceiling (seats counted as active users plus live invitations, the
+  way the seat gate counts them), and the same counts for a single account.
+  Read-only aggregates, no names, emails or provider identifiers.
+- `search_sessions` built-in tool. An agent searches the runtime session
+  corpus before repeating work: ranked results, one trimmed snippet per
+  session, a match reason and the endpoint's degraded markers. Scope is the
+  calling agent's own sessions; `scope: "account"` is refused by name until an
+  operator grants it, never silently narrowed. The response is size-capped and
+  reports what it dropped. Default-off, so a flow selects it in its allow-list
+  or an account enables it on the Tools page, and an access rule that denies it
+  stops the call. Docs at `docs/guide/agent-session-search.md`.
+
 - Callable-flows picker on the flow editor. When the delegation tool is
   on, the form lists the account's other flows (paging past the 100-row
   list default) and lets the operator choose which this flow may call,
@@ -36,6 +50,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `before*` hooks have no field that reaches the model, so a note claimed there
   is held for its session and rides the next tool call's carrying hook, once. A
   turn with no pending note produces the same response as before.
+- `preloop sessions search` queries session content from a terminal
+  through `POST /api/v1/runtime-sessions/search`. The query is the
+  argument, `--from` / `--to` bound the time range, `--mode` picks the
+  ranking mode and `--limit` pages past `--page-size` (at most 50) by
+  offset. Default output is one readable block per session: identifiers,
+  timestamps, why it matched and the matching turns. `--json` emits each
+  response page exactly as the endpoint sent it; degraded markers, the
+  indexed-through marker and the result count go to standard error so a
+  piped payload stays clean. Exit status is 0 for results, 2 for no
+  results and 1 for a failure, which prints one sentence rather than a
+  server stack trace. Docs in `cli/README.md`.
 - `preloop notes send` posts one operator note from the terminal to
   `POST /api/v1/operator-notes`. Name exactly one of `--agent`,
   `--session`, or `--execution`. The body is the argument, or stdin when
@@ -190,6 +215,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The console upgrade modal repeats what the server said instead of
+  "Unexpected checkout response". `startCheckout` resolves a `refresh`
+  answer (asking the billing views to re-read the subscription summary and
+  returning the reason), surfaces the server's sentence for any other
+  action, and keeps the redirect path. A deployment refusal such as
+  `catalog_not_synced` now reaches the dialog word for word.
+
 - The stale-claim reaper no longer re-publishes every unclaimed execution
   from every worker on every pass. One replica runs the pass per interval
   (a database lease), an execution nobody claims is re-dispatched on a
@@ -228,6 +260,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   next to "Connect with GitHub".
 
 ### Changed
+
+- Brand pricing config: `landing.pricing.deployment_options` is no longer
+  read. The Dedicated tab is `landing.pricing.dedicated` (same card-plus-table
+  shape as Cloud) with optional `cloud_label`. A leftover
+  `deployment_options` key is ignored and will not render. EE brands.yaml
+  already ships the replacement block.
 
 - Helm gateway Deployments set `PRELOOP_SERVICE_ROLE=gateway` (API pods
   set `api`). `create_app` lazy-imports control-plane routers so a gateway

@@ -103,4 +103,7 @@ src/views/public/
 - **SEO**: Search engines see fully rendered content on first load
 - **Performance**: No flash of unstyled content (FOUC) with critical CSS
 - **SPA Experience**: After hydration, navigation is instant client-side
-- **Maintainability**: Content defined in `brands.yaml` and markdown files
+- **Maintainability**: Content defined in `brands.yaml` and markdown files.
+  Pricing: Cloud cards live in `landing.pricing.plans`; the Dedicated tab is
+  `landing.pricing.dedicated` (same card-plus-table shape). The old
+  `deployment_options` list is ignored.

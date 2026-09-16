@@ -101,6 +101,7 @@ class TestListAllTools:
             "send_note",
             "run_flow",
             "get_execution",
+            "search_sessions",
         }
         # Issue triage folded back into get_issue/update_issue (#661): no
         # separate default-disabled triage tools remain in the catalogue.

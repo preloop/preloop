@@ -476,6 +476,54 @@ class Settings(BaseSettings):
             "Compare after stripping a trailing slash."
         ),
     )
+    session_search_backfill_enabled: bool = Field(
+        False,
+        description=(
+            "Run the scheduled backfill that indexes existing session history "
+            "into the session search corpus. Off by default: walking every "
+            "account's retained history is a decision an operator makes, not "
+            "something an upgrade starts (SESSION_SEARCH_BACKFILL_ENABLED)."
+        ),
+    )
+    session_search_backfill_interval_seconds: int = Field(
+        900,
+        ge=60,
+        description="Seconds between session search backfill passes.",
+    )
+    session_search_backfill_max_rows_per_pass: int = Field(
+        2000,
+        ge=1,
+        description=(
+            "Corpus rows one backfill pass may write in total. The backlog is "
+            "drained across passes rather than in one long transaction."
+        ),
+    )
+    session_search_backfill_max_rows_per_account: int = Field(
+        500,
+        ge=1,
+        description=(
+            "Corpus rows one backfill pass may write for a single account, so "
+            "one large account cannot consume the whole pass budget."
+        ),
+    )
+    session_search_backfill_max_seconds: int = Field(
+        120,
+        ge=1,
+        description=(
+            "Wall-clock budget for one backfill pass. The pass stops cleanly "
+            "at the budget and resumes from its watermark on the next tick."
+        ),
+    )
+    session_search_backfill_max_age_days: int = Field(
+        183,
+        ge=0,
+        description=(
+            "How far back the backfill walks, in days. The default matches "
+            "the 183 day retention floor, which is the oldest history a "
+            "deployment is required to still hold. 0 means no age bound "
+            "(SESSION_SEARCH_BACKFILL_MAX_AGE_DAYS)."
+        ),
+    )
     model_gateway_auto_index_failed_interactions: bool = Field(
         False,
         description=(
@@ -1546,6 +1594,10 @@ class Settings(BaseSettings):
             session_embedding_api_key_base_urls=(
                 os.getenv("SESSION_EMBEDDING_API_KEY_BASE_URLS") or ""
             ).strip(),
+            session_search_backfill_enabled=os.getenv(
+                "SESSION_SEARCH_BACKFILL_ENABLED", "false"
+            ).lower()
+            in ("true", "1", "t", "yes"),
             model_gateway_auto_index_failed_interactions=os.getenv(
                 "MODEL_GATEWAY_AUTO_INDEX_FAILED_INTERACTIONS", "false"
             ).lower()

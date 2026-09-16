@@ -443,6 +443,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
         occurred_at: datetime,
         chunks: Sequence[SessionSearchChunk],
         commit: bool = False,
+        existing: Optional[Sequence[SessionSearchDocument]] = None,
     ) -> List[SessionSearchDocument]:
         """Store the chunks of one source, skipping an unchanged rewrite.
 
@@ -453,20 +454,28 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
         replaces the rows so filter columns and the session-timeline index
         stay current. Anything else replaces the source's chunks wholesale,
         which is what keeps a shrinking source from leaving orphans behind.
+
+        ``existing`` is the already-fetched row set for this source, used by
+        the backfill walk so it does not pay ``list_for_source`` twice.
+        ``None`` means look them up here. An empty sequence means they were
+        looked up and there were none.
         """
-        existing = self.list_for_source(
-            db, source_kind=source_kind, source_id=str(source_id)
-        )
+        if existing is None:
+            existing_rows = self.list_for_source(
+                db, source_kind=source_kind, source_id=str(source_id)
+            )
+        else:
+            existing_rows = list(existing)
         new_hashes = [content_hash_for(chunk.content) for chunk in chunks]
-        if [row.content_hash for row in existing] == new_hashes and all(
+        if [row.content_hash for row in existing_rows] == new_hashes and all(
             row.occurred_at == occurred_at
             and row.role == chunk.role
             and row.status == chunk.status
-            for row, chunk in zip(existing, chunks, strict=False)
+            for row, chunk in zip(existing_rows, chunks, strict=False)
         ):
-            return existing
+            return existing_rows
 
-        if existing:
+        if existing_rows:
             self.delete_for_source(
                 db, source_kind=source_kind, source_id=str(source_id)
             )
@@ -987,6 +996,20 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
                 )
             )
         return grouped
+
+    def earliest_occurred_at(
+        self, db: Session, *, account_id: Any
+    ) -> Optional[datetime]:
+        """Return the oldest chunk timestamp an account holds, if any.
+
+        This is how far back the corpus currently reaches for content indexed
+        on write; the backfill watermark is what moves it further back.
+        """
+        return (
+            db.query(func.min(SessionSearchDocument.occurred_at))
+            .filter(SessionSearchDocument.account_id == account_id)
+            .scalar()
+        )
 
     def count_for_session(
         self, db: Session, *, account_id: Any, runtime_session_id: Any

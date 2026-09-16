@@ -3,7 +3,8 @@
 from unittest.mock import MagicMock, patch
 
 from preloop.api.endpoints.anthropic_gateway import get_anthropic_gateway_auth_context
-from preloop.models.crud import crud_account, crud_ai_model
+from preloop.models.crud import crud_account, crud_ai_model, crud_api_key
+from preloop.models.models.runtime_session import RuntimeSession
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 
 
@@ -415,3 +416,217 @@ def test_claude_code_session_header_reaches_gateway_service(
 
         assert response.status_code == 200
         assert service_cls.call_args.kwargs["client_session_id"] == expected
+
+
+_LITELLM_MESSAGE = {
+    "id": "msg_lineage",
+    "created": 1710000000,
+    "choices": [
+        {
+            "message": {"role": "assistant", "content": "ok"},
+            "finish_reason": "stop",
+        }
+    ],
+    "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+}
+
+
+def _claude_gateway_model(db_session, account_id):
+    return crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Claude Gateway Model",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-sonnet-4-5",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "anthropic/claude-sonnet-4-5",
+                    "provider_adapter": "preloop",
+                }
+            },
+            "is_default": True,
+        },
+        account_id=account_id,
+    )
+
+
+def _claude_code_key(db_session, test_user):
+    runtime_api_key, _ = crud_api_key.create_runtime_key(
+        db_session,
+        name="claude_code Durable Credential",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={
+            "credential_kind": "managed_agent_durable",
+            "runtime_principal": {
+                "type": "claude_code",
+                "id": "claude_code-64fd76044120",
+                "name": "claude_code",
+            },
+        },
+    )
+    return runtime_api_key
+
+
+def _post_anthropic_message(client, extra_headers):
+    return client.post(
+        "/anthropic/v1/messages",
+        headers={
+            "x-api-key": "ignored",
+            "anthropic-version": "2023-06-01",
+            **extra_headers,
+        },
+        json={
+            "model": "anthropic/claude-sonnet-4-5",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 256,
+        },
+    )
+
+
+def test_claude_code_agent_id_header_records_parent_over_http(
+    app, client, db_session, test_user
+):
+    """X-Claude-Code-Agent-Id over HTTP keys the child and points at the parent."""
+    _claude_gateway_model(db_session, test_user.account_id)
+    api_key = _claude_code_key(db_session, test_user)
+    app.dependency_overrides[get_anthropic_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user, api_key=api_key)
+    )
+    session_uuid = "ebd4605d-7099-4c54-bd01-747f7a720e1b"
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=_LITELLM_MESSAGE,
+    ):
+        parent_response = _post_anthropic_message(
+            client, {"X-Claude-Code-Session-Id": session_uuid}
+        )
+        child_response = _post_anthropic_message(
+            client,
+            {
+                "X-Claude-Code-Session-Id": session_uuid,
+                "X-Claude-Code-Agent-Id": "a1e37403a36fc420c",
+            },
+        )
+
+    assert parent_response.status_code == 200
+    assert child_response.status_code == 200
+    sessions = (
+        db_session.query(RuntimeSession)
+        .filter(RuntimeSession.account_id == test_user.account_id)
+        .order_by(RuntimeSession.created_at.asc(), RuntimeSession.id.asc())
+        .all()
+    )
+    assert len(sessions) == 2
+    parent = next(
+        session
+        for session in sessions
+        if session.session_source_id.endswith(f":{session_uuid}")
+    )
+    child = next(
+        session
+        for session in sessions
+        if session.session_source_id.endswith(f":{session_uuid}:a1e37403a36fc420c")
+    )
+    assert parent.parent_session_id is None
+    assert child.parent_session_id == parent.id
+
+
+def test_preloop_session_header_suppresses_parent_over_http(
+    app, client, db_session, test_user
+):
+    """An operator X-Preloop-Session-Id wins and records no parent."""
+    _claude_gateway_model(db_session, test_user.account_id)
+    api_key = _claude_code_key(db_session, test_user)
+    app.dependency_overrides[get_anthropic_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user, api_key=api_key)
+    )
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=_LITELLM_MESSAGE,
+    ):
+        response = _post_anthropic_message(
+            client,
+            {
+                "X-Claude-Code-Session-Id": "ebd4605d-7099-4c54-bd01-747f7a720e1b",
+                "X-Claude-Code-Agent-Id": "a1e37403a36fc420c",
+                "X-Preloop-Session-Id": "explicit-run",
+            },
+        )
+
+    assert response.status_code == 200
+    sessions = (
+        db_session.query(RuntimeSession)
+        .filter(RuntimeSession.account_id == test_user.account_id)
+        .all()
+    )
+    assert len(sessions) == 1
+    assert sessions[0].parent_session_id is None
+    assert sessions[0].session_source_id.endswith(":explicit-run")
+
+
+def test_claude_code_agent_id_header_reaches_gateway_service(
+    app, client, db_session, test_user
+):
+    """``X-Claude-Code-Agent-Id`` must split the subagent and name its parent.
+
+    Service tests construct OpenAIGatewayService directly. This drives
+    create_message over HTTP so a typo in the FastAPI header alias cannot
+    drop the parent, and so X-Preloop-Session-Id still suppresses lineage.
+    """
+    app.dependency_overrides[get_anthropic_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user)
+    )
+    session_uuid = "26d2f152-2d10-49e5-a68c-e471d55aadad"
+    agent_id = "a1e37403a36fc420c"
+
+    for headers, expected_session, expected_parent in (
+        (
+            {
+                "X-Claude-Code-Session-Id": session_uuid,
+                "X-Claude-Code-Agent-Id": agent_id,
+            },
+            f"{session_uuid}:{agent_id}",
+            session_uuid,
+        ),
+        (
+            {
+                "X-Claude-Code-Session-Id": session_uuid,
+                "X-Claude-Code-Agent-Id": agent_id,
+                "X-Preloop-Session-Id": "explicit-run",
+            },
+            "explicit-run",
+            None,
+        ),
+        (
+            {"X-Claude-Code-Session-Id": session_uuid},
+            session_uuid,
+            None,
+        ),
+    ):
+        with patch(
+            "preloop.api.endpoints.anthropic_gateway.OpenAIGatewayService"
+        ) as service_cls:
+            service_cls.return_value.create_message.return_value = {"type": "message"}
+            response = client.post(
+                "/anthropic/v1/messages",
+                headers={
+                    "x-api-key": "ignored",
+                    "anthropic-version": "2023-06-01",
+                    **headers,
+                },
+                json={
+                    "model": "anthropic/claude-sonnet-4-5",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "max_tokens": 256,
+                },
+            )
+
+        assert response.status_code == 200
+        kwargs = service_cls.call_args.kwargs
+        assert kwargs["client_session_id"] == expected_session
+        assert kwargs["client_parent_session_id"] == expected_parent

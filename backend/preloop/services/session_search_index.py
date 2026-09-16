@@ -20,7 +20,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from sqlalchemy.orm import Session
 
@@ -258,6 +258,7 @@ def write_source_chunks(
     flow_id: Optional[Any] = None,
     status: Optional[str] = None,
     commit: bool = False,
+    existing: Optional[Sequence[SessionSearchDocument]] = None,
 ) -> List[SessionSearchDocument]:
     """Write one source's chunks, swallowing every failure.
 
@@ -307,6 +308,7 @@ def write_source_chunks(
                 source_id=str(source_id),
                 occurred_at=occurred_at or _now(),
                 chunks=chunks,
+                existing=existing,
             )
         except Exception:
             if savepoint.is_active:
@@ -455,6 +457,7 @@ def index_tool_call(
     flow_id: Optional[Any] = None,
     meta_data: Optional[Dict[str, Any]] = None,
     commit: bool = False,
+    existing: Optional[Sequence[SessionSearchDocument]] = None,
 ) -> List[SessionSearchDocument]:
     """Index one tool call activity."""
     content_captured = bool(settings.model_gateway_capture_content)
@@ -484,6 +487,7 @@ def index_tool_call(
         flow_id=flow_id,
         status=status,
         commit=commit,
+        existing=existing,
     )
 
 

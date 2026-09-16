@@ -10,6 +10,7 @@ import {
   getKillSwitchStatus,
   activateKillSwitch,
   deactivateKillSwitch,
+  BILLING_SUBSCRIPTION_CHANGED,
 } from '../../../api';
 import type { KillSwitchScope, KillSwitchStatus } from '../../../types';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
@@ -181,10 +182,38 @@ export class AccountView extends LitElement {
       v === -1 ? 'Custom' : v === 365 ? '1 year' : v ? `${v} days` : null,
   };
 
+  /**
+   * Re-read the summary when something outside this view changed the
+   * subscription.
+   *
+   * The plan comparison's own event reaches `_refreshBillingSummary` through
+   * the template binding below; it is composed, so it also arrives here after
+   * bubbling out of the shadow root. Ignoring anything that did not originate
+   * on `window` keeps that one change to one fetch, and leaves this listener
+   * for the module-level dispatch in `api.ts`, which has no element to bubble
+   * from.
+   */
+  private _handleSubscriptionChanged = (event: Event) => {
+    if (event.target !== window) return;
+    void this._refreshBillingSummary();
+  };
+
   async connectedCallback() {
     super.connectedCallback();
+    window.addEventListener(
+      BILLING_SUBSCRIPTION_CHANGED,
+      this._handleSubscriptionChanged
+    );
     await this._fetchData();
     void this._refreshHaltStatus();
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener(
+      BILLING_SUBSCRIPTION_CHANGED,
+      this._handleSubscriptionChanged
+    );
+    super.disconnectedCallback();
   }
 
   /** Reload kill-switch state; failures keep the last known state. */

@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import random
-import re
 import sys
 import threading
 import time
@@ -86,6 +85,7 @@ from preloop.services.account_realtime import (
     emit_account_event,
 )
 from preloop.services.account_governance_cache import get_cached_account_meta_data
+from preloop.services.agent_session_headers import normalize_session_id
 from preloop.services import alibaba_pricing
 from preloop.services import kill_switch as kill_switch_service
 from preloop.services.context_optimization import (
@@ -662,12 +662,10 @@ def get_model_gateway_backend(
     )
 
 
-# Per-run session id (X-Preloop-Session-Id) validation. The header maps to a
-# LangGraph ``thread_id`` / wizard-emitted run id. We accept a conservative,
-# URL/identifier-safe charset and cap the length; anything else is ignored so a
-# malformed header never errors and simply falls back to source keying.
-_CLIENT_SESSION_ID_MAX_LEN = 200
-_CLIENT_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_.:\-]+$")
+# Per-run session id (X-Preloop-Session-Id) validation. The rules live in
+# ``agent_session_headers`` because every path that can turn a client-supplied
+# value into part of a session key has to apply the same ones: the session id,
+# an agent-native equivalent, and (since subagent lineage) a parent session id.
 
 
 # Preserve only caller identity, never ingress credentials or proxy headers.
@@ -698,25 +696,12 @@ def _bounded_client_identity_headers(
     return identity
 
 
-def _normalize_client_session_id(raw: Optional[str]) -> Optional[str]:
-    """Validate and normalize the client-supplied per-run session id.
-
-    Args:
-        raw: Raw ``X-Preloop-Session-Id`` header value (may be ``None``).
-
-    Returns:
-        The trimmed id when it is non-empty, within the length cap, and uses
-        only the safe charset; otherwise ``None`` (caller falls back to the
-        existing source-keyed behavior).
-    """
-    if not isinstance(raw, str):
-        return None
-    candidate = raw.strip()
-    if not candidate or len(candidate) > _CLIENT_SESSION_ID_MAX_LEN:
-        return None
-    if not _CLIENT_SESSION_ID_RE.match(candidate):
-        return None
-    return candidate
+#: Validate and normalize a client-supplied per-run session id: the trimmed id
+#: when it is non-empty, within the length cap and on the safe charset,
+#: otherwise ``None`` (caller falls back to the existing source-keyed
+#: behavior). Kept under the historical private name so the many call sites
+#: below, and any out-of-tree importer, read unchanged.
+_normalize_client_session_id = normalize_session_id
 
 
 # Claude Code stamps its OWN session id on every Anthropic request in two
@@ -835,6 +820,7 @@ class OpenAIGatewayService:
         skip_runtime_session_resolution: bool = False,
         owns_db_session: bool = False,
         client_identity_headers: Optional[Mapping[str, str]] = None,
+        client_parent_session_id: Optional[str] = None,
     ) -> None:
         self._owns_db_session = owns_db_session
         # The request dependency supplies a binding only. Every owned Session
@@ -851,6 +837,19 @@ class OpenAIGatewayService:
         # an agent-native equivalent such as X-Claude-Code-Session-Id).
         # Validated/normalized once; invalid values fall back to source keying.
         self._client_session_id = _normalize_client_session_id(client_session_id)
+        # Session that spawned this one, when the harness said so (OpenCode's
+        # X-Parent-Session-Id, Claude Code's agent id). Same validation as the
+        # session id, so a hostile value simply leaves the lineage unknown. It
+        # is only meaningful next to a per-run session id of our own, and a
+        # session is never its own parent.
+        self._client_parent_session_id = _normalize_client_session_id(
+            client_parent_session_id
+        )
+        if (
+            self._client_session_id is None
+            or self._client_parent_session_id == self._client_session_id
+        ):
+            self._client_parent_session_id = None
         self._resolved_runtime_session_id: Optional[str] = None
         self._resolved_runtime_session_attempted = skip_runtime_session_resolution
         self._last_context_optimization: Optional[ContextOptimizationStats] = None
@@ -1072,6 +1071,72 @@ class OpenAIGatewayService:
         stamp = int((ended_at or datetime.now(timezone.utc)).timestamp())
         return f"{base_source_id}{IDLE_GENERATION_INFIX}{stamp}"
 
+    def _resolve_parent_runtime_session_id(
+        self,
+        *,
+        session_source_type: str,
+        principal_source_id: str,
+        runtime_principal: Dict[str, Any],
+        observed_at: datetime,
+    ) -> Optional[Any]:
+        """Return the row id of the session that spawned this one, if any.
+
+        The parent is keyed exactly as the parent's own turns key it, so the
+        link resolves to a real ``runtime_session`` row instead of a free-text
+        id nothing can join to. A subagent's first turn can reach us before the
+        parent's next one, so a missing parent row is created rather than
+        skipped: the parent's own turn then finds that row instead of racing
+        into a second one.
+
+        Args:
+            session_source_type: The principal type, used as the source type.
+            principal_source_id: The principal's key without any per-run
+                suffix.
+            runtime_principal: The credential's runtime-principal block.
+            observed_at: This request's timestamp, used only when the parent
+                row has to be created.
+
+        Returns:
+            The parent ``runtime_session`` id, or ``None`` when the harness
+            supplied no lineage or the lookup failed. ``None`` is a normal
+            answer and never fails the request.
+        """
+        if not self._client_parent_session_id:
+            return None
+        parent_source_id = f"{principal_source_id}:{self._client_parent_session_id}"
+        try:
+            parent = crud_runtime_session.get_by_source(
+                self.db,
+                account_id=str(self.auth_context.user.account_id),
+                session_source_type=session_source_type,
+                session_source_id=parent_source_id,
+            )
+            if parent is None:
+                parent = crud_runtime_session.upsert_by_source(
+                    self.db,
+                    account_id=str(self.auth_context.user.account_id),
+                    session_source_type=session_source_type,
+                    session_source_id=parent_source_id,
+                    runtime_principal_type=session_source_type,
+                    runtime_principal_id=parent_source_id,
+                    runtime_principal_name=runtime_principal.get("name"),
+                    started_at=observed_at,
+                    last_activity_at=observed_at,
+                )
+            return parent.id
+        except SQLAlchemyError:
+            self.db.rollback()
+            logger.warning(
+                "Failed to resolve parent runtime session for gateway request",
+                exc_info=True,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to resolve parent runtime session for gateway request",
+                exc_info=True,
+            )
+        return None
+
     def _resolve_runtime_session(self) -> Optional[str]:
         if self._resolved_runtime_session_attempted:
             return self._resolved_runtime_session_id
@@ -1089,6 +1154,9 @@ class OpenAIGatewayService:
         if not runtime_session_id and runtime_principal:
             session_source_type = runtime_principal.get("type")
             session_source_id = runtime_principal.get("id")
+            # The principal's own key, before any per-run suffix: a parent
+            # session is keyed by it exactly as this request's session is.
+            principal_source_id = session_source_id
             # A static custom-agent credential reuses one source id for every
             # request, collapsing per-run ROI into one eternal session. When the
             # client supplies a per-run id via X-Preloop-Session-Id, fold it into
@@ -1173,7 +1241,35 @@ class OpenAIGatewayService:
                             started_at=observed_at,
                             last_activity_at=observed_at,
                             reopen_if_ended=True,
+                            parent_session_id=self._resolve_parent_runtime_session_id(
+                                session_source_type=session_source_type,
+                                principal_source_id=principal_source_id,
+                                runtime_principal=runtime_principal,
+                                observed_at=observed_at,
+                            ),
                         )
+                    elif (
+                        rs.parent_session_id is None and self._client_parent_session_id
+                    ):
+                        # Fill a NULL lineage the way hook ingest does: rows
+                        # created before this column landed, and rows whose
+                        # parent lookup failed transiently. Lineage stays
+                        # write-once on top.
+                        observed_at = datetime.now(timezone.utc)
+                        parent_session_id = self._resolve_parent_runtime_session_id(
+                            session_source_type=session_source_type,
+                            principal_source_id=principal_source_id,
+                            runtime_principal=runtime_principal,
+                            observed_at=observed_at,
+                        )
+                        if parent_session_id is not None:
+                            rs = crud_runtime_session.upsert_by_source(
+                                self.db,
+                                account_id=str(self.auth_context.user.account_id),
+                                session_source_type=session_source_type,
+                                session_source_id=session_source_id,
+                                parent_session_id=parent_session_id,
+                            )
                     runtime_session_id = str(rs.id)
                 except SQLAlchemyError as e:
                     self.db.rollback()

@@ -309,6 +309,62 @@ def _as_naive_utc(value: datetime) -> datetime:
     return value
 
 
+def _parent_session_id_for_record(
+    db: Session,
+    *,
+    account_id: str,
+    agent: ManagedAgent,
+    source: str,
+    record: UsageIngestRecord,
+    observed_at: datetime,
+) -> Optional[Any]:
+    """Return the session row a pushed record's parent conversation maps onto.
+
+    Hooks that can see a subagent already report the thread it was spawned
+    from (``parent_conversation_id``, used for the Cost rollup). The same
+    value names a runtime session under the ``(source, conversation_id)``
+    keying above, so the session can record which session spawned it rather
+    than only which thread its spend rolls up to.
+
+    Args:
+        db: Database session (flushed, not committed).
+        account_id: Owning account id.
+        agent: Managed agent the batch was attributed to.
+        source: Ingest source label; the ``session_source_type``.
+        record: The pushed record.
+        observed_at: The record's timestamp, used only when the parent's own
+            session row does not exist yet.
+
+    Returns:
+        The parent runtime session's id, or ``None`` when the record names no
+        parent, names itself, or the harness reports no lineage at all.
+    """
+    parent_conversation_id = record.parent_conversation_id
+    if not parent_conversation_id or parent_conversation_id == record.conversation_id:
+        return None
+    parent = crud_runtime_session.get_by_source(
+        db,
+        account_id=account_id,
+        session_source_type=source,
+        session_source_id=parent_conversation_id,
+    )
+    if parent is None:
+        # A worker's records can arrive before its parent's next turn. Create
+        # the parent's row here so both paths land on the same one.
+        parent = crud_runtime_session.upsert_by_source(
+            db,
+            account_id=account_id,
+            session_source_type=source,
+            session_source_id=parent_conversation_id,
+            runtime_principal_type=agent.session_source_type,
+            runtime_principal_id=agent.session_source_id,
+            runtime_principal_name=agent.display_name,
+            started_at=observed_at,
+            last_activity_at=observed_at,
+        )
+    return parent.id
+
+
 def sync_runtime_session_for_record(
     db: Session,
     *,
@@ -358,6 +414,21 @@ def sync_runtime_session_for_record(
         session_source_type=source,
         session_source_id=conversation_id,
     )
+    # Lineage is write-once. Skip the parent get_by_source when the value
+    # cannot land on an already-parented row.
+    need_parent = session is None or session.parent_session_id is None
+    parent_session_id = (
+        _parent_session_id_for_record(
+            db,
+            account_id=account_id,
+            agent=agent,
+            source=source,
+            record=record,
+            observed_at=observed_at,
+        )
+        if need_parent
+        else None
+    )
     if session is None:
         session = crud_runtime_session.upsert_by_source(
             db,
@@ -370,8 +441,13 @@ def sync_runtime_session_for_record(
             started_at=observed_at,
             last_activity_at=observed_at,
             ended_at=ended_at,
+            parent_session_id=parent_session_id,
         )
     else:
+        if parent_session_id is not None and session.parent_session_id is None:
+            # Write-once, like the creation path: the first reported lineage
+            # for a conversation is the one that was observed.
+            session.parent_session_id = parent_session_id
         last_activity_at = session.last_activity_at
         if last_activity_at is None or observed_at > _as_naive_utc(last_activity_at):
             session.last_activity_at = observed_at

@@ -39,6 +39,30 @@ func (e *processExitError) Unwrap() error {
 	return e.err
 }
 
+// exitCodeError carries an exit status a command chose for an outcome that is
+// not a failure of the command itself, together with the line already printed
+// for it. `preloop sessions search` uses it for "nothing matched": a script
+// has to tell an empty answer apart from a broken one, and collapsing both to
+// 1 makes that impossible.
+type exitCodeError struct {
+	code    int
+	message string
+}
+
+func (e *exitCodeError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.message
+}
+
+func (e *exitCodeError) ExitCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.code
+}
+
 // wrapProcessExit maps a child *exec.ExitError to processExitError so
 // ProcessExitCode can recover the exact code. Other errors (failed start,
 // missing binary, flag problems) pass through unchanged.
@@ -55,10 +79,16 @@ func wrapProcessExit(err error) error {
 
 // ProcessExitCode is the process status main should os.Exit with after
 // Execute returns. Child cursor-agent failures keep their own code (2,
-// 130, ...). Preloop-side failures (missing binary, bad flags) stay 1.
+// 130, ...), and a command that chose a status for its own outcome (e.g. a
+// search that matched nothing) keeps that one. Preloop-side failures
+// (missing binary, bad flags) stay 1.
 func ProcessExitCode(err error) int {
 	if err == nil {
 		return 0
+	}
+	var outcome *exitCodeError
+	if errors.As(err, &outcome) {
+		return outcome.ExitCode()
 	}
 	var coded *processExitError
 	if errors.As(err, &coded) {

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import case, func
+from sqlalchemy import case, func, tuple_
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -318,6 +318,37 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             .order_by(self.model.timestamp.desc())
             .limit(limit)
             .offset(offset)
+            .all()
+        )
+
+    def list_tool_calls_page(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        before_timestamp: Optional[datetime] = None,
+        before_activity_id: Optional[Any] = None,
+        limit: int = 100,
+    ) -> list[RuntimeSessionActivity]:
+        """Return one page of a session's tool calls, newest first.
+
+        Keyed on ``(timestamp, id)`` so a backfill can walk a long session
+        across passes without an offset skipping rows written in between.
+        """
+        stmt = db.query(self.model).filter(
+            self.model.account_id == account_id,
+            self.model.runtime_session_id == runtime_session_id,
+            self.model.activity_type == "tool_call",
+        )
+        if before_timestamp is not None and before_activity_id is not None:
+            stmt = stmt.filter(
+                tuple_(self.model.timestamp, self.model.id)
+                < tuple_(before_timestamp, before_activity_id)
+            )
+        return (
+            stmt.order_by(self.model.timestamp.desc(), self.model.id.desc())
+            .limit(max(1, int(limit)))
             .all()
         )
 

@@ -300,3 +300,190 @@ def test_accounts_without_a_hosted_wallet_are_counted_against_the_fleet(db_sessi
 
     assert after["accounts"] == before["accounts"] + 1
     assert after["without_hosted_wallet"] == before["without_hosted_wallet"] + 1
+
+
+def _invitation(db, account, inviter, *, status=None, expires_in_days: int = 7):
+    now = datetime.now(timezone.utc)
+    invitation = models.UserInvitation(
+        account_id=account.id,
+        email=f"invite_{uuid.uuid4().hex[:8]}@example.com",
+        invited_by=inviter.id,
+        token=uuid.uuid4().hex,
+        status=status or models.UserInvitationStatus.PENDING,
+        expires_at=now + timedelta(days=expires_in_days),
+    )
+    db.add(invitation)
+    db.flush()
+    return invitation
+
+
+class TestEntitledAccounts:
+    """The population ``free_cap_overages`` cannot see: the paying one.
+
+    An account on a grandfathered plan can be entitled and still be over the
+    limit its persisted plan row carries, which is exactly the case an
+    operator needs counted before gating is switched on.
+    """
+
+    def test_entitled_accounts_are_counted_under_their_current_plan(self, db_session):
+        plan_id = f"preflight-entitled-{uuid.uuid4().hex[:8]}"
+        _plan(db_session, plan_id)
+        account = _account(db_session)
+        _subscription(db_session, account, plan_id)
+
+        counts = billing_preflight.entitled_accounts_by_plan(db_session)
+
+        assert counts[plan_id] == 1
+
+    def test_an_unentitled_account_is_never_counted(self, db_session):
+        plan_id = f"preflight-stale-{uuid.uuid4().hex[:8]}"
+        _plan(db_session, plan_id)
+        now = datetime.now(timezone.utc)
+        _subscription(
+            db_session,
+            _account(db_session),
+            plan_id,
+            status="trialing",
+            current_period_start=now - timedelta(days=30),
+            current_period_end=now - timedelta(days=1),
+        )
+
+        counts = billing_preflight.entitled_accounts_by_plan(db_session)
+
+        assert plan_id not in counts
+
+    def test_pressure_counts_seats_the_way_the_seat_gate_counts_them(self, db_session):
+        """Seats are active users plus live invitations, not users alone."""
+        plan_id = f"preflight-seats-{uuid.uuid4().hex[:8]}"
+        _plan(db_session, plan_id)
+        account = _account(db_session)
+        _subscription(db_session, account, plan_id)
+        inviter = _user(db_session, account)
+        _user(db_session, account)
+        _invitation(db_session, account, inviter)
+
+        pressure = billing_preflight.entitled_capacity_pressure(
+            db_session, plan_id=plan_id, max_users=2, max_agents=-1
+        )
+
+        assert pressure["accounts"] == 1
+        assert pressure["over_user_cap"] == 1
+        assert pressure["at_or_over_user_cap"] == 1
+        assert pressure["over_any_cap"] == 1
+
+    def test_an_account_exactly_at_the_cap_is_not_over_it(self, db_session):
+        plan_id = f"preflight-at-cap-{uuid.uuid4().hex[:8]}"
+        _plan(db_session, plan_id)
+        account = _account(db_session)
+        _subscription(db_session, account, plan_id)
+        _user(db_session, account)
+        _user(db_session, account)
+
+        pressure = billing_preflight.entitled_capacity_pressure(
+            db_session, plan_id=plan_id, max_users=2, max_agents=-1
+        )
+
+        assert pressure["at_or_over_user_cap"] == 1
+        assert pressure["over_user_cap"] == 0
+        assert pressure["over_any_cap"] == 0
+
+    def test_an_unlimited_cap_puts_nobody_under_pressure(self, db_session):
+        plan_id = f"preflight-unlimited-{uuid.uuid4().hex[:8]}"
+        _plan(db_session, plan_id)
+        account = _account(db_session)
+        _subscription(db_session, account, plan_id)
+        for _ in range(4):
+            _user(db_session, account)
+            _agent(db_session, account)
+
+        pressure = billing_preflight.entitled_capacity_pressure(
+            db_session, plan_id=plan_id, max_users=-1, max_agents=-1
+        )
+
+        assert pressure["accounts"] == 1
+        assert pressure["at_or_over_user_cap"] == 0
+        assert pressure["over_user_cap"] == 0
+        assert pressure["at_or_over_agent_cap"] == 0
+        assert pressure["over_agent_cap"] == 0
+
+    def test_agents_over_the_cap_are_counted(self, db_session):
+        plan_id = f"preflight-agents-{uuid.uuid4().hex[:8]}"
+        _plan(db_session, plan_id)
+        account = _account(db_session)
+        _subscription(db_session, account, plan_id)
+        for _ in range(3):
+            _agent(db_session, account)
+        _agent(db_session, account, lifecycle_state="retired")
+
+        pressure = billing_preflight.entitled_capacity_pressure(
+            db_session, plan_id=plan_id, max_users=-1, max_agents=2
+        )
+
+        assert pressure["over_agent_cap"] == 1
+        assert pressure["over_any_cap"] == 1
+
+    def test_only_the_named_plan_is_measured(self, db_session):
+        measured = f"preflight-measured-{uuid.uuid4().hex[:8]}"
+        other = f"preflight-other-{uuid.uuid4().hex[:8]}"
+        _plan(db_session, measured)
+        _plan(db_session, other)
+        crowded = _account(db_session)
+        _subscription(db_session, crowded, other)
+        for _ in range(5):
+            _user(db_session, crowded)
+
+        pressure = billing_preflight.entitled_capacity_pressure(
+            db_session, plan_id=measured, max_users=1, max_agents=1
+        )
+
+        assert pressure["accounts"] == 0
+        assert pressure["over_any_cap"] == 0
+
+
+class TestAccountCapacityCounts:
+    def test_one_account_reports_the_numbers_behind_its_seats(self, db_session):
+        account = _account(db_session)
+        inviter = _user(db_session, account)
+        _user(db_session, account)
+        _user(db_session, account, is_active=False)
+        _invitation(db_session, account, inviter)
+        _agent(db_session, account)
+        _agent(db_session, account, lifecycle_state="retired")
+
+        counts = billing_preflight.account_capacity_counts(
+            db_session, account_id=str(account.id)
+        )
+
+        assert counts["active_users"] == 2
+        assert counts["pending_invitations"] == 1
+        assert counts["seats_used"] == 3
+        assert counts["active_agents"] == 1
+
+    def test_an_expired_invitation_does_not_hold_a_seat(self, db_session):
+        account = _account(db_session)
+        inviter = _user(db_session, account)
+        _invitation(db_session, account, inviter, expires_in_days=-1)
+
+        counts = billing_preflight.account_capacity_counts(
+            db_session, account_id=str(account.id)
+        )
+
+        assert counts["pending_invitations"] == 0
+        assert counts["seats_used"] == 1
+
+    def test_another_account_never_leaks_into_the_counts(self, db_session):
+        account = _account(db_session)
+        neighbour = _account(db_session)
+        _user(db_session, neighbour)
+        _agent(db_session, neighbour)
+
+        counts = billing_preflight.account_capacity_counts(
+            db_session, account_id=str(account.id)
+        )
+
+        assert counts == {
+            "active_users": 0,
+            "pending_invitations": 0,
+            "seats_used": 0,
+            "active_agents": 0,
+        }

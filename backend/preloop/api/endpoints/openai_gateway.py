@@ -9,7 +9,10 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from preloop.models.db.session import get_db_session
-from preloop.services.agent_session_headers import native_session_id_from_headers
+from preloop.services.agent_session_headers import (
+    native_parent_session_id_from_headers,
+    native_session_id_from_headers,
+)
 from preloop.services.model_gateway_auth import (
     ModelGatewayAuthContext,
     authenticate_bearer_token,
@@ -117,6 +120,11 @@ def create_chat_completion(
     Preloop's own header still wins, and agent-native headers are only trusted
     for the agent the credential identifies — see
     :mod:`preloop.services.agent_session_headers`.
+
+    OpenCode additionally names the session that spawned a subagent's session
+    (``x-parent-session-id``); it is read on the same terms and only when the
+    session id came from the harness, so an operator-supplied
+    ``X-Preloop-Session-Id`` is never given a parent it did not ask for.
     """
     service = OpenAIGatewayService(
         db,
@@ -125,6 +133,13 @@ def create_chat_completion(
         owns_db_session=True,
         client_session_id=x_preloop_session_id
         or native_session_id_from_headers(request.headers, auth_context=auth_context),
+        client_parent_session_id=(
+            None
+            if x_preloop_session_id
+            else native_parent_session_id_from_headers(
+                request.headers, auth_context=auth_context
+            )
+        ),
     )
     if payload.get("stream"):
         return GatewayStreamingResponse(
@@ -161,6 +176,13 @@ def create_response(
         client_identity_headers=request.headers,
         client_session_id=x_preloop_session_id
         or native_session_id_from_headers(request.headers, auth_context=auth_context),
+        client_parent_session_id=(
+            None
+            if x_preloop_session_id
+            else native_parent_session_id_from_headers(
+                request.headers, auth_context=auth_context
+            )
+        ),
     )
     if payload.get("stream"):
         return GatewayStreamingResponse(
@@ -184,7 +206,9 @@ def create_embedding(
 
     Same authentication, account scoping, budget preflight and usage
     accounting as the completions routes; embeddings carry no stream, so
-    there is no SSE branch here.
+    there is no SSE branch here. Parent lineage is read on the same terms
+    as chat and responses: a subagent whose first request is an embedding
+    must still record who spawned it.
     """
     service = OpenAIGatewayService(
         db,
@@ -193,5 +217,12 @@ def create_embedding(
         owns_db_session=True,
         client_session_id=x_preloop_session_id
         or native_session_id_from_headers(request.headers, auth_context=auth_context),
+        client_parent_session_id=(
+            None
+            if x_preloop_session_id
+            else native_parent_session_id_from_headers(
+                request.headers, auth_context=auth_context
+            )
+        ),
     )
     return _with_alias_collision_warning(service.create_embedding(payload), service)

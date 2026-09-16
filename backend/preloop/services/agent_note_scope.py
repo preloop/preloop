@@ -329,11 +329,12 @@ def _grant_facts(
 ) -> Dict[str, Any]:
     """The bindings a rule sees when it is asked to widen the scope.
 
-    The call's own arguments are here under the names the tool uses, so a rule
-    written for ``send_note`` means the same thing at this evaluation as at the
-    one the tool call already went through. The ``note_`` keys are the facts
-    that only exist here: they are what the platform worked out about the
-    lineage, never anything the calling agent asserted.
+    ``text`` is the caller's. ``agent_id``, ``runtime_session_id``, and
+    ``execution_id`` are the target as the platform resolved it, under the
+    names the tool uses: they can be present even when the caller never
+    named them. A rule should key on the ``note_*`` facts, which name
+    author and target unambiguously. Top-level ``execution_id`` in the
+    rule context is the author run only on grant evaluation.
     """
     return {
         "text": text,

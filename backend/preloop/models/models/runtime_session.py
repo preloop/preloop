@@ -43,6 +43,10 @@ class RuntimeSession(Base):
             "last_activity_at",
             postgresql_ops={"last_activity_at": "DESC"},
         ),
+        Index(
+            "ix_runtime_session_parent_session_id",
+            "parent_session_id",
+        ),
     )
 
     account_id: Mapped[uuid.UUID] = mapped_column(
@@ -53,6 +57,16 @@ class RuntimeSession(Base):
     )
     session_source_type: Mapped[str] = mapped_column(String(64), nullable=False)
     session_source_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: The session that spawned this one, when the harness says so on the wire
+    #: (see ``preloop.services.agent_session_headers``). NULL is the normal
+    #: case and means "lineage unknown", never "no parent": most harnesses do
+    #: not distinguish a subagent turn at all. Written once, when the row is
+    #: created, and never rewritten afterwards.
+    parent_session_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("runtime_session.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     session_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     runtime_principal_type: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True

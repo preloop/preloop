@@ -421,6 +421,15 @@ async def _start_resume_execution(
     insert. Dispatch happens after commit: a failed dispatch must not roll
     that write back or release the claim, or the next sweep would start a
     second resume.
+
+    The continuation carries the parked run's lineage (parent, root, depth)
+    unchanged rather than starting a new tree: it is the same logical child
+    carrying on, so its parent keeps waiting for it, a rollup keyed on the
+    root still counts it, and the depth cap does not spend a hop on a
+    question a person answered. The park link itself is expressed by
+    ``resume_execution_id``, not by the parent edge. Values are read
+    defensively because rows that predate the lineage columns, and the
+    fakes in the park tests, may not carry them.
     """
     from preloop.models.crud import crud_flow_execution
     from preloop.models.schemas.flow_execution import FlowExecutionCreate
@@ -441,6 +450,9 @@ async def _start_resume_execution(
             flow_id=flow.id,
             status="PENDING",
             trigger_event_details=details,
+            parent_execution_id=getattr(parked, "parent_execution_id", None),
+            root_execution_id=getattr(parked, "root_execution_id", None),
+            delegation_depth=int(getattr(parked, "delegation_depth", 0) or 0),
         ),
     )
     if not crud_flow_execution.mark_park_resumed(

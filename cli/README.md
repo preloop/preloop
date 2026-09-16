@@ -251,6 +251,46 @@ that lets you stop the agent, and every note is written to the audit trail
 with its author. Reading and cancelling notes stays in the console and the
 API for now. See [docs/guide/operator-notes.md](../docs/guide/operator-notes.md).
 
+### Session search
+
+```bash
+preloop sessions search "rolling restart"
+preloop sessions search '"rolling restart" -staging'     # phrase, with an exclusion
+preloop sessions search kubectl or helm                  # alternation
+preloop sessions search kubectl --from 2026-09-01 --to 2026-09-15
+preloop sessions search kubectl --limit 120              # pages past one request
+preloop sessions search kubectl --json | jq -r '.results[].runtime_session_id'
+```
+
+`preloop sessions search` calls `POST /api/v1/runtime-sessions/search`, the
+ranked keyword search over recorded session content: model calls, tool calls,
+transcript messages, operator notes and session summaries. The body is a POST
+so the query text stays out of proxy and access logs. Nothing about the query
+is interpreted by the CLI, so the same words return the same answer here and
+in the console.
+
+Default output is one block per session: the session id and the source
+type/id you already type, the reference and title when set, when it ran, why
+it matched (how many chunks, the fused score) and each matching turn with its
+timestamp. `<mark>` markup from the server's headline generator is stripped in
+that view and kept in `--json`.
+
+`--json` writes each response page exactly as the endpoint sent it, one
+document per page, so it can be piped into `jq`. Every note the human reader
+needs goes to standard error instead: a degraded ranking mode (asking for
+`--mode semantic` on a deployment that cannot rank semantically), how far the
+corpus is indexed, and the result count. That keeps the piped payload a clean
+document while a human still sees that coverage was partial.
+
+`--limit` is the total number of sessions to retrieve and `--page-size` how
+many per request (at most 50, the server's cap); a `--limit` above the page
+size is paged by offset automatically.
+
+Exit status is what a script branches on: `0` when something matched, `2` when
+the search ran and matched nothing, `1` when it could not be answered. An
+endpoint failure prints one sentence, never a server stack trace. Searching
+needs the `view_runtime_sessions` permission.
+
 ### Models
 
 ```bash

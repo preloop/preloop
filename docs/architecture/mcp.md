@@ -43,6 +43,16 @@ description and JSON schema from `preloop/tools/builtin_defs.py` and are added w
 `FunctionTool.from_function`, so `preloop/api/endpoints/tools.py`,
 `initialize_mcp.py` and `dynamic_mcp_server.py` cannot drift apart.
 
+### Session search tool
+
+`search_sessions` lets an agent query the runtime session corpus before
+repeating work it already did. It is default-off, scoped to the calling agent's
+own sessions unless an operator grants the account wide scope, and its answer is
+size-capped so a search cannot flood a context window. The tool definition lives
+in `preloop/tools/builtin_defs.py`, the scope and cap rules in
+`preloop/services/agent_session_search.py`, and the guide is at
+[docs/guide/agent-session-search.md](../guide/agent-session-search.md).
+
 ### Issue tools
 
 `get_issue` and `update_issue` carry the issue triage surface. There are no separate

@@ -11,10 +11,9 @@ being true:
 * ``WAITING_FOR_HUMAN`` is an interrupted child, not a finished one, and the
   parked row is closed without the result
 * the continuation of a parked run carries the parked run's trigger context
-  and, today, not its lineage
+  and its lineage, unchanged (#707)
 
-Nothing here exercises a database or a network: the point is the contract, and
-one of these tests is written to fail when the follow up (#707) lands.
+Nothing here exercises a database or a network: the point is the contract.
 """
 
 from __future__ import annotations
@@ -247,14 +246,37 @@ class TestTheContinuation:
         assert details["_resume"]["execution_id"] == str(parked.id)
         assert details["payload"]["repository"] == "example/widget"
 
-    async def test_the_continuation_drops_the_child_s_lineage_today(self, monkeypatch):
-        """Pinned gap, not a decision: #707 carries the lineage across.
+    async def test_the_continuation_carries_the_child_s_lineage(self, monkeypatch):
+        """#707: the lineage crosses the park unchanged, it is not re-parented.
 
-        When that lands this assertion flips to the parked row's own values,
-        unchanged, because a continuation is the same logical child carrying
-        on rather than a new child of the run it continues.
+        A continuation is the same logical child carrying on rather than a new
+        child of the run it continues, so the depth is copied and never
+        incremented: the park link is already expressed by
+        ``resume_execution_id``.
         """
         parked = _parked_child()
+        obj_in = await self._create_call(monkeypatch, parked)
+        assert obj_in.parent_execution_id == parked.parent_execution_id
+        assert obj_in.root_execution_id == parked.root_execution_id
+        assert obj_in.delegation_depth == parked.delegation_depth == 1
+
+    async def test_a_root_run_continues_without_a_lineage(self, monkeypatch):
+        """No lineage to carry, and none invented: null, null and depth 0."""
+        parked = _parked_child(
+            parent_execution_id=None, root_execution_id=None, delegation_depth=0
+        )
+        obj_in = await self._create_call(monkeypatch, parked)
+        assert obj_in.parent_execution_id is None
+        assert obj_in.root_execution_id is None
+        assert obj_in.delegation_depth == 0
+
+    async def test_a_row_predating_the_lineage_columns_still_continues(
+        self, monkeypatch
+    ):
+        """Read defensively: an old parked row has no lineage attributes."""
+        parked = _parked_child()
+        for name in LINEAGE_NAMES:
+            delattr(parked, name)
         obj_in = await self._create_call(monkeypatch, parked)
         assert obj_in.parent_execution_id is None
         assert obj_in.root_execution_id is None

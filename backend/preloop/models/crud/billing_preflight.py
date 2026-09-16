@@ -13,10 +13,10 @@ run any of this.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, literal, select
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -101,6 +101,164 @@ def free_cap_overages(
         "over_user_cap": int(row[0] or 0),
         "over_agent_cap": int(row[1] or 0),
         "over_any_cap": int(row[2] or 0),
+    }
+
+
+def entitled_accounts_by_plan(db: Session) -> dict[str, int]:
+    """Count entitled accounts per plan id.
+
+    The mirror image of :func:`free_cap_overages`, which only ever looks at
+    accounts *without* an entitled subscription. The risk that section cannot
+    see is a paying customer on a grandfathered plan whose persisted row
+    carries limits the catalog does not: gating goes live and a customer who
+    was promised "unlimited" meets a cap. Counting them by plan is the first
+    half of the answer; the caller resolves each plan's effective limits.
+
+    Args:
+        db: Read-only session.
+
+    Returns:
+        ``{plan_id: account_count}``, empty when nobody is entitled.
+    """
+    entitled = _entitled_plan_subquery().subquery()
+    rows = db.execute(
+        select(entitled.c.plan_id, func.count(entitled.c.account_id)).group_by(
+            entitled.c.plan_id
+        )
+    ).all()
+    return {str(plan_id): int(count or 0) for plan_id, count in rows if plan_id}
+
+
+def entitled_capacity_pressure(
+    db: Session, *, plan_id: str, max_users: int, max_agents: int
+) -> dict[str, int]:
+    """How many entitled accounts on one plan sit at or above its caps.
+
+    "Seats used" is active users plus pending invitations, matching what the
+    seat gate actually counts, so the number here is the one a customer will
+    meet. A cap of -1 means unlimited and is reported as zero pressure rather
+    than skipped, so the shape of the answer never depends on the plan.
+
+    Args:
+        db: Read-only session.
+        plan_id: Plan whose entitled accounts are measured.
+        max_users: Effective seat ceiling, -1 for unlimited.
+        max_agents: Effective agent ceiling, -1 for unlimited.
+
+    Returns:
+        ``at_or_over_user_cap``, ``over_user_cap``, ``at_or_over_agent_cap``,
+        ``over_agent_cap``, ``over_any_cap`` and ``accounts``.
+    """
+    entitled = _entitled_plan_subquery().subquery()
+    now = datetime.now(timezone.utc)
+    users = (
+        select(
+            models.User.account_id.label("account_id"),
+            func.count(models.User.id).label("total"),
+        )
+        .where(models.User.is_active.is_(True))
+        .group_by(models.User.account_id)
+        .subquery()
+    )
+    invites = (
+        select(
+            models.UserInvitation.account_id.label("account_id"),
+            func.count(models.UserInvitation.id).label("total"),
+        )
+        .where(
+            models.UserInvitation.status == models.UserInvitationStatus.PENDING,
+            models.UserInvitation.expires_at > now,
+        )
+        .group_by(models.UserInvitation.account_id)
+        .subquery()
+    )
+    agents = (
+        select(
+            models.ManagedAgent.account_id.label("account_id"),
+            func.count(models.ManagedAgent.id).label("total"),
+        )
+        .where(models.ManagedAgent.lifecycle_state == "active")
+        .group_by(models.ManagedAgent.account_id)
+        .subquery()
+    )
+    seats = func.coalesce(users.c.total, 0) + func.coalesce(invites.c.total, 0)
+    agent_total = func.coalesce(agents.c.total, 0)
+    always_false = literal(1) == literal(0)
+    at_users = seats >= max_users if max_users >= 0 else always_false
+    over_users = seats > max_users if max_users >= 0 else always_false
+    at_agents = agent_total >= max_agents if max_agents >= 0 else always_false
+    over_agents = agent_total > max_agents if max_agents >= 0 else always_false
+    row = db.execute(
+        select(
+            func.count(models.Account.id),
+            func.count(case((at_users, 1))),
+            func.count(case((over_users, 1))),
+            func.count(case((at_agents, 1))),
+            func.count(case((over_agents, 1))),
+            func.count(case((over_users | over_agents, 1))),
+        )
+        .select_from(models.Account)
+        .join(entitled, entitled.c.account_id == models.Account.id)
+        .outerjoin(users, users.c.account_id == models.Account.id)
+        .outerjoin(invites, invites.c.account_id == models.Account.id)
+        .outerjoin(agents, agents.c.account_id == models.Account.id)
+        .where(entitled.c.plan_id == plan_id)
+    ).one()
+    return {
+        "accounts": int(row[0] or 0),
+        "at_or_over_user_cap": int(row[1] or 0),
+        "over_user_cap": int(row[2] or 0),
+        "at_or_over_agent_cap": int(row[3] or 0),
+        "over_agent_cap": int(row[4] or 0),
+        "over_any_cap": int(row[5] or 0),
+    }
+
+
+def account_capacity_counts(db: Session, *, account_id: str) -> dict[str, int]:
+    """Seat and agent counts for one account, as the gates count them.
+
+    Args:
+        db: Read-only session.
+        account_id: Account to measure.
+
+    Returns:
+        ``active_users``, ``pending_invitations``, ``seats_used`` and
+        ``active_agents``.
+    """
+    now = datetime.now(timezone.utc)
+    active_users = int(
+        db.execute(
+            select(func.count(models.User.id)).where(
+                models.User.account_id == account_id,
+                models.User.is_active.is_(True),
+            )
+        ).scalar()
+        or 0
+    )
+    pending = int(
+        db.execute(
+            select(func.count(models.UserInvitation.id)).where(
+                models.UserInvitation.account_id == account_id,
+                models.UserInvitation.status == models.UserInvitationStatus.PENDING,
+                models.UserInvitation.expires_at > now,
+            )
+        ).scalar()
+        or 0
+    )
+    agents = int(
+        db.execute(
+            select(func.count(models.ManagedAgent.id)).where(
+                models.ManagedAgent.account_id == account_id,
+                models.ManagedAgent.lifecycle_state == "active",
+            )
+        ).scalar()
+        or 0
+    )
+    return {
+        "active_users": active_users,
+        "pending_invitations": pending,
+        "seats_used": active_users + pending,
+        "active_agents": agents,
     }
 
 
@@ -212,7 +370,10 @@ def gated_capability_usage(db: Session, *, since: datetime) -> dict[str, Any]:
 
 
 __all__ = [
+    "account_capacity_counts",
     "accounts_without_hosted_wallet",
+    "entitled_accounts_by_plan",
+    "entitled_capacity_pressure",
     "entitled_without_revision",
     "expired_trials",
     "free_cap_overages",
