@@ -216,13 +216,24 @@ class GitCloneConfig(BaseModel):
 
         The whole point of the path is that the document leaves through the
         pull request surface, so an enabled block with pull requests turned
-        off is a configuration that cannot do what it says.
+        off is a configuration that cannot do what it says. Isolated
+        publication_mode is a different publisher (trusted control plane);
+        combining it with this block would skip the marker and publish
+        nothing.
         """
         block = self.report_publication
-        if block is not None and block.enabled and not self.create_pull_request:
+        if block is None or not block.enabled:
+            return self
+        if not self.create_pull_request:
             raise ValueError(
                 "report_publication requires create_pull_request: the report "
                 "lands as a pull request, never as a direct commit"
+            )
+        if self.publication_mode == "isolated":
+            raise ValueError(
+                "report_publication cannot use publication_mode isolated: "
+                "the report is published by the post-execution block, not "
+                "the isolated publisher"
             )
         return self
 

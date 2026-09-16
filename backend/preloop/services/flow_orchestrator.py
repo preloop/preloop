@@ -2599,6 +2599,8 @@ class FlowExecutionOrchestrator:
 
         # Outcome of publishing this run's report through the pull request
         # path. Printed once, after the agent exited, whatever happened.
+        # Capture is gated: a look-alike line on a flow that did not opt
+        # in is not a platform receipt.
         if stripped_line.startswith(REPORT_PUBLICATION_MARKER + " "):
             self._note_report_publication(stripped_line)
 
@@ -3740,13 +3742,35 @@ class FlowExecutionOrchestrator:
         self._verification_evidence = parsed
         logger.info("Publication gate evidence captured")
 
+    def _report_publication_enabled(self) -> bool:
+        """True only when this run opted into report publication.
+
+        The marker is a platform receipt. An agent (or a prompt-injected
+        repository) printing a look-alike line on any other flow must not
+        become ``result.report_publication``.
+        """
+        git_config: Any = None
+        flow = getattr(self, "flow", None)
+        if flow is not None:
+            git_config = getattr(flow, "git_clone_config", None)
+        context = getattr(self, "_execution_context", None)
+        if not isinstance(git_config, dict) and isinstance(context, dict):
+            git_config = context.get("git_clone_config")
+        if not isinstance(git_config, dict):
+            return False
+        block = git_config.get("report_publication")
+        return isinstance(block, dict) and bool(block.get("enabled"))
+
     def _note_report_publication(self, line: str) -> None:
         """Remember how the report publication ended (last marker wins).
 
         The block prints exactly one line per run; a retried attempt prints
         its own, and the later one describes the state the repository is
-        actually in.
+        actually in. Capture is refused unless this execution enabled
+        report publication, so a forged marker on a normal flow is noise.
         """
+        if not self._report_publication_enabled():
+            return
         parsed = parse_report_publication_marker(line)
         if parsed is None:
             return
@@ -3759,7 +3783,10 @@ class FlowExecutionOrchestrator:
 
         Same recovery pattern as the publication gate evidence: a dropped
         stream reconnect must not turn a recorded failure into silence.
+        Recovery is also gated on the run's own configuration.
         """
+        if not self._report_publication_enabled():
+            return None
         if self._report_publication is not None:
             return self._report_publication
         for line in self.execution_logger.get_agent_output_lines() or []:

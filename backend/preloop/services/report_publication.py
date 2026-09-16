@@ -24,6 +24,7 @@ throwaway git worktree of the checkout:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shlex
@@ -79,6 +80,7 @@ REPORT_PUBLICATION_REASONS = frozenset(
         "repository_missing",
         "repository_ambiguous",
         "invalid_configuration",
+        "write_flow_conflict",
     }
 )
 
@@ -87,6 +89,10 @@ MAX_COMMIT_MESSAGE_LENGTH = 512
 
 _SAFE_GIT_REF_CHARS = re.compile(r"[A-Za-z0-9._/-]+")
 _SLUG_UNSAFE = re.compile(r"[^a-z0-9]+")
+# Destination and source paths are interpolated into the post-execution
+# marker. Anything outside this allowlist is a shell metacharacter (or
+# worse) and is refused before it can reach echo or python -c.
+_SHELL_UNSAFE_PATH = re.compile(r"[^A-Za-z0-9._/@ +-]")
 
 
 class ReportPublicationError(ValueError):
@@ -125,9 +131,10 @@ def validated_git_ref(name: Optional[str]) -> Optional[str]:
 def validated_relative_path(value: Any) -> Optional[str]:
     """Return a repository relative path, or None when it is not one.
 
-    Absolute paths, traversal, backslashes, control characters and anything
-    under ``.git`` are refused: this path is both a ``cp`` target and a git
-    pathspec, and it comes from flow configuration.
+    Absolute paths, traversal, backslashes, control characters, shell
+    metacharacters and anything under ``.git`` are refused: this path is
+    a ``cp`` target, a git pathspec and a marker field, and it comes from
+    flow configuration.
     """
     if not value or not isinstance(value, str):
         return None
@@ -137,6 +144,8 @@ def validated_relative_path(value: Any) -> Optional[str]:
     if path.startswith("/") or path.startswith("-") or "\\" in path:
         return None
     if any(ord(char) < 0x20 or ord(char) == 0x7F for char in path):
+        return None
+    if _SHELL_UNSAFE_PATH.search(path):
         return None
     parts = path.split("/")
     for part in parts:
@@ -255,15 +264,46 @@ def resolve_report_publication(
     )
 
 
+def _marker_print_shell(
+    outcome_assignment: str,
+    reason_assignment: str,
+    fields: Mapping[str, str],
+) -> str:
+    """Print the marker via python so field values never enter a quoted echo.
+
+    Outcome and reason are supplied as already-quoted shell assignments
+    (literals, or expansions of the closed-vocabulary variables the
+    publication block sets). Document and branch travel through the
+    environment, the same way ``_build_pr_or_mr_create_shell`` encodes
+    its payload: ``$`` / backticks / quotes in a flow-configured path
+    cannot become command substitution.
+    """
+    env_parts = [outcome_assignment, reason_assignment]
+    py_pairs = [
+        '"outcome": os.environ.get("PRELOOP_REPORT_OUTCOME", "")',
+        '"reason": os.environ.get("PRELOOP_REPORT_REASON", "")',
+    ]
+    for index, (key, value) in enumerate(sorted(fields.items())):
+        env_name = f"PRELOOP_REPORT_FIELD_{index}"
+        env_parts.append(f"{env_name}={shlex.quote(str(value))}")
+        py_pairs.append(
+            f"{json.dumps(key)}: os.environ.get({json.dumps(env_name)}, '')"
+        )
+    py_pairs.append(f'"log": {json.dumps(REPORT_PUBLICATION_LOG_RELATIVE)}')
+    python = (
+        "import json,os;"
+        f"print({json.dumps(REPORT_PUBLICATION_MARKER + ' ')}+"
+        "json.dumps({" + ",".join(py_pairs) + "},separators=(',',':')))"
+    )
+    return f"{' '.join(env_parts)} python3 -c {shlex.quote(python)}"
+
+
 def _marker_echo(outcome_ref: str, reason_ref: str, fields: Mapping[str, str]) -> str:
     """Shell that prints the single marker line, with shell-expanded state."""
-    extra = "".join(
-        f', \\"{key}\\": \\"{value}\\"' for key, value in sorted(fields.items())
-    )
-    return (
-        f'echo "{REPORT_PUBLICATION_MARKER} '
-        f'{{\\"outcome\\": \\"${outcome_ref}\\", \\"reason\\": \\"${reason_ref}\\"'
-        f'{extra}, \\"log\\": \\"{REPORT_PUBLICATION_LOG_RELATIVE}\\"}}"'
+    return _marker_print_shell(
+        f'PRELOOP_REPORT_OUTCOME="${{{outcome_ref}}}"',
+        f'PRELOOP_REPORT_REASON="${{{reason_ref}}}"',
+        fields,
     )
 
 
@@ -277,13 +317,10 @@ def build_failed_report_publication_shell(
     """
     if reason not in REPORT_PUBLICATION_REASONS:
         reason = "invalid_configuration"
-    parts = "".join(
-        f', \\"{key}\\": \\"{value}\\"' for key, value in sorted((fields or {}).items())
-    )
-    return (
-        f'echo "{REPORT_PUBLICATION_MARKER} '
-        f'{{\\"outcome\\": \\"{OUTCOME_FAILED}\\", \\"reason\\": \\"{reason}\\"'
-        f'{parts}, \\"log\\": \\"{REPORT_PUBLICATION_LOG_RELATIVE}\\"}}"'
+    return _marker_print_shell(
+        f"PRELOOP_REPORT_OUTCOME={shlex.quote(OUTCOME_FAILED)}",
+        f"PRELOOP_REPORT_REASON={shlex.quote(reason)}",
+        fields or {},
     )
 
 
@@ -429,8 +466,6 @@ def parse_report_publication_marker(line: str) -> Optional[dict[str, Any]]:
     Only the closed vocabularies are accepted: a look-alike line an agent
     printed cannot claim a publication that did not happen.
     """
-    import json
-
     if not isinstance(line, str):
         return None
     stripped = line.strip()

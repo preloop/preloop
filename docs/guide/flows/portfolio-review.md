@@ -284,7 +284,10 @@ get two branches and therefore two independent pull requests. Set
 `report_publication.branch` if your repository has its own convention;
 the rule above then does not apply, but the stability requirement still
 does: a branch that changes between runs would open a second pull
-request.
+request. An override that equals the repository default branch is
+refused (`invalid_configuration`): that would be a direct commit. An
+override of an existing human branch also carries that branch's history
+into the report pull request, so prefer the `preloop/report/` prefix.
 
 ### What it will not do
 
@@ -324,7 +327,11 @@ string: `identical_document`, `report_missing`, `checkout_unavailable`,
 `stage_failed`, `commit_failed`, `push_failed`,
 `pull_request_unavailable`, `pull_request_disabled`,
 `provider_unsupported`, `repository_missing`, `repository_ambiguous`,
-`invalid_configuration`. The git and provider output behind it is kept in
+`invalid_configuration`, `write_flow_conflict`. Isolated
+`publication_mode` cannot be combined with this block: the schema
+rejects it, and a leftover runtime config prints the marker with
+`invalid_configuration` instead of publishing nothing. The git and
+provider output behind a failure is kept in
 `evidence/report-publication.log`. This field is written by the platform
 from the container's own output; an agent's `result.json` cannot author
 it, which is what makes it evidence rather than a claim.

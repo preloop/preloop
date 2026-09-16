@@ -4694,6 +4694,16 @@ true
             return build_failed_report_publication_shell(
                 "base_branch_unavailable", fields
             )
+        if plan.branch == base_branch:
+            # Known only at runtime: an override of `main` with source_branch
+            # `main` would push HEAD to the default branch.
+            self.logger.warning(
+                "report_publication.branch equals the base branch %s",
+                base_branch,
+            )
+            return build_failed_report_publication_shell(
+                "invalid_configuration", fields
+            )
         pull_request_shell = self._build_pr_or_mr_create_shell(
             execution_context=execution_context,
             git_config=git_config,
@@ -4790,6 +4800,76 @@ true
         parts.append("cd /workspace\n")
         return "".join(parts)
 
+    def _report_publication_refusal_prefix(
+        self, git_config: Dict[str, Any], reason: str
+    ) -> str:
+        """Marker-only prefix so a refused publication is never silent."""
+        from preloop.services.report_publication import (
+            ReportPublicationError,
+            build_failed_report_publication_shell,
+            resolve_report_publication,
+        )
+
+        fields: Dict[str, str] = {}
+        try:
+            plan = resolve_report_publication(git_config)
+            if plan is not None:
+                fields = plan.as_marker_fields()
+        except ReportPublicationError:
+            pass
+        return build_failed_report_publication_shell(reason, fields) + "\n"
+
+    def _combine_report_publication_and_push(
+        self,
+        *,
+        git_config: Dict[str, Any],
+        repositories: list[Dict[str, Any]],
+        publication_commands: str,
+        push_commands: str,
+        source_branch: str,
+    ) -> str:
+        """Refuse publication when the checkout already has agent commits.
+
+        Report publication assumes a read-only agent. If the checkout is
+        ahead of the base branch, those commits must take the normal push
+        path instead of being dropped while a clean report receipt is stored.
+        """
+        from preloop.services.report_publication import (
+            build_failed_report_publication_shell,
+        )
+
+        clone_path = "/workspace"
+        if repositories:
+            clone_path = self._resolve_repository_clone_path(repositories[0], 0)
+        safe_base = _validated_git_ref(str(source_branch or "main")) or "main"
+        fields: Dict[str, str] = {}
+        try:
+            from preloop.services.report_publication import (
+                ReportPublicationError,
+                resolve_report_publication,
+            )
+
+            plan = resolve_report_publication(git_config)
+            if plan is not None:
+                fields = plan.as_marker_fields()
+        except ReportPublicationError:
+            pass
+        refusal = build_failed_report_publication_shell("write_flow_conflict", fields)
+        return (
+            f"cd {shlex.quote(clone_path)} 2>/dev/null || true\n"
+            f"COMMIT_COUNT=$(git rev-list --count origin/{safe_base}..HEAD "
+            f"2>/dev/null || git rev-list --count {safe_base}..HEAD "
+            f'2>/dev/null || echo "0")\n'
+            f'if [ "$COMMIT_COUNT" -gt "0" ]; then\n'
+            f'  echo "Report publication refused: checkout has commits '
+            f'ahead of {safe_base}"\n'
+            f"  {refusal}\n"
+            f"{push_commands}\n"
+            "else\n"
+            f"{publication_commands}\n"
+            "fi\n"
+        )
+
     def _prepare_git_post_execution_commands(
         self, execution_context: Dict[str, Any]
     ) -> str:
@@ -4848,10 +4928,17 @@ true
                     if execution_context.get("checkpoint_env")
                     else ""
                 )
+                isolated_prefix = ""
+                if publishes_report:
+                    # Isolated mode never emits the report-publication block.
+                    # Disclose the refusal so the run is not silent.
+                    isolated_prefix = self._report_publication_refusal_prefix(
+                        git_config, "invalid_configuration"
+                    )
                 if len(repositories) == 1:
                     path = self._resolve_repository_clone_path(repositories[0], 0)
                     return (
-                        checkpoint + f"cd {shlex.quote(path)}\n"
+                        isolated_prefix + checkpoint + f"cd {shlex.quote(path)}\n"
                         f"mkdir -p {EVIDENCE_DIR_PATH}\n"
                         f"git bundle create {EVIDENCE_DIR_PATH}/branch.bundle HEAD || exit 1\n"
                         f"git rev-parse HEAD > {EVIDENCE_DIR_PATH}/HEAD.txt || exit 1\n"
@@ -4876,7 +4963,7 @@ true
                             str(repo_config.get("clone_path") or path)
                         )
                     except ProductProvenanceError:
-                        return (
+                        return isolated_prefix + (
                             "echo 'Isolated publication clone_path is not a safe "
                             "repository slug' >&2; exit 1"
                         )
@@ -4900,7 +4987,7 @@ true
                     "fi\n"
                     "cd /workspace\n"
                 )
-                return "".join(parts)
+                return isolated_prefix + "".join(parts)
 
             if self._wants_readonly_checkout_evidence(execution_context):
                 return self._readonly_checkout_evidence_commands(repositories)
@@ -4908,18 +4995,16 @@ true
             # Report publication (issue #648): the agent holds no write tools,
             # so there are no agent commits to push. The document it produced
             # is published here instead, on a stable branch, as a pull request.
+            # If the checkout is already ahead of the base (a write-enabled
+            # flow that also set this block), refuse publication and keep
+            # the normal push path so those commits are not dropped.
+            publication_commands = ""
             if publishes_report:
-                commands = self._build_report_publication_commands(
+                publication_commands = self._build_report_publication_commands(
                     execution_context=execution_context,
                     git_config=git_config,
                     repositories=repositories,
                 )
-                if commands and execution_context.get("checkpoint_env"):
-                    commands = (
-                        "_preloop_checkpoint || { echo PRELOOP_CHECKPOINT "
-                        "prepublication_failed; exit 1; }\n" + commands
-                    )
-                return commands
 
             self.logger.info(
                 f"Preparing post-execution git commands: "
@@ -4928,6 +5013,20 @@ true
             )
 
             if not target_branch:
+                if publishes_report:
+                    combined = self._combine_report_publication_and_push(
+                        git_config=git_config,
+                        repositories=repositories,
+                        publication_commands=publication_commands,
+                        push_commands="",
+                        source_branch=str(source_branch or "main"),
+                    )
+                    if combined and execution_context.get("checkpoint_env"):
+                        combined = (
+                            "_preloop_checkpoint || { echo PRELOOP_CHECKPOINT "
+                            "prepublication_failed; exit 1; }\n" + combined
+                        )
+                    return combined
                 return ""
 
             safe_target = _validated_git_ref(target_branch)
@@ -5092,6 +5191,21 @@ true
 
                 post_commands.extend(repo_post_commands)
 
+            push_script = "\n".join(post_commands) if post_commands else ""
+            if publishes_report:
+                combined = self._combine_report_publication_and_push(
+                    git_config=git_config,
+                    repositories=repositories,
+                    publication_commands=publication_commands,
+                    push_commands=push_script,
+                    source_branch=str(source_branch or "main"),
+                )
+                if combined and execution_context.get("checkpoint_env"):
+                    combined = (
+                        "_preloop_checkpoint || { echo PRELOOP_CHECKPOINT "
+                        "prepublication_failed; exit 1; }\n" + combined
+                    )
+                return combined
             if not post_commands:
                 return ""
 

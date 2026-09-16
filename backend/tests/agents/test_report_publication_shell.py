@@ -455,6 +455,16 @@ class TestProtectedDefaultBranch:
         merge_base = repo._git("merge-base", "main", REPORT_BRANCH, cwd=repo.origin)
         assert merge_base == repo._git("rev-parse", "main", cwd=repo.origin)
 
+    def test_a_branch_override_of_main_is_refused(self, repo: PublishingRepo) -> None:
+        main_before = repo._git("rev-parse", "main", cwd=repo.origin)
+
+        result = repo.run(report_publication={"branch": "main"})
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert repo.outcome(result)["reason"] == "invalid_configuration"
+        assert repo._git("rev-parse", "main", cwd=repo.origin) == main_before
+        assert not repo.origin_has(REPORT_BRANCH)
+
 
 class TestPublishFailureDegradesTheRun:
     def test_a_refused_push_is_recorded_and_the_artifact_survives(
@@ -518,3 +528,23 @@ class TestPublishFailureDegradesTheRun:
         assert repo.outcome(second)["outcome"] == "published"
         assert len(repo.pull_requests()) == 1
         assert repo.pull_requests()[0]["head"]["ref"] == REPORT_BRANCH
+
+
+class TestWriteFlowConflict:
+    def test_agent_commits_refuse_publication_and_keep_the_marker(
+        self, repo: PublishingRepo
+    ) -> None:
+        repo._git("config", "user.email", "agent@example.com", cwd=repo.repo)
+        repo._git("config", "user.name", "Agent", cwd=repo.repo)
+        (repo.repo / "agent.txt").write_text("agent work\n")
+        repo._git("add", ".", cwd=repo.repo)
+        repo._git("commit", "-m", "agent change", cwd=repo.repo)
+
+        result = repo.run()
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        outcome = repo.outcome(result)
+        assert outcome["outcome"] == "failed"
+        assert outcome["reason"] == "write_flow_conflict"
+        assert not repo.origin_has(REPORT_BRANCH)
+        assert repo.pull_requests() == []
