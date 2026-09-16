@@ -210,6 +210,16 @@ class TestParkSurvivesAFastAgentExit:
             "get_park_request",
             MagicMock(return_value=park_request),
         )
+        monkeypatch.setattr(
+            module.crud_flow_execution,
+            "get_stop_request",
+            MagicMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            module.crud_flow_execution,
+            "get",
+            MagicMock(return_value=SimpleNamespace(status="RUNNING")),
+        )
         return orchestrator
 
     async def test_a_pending_park_wins_over_the_container_exit(self, monkeypatch):
@@ -394,6 +404,16 @@ class TestTheWholeHandshakeOnAFastExit:
                     "parked_at": None,
                 }
             ),
+        )
+        monkeypatch.setattr(
+            module.crud_flow_execution,
+            "get_stop_request",
+            MagicMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            module.crud_flow_execution,
+            "get",
+            MagicMock(return_value=SimpleNamespace(status="RUNNING")),
         )
         confirm = MagicMock()
         monkeypatch.setattr(module.crud_flow_execution, "confirm_park", confirm)

@@ -12,6 +12,7 @@ from preloop.models import models
 
 from preloop.models.models.flow_execution import (
     DELEGATION_DETAILS_KEY,
+    STOP_COVERAGE_KEY,
     TRIGGER_SUBJECT_KEY,
     FlowExecution,
 )
@@ -803,6 +804,10 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     FlowExecution.error_message,
                     FlowExecution.failure_category,
                     FlowExecution.queued_reason,
+                    # Why a row in this tree changed state, which for a
+                    # cascading stop (#689) is the only place the tree can
+                    # say "stopped with its parent" rather than "stopped".
+                    FlowExecution.stop_reason,
                     FlowExecution.parent_execution_id,
                     FlowExecution.root_execution_id,
                     FlowExecution.delegation_depth,
@@ -1574,6 +1579,9 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         """
         db.query(models.FlowExecution).filter(
             models.FlowExecution.id == execution_id,
+            models.FlowExecution.status.notin_(tuple(self.TERMINAL_EXECUTION_STATUSES)),
+            models.FlowExecution.stop_requested_at.is_(None),
+            models.FlowExecution.parked_at.is_(None),
         ).update(
             {
                 models.FlowExecution.status: self.parked_status_for_kind(kind),
@@ -1691,6 +1699,172 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             .limit(limit)
             .all()
         )
+
+    # --- Stopping a parent, and the tree it is parked on (#689) ------------
+
+    #: Statuses at which an execution can no longer change on its own. Same
+    #: set ``flow_delegation_budget.TERMINAL_STATUSES`` uses, restated here so
+    #: the CRUD layer does not import a service; a test asserts the two
+    #: spellings agree. A cascading stop must never write over a row that
+    #: already finished, however it finished.
+    TERMINAL_EXECUTION_STATUSES = frozenset(
+        {
+            "SUCCEEDED",
+            "FAILED",
+            "STOPPED",
+            "TIMEOUT",
+            "TIMED_OUT",
+            "ABORTED",
+            "CANCELLED",
+            "CANCELED",
+        }
+    )
+
+    #: ``stop_source`` written on an execution stopped because the parent it
+    #: was started by was stopped. Distinct from ``account_halt`` so the tree
+    #: can say why a row changed: a kill switch and a parent's stop are not
+    #: the same event to whoever is reading the run afterwards.
+    STOP_SOURCE_PARENT_STOP = "parent_stop"
+
+    def close_children_park_for_stop(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        reason: str,
+        now: Optional[datetime] = None,
+        commit: bool = True,
+    ) -> bool:
+        """Close a park on children because an operator stopped the parent.
+
+        One conditional UPDATE, and it is the whole race: it matches a row
+        still sitting on ``WAITING_FOR_CHILDREN``, or a still-live row that
+        has requested a children park but has not been confirmed yet. A
+        child that finishes at the same instant either claims the park first
+        (and this returns False, the caller then stops the resume it
+        created) or claims nothing, because the row is already ``STOPPED``.
+        Both orders leave exactly one outcome and no second resume.
+
+        The park row is closed rather than left claimable: the expiry is
+        cleared so no sweep looks at it again, while ``park_request_id`` and
+        ``park_kind`` stay for the audit trail. ``stop_source`` stays NULL
+        on this row: the operator stopped the parent, which is the same
+        provenance as a plain stop. ``parent_stop`` is reserved for
+        children this stop ends.
+        """
+        moment = now or datetime.now(timezone.utc)
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.resume_execution_id.is_(None),
+                or_(
+                    models.FlowExecution.status == self.WAITING_FOR_CHILDREN_STATUS,
+                    and_(
+                        models.FlowExecution.status == "RUNNING",
+                        models.FlowExecution.park_kind == self.PARK_KIND_CHILDREN,
+                        models.FlowExecution.parked_at.is_(None),
+                    ),
+                ),
+            )
+            .update(
+                {
+                    models.FlowExecution.status: "STOPPED",
+                    models.FlowExecution.end_time: moment,
+                    models.FlowExecution.error_message: reason,
+                    models.FlowExecution.park_expires_at: None,
+                    models.FlowExecution.stop_requested_at: func.coalesce(
+                        models.FlowExecution.stop_requested_at, moment
+                    ),
+                    models.FlowExecution.stop_reason: reason[:500],
+                    models.FlowExecution.orchestrator_worker_id: None,
+                    models.FlowExecution.orchestrator_claimed_at: None,
+                    models.FlowExecution.orchestrator_heartbeat_at: None,
+                },
+                synchronize_session=False,
+            )
+        )
+        if commit:
+            db.commit()
+        return bool(count)
+
+    def stop_for_parent_stop(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        reason: str,
+        now: Optional[datetime] = None,
+        commit: bool = True,
+    ) -> bool:
+        """Stop one execution because the run that started it was stopped.
+
+        Conditional on the row not being terminal already, which is what
+        keeps a child that completed while the stop was in flight: it keeps
+        its own terminal status, its result and its cost, and this returns
+        False rather than overwriting any of them.
+
+        The durable stop intent is written alongside the status so a runtime
+        that is still alive is actually torn down: the orchestrator polls
+        ``stop_requested_at`` on every loop and a runner reads it through the
+        same path an account halt uses. ``stop_reason`` is what the execution
+        tree shows for a row this stop changed.
+        """
+        moment = now or datetime.now(timezone.utc)
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.status.notin_(
+                    sorted(self.TERMINAL_EXECUTION_STATUSES)
+                ),
+            )
+            .update(
+                {
+                    models.FlowExecution.status: "STOPPED",
+                    models.FlowExecution.end_time: moment,
+                    models.FlowExecution.error_message: reason,
+                    models.FlowExecution.park_expires_at: None,
+                    models.FlowExecution.stop_requested_at: func.coalesce(
+                        models.FlowExecution.stop_requested_at, moment
+                    ),
+                    models.FlowExecution.stop_reason: reason[:500],
+                    models.FlowExecution.stop_source: self.STOP_SOURCE_PARENT_STOP,
+                },
+                synchronize_session=False,
+            )
+        )
+        if commit:
+            db.commit()
+        return bool(count)
+
+    def record_stop_coverage(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        coverage: Dict[str, Any],
+        commit: bool = True,
+    ) -> bool:
+        """Record on a stopped parent how far its tree got (#689).
+
+        Written under the reserved ``_stop_coverage`` key of the execution's
+        own trigger details, next to the other platform-authored blocks, so
+        the record of a stopped tree is the execution row rather than a log
+        line somebody has to find.
+        """
+        row = self.get(db, id=execution_id)
+        if row is None:
+            return False
+        details = dict(row.trigger_event_details or {})
+        details[STOP_COVERAGE_KEY] = coverage
+        row.trigger_event_details = details
+        db.add(row)
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+        return True
 
     def mark_park_resumed(
         self,

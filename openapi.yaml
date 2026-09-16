@@ -17325,6 +17325,16 @@ components:
           description: Label the caller passed to run_flow for this child, e.g. 'lint
             the diff'. Null on a run that was not delegated and on a delegation that
             passed no label.
+        stop_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stop Reason
+          description: 'Why this execution was stopped, when something other than
+            the run itself ended it: an account kill switch, or the stop of the execution
+            that started it. Null for every row nobody stopped, which lets the tree
+            show which children a parent''s stop ended and which had finished on their
+            own.'
       type: object
       required:
       - id

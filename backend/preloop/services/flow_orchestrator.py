@@ -4422,6 +4422,21 @@ class FlowExecutionOrchestrator:
 
         if self.execution_log is None:
             return None
+        # A stop in the pre-park window writes durable intent (and often
+        # STOPPED) before this monitor notices the agent exited. Confirming
+        # the park here would resurrect WAITING_FOR_CHILDREN over a row the
+        # operator just stopped.
+        if crud_flow_execution.get_stop_request(
+            self.db, execution_id=self.execution_log.id
+        ):
+            return None
+        current = crud_flow_execution.get(
+            self.db, id=self.execution_log.id, refresh=True
+        )
+        if current is not None and str(current.status or "").upper() in (
+            crud_flow_execution.TERMINAL_EXECUTION_STATUSES
+        ):
+            return None
         park_request = crud_flow_execution.get_park_request(
             self.db,
             execution_id=self.execution_log.id,

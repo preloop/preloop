@@ -33,8 +33,10 @@ the return value of the ``run_flow`` call the parent made.
 
 Not here, on purpose: cost ceilings (#631), the console execution tree
 (#634), approvals raised inside a child (#635), and what happens to children
-when an operator stops a parked parent, which is decided and implemented on
-#689 and is why this module never touches the stop path.
+when an operator stops a parked parent, which is decided and implemented in
+``flow_tree_stop`` (#689) and is why this module never touches the stop path.
+A deadline here expires the parent's wait and leaves the children running; a
+stop there ends them, because the two are not the same event.
 """
 
 from __future__ import annotations
@@ -889,9 +891,10 @@ async def _start_resume_execution(
     """Create and dispatch the execution that continues a parked parent.
 
     The claim is marked consumed in the same transaction as the PENDING
-    insert, so a crash cannot leave a resume nobody linked or a claim the
-    sweep would use twice. Dispatch happens after the commit: a failed
-    dispatch must not roll that write back.
+    insert (``FlowExecutionCRUD.create`` flushes only; it does not
+    commit), so a failed ``mark_park_resumed`` rolls the insert back with
+    the claim and cannot leave an orphan PENDING row. Dispatch happens
+    after the commit: a failed dispatch must not roll that write back.
 
     The resume inherits the parked run's lineage (parent, root, depth) rather
     than starting a new tree: a parent that is itself somebody's child stays

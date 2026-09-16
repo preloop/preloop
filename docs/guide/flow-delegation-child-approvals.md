@@ -202,8 +202,12 @@ them:
   `preloop.ai/status` `WAITING_FOR_HUMAN`. The parent's report says the
   subtree is with a person, not that it failed and not that it succeeded with
   no result. The child is not stopped: its window is its own, and stopping it
-  would throw away work already paid for. This is the same question #689 asks
-  about an operator initiated stop, and the answer there governs that case.
+  would throw away work already paid for. An operator initiated stop is the
+  other case, and [#689](https://github.com/preloop/preloop/issues/689)
+  decided it the other way: a stop does end the children, including one
+  waiting for a person, because an operator who stops a tree means the spend
+  to stop too. A deadline is the parent giving up on waiting; a stop is
+  somebody ending the work.
 - **When the decision arrives before the parent's deadline**, the child
   continues as a *different execution row*. The parked row is closed with the
   continuation's terminal status but its `result` is null

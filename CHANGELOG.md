@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer could not do: a partial coverage notice when the corpus stops inside
   the range being searched, and the endpoint's degraded marker when semantic
   ranking did not run.
+- Stopping a flow that is parked on the flows it started stops those flows
+  too, at any depth. The parent leaves `WAITING_FOR_CHILDREN` before anything
+  else, so a child finishing at that instant resumes nothing and the sweep
+  never picks the run up again; a child that had already finished, or that
+  finishes while the stop is in flight, keeps its status, its result and its
+  cost. Each stopped child records why it changed, which the execution tree
+  now shows, and the stopped parent records the coverage it reached and what
+  the tree had cost. Docs in `docs/guide/flows/flow-delegation.md`.
+
 - `search_sessions` built-in tool. An agent searches the runtime session
   corpus before repeating work: ranked results, one trimmed snippet per
   session, a match reason and the endpoint's degraded markers. Scope is the
