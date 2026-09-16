@@ -171,3 +171,12 @@ its own `embedding_model`, so a model change degrades to keyword rather than
 scoring across two spaces. Query vectors are cached per process for a short
 window, keyed by a digest of account, model identity and query, so paging a
 result set does not re-embed it.
+
+`GET /api/v1/runtime-sessions/{id}/similar` reads the same rows with no query
+text. A session is compared by a stride sample of its own `clear` chunks
+against the corpus in its own model's space, with no provider call and no
+spend, so an account at its daily cap still gets an answer. Sessions are
+ranked on their best matching passage with a small credit for matching in more
+than one place, and every limit that applied (nothing embedded, no comparable
+session, sampling, a time window) is named in the degraded block. The
+decisions behind it are in [Similar sessions](similar-sessions.md).

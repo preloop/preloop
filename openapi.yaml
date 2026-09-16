@@ -11782,6 +11782,95 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/runtime-sessions/{runtime_session_id}/similar:
+    get:
+      tags:
+      - Runtime Sessions
+      summary: List sessions similar to this one
+      description: "Rank other sessions of this account by similarity to this one.\n\
+        \nThe comparison reads vectors the indexing worker already wrote: nothing\
+        \ is\nembedded, no provider is called and no spend is recorded, so an account\
+        \ at\nits daily embedding cap still gets this list. A session with no vectors\
+        \ of\nits own, or an account whose corpus holds no other session embedded\
+        \ with\nthe same model, is answered with an empty list and a degraded reason\n\
+        naming which of those it was, never with an error.\n\nRaises:\n    HTTPException:\
+        \ 404 when the session does not belong to this account,\n        so a probe\
+        \ cannot tell an existing session of another account\n        apart from one\
+        \ that never existed."
+      operationId: similar_runtime_sessions_api_v1_runtime_sessions__runtime_session_id__similar_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runtime Session Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 20
+          minimum: 1
+          description: Similar sessions to return.
+          default: 5
+          title: Limit
+        description: Similar sessions to return.
+      - name: max_matches_per_session
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 5
+          minimum: 0
+          description: Matching passages returned per session. Zero returns the ranking
+            with no captured content at all.
+          default: 2
+          title: Max Matches Per Session
+        description: Matching passages returned per session. Zero returns the ranking
+          with no captured content at all.
+      - name: window_days
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 365
+            minimum: 1
+          - type: 'null'
+          description: 'Only compare content this recent. Unset compares the whole
+            corpus, which is the default: the session worth finding is often an old
+            one.'
+          title: Window Days
+        description: 'Only compare content this recent. Unset compares the whole corpus,
+          which is the default: the session worth finding is often an old one.'
+      - name: include_match_text
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: When false no chunk text is read, so no captured content leaves
+            the database; matches still name the turn they came from.
+          default: true
+          title: Include Match Text
+        description: When false no chunk text is read, so no captured content leaves
+          the database; matches still name the turn they came from.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimilarSessionsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/roles:
     get:
       tags:
@@ -26115,6 +26204,291 @@ components:
       - active
       title: SigningKeyRotateRead
       description: 'Result of a rotation: what was retired and what signs now.'
+    SimilarSessionMatch:
+      properties:
+        document_id:
+          type: string
+          format: uuid
+          title: Document Id
+          description: Corpus chunk row id.
+        source_kind:
+          type: string
+          title: Source Kind
+          description: Which kind of turn this came from.
+        source_id:
+          type: string
+          title: Source Id
+          description: Identifier of the turn in its own table.
+        chunk_index:
+          type: integer
+          title: Chunk Index
+          description: Position of the chunk inside the turn.
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+          description: When the turn happened.
+        role:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role
+          description: Role recorded for the turn.
+        similarity:
+          type: number
+          title: Similarity
+          description: Cosine similarity between this chunk and the probe chunk.
+        band:
+          type: string
+          enum:
+          - close
+          - related
+          - loose
+          title: Band
+          description: 'The similarity as a word: close, related or loose.'
+        redaction_state:
+          type: string
+          title: Redaction State
+          description: Whether the stored chunk was masked or metadata only.
+        text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Text
+          description: Opening characters of the matching chunk, or null when the
+            request disabled match text or the chunk's redaction state forbids returning
+            any.
+        probe:
+          $ref: '#/components/schemas/SimilarSessionProbe'
+          description: The chunk of the session being viewed that this one is near,
+            so a reader can see both ends of the match.
+      type: object
+      required:
+      - document_id
+      - source_kind
+      - source_id
+      - chunk_index
+      - occurred_at
+      - similarity
+      - band
+      - redaction_state
+      - probe
+      title: SimilarSessionMatch
+      description: 'One matching chunk of the other session: the reason it is in the
+        list.
+
+
+        The identity fields name the turn, so a console can open the other session
+
+        at the passage that matched rather than at its top.'
+    SimilarSessionProbe:
+      properties:
+        document_id:
+          type: string
+          format: uuid
+          title: Document Id
+          description: Corpus chunk row id.
+        source_kind:
+          type: string
+          title: Source Kind
+          description: Which kind of turn this came from.
+        source_id:
+          type: string
+          title: Source Id
+          description: Identifier of the turn in its own table.
+        chunk_index:
+          type: integer
+          title: Chunk Index
+          description: Position of the chunk inside the turn.
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+          description: When the turn happened.
+        role:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role
+          description: Role recorded for the turn.
+      type: object
+      required:
+      - document_id
+      - source_kind
+      - source_id
+      - chunk_index
+      - occurred_at
+      title: SimilarSessionProbe
+      description: The passage of the viewed session that a match was found from.
+    SimilarSessionResult:
+      properties:
+        runtime_session_id:
+          type: string
+          format: uuid
+          title: Runtime Session Id
+        session_source_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Source Type
+        session_source_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Source Id
+        session_reference:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Reference
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+        started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started At
+        last_activity_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Activity At
+        score:
+          type: number
+          title: Score
+          description: 'The number this result was ordered by: the best matching pair
+            of chunks plus a damped bonus for matching in several places. It is not
+            a probability and is not comparable with a search score.'
+        similarity:
+          type: number
+          title: Similarity
+          description: Cosine similarity of the best matching pair of chunks.
+        band:
+          type: string
+          enum:
+          - close
+          - related
+          - loose
+          title: Band
+          description: 'The best similarity as a word: close, related or loose.'
+        matched_chunk_count:
+          type: integer
+          title: Matched Chunk Count
+          description: Distinct chunks of this session that were near a probe chunk,
+            which is how broadly the two sessions overlap.
+        matches:
+          items:
+            $ref: '#/components/schemas/SimilarSessionMatch'
+          type: array
+          title: Matches
+          description: The closest matching chunks, strongest first.
+      type: object
+      required:
+      - runtime_session_id
+      - score
+      - similarity
+      - band
+      - matched_chunk_count
+      title: SimilarSessionResult
+      description: One session similar to the one being viewed.
+    SimilarSessionsDegraded:
+      properties:
+        semantic:
+          type: boolean
+          title: Semantic
+          description: Whether a vector comparison actually ran. False when this session
+            has no vectors to compare from.
+          default: false
+        reasons:
+          items:
+            type: string
+          type: array
+          title: Reasons
+          description: 'Machine readable reason codes, empty when nothing narrowed
+            this answer. One of: semantic_not_enabled, semantic_disabled_by_deployment,
+            similar_session_not_embedded, semantic_model_mismatch, similar_no_comparable_sessions,
+            semantic_backfill_incomplete, similar_session_sampled, similar_window_applied.'
+        detail:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Detail
+          description: One sentence a console can show without decoding a code.
+      type: object
+      title: SimilarSessionsDegraded
+      description: What this answer could not compare, stated rather than implied.
+    SimilarSessionsResponse:
+      properties:
+        runtime_session_id:
+          type: string
+          format: uuid
+          title: Runtime Session Id
+          description: The session the list is about.
+        model_identity:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Identity
+          description: Vector space the comparison ran in, as <provider>:<model>@<dimensions>.
+            Null when nothing was compared. Sessions embedded with another model were
+            not candidates.
+        embedded_chunks:
+          type: integer
+          title: Embedded Chunks
+          description: Chunks of this session that carry a vector of that model.
+          default: 0
+        probe_chunks:
+          type: integer
+          title: Probe Chunks
+          description: Chunks of this session actually used as the query. Fewer than
+            embedded_chunks means the session was represented by an evenly spread
+            sample of itself, and the degraded block says so.
+          default: 0
+        pending_chunks:
+          type: integer
+          title: Pending Chunks
+          description: Chunks of this session still waiting for a vector.
+          default: 0
+        window_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Window Days
+          description: Time window the comparison was limited to, or null when the
+            whole corpus was compared. No window applies by default.
+        limit:
+          type: integer
+          title: Limit
+          description: Sessions asked for, at most 20.
+          default: 5
+        max_matches_per_session:
+          type: integer
+          title: Max Matches Per Session
+          description: Matching chunks asked for per session, at most 5.
+          default: 2
+        degraded:
+          $ref: '#/components/schemas/SimilarSessionsDegraded'
+        elapsed_ms:
+          type: number
+          title: Elapsed Ms
+          description: Server side time spent building this list.
+        results:
+          items:
+            $ref: '#/components/schemas/SimilarSessionResult'
+          type: array
+          title: Results
+      type: object
+      required:
+      - runtime_session_id
+      - degraded
+      - elapsed_ms
+      title: SimilarSessionsResponse
+      description: Sessions like this one, and everything needed to read the list.
     SpeechToTextResponse:
       properties:
         text:

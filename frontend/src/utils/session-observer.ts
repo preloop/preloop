@@ -73,6 +73,14 @@ export interface SessionObserverFeatures {
   replayModes?: boolean;
   rawPayloads?: boolean;
   endSession?: boolean;
+  /**
+   * Shows the "Similar sessions" panel under the replay.
+   *
+   * Off by default because it only answers where the account has opted into
+   * session embedding; a host that turns it on gets a panel that says so
+   * rather than an empty box.
+   */
+  similarSessions?: boolean;
 }
 
 export interface SessionSummaryInsight {
