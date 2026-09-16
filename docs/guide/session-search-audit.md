@@ -61,8 +61,11 @@ exports.
 
 An account that needs the text sets `session_search_audit_store_query_text` to
 `true` in its account metadata. It is off until it is set, and the name says
-what it turns on. With it on the row also carries `query_text`; with it off,
-no field in the row contains the query.
+what it turns on. With it on the row also carries `query_text`, cut at 512
+characters (the same cap the search request accepts); with it off, no field
+in the row contains the query. An unknown-scope refusal still echoes the
+caller string, but only the first 64 characters, so a malformed call cannot
+inflate the row. `query_chars` still records the real length.
 
 ## Who searched
 

@@ -20,7 +20,10 @@ from preloop.models.crud.session_search_document import SessionSearchChunk
 from preloop.models.models.session_search_document import (
     SOURCE_KIND_TRANSCRIPT_MESSAGE,
 )
-from preloop.schemas.session_search import DEGRADED_SEMANTIC_NOT_ENABLED
+from preloop.schemas.session_search import (
+    DEGRADED_SEMANTIC_NOT_ENABLED,
+    MAX_QUERY_CHARS,
+)
 from preloop.services import agent_session_search, session_search_audit
 from preloop.services.agent_session_search import (
     ACCOUNT_SCOPE_GRANT,
@@ -536,6 +539,30 @@ def test_an_unknown_scope_and_an_invalid_request_are_both_recorded(
 
     reasons = {row.details["reason"] for row in _audit_rows(db_session, account_id)}
     assert reasons == {REFUSAL_UNKNOWN_SCOPE, REFUSAL_INVALID_REQUEST}
+
+
+def test_a_malformed_refusal_cannot_inflate_the_audit_row(db_session, test_user):
+    """Storage bounds live on the write path, not the advertised schema."""
+    account = crud_account.get(db_session, id=test_user.account_id)
+    account.meta_data = {session_search_audit.QUERY_TEXT_OPT_IN_KEY: True}
+    db_session.flush()
+    oversized_scope = "everything-" + ("z" * 200)
+    oversized_query = "secret " + ("x" * 2000)
+
+    answer = _search(
+        db_session, str(test_user.account_id), oversized_query, scope=oversized_scope
+    )
+
+    assert answer["reason"] == REFUSAL_UNKNOWN_SCOPE
+    row = _audit_rows(db_session, test_user.account_id)[0]
+    assert (
+        row.details["scope"]
+        == oversized_scope[: session_search_audit.AUDIT_SCOPE_MAX_CHARS]
+    )
+    assert len(row.details["scope"]) == session_search_audit.AUDIT_SCOPE_MAX_CHARS
+    assert row.details["query_text"] == oversized_query[:MAX_QUERY_CHARS]
+    assert len(row.details["query_text"]) == MAX_QUERY_CHARS
+    assert row.details["query_chars"] == len(oversized_query)
 
 
 def test_an_audit_write_failure_leaves_the_agent_answer_unchanged(

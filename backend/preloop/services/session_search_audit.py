@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 from preloop.models.crud import crud_audit_log
 from preloop.models.crud.session_search_document import normalize_query
 from preloop.schemas.session_search import (
+    MAX_QUERY_CHARS,
     SessionSearchRequest,
     SessionSearchResponse,
 )
@@ -84,6 +85,11 @@ QUERY_TEXT_OPT_IN_KEY = "session_search_audit_store_query_text"
 #: digest is visible in the data rather than silently comparing unequal.
 QUERY_HASH_PREFIX = "sha256"
 
+#: Longest `scope` kept on the row. Known values are `own` and `account`.
+#: An unknown-scope refusal still echoes the caller string, but an unbounded
+#: MCP argument must not inflate the JSONB column.
+AUDIT_SCOPE_MAX_CHARS = 64
+
 
 def _normalized(query: Optional[str]) -> str:
     """The query as the search itself parsed it, never None.
@@ -93,6 +99,13 @@ def _normalized(query: Optional[str]) -> str:
     records the empty string rather than deciding a search did not happen.
     """
     return normalize_query(query) or ""
+
+
+def _bounded(value: str, max_chars: int) -> str:
+    """Cut one stored string at a hard length, never raising."""
+    if len(value) <= max_chars:
+        return value
+    return value[:max_chars]
 
 
 def query_hash(query: str) -> str:
@@ -263,7 +276,7 @@ def build_details(
     if total_matched is not None:
         details["total_matched"] = total_matched
     if scope is not None:
-        details["scope"] = scope
+        details["scope"] = _bounded(scope, AUDIT_SCOPE_MAX_CHARS)
     if limit is not None:
         details["limit"] = limit
     if offset is not None:
@@ -273,7 +286,7 @@ def build_details(
     if error_type is not None:
         details["error_type"] = error_type
     if include_query_text:
-        details["query_text"] = _normalized(query)
+        details["query_text"] = _bounded(_normalized(query), MAX_QUERY_CHARS)
     return details
 
 
@@ -486,6 +499,7 @@ __all__ = [
     "ACTOR_USER",
     "AUDIT_ACTION",
     "AUDIT_RESOURCE_TYPE",
+    "AUDIT_SCOPE_MAX_CHARS",
     "QUERY_HASH_PREFIX",
     "QUERY_TEXT_OPT_IN_KEY",
     "SOURCE_API",

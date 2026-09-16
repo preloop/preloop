@@ -16,6 +16,7 @@ from fastapi import HTTPException
 
 from preloop.models.crud import crud_account, crud_audit_log
 from preloop.schemas.session_search import (
+    MAX_QUERY_CHARS,
     SessionSearchDegraded,
     SessionSearchRequest,
     SessionSearchResponse,
@@ -24,6 +25,7 @@ from preloop.services import session_search_audit
 from preloop.services.session_search_audit import (
     AUDIT_ACTION,
     AUDIT_RESOURCE_TYPE,
+    AUDIT_SCOPE_MAX_CHARS,
     QUERY_TEXT_OPT_IN_KEY,
     SOURCE_API,
     SOURCE_MCP,
@@ -139,6 +141,42 @@ def test_details_carry_the_query_text_only_with_the_opt_in():
     assert details["query_text"] == SECRET_QUERY
     assert details["query_text_stored"] is True
     assert details["query_hash"] == query_hash(SECRET_QUERY)
+
+
+def test_opt_in_query_text_is_capped_at_the_search_request_limit():
+    """The write path bounds storage even when request validation did not run."""
+    oversized = "secret " + ("x" * 2000)
+    details = build_details(
+        actor=user_actor(None),
+        query=oversized,
+        mode="keyword",
+        filters={},
+        result_count=0,
+        include_query_text=True,
+    )
+
+    assert details["query_text"] == oversized[:MAX_QUERY_CHARS]
+    assert len(details["query_text"]) == MAX_QUERY_CHARS
+    assert details["query_chars"] == len(oversized)
+    assert details["query_hash"] == query_hash(oversized)
+
+
+def test_an_unknown_scope_echo_is_capped_on_the_row():
+    oversized_scope = "everything-" + ("z" * 200)
+    details = build_details(
+        actor=agent_actor(managed_agent_id="agent-row-1"),
+        query=SECRET_QUERY,
+        mode="keyword",
+        filters={},
+        result_count=0,
+        include_query_text=False,
+        scope=oversized_scope,
+        reason="unknown_scope",
+    )
+
+    assert details["scope"] == oversized_scope[:AUDIT_SCOPE_MAX_CHARS]
+    assert len(details["scope"]) == AUDIT_SCOPE_MAX_CHARS
+    assert "query_text" not in details
 
 
 def test_only_the_filters_that_were_applied_are_recorded():
