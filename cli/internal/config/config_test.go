@@ -178,3 +178,59 @@ func TestGetConfigDir(t *testing.T) {
 		t.Errorf("expected '%s', got '%s'", expected, dir)
 	}
 }
+
+func TestRunnerConcurrencyDefaultsAndOverrides(t *testing.T) {
+	tmpDir := t.TempDir()
+	testenv.SetHome(t, tmpDir)
+
+	if got := RunnerConcurrency(); got != DefaultRunnerConcurrency {
+		t.Fatalf("default runner concurrency = %d", got)
+	}
+
+	path := filepath.Join(tmpDir, ConfigDir, ConfigFile)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := "api_url: https://preloop.example.com\nrunner:\n  concurrency: 6\n"
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := RunnerConcurrency(); got != 6 {
+		t.Fatalf("configured runner concurrency = %d", got)
+	}
+
+	t.Setenv(EnvRunnerConcurrency, "3")
+	if got := RunnerConcurrency(); got != 3 {
+		t.Fatalf("environment runner concurrency = %d", got)
+	}
+	t.Setenv(EnvRunnerConcurrency, "not-a-number")
+	if got := RunnerConcurrency(); got != 6 {
+		t.Fatalf("unusable environment value must fall back to the file: %d", got)
+	}
+}
+
+func TestSaveKeepsRunnerSettings(t *testing.T) {
+	tmpDir := t.TempDir()
+	testenv.SetHome(t, tmpDir)
+	path := filepath.Join(tmpDir, ConfigDir, ConfigFile)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := "api_url: https://preloop.example.com\nrunner:\n  concurrency: 4\n"
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Logging in writes tokens; it must not silently reset this host's
+	// runner settings.
+	if err := SetTokens("access", "refresh"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Runner.Concurrency != 4 || cfg.AccessToken != "access" {
+		t.Fatalf("config = %#v", cfg)
+	}
+}

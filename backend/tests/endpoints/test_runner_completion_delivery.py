@@ -48,16 +48,21 @@ def leased_execution(
             "name": "local runner",
             "token_hash": "test-token",
             "status": "busy",
-            "reported_status": "RUNNING",
-            "current_execution_id": execution.id,
-            "pending_job": {
-                "execution_id": str(execution.id),
-                "launch_version": 1,
-                "agent_type": "codex",
-            },
-            "halt_requested": False,
+            "concurrency": 1,
         },
     )
+    assignment = crud_flow_runner.create_assignment(
+        db_session,
+        runner_id=runner.id,
+        execution_id=execution.id,
+        pending_job={
+            "execution_id": str(execution.id),
+            "launch_version": 1,
+            "agent_type": "codex",
+        },
+    )
+    assignment.reported_status = "RUNNING"
+    db_session.commit()
     return runner, execution
 
 
@@ -115,7 +120,7 @@ async def test_completion_persistence_failure_retains_runner_lease(
     saved_execution = crud_flow_execution.get(db_session, id=execution_id)
     assert saved_runner.current_execution_id == execution_id
     assert saved_runner.pending_job["execution_id"] == str(execution_id)
-    assert saved_runner.reported_status == "RUNNING"
+    assert saved_runner.current_assignment.reported_status == "RUNNING"
     assert saved_execution.status == "RUNNING"
     assert saved_execution.result is None
 
@@ -133,7 +138,8 @@ async def test_completion_commits_result_and_releases_lease_together(
     saved_execution = crud_flow_execution.get(db_session, id=execution_id)
     assert saved_runner.current_execution_id is None
     assert saved_runner.pending_job is None
-    assert saved_runner.reported_status == "SUCCEEDED"
+    assert saved_runner.running_count == 0
+    assert saved_runner.free_slots == saved_runner.capacity
     assert saved_execution.status == "SUCCEEDED"
     assert saved_execution.result["status"] == "success"
 
@@ -167,7 +173,7 @@ async def test_late_owner_completion_preserves_existing_terminal_outcome(
     saved_runner = crud_flow_runner.get(db_session, id=runner_id)
     saved_execution = crud_flow_execution.get(db_session, id=execution_id)
     assert saved_runner.current_execution_id is None
-    assert saved_runner.reported_status == terminal_status
+    assert saved_runner.running_count == 0
     assert saved_execution.status == terminal_status
     assert saved_execution.error_message == "original terminal reason"
     assert saved_execution.result == {"original": True}

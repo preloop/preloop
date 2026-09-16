@@ -1937,16 +1937,16 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             raise ValueError("Execution flow not found")
         crud_account_halt.lock_account(db, account_id=account_id)
         execution = self.get(db, id=execution_id, refresh=True)
-        runner = (
-            db.query(models.FlowRunner)
-            .filter(
-                models.FlowRunner.current_execution_id == execution_id,
-            )
+        # Halt the one assignment, not the runner: the same machine may be
+        # running other executions that were not stopped.
+        assignment = (
+            db.query(models.FlowRunnerAssignment)
+            .filter(models.FlowRunnerAssignment.execution_id == execution_id)
             .with_for_update()
             .first()
         )
-        if runner is not None:
-            runner.halt_requested = True
+        if assignment is not None:
+            assignment.halt_requested = True
         elif str(execution.agent_session_reference or "").startswith("runner:queued:"):
             execution.status = "STOPPED"
             stopped_at = datetime.now(timezone.utc)

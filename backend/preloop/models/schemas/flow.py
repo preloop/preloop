@@ -836,9 +836,9 @@ class FlowBase(BaseModel):
             "runner; or the literal 'server' for the hosted executor. "
             "When unset, the account default_runner_pool applies, then any "
             "online private runner, then the hosted executor. A trigger-time "
-            "`--runner` / `_runner` override takes precedence. If a chosen "
-            "private pool has no idle runner the job queues for 15 minutes "
-            "then FAILS."
+            "`--runner` / `_runner` override takes precedence. If no runner "
+            "in a chosen private pool has a free slot the job queues for 15 "
+            "minutes then FAILS."
         ),
     )
     timeout_seconds: Optional[int] = Field(

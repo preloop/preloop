@@ -334,14 +334,14 @@ exit 2
 	FlagToken = "tok"
 	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
 	client := api.NewClientWithToken(server.URL, "tok")
-	state, err := loadOrRegisterRunner(client, "box", "host", nil)
+	state, err := loadOrRegisterRunner(client, "box", "host", nil, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	interrupt := make(chan os.Signal, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- runnerForegroundLoop(state, interrupt, io.Discard)
+		done <- runnerForegroundLoop(state, interrupt, io.Discard, 2)
 	}()
 	deadline := time.Now().Add(8 * time.Second)
 	for !completed.Load() && time.Now().Before(deadline) {

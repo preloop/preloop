@@ -26,6 +26,17 @@ describe('RunnersView', () => {
             status,
             headers: { 'Content-Type': 'application/json' },
           });
+        if (url.includes('/concurrency')) {
+          const body = JSON.parse(String(init?.body || '{}')) as {
+            concurrency?: number;
+          };
+          const runner = (runners[0] || {}) as Record<string, unknown>;
+          return json({
+            ...runner,
+            concurrency: body.concurrency,
+            capacity: body.concurrency,
+          });
+        }
         if (url.includes('/api/v1/runners')) {
           return json(runners);
         }
@@ -346,6 +357,114 @@ describe('RunnersView', () => {
     await element.updateComplete;
     const restored = control.shadowRoot?.querySelector('sl-select') as SlSelect;
     expect(restored.value).to.equal('office-mac');
+  });
+
+  it('shows running count against the runner slot ceiling', async () => {
+    fetchStub = createFetchStub([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'office-mac',
+        hostname: 'mac.local',
+        os: 'darwin',
+        arch: 'arm64',
+        labels: ['local'],
+        status: 'busy',
+        last_heartbeat: '2026-08-17T10:00:00Z',
+        concurrency: 2,
+        reported_concurrency: 2,
+        capacity: 2,
+        running_count: 2,
+        running_execution_ids: [
+          '22222222-2222-4222-8222-222222222222',
+          '33333333-3333-4333-8333-333333333333',
+        ],
+        current_execution_id: '22222222-2222-4222-8222-222222222222',
+      },
+    ]);
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading
+    );
+    await element.updateComplete;
+
+    const slots = element.shadowRoot?.querySelector('.slot-count');
+    expect(slots?.textContent?.replace(/\s+/g, ' ').trim()).to.equal('2 / 2');
+    const links = Array.from(
+      element.shadowRoot?.querySelectorAll('.executions a') || []
+    ).map((link) => link.getAttribute('href'));
+    expect(links).to.deep.equal([
+      '/console/flows/executions/22222222-2222-4222-8222-222222222222',
+      '/console/flows/executions/33333333-3333-4333-8333-333333333333',
+    ]);
+  });
+
+  it('edits the runner slot ceiling', async () => {
+    fetchStub = createFetchStub([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'office-mac',
+        hostname: 'mac.local',
+        os: 'darwin',
+        arch: 'arm64',
+        labels: ['local'],
+        status: 'online',
+        last_heartbeat: '2026-08-17T10:00:00Z',
+        concurrency: 2,
+        capacity: 2,
+        running_count: 0,
+        running_execution_ids: [],
+        current_execution_id: null,
+      },
+    ]);
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading
+    );
+    await element.updateComplete;
+
+    const edit = element.shadowRoot?.querySelector(
+      '.slots sl-button'
+    ) as HTMLElement;
+    edit.click();
+    await element.updateComplete;
+
+    const input = element.shadowRoot?.querySelector(
+      '.slot-edit sl-input'
+    ) as HTMLInputElement;
+    input.value = '4';
+    const save = element.shadowRoot?.querySelector(
+      '.slot-edit sl-button'
+    ) as HTMLElement;
+    save.click();
+
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('/concurrency'))
+    );
+    const patch = fetchStub
+      .getCalls()
+      .find((call) => String(call.args[0]).includes('/concurrency'));
+    expect(String(patch?.args[0])).to.contain(
+      '/api/v1/runners/11111111-1111-4111-8111-111111111111/concurrency'
+    );
+    expect(
+      String((patch?.args[1] as RequestInit).method).toUpperCase()
+    ).to.equal('PATCH');
+    expect(
+      JSON.parse(String((patch?.args[1] as RequestInit).body))
+    ).to.deep.equal({ concurrency: 4 });
+    await waitUntil(() =>
+      Boolean(
+        element.shadowRoot
+          ?.querySelector('.slot-count')
+          ?.textContent?.includes('/ 4')
+      )
+    );
   });
 
   it('shows registered-by email for a runner that arrives over websocket', async () => {

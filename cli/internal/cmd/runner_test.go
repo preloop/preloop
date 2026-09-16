@@ -186,7 +186,7 @@ func TestLoadOrRegisterRunnerCreates(t *testing.T) {
 	defer server.Close()
 
 	client := api.NewClientWithToken(server.URL, "tok")
-	state, err := loadOrRegisterRunner(client, "box", "host", []string{"local"})
+	state, err := loadOrRegisterRunner(client, "box", "host", []string{"local"}, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func TestRunnerFgLeasesJob(t *testing.T) {
 	FlagToken = "tok"
 	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
 	client := api.NewClientWithToken(server.URL, "tok")
-	state, err := loadOrRegisterRunner(client, "box", "host", nil)
+	state, err := loadOrRegisterRunner(client, "box", "host", nil, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +262,7 @@ func TestRunnerFgLeasesJob(t *testing.T) {
 	interrupt := make(chan os.Signal, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- runnerForegroundLoop(state, interrupt, io.Discard)
+		done <- runnerForegroundLoop(state, interrupt, io.Discard, 2)
 	}()
 
 	deadline := time.Now().Add(3 * time.Second)
@@ -376,7 +376,7 @@ func TestRunnerFgStartsLeaseAfterIdleHalt(t *testing.T) {
 	FlagToken = "tok"
 	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
 	client := api.NewClientWithToken(server.URL, "tok")
-	state, err := loadOrRegisterRunner(client, "box", "host", nil)
+	state, err := loadOrRegisterRunner(client, "box", "host", nil, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +384,7 @@ func TestRunnerFgStartsLeaseAfterIdleHalt(t *testing.T) {
 	interrupt := make(chan os.Signal, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- runnerForegroundLoop(state, interrupt, io.Discard)
+		done <- runnerForegroundLoop(state, interrupt, io.Discard, 2)
 	}()
 
 	deadline := time.Now().Add(3 * time.Second)
@@ -483,7 +483,7 @@ func TestRunnerFgReconnectsAfterAbnormalClose(t *testing.T) {
 	FlagToken = "tok"
 	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
 	client := api.NewClientWithToken(server.URL, "tok")
-	state, err := loadOrRegisterRunner(client, "box", "host", nil)
+	state, err := loadOrRegisterRunner(client, "box", "host", nil, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +491,7 @@ func TestRunnerFgReconnectsAfterAbnormalClose(t *testing.T) {
 	interrupt := make(chan os.Signal, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- runnerForegroundLoop(state, interrupt, io.Discard)
+		done <- runnerForegroundLoop(state, interrupt, io.Discard, 2)
 	}()
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -570,7 +570,7 @@ func TestRunnerFgResendsCompleteOnJobReplay(t *testing.T) {
 	FlagToken = "tok"
 	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
 	client := api.NewClientWithToken(server.URL, "tok")
-	state, err := loadOrRegisterRunner(client, "box", "host", nil)
+	state, err := loadOrRegisterRunner(client, "box", "host", nil, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -578,7 +578,7 @@ func TestRunnerFgResendsCompleteOnJobReplay(t *testing.T) {
 	interrupt := make(chan os.Signal, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- runnerForegroundLoop(state, interrupt, io.Discard)
+		done <- runnerForegroundLoop(state, interrupt, io.Discard, 2)
 	}()
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -635,12 +635,12 @@ func TestRunnerFgFatalServerErrorDoesNotReconnect(t *testing.T) {
 	FlagToken = "tok"
 	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
 	client := api.NewClientWithToken(server.URL, "tok")
-	state, err := loadOrRegisterRunner(client, "box", "host", nil)
+	state, err := loadOrRegisterRunner(client, "box", "host", nil, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = runnerForegroundLoop(state, make(chan os.Signal, 1), io.Discard)
+	err = runnerForegroundLoop(state, make(chan os.Signal, 1), io.Discard, 2)
 	if err == nil || !strings.Contains(err.Error(), "unauthorized") {
 		t.Fatalf("err = %v", err)
 	}
@@ -694,7 +694,7 @@ func TestStopForegroundOnInterruptKillsJobAndUnregisters(t *testing.T) {
 	FlagToken = "tok"
 	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
 	client := api.NewClientWithToken(server.URL, "tok")
-	state, err := loadOrRegisterRunner(client, "box", "host", nil)
+	state, err := loadOrRegisterRunner(client, "box", "host", nil, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -710,10 +710,11 @@ func TestStopForegroundOnInterruptKillsJobAndUnregisters(t *testing.T) {
 		}
 	})
 	halted := &atomic.Bool{}
-	halt := true
 	waited := make(chan error, 1)
 	go func() { waited <- cmd.Wait() }()
-	stopForegroundOnInterrupt(state, cmd, &halt, halted, io.Discard)
+	jobs := newRunnerJobs(2)
+	jobs.start(&runnerJob{executionID: "execution-interrupt", cmd: cmd, halted: halted})
+	stopForegroundOnInterrupt(state, jobs, io.Discard)
 	if !halted.Load() {
 		t.Fatal("running job must latch halted")
 	}
@@ -875,7 +876,7 @@ func TestRunnerFgInterruptDuringBackoffKillsJob(t *testing.T) {
 	FlagToken = "tok"
 	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
 	client := api.NewClientWithToken(server.URL, "tok")
-	state, err := loadOrRegisterRunner(client, "box", "host", nil)
+	state, err := loadOrRegisterRunner(client, "box", "host", nil, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -883,7 +884,7 @@ func TestRunnerFgInterruptDuringBackoffKillsJob(t *testing.T) {
 	interrupt := make(chan os.Signal, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- runnerForegroundLoop(state, interrupt, io.Discard)
+		done <- runnerForegroundLoop(state, interrupt, io.Discard, 2)
 	}()
 
 	var jobPID int

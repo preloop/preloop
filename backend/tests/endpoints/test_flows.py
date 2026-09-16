@@ -1546,13 +1546,11 @@ async def test_send_execution_command_stop_runner_backed_halts_runner(
     mock_crud_flow_execution.get.return_value = mock_execution
     mock_crud_flow_execution.update.return_value = mock_execution
 
-    mock_runner = MagicMock()
-    mock_runner.halt_requested = False
     mock_crud_flow_runner = mocker.patch(
         "preloop.api.endpoints.flows.crud_flow_runner",
         new_callable=MagicMock,
     )
-    mock_crud_flow_runner.get.return_value = mock_runner
+    mock_crud_flow_runner.request_halt.return_value = True
 
     mock_nats_client = MagicMock()
     mocker.patch(
@@ -1582,9 +1580,11 @@ async def test_send_execution_command_stop_runner_backed_halts_runner(
 
     # Assert
     assert result == {"status": "stopped"}
-    mock_crud_flow_runner.get.assert_called_once()
-    assert mock_crud_flow_runner.get.call_args.kwargs["id"] == runner_id
-    assert mock_runner.halt_requested is True
+    mock_crud_flow_runner.request_halt.assert_called_once()
+    halt_call = mock_crud_flow_runner.request_halt.call_args
+    assert halt_call.kwargs["runner_id"] == runner_id
+    # Halt names the execution, so the runner's other jobs keep running.
+    assert halt_call.kwargs["execution_id"] == execution_id
     mock_codex_agent.assert_not_called()
     mock_container_executor.assert_not_called()
     final_call = mock_crud_flow_execution.update.call_args

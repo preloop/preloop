@@ -106,15 +106,7 @@ def case(db_session: Session, test_user, monkeypatch: pytest.MonkeyPatch):
             "name": "private",
             "token_hash": hash_runner_token("runner-token"),
             "status": "online",
-            "reported_status": "RUNNING",
             "last_heartbeat": datetime.now(timezone.utc),
-            "current_execution_id": execution.id,
-            "pending_job": {
-                "_publication": state,
-                "launch_version": 1,
-                "agent_type": "codex",
-                "execution_id": str(execution.id),
-            },
             "publication_capabilities": {
                 "connection_id": "conn",
                 "version": 1,
@@ -124,6 +116,18 @@ def case(db_session: Session, test_user, monkeypatch: pytest.MonkeyPatch):
         },
     )
     execution.runner_id = runner.id
+    assignment = crud_flow_runner.create_assignment(
+        db_session,
+        runner_id=runner.id,
+        execution_id=execution.id,
+        pending_job={
+            "_publication": state,
+            "launch_version": 1,
+            "agent_type": "codex",
+            "execution_id": str(execution.id),
+        },
+    )
+    assignment.reported_status = "RUNNING"
     db_session.commit()
     broker = AsyncMock(
         return_value=PublicationLease(
@@ -157,6 +161,7 @@ def case(db_session: Session, test_user, monkeypatch: pytest.MonkeyPatch):
         execution=execution,
         policy=policy,
         runner=runner,
+        assignment=assignment,
         controller=controller,
         broker=broker,
         revoke=revoke,
@@ -217,7 +222,7 @@ async def test_success_consumes_state_before_broker_and_preserves_independent_bu
     case.broker.side_effect = mint
     reply = await case.controller.handle(verified)
     assert reply["lease"]["token"] == "write-only-secret"
-    assert "write-only-secret" not in json.dumps(case.runner.pending_job)
+    assert "write-only-secret" not in json.dumps(case.assignment.pending_job)
     assert "write-only-secret" not in json.dumps(case.execution.result)
     ack = await case.controller.handle(
         message(case, "publication_complete", publication=receipt())
@@ -244,7 +249,7 @@ async def test_stale_authority_never_mints(case, mutation):
     elif mutation == "account":
         case.controller.account_id = uuid4()
     elif mutation == "cancelled":
-        case.runner.halt_requested = True
+        case.assignment.halt_requested = True
     elif mutation == "expired":
         state = deepcopy(case.execution.result[publication.STATE_KEY])
         state["deadline"] = 0
@@ -338,7 +343,7 @@ async def test_cancel_during_broker_revokes_before_delivery(case):
     lease = case.broker.return_value
 
     async def cancel(*args, **kwargs):
-        case.runner.halt_requested = True
+        case.assignment.halt_requested = True
         case.db.commit()
         return lease
 
@@ -364,8 +369,7 @@ def test_connection_cleanup_is_compare_and_clear(case):
 
 @pytest.mark.parametrize("capable", [False, True])
 def test_lease_requires_ready_publication_helper(case, capable):
-    case.runner.pending_job = None
-    case.runner.current_execution_id = None
+    crud_flow_runner.release_assignment(case.db, runner_id=case.runner.id)
     case.execution.runner_id = None
     case.runner.publication_capabilities = {
         "version": 1,
@@ -397,8 +401,8 @@ async def test_real_ws_protocol_and_all_terminal_credential_paths(
     case, ending, monkeypatch, direct_evidence
 ):
     if direct_evidence:
-        case.runner.pending_job = {
-            **case.runner.pending_job,
+        case.assignment.pending_job = {
+            **case.assignment.pending_job,
             "evidence_direct_upload": True,
         }
         case.db.commit()
@@ -723,13 +727,13 @@ async def test_runner_delivery_strips_internal_snapshot_and_rejects_consumed_lau
         "preloop.agents.runner_launch.build_runner_launch",
         AsyncMock(return_value={"version": 1, "script": "bootstrap", "env": {}}),
     )
-    job = deepcopy(case.runner.pending_job)
+    job = deepcopy(case.assignment.pending_job)
     delivered = await prepare_runner_delivery(case.db, job, {})
     assert "_publication" not in delivered
     assert "policy" not in json.dumps(delivered["publication"])
     assert delivered["publication"]["base_sha"] == case.policy.base_sha
     await verified_reply(case)
-    delivered = await prepare_runner_delivery(case.db, case.runner.pending_job, {})
+    delivered = await prepare_runner_delivery(case.db, case.assignment.pending_job, {})
     assert "launch_error" in delivered
     assert "launch" not in delivered
     assert "_publication" not in delivered

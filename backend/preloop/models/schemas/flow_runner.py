@@ -6,6 +6,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from preloop.models.models.flow_runner import (
+    DEFAULT_RUNNER_CONCURRENCY,
+    MAX_RUNNER_CONCURRENCY,
+)
+
 
 class HostExecProfileAdvertisement(BaseModel):
     """Name and capability flags a runner advertises. No executable path."""
@@ -28,6 +33,9 @@ class RunnerRegisterRequest(BaseModel):
     host_exec_profiles: List[HostExecProfileAdvertisement] = Field(
         default_factory=list, max_length=64
     )
+    #: How many jobs this process is willing to run at once. It may lower the
+    #: stored ceiling for as long as it is connected; it never raises it.
+    concurrency: Optional[int] = Field(None, ge=1, le=MAX_RUNNER_CONCURRENCY)
 
 
 class RunnerResponse(BaseModel):
@@ -45,6 +53,15 @@ class RunnerResponse(BaseModel):
     status: str
     last_heartbeat: Optional[datetime] = None
     current_execution_id: Optional[UUID] = None
+    #: The owner's ceiling on concurrent jobs for this runner.
+    concurrency: int = DEFAULT_RUNNER_CONCURRENCY
+    #: What the connected process says it can run at once, if it said.
+    reported_concurrency: Optional[int] = None
+    #: Ceiling and report combined: what a dispatcher may actually fill.
+    capacity: int = DEFAULT_RUNNER_CONCURRENCY
+    #: Executions this runner holds right now.
+    running_count: int = 0
+    running_execution_ids: List[UUID] = Field(default_factory=list)
     registered_by_email: Optional[str] = None
     capabilities: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
@@ -53,6 +70,12 @@ class RunnerResponse(BaseModel):
 
 class RunnerRegisterResponse(RunnerResponse):
     token: str
+
+
+class RunnerConcurrencyUpdate(BaseModel):
+    """Edit one runner's slot ceiling from the console."""
+
+    concurrency: int = Field(ge=1, le=MAX_RUNNER_CONCURRENCY)
 
 
 class RunnerFleetSummary(BaseModel):
