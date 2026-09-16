@@ -11,8 +11,11 @@ lists chunks newest first, which is what a timeline wants.
 :meth:`CRUDSessionSearchDocument.search_sessions_ranked` answers the other
 question, "where did an agent do this": it ranks chunks by relevance, fuses the
 chunk scores of one session into a single session score, and returns database
-generated snippets for the best chunks. Both bind ``account_id`` in the query
-itself, never in a serialiser.
+generated snippets for the best chunks. A third shape,
+:meth:`CRUDSessionSearchDocument.similar_chunks`, answers "has an agent
+already done something like this" with the session itself as the query: it
+reads vectors that already exist and never embeds anything. All of them bind
+``account_id`` in the query itself, never in a serialiser.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from sqlalchemy import (
     or_,
     select,
     text,
+    union_all,
     update,
 )
 from sqlalchemy.orm import Session
@@ -120,6 +124,42 @@ MAX_VECTOR_SESSIONS = MAX_SESSION_RESULTS
 #: neighbour order, which reads as an answer and is not one.
 MIN_SEMANTIC_SIMILARITY = 0.20
 
+#: Chunks of one session used to represent it when looking for sessions like
+#: it. A session is many chunks and a request cannot compare all of them, so
+#: the comparison is made from a sample: this is how large that sample is.
+SIMILAR_PROBE_CHUNKS = 8
+
+#: Nearest neighbours each probe chunk reads from the index. The probes share
+#: one candidate pool afterwards, so this is the depth per probe and not the
+#: size of the answer.
+SIMILAR_NEIGHBOURS_PER_PROBE = 25
+
+#: Sessions a similarity answer may return. A list on a session detail page is
+#: read, not paged: past twenty entries the question has become a search.
+MAX_SIMILAR_SESSIONS = 20
+
+#: Matching chunks returned per similar session, so an entry can say what
+#: matched without carrying a transcript.
+MAX_SIMILAR_MATCHES_PER_SESSION = 5
+
+#: Cosine similarity two chunks need before one counts as a neighbour of the
+#: other. Higher than :data:`MIN_SEMANTIC_SIMILARITY` on purpose: that floor
+#: compares a short query with a chunk, while this compares two pieces of
+#: agent transcript, which share boilerplate (tool preambles, system text,
+#: stack traces) and are therefore close to each other by default. A floor
+#: that low here would call every session similar to every other one.
+MIN_SIMILAR_SIMILARITY = 0.35
+
+#: Weight of the breadth bonus in a session's similarity score, damped by a
+#: logarithm. The best matching pair of chunks decides the order; matching in
+#: several distinct places only breaks near ties. See
+#: :meth:`CRUDSessionSearchDocument.similar_chunks` for the stated bias.
+SIMILAR_BREADTH_WEIGHT = 0.02
+
+#: Characters of a matching chunk returned as its preview. Enough to read what
+#: matched, short enough that a list of twenty entries is not a transcript.
+SIMILAR_PREVIEW_CHARS = 280
+
 #: How a result matched: on the words, on the vector, or on both. Published
 #: per result and per snippet, because a hybrid answer that does not say which
 #: half produced a row is asking the reader to guess.
@@ -137,7 +177,9 @@ MATCH_REASONS = (MATCH_REASON_KEYWORD, MATCH_REASON_SEMANTIC, MATCH_REASON_BOTH)
 #: ``backend/tests/models/crud/test_session_search_vector.py``, not from
 #: measured relevance on real corpora. Treat a change to them as a product
 #: change, not a refactor. The fusion weights live beside them in
-#: ``preloop.services.session_search_fusion``.
+#: ``preloop.services.session_search_fusion``, and the similarity constants
+#: (``SIMILAR_*``, ``MIN_SIMILAR_SIMILARITY``) are unvalidated in exactly the
+#: same way; ``docs/architecture/similar-sessions.md`` records what they mean.
 
 
 def _held_session_exists() -> Any:
@@ -267,6 +309,70 @@ class EmbeddingCoverage:
     model_vectors: int = 0
     pending: int = 0
     embedded_through: Optional[datetime] = None
+
+
+@dataclass
+class ProbeChunk:
+    """One chunk of the session a similarity search is being run from.
+
+    It carries its own vector, because the "query" of a similarity search is
+    the session itself and there is nothing to embed: the vectors already
+    exist, written by the indexing worker, and this read spends no money and
+    reaches no provider.
+    """
+
+    document_id: Any
+    source_kind: str
+    source_id: str
+    chunk_index: int
+    occurred_at: datetime
+    role: Optional[str]
+    embedding_model: str
+    embedding: List[float] = field(default_factory=list)
+
+
+@dataclass
+class SimilarChunkHit:
+    """One chunk of another session, and the probe chunk it is near.
+
+    Both ends are named so a result can say why it is here: ``probe_*`` is the
+    passage of the session being viewed, the rest is the passage of the other
+    session that matched it.
+    """
+
+    document_id: Any
+    runtime_session_id: Any
+    source_kind: str
+    source_id: str
+    chunk_index: int
+    occurred_at: datetime
+    role: Optional[str]
+    redaction_state: str
+    similarity: float
+    probe_document_id: Any
+
+
+@dataclass
+class SessionEmbeddingState:
+    """What one session has in the corpus, and in whose vector space.
+
+    A similarity answer that returns nothing has to say which of the reasons
+    it was: this session has no chunks at all, its chunks are still waiting
+    for vectors, or its vectors were produced by a model that nothing else in
+    the account was embedded with.
+    """
+
+    chunks: int = 0
+    embedded: int = 0
+    pending: int = 0
+    #: Model identity the comparison will run in, chosen by
+    #: :meth:`CRUDSessionSearchDocument.session_embedding_state`.
+    model_identity: Optional[str] = None
+    #: Chunks of this session carrying a vector of ``model_identity``.
+    model_chunks: int = 0
+    #: How many distinct models this one session's vectors came from. More
+    #: than one means a re-embedding sweep passed through it.
+    models: int = 0
 
 
 @dataclass
@@ -1376,6 +1482,304 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
                 else None
             ),
         )
+
+    def session_embedding_state(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        preferred_model: Optional[str] = None,
+    ) -> SessionEmbeddingState:
+        """What one session holds, and the model its comparison will run in.
+
+        The model is chosen rather than assumed. ``preferred_model`` (the
+        account's current embedding model) wins when this session actually has
+        vectors from it, because comparing in the space the rest of the corpus
+        is being written in is what finds neighbours. When it does not, the
+        model that produced most of this session's vectors is used instead, so
+        a session embedded before a provider change can still be compared with
+        its own contemporaries rather than answering with nothing. Ties break
+        on the model identity, so the choice is the same on every request.
+        """
+        scope = [
+            SessionSearchDocument.account_id == account_id,
+            SessionSearchDocument.runtime_session_id == runtime_session_id,
+        ]
+        totals = db.execute(
+            select(
+                func.count(SessionSearchDocument.id).label("chunks"),
+                func.count(SessionSearchDocument.id)
+                .filter(SessionSearchDocument.embedding.isnot(None))
+                .label("embedded"),
+                func.count(SessionSearchDocument.id)
+                .filter(
+                    and_(
+                        SessionSearchDocument.embedding.is_(None),
+                        SessionSearchDocument.redaction_state == REDACTION_STATE_CLEAR,
+                        SessionSearchDocument.content != "",
+                    )
+                )
+                .label("pending"),
+            ).where(*scope)
+        ).one()
+
+        model_rows = db.execute(
+            select(
+                SessionSearchDocument.embedding_model.label("model_identity"),
+                func.count(SessionSearchDocument.id).label("chunks"),
+            )
+            .where(
+                *scope,
+                SessionSearchDocument.embedding.isnot(None),
+                SessionSearchDocument.embedding_model.isnot(None),
+            )
+            .group_by(SessionSearchDocument.embedding_model)
+            .order_by(
+                func.count(SessionSearchDocument.id).desc(),
+                SessionSearchDocument.embedding_model.asc(),
+            )
+        ).all()
+
+        by_model = {str(row.model_identity): int(row.chunks or 0) for row in model_rows}
+        chosen: Optional[str] = None
+        if preferred_model and by_model.get(preferred_model):
+            chosen = preferred_model
+        elif model_rows:
+            chosen = str(model_rows[0].model_identity)
+        return SessionEmbeddingState(
+            chunks=int(totals.chunks or 0),
+            embedded=int(totals.embedded or 0),
+            pending=int(totals.pending or 0),
+            model_identity=chosen,
+            model_chunks=by_model.get(chosen or "", 0),
+            models=len(by_model),
+        )
+
+    def session_probe_chunks(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        embedding_model: str,
+        limit: int = SIMILAR_PROBE_CHUNKS,
+    ) -> List[ProbeChunk]:
+        """Read the chunks that will represent one session, spread over it.
+
+        The sample is taken at an even stride through the session in time
+        order rather than from its head, so a long session is represented by
+        its beginning, middle and end. Reading every chunk instead is not an
+        option worth having: a thousand chunk session is a megabyte of vectors
+        per request, and the extra probes buy less than the stride costs.
+
+        The bias this creates is stated rather than hidden: a session whose
+        one distinctive passage falls between two stride positions is
+        compared without it, so a similar session can be missed. The caller
+        publishes how many chunks of how many were used.
+        """
+        budget = max(1, min(int(limit), SIMILAR_PROBE_CHUNKS))
+        conditions = [
+            SessionSearchDocument.account_id == account_id,
+            SessionSearchDocument.runtime_session_id == runtime_session_id,
+            SessionSearchDocument.embedding.isnot(None),
+            SessionSearchDocument.embedding_model == embedding_model,
+            SessionSearchDocument.redaction_state == REDACTION_STATE_CLEAR,
+        ]
+        available = int(
+            db.execute(
+                select(func.count(SessionSearchDocument.id)).where(*conditions)
+            ).scalar()
+            or 0
+        )
+        if not available:
+            return []
+        stride = max(1, -(-available // budget))  # ceiling division
+
+        ordered = (
+            select(
+                SessionSearchDocument.id.label("document_id"),
+                SessionSearchDocument.source_kind.label("source_kind"),
+                SessionSearchDocument.source_id.label("source_id"),
+                SessionSearchDocument.chunk_index.label("chunk_index"),
+                SessionSearchDocument.occurred_at.label("occurred_at"),
+                SessionSearchDocument.role.label("role"),
+                SessionSearchDocument.embedding.label("embedding"),
+                SessionSearchDocument.embedding_model.label("embedding_model"),
+                (
+                    func.row_number().over(
+                        order_by=(
+                            SessionSearchDocument.occurred_at.asc(),
+                            SessionSearchDocument.chunk_index.asc(),
+                            SessionSearchDocument.id.asc(),
+                        )
+                    )
+                    - 1
+                ).label("position"),
+            )
+            .where(*conditions)
+            .subquery()
+        )
+        rows = db.execute(
+            select(ordered)
+            .where(ordered.c.position % stride == 0)
+            .order_by(ordered.c.position.asc())
+            .limit(budget)
+        ).all()
+        return [
+            ProbeChunk(
+                document_id=row.document_id,
+                source_kind=row.source_kind,
+                source_id=row.source_id,
+                chunk_index=int(row.chunk_index or 0),
+                occurred_at=row.occurred_at,
+                role=row.role,
+                embedding_model=str(row.embedding_model),
+                embedding=[float(value) for value in (row.embedding or [])],
+            )
+            for row in rows
+        ]
+
+    def similar_chunks(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        probes: Sequence[ProbeChunk],
+        exclude_session_id: Any,
+        neighbours_per_probe: int = SIMILAR_NEIGHBOURS_PER_PROBE,
+        min_similarity: float = MIN_SIMILAR_SIMILARITY,
+        start_date: Optional[datetime] = None,
+    ) -> List[SimilarChunkHit]:
+        """Nearest neighbours of a session's probe chunks, in other sessions.
+
+        Every restriction that makes the answer legitimate is in the SQL, not
+        in the caller:
+
+        * ``account_id`` bounds the search to the caller's own corpus;
+        * ``exclude_session_id`` removes the session being viewed, which would
+          otherwise be its own nearest neighbour in every position;
+        * ``embedding_model`` pins each probe to vectors of its own model,
+          because a cosine distance between two models' spaces is not a
+          similarity;
+        * ``redaction_state`` is pinned to ``clear``, so a chunk withheld
+          after it was embedded cannot answer with the text it no longer has.
+
+        One statement, one branch per probe, each with its own index scan and
+        its own depth, unioned. The alternative (one round trip per probe)
+        multiplies latency by the probe count for the same rows.
+
+        Returns:
+            Chunk pairs ordered by similarity, then by chunk id so two equally
+            close neighbours come back in the same order every time.
+        """
+        usable = [
+            probe for probe in probes if probe.embedding and probe.embedding_model
+        ]
+        if not usable:
+            return []
+        depth = max(1, min(int(neighbours_per_probe), SIMILAR_NEIGHBOURS_PER_PROBE))
+        floor = float(min_similarity)
+
+        branches = []
+        for probe in usable:
+            distance = SessionSearchDocument.embedding.cosine_distance(
+                list(probe.embedding)
+            )
+            conditions = [
+                SessionSearchDocument.account_id == account_id,
+                SessionSearchDocument.runtime_session_id != exclude_session_id,
+                SessionSearchDocument.embedding.isnot(None),
+                SessionSearchDocument.embedding_model == probe.embedding_model,
+                SessionSearchDocument.redaction_state == REDACTION_STATE_CLEAR,
+                distance <= (1.0 - floor),
+            ]
+            if start_date is not None:
+                conditions.append(SessionSearchDocument.occurred_at >= start_date)
+            branches.append(
+                select(
+                    SessionSearchDocument.id.label("document_id"),
+                    SessionSearchDocument.runtime_session_id.label(
+                        "runtime_session_id"
+                    ),
+                    SessionSearchDocument.source_kind.label("source_kind"),
+                    SessionSearchDocument.source_id.label("source_id"),
+                    SessionSearchDocument.chunk_index.label("chunk_index"),
+                    SessionSearchDocument.occurred_at.label("occurred_at"),
+                    SessionSearchDocument.role.label("role"),
+                    SessionSearchDocument.redaction_state.label("redaction_state"),
+                    (literal(1.0) - distance).label("similarity"),
+                    literal(str(probe.document_id)).label("probe_document_id"),
+                )
+                .where(*conditions)
+                .order_by(distance.asc(), SessionSearchDocument.id.asc())
+                .limit(depth)
+            )
+
+        statement = branches[0] if len(branches) == 1 else union_all(*branches)
+        rows = db.execute(statement).all()
+        hits = [
+            SimilarChunkHit(
+                document_id=row.document_id,
+                runtime_session_id=row.runtime_session_id,
+                source_kind=row.source_kind,
+                source_id=row.source_id,
+                chunk_index=int(row.chunk_index or 0),
+                occurred_at=row.occurred_at,
+                role=row.role,
+                redaction_state=row.redaction_state,
+                similarity=float(row.similarity or 0.0),
+                probe_document_id=row.probe_document_id,
+            )
+            for row in rows
+        ]
+        hits.sort(key=lambda hit: (-hit.similarity, str(hit.document_id)))
+        return hits
+
+    def chunk_previews(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        document_ids: Sequence[Any],
+        max_chars: int = SIMILAR_PREVIEW_CHARS,
+    ) -> Dict[str, Optional[str]]:
+        """Opening text of named chunks, keyed by chunk id as text.
+
+        A similarity search has no query terms, so there is nothing for
+        ``ts_headline`` to mark and the honest preview is the start of the
+        chunk. The truncation happens in the projection, so a chunk longer
+        than the preview never travels, and a chunk whose redaction state
+        forbids text resolves to nothing at all rather than to a prefix of it.
+        """
+        wanted = [value for value in document_ids if value is not None]
+        if not wanted:
+            return {}
+        width = max(1, int(max_chars))
+        returnable = SessionSearchDocument.redaction_state.in_(
+            TEXT_RETURNABLE_REDACTION_STATES
+        )
+        rows = db.execute(
+            select(
+                SessionSearchDocument.id.label("document_id"),
+                SessionSearchDocument.redaction_state.label("redaction_state"),
+                case(
+                    (returnable, func.left(SessionSearchDocument.content, width)),
+                    else_=null(),
+                ).label("preview"),
+            ).where(
+                SessionSearchDocument.account_id == account_id,
+                SessionSearchDocument.id.in_(wanted),
+            )
+        ).all()
+        return {
+            str(row.document_id): (
+                row.preview
+                if row.redaction_state in TEXT_RETURNABLE_REDACTION_STATES
+                else None
+            )
+            for row in rows
+        }
 
     def count_for_session(
         self, db: Session, *, account_id: Any, runtime_session_id: Any

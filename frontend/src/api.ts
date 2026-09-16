@@ -53,6 +53,8 @@ import type {
   RuntimeSessionActivityListResponse,
   RuntimeSessionRequestListResponse,
   RuntimeSessionSummaryInsight,
+  SimilarSessionsParams,
+  SimilarSessionsResponse,
   RuntimeSessionInteractionSummary,
   RuntimeSessionOptimizationJobStatusResponse,
   RuntimeSessionOptimizationJobSubmitResponse,
@@ -1855,6 +1857,46 @@ export async function getAccountRuntimeSessionActivityTimeline(
   );
   if (!response.ok) {
     throw new Error('Failed to fetch session activity timeline');
+  }
+  return response.json();
+}
+
+/**
+ * Fetch the sessions most similar to this one.
+ *
+ * Reads vectors the indexing worker already wrote, so this costs the account
+ * nothing and never fails for spend reasons. A comparison that could not run
+ * comes back as an empty list with `degraded.reasons` naming why, so the
+ * caller renders a sentence rather than an error.
+ */
+export async function getSimilarSessions(
+  runtimeSessionId: string,
+  params: SimilarSessionsParams = {}
+): Promise<SimilarSessionsResponse> {
+  const queryParams = new URLSearchParams();
+
+  if (typeof params.limit === 'number') {
+    queryParams.set('limit', String(params.limit));
+  }
+  if (typeof params.maxMatchesPerSession === 'number') {
+    queryParams.set(
+      'max_matches_per_session',
+      String(params.maxMatchesPerSession)
+    );
+  }
+  if (typeof params.windowDays === 'number') {
+    queryParams.set('window_days', String(params.windowDays));
+  }
+  if (params.includeMatchText === false) {
+    queryParams.set('include_match_text', 'false');
+  }
+
+  const queryString = queryParams.toString();
+  const response = await fetchWithAuth(
+    `/api/v1/runtime-sessions/${runtimeSessionId}/similar${queryString ? `?${queryString}` : ''}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch similar sessions');
   }
   return response.json();
 }

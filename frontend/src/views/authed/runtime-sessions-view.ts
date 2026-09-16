@@ -1725,6 +1725,12 @@ export class RuntimeSessionsView extends LitElement {
             auditLinks: true,
             liveFollow: true,
             endSession: true,
+            // On here and nowhere else: this is the page where reading one
+            // session and wanting the one that went the same way is the
+            // actual task. The panel stays collapsed until asked, and an
+            // account with no embedded sessions gets a sentence saying so
+            // rather than an empty box.
+            similarSessions: true,
           }}
           @session-selected=${(event: CustomEvent) => {
             this.selectSession(event.detail.sessionId);

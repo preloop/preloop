@@ -32,6 +32,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports what it dropped. Default-off, so a flow selects it in its allow-list
   or an account enables it on the Tools page, and an access rule that denies it
   stops the call. Docs at `docs/guide/agent-session-search.md`.
+- Sessions similar to the one being read. `GET
+  /api/v1/runtime-sessions/{id}/similar` ranks other sessions of the account
+  against a stride sample of this session's own chunks, using vectors the
+  indexing worker already wrote: nothing is embedded, no provider is called
+  and no spend is recorded, so an account at its daily embedding cap still
+  gets the list. A session is only compared with chunks carrying the same
+  embedding model identity, and only `clear` chunks are probes or matches.
+  Each result carries its best similarity plus a coarse band (`close`,
+  `related`, `loose`); the console shows the band and keeps the number in a
+  tooltip, because a cosine number reads as a measurement it is not.
+  Everything the comparison could not do is named in a degraded block rather
+  than raised: nothing indexed for this session, no other session in the same
+  vector space, only part of a long session sampled, a time window applied.
+  There is no default time window: the session worth finding is often an old
+  one. The console shows the neighbours in a collapsed panel under the session
+  replay, each entry linking to the other session with its matching passage
+  inline. Ranking constants and band cut points are tunable and not validated
+  against a labelled set; the decisions behind them are recorded in
+  `docs/architecture/similar-sessions.md`.
 - Semantic and hybrid ranking on `POST /api/v1/runtime-sessions/search`.
   `mode` accepts `keyword`, `semantic` or `hybrid`. The vector half only
   scores chunks stamped with the model that embedded the query, and the two

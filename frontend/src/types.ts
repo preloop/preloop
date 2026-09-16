@@ -967,6 +967,81 @@ export interface RuntimeSessionRequestListResponse {
   cache_summary?: RuntimeSessionCacheSummary;
 }
 
+/**
+ * Sessions similar to the one being viewed.
+ *
+ * The shapes mirror `GET /api/v1/runtime-sessions/{id}/similar`. Two fields
+ * are there for honesty rather than for display: `degraded` names everything
+ * the comparison could not do, and `probe_chunks` against `embedded_chunks`
+ * says how much of the session was actually compared.
+ */
+export type SimilarityBand = 'close' | 'related' | 'loose';
+
+export interface SimilarSessionProbe {
+  document_id: string;
+  source_kind: string;
+  source_id: string;
+  chunk_index: number;
+  occurred_at: string;
+  role: string | null;
+}
+
+export interface SimilarSessionMatch {
+  document_id: string;
+  source_kind: string;
+  source_id: string;
+  chunk_index: number;
+  occurred_at: string;
+  role: string | null;
+  similarity: number;
+  band: SimilarityBand;
+  redaction_state: string;
+  text: string | null;
+  probe: SimilarSessionProbe;
+}
+
+export interface SimilarSessionResult {
+  runtime_session_id: string;
+  session_source_type: string | null;
+  session_source_id: string | null;
+  session_reference: string | null;
+  title: string | null;
+  started_at: string | null;
+  last_activity_at: string | null;
+  score: number;
+  similarity: number;
+  band: SimilarityBand;
+  matched_chunk_count: number;
+  matches: SimilarSessionMatch[];
+}
+
+export interface SimilarSessionsDegraded {
+  semantic: boolean;
+  reasons: string[];
+  detail: string | null;
+}
+
+export interface SimilarSessionsResponse {
+  runtime_session_id: string;
+  model_identity: string | null;
+  embedded_chunks: number;
+  probe_chunks: number;
+  pending_chunks: number;
+  window_days: number | null;
+  limit: number;
+  max_matches_per_session: number;
+  degraded: SimilarSessionsDegraded;
+  elapsed_ms: number;
+  results: SimilarSessionResult[];
+}
+
+export interface SimilarSessionsParams {
+  limit?: number;
+  maxMatchesPerSession?: number;
+  windowDays?: number;
+  includeMatchText?: boolean;
+}
+
 export interface RuntimeSessionSummaryInsight {
   title: string;
   description: string;

@@ -171,4 +171,8 @@ records purpose-tagged usage. The shared API key is allow-listed.
 `POST /api/v1/runtime-sessions/search` reads it in `keyword`, `semantic` or
 `hybrid` mode, fusing the two candidate lists by rank; a half that cannot run
 is reported in a degraded block with keyword results, never as an error.
+`GET /api/v1/runtime-sessions/{id}/similar` reads the same vectors with no
+query at all: a session is compared by a stride sample of its own chunks, in
+its own model's space, and spends nothing.
+See [Similar sessions](docs/architecture/similar-sessions.md).
 Operator knobs: [Session embedding](docs/operations/session-embedding.md).

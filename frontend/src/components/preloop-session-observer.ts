@@ -24,6 +24,7 @@ import {
   getRuntimeSessionGatewayEvents,
   getRuntimeSessionOptimizationJob,
   getRuntimeSessionRequests,
+  getSimilarSessions,
   listRuntimeSessionOptimizationActions,
   optimizeRuntimeSession,
   submitRuntimeSessionOptimizationJob,
@@ -41,6 +42,7 @@ import type {
   RuntimeSessionCacheSummary,
   RuntimeSessionRequestItem,
   RuntimeSessionSummary,
+  SimilarSessionsResponse,
 } from '../types';
 import { unifiedWebSocketManager } from '../services/unified-websocket-manager';
 import type {
@@ -66,6 +68,7 @@ import './talk-button';
 import './session-list-panel';
 import './session-replay-panel';
 import './session-request-timeline';
+import './similar-sessions-panel';
 import { consoleDialogStyles } from '../styles/console-dialog';
 
 type SessionInput = RuntimeSessionSummary | Record<string, unknown>;
@@ -148,6 +151,7 @@ const DEFAULT_FEATURES: Required<SessionObserverFeatures> = {
   replayModes: true,
   rawPayloads: true,
   endSession: false,
+  similarSessions: false,
 };
 
 @customElement('preloop-session-observer')
@@ -326,6 +330,18 @@ export class PreloopSessionObserver extends LitElement {
     string,
     OptimizationJobRequestOptions
   > = {};
+
+  // Similar sessions, per session id, kept once loaded: the answer depends on
+  // a corpus that changes slowly, and an operator flipping between two
+  // sessions should not pay for a vector query each time.
+  @state()
+  private loadedSimilarSessions: Record<string, SimilarSessionsResponse> = {};
+
+  @state()
+  private loadingSimilarForSessionId: string | null = null;
+
+  @state()
+  private similarSessionsError = '';
 
   @state()
   private aiModels: AIModel[] = [];
@@ -1188,6 +1204,58 @@ export class PreloopSessionObserver extends LitElement {
     } finally {
       this.loadingReplayMetadataForSessionId = null;
     }
+  }
+
+  /**
+   * Load the sessions similar to one the operator asked about.
+   *
+   * Only ever called from the panel opening, never from selecting a session:
+   * this is a side question, and a session nobody asked about should not cost
+   * a vector query. A failure here is confined to the panel rather than
+   * raised into the observer's own error banner, because the replay beside it
+   * is still fine.
+   */
+  private async loadSimilarSessions(sessionId: string): Promise<void> {
+    if (
+      this.loadedSimilarSessions[sessionId] ||
+      this.loadingSimilarForSessionId === sessionId
+    ) {
+      return;
+    }
+    this.loadingSimilarForSessionId = sessionId;
+    this.similarSessionsError = '';
+    try {
+      const response = await getSimilarSessions(sessionId);
+      this.loadedSimilarSessions = {
+        ...this.loadedSimilarSessions,
+        [sessionId]: response,
+      };
+    } catch (error) {
+      console.error('Failed to load similar sessions:', error);
+      this.similarSessionsError =
+        error instanceof Error
+          ? error.message
+          : 'Failed to load similar sessions';
+    } finally {
+      this.loadingSimilarForSessionId = null;
+    }
+  }
+
+  /**
+   * Open a similar session in place when this observer already holds it.
+   *
+   * Returns true when it was handled here, so the panel can stop the link
+   * from navigating. A session this observer does not list (an older one, or
+   * one outside the current scope) is left to the link.
+   */
+  private openSimilarSession(sessionId: string): boolean {
+    if (!sessionId) return false;
+    const known = this.observedSessions.some(
+      (session) => session.id === sessionId
+    );
+    if (!known) return false;
+    void this.selectSession(sessionId, { userInitiated: true });
+    return true;
   }
 
   private async loadSessionOptimization(
@@ -2174,6 +2242,35 @@ export class PreloopSessionObserver extends LitElement {
               ? this.loadOptimizationActions(this.activeSessionId)
               : undefined}
         ></session-replay-panel>
+        ${
+          this.enabledFeatures.similarSessions && this.activeSessionId
+            ? html`
+                <similar-sessions-panel
+                  style="margin-top: var(--sl-spacing-small);"
+                  runtime-session-id=${this.activeSessionId}
+                  .response=${
+                    this.loadedSimilarSessions[this.activeSessionId] || null
+                  }
+                  .loading=${
+                    this.loadingSimilarForSessionId === this.activeSessionId
+                  }
+                  .error=${this.similarSessionsError}
+                  @similar-sessions-requested=${(event: CustomEvent) => {
+                    void this.loadSimilarSessions(
+                      event.detail.runtimeSessionId
+                    );
+                  }}
+                  @similar-session-selected=${(event: CustomEvent) => {
+                    if (
+                      this.openSimilarSession(event.detail.runtimeSessionId)
+                    ) {
+                      event.preventDefault();
+                    }
+                  }}
+                ></similar-sessions-panel>
+              `
+            : nothing
+        }
       </div>
     `;
 
