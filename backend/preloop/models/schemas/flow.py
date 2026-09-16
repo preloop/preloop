@@ -54,6 +54,81 @@ class GitCloneRepository(BaseModel):
         return str(value) if value is not None else None
 
 
+class ReportPublication(BaseModel):
+    """Land a generated document in the repository as a pull request.
+
+    For flows whose agent holds no write tools: the document the run produced
+    is copied into a throwaway worktree of the checkout after the agent has
+    exited, committed on a stable branch keyed on the document, and offered
+    through the same pull request path every other change uses. Issue #648.
+
+    ``extra='forbid'``: a misspelled key here is a document that silently
+    lands somewhere else, or not at all.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description="Whether the run publishes its report as a pull request",
+    )
+    source_path: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "Workspace relative path of the generated document, for example "
+            "evidence/portfolio-report.md"
+        ),
+    )
+    destination_path: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "Repository relative path the document lands at, for example PORTFOLIO.md"
+        ),
+    )
+    branch: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "Branch the document is maintained on. Defaults to "
+            "preloop/report/<document slug>, which is stable across runs so a "
+            "re-run updates the open pull request instead of opening a second"
+        ),
+    )
+    commit_message: Optional[str] = Field(
+        default=None,
+        max_length=512,
+        description="Commit subject. Defaults to 'Update <destination_path>'",
+    )
+
+    @model_validator(mode="after")
+    def validate_paths(self) -> "ReportPublication":
+        """An enabled block has to name both ends of the copy, safely."""
+        if not self.enabled:
+            return self
+        from preloop.services.report_publication import (
+            ReportPublicationError,
+            report_branch_name,
+            validated_relative_path,
+        )
+
+        if validated_relative_path(self.source_path) is None:
+            raise ValueError(
+                "report_publication.source_path must be a workspace relative path"
+            )
+        destination = validated_relative_path(self.destination_path)
+        if destination is None:
+            raise ValueError(
+                "report_publication.destination_path must be a repository relative path"
+            )
+        try:
+            report_branch_name(destination, self.branch)
+        except ReportPublicationError as error:
+            raise ValueError(str(error)) from error
+        return self
+
+
 class GitCloneConfig(BaseModel):
     """Configuration for git clone operations before agent execution."""
 
@@ -126,6 +201,41 @@ class GitCloneConfig(BaseModel):
             "before the flow pushes it or opens a pull request"
         ),
     )
+
+    report_publication: Optional[ReportPublication] = Field(
+        default=None,
+        description=(
+            "Publish the document this run generated as a pull request, "
+            "after the agent has exited and without giving it write tools"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_report_publication(self) -> "GitCloneConfig":
+        """Publishing a report is a pull request, never a direct commit.
+
+        The whole point of the path is that the document leaves through the
+        pull request surface, so an enabled block with pull requests turned
+        off is a configuration that cannot do what it says. Isolated
+        publication_mode is a different publisher (trusted control plane);
+        combining it with this block would skip the marker and publish
+        nothing.
+        """
+        block = self.report_publication
+        if block is None or not block.enabled:
+            return self
+        if not self.create_pull_request:
+            raise ValueError(
+                "report_publication requires create_pull_request: the report "
+                "lands as a pull request, never as a direct commit"
+            )
+        if self.publication_mode == "isolated":
+            raise ValueError(
+                "report_publication cannot use publication_mode isolated: "
+                "the report is published by the post-execution block, not "
+                "the isolated publisher"
+            )
+        return self
 
     def effective_verification_policy(self) -> ResolvedVerificationPolicy:
         """Effective policy for this config, computed by the contract.

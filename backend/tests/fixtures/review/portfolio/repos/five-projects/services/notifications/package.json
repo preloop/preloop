@@ -1,0 +1,12 @@
+{
+  "name": "notifications",
+  "version": "3.2.1",
+  "description": "synthetic fixture: notification fan-out service",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  }
+}

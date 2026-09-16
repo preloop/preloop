@@ -1,0 +1,259 @@
+{
+  "schema": "preloop.review.portfolio/v1",
+  "flow": "portfolio-review",
+  "status": "success",
+  "run_at": "2026-09-16T09:00:00Z",
+  "git": {
+    "remote": "https://example.com/example/sample-portfolio.git",
+    "commit": "0000000000000000000000000000000000000000",
+    "branch": "main",
+    "dirty": false
+  },
+  "tool_versions": {
+    "git": "2.43.0"
+  },
+  "inputs_declared": {
+    "target_repo_path": "/workspace/small-portfolio",
+    "root_path": ".",
+    "max_depth": 3,
+    "auto_select_threshold": 3,
+    "max_inline_projects": 5,
+    "depth": "standard",
+    "eol_runtimes": [
+      {
+        "runtime": "java",
+        "version": "8",
+        "end_of_life": "2022-03-31"
+      },
+      {
+        "runtime": "python",
+        "version": "3.8",
+        "end_of_life": "2024-10-07"
+      },
+      {
+        "runtime": "node",
+        "version": "14",
+        "end_of_life": "2023-04-30"
+      }
+    ]
+  },
+  "runner": {
+    "kind": null,
+    "id": null
+  },
+  "discovery": {
+    "root": ".",
+    "depth_cap": 3,
+    "depth_cap_hit": false,
+    "dirs_truncated_at_cap": [],
+    "detectors_matched": [
+      "package.json",
+      "pyproject.toml"
+    ],
+    "excluded_dirs": [],
+    "eol_table": "payload",
+    "count": 2,
+    "projects": [
+      {
+        "path": "apps/checkout",
+        "rank": 1,
+        "stacks": [
+          "node"
+        ],
+        "manifests": [
+          "apps/checkout/package.json"
+        ],
+        "runtimes": [
+          {
+            "name": "node",
+            "version": ">=20",
+            "source": "apps/checkout/package.json"
+          }
+        ],
+        "last_commit_date": "2026-09-01",
+        "commits_12m": 20,
+        "file_count": 4,
+        "has_readme": true,
+        "has_architecture_doc": false,
+        "has_ci": false,
+        "has_tests_dir": false,
+        "has_licence": true,
+        "triage": {
+          "score": 3,
+          "band": "medium",
+          "reasons": [
+            "no_architecture_doc",
+            "no_ci",
+            "no_tests_dir"
+          ]
+        }
+      },
+      {
+        "path": "apps/pricing",
+        "rank": 2,
+        "stacks": [
+          "python"
+        ],
+        "manifests": [
+          "apps/pricing/pyproject.toml"
+        ],
+        "runtimes": [
+          {
+            "name": "python",
+            "version": ">=3.12",
+            "source": "apps/pricing/pyproject.toml"
+          }
+        ],
+        "last_commit_date": "2026-09-05",
+        "commits_12m": 18,
+        "file_count": 6,
+        "has_readme": true,
+        "has_architecture_doc": false,
+        "has_ci": true,
+        "has_tests_dir": true,
+        "has_licence": true,
+        "triage": {
+          "score": 1,
+          "band": "low",
+          "reasons": [
+            "no_architecture_doc"
+          ]
+        }
+      }
+    ]
+  },
+  "selection": {
+    "source": "auto_below_threshold",
+    "auto_select_threshold": 3,
+    "inline_cap": 8,
+    "selected": [
+      "apps/checkout",
+      "apps/pricing"
+    ],
+    "over_inline_cap": []
+  },
+  "questions": [
+    {
+      "phase": "selection",
+      "asked": false,
+      "status": "not_asked",
+      "reason": "2 projects discovered, below the auto select threshold of 3",
+      "request_id": null,
+      "expires_at": null,
+      "answered_by": null,
+      "answered_at": null,
+      "items": [],
+      "selectable_ids": []
+    },
+    {
+      "phase": "follow_ups",
+      "asked": false,
+      "status": "not_asked",
+      "reason": "no follow up candidates",
+      "request_id": null,
+      "expires_at": null,
+      "answered_by": null,
+      "answered_at": null,
+      "items": [],
+      "selectable_ids": []
+    }
+  ],
+  "projects": [
+    {
+      "path": "apps/checkout",
+      "lens": "docs-currency-review",
+      "lens_schema": "preloop.review.docscurrency/v1",
+      "lens_status": "ran",
+      "not_run_reason": null,
+      "verdict": "pass",
+      "health": "healthy",
+      "counts": {
+        "holds": 3,
+        "drifted": 0,
+        "not_checkable": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0
+      },
+      "result_artifact": "evidence/projects/apps-checkout/result.json"
+    },
+    {
+      "path": "apps/pricing",
+      "lens": "docs-currency-review",
+      "lens_schema": "preloop.review.docscurrency/v1",
+      "lens_status": "ran",
+      "not_run_reason": null,
+      "verdict": "pass",
+      "health": "healthy",
+      "counts": {
+        "holds": 4,
+        "drifted": 0,
+        "not_checkable": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0
+      },
+      "result_artifact": "evidence/projects/apps-pricing/result.json"
+    }
+  ],
+  "follow_ups": [],
+  "coverage": {
+    "projects_discovered": 2,
+    "projects_selected": 2,
+    "projects_reviewed": 2,
+    "plan_completed": true,
+    "not_reviewed": []
+  },
+  "rollup": {
+    "by_health": {
+      "healthy": 2,
+      "findings": 0,
+      "failing": 0,
+      "unknown": 0
+    },
+    "by_severity": {
+      "high": 0,
+      "medium": 0,
+      "low": 0
+    },
+    "follow_ups_total": 0,
+    "follow_ups_approved": 0,
+    "issues_filed": 0
+  },
+  "verdict": "pass",
+  "checks": [
+    {
+      "name": "discovery_deterministic",
+      "passed": true,
+      "skipped": false,
+      "details": "2 projects from the detector list, depth cap 3"
+    },
+    {
+      "name": "selection_question_answered",
+      "passed": true,
+      "skipped": true,
+      "details": "not asked: 2 projects is below the threshold of 3, so both were selected automatically"
+    },
+    {
+      "name": "issues_filed",
+      "passed": true,
+      "skipped": false,
+      "details": "0: this preset has no write tools"
+    }
+  ],
+  "assessments": [
+    {
+      "topic": "portfolio",
+      "judgment": "Agent judgment: both projects document what they do and the documentation matched the code in this run."
+    }
+  ],
+  "artifacts": {
+    "report": "evidence/portfolio-report.md",
+    "register": "evidence/projects-register.md",
+    "findings": "evidence/findings.json",
+    "inventory": "evidence/inventory.json",
+    "questions": "evidence/questions.json"
+  },
+  "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice.",
+  "note": "synthetic fixture"
+}

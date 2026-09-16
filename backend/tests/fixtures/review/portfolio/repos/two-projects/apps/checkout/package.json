@@ -1,0 +1,12 @@
+{
+  "name": "checkout",
+  "version": "1.1.0",
+  "description": "synthetic fixture: checkout front end",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  }
+}

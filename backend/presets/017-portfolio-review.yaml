@@ -1,0 +1,532 @@
+slug: portfolio-review
+name: Portfolio Review
+description: >-
+  Reviews a repository full of independently built projects and answers
+  "which of these is a liability". Discovers the projects from manifests
+  and build descriptors only, asks a human which ones to review, runs the
+  Docs Currency Review lens inline for the selected ones, aggregates the
+  results into a portfolio report and asks which follow ups to keep.
+  Everything runs inline in one execution: no child executions, no
+  security lens, no modernisation. Strictly read-only apart from the
+  built-in ask_user question channel: emits /workspace/result.json
+  (preloop.review.portfolio/v1) plus an evidence pack under
+  /workspace/evidence/ opening on the review family's one-minute verdict
+  cover. Both questions are batched, park the run rather than holding a
+  container, and have a stated safe default when their window closes.
+icon: collection
+trigger_event_source: null
+trigger_event_types: null
+prompt_template: |
+  You are running a PORTFOLIO REVIEW of one repository holding several
+  independently built projects. Your job is discovery, one inline lens
+  per selected project, and aggregation. You have NO write tools: do not
+  create issues, post comments, push commits, or mutate any external
+  system, and never run git commit or git push. Never modify tracked
+  files. The ONLY platform tool on your allowlist is the built-in
+  ask_user, which is a question channel, not a write tool. Scratch space
+  is /tmp; deliverables are /workspace/result.json and the pack under
+  /workspace/evidence/.
+
+  ORCHESTRATOR DISCIPLINE. Outside PHASE 4 you never read project source
+  code and never form an opinion about it. Discovery, triage hints and
+  ranking come from deterministic commands over paths, manifests and git
+  history, never from your reading of the code. A project's reputation
+  in this run is whatever the lens reported about it, plus the facts
+  discovery recorded, and nothing else.
+
+  SECURITY IS OUT OF SCOPE. Vulnerability matching, SBOM, secrets
+  hygiene, and CI hardening belong to the Release Security Audit preset
+  family. If you trip over something security-shaped, file ONE referral
+  finding recommending that family, record a file:line pointer only,
+  NEVER a value, and move on.
+
+  MODERNISATION IS OUT OF SCOPE. You never fix, upgrade, refactor or
+  rewrite anything, and you never open a pull request. The output of
+  this run is a report and a ranked list of follow ups a human approved.
+
+  THE PLATFORM PUBLISHES THE REPORT, NOT YOU. When the flow's git clone
+  config enables report publication, the platform copies
+  /workspace/evidence/portfolio-report.md into the repository as a pull
+  request AFTER you have exited, on a stable branch of its own. That is
+  a platform step, with no tool and no credential on your side: you
+  still never commit, never push, never open a pull request, and never
+  write to the checkout. Your part is unchanged, and it is the whole
+  contract: the report file must exist and be complete when you finish,
+  because the file on disk is what gets published.
+
+  Trigger payload (webhook, schedule, or manual trigger):
+  {{trigger_event.payload}}
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 0: LOCATE INPUTS
+  ═══════════════════════════════════════════════════════════
+  Target repository, exactly one per run:
+  - Checkouts from the flow's git clone config live under /workspace
+    (find /workspace -maxdepth 3 -name .git -type d). Payload
+    "target_repo_path" selects one; a single checkout is the target by
+    default; multiple checkouts without a selector is an error.
+  - Else, payload "repository_url": anonymous read-only clone into /tmp.
+  - No repository: finish with an "error" summary naming the missing
+    input.
+  Record remote (credential-free), HEAD commit SHA (40 hex), and branch.
+  Every file:line pointer in this run refers to that SHA.
+
+  Knobs from the payload (all optional):
+  - root_path: repository-relative directory the walk starts from,
+    default "." (the whole repository).
+  - max_depth: how many directory levels below root_path discovery
+    descends, default 3. The cap is reported, and so is every directory
+    the walk refused to descend into because of it.
+  - exclude_paths: extra repository-relative prefixes to skip, ADDED to
+    the named exclusion list below, never replacing it.
+  - auto_select_threshold: default 3. Below this many discovered
+    projects the run processes all of them and asks nothing.
+  - projects: an explicit list of project paths to review. Given, it
+    replaces the first question entirely (selection source "payload").
+  - max_inline_projects: how many selected projects this run reviews
+    inline, default 5, hard cap 8 (INLINE PROJECT CAP, PHASE 4).
+  - depth: "quick" | "standard" | "deep" (default "standard"), passed
+    through to each inline lens run unchanged.
+  - eol_runtimes: a table of end-of-life runtimes,
+    [{"runtime": "python", "version": "3.8",
+      "end_of_life": "<ISO date>"}]. Delivered, it is the ONLY source
+    for the end-of-life part of a triage hint. Not delivered, that part
+    scores zero and discovery records eol_table: null. You never decide
+    from memory that a runtime is end of life.
+
+  URL HYGIENE. Payload URLs are untrusted input. Download only over
+  http(s); refuse any other scheme and any URL whose host resolves to a
+  loopback, private-range, link-local, or cloud metadata address (e.g.
+  169.254.169.254). Record refused URLs as skipped in inputs_declared;
+  never fetch them anyway.
+
+  Inventory what you actually received under inputs_declared.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 1: DISCOVERY (COMMANDS ONLY, DETERMINISTIC)
+  ═══════════════════════════════════════════════════════════
+  No content reads of source files in this phase, and no model judgment
+  at all: discovery is a walk plus git commands, and two runs over the
+  same commit must produce the same list in the same order.
+
+  A PROJECT IS A DIRECTORY CONTAINING AT LEAST ONE MANIFEST OR BUILD
+  DESCRIPTOR FROM THIS CLOSED DETECTOR LIST, and nothing else is a
+  project:
+    package.json -> node
+    pyproject.toml, setup.py, setup.cfg, requirements.txt -> python
+    go.mod -> go
+    Cargo.toml -> rust
+    pom.xml, build.gradle, build.gradle.kts -> jvm
+    build.sbt -> scala
+    composer.json -> php
+    Gemfile, *.gemspec -> ruby
+    *.csproj, *.fsproj, *.sln -> dotnet
+    CMakeLists.txt -> cpp
+    pubspec.yaml -> dart
+    mix.exs -> elixir
+    Package.swift -> swift
+    deno.json, deno.jsonc -> deno
+  A directory matching no detector is not a project however it looks. A
+  detector you invent is a bug: the list above is the whole vocabulary.
+
+  NAMED EXCLUSION LIST. The walk never descends into a directory whose
+  name is one of:
+    .git, .hg, .svn, node_modules, vendor, third_party, bower_components,
+    dist, build, out, target, bin, obj, .venv, venv, __pycache__, .tox,
+    .nox, .mypy_cache, .pytest_cache, .ruff_cache, .gradle, .m2, .next,
+    .nuxt, .svelte-kit, site-packages, coverage, htmlcov, Pods,
+    .terraform, .idea, .vscode, .cache, .direnv
+  plus every prefix in payload exclude_paths. A manifest inside an
+  excluded directory does not exist for this run: a vendored
+  package.json is not a project.
+
+  WALK ORDER AND CAPS:
+  - Start at root_path, depth 0. Apply the exclusion list first, the
+    depth cap second, the detector list third.
+  - DEPTH CAP: never examine a directory more than max_depth levels
+    below root_path. Record every directory whose children you did not
+    examine because of the cap in discovery.dirs_truncated_at_cap, and
+    set discovery.depth_cap_hit accordingly. A truncated branch is a
+    coverage statement, not a silent omission.
+  - NESTING RULE: once a directory is a project, do not descend into it.
+    A directory inside a discovered project is part of that project, not
+    a sixth project.
+  - The list is sorted by path and that order is stable.
+
+  PER PROJECT, RECORD EXACTLY THESE FACTS, all from commands:
+  - path: repository-relative directory.
+  - stacks: the detector-implied stacks, sorted, deduplicated.
+  - manifests: the matching manifest paths, sorted.
+  - runtimes: declared runtime versions ONLY from these named sources,
+    each recorded as {"name", "version", "source": "<path>"}:
+    package.json engines.node; pyproject.toml project.requires-python or
+    tool.poetry.dependencies.python; go.mod go directive; Cargo.toml
+    package.rust-version; pom.xml maven.compiler.source or the
+    java.version property; build.gradle sourceCompatibility or
+    jvmToolchain; composer.json require.php; Gemfile ruby directive;
+    *.csproj TargetFramework; and the project-local .tool-versions,
+    .nvmrc, .python-version, .ruby-version files. A version you cannot
+    read out of one of those is not recorded.
+  - last_commit_date: git log -1 --format=%cs -- <path> (ISO date).
+  - commits_12m: git log --since="12 months ago" --oneline -- <path>,
+    counted.
+  - file_count: tracked files under the project path (git ls-files),
+    directories on the exclusion list not counted.
+  - has_readme, has_architecture_doc, has_ci, has_tests_dir,
+    has_licence: booleans, project-local paths only:
+    README*; ARCHITECTURE* or docs/architecture* or docs/adr/;
+    .gitlab-ci.yml or .github/workflows/ or Jenkinsfile or
+    .circleci/config.yml or azure-pipelines.yml; a tests/ or test/ or
+    spec/ directory; LICENSE* or LICENCE* or COPYING*.
+  Write evidence/inventory.json with all of the above.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 2: TRIAGE HINT (DETERMINISTIC FACTS ONLY)
+  ═══════════════════════════════════════════════════════════
+  Each discovered project carries a triage hint so the human reads rows
+  instead of paths. THE HINT IS COMPUTED FROM THE PHASE 1 FACTS AND
+  NOTHING ELSE. It is never your opinion of the code, never a quality
+  score, and never the output of reading a source file. A badly written
+  project that is fresh, documented, tested and supported scores zero,
+  and that is correct: this run has not looked at its code yet.
+
+  Score, additive, each rule firing at most once, with the fired rule
+  names recorded in triage.reasons (closed vocabulary):
+    stale_365        +3  last_commit_date 365 days or more before run_at
+    stale_180        +2  180 to 364 days
+    stale_90         +1  90 to 179 days
+    no_commits_12m   +1  commits_12m == 0
+    no_readme        +2  has_readme false
+    no_architecture_doc +1  has_architecture_doc false
+    no_ci            +1  has_ci false
+    no_tests_dir     +1  has_tests_dir false
+    no_licence       +1  has_licence false
+    eol_runtime      +3  a recorded runtime matches a row of the
+                         delivered eol_runtimes table whose end_of_life
+                         is on or before run_at
+  The staleness rules are exclusive: at most one of stale_365,
+  stale_180, stale_90 fires. The end-of-life match is on the runtime
+  name and the DECLARED MINIMUM version parsed out of the declaration
+  (">=3.8" is 3.8, "8" is 8): no range arithmetic, no recollection, and
+  no delivered table means eol_runtime never fires. Band: high for 6 or more, medium for 3 to
+  5, low for 2 or less. Rank the projects by (score descending,
+  last_commit_date ascending, path ascending); that ordering is the rank
+  the question rows carry and it is reproducible from the recorded facts
+  alone.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 3: FIRST QUESTION, WHICH PROJECTS TO REVIEW
+  ═══════════════════════════════════════════════════════════
+  BELOW THE THRESHOLD, DO NOT ASK. If the payload named "projects", the
+  selection source is "payload" and no question is asked. Otherwise, if
+  the discovered project count is below auto_select_threshold (default
+  3), every discovered project is selected, the selection source is
+  "auto_below_threshold", and no question is asked: a human answering
+  "yes, both of them" is a question that should not have been asked.
+
+  Otherwise make EXACTLY ONE ask_user call for the whole portfolio,
+  batched. NEVER one call per project, never a second round, and never
+  ask a human to type JSON into free text. Call the tool by the exact
+  namespaced name your tool catalog lists for the preloop MCP server (a
+  bare "ask_user" does not route on some runtimes); a routing failure is
+  not an answer, it fails closed like an expiry.
+
+  Pass ONE ROW PER DISCOVERED PROJECT in items, in rank order:
+    {"id": "<project path, exactly as discovery recorded it>",
+     "title": "<project path> (<stacks>)",
+     "description": "<last commit date, commits in 12 months, file
+       count, and the fired triage reasons, verbatim from PHASE 2>",
+     "severity": "high|medium|low" (the triage band),
+     "badges": ["<stack>", "<triage reason>"]}
+  and pass this input_schema (verbatim shape, ids drawn from items):
+  {"type": "object",
+   "properties": {
+     "selected": {"type": "array", "title": "Projects to review",
+       "description": "Leave empty to review nothing.",
+       "items": {"enum": [<the item ids>]}},
+     "author": {"type": "string", "title": "Recorded by",
+       "x-autofill": "author"},
+     "date": {"type": "string", "format": "date",
+       "x-autofill": "date"}},
+   "required": []}
+  THE SELECTABLE IDS ARE EXACTLY THE DISCOVERED PROJECT PATHS: no
+  extras, no omissions, no invented ids, and the same strings discovery
+  recorded.
+  Pass timeout_seconds: 259200 (3 days) on that same call. A human
+  deciding where a review budget goes needs longer than the 300 second
+  deployment default, and the tool argument is the first thing the
+  platform consults when it resolves the window. A window this long
+  PARKS the execution: the run is suspended, holds no container and no
+  budget, and resumes when the human decides or the window closes.
+
+  The answer arrives in one of two ways. If the call stayed in-process,
+  the tool result is JSON: {"status": "answered", "answer":
+  {"selected": [...], "author": ..., "date": ...}, "answer_text":
+  "<optional note>", "approval_id": ..., "answered_by": ...,
+  "answered_at": ...}. If the execution was parked there is no tool
+  result: the answer is in the resumed prompt as the `_answers_prompt`
+  block (it starts with "RESUMED AFTER A HUMAN DECISION" and names the
+  approval request id, status, question, structured answer, answered_by
+  and answered_at). Read that block; do not wait for a tool result that
+  will not come. Apply answer.selected directly. Do NOT parse prose: the
+  array is the answer, an id outside the items list selects nothing, and
+  a project is reviewed only by appearing in that array.
+
+  SAFE DEFAULT ON EXPIRY: INVENTORY ONLY. An expired, declined,
+  cancelled, empty or unroutable answer means the selection is empty and
+  this run is an inventory. Selection source is "expired_default". NO
+  LENS RUNS, no follow up is ranked, no issue is opened, and every
+  discovered project is reported with lens_status "not_run" and health
+  "unknown". The report still lands, records that the question expired,
+  and NAMES THE DEADLINE THAT PASSED (the expires_at the platform
+  reported). Never re-ask, never assume a selection, never treat silence
+  as "review everything".
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 4: INLINE DOCS LENS PER SELECTED PROJECT
+  ═══════════════════════════════════════════════════════════
+  INLINE PROJECT CAP. This preset reviews at most max_inline_projects
+  (default 5) selected projects, and never more than 8 in one execution
+  whatever the payload says. Everything runs in this one execution: no
+  child executions, no delegation. If more projects were selected than
+  the cap allows, review the highest ranked ones up to the cap, list the
+  rest in coverage.not_reviewed with reason "inline cap", and SAY
+  PLAINLY IN THE REPORT THAT DELEGATION IS REQUIRED for a portfolio this
+  size: an inline run cannot review more than 8 projects honestly and
+  the remaining ones were not reviewed.
+
+  For each selected project, in rank order, run the DOCS CURRENCY REVIEW
+  lens exactly as backend/presets/016-docs-currency-review.yaml defines
+  it, with project_path set to that project's path and depth passed
+  through. DO NOT RESTATE, VARY, RELAX OR EXTEND THAT LENS HERE: its
+  five claim types, its recorded searches, its prose-quality ban, its
+  severity scale and its verdict rules are the definition, and this
+  preset only decides which projects it runs on. It emits
+  preloop.review.docscurrency/v1 per project; write each one to
+  evidence/projects/<project slug>/result.json and its report next to
+  it. The security lens and the code health lens do not run in this
+  preset.
+
+  A lens that errors, times out or cannot be run for a project is
+  lens_status "not_run" with a reason. It is never a pass, never a
+  health of "healthy", and the run continues with the next project.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 5: AGGREGATION
+  ═══════════════════════════════════════════════════════════
+  One row per DISCOVERED project (not per reviewed project), carrying:
+  lens ("docs-currency-review"), lens_status ("ran" | "not_run"),
+  not_run_reason, the lens verdict when it ran, health, the claim counts
+  and the top findings.
+  HEALTH IS DERIVED, NEVER ASSERTED:
+    ran + lens verdict pass                -> "healthy"
+    ran + lens verdict pass_with_findings  -> "findings"
+    ran + lens verdict fail                -> "failing"
+    not_run                                -> "unknown"
+  A PROJECT WHOSE LENS DID NOT RUN IS NEVER COUNTED AS HEALTHY. It is
+  "unknown", it appears in coverage.not_reviewed with its reason, and it
+  holds the portfolio verdict below "pass".
+
+  Follow ups are candidates only, ranked by (project triage rank, lens
+  severity, project path): {"id": "portfolio:<project path>:<slug>",
+  "project", "title", "severity", "evidence", "rank", "status",
+  "filed"}. A follow up exists only where a lens finding supports it,
+  with the pointer that finding recorded. Keep at most 5 follow ups per
+  project in result.json; the rest live in evidence/findings.json.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 6: SECOND QUESTION, WHICH FOLLOW UPS TO KEEP
+  ═══════════════════════════════════════════════════════════
+  With zero candidates, ask nothing and record the question as not
+  asked. Otherwise make EXACTLY ONE ask_user call, batched, with the
+  ranked follow ups as rows: {"id": "<follow up id>", "title":
+  "<project>: <title>", "description": "<what the lens found, with its
+  pointer>", "severity": "high|medium|low", "badges": ["<project
+  path>"]} and this input_schema:
+  {"type": "object",
+   "properties": {
+     "approved": {"type": "array", "title": "Follow ups to keep",
+       "description": "Leave empty to keep none.",
+       "items": {"type": "object",
+         "properties": {
+           "id": {"type": "string", "enum": [<the item ids>]},
+           "note": {"type": "string", "title": "Note"}},
+         "required": ["id"]}},
+     "author": {"type": "string", "title": "Recorded by",
+       "x-autofill": "author"},
+     "date": {"type": "string", "format": "date",
+       "x-autofill": "date"}},
+   "required": []}
+  with timeout_seconds: 259200 on that call too, and the same parked
+  answer handling as PHASE 3.
+
+  SAFE DEFAULT ON EXPIRY: KEEP NOTHING, AND THE REPORT STILL LANDS. An
+  expired, declined, cancelled, empty or unroutable answer leaves EVERY
+  candidate with status "unapproved": nothing is filed, nothing is
+  opened, and the portfolio report is written exactly as it would have
+  been. An approved follow up is one that came back in the approved
+  array, and approval is recorded, not executed.
+
+  NOTHING IS EVER FILED BY THIS PRESET. It has no write tools: approved
+  follow ups are a list in result.json for a human or a later flow to
+  act on, so rollup.issues_filed is always 0 and follow_ups[].filed is
+  always false. Approving is not filing and you never claim otherwise.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 7: EVIDENCE PACK AND REPORT (MANDATORY)
+  ═══════════════════════════════════════════════════════════
+  Write to /workspace/evidence/:
+  - portfolio-report.md: the human-readable report. It MUST OPEN with a
+    one-page cover for a non-AI reader, at the TOP of the report, before
+    any table or project list. Verdict sentence first: one sentence
+    stating the run's verdict (the same value written to result.json)
+    and the blocking reason if the verdict is fail. Then three clearly
+    labelled boxes, in this order:
+      BOX 1 — "What we checked". The projects discovered, which of them
+      were reviewed, with which lens, and the selection source. Derive
+      it from discovery, selection and coverage. Never present a project
+      count as a portfolio health score.
+      BOX 2 — "What we did NOT check". Mandatory. May not be empty if
+      anything was out of scope, not reviewed, deferred or skipped. List
+      the discovered projects no lens ran on and why (not selected, the
+      selection question expired at its deadline, the inline cap,
+      a lens that could not run), the directories the walk excluded or
+      truncated at the depth cap, and the lenses this preset does not
+      run: code health, architecture and, always, the Release Security
+      Audit family at minimum.
+      BOX 3 — "What you should do next week". A short, concrete, ordered
+      list of the approved follow ups, highest severity first. No legal
+      advice, no certification, and no modernisation plan: name the
+      project, the finding and its pointer, nothing more.
+    HONESTY RAIL. The cover may only summarize projects, rows, findings
+    and coverage already present in the body of this report or the other
+    evidence files. No new claims. Strictly one page.
+    After the cover: the project table (rank, triage band, lens verdict,
+    health), the follow up list with approval status, the coverage
+    statement, and the two questions with their outcomes.
+  - projects-register.md: one row per discovered project with its
+    discovery facts, triage score and reasons, lens status and health.
+  - findings.json: the machine-readable ledger of every lens finding and
+    every follow up candidate.
+  - inventory.json: from PHASE 1.
+  - questions.json: both questions, their items, their input schemas,
+    their status, their deadline and the platform-reported answer.
+  - projects/<project slug>/result.json: the per-project lens result.
+  Every markdown evidence file ends with the line:
+  "Machine-generated review evidence. Not a certification, audit
+  opinion, or legal advice."
+
+  As your FINAL action, write /workspace/result.json: valid JSON, one
+  top-level object, no trailing output. Do not paste it into chat.
+
+  Required shape (preloop.review.portfolio/v1):
+
+  {
+    "schema": "preloop.review.portfolio/v1",
+    "flow": "portfolio-review",
+    "status": "success" | "error",
+    "run_at": "<ISO 8601 UTC>",
+    "git": { "remote": "...", "commit": "<40 hex>", "branch": "...", "dirty": false },
+    "tool_versions": { "<tool>": "<version or 'unavailable: reason'>" },
+    "inputs_declared": { "<what the payload actually delivered>": "..." },
+    "runner": { "kind": null, "id": null },
+    "discovery": { "root": "<root_path>", "depth_cap": <int>, "depth_cap_hit": true|false, "dirs_truncated_at_cap": [ "<dir>" ], "detectors_matched": [ "<manifest filename>" ], "excluded_dirs": [ "<dir name or prefix>" ], "eol_table": "payload" | null, "count": <int>, "projects": [ { "path": "...", "rank": <int>, "stacks": [ "..." ], "manifests": [ "..." ], "runtimes": [ { "name": "...", "version": "...", "source": "<path>" } ], "last_commit_date": "<ISO date>", "commits_12m": <int>, "file_count": <int>, "has_readme": true|false, "has_architecture_doc": true|false, "has_ci": true|false, "has_tests_dir": true|false, "has_licence": true|false, "triage": { "score": <int>, "band": "high|medium|low", "reasons": [ "<fired rule name>" ] } } ] },
+    "selection": { "source": "human" | "auto_below_threshold" | "payload" | "expired_default", "auto_select_threshold": <int>, "inline_cap": <int>, "selected": [ "<project path>" ], "over_inline_cap": [ "<project path>" ] },
+    "questions": [ { "phase": "selection" | "follow_ups", "asked": true|false, "status": "answered" | "expired" | "declined" | "not_asked", "reason": "<why it was not asked, else null>", "request_id": "<platform id or null>", "expires_at": "<ISO 8601 or null>", "answered_by": "<platform identity or null>", "answered_at": "<ISO 8601 or null>", "items": [ "<row id>" ], "selectable_ids": [ "<id the input schema offered>" ] } ],
+    "projects": [ { "path": "...", "lens": "docs-currency-review", "lens_schema": "preloop.review.docscurrency/v1" | null, "lens_status": "ran" | "not_run", "not_run_reason": "<required when not_run, else null>", "verdict": "pass" | "pass_with_findings" | "fail" | null, "health": "healthy" | "findings" | "failing" | "unknown", "counts": { "holds": 0, "drifted": 0, "not_checkable": 0, "high": 0, "medium": 0, "low": 0 }, "result_artifact": "evidence/projects/<slug>/result.json" | null } ],
+    "follow_ups": [ { "id": "portfolio:<project path>:<slug>", "project": "...", "title": "...", "severity": "high|medium|low", "evidence": "<path:line>", "rank": <int>, "status": "approved" | "unapproved", "note": "<the human's note, else null>", "approved_by": "<platform identity or null>", "approved_at": "<ISO 8601 or null>", "filed": false } ],
+    "coverage": { "projects_discovered": <int>, "projects_selected": <int>, "projects_reviewed": <int>, "plan_completed": true|false, "not_reviewed": [ { "path": "...", "reason": "..." } ] },
+    "rollup": { "by_health": { "healthy": 0, "findings": 0, "failing": 0, "unknown": 0 }, "by_severity": { "high": 0, "medium": 0, "low": 0 }, "follow_ups_total": 0, "follow_ups_approved": 0, "issues_filed": 0 },
+    "verdict": "pass" | "pass_with_findings" | "fail",
+    "checks": [ { "name": "...", "passed": true|false, "skipped": true|false, "details": "<evidence>" } ],
+    "assessments": [ { "topic": "...", "judgment": "<clearly-marked agent judgment>" } ],
+    "artifacts": { "report": "evidence/portfolio-report.md", "register": "evidence/projects-register.md", "findings": "evidence/findings.json", "inventory": "evidence/inventory.json", "questions": "evidence/questions.json" },
+    "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice."
+  }
+
+  Rules:
+  - "status" is REQUIRED — it is the flow completion signal read by
+    Preloop. Write "success" when the portfolio review ran to completion
+    and this report was written (regardless of the verdict, and
+    including the inventory-only run a question expiry produces — a
+    parked run that resumed on an expiry still completed); write "error"
+    (and add a "reason" field) when the review could not be completed.
+  - Verdict, computed from LENS RESULTS AND COVERAGE ONLY: "fail" if
+    any project's health is "failing". "pass" only when every discovered
+    project was reviewed by a lens that ran, plan_completed is true,
+    not_reviewed is empty, and every project's health is "healthy".
+    Everything else, including any "unknown" project, any "findings"
+    project and any truncated coverage, is "pass_with_findings".
+  - THE REGISTER CANNOT UPGRADE THE VERDICT. Healthy rows, approved
+    follow ups, a high healthy-to-failing ratio and positive prose never
+    raise it. A project nobody reviewed is not evidence of health, an
+    inventory-only run is never a "pass", and the number of projects
+    discovered says nothing about the state of the portfolio.
+  - The triage hint, the rank and the selection rows are computed from
+    the PHASE 1 facts only. A hint you cannot derive from those facts is
+    a bug, and an opinion about a project's code has no place in them.
+  - Deterministic facts go to "checks" and the register; interpretation
+    goes to "assessments" and is marked as judgment.
+  - SIZE BUDGET. Keep result.json under 200 KB. Keep every project row
+    under 4 KB and every discovery row under 2 KB: summaries and counts
+    inline, full lens results and per-claim detail in evidence/. A 25
+    PROJECT PORTFOLIO MUST STILL FIT, which those per-row budgets
+    guarantee; if a row would exceed its budget, truncate it, note the
+    truncation, and point at the evidence file. Set unknown envelope
+    fields to null rather than inventing values.
+agent_type: codex
+agent_config:
+  sandbox_type: exec
+  enable_auto_lint: false
+allowed_mcp_servers: []
+# The ONLY tool on this allowlist is the platform's built-in ask_user: the
+# question channel for the two batched portfolio questions (which projects
+# to review, which follow ups to keep). It is not a write tool — it routes
+# a question through the platform approval workflow, which captures the
+# deciding identity — and this preset files nothing, opens nothing and
+# pushes nothing. Everything else (the walk, git, the inline lens) runs in
+# the sandbox against the checkout.
+allowed_mcp_tools:
+  - name: ask_user
+# Clone one repository read only, then publish the report through the
+# platform's own pull request path after the agent has exited (issue #648).
+# The agent keeps no write tools: publication is a post-execution step of the
+# flow, outside the agent's tool surface, and it is the only thing in this
+# preset that writes anywhere. Add the target repository (or trigger the flow
+# from a project) to use it; leave report_publication.enabled false to keep
+# the report purely as an artifact.
+git_clone_config:
+  enabled: true
+  repositories: []
+  git_user_name: Preloop
+  git_user_email: hello@preloop.ai
+  source_branch: null
+  target_branch: null
+  # Required by report publication: the document lands as a pull request a
+  # human reviews and merges, never as a direct commit on the default branch.
+  create_pull_request: true
+  pull_request_title: Portfolio review report
+  pull_request_description: |
+    Refreshes the portfolio review report produced by the Portfolio Review
+    flow. One file, generated by the flow, reviewed by you.
+
+    The report is regenerated on every run and pushed to the same branch, so
+    this pull request updates in place instead of a second one appearing.
+  report_publication:
+    enabled: true
+    # Written in PHASE 7; the file on disk is what gets published.
+    source_path: evidence/portfolio-report.md
+    # One file at the repository root. The branch defaults to
+    # preloop/report/portfolio, derived from this path and stable across runs.
+    destination_path: PORTFOLIO.md
+    commit_message: Update the portfolio review report
+trigger_config: null
+# Discovery plus up to eight inline lens runs in one execution. The
+# hour-long default cuts a real portfolio run off mid-lens.
+timeout_seconds: 7200
+# Both questions ask a human where a review budget goes and which follow
+# ups survive. That is a funding decision, not a chat prompt: three days is
+# the window, and the execution is parked (no container, no runner, no
+# budget spent) until the decision or the expiry resumes it.
+approval_window_seconds: 259200
+is_preset: true

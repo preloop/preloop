@@ -1,0 +1,466 @@
+{
+  "schema": "preloop.review.portfolio/v1",
+  "flow": "portfolio-review",
+  "status": "success",
+  "run_at": "2026-09-16T09:00:00Z",
+  "git": {
+    "remote": "https://example.com/example/sample-portfolio.git",
+    "commit": "0000000000000000000000000000000000000000",
+    "branch": "main",
+    "dirty": false
+  },
+  "tool_versions": {
+    "git": "2.43.0"
+  },
+  "inputs_declared": {
+    "target_repo_path": "/workspace/sample-portfolio",
+    "root_path": ".",
+    "max_depth": 3,
+    "auto_select_threshold": 3,
+    "max_inline_projects": 5,
+    "depth": "standard",
+    "eol_runtimes": [
+      {
+        "runtime": "java",
+        "version": "8",
+        "end_of_life": "2022-03-31"
+      },
+      {
+        "runtime": "python",
+        "version": "3.8",
+        "end_of_life": "2024-10-07"
+      },
+      {
+        "runtime": "node",
+        "version": "14",
+        "end_of_life": "2023-04-30"
+      }
+    ]
+  },
+  "runner": {
+    "kind": null,
+    "id": null
+  },
+  "discovery": {
+    "root": ".",
+    "depth_cap": 3,
+    "depth_cap_hit": true,
+    "dirs_truncated_at_cap": [
+      "platform/edge/gateway"
+    ],
+    "detectors_matched": [
+      "go.mod",
+      "package.json",
+      "pom.xml",
+      "pyproject.toml"
+    ],
+    "excluded_dirs": [
+      ".venv",
+      "build",
+      "libs/vendor",
+      "node_modules"
+    ],
+    "eol_table": "payload",
+    "count": 5,
+    "projects": [
+      {
+        "path": "legacy/inventory-web",
+        "rank": 1,
+        "stacks": [
+          "jvm"
+        ],
+        "manifests": [
+          "legacy/inventory-web/pom.xml"
+        ],
+        "runtimes": [
+          {
+            "name": "java",
+            "version": "8",
+            "source": "legacy/inventory-web/pom.xml"
+          }
+        ],
+        "last_commit_date": "2024-04-12",
+        "commits_12m": 0,
+        "file_count": 3,
+        "has_readme": false,
+        "has_architecture_doc": false,
+        "has_ci": false,
+        "has_tests_dir": false,
+        "has_licence": false,
+        "triage": {
+          "score": 13,
+          "band": "high",
+          "reasons": [
+            "stale_365",
+            "no_commits_12m",
+            "no_readme",
+            "no_architecture_doc",
+            "no_ci",
+            "no_tests_dir",
+            "no_licence",
+            "eol_runtime"
+          ]
+        }
+      },
+      {
+        "path": "services/billing-api",
+        "rank": 2,
+        "stacks": [
+          "python"
+        ],
+        "manifests": [
+          "services/billing-api/pyproject.toml"
+        ],
+        "runtimes": [
+          {
+            "name": "python",
+            "version": ">=3.8",
+            "source": "services/billing-api/pyproject.toml"
+          }
+        ],
+        "last_commit_date": "2025-05-02",
+        "commits_12m": 0,
+        "file_count": 4,
+        "has_readme": true,
+        "has_architecture_doc": false,
+        "has_ci": false,
+        "has_tests_dir": true,
+        "has_licence": false,
+        "triage": {
+          "score": 10,
+          "band": "high",
+          "reasons": [
+            "stale_365",
+            "no_commits_12m",
+            "no_architecture_doc",
+            "no_ci",
+            "no_licence",
+            "eol_runtime"
+          ]
+        }
+      },
+      {
+        "path": "services/notifications",
+        "rank": 3,
+        "stacks": [
+          "node"
+        ],
+        "manifests": [
+          "services/notifications/package.json"
+        ],
+        "runtimes": [
+          {
+            "name": "node",
+            "version": ">=20",
+            "source": "services/notifications/package.json"
+          }
+        ],
+        "last_commit_date": "2026-05-01",
+        "commits_12m": 14,
+        "file_count": 5,
+        "has_readme": true,
+        "has_architecture_doc": false,
+        "has_ci": false,
+        "has_tests_dir": false,
+        "has_licence": true,
+        "triage": {
+          "score": 4,
+          "band": "medium",
+          "reasons": [
+            "stale_90",
+            "no_architecture_doc",
+            "no_ci",
+            "no_tests_dir"
+          ]
+        }
+      },
+      {
+        "path": "libs/shared-utils",
+        "rank": 4,
+        "stacks": [
+          "python"
+        ],
+        "manifests": [
+          "libs/shared-utils/pyproject.toml"
+        ],
+        "runtimes": [
+          {
+            "name": "python",
+            "version": ">=3.11",
+            "source": "libs/shared-utils/pyproject.toml"
+          }
+        ],
+        "last_commit_date": "2026-08-01",
+        "commits_12m": 31,
+        "file_count": 5,
+        "has_readme": true,
+        "has_architecture_doc": false,
+        "has_ci": true,
+        "has_tests_dir": true,
+        "has_licence": false,
+        "triage": {
+          "score": 2,
+          "band": "low",
+          "reasons": [
+            "no_architecture_doc",
+            "no_licence"
+          ]
+        }
+      },
+      {
+        "path": "tools/report-cli",
+        "rank": 5,
+        "stacks": [
+          "go"
+        ],
+        "manifests": [
+          "tools/report-cli/go.mod"
+        ],
+        "runtimes": [
+          {
+            "name": "go",
+            "version": "1.22",
+            "source": "tools/report-cli/go.mod"
+          }
+        ],
+        "last_commit_date": "2026-09-10",
+        "commits_12m": 52,
+        "file_count": 7,
+        "has_readme": true,
+        "has_architecture_doc": true,
+        "has_ci": true,
+        "has_tests_dir": true,
+        "has_licence": true,
+        "triage": {
+          "score": 0,
+          "band": "low",
+          "reasons": []
+        }
+      }
+    ]
+  },
+  "selection": {
+    "source": "expired_default",
+    "auto_select_threshold": 3,
+    "inline_cap": 8,
+    "selected": [],
+    "over_inline_cap": []
+  },
+  "questions": [
+    {
+      "phase": "selection",
+      "asked": true,
+      "status": "expired",
+      "reason": null,
+      "request_id": "9d2a4f61-0c3b-4a27-9d61-1f0e5b7c2a34",
+      "expires_at": "2026-09-19T09:02:00Z",
+      "answered_by": null,
+      "answered_at": null,
+      "items": [
+        "legacy/inventory-web",
+        "services/billing-api",
+        "services/notifications",
+        "libs/shared-utils",
+        "tools/report-cli"
+      ],
+      "selectable_ids": [
+        "legacy/inventory-web",
+        "services/billing-api",
+        "services/notifications",
+        "libs/shared-utils",
+        "tools/report-cli"
+      ]
+    },
+    {
+      "phase": "follow_ups",
+      "asked": false,
+      "status": "not_asked",
+      "reason": "no follow up candidates: no lens ran",
+      "request_id": null,
+      "expires_at": null,
+      "answered_by": null,
+      "answered_at": null,
+      "items": [],
+      "selectable_ids": []
+    }
+  ],
+  "projects": [
+    {
+      "path": "legacy/inventory-web",
+      "lens": "docs-currency-review",
+      "lens_schema": null,
+      "lens_status": "not_run",
+      "not_run_reason": "the selection question expired at 2026-09-19T09:02:00Z",
+      "verdict": null,
+      "health": "unknown",
+      "counts": {
+        "holds": 0,
+        "drifted": 0,
+        "not_checkable": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0
+      },
+      "result_artifact": null
+    },
+    {
+      "path": "services/billing-api",
+      "lens": "docs-currency-review",
+      "lens_schema": null,
+      "lens_status": "not_run",
+      "not_run_reason": "the selection question expired at 2026-09-19T09:02:00Z",
+      "verdict": null,
+      "health": "unknown",
+      "counts": {
+        "holds": 0,
+        "drifted": 0,
+        "not_checkable": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0
+      },
+      "result_artifact": null
+    },
+    {
+      "path": "services/notifications",
+      "lens": "docs-currency-review",
+      "lens_schema": null,
+      "lens_status": "not_run",
+      "not_run_reason": "the selection question expired at 2026-09-19T09:02:00Z",
+      "verdict": null,
+      "health": "unknown",
+      "counts": {
+        "holds": 0,
+        "drifted": 0,
+        "not_checkable": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0
+      },
+      "result_artifact": null
+    },
+    {
+      "path": "libs/shared-utils",
+      "lens": "docs-currency-review",
+      "lens_schema": null,
+      "lens_status": "not_run",
+      "not_run_reason": "the selection question expired at 2026-09-19T09:02:00Z",
+      "verdict": null,
+      "health": "unknown",
+      "counts": {
+        "holds": 0,
+        "drifted": 0,
+        "not_checkable": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0
+      },
+      "result_artifact": null
+    },
+    {
+      "path": "tools/report-cli",
+      "lens": "docs-currency-review",
+      "lens_schema": null,
+      "lens_status": "not_run",
+      "not_run_reason": "the selection question expired at 2026-09-19T09:02:00Z",
+      "verdict": null,
+      "health": "unknown",
+      "counts": {
+        "holds": 0,
+        "drifted": 0,
+        "not_checkable": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0
+      },
+      "result_artifact": null
+    }
+  ],
+  "follow_ups": [],
+  "coverage": {
+    "projects_discovered": 5,
+    "projects_selected": 0,
+    "projects_reviewed": 0,
+    "plan_completed": false,
+    "not_reviewed": [
+      {
+        "path": "legacy/inventory-web",
+        "reason": "inventory only: the selection question expired at 2026-09-19T09:02:00Z"
+      },
+      {
+        "path": "services/billing-api",
+        "reason": "inventory only: the selection question expired at 2026-09-19T09:02:00Z"
+      },
+      {
+        "path": "services/notifications",
+        "reason": "inventory only: the selection question expired at 2026-09-19T09:02:00Z"
+      },
+      {
+        "path": "libs/shared-utils",
+        "reason": "inventory only: the selection question expired at 2026-09-19T09:02:00Z"
+      },
+      {
+        "path": "tools/report-cli",
+        "reason": "inventory only: the selection question expired at 2026-09-19T09:02:00Z"
+      }
+    ]
+  },
+  "rollup": {
+    "by_health": {
+      "healthy": 0,
+      "findings": 0,
+      "failing": 0,
+      "unknown": 5
+    },
+    "by_severity": {
+      "high": 0,
+      "medium": 0,
+      "low": 0
+    },
+    "follow_ups_total": 0,
+    "follow_ups_approved": 0,
+    "issues_filed": 0
+  },
+  "verdict": "pass_with_findings",
+  "checks": [
+    {
+      "name": "discovery_deterministic",
+      "passed": true,
+      "skipped": false,
+      "details": "5 projects from the detector list, depth cap 3"
+    },
+    {
+      "name": "selection_question_answered",
+      "passed": false,
+      "skipped": false,
+      "details": "expired at 2026-09-19T09:02:00Z with no answer: safe default applied, inventory only"
+    },
+    {
+      "name": "lenses_run",
+      "passed": true,
+      "skipped": true,
+      "details": "0 of 5: no project was selected"
+    },
+    {
+      "name": "issues_filed",
+      "passed": true,
+      "skipped": false,
+      "details": "0: this preset has no write tools"
+    }
+  ],
+  "assessments": [
+    {
+      "topic": "portfolio",
+      "judgment": "Agent judgment: this run is an inventory. Nothing here says any of these five projects is healthy."
+    }
+  ],
+  "artifacts": {
+    "report": "evidence/portfolio-report.md",
+    "register": "evidence/projects-register.md",
+    "findings": "evidence/findings.json",
+    "inventory": "evidence/inventory.json",
+    "questions": "evidence/questions.json"
+  },
+  "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice.",
+  "note": "synthetic fixture"
+}
