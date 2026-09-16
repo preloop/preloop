@@ -99,6 +99,11 @@ if '--help' in args:
 root = pathlib.Path(os.environ['TEST_ROOT'])
 log = root / 'calls'
 with log.open('a') as out: out.write(json.dumps(args) + '\\n')
+# Record what arrived on stdin: gemini and opencode take their prompt there
+# now, so a test can tell "the prompt was delivered" from "the prompt was in
+# argv". Skipped on a terminal, where a read would block (pytest -s).
+stdin_text = '' if sys.stdin.isatty() else sys.stdin.read()
+with (root / 'stdin').open('a') as out: out.write(json.dumps(stdin_text) + '\\n')
 count = len(log.read_text().splitlines())
 if count == 1 and write_result is not None:
     (root / 'result.json').write_text(write_result)
@@ -162,8 +167,14 @@ def test_generated_launch_resumes_parent_and_publishes_once(
     assert len(calls) == 2
     expected = "ses_parent1234" if harness == "opencode" else SID
     assert expected in calls[1]
-    if harness != "codex":
-        assert "Complete the synthetic task" in calls[0]
+    # The task prompt reaches every harness on stdin and none of them in argv:
+    # one argv element holding the whole prompt is what breaks at
+    # MAX_ARG_STRLEN (issue #692).
+    stdins = [
+        json.loads(line) for line in (tmp_path / "stdin").read_text().splitlines()
+    ]
+    assert "Complete the synthetic task" in stdins[0]
+    assert "Complete the synthetic task" not in calls[0]
     assert "Complete the synthetic task" not in calls[1]
     assert published.read_text().splitlines() == ["published"]
 

@@ -187,7 +187,10 @@ class TestOpenCodeBuildScript:
         script = agent._build_opencode_script(context)
         assert prompt not in script
         assert base64.b64encode(prompt.encode()).decode() not in script
-        assert f'-- "$(cat {PROMPT_FILE_PATH})"' in script
+        # Nor in the inner command line: `opencode run` takes the message on
+        # stdin, so no single argv element grows with the prompt (issue #692).
+        assert f'-- "$(cat {PROMPT_FILE_PATH})"' not in script
+        assert f"< {PROMPT_FILE_PATH}" in script
 
     def test_script_contains_model(self):
         """Script logs the configured model."""

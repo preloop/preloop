@@ -10,6 +10,8 @@ from __future__ import annotations
 import base64
 import shlex
 
+from preloop.utils.execve_limits import build_prompt_delivery_guard
+
 ATTEMPT_LOG_PATH = "/tmp/preloop-agent-attempt.log"
 RECOVERY_PROMPT_PATH = "/tmp/preloop-stream-recovery-prompt.txt"
 RECOVERY_PROMPT = """The upstream model connection was interrupted. Continue this existing session from the last incomplete turn. Keep completed work and tool results. Do not restart the task or repeat completed tool calls, pushes, comments, or other external writes. If an external action's result is uncertain, inspect its current state before deciding whether anything remains to do. Finish the original task and its completion report."""
@@ -126,6 +128,7 @@ while [ "${{{exit_code_var}}}" -ne 0 ] && [ "$_pl_recovery_attempt" -lt {max_res
     echo "PRELOOP_STREAM_RECOVERY {agent_label} attempt=$_pl_recovery_attempt"
     sleep $(({backoff_seconds} * (1 << (_pl_recovery_attempt - 1))))
     echo '{encoded}' | base64 -d > {shlex.quote(prompt_path)}
+    {build_prompt_delivery_guard(prompt_path, label="recovery prompt")}
     : > {shlex.quote(attempt_log_path)}
     PRELOOP_RECOVERY_TIMEOUT="timeout -k {kill_after_seconds} {timeout_seconds}"
     set +e

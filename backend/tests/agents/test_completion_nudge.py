@@ -328,6 +328,8 @@ class TestGeneratedAgentScripts:
         assert COMPLETION_NUDGE_MARKER in script
         assert AGENT_OUTPUT_LOG_PATH in script
         assert NUDGE_PROMPT_PATH in script
+        assert "PRELOOP_PROMPT_NOT_DELIVERED" in script
+        assert "completion nudge prompt at" in script
         # The reminder must be strictly before anything that pushes.
         nudge_at = script.index(COMPLETION_NUDGE_MARKER)
         for side_effect in ("git push", "git commit"):
