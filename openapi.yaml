@@ -19401,6 +19401,12 @@ components:
           - type: 'null'
           description: 'Publication gate policy: required checks a commit must pass
             before the flow pushes it or opens a pull request'
+        report_publication:
+          anyOf:
+          - $ref: '#/components/schemas/ReportPublication'
+          - type: 'null'
+          description: Publish the document this run generated as a pull request,
+            after the agent has exited and without giving it write tools
       type: object
       title: GitCloneConfig
       description: Configuration for git clone operations before agent execution.
@@ -19508,6 +19514,12 @@ components:
           - type: 'null'
           description: 'Publication gate policy: required checks a commit must pass
             before the flow pushes it or opens a pull request'
+        report_publication:
+          anyOf:
+          - $ref: '#/components/schemas/ReportPublication'
+          - type: 'null'
+          description: Publish the document this run generated as a pull request,
+            after the agent has exited and without giving it write tools
       type: object
       title: GitCloneConfig
       description: Configuration for git clone operations before agent execution.
@@ -23447,6 +23459,63 @@ components:
       - challenge_token
       title: RegistrationVerifyRequest
       description: Authenticator response for the registration ceremony.
+    ReportPublication:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+          description: Whether the run publishes its report as a pull request
+          default: false
+        source_path:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Source Path
+          description: Workspace relative path of the generated document, for example
+            evidence/portfolio-report.md
+        destination_path:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Destination Path
+          description: Repository relative path the document lands at, for example
+            PORTFOLIO.md
+        branch:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Branch
+          description: Branch the document is maintained on. Defaults to preloop/report/<document
+            slug>, which is stable across runs so a re-run updates the open pull request
+            instead of opening a second
+        commit_message:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Commit Message
+          description: Commit subject. Defaults to 'Update <destination_path>'
+      additionalProperties: false
+      type: object
+      title: ReportPublication
+      description: 'Land a generated document in the repository as a pull request.
+
+
+        For flows whose agent holds no write tools: the document the run produced
+
+        is copied into a throwaway worktree of the checkout after the agent has
+
+        exited, committed on a stable branch keyed on the document, and offered
+
+        through the same pull request path every other change uses. Issue #648.
+
+
+        ``extra=''forbid''``: a misspelled key here is a document that silently
+
+        lands somewhere else, or not at all.'
     RepriceRequest:
       properties:
         start_date:

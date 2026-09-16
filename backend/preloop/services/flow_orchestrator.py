@@ -87,6 +87,11 @@ from preloop.services.flow_runtime_token import (
     create_flow_runtime_token,
     revoke_flow_runtime_tokens,
 )
+from preloop.services.report_publication import (
+    REPORT_PUBLICATION_MARKER,
+    REPORT_PUBLICATION_RESULT_KEY,
+    parse_report_publication_marker,
+)
 from preloop.services.tracker_git_token import resolve_tracker_git_token
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
@@ -583,6 +588,11 @@ class FlowExecutionOrchestrator:
         # agent's own verification claim in result.json is preserved under
         # verification_reported instead.
         self._verification_evidence: Optional[Dict[str, Any]] = None
+        # Report publication outcome (issue #648) captured from the
+        # PRELOOP_REPORT_PUBLICATION marker the post-execution block prints
+        # after the agent has exited. Owned by the control plane: a flow whose
+        # agent has no write tools cannot author its own publication receipt.
+        self._report_publication: Optional[Dict[str, Any]] = None
         # CRA persist-boundary decision from the last result.json capture.
         self._cra_persist_decision: Optional[Any] = None
 
@@ -2587,6 +2597,11 @@ class FlowExecutionOrchestrator:
         elif stripped_line.startswith(VERIFICATION_DENIED_MARKER):
             logger.warning("Publication gate denied publication")
 
+        # Outcome of publishing this run's report through the pull request
+        # path. Printed once, after the agent exited, whatever happened.
+        if stripped_line.startswith(REPORT_PUBLICATION_MARKER + " "):
+            self._note_report_publication(stripped_line)
+
         # In-place completion nudge markers printed by the agent
         # script. Order matters: the result marker shares the start
         # marker's prefix, so the exact match is tested first.
@@ -3724,6 +3739,34 @@ class FlowExecutionOrchestrator:
             return
         self._verification_evidence = parsed
         logger.info("Publication gate evidence captured")
+
+    def _note_report_publication(self, line: str) -> None:
+        """Remember how the report publication ended (last marker wins).
+
+        The block prints exactly one line per run; a retried attempt prints
+        its own, and the later one describes the state the repository is
+        actually in.
+        """
+        parsed = parse_report_publication_marker(line)
+        if parsed is None:
+            return
+        self._report_publication = parsed
+        logger.info("Report publication outcome: %s", parsed.get("outcome"))
+        self.execution_logger.log_milestone("report_publication", dict(parsed))
+
+    def _resolve_report_publication(self) -> Optional[Dict[str, Any]]:
+        """The publication outcome, from the live stream or the stored logs.
+
+        Same recovery pattern as the publication gate evidence: a dropped
+        stream reconnect must not turn a recorded failure into silence.
+        """
+        if self._report_publication is not None:
+            return self._report_publication
+        for line in self.execution_logger.get_agent_output_lines() or []:
+            parsed = parse_report_publication_marker(line)
+            if parsed is not None:
+                self._report_publication = parsed
+        return self._report_publication
 
     def _resolve_verification_evidence(self) -> Optional[Dict[str, Any]]:
         """Gate evidence from the live stream, or from the stored log tail.
@@ -6292,6 +6335,16 @@ class FlowExecutionOrchestrator:
             # different, separately auditable things. An agent-authored
             # ``verification`` claim survives renamed as
             # ``verification_reported``.
+            # Report publication (issue #648): the control plane owns this
+            # key, so a failed publish is recorded on a run that still
+            # succeeded, with its report artifact intact, and an agent cannot
+            # claim a pull request it has no tools to open.
+            report_publication = self._resolve_report_publication()
+            if report_publication is not None:
+                if not isinstance(merged_result, dict):
+                    merged_result = {}
+                merged_result[REPORT_PUBLICATION_RESULT_KEY] = dict(report_publication)
+
             verification_evidence = self._resolve_verification_evidence()
             if verification_evidence is not None and isinstance(merged_result, dict):
                 separate_agent_verification_claim(merged_result)

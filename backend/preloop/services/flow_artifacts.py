@@ -28,6 +28,10 @@ RESERVED_RESULT_FIELDS = (
     "evidence_upload",
     "product_provenance",
     "dossier_manifest",
+    # Issue #648: the report publication outcome is written by the platform
+    # from the post-execution marker. An agent with no write tools cannot
+    # author a receipt for a pull request it could not have opened.
+    "report_publication",
 )
 EVIDENCE_UPLOAD_OUTCOMES = frozenset({"uploaded", "failed", "absent"})
 TERMINAL_EXECUTION_STATUSES = frozenset(

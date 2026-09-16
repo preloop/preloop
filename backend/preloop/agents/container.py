@@ -4614,6 +4614,114 @@ true
             )
         )
 
+    def _build_report_publication_commands(
+        self,
+        *,
+        execution_context: Dict[str, Any],
+        git_config: Dict[str, Any],
+        repositories: list[Dict[str, Any]],
+    ) -> str:
+        """Post-execution block that lands the run's report as a pull request.
+
+        Runs for flows whose agent has no write tools at all (issue #648): the
+        agent produced a document in the workspace, and the platform, after the
+        container's agent has exited, offers it to the repository through the
+        flow's own pull request configuration. Every refusal still prints the
+        marker, so the run reports what happened instead of silently skipping.
+        """
+        from preloop.services.report_publication import (
+            ReportPublicationError,
+            build_failed_report_publication_shell,
+            build_report_publication_shell,
+            resolve_report_publication,
+        )
+
+        try:
+            plan = resolve_report_publication(git_config)
+        except ReportPublicationError as error:
+            self.logger.warning("Report publication refused: %s", error)
+            return build_failed_report_publication_shell(error.reason)
+        if plan is None:
+            return ""
+
+        fields = plan.as_marker_fields()
+        if not git_config.get("create_pull_request"):
+            self.logger.warning(
+                "report_publication is enabled but create_pull_request is not"
+            )
+            return build_failed_report_publication_shell(
+                "pull_request_disabled", fields
+            )
+        # Multi repository publishing is out of scope: with more than one
+        # checkout there is no single repository the document belongs to, and
+        # guessing one would write into a repository nobody nominated.
+        if len(repositories) != 1:
+            self.logger.warning(
+                "report_publication needs exactly one repository, found %s",
+                len(repositories),
+            )
+            return build_failed_report_publication_shell(
+                "repository_missing" if not repositories else "repository_ambiguous",
+                fields,
+            )
+
+        repo_config = repositories[0]
+        clone_path = self._resolve_repository_clone_path(repo_config, 0)
+        token, tracker_type = self._resolve_repository_token(
+            repo_config, execution_context
+        )
+        trigger_data = execution_context.get("trigger_event_data", {})
+        repo_url = self._resolve_repository_clone_url(
+            repo_config, 0, execution_context, trigger_data
+        )
+        host_kind = (
+            tracker_host_kind(strip_url_credentials(repo_url)) if repo_url else None
+        )
+        token_ref = ""
+        if token:
+            token_ref = "${%s}" % self._register_git_api_token(
+                execution_context, 0, token
+            )
+        base_branch = _validated_git_ref(
+            str(
+                execution_context.get("_git_source_branch")
+                or git_config.get("source_branch")
+                or "main"
+            )
+        )
+        if base_branch is None:
+            self.logger.warning("Report publication has no usable base branch")
+            return build_failed_report_publication_shell(
+                "base_branch_unavailable", fields
+            )
+        pull_request_shell = self._build_pr_or_mr_create_shell(
+            execution_context=execution_context,
+            git_config=git_config,
+            token_ref=token_ref,
+            tracker_type=tracker_type,
+            host_kind=host_kind,
+            repo_url=repo_url,
+            safe_target=plan.branch,
+            safe_source=base_branch,
+        )
+        if not pull_request_shell:
+            # No token, or a provider with no pull request API here: pushing a
+            # branch nobody can review is not the promised outcome.
+            return build_failed_report_publication_shell("provider_unsupported", fields)
+
+        return build_report_publication_shell(
+            plan,
+            clone_path=clone_path,
+            base_branch=base_branch,
+            git_user_name=str(git_config.get("git_user_name") or "Preloop"),
+            git_user_email=str(git_config.get("git_user_email") or "hello@preloop.ai"),
+            push_auth_shell=build_push_auth_setup_shell(
+                token_ref=token_ref,
+                username=credential_username(host_kind, tracker_type),
+            ),
+            pull_request_shell=pull_request_shell,
+        )
+
     def _wants_readonly_checkout_evidence(
         self, execution_context: Dict[str, Any]
     ) -> bool:
@@ -4711,7 +4819,19 @@ true
             repositories = self._resolve_git_clone_repositories(
                 execution_context, git_config
             )
+            report_block = git_config.get("report_publication")
+            publishes_report = isinstance(report_block, dict) and report_block.get(
+                "enabled"
+            )
             if not repositories:
+                if publishes_report:
+                    # A publishing flow with nothing to publish into still
+                    # discloses why, instead of skipping in silence.
+                    return self._build_report_publication_commands(
+                        execution_context=execution_context,
+                        git_config=git_config,
+                        repositories=repositories,
+                    )
                 self.logger.debug("No repositories in git_clone_config")
                 return ""
 
@@ -4784,6 +4904,22 @@ true
 
             if self._wants_readonly_checkout_evidence(execution_context):
                 return self._readonly_checkout_evidence_commands(repositories)
+
+            # Report publication (issue #648): the agent holds no write tools,
+            # so there are no agent commits to push. The document it produced
+            # is published here instead, on a stable branch, as a pull request.
+            if publishes_report:
+                commands = self._build_report_publication_commands(
+                    execution_context=execution_context,
+                    git_config=git_config,
+                    repositories=repositories,
+                )
+                if commands and execution_context.get("checkpoint_env"):
+                    commands = (
+                        "_preloop_checkpoint || { echo PRELOOP_CHECKPOINT "
+                        "prepublication_failed; exit 1; }\n" + commands
+                    )
+                return commands
 
             self.logger.info(
                 f"Preparing post-execution git commands: "
