@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from preloop.models.crud import (
     crud_account,
+    crud_audit_log,
     crud_runtime_session,
     crud_session_search_document,
 )
@@ -20,7 +21,7 @@ from preloop.models.models.session_search_document import (
     SOURCE_KIND_TRANSCRIPT_MESSAGE,
 )
 from preloop.schemas.session_search import DEGRADED_SEMANTIC_NOT_ENABLED
-from preloop.services import agent_session_search
+from preloop.services import agent_session_search, session_search_audit
 from preloop.services.agent_session_search import (
     ACCOUNT_SCOPE_GRANT,
     MAX_RESPONSE_CHARS,
@@ -452,3 +453,110 @@ def test_the_limit_is_clamped_to_the_documented_maximum(db_session, test_user):
 
     assert "refused" not in answer
     assert answer["returned"] == 3
+
+
+# --- every agent search is on the record (#688) ----------------------------
+
+
+def _audit_rows(db_session, account_id):
+    return crud_audit_log.get_by_account(
+        db_session,
+        account_id=str(account_id),
+        action=session_search_audit.AUDIT_ACTION,
+        resource_type=session_search_audit.AUDIT_RESOURCE_TYPE,
+    )
+
+
+def test_an_agent_search_is_audited_with_the_agent_as_the_actor(db_session, test_user):
+    """An operator has to be able to tell an agent's grep from a person's."""
+    account_id = str(test_user.account_id)
+    mine = _session(db_session, account_id, "mine", CALLER)
+    _write(
+        db_session,
+        account_id,
+        mine,
+        "rotated the signing key on the build host",
+        principal=CALLER,
+    )
+
+    _search(
+        db_session,
+        account_id,
+        "signing key",
+        subject_context={"managed_agent_id": "agent-row-1", "api_key_id": "key-1"},
+    )
+
+    rows = _audit_rows(db_session, account_id)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.status == session_search_audit.STATUS_SUCCESS
+    assert row.user_id is None
+    assert row.details["actor_type"] == session_search_audit.ACTOR_MANAGED_AGENT
+    assert row.details["actor_managed_agent_id"] == "agent-row-1"
+    assert row.details["actor_runtime_principal_id"] == CALLER
+    assert row.details["source"] == session_search_audit.SOURCE_MCP
+    assert row.details["scope"] == "own"
+    assert row.details["result_count"] == 1
+    assert row.details["query_hash"] == session_search_audit.query_hash("signing key")
+    assert "signing key" not in json.dumps(row.details)
+
+
+def test_a_refused_account_scope_search_is_recorded_as_denied(db_session, test_user):
+    """The attempted read is the row a reviewer wants most."""
+    account_id = str(test_user.account_id)
+
+    answer = _search(db_session, account_id, "billing incident", scope="account")
+
+    assert answer["reason"] == REFUSAL_ACCOUNT_SCOPE_NOT_GRANTED
+    row = _audit_rows(db_session, account_id)[0]
+    assert row.status == session_search_audit.STATUS_DENIED
+    assert row.details["reason"] == REFUSAL_ACCOUNT_SCOPE_NOT_GRANTED
+    assert row.details["scope"] == "account"
+    assert row.details["result_count"] == 0
+
+
+def test_a_search_with_no_agent_identity_is_recorded_as_denied(db_session, test_user):
+    account_id = str(test_user.account_id)
+
+    answer = _search(db_session, account_id, "anything", runtime_principal_id=None)
+
+    assert answer["reason"] == REFUSAL_NO_AGENT_IDENTITY
+    row = _audit_rows(db_session, account_id)[0]
+    assert row.status == session_search_audit.STATUS_DENIED
+    assert row.details["reason"] == REFUSAL_NO_AGENT_IDENTITY
+
+
+def test_an_unknown_scope_and_an_invalid_request_are_both_recorded(
+    db_session, test_user
+):
+    account_id = str(test_user.account_id)
+
+    _search(db_session, account_id, "anything", scope="everything")
+    _search(db_session, account_id, "anything", start_date="2026-09-01T00:00:00")
+
+    reasons = {row.details["reason"] for row in _audit_rows(db_session, account_id)}
+    assert reasons == {REFUSAL_UNKNOWN_SCOPE, REFUSAL_INVALID_REQUEST}
+
+
+def test_an_audit_write_failure_leaves_the_agent_answer_unchanged(
+    db_session, test_user, monkeypatch
+):
+    account_id = str(test_user.account_id)
+    mine = _session(db_session, account_id, "mine", CALLER)
+    _write(
+        db_session,
+        account_id,
+        mine,
+        "restarted the ingest worker",
+        principal=CALLER,
+    )
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("audit table is read only")
+
+    monkeypatch.setattr(crud_audit_log, "log_action", boom)
+
+    answer = _search(db_session, account_id, "ingest worker")
+
+    assert _references(answer) == {"mine"}
+    assert _audit_rows(db_session, account_id) == []

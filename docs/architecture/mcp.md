@@ -51,7 +51,10 @@ own sessions unless an operator grants the account wide scope, and its answer is
 size-capped so a search cannot flood a context window. The tool definition lives
 in `preloop/tools/builtin_defs.py`, the scope and cap rules in
 `preloop/services/agent_session_search.py`, and the guide is at
-[docs/guide/agent-session-search.md](../guide/agent-session-search.md).
+[docs/guide/agent-session-search.md](../guide/agent-session-search.md). Every
+call it makes is audited with the agent as the actor; what the row carries is
+described in
+[docs/guide/session-search-audit.md](../guide/session-search-audit.md).
 
 ### Issue tools
 

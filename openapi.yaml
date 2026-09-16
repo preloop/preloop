@@ -11759,7 +11759,14 @@ paths:
 
         and search the corpus vectors; when that half cannot run, the answer is
 
-        keyword results with a degraded marker naming the cause, never an error.'
+        keyword results with a degraded marker naming the cause, never an error.
+
+
+        The call is audited either way. A refusal raised inside the handler is
+
+        recorded as denied and a broken search as failed, so a trail with no row
+
+        for a search means no search ran, not that one was hidden.'
       operationId: search_runtime_sessions_api_v1_runtime_sessions_search_post
       requestBody:
         content:
