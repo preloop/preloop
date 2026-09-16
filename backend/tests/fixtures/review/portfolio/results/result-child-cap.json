@@ -1,0 +1,683 @@
+{
+  "schema": "preloop.review.portfolio/v1",
+  "flow": "portfolio-review",
+  "status": "success",
+  "run_at": "2026-09-16T09:00:00Z",
+  "git": {
+    "remote": "https://example.com/example/sample-portfolio.git",
+    "commit": "0000000000000000000000000000000000000000",
+    "branch": "main",
+    "dirty": false
+  },
+  "tool_versions": {
+    "git": "2.43.0"
+  },
+  "inputs_declared": {
+    "target_repo_path": "/workspace/sample-portfolio",
+    "root_path": ".",
+    "max_depth": 3,
+    "auto_select_threshold": 3,
+    "lenses": [
+      "docs-currency-review",
+      "repo-code-health-review"
+    ],
+    "max_projects": 5,
+    "max_children": 5,
+    "max_cost_usd_per_child": 2.0,
+    "child_timeout_seconds": 3600,
+    "depth": "standard",
+    "eol_runtimes": [
+      {
+        "runtime": "java",
+        "version": "8",
+        "end_of_life": "2022-03-31"
+      },
+      {
+        "runtime": "python",
+        "version": "3.8",
+        "end_of_life": "2024-10-07"
+      },
+      {
+        "runtime": "node",
+        "version": "14",
+        "end_of_life": "2023-04-30"
+      }
+    ]
+  },
+  "runner": {
+    "kind": null,
+    "id": null
+  },
+  "discovery": {
+    "root": ".",
+    "depth_cap": 3,
+    "depth_cap_hit": true,
+    "dirs_truncated_at_cap": [
+      "platform/edge/gateway"
+    ],
+    "detectors_matched": [
+      "go.mod",
+      "package.json",
+      "pom.xml",
+      "pyproject.toml"
+    ],
+    "excluded_dirs": [
+      ".venv",
+      "build",
+      "libs/vendor",
+      "node_modules"
+    ],
+    "eol_table": "payload",
+    "count": 5,
+    "projects": [
+      {
+        "path": "legacy/inventory-web",
+        "rank": 1,
+        "stacks": [
+          "jvm"
+        ],
+        "manifests": [
+          "legacy/inventory-web/pom.xml"
+        ],
+        "runtimes": [
+          {
+            "name": "java",
+            "version": "8",
+            "source": "legacy/inventory-web/pom.xml"
+          }
+        ],
+        "last_commit_date": "2024-04-12",
+        "commits_12m": 0,
+        "file_count": 3,
+        "has_readme": false,
+        "has_architecture_doc": false,
+        "has_ci": false,
+        "has_tests_dir": false,
+        "has_licence": false,
+        "triage": {
+          "score": 13,
+          "band": "high",
+          "reasons": [
+            "stale_365",
+            "no_commits_12m",
+            "no_readme",
+            "no_architecture_doc",
+            "no_ci",
+            "no_tests_dir",
+            "no_licence",
+            "eol_runtime"
+          ]
+        },
+        "sbom_paths": [],
+        "has_sbom": false
+      },
+      {
+        "path": "services/billing-api",
+        "rank": 2,
+        "stacks": [
+          "python"
+        ],
+        "manifests": [
+          "services/billing-api/pyproject.toml"
+        ],
+        "runtimes": [
+          {
+            "name": "python",
+            "version": ">=3.8",
+            "source": "services/billing-api/pyproject.toml"
+          }
+        ],
+        "last_commit_date": "2025-05-02",
+        "commits_12m": 0,
+        "file_count": 5,
+        "has_readme": true,
+        "has_architecture_doc": false,
+        "has_ci": false,
+        "has_tests_dir": true,
+        "has_licence": false,
+        "triage": {
+          "score": 10,
+          "band": "high",
+          "reasons": [
+            "stale_365",
+            "no_commits_12m",
+            "no_architecture_doc",
+            "no_ci",
+            "no_licence",
+            "eol_runtime"
+          ]
+        },
+        "sbom_paths": [
+          "services/billing-api/sbom.cdx.json"
+        ],
+        "has_sbom": true
+      },
+      {
+        "path": "services/notifications",
+        "rank": 3,
+        "stacks": [
+          "node"
+        ],
+        "manifests": [
+          "services/notifications/package.json"
+        ],
+        "runtimes": [
+          {
+            "name": "node",
+            "version": ">=20",
+            "source": "services/notifications/package.json"
+          }
+        ],
+        "last_commit_date": "2026-05-01",
+        "commits_12m": 14,
+        "file_count": 5,
+        "has_readme": true,
+        "has_architecture_doc": false,
+        "has_ci": false,
+        "has_tests_dir": false,
+        "has_licence": true,
+        "triage": {
+          "score": 4,
+          "band": "medium",
+          "reasons": [
+            "stale_90",
+            "no_architecture_doc",
+            "no_ci",
+            "no_tests_dir"
+          ]
+        },
+        "sbom_paths": [],
+        "has_sbom": false
+      },
+      {
+        "path": "libs/shared-utils",
+        "rank": 4,
+        "stacks": [
+          "python"
+        ],
+        "manifests": [
+          "libs/shared-utils/pyproject.toml"
+        ],
+        "runtimes": [
+          {
+            "name": "python",
+            "version": ">=3.11",
+            "source": "libs/shared-utils/pyproject.toml"
+          }
+        ],
+        "last_commit_date": "2026-08-01",
+        "commits_12m": 31,
+        "file_count": 5,
+        "has_readme": true,
+        "has_architecture_doc": false,
+        "has_ci": true,
+        "has_tests_dir": true,
+        "has_licence": false,
+        "triage": {
+          "score": 2,
+          "band": "low",
+          "reasons": [
+            "no_architecture_doc",
+            "no_licence"
+          ]
+        },
+        "sbom_paths": [],
+        "has_sbom": false
+      },
+      {
+        "path": "tools/report-cli",
+        "rank": 5,
+        "stacks": [
+          "go"
+        ],
+        "manifests": [
+          "tools/report-cli/go.mod"
+        ],
+        "runtimes": [
+          {
+            "name": "go",
+            "version": "1.22",
+            "source": "tools/report-cli/go.mod"
+          }
+        ],
+        "last_commit_date": "2026-09-10",
+        "commits_12m": 52,
+        "file_count": 7,
+        "has_readme": true,
+        "has_architecture_doc": true,
+        "has_ci": true,
+        "has_tests_dir": true,
+        "has_licence": true,
+        "triage": {
+          "score": 0,
+          "band": "low",
+          "reasons": []
+        },
+        "sbom_paths": [],
+        "has_sbom": false
+      }
+    ]
+  },
+  "selection": {
+    "source": "human",
+    "auto_select_threshold": 3,
+    "project_cap": 5,
+    "selected": [
+      "legacy/inventory-web",
+      "services/billing-api",
+      "services/notifications",
+      "libs/shared-utils",
+      "tools/report-cli"
+    ],
+    "over_project_cap": []
+  },
+  "questions": [
+    {
+      "phase": "selection",
+      "asked": true,
+      "status": "answered",
+      "reason": null,
+      "request_id": "9d2a4f61-0c3b-4a27-9d61-1f0e5b7c2a34",
+      "expires_at": "2026-09-19T09:02:00Z",
+      "answered_by": "user-2f0b1d4c",
+      "answered_at": "2026-09-16T10:41:00Z",
+      "items": [
+        "legacy/inventory-web",
+        "services/billing-api",
+        "services/notifications",
+        "libs/shared-utils",
+        "tools/report-cli"
+      ],
+      "selectable_ids": [
+        "legacy/inventory-web",
+        "services/billing-api",
+        "services/notifications",
+        "libs/shared-utils",
+        "tools/report-cli"
+      ]
+    },
+    {
+      "phase": "follow_ups",
+      "asked": true,
+      "status": "answered",
+      "reason": null,
+      "request_id": "4b7c1e90-5d6a-4f18-8c02-7a3e9d5b1c60",
+      "expires_at": "2026-09-19T11:05:00Z",
+      "answered_by": "user-2f0b1d4c",
+      "answered_at": "2026-09-16T11:12:00Z",
+      "items": [
+        "portfolio:legacy/inventory-web:app-java-god-class"
+      ],
+      "selectable_ids": [
+        "portfolio:legacy/inventory-web:app-java-god-class"
+      ]
+    }
+  ],
+  "fan_out": {
+    "lenses": [
+      "docs-currency-review",
+      "repo-code-health-review"
+    ],
+    "lenses_refused": [],
+    "child_cap": 5,
+    "max_cost_usd_per_child": 2.0,
+    "children_planned": 10,
+    "children_started": 5,
+    "children_over_cap": [
+      {
+        "project": "services/notifications",
+        "lens": "repo-code-health-review"
+      },
+      {
+        "project": "libs/shared-utils",
+        "lens": "docs-currency-review"
+      },
+      {
+        "project": "libs/shared-utils",
+        "lens": "repo-code-health-review"
+      },
+      {
+        "project": "tools/report-cli",
+        "lens": "docs-currency-review"
+      },
+      {
+        "project": "tools/report-cli",
+        "lens": "repo-code-health-review"
+      }
+    ],
+    "parked": true,
+    "wait_expired": []
+  },
+  "projects": [
+    {
+      "path": "legacy/inventory-web",
+      "status": "findings",
+      "cost_usd": 0.853,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": "preloop.review.docscurrency/v1",
+          "lens_status": "ran",
+          "reason": null,
+          "verdict": "pass",
+          "health": "healthy",
+          "counts": {
+            "holds": 2,
+            "drifted": 0,
+            "not_checkable": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": {
+            "execution_id": "c1d3e5a7-0000-4000-8000-000000000001",
+            "state": "SUCCEEDED",
+            "cost_usd": 0.301,
+            "label": "legacy/inventory-web|docs-currency-review"
+          },
+          "result_artifact": "evidence/projects/legacy-inventory-web/docs-currency-review/result.json"
+        },
+        {
+          "lens": "repo-code-health-review",
+          "lens_schema": "preloop.review.codehealth/v1",
+          "lens_status": "ran",
+          "reason": null,
+          "verdict": "pass_with_findings",
+          "health": "findings",
+          "counts": {
+            "high": 0,
+            "medium": 1,
+            "low": 2
+          },
+          "child": {
+            "execution_id": "c1d3e5a7-0000-4000-8000-000000000002",
+            "state": "SUCCEEDED",
+            "cost_usd": 0.552,
+            "label": "legacy/inventory-web|repo-code-health-review"
+          },
+          "result_artifact": "evidence/projects/legacy-inventory-web/repo-code-health-review/result.json"
+        }
+      ]
+    },
+    {
+      "path": "services/billing-api",
+      "status": "unknown",
+      "cost_usd": 0.248,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": "preloop.review.docscurrency/v1",
+          "lens_status": "ran",
+          "reason": null,
+          "verdict": "pass",
+          "health": "healthy",
+          "counts": {
+            "holds": 3,
+            "drifted": 0,
+            "not_checkable": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": {
+            "execution_id": "c1d3e5a7-0000-4000-8000-000000000003",
+            "state": "SUCCEEDED",
+            "cost_usd": 0.248,
+            "label": "services/billing-api|docs-currency-review"
+          },
+          "result_artifact": "evidence/projects/services-billing-api/docs-currency-review/result.json"
+        },
+        {
+          "lens": "repo-code-health-review",
+          "lens_schema": null,
+          "lens_status": "refused",
+          "reason": "budget_exceeded: the call was refused before any child ran",
+          "verdict": null,
+          "health": "unknown",
+          "counts": {
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": {
+            "execution_id": "c1d3e5a7-0000-4000-8000-000000000004",
+            "state": "REFUSED",
+            "cost_usd": null,
+            "label": "services/billing-api|repo-code-health-review"
+          },
+          "result_artifact": null
+        }
+      ]
+    },
+    {
+      "path": "services/notifications",
+      "status": "unknown",
+      "cost_usd": 0.226,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": "preloop.review.docscurrency/v1",
+          "lens_status": "ran",
+          "reason": null,
+          "verdict": "pass",
+          "health": "healthy",
+          "counts": {
+            "holds": 2,
+            "drifted": 0,
+            "not_checkable": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": {
+            "execution_id": "c1d3e5a7-0000-4000-8000-000000000005",
+            "state": "SUCCEEDED",
+            "cost_usd": 0.226,
+            "label": "services/notifications|docs-currency-review"
+          },
+          "result_artifact": "evidence/projects/services-notifications/docs-currency-review/result.json"
+        },
+        {
+          "lens": "repo-code-health-review",
+          "lens_schema": null,
+          "lens_status": "not_run",
+          "reason": "child cap",
+          "verdict": null,
+          "health": "unknown",
+          "counts": {
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": null,
+          "result_artifact": null
+        }
+      ]
+    },
+    {
+      "path": "libs/shared-utils",
+      "status": "unknown",
+      "cost_usd": 0.0,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": null,
+          "lens_status": "not_run",
+          "reason": "child cap",
+          "verdict": null,
+          "health": "unknown",
+          "counts": {
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": null,
+          "result_artifact": null
+        },
+        {
+          "lens": "repo-code-health-review",
+          "lens_schema": null,
+          "lens_status": "not_run",
+          "reason": "child cap",
+          "verdict": null,
+          "health": "unknown",
+          "counts": {
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": null,
+          "result_artifact": null
+        }
+      ]
+    },
+    {
+      "path": "tools/report-cli",
+      "status": "unknown",
+      "cost_usd": 0.0,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": null,
+          "lens_status": "not_run",
+          "reason": "child cap",
+          "verdict": null,
+          "health": "unknown",
+          "counts": {
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": null,
+          "result_artifact": null
+        },
+        {
+          "lens": "repo-code-health-review",
+          "lens_schema": null,
+          "lens_status": "not_run",
+          "reason": "child cap",
+          "verdict": null,
+          "health": "unknown",
+          "counts": {
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": null,
+          "result_artifact": null
+        }
+      ]
+    }
+  ],
+  "follow_ups": [
+    {
+      "id": "portfolio:legacy/inventory-web:app-java-god-class",
+      "project": "legacy/inventory-web",
+      "lens": "repo-code-health-review",
+      "title": "App.java holds request routing, persistence and formatting in one class",
+      "severity": "medium",
+      "evidence": "legacy/inventory-web/src/main/java/App.java:1",
+      "rank": 1,
+      "status": "approved",
+      "note": null,
+      "approved_by": "user-2f0b1d4c",
+      "approved_at": "2026-09-16T11:12:00Z",
+      "filed": false
+    }
+  ],
+  "coverage": {
+    "projects_discovered": 5,
+    "projects_selected": 5,
+    "projects_reviewed": 3,
+    "lens_runs_planned": 10,
+    "lens_runs_completed": 4,
+    "plan_completed": false,
+    "not_reviewed": [
+      {
+        "path": "libs/shared-utils",
+        "reason": "child cap"
+      },
+      {
+        "path": "tools/report-cli",
+        "reason": "child cap"
+      }
+    ]
+  },
+  "rollup": {
+    "by_health": {
+      "healthy": 0,
+      "findings": 1,
+      "failing": 0,
+      "unknown": 4
+    },
+    "by_severity": {
+      "high": 0,
+      "medium": 1,
+      "low": 0
+    },
+    "follow_ups_total": 1,
+    "follow_ups_approved": 1,
+    "issues_filed": 0,
+    "children_started": 5,
+    "children_succeeded": 4,
+    "children_failed": 0,
+    "children_refused": 1,
+    "children_expired": 0,
+    "children_cost_usd": 1.327
+  },
+  "verdict": "pass_with_findings",
+  "checks": [
+    {
+      "name": "discovery_deterministic",
+      "passed": true,
+      "skipped": false,
+      "details": "5 projects from the detector list, depth cap 3"
+    },
+    {
+      "name": "selection_question_answered",
+      "passed": true,
+      "skipped": false,
+      "details": "1 batched question, 5 rows, answered at 2026-09-16T10:41:00Z"
+    },
+    {
+      "name": "fan_out_completed",
+      "passed": false,
+      "skipped": false,
+      "details": "5 child executions started, 4 completed, 0 failed, 1 refused, 0 expired, 1.327 USD"
+    },
+    {
+      "name": "coverage_declared",
+      "passed": true,
+      "skipped": false,
+      "details": "10 calls planned, 5 made, 5 over the child cap of 5: 2 projects were never reached and are listed under coverage"
+    },
+    {
+      "name": "follow_up_question_answered",
+      "passed": true,
+      "skipped": false,
+      "details": "1 batched question, 1 row, 1 approved"
+    },
+    {
+      "name": "issues_filed",
+      "passed": true,
+      "skipped": false,
+      "details": "0: this preset has no write tools"
+    }
+  ],
+  "assessments": [
+    {
+      "topic": "portfolio",
+      "judgment": "Agent judgment: the cap stopped the fan out halfway down the triage order. Two projects were never reached, and one lens was refused on budget."
+    }
+  ],
+  "artifacts": {
+    "report": "evidence/portfolio-report.md",
+    "register": "evidence/projects-register.md",
+    "findings": "evidence/findings.json",
+    "inventory": "evidence/inventory.json",
+    "questions": "evidence/questions.json",
+    "children": "evidence/children.json"
+  },
+  "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice.",
+  "note": "synthetic fixture"
+}

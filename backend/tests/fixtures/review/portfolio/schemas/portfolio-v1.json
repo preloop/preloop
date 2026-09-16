@@ -1,0 +1,1198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "preloop.review.portfolio/v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "flow",
+    "status",
+    "run_at",
+    "git",
+    "tool_versions",
+    "inputs_declared",
+    "runner",
+    "discovery",
+    "selection",
+    "questions",
+    "fan_out",
+    "projects",
+    "follow_ups",
+    "coverage",
+    "rollup",
+    "verdict",
+    "checks",
+    "assessments",
+    "artifacts",
+    "disclaimer"
+  ],
+  "properties": {
+    "schema": {
+      "const": "preloop.review.portfolio/v1"
+    },
+    "flow": {
+      "const": "portfolio-review"
+    },
+    "status": {
+      "enum": [
+        "success",
+        "error"
+      ]
+    },
+    "run_at": {
+      "type": "string"
+    },
+    "git": {},
+    "tool_versions": {},
+    "inputs_declared": {},
+    "runner": {},
+    "discovery": {
+      "type": "object",
+      "required": [
+        "root",
+        "depth_cap",
+        "depth_cap_hit",
+        "dirs_truncated_at_cap",
+        "detectors_matched",
+        "excluded_dirs",
+        "eol_table",
+        "count",
+        "projects"
+      ],
+      "properties": {
+        "depth_cap": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "depth_cap_hit": {
+          "type": "boolean"
+        },
+        "dirs_truncated_at_cap": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "eol_table": {
+          "enum": [
+            "payload",
+            null
+          ]
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "projects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "rank",
+              "stacks",
+              "manifests",
+              "runtimes",
+              "last_commit_date",
+              "commits_12m",
+              "file_count",
+              "has_readme",
+              "has_architecture_doc",
+              "has_ci",
+              "has_tests_dir",
+              "has_licence",
+              "sbom_paths",
+              "has_sbom",
+              "triage"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "rank": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "stacks": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "node",
+                    "python",
+                    "go",
+                    "rust",
+                    "jvm",
+                    "scala",
+                    "php",
+                    "ruby",
+                    "dotnet",
+                    "cpp",
+                    "dart",
+                    "elixir",
+                    "swift",
+                    "deno"
+                  ]
+                },
+                "minItems": 1
+              },
+              "manifests": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
+              },
+              "runtimes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "name",
+                    "version",
+                    "source"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "last_commit_date": {
+                "type": "string",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+              },
+              "commits_12m": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "file_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "has_readme": {
+                "type": "boolean"
+              },
+              "has_architecture_doc": {
+                "type": "boolean"
+              },
+              "has_ci": {
+                "type": "boolean"
+              },
+              "has_tests_dir": {
+                "type": "boolean"
+              },
+              "has_licence": {
+                "type": "boolean"
+              },
+              "triage": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "score",
+                  "band",
+                  "reasons"
+                ],
+                "properties": {
+                  "score": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "band": {
+                    "enum": [
+                      "high",
+                      "medium",
+                      "low"
+                    ]
+                  },
+                  "reasons": {
+                    "type": "array",
+                    "items": {
+                      "enum": [
+                        "stale_365",
+                        "stale_180",
+                        "stale_90",
+                        "no_commits_12m",
+                        "no_readme",
+                        "no_architecture_doc",
+                        "no_ci",
+                        "no_tests_dir",
+                        "no_licence",
+                        "eol_runtime"
+                      ]
+                    }
+                  }
+                }
+              },
+              "sbom_paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "has_sbom": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "auto_select_threshold",
+        "project_cap",
+        "selected",
+        "over_project_cap"
+      ],
+      "properties": {
+        "source": {
+          "enum": [
+            "human",
+            "auto_below_threshold",
+            "payload",
+            "expired_default"
+          ]
+        },
+        "auto_select_threshold": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "selected": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "project_cap": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12
+        },
+        "over_project_cap": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "questions": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "phase",
+          "asked",
+          "status",
+          "reason",
+          "request_id",
+          "expires_at",
+          "answered_by",
+          "answered_at",
+          "items",
+          "selectable_ids"
+        ],
+        "properties": {
+          "phase": {
+            "enum": [
+              "selection",
+              "follow_ups"
+            ]
+          },
+          "asked": {
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "answered",
+              "expired",
+              "declined",
+              "not_asked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "answered_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "answered_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "selectable_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "asked": {
+                  "const": false
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "status": {
+                  "const": "not_asked"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "request_id": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "expired"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "expires_at": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "answered_by": {
+                  "type": "null"
+                },
+                "answered_at": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "projects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "status",
+          "cost_usd",
+          "lenses"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "enum": [
+              "healthy",
+              "findings",
+              "failing",
+              "unknown"
+            ]
+          },
+          "cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "lenses": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "lens",
+                "lens_schema",
+                "lens_status",
+                "reason",
+                "verdict",
+                "health",
+                "counts",
+                "child",
+                "result_artifact"
+              ],
+              "properties": {
+                "lens": {
+                  "enum": [
+                    "docs-currency-review",
+                    "repo-code-health-review",
+                    "release-security-audit"
+                  ]
+                },
+                "lens_schema": {
+                  "enum": [
+                    "preloop.review.docscurrency/v1",
+                    "preloop.review.codehealth/v1",
+                    "preloop.cra.releaseaudit/v1",
+                    null
+                  ]
+                },
+                "lens_status": {
+                  "enum": [
+                    "ran",
+                    "failed",
+                    "refused",
+                    "expired",
+                    "not_checkable",
+                    "not_run"
+                  ]
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "verdict": {
+                  "enum": [
+                    "pass",
+                    "pass_with_findings",
+                    "fail",
+                    null
+                  ]
+                },
+                "health": {
+                  "enum": [
+                    "healthy",
+                    "findings",
+                    "failing",
+                    "unknown"
+                  ]
+                },
+                "counts": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "high",
+                    "medium",
+                    "low"
+                  ],
+                  "properties": {
+                    "high": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "medium": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "low": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "holds": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "drifted": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "not_checkable": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                },
+                "child": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "additionalProperties": false,
+                  "required": [
+                    "execution_id",
+                    "state",
+                    "cost_usd",
+                    "label"
+                  ],
+                  "properties": {
+                    "execution_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "state": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "cost_usd": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "result_artifact": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "lens_status": {
+                        "const": "ran"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "verdict": {
+                        "enum": [
+                          "pass",
+                          "pass_with_findings",
+                          "fail"
+                        ]
+                      },
+                      "health": {
+                        "enum": [
+                          "healthy",
+                          "findings",
+                          "failing"
+                        ]
+                      },
+                      "reason": {
+                        "type": "null"
+                      },
+                      "lens_schema": {
+                        "enum": [
+                          "preloop.review.docscurrency/v1",
+                          "preloop.review.codehealth/v1",
+                          "preloop.cra.releaseaudit/v1"
+                        ]
+                      },
+                      "result_artifact": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "child": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "lens_status": {
+                        "const": "failed"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "verdict": {
+                        "type": "null"
+                      },
+                      "health": {
+                        "const": "unknown"
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "child": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "lens_status": {
+                        "const": "refused"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "verdict": {
+                        "type": "null"
+                      },
+                      "health": {
+                        "const": "unknown"
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "lens_status": {
+                        "const": "expired"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "verdict": {
+                        "type": "null"
+                      },
+                      "health": {
+                        "const": "unknown"
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "child": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "lens_status": {
+                        "const": "not_checkable"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "lens": {
+                        "const": "release-security-audit"
+                      },
+                      "verdict": {
+                        "type": "null"
+                      },
+                      "health": {
+                        "const": "unknown"
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "child": {
+                        "type": "null"
+                      },
+                      "result_artifact": {
+                        "type": "null"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "lens_status": {
+                        "const": "not_run"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "verdict": {
+                        "type": "null"
+                      },
+                      "health": {
+                        "const": "unknown"
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "child": {
+                        "type": "null"
+                      },
+                      "lens_schema": {
+                        "type": "null"
+                      },
+                      "result_artifact": {
+                        "type": "null"
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "minItems": 1
+          }
+        }
+      }
+    },
+    "follow_ups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "project",
+          "lens",
+          "title",
+          "severity",
+          "evidence",
+          "rank",
+          "status",
+          "note",
+          "approved_by",
+          "approved_at",
+          "filed"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^portfolio:"
+          },
+          "project": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "severity": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "evidence": {
+            "type": "string",
+            "pattern": "^.+:[0-9]+$"
+          },
+          "rank": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "enum": [
+              "approved",
+              "unapproved"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "approved_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "approved_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filed": {
+            "const": false
+          },
+          "lens": {
+            "enum": [
+              "docs-currency-review",
+              "repo-code-health-review",
+              "release-security-audit"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "unapproved"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "approved_by": {
+                  "type": "null"
+                },
+                "approved_at": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "approved"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "approved_by": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "approved_at": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projects_discovered",
+        "projects_selected",
+        "projects_reviewed",
+        "lens_runs_planned",
+        "lens_runs_completed",
+        "plan_completed",
+        "not_reviewed"
+      ],
+      "properties": {
+        "projects_discovered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "projects_selected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "projects_reviewed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "plan_completed": {
+          "type": "boolean"
+        },
+        "not_reviewed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "reason"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "lens_runs_planned": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lens_runs_completed": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "rollup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "by_health",
+        "by_severity",
+        "follow_ups_total",
+        "follow_ups_approved",
+        "issues_filed",
+        "children_started",
+        "children_succeeded",
+        "children_failed",
+        "children_refused",
+        "children_expired",
+        "children_cost_usd"
+      ],
+      "properties": {
+        "by_health": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "healthy",
+            "findings",
+            "failing",
+            "unknown"
+          ],
+          "properties": {
+            "healthy": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "findings": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failing": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unknown": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "by_severity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "properties": {
+            "high": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "medium": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "low": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "follow_ups_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "follow_ups_approved": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "issues_filed": {
+          "const": 0
+        },
+        "children_started": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children_succeeded": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children_failed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children_refused": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children_expired": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children_cost_usd": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "verdict": {
+      "enum": [
+        "pass",
+        "pass_with_findings",
+        "fail"
+      ]
+    },
+    "checks": {
+      "type": "array"
+    },
+    "assessments": {
+      "type": "array"
+    },
+    "artifacts": {
+      "type": "object",
+      "required": [
+        "report",
+        "register",
+        "findings",
+        "inventory",
+        "questions",
+        "children"
+      ]
+    },
+    "disclaimer": {
+      "const": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice."
+    },
+    "fan_out": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lenses",
+        "lenses_refused",
+        "child_cap",
+        "max_cost_usd_per_child",
+        "children_planned",
+        "children_started",
+        "children_over_cap",
+        "parked",
+        "wait_expired"
+      ],
+      "properties": {
+        "lenses": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "docs-currency-review",
+              "repo-code-health-review",
+              "release-security-audit"
+            ]
+          },
+          "minItems": 1
+        },
+        "lenses_refused": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "lens",
+              "reason"
+            ],
+            "properties": {
+              "lens": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "child_cap": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 25
+        },
+        "max_cost_usd_per_child": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "children_planned": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children_started": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children_over_cap": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "project",
+              "lens"
+            ],
+            "properties": {
+              "project": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lens": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "parked": {
+          "type": "boolean"
+        },
+        "wait_expired": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,307 @@
+{
+  "note": "synthetic fixture",
+  "scenario": "five-selected",
+  "parent_execution_id": "a0b1c2d3-0000-4000-8000-000000000017",
+  "root_execution_id": "a0b1c2d3-0000-4000-8000-000000000017",
+  "calls": [
+    {
+      "project": "legacy/inventory-web",
+      "lens": "docs-currency-review",
+      "made": true,
+      "reason": null,
+      "call": {
+        "tool": "run_flow",
+        "arguments": {
+          "flow": "docs-currency-review",
+          "payload": {
+            "target_repo_path": "/workspace/sample-portfolio",
+            "project_path": "legacy/inventory-web",
+            "depth": "standard"
+          },
+          "label": "legacy/inventory-web|docs-currency-review",
+          "max_cost_usd": 2.0,
+          "timeout_seconds": 3600
+        }
+      },
+      "request": {
+        "messageId": "req-legacy-inventory-web-docs-currency-review",
+        "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "data": {
+              "target_repo_path": "/workspace/sample-portfolio",
+              "project_path": "legacy/inventory-web",
+              "depth": "standard"
+            },
+            "mediaType": "application/json"
+          }
+        ],
+        "metadata": {
+          "preloop.ai/kind": "delegation_request",
+          "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+          "preloop.ai/rootExecutionId": null,
+          "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000016",
+          "preloop.ai/flowName": "docs-currency-review",
+          "preloop.ai/depth": 1
+        }
+      },
+      "child_execution_id": "c1d3e5a7-0000-4000-8000-000000000001"
+    },
+    {
+      "project": "services/billing-api",
+      "lens": "docs-currency-review",
+      "made": true,
+      "reason": null,
+      "call": {
+        "tool": "run_flow",
+        "arguments": {
+          "flow": "docs-currency-review",
+          "payload": {
+            "target_repo_path": "/workspace/sample-portfolio",
+            "project_path": "services/billing-api",
+            "depth": "standard"
+          },
+          "label": "services/billing-api|docs-currency-review",
+          "max_cost_usd": 2.0,
+          "timeout_seconds": 3600
+        }
+      },
+      "request": {
+        "messageId": "req-services-billing-api-docs-currency-review",
+        "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "data": {
+              "target_repo_path": "/workspace/sample-portfolio",
+              "project_path": "services/billing-api",
+              "depth": "standard"
+            },
+            "mediaType": "application/json"
+          }
+        ],
+        "metadata": {
+          "preloop.ai/kind": "delegation_request",
+          "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+          "preloop.ai/rootExecutionId": null,
+          "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000016",
+          "preloop.ai/flowName": "docs-currency-review",
+          "preloop.ai/depth": 1
+        }
+      },
+      "child_execution_id": "c1d3e5a7-0000-4000-8000-000000000002"
+    },
+    {
+      "project": "services/notifications",
+      "lens": "docs-currency-review",
+      "made": true,
+      "reason": null,
+      "call": {
+        "tool": "run_flow",
+        "arguments": {
+          "flow": "docs-currency-review",
+          "payload": {
+            "target_repo_path": "/workspace/sample-portfolio",
+            "project_path": "services/notifications",
+            "depth": "standard"
+          },
+          "label": "services/notifications|docs-currency-review",
+          "max_cost_usd": 2.0,
+          "timeout_seconds": 3600,
+          "wait": true
+        }
+      },
+      "request": {
+        "messageId": "req-services-notifications-docs-currency-review",
+        "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "data": {
+              "target_repo_path": "/workspace/sample-portfolio",
+              "project_path": "services/notifications",
+              "depth": "standard"
+            },
+            "mediaType": "application/json"
+          }
+        ],
+        "metadata": {
+          "preloop.ai/kind": "delegation_request",
+          "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+          "preloop.ai/rootExecutionId": null,
+          "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000016",
+          "preloop.ai/flowName": "docs-currency-review",
+          "preloop.ai/depth": 1
+        }
+      },
+      "child_execution_id": "c1d3e5a7-0000-4000-8000-000000000003"
+    }
+  ],
+  "children": {
+    "c1d3e5a7-0000-4000-8000-000000000001": {
+      "id": "c1d3e5a7-0000-4000-8000-000000000001",
+      "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "timestamp": "2026-09-16T10:58:00Z"
+      },
+      "metadata": {
+        "preloop.ai/kind": "delegation_task",
+        "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "preloop.ai/rootExecutionId": null,
+        "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000016",
+        "preloop.ai/flowName": "docs-currency-review",
+        "preloop.ai/depth": 1,
+        "preloop.ai/status": "SUCCEEDED",
+        "preloop.ai/executionId": "c1d3e5a7-0000-4000-8000-000000000001",
+        "preloop.ai/cost": 0.412,
+        "preloop.ai/tokens": 48210
+      },
+      "artifacts": [
+        {
+          "artifactId": "result-c1d3e5a7-0000-4000-8000-000000000001",
+          "name": "result.json",
+          "parts": [
+            {
+              "data": {
+                "schema": "preloop.review.docscurrency/v1",
+                "flow": "docs-currency-review",
+                "status": "success",
+                "verdict": "fail",
+                "counts": {
+                  "holds": 1,
+                  "drifted": 2,
+                  "not_checkable": 0,
+                  "high": 1,
+                  "medium": 1,
+                  "low": 0
+                },
+                "findings": [
+                  {
+                    "id": "mvn-tomcat-run",
+                    "severity": "high",
+                    "title": "INSTALL.md documents 'mvn tomcat:run'; the pom declares no tomcat plugin",
+                    "evidence": "legacy/inventory-web/INSTALL.md:11"
+                  },
+                  {
+                    "id": "inventory-db-url",
+                    "severity": "medium",
+                    "title": "INSTALL.md names INVENTORY_DB_URL; the code reads INVENTORY_DATABASE_URL",
+                    "evidence": "legacy/inventory-web/INSTALL.md:15"
+                  }
+                ],
+                "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice.",
+                "note": "synthetic fixture: the child result envelope, abridged"
+              },
+              "mediaType": "application/json"
+            }
+          ]
+        }
+      ]
+    },
+    "c1d3e5a7-0000-4000-8000-000000000002": {
+      "id": "c1d3e5a7-0000-4000-8000-000000000002",
+      "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "timestamp": "2026-09-16T10:58:00Z"
+      },
+      "metadata": {
+        "preloop.ai/kind": "delegation_task",
+        "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "preloop.ai/rootExecutionId": null,
+        "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000016",
+        "preloop.ai/flowName": "docs-currency-review",
+        "preloop.ai/depth": 1,
+        "preloop.ai/status": "SUCCEEDED",
+        "preloop.ai/executionId": "c1d3e5a7-0000-4000-8000-000000000002",
+        "preloop.ai/cost": 0.265,
+        "preloop.ai/tokens": 31190
+      },
+      "artifacts": [
+        {
+          "artifactId": "result-c1d3e5a7-0000-4000-8000-000000000002",
+          "name": "result.json",
+          "parts": [
+            {
+              "data": {
+                "schema": "preloop.review.docscurrency/v1",
+                "flow": "docs-currency-review",
+                "status": "success",
+                "verdict": "pass_with_findings",
+                "counts": {
+                  "holds": 2,
+                  "drifted": 1,
+                  "not_checkable": 1,
+                  "high": 0,
+                  "medium": 1,
+                  "low": 0
+                },
+                "findings": [
+                  {
+                    "id": "billing-api-token",
+                    "severity": "medium",
+                    "title": "README names BILLING_API_TOKEN; no code in the project reads it",
+                    "evidence": "services/billing-api/README.md:7"
+                  }
+                ],
+                "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice.",
+                "note": "synthetic fixture: the child result envelope, abridged"
+              },
+              "mediaType": "application/json"
+            }
+          ]
+        }
+      ]
+    },
+    "c1d3e5a7-0000-4000-8000-000000000003": {
+      "id": "c1d3e5a7-0000-4000-8000-000000000003",
+      "contextId": "a0b1c2d3-0000-4000-8000-000000000017",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "timestamp": "2026-09-16T10:58:00Z"
+      },
+      "metadata": {
+        "preloop.ai/kind": "delegation_task",
+        "preloop.ai/parentExecutionId": "a0b1c2d3-0000-4000-8000-000000000017",
+        "preloop.ai/rootExecutionId": null,
+        "preloop.ai/flowId": "3f1a0c52-0000-4000-8000-000000000016",
+        "preloop.ai/flowName": "docs-currency-review",
+        "preloop.ai/depth": 1,
+        "preloop.ai/status": "SUCCEEDED",
+        "preloop.ai/executionId": "c1d3e5a7-0000-4000-8000-000000000003",
+        "preloop.ai/cost": 0.198,
+        "preloop.ai/tokens": 25640
+      },
+      "artifacts": [
+        {
+          "artifactId": "result-c1d3e5a7-0000-4000-8000-000000000003",
+          "name": "result.json",
+          "parts": [
+            {
+              "data": {
+                "schema": "preloop.review.docscurrency/v1",
+                "flow": "docs-currency-review",
+                "status": "success",
+                "verdict": "pass",
+                "counts": {
+                  "holds": 2,
+                  "drifted": 0,
+                  "not_checkable": 0,
+                  "high": 0,
+                  "medium": 0,
+                  "low": 0
+                },
+                "findings": [],
+                "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice.",
+                "note": "synthetic fixture: the child result envelope, abridged"
+              },
+              "mediaType": "application/json"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

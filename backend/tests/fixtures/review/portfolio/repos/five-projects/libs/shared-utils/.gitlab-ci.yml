@@ -1,0 +1,3 @@
+shared-utils-tests:
+  script:
+    - pytest libs/shared-utils

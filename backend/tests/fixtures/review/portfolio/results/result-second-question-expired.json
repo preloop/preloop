@@ -1,0 +1,599 @@
+{
+  "schema": "preloop.review.portfolio/v1",
+  "flow": "portfolio-review",
+  "status": "success",
+  "run_at": "2026-09-16T09:00:00Z",
+  "git": {
+    "remote": "https://example.com/example/sample-portfolio.git",
+    "commit": "0000000000000000000000000000000000000000",
+    "branch": "main",
+    "dirty": false
+  },
+  "tool_versions": {
+    "git": "2.43.0"
+  },
+  "inputs_declared": {
+    "target_repo_path": "/workspace/sample-portfolio",
+    "root_path": ".",
+    "max_depth": 3,
+    "auto_select_threshold": 3,
+    "lenses": [
+      "docs-currency-review"
+    ],
+    "max_projects": 5,
+    "max_children": 20,
+    "max_cost_usd_per_child": 2.0,
+    "child_timeout_seconds": 3600,
+    "depth": "standard",
+    "eol_runtimes": [
+      {
+        "runtime": "java",
+        "version": "8",
+        "end_of_life": "2022-03-31"
+      },
+      {
+        "runtime": "python",
+        "version": "3.8",
+        "end_of_life": "2024-10-07"
+      },
+      {
+        "runtime": "node",
+        "version": "14",
+        "end_of_life": "2023-04-30"
+      }
+    ]
+  },
+  "runner": {
+    "kind": null,
+    "id": null
+  },
+  "discovery": {
+    "root": ".",
+    "depth_cap": 3,
+    "depth_cap_hit": true,
+    "dirs_truncated_at_cap": [
+      "platform/edge/gateway"
+    ],
+    "detectors_matched": [
+      "go.mod",
+      "package.json",
+      "pom.xml",
+      "pyproject.toml"
+    ],
+    "excluded_dirs": [
+      ".venv",
+      "build",
+      "libs/vendor",
+      "node_modules"
+    ],
+    "eol_table": "payload",
+    "count": 5,
+    "projects": [
+      {
+        "path": "legacy/inventory-web",
+        "rank": 1,
+        "stacks": [
+          "jvm"
+        ],
+        "manifests": [
+          "legacy/inventory-web/pom.xml"
+        ],
+        "runtimes": [
+          {
+            "name": "java",
+            "version": "8",
+            "source": "legacy/inventory-web/pom.xml"
+          }
+        ],
+        "last_commit_date": "2024-04-12",
+        "commits_12m": 0,
+        "file_count": 3,
+        "has_readme": false,
+        "has_architecture_doc": false,
+        "has_ci": false,
+        "has_tests_dir": false,
+        "has_licence": false,
+        "triage": {
+          "score": 13,
+          "band": "high",
+          "reasons": [
+            "stale_365",
+            "no_commits_12m",
+            "no_readme",
+            "no_architecture_doc",
+            "no_ci",
+            "no_tests_dir",
+            "no_licence",
+            "eol_runtime"
+          ]
+        },
+        "sbom_paths": [],
+        "has_sbom": false
+      },
+      {
+        "path": "services/billing-api",
+        "rank": 2,
+        "stacks": [
+          "python"
+        ],
+        "manifests": [
+          "services/billing-api/pyproject.toml"
+        ],
+        "runtimes": [
+          {
+            "name": "python",
+            "version": ">=3.8",
+            "source": "services/billing-api/pyproject.toml"
+          }
+        ],
+        "last_commit_date": "2025-05-02",
+        "commits_12m": 0,
+        "file_count": 5,
+        "has_readme": true,
+        "has_architecture_doc": false,
+        "has_ci": false,
+        "has_tests_dir": true,
+        "has_licence": false,
+        "triage": {
+          "score": 10,
+          "band": "high",
+          "reasons": [
+            "stale_365",
+            "no_commits_12m",
+            "no_architecture_doc",
+            "no_ci",
+            "no_licence",
+            "eol_runtime"
+          ]
+        },
+        "sbom_paths": [
+          "services/billing-api/sbom.cdx.json"
+        ],
+        "has_sbom": true
+      },
+      {
+        "path": "services/notifications",
+        "rank": 3,
+        "stacks": [
+          "node"
+        ],
+        "manifests": [
+          "services/notifications/package.json"
+        ],
+        "runtimes": [
+          {
+            "name": "node",
+            "version": ">=20",
+            "source": "services/notifications/package.json"
+          }
+        ],
+        "last_commit_date": "2026-05-01",
+        "commits_12m": 14,
+        "file_count": 5,
+        "has_readme": true,
+        "has_architecture_doc": false,
+        "has_ci": false,
+        "has_tests_dir": false,
+        "has_licence": true,
+        "triage": {
+          "score": 4,
+          "band": "medium",
+          "reasons": [
+            "stale_90",
+            "no_architecture_doc",
+            "no_ci",
+            "no_tests_dir"
+          ]
+        },
+        "sbom_paths": [],
+        "has_sbom": false
+      },
+      {
+        "path": "libs/shared-utils",
+        "rank": 4,
+        "stacks": [
+          "python"
+        ],
+        "manifests": [
+          "libs/shared-utils/pyproject.toml"
+        ],
+        "runtimes": [
+          {
+            "name": "python",
+            "version": ">=3.11",
+            "source": "libs/shared-utils/pyproject.toml"
+          }
+        ],
+        "last_commit_date": "2026-08-01",
+        "commits_12m": 31,
+        "file_count": 5,
+        "has_readme": true,
+        "has_architecture_doc": false,
+        "has_ci": true,
+        "has_tests_dir": true,
+        "has_licence": false,
+        "triage": {
+          "score": 2,
+          "band": "low",
+          "reasons": [
+            "no_architecture_doc",
+            "no_licence"
+          ]
+        },
+        "sbom_paths": [],
+        "has_sbom": false
+      },
+      {
+        "path": "tools/report-cli",
+        "rank": 5,
+        "stacks": [
+          "go"
+        ],
+        "manifests": [
+          "tools/report-cli/go.mod"
+        ],
+        "runtimes": [
+          {
+            "name": "go",
+            "version": "1.22",
+            "source": "tools/report-cli/go.mod"
+          }
+        ],
+        "last_commit_date": "2026-09-10",
+        "commits_12m": 52,
+        "file_count": 7,
+        "has_readme": true,
+        "has_architecture_doc": true,
+        "has_ci": true,
+        "has_tests_dir": true,
+        "has_licence": true,
+        "triage": {
+          "score": 0,
+          "band": "low",
+          "reasons": []
+        },
+        "sbom_paths": [],
+        "has_sbom": false
+      }
+    ]
+  },
+  "selection": {
+    "source": "human",
+    "auto_select_threshold": 3,
+    "project_cap": 5,
+    "selected": [
+      "legacy/inventory-web",
+      "services/billing-api",
+      "services/notifications"
+    ],
+    "over_project_cap": []
+  },
+  "questions": [
+    {
+      "phase": "selection",
+      "asked": true,
+      "status": "answered",
+      "reason": null,
+      "request_id": "9d2a4f61-0c3b-4a27-9d61-1f0e5b7c2a34",
+      "expires_at": "2026-09-19T09:02:00Z",
+      "answered_by": "user-2f0b1d4c",
+      "answered_at": "2026-09-16T10:41:00Z",
+      "items": [
+        "legacy/inventory-web",
+        "services/billing-api",
+        "services/notifications",
+        "libs/shared-utils",
+        "tools/report-cli"
+      ],
+      "selectable_ids": [
+        "legacy/inventory-web",
+        "services/billing-api",
+        "services/notifications",
+        "libs/shared-utils",
+        "tools/report-cli"
+      ]
+    },
+    {
+      "phase": "follow_ups",
+      "asked": true,
+      "status": "expired",
+      "reason": null,
+      "request_id": "4b7c1e90-5d6a-4f18-8c02-7a3e9d5b1c60",
+      "expires_at": "2026-09-19T11:05:00Z",
+      "answered_by": null,
+      "answered_at": null,
+      "items": [
+        "portfolio:legacy/inventory-web:mvn-tomcat-run",
+        "portfolio:legacy/inventory-web:inventory-db-url",
+        "portfolio:services/billing-api:billing-api-token"
+      ],
+      "selectable_ids": [
+        "portfolio:legacy/inventory-web:mvn-tomcat-run",
+        "portfolio:legacy/inventory-web:inventory-db-url",
+        "portfolio:services/billing-api:billing-api-token"
+      ]
+    }
+  ],
+  "fan_out": {
+    "lenses": [
+      "docs-currency-review"
+    ],
+    "lenses_refused": [],
+    "child_cap": 20,
+    "max_cost_usd_per_child": 2.0,
+    "children_planned": 3,
+    "children_started": 3,
+    "children_over_cap": [],
+    "parked": true,
+    "wait_expired": []
+  },
+  "projects": [
+    {
+      "path": "legacy/inventory-web",
+      "status": "failing",
+      "cost_usd": 0.412,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": "preloop.review.docscurrency/v1",
+          "lens_status": "ran",
+          "reason": null,
+          "verdict": "fail",
+          "health": "failing",
+          "counts": {
+            "holds": 1,
+            "drifted": 2,
+            "not_checkable": 0,
+            "high": 1,
+            "medium": 1,
+            "low": 0
+          },
+          "child": {
+            "execution_id": "c1d3e5a7-0000-4000-8000-000000000001",
+            "state": "SUCCEEDED",
+            "cost_usd": 0.412,
+            "label": "legacy/inventory-web|docs-currency-review"
+          },
+          "result_artifact": "evidence/projects/legacy-inventory-web/docs-currency-review/result.json"
+        }
+      ]
+    },
+    {
+      "path": "services/billing-api",
+      "status": "findings",
+      "cost_usd": 0.265,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": "preloop.review.docscurrency/v1",
+          "lens_status": "ran",
+          "reason": null,
+          "verdict": "pass_with_findings",
+          "health": "findings",
+          "counts": {
+            "holds": 2,
+            "drifted": 1,
+            "not_checkable": 1,
+            "high": 0,
+            "medium": 1,
+            "low": 0
+          },
+          "child": {
+            "execution_id": "c1d3e5a7-0000-4000-8000-000000000002",
+            "state": "SUCCEEDED",
+            "cost_usd": 0.265,
+            "label": "services/billing-api|docs-currency-review"
+          },
+          "result_artifact": "evidence/projects/services-billing-api/docs-currency-review/result.json"
+        }
+      ]
+    },
+    {
+      "path": "services/notifications",
+      "status": "healthy",
+      "cost_usd": 0.198,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": "preloop.review.docscurrency/v1",
+          "lens_status": "ran",
+          "reason": null,
+          "verdict": "pass",
+          "health": "healthy",
+          "counts": {
+            "holds": 2,
+            "drifted": 0,
+            "not_checkable": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": {
+            "execution_id": "c1d3e5a7-0000-4000-8000-000000000003",
+            "state": "SUCCEEDED",
+            "cost_usd": 0.198,
+            "label": "services/notifications|docs-currency-review"
+          },
+          "result_artifact": "evidence/projects/services-notifications/docs-currency-review/result.json"
+        }
+      ]
+    },
+    {
+      "path": "libs/shared-utils",
+      "status": "unknown",
+      "cost_usd": 0.0,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": null,
+          "lens_status": "not_run",
+          "reason": "not selected by the human",
+          "verdict": null,
+          "health": "unknown",
+          "counts": {
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": null,
+          "result_artifact": null
+        }
+      ]
+    },
+    {
+      "path": "tools/report-cli",
+      "status": "unknown",
+      "cost_usd": 0.0,
+      "lenses": [
+        {
+          "lens": "docs-currency-review",
+          "lens_schema": null,
+          "lens_status": "not_run",
+          "reason": "not selected by the human",
+          "verdict": null,
+          "health": "unknown",
+          "counts": {
+            "high": 0,
+            "medium": 0,
+            "low": 0
+          },
+          "child": null,
+          "result_artifact": null
+        }
+      ]
+    }
+  ],
+  "follow_ups": [
+    {
+      "id": "portfolio:legacy/inventory-web:mvn-tomcat-run",
+      "project": "legacy/inventory-web",
+      "lens": "docs-currency-review",
+      "title": "INSTALL.md documents 'mvn tomcat:run'; the pom declares no tomcat plugin",
+      "severity": "high",
+      "evidence": "legacy/inventory-web/INSTALL.md:11",
+      "rank": 1,
+      "status": "unapproved",
+      "note": null,
+      "approved_by": null,
+      "approved_at": null,
+      "filed": false
+    },
+    {
+      "id": "portfolio:legacy/inventory-web:inventory-db-url",
+      "project": "legacy/inventory-web",
+      "lens": "docs-currency-review",
+      "title": "INSTALL.md names INVENTORY_DB_URL; the code reads INVENTORY_DATABASE_URL",
+      "severity": "medium",
+      "evidence": "legacy/inventory-web/INSTALL.md:15",
+      "rank": 2,
+      "status": "unapproved",
+      "note": null,
+      "approved_by": null,
+      "approved_at": null,
+      "filed": false
+    },
+    {
+      "id": "portfolio:services/billing-api:billing-api-token",
+      "project": "services/billing-api",
+      "lens": "docs-currency-review",
+      "title": "README names BILLING_API_TOKEN; no code in the project reads it",
+      "severity": "medium",
+      "evidence": "services/billing-api/README.md:7",
+      "rank": 3,
+      "status": "unapproved",
+      "note": null,
+      "approved_by": null,
+      "approved_at": null,
+      "filed": false
+    }
+  ],
+  "coverage": {
+    "projects_discovered": 5,
+    "projects_selected": 3,
+    "projects_reviewed": 3,
+    "lens_runs_planned": 3,
+    "lens_runs_completed": 3,
+    "plan_completed": true,
+    "not_reviewed": [
+      {
+        "path": "libs/shared-utils",
+        "reason": "not selected by the human"
+      },
+      {
+        "path": "tools/report-cli",
+        "reason": "not selected by the human"
+      }
+    ]
+  },
+  "rollup": {
+    "by_health": {
+      "healthy": 1,
+      "findings": 1,
+      "failing": 1,
+      "unknown": 2
+    },
+    "by_severity": {
+      "high": 1,
+      "medium": 2,
+      "low": 0
+    },
+    "follow_ups_total": 3,
+    "follow_ups_approved": 0,
+    "issues_filed": 0,
+    "children_started": 3,
+    "children_succeeded": 3,
+    "children_failed": 0,
+    "children_refused": 0,
+    "children_expired": 0,
+    "children_cost_usd": 0.875
+  },
+  "verdict": "fail",
+  "checks": [
+    {
+      "name": "discovery_deterministic",
+      "passed": true,
+      "skipped": false,
+      "details": "5 projects from the detector list, depth cap 3"
+    },
+    {
+      "name": "selection_question_answered",
+      "passed": true,
+      "skipped": false,
+      "details": "1 batched question, 5 rows, answered at 2026-09-16T10:41:00Z"
+    },
+    {
+      "name": "fan_out_completed",
+      "passed": true,
+      "skipped": false,
+      "details": "3 child executions started, 3 completed, 0 failed, 0 refused, 0 expired, 0.875 USD"
+    },
+    {
+      "name": "follow_up_question_answered",
+      "passed": false,
+      "skipped": false,
+      "details": "expired at 2026-09-19T11:05:00Z with no answer: safe default applied, every candidate stays unapproved"
+    },
+    {
+      "name": "issues_filed",
+      "passed": true,
+      "skipped": false,
+      "details": "0: this preset has no write tools"
+    }
+  ],
+  "assessments": [
+    {
+      "topic": "portfolio",
+      "judgment": "Agent judgment: the report stands on the lens results; nobody accepted a follow up, so nothing is queued."
+    }
+  ],
+  "artifacts": {
+    "report": "evidence/portfolio-report.md",
+    "register": "evidence/projects-register.md",
+    "findings": "evidence/findings.json",
+    "inventory": "evidence/inventory.json",
+    "questions": "evidence/questions.json",
+    "children": "evidence/children.json"
+  },
+  "disclaimer": "Machine-generated review evidence. Not a certification, audit opinion, or legal advice.",
+  "note": "synthetic fixture"
+}

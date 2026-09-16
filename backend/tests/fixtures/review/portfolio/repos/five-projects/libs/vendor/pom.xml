@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- synthetic fixture: a vendored manifest, never a project. -->
+<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example.vendored</groupId>
+  <artifactId>third-party-lib</artifactId>
+  <version>0.9.0</version>
+</project>

@@ -17,6 +17,14 @@ human-readable evidence pack under `/workspace/evidence/`.
 | Standards Compliance Walk | Payload-named standards normalized into a requirement register (`met | gap | partial | declared` plus mandatory `not_checkable`) | `preloop.review.standards/v1` |
 | Docs Currency Review | Is the README still true: five checkable claim types (entry points, services, dependencies, environment variables, build or run commands) extracted from the documentation and verified against the code, emitted as a drift list of (claim, where the doc says it, what the code shows) | `preloop.review.docscurrency/v1` |
 
+**A repository full of separate projects** is one layer above these four:
+the [Portfolio Review preset](portfolio-review.md) discovers the projects
+in such a repository from manifests only, asks a human which ones to
+review, then starts one child execution per selected project per lens
+(docs currency, code health, release security audit) and aggregates what
+they reported into `preloop.review.portfolio/v1`. It reuses the lenses
+below unchanged rather than restating them.
+
 They are a **family sharing one skeleton**, not one parameterized preset:
 the four lenses have different required inputs, different failure modes
 when inputs are missing, different result schemas, and different run

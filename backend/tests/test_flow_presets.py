@@ -509,6 +509,7 @@ PRESET_COMPLETION_MARKERS = {
     "014-security-maintenance-implementation.yaml": ('"status": "success" | "failure"'),
     "015-weekly-model-price-review.yaml": '"status": "success" | "failure"',
     "016-docs-currency-review.yaml": '"status": "success" | "error"',
+    "017-portfolio-review.yaml": '"status": "success" | "error"',
 }
 
 

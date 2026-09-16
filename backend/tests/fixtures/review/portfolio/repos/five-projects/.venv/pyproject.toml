@@ -1,0 +1,4 @@
+# synthetic fixture: a manifest inside an excluded virtualenv.
+[project]
+name = "installed-package"
+version = "1.0.0"

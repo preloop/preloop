@@ -1,0 +1,25 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:00000000-0000-4000-8000-000000000001",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2025-02-11T00:00:00Z",
+    "authors": [{"name": "Jane Doe"}],
+    "component": {
+      "type": "application",
+      "name": "billing-api",
+      "version": "0.4.0",
+      "description": "synthetic fixture: the only project in this repository that ships an SBOM"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "example-http",
+      "version": "2.1.0",
+      "supplier": {"name": "Example Maintainers"},
+      "purl": "pkg:pypi/example-http@2.1.0"
+    }
+  ]
+}
