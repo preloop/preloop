@@ -27,6 +27,7 @@ from preloop.services.upstream_errors import (
     ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
     classify_recorded_error,
 )
+from preloop.utils.execve_limits import PROMPT_NOT_DELIVERED_MARKER
 from preloop.utils.secret_scrubbing import scrub_secrets
 from preloop.utils.workspace_snapshot import SETUP_FAILED_MARKER
 
@@ -521,6 +522,40 @@ def _scan_setup_failure(logs_text: str) -> Optional[AgentFailureAnalysis]:
     return AgentFailureAnalysis(message=_finalize(message), transient=False)
 
 
+# The harnesses feed the prompt to their CLI on stdin, so a prompt that never
+# arrived would otherwise surface as the CLI's own wording ("No input provided
+# via stdin") or, worse, as a session that ran with no instructions. The
+# container-side guard and the chunk transport print these markers instead; a
+# run that carries one failed before the model was ever called, and no retry
+# of the same payload can help.
+_PROMPT_DELIVERY_MARKERS = (
+    PROMPT_NOT_DELIVERED_MARKER,
+    "PRELOOP_LAUNCH_PAYLOAD_MISSING",
+    "PRELOOP_LAUNCH_PAYLOAD_TRUNCATED",
+)
+_PROMPT_DELIVERY_LINE_RE = re.compile(
+    rf"^.*(?:{'|'.join(re.escape(marker) for marker in _PROMPT_DELIVERY_MARKERS)}).*$",
+    re.MULTILINE,
+)
+
+
+def _scan_prompt_delivery_failure(logs_text: str) -> Optional[AgentFailureAnalysis]:
+    """Return a verdict when the prompt never reached the agent CLI."""
+
+    match = _PROMPT_DELIVERY_LINE_RE.search(logs_text or "")
+    if match is None:
+        return None
+    detail = match.group(0).strip()
+    message = "The agent prompt did not reach the container"
+    if detail:
+        message += f": {detail}"
+    return AgentFailureAnalysis(
+        message=_finalize(message),
+        transient=False,
+        evidence=_finalize(detail),
+    )
+
+
 def analyze_agent_failure(logs_text: str) -> AgentFailureAnalysis:
     """Explain why an agent container failed, from its logs.
 
@@ -538,6 +573,10 @@ def analyze_agent_failure(logs_text: str) -> AgentFailureAnalysis:
     setup_failure = _scan_setup_failure(logs_text)
     if setup_failure is not None:
         return setup_failure
+
+    prompt_failure = _scan_prompt_delivery_failure(logs_text)
+    if prompt_failure is not None:
+        return prompt_failure
 
     already_analyzed = _reanalyze_generated_message(logs_text)
     if already_analyzed is not None:

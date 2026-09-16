@@ -11,7 +11,9 @@ from aiodocker.exceptions import DockerError
 
 from preloop.utils.execve_limits import (
     PROMPT_FILE_PATH,
+    build_prompt_delivery_guard,
     build_prompt_materialization_shell,
+    prompt_stdin_redirect,
     prompt_transport_env,
 )
 from preloop.services.mcp_config_service import MCPConfigService
@@ -531,6 +533,14 @@ fi
         # (preloop.utils.execve_limits).
         prompt_block = build_prompt_materialization_shell(prompt)
 
+        # `opencode run` reads its message from stdin when no positional
+        # message is given, so the prompt is redirected from the file and the
+        # command line carries none of it. The guard runs first: with an empty
+        # stdin and no positional argument the CLI refuses with wording of its
+        # own, which says nothing about why the prompt was missing.
+        prompt_redirect = prompt_stdin_redirect(PROMPT_FILE_PATH)
+        prompt_guard = build_prompt_delivery_guard(PROMPT_FILE_PATH)
+
         # Native CLI session persistence blocks (all empty on a cold start).
         session_blocks = self._build_cli_session_blocks(execution_context)
 
@@ -549,7 +559,7 @@ fi
                     '$PRELOOP_NUDGE_TIMEOUT opencode run --session "$_pl_sid" '
                     "--format json --print-logs --log-level WARN "
                     f"--model {opencode_model_arg} "
-                    f'-- "$(cat {NUDGE_PROMPT_PATH})" 2>&1 '
+                    f"{prompt_stdin_redirect(NUDGE_PROMPT_PATH)} 2>&1 "
                     "| node /tmp/opencode-json-log-filter.js "
                     f'| tee -a "{AGENT_OUTPUT_LOG_PATH}"'
                 ),
@@ -572,7 +582,7 @@ fi
             resume_command=(
                 '$PRELOOP_RECOVERY_TIMEOUT opencode run --session "$_pl_recovery_sid" '
                 f"--format json --print-logs --log-level WARN --model {opencode_model_arg} "
-                f'-- "$(cat {RECOVERY_PROMPT_PATH})" 2>&1 '
+                f"{prompt_stdin_redirect(RECOVERY_PROMPT_PATH)} 2>&1 "
                 "| node /tmp/opencode-json-log-filter.js "
                 f'| tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"\n'
                 '    _pl_recovery_codes=("${PIPESTATUS[@]}")\n'
@@ -799,20 +809,24 @@ echo "PRELOOP_AGENT_EXEC_START"
 {build_stream_recovery_baseline_block()}
 
 # Run OpenCode with the prompt.
-# opencode run accepts messages as positional args and runs non-interactively.
-# TODO(reliability): If opencode supports reading from stdin or passing a file
-# directly, we should switch to that instead of positional args $(cat ...) to avoid E2BIG on very large prompts.
+# opencode run takes its message on stdin when no positional message is given,
+# and runs non-interactively either way. The prompt is redirected from the
+# materialized file rather than interpolated as `-- "$(cat ...)"`: that put the
+# whole prompt into one execve string, which the kernel caps at
+# MAX_ARG_STRLEN (128 KiB) and rejects with "argument list too long" from
+# inside the container (issue #609). Nothing is passed positionally now, so
+# the '--' guard against a leading hyphen is no longer needed.
 # Auto-approve all permission requests to avoid hangs.
-# We use '--' to prevent argument injection if the prompt starts with a hyphen.
 # --print-logs/--log-level WARN: surface opencode's internal logs on stderr —
 # without this, fatal errors only land in log files inside the container and
 # failures are undiagnosable from the captured log stream (issue #212).
 # 2>&1 merges stderr into the filter pipe; the filter passes non-JSON lines
 # through verbatim, so stderr text reaches the execution log in order.
+{prompt_guard}
 set +e
 : > "{AGENT_OUTPUT_LOG_PATH}"
 : > "{ATTEMPT_LOG_PATH}"
-opencode run $OPENCODE_RESUME_ARGS --format json --print-logs --log-level WARN --model {opencode_model_arg} -- "$(cat {PROMPT_FILE_PATH})" 2>&1 | node /tmp/opencode-json-log-filter.js | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
+opencode run $OPENCODE_RESUME_ARGS --format json --print-logs --log-level WARN --model {opencode_model_arg} {prompt_redirect} 2>&1 | node /tmp/opencode-json-log-filter.js | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
 PIPE_CODES=("${{PIPESTATUS[@]}}")
 OPENCODE_EXIT_CODE=${{PIPE_CODES[0]}}
 FILTER_EXIT_CODE=${{PIPE_CODES[1]:-0}}

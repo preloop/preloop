@@ -142,7 +142,10 @@ class TestGeminiBuildScript:
         script = agent._build_gemini_script(context)
         assert prompt not in script
         assert base64.b64encode(prompt.encode()).decode() not in script
-        assert f'--prompt "$(cat {PROMPT_FILE_PATH})"' in script
+        # Nor in the inner command line: the CLI reads it from stdin, so no
+        # single argv element grows with the prompt (issue #692).
+        assert f'--prompt "$(cat {PROMPT_FILE_PATH})"' not in script
+        assert f"< {PROMPT_FILE_PATH}" in script
 
     def test_script_contains_model(self):
         """Generated script uses the configured model."""

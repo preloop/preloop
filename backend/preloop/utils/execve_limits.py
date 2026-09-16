@@ -107,6 +107,15 @@ LEGACY_PROMPT_ENV = "AGENT_PROMPT"
 # string in the payload when it is present at all.
 MAX_LEGACY_PROMPT_BYTES = 64 * 1024
 
+# Printed by the container-side guard when a harness is about to start a CLI
+# whose prompt file is missing or empty. A CLI reading its prompt from stdin
+# cannot tell "no prompt" from "an empty prompt", and an agent that runs on an
+# empty prompt is worse than one that refuses to start: it burns a model call,
+# it may push something, and nothing in the log says why. The marker makes the
+# run fail with a cause a human can read, and
+# ``preloop.agents.failure_analysis`` classifies it.
+PROMPT_NOT_DELIVERED_MARKER = "PRELOOP_PROMPT_NOT_DELIVERED"
+
 
 class LaunchPayloadTooLargeError(ValueError):
     """A launch would hand the kernel a string it must reject.
@@ -262,6 +271,49 @@ def build_prompt_materialization_shell(prompt: str) -> str:
         prompt,
         PROMPT_FILE_PATH,
         label="agent prompt",
+    )
+
+
+def prompt_stdin_redirect(path: str = PROMPT_FILE_PATH) -> str:
+    """The redirection that feeds a prompt file to a CLI on stdin.
+
+    Harnesses use this instead of interpolating ``"$(cat <file>)"`` into the
+    CLI's command line. The command substitution put the whole prompt into one
+    ``argv`` element, which the kernel caps at :data:`MAX_ARG_STRLEN`; the
+    redirection puts nothing there, so the size of the longest argument stops
+    depending on the size of the prompt.
+    """
+    return f"< {shlex.quote(path)}"
+
+
+def build_prompt_delivery_guard(
+    path: str = PROMPT_FILE_PATH,
+    *,
+    label: str = "agent prompt",
+) -> str:
+    """Shell block refusing to start a CLI whose prompt never arrived.
+
+    Placed immediately before the invocation that redirects ``path`` onto the
+    CLI's stdin. A CLI handed an empty stdin either errors with wording of its
+    own or, worse, starts a session with no instructions; either way the log
+    would not say that the prompt was the problem. The guard says it, with a
+    marker :func:`preloop.agents.failure_analysis.analyze_agent_failure`
+    recognises, and exits non-zero before a model is ever called.
+
+    Args:
+        path: The prompt file the CLI will read from stdin.
+        label: What the file holds, for the operator-facing message.
+
+    Returns:
+        A bash block, safe to embed verbatim in an agent script.
+    """
+    quoted = shlex.quote(path)
+    return (
+        f"if [ ! -s {quoted} ]; then\n"
+        f'    echo "{PROMPT_NOT_DELIVERED_MARKER} {label} at {path} '
+        'is missing or empty" >&2\n'
+        "    exit 1\n"
+        "fi"
     )
 
 

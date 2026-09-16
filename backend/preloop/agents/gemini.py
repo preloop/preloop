@@ -11,7 +11,9 @@ from aiodocker.exceptions import DockerError
 
 from preloop.utils.execve_limits import (
     PROMPT_FILE_PATH,
+    build_prompt_delivery_guard,
     build_prompt_materialization_shell,
+    prompt_stdin_redirect,
     prompt_transport_env,
 )
 from preloop.services.mcp_config_service import MCPConfigService
@@ -363,6 +365,12 @@ class GeminiAgent(ContainerAgentExecutor):
         # (preloop.utils.execve_limits).
         prompt_block = build_prompt_materialization_shell(prompt)
 
+        # The CLI reads the prompt from stdin; the guard runs first so an
+        # undelivered prompt names itself instead of starting a model call
+        # with nothing to do.
+        prompt_redirect = prompt_stdin_redirect(PROMPT_FILE_PATH)
+        prompt_guard = build_prompt_delivery_guard(PROMPT_FILE_PATH)
+
         # Prepare initialization commands (git clone, custom commands)
         init_commands = self._prepare_init_commands(execution_context)
 
@@ -415,7 +423,7 @@ echo '{settings_b64}' | base64 -d > "$HOME/.gemini/settings.json"
             resume_command=(
                 '$PRELOOP_RECOVERY_TIMEOUT gemini --resume "$_pl_recovery_sid" '
                 f'--output-format stream-json --yolo -m "{model}" '
-                f'--prompt "$(cat {RECOVERY_PROMPT_PATH})" 2>&1 '
+                f"{prompt_stdin_redirect(RECOVERY_PROMPT_PATH)} 2>&1 "
                 "| node /tmp/gemini-json-log-filter.js "
                 f'| tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"\n'
                 '    _pl_recovery_codes=("${PIPESTATUS[@]}")\n'
@@ -565,12 +573,18 @@ JS
 # Run Gemini CLI with the prompt
 # --yolo: Skip confirmation prompts for tool usage
 # -m: Specify the model
-# --prompt: Pass the prompt (read from file)
+# The prompt arrives on stdin, redirected from the materialized file, and
+# never as an argv element: `--prompt "$(cat ...)"` made one execve string
+# out of the whole prompt, which the kernel caps at MAX_ARG_STRLEN (128 KiB)
+# and rejects with the opaque "argument list too long" from inside the pod.
+# The CLI documents -p/--prompt as "Appended to input on stdin (if any)", so
+# piping the prompt in drives the same headless mode without the cap.
+{prompt_guard}
 set +e
 : > "{AGENT_OUTPUT_LOG_PATH}"
 : > "{ATTEMPT_LOG_PATH}"
 rm -f /tmp/preloop-gemini-session-id
-gemini --output-format stream-json --yolo -m "{model}" --prompt "$(cat {PROMPT_FILE_PATH})" 2>&1 | node /tmp/gemini-json-log-filter.js | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
+gemini --output-format stream-json --yolo -m "{model}" {prompt_redirect} 2>&1 | node /tmp/gemini-json-log-filter.js | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
 GEMINI_PIPE_CODES=("${{PIPESTATUS[@]}}")
 GEMINI_EXIT_CODE=${{GEMINI_PIPE_CODES[0]:-1}}
 if [ "$GEMINI_EXIT_CODE" -eq 0 ] && [ "${{GEMINI_PIPE_CODES[1]:-0}}" -ne 0 ]; then
