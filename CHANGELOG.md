@@ -40,7 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   result set does not re-embed the query; query embedding spend is recorded
   against the same daily cap as the indexing worker.
 - A session is findable by its own generated summary. Persisting a session
-  title and summary writes one `session_summary` chunk into the search
+  title and summary (plugin title hook, usage-import metadata, or a
+  gateway auto-summary) writes one `session_summary` chunk into the search
   corpus, so a search for the words that describe what a session was about
   matches the summary sentence and not only the transcript. Regenerating the
   title rewrites that one chunk, an identical regeneration changes nothing,

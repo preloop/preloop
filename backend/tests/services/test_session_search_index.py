@@ -669,3 +669,135 @@ def test_cleanup_failure_is_logged_and_swallowed(db_session, test_user, caplog):
         "Session summary chunk cleanup failed" in record.message
         for record in caplog.records
     )
+
+
+def test_capture_off_summary_only_session_leaves_no_header_chunk(db_session, test_user):
+    """With capture off, a summary and no title is nothing searchable."""
+    session = _session(db_session, test_user.account_id, source_id="session-capture")
+    crud_runtime_session.update_session_title(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(session.id),
+        title="Temporary title",
+        summary="The agent inspected a private payload.",
+        commit=False,
+    )
+    assert (
+        len(
+            crud_session_search_document.list_for_source(
+                db_session,
+                source_kind=SOURCE_KIND_SESSION_SUMMARY,
+                source_id=str(session.id),
+            )
+        )
+        == 1
+    )
+
+    with patch.object(settings, "model_gateway_capture_content", False):
+        crud_runtime_session.update_session_title(
+            db_session,
+            account_id=str(test_user.account_id),
+            runtime_session_id=str(session.id),
+            title="",
+            summary="The agent inspected a private payload.",
+            commit=False,
+        )
+
+    assert (
+        crud_session_search_document.list_for_source(
+            db_session,
+            source_kind=SOURCE_KIND_SESSION_SUMMARY,
+            source_id=str(session.id),
+        )
+        == []
+    )
+
+
+def test_capture_off_keeps_the_title_and_omits_the_summary_text(db_session, test_user):
+    """The title is metadata; capture off still stores it and not the summary."""
+    session = _session(db_session, test_user.account_id, source_id="session-meta")
+
+    with patch.object(settings, "model_gateway_capture_content", False):
+        crud_runtime_session.update_session_title(
+            db_session,
+            account_id=str(test_user.account_id),
+            runtime_session_id=str(session.id),
+            title="Public title",
+            summary="The agent read a private payload.",
+            commit=False,
+        )
+
+    chunks = crud_session_search_document.list_for_source(
+        db_session,
+        source_kind=SOURCE_KIND_SESSION_SUMMARY,
+        source_id=str(session.id),
+    )
+    assert len(chunks) == 1
+    assert "title: Public title" in chunks[0].content
+    assert "private payload" not in chunks[0].content
+
+
+def test_kill_switch_still_drops_a_cleared_summary_chunk(db_session, test_user):
+    """Clearing a session still removes its chunk while indexing is disabled."""
+    session = _session(db_session, test_user.account_id, source_id="session-kill")
+    crud_runtime_session.update_session_title(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(session.id),
+        title="Temporary title",
+        summary="The agent inspected the staging queue.",
+        commit=False,
+    )
+    assert (
+        len(
+            crud_session_search_document.list_for_source(
+                db_session,
+                source_kind=SOURCE_KIND_SESSION_SUMMARY,
+                source_id=str(session.id),
+            )
+        )
+        == 1
+    )
+
+    with patch.object(settings, "session_search_index_enabled", False):
+        crud_runtime_session.update_session_title(
+            db_session,
+            account_id=str(test_user.account_id),
+            runtime_session_id=str(session.id),
+            title="",
+            summary="",
+            commit=False,
+        )
+
+    assert (
+        crud_session_search_document.list_for_source(
+            db_session,
+            source_kind=SOURCE_KIND_SESSION_SUMMARY,
+            source_id=str(session.id),
+        )
+        == []
+    )
+
+
+def test_kill_switch_does_not_write_a_new_summary_chunk(db_session, test_user):
+    """The kill switch still parks new writes. Only cleanup stays live."""
+    session = _session(db_session, test_user.account_id, source_id="session-off")
+
+    with patch.object(settings, "session_search_index_enabled", False):
+        crud_runtime_session.update_session_title(
+            db_session,
+            account_id=str(test_user.account_id),
+            runtime_session_id=str(session.id),
+            title="Parked title",
+            summary="The agent finished the run.",
+            commit=False,
+        )
+
+    assert (
+        crud_session_search_document.list_for_source(
+            db_session,
+            source_kind=SOURCE_KIND_SESSION_SUMMARY,
+            source_id=str(session.id),
+        )
+        == []
+    )

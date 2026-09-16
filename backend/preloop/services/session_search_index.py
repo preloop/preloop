@@ -588,17 +588,27 @@ def index_session_summary(
     being replaced by a header with no content. That is what keeps a cleared
     summary, or a title write that never produced a title, from answering a
     search with text the session no longer carries.
+
+    Content capture gates the summary line. A session with no title and a
+    summary that capture forbids would otherwise store only the kind header,
+    so that case is treated as empty and the stale chunk is dropped. The
+    title line is metadata and still writes when capture is off.
+
+    Cleanup still runs when the indexing kill switch is on. Writes do not.
+    A cleared session must not keep answering searches with text it no
+    longer carries, which is the same reason redaction deletes are not
+    gated on the switch.
     """
-    if not indexing_enabled():
-        return []
     title_text = (title or "").strip()
     summary_text = (summary or "").strip()
-    if not title_text and not summary_text:
+    content_captured = bool(settings.model_gateway_capture_content)
+    if not title_text and not (summary_text and content_captured):
         _drop_session_summary_chunks(
             db, runtime_session_id=runtime_session_id, commit=commit
         )
         return []
-    content_captured = bool(settings.model_gateway_capture_content)
+    if not indexing_enabled():
+        return []
     body = "\n".join(
         line
         for line in (

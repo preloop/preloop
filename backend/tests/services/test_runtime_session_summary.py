@@ -172,6 +172,7 @@ def test_summary_cadence_survives_new_service_instances(result: Any) -> None:
                 return_value=_model(),
             ),
             patch.object(service, "_generate_runtime_session_summary", generate),
+            patch("preloop.services.openai_gateway.index_session_summary"),
         ):
             service._maybe_refresh_runtime_session_summary(
                 runtime_session=session,
@@ -324,6 +325,18 @@ def test_first_successful_flow_usage_after_failures_generates_initial_summary(
     )
     db_session.refresh(session)
     assert session.summary == "Reviewed changes"
+    from preloop.models.crud import crud_session_search_document
+    from preloop.models.models.session_search_document import (
+        SOURCE_KIND_SESSION_SUMMARY,
+    )
+
+    chunks = crud_session_search_document.list_for_source(
+        db_session,
+        source_kind=SOURCE_KIND_SESSION_SUMMARY,
+        source_id=str(session.id),
+    )
+    assert len(chunks) == 1
+    assert "Reviewed changes" in chunks[0].content
 
 
 def test_summary_wait_releases_db_and_preserves_primary_objects_and_identity() -> None:
