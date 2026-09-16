@@ -2018,6 +2018,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         stale_after_seconds: int = 120,
         account_id: Optional[Any] = None,
         exclude_execution_id: Optional[Any] = None,
+        hosted_only: bool = False,
     ) -> Dict[Any, int]:
         """How many executions each account currently has admitted.
 
@@ -2025,10 +2026,23 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         absent: they hold no container, no runner and no worker, so counting
         them would let one human decision, or one slow child, block an
         account's remaining slots for days.
+
+        Args:
+            db: Database session.
+            stale_after_seconds: Seconds after which a claim heartbeat is dead.
+            account_id: Count one account instead of every account.
+            exclude_execution_id: Leave this execution out of the count.
+            hosted_only: Count executions that need hosted compute and skip
+                the ones a private runner already holds. The per-account cap
+                bounds a shared pool; an account's own runners are bounded by
+                their own concurrency, so counting them there would punish
+                exactly the accounts that bring capacity.
         """
         from datetime import datetime, timedelta, timezone
 
         from sqlalchemy import func
+
+        from preloop.services.runner_service import runner_assigned_execution_clause
 
         stale_before = datetime.now(timezone.utc) - timedelta(
             seconds=max(1, stale_after_seconds)
@@ -2044,6 +2058,13 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 self._admitted_predicate(stale_before),
             )
         )
+        if hosted_only:
+            query = query.filter(
+                ~runner_assigned_execution_clause(
+                    reference_column=models.FlowExecution.agent_session_reference,
+                    runner_id_column=models.FlowExecution.runner_id,
+                )
+            )
         if account_id is not None:
             query = query.filter(models.Flow.account_id == account_id)
         if exclude_execution_id is not None:
@@ -2199,6 +2220,11 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         claim happen under one transaction-scoped advisory lock keyed on the
         account, so two workers cannot both take the last slot.
 
+        The cap bounds hosted compute only. An execution assigned to one of
+        the account's private runners is bounded by that runner's own
+        capacity (one job per runner today), so it is neither counted nor
+        held back here.
+
         The cap applies to admission only. An execution that already has an
         agent session, or that this worker already owns, is always claimable:
         refusing it would leave a live container unmonitored, which is worse
@@ -2227,6 +2253,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             QUEUED_REASON_ACCOUNT_CAP,
             account_running_cap,
         )
+        from preloop.services.runner_service import is_runner_assigned_reference
 
         now = datetime.now(timezone.utc)
         stale_before = now - timedelta(seconds=max(1, stale_after_seconds))
@@ -2250,12 +2277,19 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         if row is None:
             return None
 
+        # A runner-assigned execution runs on the account's own compute. Its
+        # bound is the runner's free capacity, applied when the job is leased,
+        # not the shared hosted cap.
+        is_runner_assigned = (
+            is_runner_assigned_reference(row.agent_session_reference)
+            or row.runner_id is not None
+        )
         is_fresh_admission = (
             row.agent_session_reference is None
             and row.status == "PENDING"
             and row.orchestrator_worker_id != worker_id
         )
-        if enforce_account_cap and is_fresh_admission:
+        if enforce_account_cap and is_fresh_admission and not is_runner_assigned:
             account_id = (
                 db.query(models.Flow.account_id)
                 .filter(models.Flow.id == row.flow_id)
@@ -2283,6 +2317,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 stale_after_seconds=stale_after_seconds,
                 account_id=account_id,
                 exclude_execution_id=row.id,
+                hosted_only=True,
             ).get(account_id, 0)
             if admitted >= cap:
                 if row.queued_reason != QUEUED_REASON_ACCOUNT_CAP:

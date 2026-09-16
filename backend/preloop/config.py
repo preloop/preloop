@@ -1161,12 +1161,15 @@ class Settings(BaseSettings):
         ),
     )
     flow_execution_max_running_per_account: int = Field(
-        3,
+        5,
         description=(
             "How many flow executions one account may have admitted at once "
-            "across the whole instance. Enforced at claim time, so retries "
-            "and resumes respect it too. Further executions stay PENDING "
-            "with queued_reason set. An account may override this through "
+            "on hosted compute, across the whole instance. Enforced at claim "
+            "time, so retries and resumes respect it too. Further executions "
+            "stay PENDING with queued_reason set. Work assigned to one of the "
+            "account's own private runners is bounded by that runner's "
+            "concurrency instead and is not counted here. An account may "
+            "override this through "
             "account.meta_data['flow_execution_max_running_per_account']."
         ),
     )
@@ -1668,7 +1671,7 @@ class Settings(BaseSettings):
                 os.getenv("FLOW_EXECUTION_MAX_INFLIGHT", "10")
             ),
             flow_execution_max_running_per_account=int(
-                os.getenv("FLOW_EXECUTION_MAX_RUNNING_PER_ACCOUNT", "3")
+                os.getenv("FLOW_EXECUTION_MAX_RUNNING_PER_ACCOUNT", "5")
             ),
             flow_execution_redispatch_backoff_max_seconds=int(
                 os.getenv("FLOW_EXECUTION_REDISPATCH_BACKOFF_MAX_SECONDS", "900")

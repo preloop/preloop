@@ -13,7 +13,12 @@ The cap is per account and is enforced where admission actually happens
 resumes and re-dispatches obey it too. Precedence:
 
 1. ``account.meta_data["flow_execution_max_running_per_account"]``
-2. ``settings.flow_execution_max_running_per_account`` (3)
+2. ``settings.flow_execution_max_running_per_account`` (5)
+
+The cap bounds the shared hosted pool. An execution assigned to one of the
+account's private runners is bounded by that runner's own capacity instead,
+so it is not counted here: charging an account's own compute against the
+shared allowance punishes exactly the accounts that bring capacity.
 
 Unlike the approval window cap, an account override may raise as well as
 lower the deployment default: this is an operator-granted allowance for a
@@ -64,7 +69,7 @@ def default_account_cap() -> int:
     """The deployment-wide allowance, floored at one."""
     return max(
         MIN_ACCOUNT_CAP,
-        _coerce(getattr(settings, "flow_execution_max_running_per_account", 3))
+        _coerce(getattr(settings, "flow_execution_max_running_per_account", 5))
         or MIN_ACCOUNT_CAP,
     )
 

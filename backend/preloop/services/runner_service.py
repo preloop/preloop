@@ -35,6 +35,12 @@ AUTO_RUNNER_POOL = "auto"
 HOSTED_RUNNER_NAME = "Preloop hosted"
 PRIVATE_RUNNER_FALLBACK_NAME = "Private runner"
 
+#: Every runtime reference that names a private runner starts with this.
+RUNNER_REFERENCE_PREFIX = "runner:"
+
+#: ``runner:queued:{pool}:{execution_id}`` has no runner yet.
+QUEUED_RUNNER_REFERENCE_PREFIX = "runner:queued:"
+
 
 def hash_runner_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -111,7 +117,7 @@ def runner_id_from_session_reference(ref: Optional[str]) -> Optional[UUID]:
     and return None. Non-strings are ignored so mocked endpoint tests stay
     hosted rather than querying the database.
     """
-    if not isinstance(ref, str) or not ref.startswith("runner:"):
+    if not isinstance(ref, str) or not ref.startswith(RUNNER_REFERENCE_PREFIX):
         return None
     parts = ref.split(":")
     if len(parts) >= 3 and parts[1] != "queued":
@@ -124,12 +130,55 @@ def runner_id_from_session_reference(ref: Optional[str]) -> Optional[UUID]:
 
 def pool_from_session_reference(ref: Optional[str]) -> Optional[str]:
     """Pool string from ``runner:queued:{pool}:{execution_id}``."""
-    if not isinstance(ref, str) or not ref.startswith("runner:"):
+    if not isinstance(ref, str) or not ref.startswith(RUNNER_REFERENCE_PREFIX):
         return None
     parts = ref.split(":")
     if len(parts) >= 4 and parts[1] == "queued" and parts[2].strip():
         return parts[2].strip()
     return None
+
+
+def is_runner_assigned_reference(ref: Optional[str]) -> bool:
+    """True when a private runner already holds this execution.
+
+    Assigned only: a queued reference is still waiting for a runner and
+    holds hosted-side state (a monitor, a queue timeout), so it is not a
+    private-runner assignment.
+    """
+    return runner_id_from_session_reference(ref) is not None
+
+
+def runner_assigned_execution_clause(
+    *,
+    reference_column: Any,
+    runner_id_column: Any,
+) -> Any:
+    """SQL form of :func:`is_runner_assigned_reference` for count queries.
+
+    Kept next to the string parser so the reference shape is written down
+    once. Two columns say the same thing from different ends: the runtime
+    reference is set by the executor, ``flow_execution.runner_id`` by the
+    lease, and a row with either is running on the account's own compute.
+
+    Args:
+        reference_column: ``FlowExecution.agent_session_reference`` column.
+        runner_id_column: ``FlowExecution.runner_id`` column.
+
+    Returns:
+        A SQLAlchemy boolean clause, true for runner-assigned executions.
+    """
+    from sqlalchemy import and_, or_
+
+    return or_(
+        runner_id_column.isnot(None),
+        and_(
+            # An unset reference must compare FALSE rather than NULL, or the
+            # negation of this clause would drop every hosted execution.
+            reference_column.isnot(None),
+            reference_column.like(f"{RUNNER_REFERENCE_PREFIX}%"),
+            ~reference_column.like(f"{QUEUED_RUNNER_REFERENCE_PREFIX}%"),
+        ),
+    )
 
 
 def derive_execution_runner(

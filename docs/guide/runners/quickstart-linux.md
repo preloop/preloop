@@ -111,6 +111,14 @@ The service reads credentials the same way the CLI does; make sure
 `~/.preloop/config.yaml` exists (via `preloop login`) for the user that
 runs the service, since the unit does not inherit your shell exports.
 
+## How runner work counts against your account
+
+A Preloop instance bounds how many executions one account may have admitted
+at once on shared hosted compute (`FLOW_EXECUTION_MAX_RUNNING_PER_ACCOUNT`,
+default 5). Work assigned to one of your own runners is bounded by that
+runner's capacity instead and does not count against the hosted allowance,
+so adding runners adds throughput rather than competing with it.
+
 ## What the runner executes
 
 Private Docker execution supports **Codex and OpenCode**. Update both the

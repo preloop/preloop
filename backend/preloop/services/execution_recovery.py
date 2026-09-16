@@ -216,9 +216,10 @@ class ExecutionRecoveryService:
           that still needs a container is left queued. Publishing into a
           queue nobody can drain is pure load;
         * per-account admission: an execution whose account is already at its
-          concurrency cap is left alone. Publishing it would have a worker
-          fetch it, refuse the claim and nak it, which is exactly the storm
-          the cap is supposed to end.
+          hosted concurrency cap is left alone. Publishing it would have a
+          worker fetch it, refuse the claim and nak it, which is exactly the
+          storm the cap is supposed to end. Work a private runner already
+          holds does not count towards that cap.
 
         The last two filters apply only to unstarted PENDING rows. Anything
         with a live agent session is re-dispatched whatever the cap or the
@@ -234,7 +235,7 @@ class ExecutionRecoveryService:
         counts = summary if summary is not None else ReaperPassSummary()
         moment = now or _utcnow()
         admitted = crud_flow_execution.count_admitted_by_account(
-            db, stale_after_seconds=stale_after_seconds
+            db, stale_after_seconds=stale_after_seconds, hosted_only=True
         )
         planned: dict[Any, int] = {}
         caps: dict[Any, int] = {}
