@@ -16,13 +16,21 @@ The semantic half embeds the query, which spends money under the account's own
 opt in and daily cap. It is still one route and one body: a mode the account
 cannot serve is answered with what it can serve plus a marker saying what is
 missing, so a client never has to ask which modes this deployment supports.
+
+Every call writes one audit row (#688). A content search is a read across
+every captured prompt, response and tool call the account holds, which is the
+broadest read the product offers, and the record of who ran it is what makes
+the feature answerable to whoever is asked whether anyone grepped the
+transcripts. The row never carries snippet text, and carries the query text
+only when the account opted in; see
+``preloop.services.session_search_audit``.
 """
 
 from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
@@ -35,7 +43,7 @@ from preloop.schemas.session_search import (
     SessionSearchRequest,
     SessionSearchResponse,
 )
-from preloop.services import session_search
+from preloop.services import session_search_audit
 from preloop.utils.permissions import require_permission
 
 router = APIRouter()
@@ -50,6 +58,7 @@ router = APIRouter()
 async def search_runtime_sessions(
     payload: SessionSearchRequest,
     account: Annotated[Account, Depends(get_account_for_user)],
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> SessionSearchResponse:
@@ -60,11 +69,21 @@ async def search_runtime_sessions(
     vector or both put it there. ``semantic`` and ``hybrid`` embed the query
     and search the corpus vectors; when that half cannot run, the answer is
     keyword results with a degraded marker naming the cause, never an error.
+
+    The call is audited either way. A refusal raised inside the handler is
+    recorded as denied and a broken search as failed, so a trail with no row
+    for a search means no search ran, not that one was hidden.
     """
+    actor = session_search_audit.user_actor(
+        current_user,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
     return await run_db_off_loop(
-        lambda: session_search.search_sessions(
+        lambda: session_search_audit.audited_search(
             db,
             account_id=account.id,
             request=payload,
+            actor=actor,
         )
     )

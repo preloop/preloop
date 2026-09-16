@@ -24,6 +24,10 @@ reported as a count, not dropped quietly.
 
 Nothing here filters by account: the account bound is applied in SQL by the
 CRUD query the search service calls, exactly as it is for the endpoint.
+
+Every call is audited, answered or refused, with the agent as the actor and
+``source="mcp"`` on the row (#688), so an operator reading the trail can tell
+an agent's grep over the transcripts from a person's.
 """
 
 from __future__ import annotations
@@ -44,7 +48,7 @@ from preloop.schemas.session_search import (
     SessionSearchResponse,
     SessionSearchResult,
 )
-from preloop.services import session_search
+from preloop.services import session_search_audit
 from preloop.services.subject_governance import (
     get_account_governance_defaults,
     get_subject_governance,
@@ -165,6 +169,40 @@ def _refusal(reason: str, detail: str, *, scope: str) -> Dict[str, Any]:
     }
 
 
+def _audit_refusal(
+    db: Session,
+    *,
+    account_id: Any,
+    actor: session_search_audit.SearchActor,
+    query: str,
+    mode: Optional[str],
+    scope: str,
+    reason: str,
+    filters: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Record a refused search, which is the row a reviewer wants most.
+
+    A refusal is an attempted read of the corpus: the agent asked for
+    something it was not allowed to have, and that is worth more to whoever
+    reviews the trail than most of the searches that succeeded. The status is
+    ``denied`` for every refusal, and the reason names which rule declined it.
+    """
+    session_search_audit.record_search(
+        db,
+        account_id=account_id,
+        actor=actor,
+        query=query,
+        mode=mode or "keyword",
+        status=session_search_audit.STATUS_DENIED,
+        filters=filters or {},
+        include_query_text=session_search_audit.query_text_audit_enabled(
+            session_search_audit.account_meta_data(db, account_id=account_id)
+        ),
+        scope=scope,
+        reason=reason,
+    )
+
+
 def _match_reason(result: SessionSearchResult) -> str:
     """Say why this session is in the answer, in one short phrase."""
     kinds: List[str] = []
@@ -268,8 +306,23 @@ def search_for_agent(
         it. Nothing here raises for a bad request: a model corrects a refusal
         on its next turn, and cannot correct a stack trace.
     """
+    actor = session_search_audit.agent_actor(
+        managed_agent_id=subject_context.get("managed_agent_id"),
+        api_key_id=subject_context.get("api_key_id"),
+        runtime_principal_id=runtime_principal_id,
+        source=session_search_audit.SOURCE_MCP,
+    )
     requested_scope = (scope or SEARCH_SESSIONS_SCOPE_OWN).strip().lower()
     if requested_scope not in SEARCH_SESSIONS_SCOPES:
+        _audit_refusal(
+            db,
+            account_id=account_id,
+            actor=actor,
+            query=query,
+            mode=mode,
+            scope=requested_scope,
+            reason=REFUSAL_UNKNOWN_SCOPE,
+        )
         return _refusal(
             REFUSAL_UNKNOWN_SCOPE,
             "scope must be one of: " + ", ".join(SEARCH_SESSIONS_SCOPES) + ".",
@@ -280,6 +333,15 @@ def search_for_agent(
         account = crud_account.get(db, id=account_id)
         meta_data = getattr(account, "meta_data", None) if account else None
         if not account_scope_granted(meta_data, subject_context=subject_context):
+            _audit_refusal(
+                db,
+                account_id=account_id,
+                actor=actor,
+                query=query,
+                mode=mode,
+                scope=requested_scope,
+                reason=REFUSAL_ACCOUNT_SCOPE_NOT_GRANTED,
+            )
             return _refusal(
                 REFUSAL_ACCOUNT_SCOPE_NOT_GRANTED,
                 "Searching every session of the account needs the "
@@ -293,6 +355,15 @@ def search_for_agent(
 
     principal = (runtime_principal_id or "").strip()
     if requested_scope == SEARCH_SESSIONS_SCOPE_OWN and not principal:
+        _audit_refusal(
+            db,
+            account_id=account_id,
+            actor=actor,
+            query=query,
+            mode=mode,
+            scope=requested_scope,
+            reason=REFUSAL_NO_AGENT_IDENTITY,
+        )
         return _refusal(
             REFUSAL_NO_AGENT_IDENTITY,
             "This session carries no agent identity, so there is no set of "
@@ -322,14 +393,27 @@ def search_for_agent(
     try:
         request = SessionSearchRequest.model_validate(payload)
     except ValidationError as exc:
+        _audit_refusal(
+            db,
+            account_id=account_id,
+            actor=actor,
+            query=query,
+            mode=mode,
+            scope=requested_scope,
+            reason=REFUSAL_INVALID_REQUEST,
+        )
         return _refusal(
             REFUSAL_INVALID_REQUEST,
             _validation_detail(exc),
             scope=requested_scope,
         )
 
-    response = session_search.search_sessions(
-        db, account_id=account_id, request=request
+    response = session_search_audit.audited_search(
+        db,
+        account_id=account_id,
+        request=request,
+        actor=actor,
+        scope=requested_scope,
     )
     return _to_tool_response(response, scope=requested_scope)
 

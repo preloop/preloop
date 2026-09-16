@@ -124,3 +124,11 @@ cap can return fewer. The corpus itself is what is searchable: content the
 deployment never captured, or that a redaction withheld afterwards, is not
 returned, and a result whose snippet was withheld says so in its
 `match_reason`.
+
+## Every call is audited
+
+A search through the tool writes one audit row with the agent as the actor and
+`source: "mcp"`, answered or refused, so an operator reading the trail can
+tell an agent's grep over the transcripts from a person's. The query text is
+not stored unless the account opted in. See
+[docs/guide/session-search-audit.md](session-search-audit.md).
