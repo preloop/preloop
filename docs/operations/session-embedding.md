@@ -10,6 +10,37 @@ vectors only. `SESSION_SEARCH_INDEX_ENABLED` gates keyword chunks. Accounts
 must still opt in through `session_embedding_setting`; the shipped default
 embeds nothing.
 
+## What gets embedded
+
+`session_embedding_setting.scope` decides how much of a session becomes
+vectors. It is `summaries_only` by default, for new accounts and for every
+row that existed before the column did.
+
+| Scope | Chunks embedded | Rough cost for 10k sessions |
+| --- | --- | --- |
+| `summaries_only` (default) | the session's own title and summary chunk, about one per session | about 60 MB of vectors |
+| `full` | every chunk, transcripts included, about 40 per session | about 2.4 GB of vectors, plus the HNSW index |
+
+The arithmetic: a 1536 wide vector of 4 byte floats is about 6 KB, so a
+session of about 40 chunks is about 240 KB of vectors, and 10k of those
+sessions are roughly 2.4 GB before an index is built. A title and summary
+are one short chunk and carry the meaning semantic search is good at, which
+is most of the value at about a fortieth of the storage and the provider
+spend.
+
+Changing the scope changes nothing that already exists. Narrowing to
+`summaries_only` keeps the vectors an account produced under `full` and
+stops new transcript chunks being claimed from the next worker pass;
+widening to `full` hands the untouched backlog back to the worker, still
+under the daily cap. Keyword search reads the whole corpus in both cases,
+so nothing becomes unfindable, and a semantic hit from a summaries-only
+account names its source in the result so it reads as a summary match.
+
+The setting is read and written at `GET` and `PUT
+/api/v1/runtime-sessions/settings/embedding`. Reading it takes
+`view_runtime_sessions`; changing the scope takes `manage_budgets`, because
+widening it is a spending decision. An unknown scope is a 422.
+
 ## Daily cap
 
 `SESSION_EMBEDDING_DAILY_CAP_USD` (default 2.0) is the per-account money

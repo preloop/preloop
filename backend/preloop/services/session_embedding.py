@@ -14,7 +14,11 @@ Shape of one run (:func:`run_account_batch`):
    *before* anything is claimed. At the cap the run stops with a degraded
    marker and the chunks stay pending; the next day's run takes them.
 3. Chunks are claimed oldest first, inside one session, and only if they are
-   ``clear`` and not under a legal hold.
+   ``clear``, not under a legal hold, and of a source kind the account's
+   embedding scope admits. ``summaries_only``, the default, admits the
+   session's own title and summary chunk and nothing else; ``full`` admits
+   every kind. Narrowing the scope deletes no vector: it only stops new ones
+   being made, and widening it hands the untouched backlog back to the worker.
 4. One provider call embeds the batch, one purpose tagged usage row records
    what it cost, and each chunk records the model identity that produced its
    vector.
@@ -54,6 +58,7 @@ from preloop.models.models.session_embedding_setting import (
     PROVIDER_LOCAL,
     PROVIDER_OPENAI_COMPATIBLE,
     SessionEmbeddingSetting,
+    source_kinds_for_scope,
 )
 from preloop.models.models.session_search_document import (
     EMBEDDING_DIMENSIONS,
@@ -386,11 +391,20 @@ def run_account_batch(
             account_id=account, status=STATUS_DISABLED, reason="account_opt_out"
         )
 
+    # What the account's scope admits. ``None`` is ``full``: every kind.
+    # summaries_only is the default, so an account that never said anything
+    # embeds one short chunk per session rather than its whole transcript.
+    source_kinds = source_kinds_for_scope(setting.scope)
+
     held_sessions = crud_session_search_document.held_runtime_session_ids(
         db, account_id=account_id
     )
     pending = crud_session_search_document.count_pending_embeddings(
-        db, account_id=account_id, excluded_session_ids=held_sessions, now=now
+        db,
+        account_id=account_id,
+        excluded_session_ids=held_sessions,
+        now=now,
+        source_kinds=source_kinds,
     )
     if pending == 0:
         return EmbeddingBatchResult(account_id=account, status=STATUS_IDLE)
@@ -438,6 +452,7 @@ def run_account_batch(
         limit=size,
         excluded_session_ids=held_sessions,
         now=now,
+        source_kinds=source_kinds,
         commit=True,
     )
     if not claimed:
@@ -539,7 +554,11 @@ def run_account_batch(
     )
 
     remaining = crud_session_search_document.count_pending_embeddings(
-        db, account_id=account_id, excluded_session_ids=held_sessions, now=now
+        db,
+        account_id=account_id,
+        excluded_session_ids=held_sessions,
+        now=now,
+        source_kinds=source_kinds,
     )
     return EmbeddingBatchResult(
         account_id=account,

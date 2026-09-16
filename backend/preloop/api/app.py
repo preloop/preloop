@@ -799,6 +799,7 @@ def _register_control_plane_routes(
         search as search_router,
         security_maintenance,
         security_screen,
+        session_embedding_settings,
         session_optimization,
         session_search,
         tools,
@@ -1084,6 +1085,16 @@ def _register_control_plane_routes(
     # out of access logs; see the module docstring.
     app.include_router(
         session_search.router,
+        prefix="/api/v1",
+        tags=["Runtime Sessions"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+
+    # Per account opt in for embedding session content, including how much of
+    # a session is embedded. Read is a sessions permission, write is a budget
+    # one; see the module docstring.
+    app.include_router(
+        session_embedding_settings.router,
         prefix="/api/v1",
         tags=["Runtime Sessions"],
         dependencies=[Depends(get_current_active_user)],

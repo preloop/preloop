@@ -12,10 +12,16 @@ from preloop.models.crud import crud_session_embedding_setting
 from preloop.models.crud.session_embedding_setting import SessionEmbeddingConfigError
 from preloop.models.models.session_embedding_setting import (
     DEGRADED_DAILY_CAP,
+    EMBEDDING_SCOPE_FULL,
+    EMBEDDING_SCOPE_SUMMARIES_ONLY,
     PROVIDER_LOCAL,
     PROVIDER_OPENAI_COMPATIBLE,
+    effective_scope,
 )
-from preloop.models.models.session_search_document import EMBEDDING_DIMENSIONS
+from preloop.models.models.session_search_document import (
+    EMBEDDING_DIMENSIONS,
+    SOURCE_KIND_SESSION_SUMMARY,
+)
 
 
 def test_an_account_that_never_asked_starts_disabled(db_session, test_user):
@@ -172,3 +178,110 @@ def test_a_self_hosted_hostname_on_a_private_network_is_kept(db_session, test_us
     )
 
     assert setting.base_url == "https://embeddings.vpc.internal/v1"
+
+
+def test_a_new_row_is_summaries_only(db_session, test_user):
+    """The default answer to "how much" is the cheap one."""
+    account_id = str(test_user.account_id)
+
+    created = crud_session_embedding_setting.get_or_create(
+        db_session, account_id=account_id
+    )
+    assert created.scope == EMBEDDING_SCOPE_SUMMARIES_ONLY
+    assert created.embedded_source_kinds == (SOURCE_KIND_SESSION_SUMMARY,)
+
+
+def test_opting_in_without_saying_a_scope_keeps_the_default(db_session, test_user):
+    """Naming a provider is not an invitation to embed everything."""
+    account_id = str(test_user.account_id)
+
+    setting = crud_session_embedding_setting.enable(
+        db_session,
+        account_id=account_id,
+        provider=PROVIDER_OPENAI_COMPATIBLE,
+        model_identifier="text-embedding-3-small",
+        base_url="https://embeddings.example.com/v1",
+    )
+
+    assert setting.scope == EMBEDDING_SCOPE_SUMMARIES_ONLY
+
+
+def test_a_re_enable_keeps_the_scope_the_account_chose(db_session, test_user):
+    """Turning it off and on again does not silently widen what is sent."""
+    account_id = str(test_user.account_id)
+    crud_session_embedding_setting.set_scope(
+        db_session, account_id=account_id, scope=EMBEDDING_SCOPE_FULL
+    )
+
+    setting = crud_session_embedding_setting.enable(
+        db_session,
+        account_id=account_id,
+        provider=PROVIDER_OPENAI_COMPATIBLE,
+        model_identifier="text-embedding-3-small",
+        base_url="https://embeddings.example.com/v1",
+    )
+
+    assert setting.scope == EMBEDDING_SCOPE_FULL
+
+
+def test_the_scope_round_trips_in_both_directions(db_session, test_user):
+    """Widening and narrowing are both one call, and neither is a migration."""
+    account_id = str(test_user.account_id)
+
+    widened = crud_session_embedding_setting.set_scope(
+        db_session, account_id=account_id, scope=EMBEDDING_SCOPE_FULL, commit=True
+    )
+    assert widened.scope == EMBEDDING_SCOPE_FULL
+    assert widened.embedded_source_kinds is None
+
+    narrowed = crud_session_embedding_setting.set_scope(
+        db_session,
+        account_id=account_id,
+        scope=EMBEDDING_SCOPE_SUMMARIES_ONLY,
+        commit=True,
+    )
+    assert narrowed.scope == EMBEDDING_SCOPE_SUMMARIES_ONLY
+    assert (
+        crud_session_embedding_setting.get_for_account(
+            db_session, account_id=account_id
+        ).scope
+        == EMBEDDING_SCOPE_SUMMARIES_ONLY
+    )
+
+
+@pytest.mark.parametrize("value", ["everything", "", "SUMMARIES_ONLY", "transcripts"])
+def test_an_unknown_scope_is_refused(db_session, test_user, value):
+    """Guessing here would either overspend or embed nothing at all."""
+    account_id = str(test_user.account_id)
+
+    with pytest.raises(SessionEmbeddingConfigError) as error:
+        crud_session_embedding_setting.set_scope(
+            db_session, account_id=account_id, scope=value
+        )
+    assert error.value.code == "invalid_scope"
+
+    with pytest.raises(SessionEmbeddingConfigError) as enable_error:
+        crud_session_embedding_setting.enable(
+            db_session,
+            account_id=account_id,
+            provider=PROVIDER_OPENAI_COMPATIBLE,
+            model_identifier="text-embedding-3-small",
+            base_url="https://embeddings.example.com/v1",
+            scope=value,
+        )
+    assert enable_error.value.code == "invalid_scope"
+
+
+def test_a_scope_this_build_does_not_know_embeds_less_not_more(db_session, test_user):
+    """A row from a newer build is read as the default, never as full."""
+    account_id = str(test_user.account_id)
+    setting = crud_session_embedding_setting.get_or_create(
+        db_session, account_id=account_id
+    )
+    setting.scope = "titles_only_and_more"
+    db_session.flush()
+
+    assert setting.embedded_source_kinds == (SOURCE_KIND_SESSION_SUMMARY,)
+    assert effective_scope(setting.scope) == EMBEDDING_SCOPE_SUMMARIES_ONLY
+    assert effective_scope(EMBEDDING_SCOPE_FULL) == EMBEDDING_SCOPE_FULL
+    assert effective_scope(None) == EMBEDDING_SCOPE_SUMMARIES_ONLY

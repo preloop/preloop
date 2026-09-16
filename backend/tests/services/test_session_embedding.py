@@ -28,6 +28,8 @@ from preloop.models.models.session_embedding_setting import (
     DEGRADED_DIMENSION_MISMATCH,
     DEGRADED_PROVIDER_ERROR,
     DEGRADED_UNPRICED_MODEL,
+    EMBEDDING_SCOPE_FULL,
+    EMBEDDING_SCOPE_SUMMARIES_ONLY,
     PROVIDER_OPENAI_COMPATIBLE,
 )
 from preloop.models.models.session_search_document import (
@@ -38,6 +40,7 @@ from preloop.models.models.session_search_document import (
     EMBEDDING_STATE_PENDING,
     REDACTION_STATE_METADATA_ONLY,
     REDACTION_STATE_REDACTED,
+    SOURCE_KIND_SESSION_SUMMARY,
     SOURCE_KIND_TRANSCRIPT_MESSAGE,
 )
 from preloop.services import session_embedding
@@ -143,10 +146,18 @@ def _chunks(
 
 
 def _opt_in(db_session, account_id, **overrides):
+    """Opt in, embedding every chunk unless the test says otherwise.
+
+    The tests that use this helper are about the worker's mechanics, and
+    their fixtures are transcript chunks, so they name ``full`` rather than
+    inherit the ``summaries_only`` default. The default is what the scope
+    tests further down assert.
+    """
     kwargs = {
         "provider": PROVIDER_OPENAI_COMPATIBLE,
         "model_identifier": "text-embedding-3-small",
         "base_url": "https://embeddings.example.com/v1",
+        "scope": EMBEDDING_SCOPE_FULL,
     }
     kwargs.update(overrides)
     setting = crud_session_embedding_setting.enable(
@@ -797,3 +808,186 @@ def test_build_provider_refuses_a_hostname_rebound_to_link_local(
 
     with pytest.raises(EmbeddingProviderError, match="loopback, link-local"):
         build_provider(setting)
+
+
+def _summary_chunk(db_session, *, account_id, session, occurred_at=OCCURRED_AT):
+    """Write the one chunk a session's own title and summary produce."""
+    stored = crud_session_search_document.replace_source_chunks(
+        db_session,
+        account_id=account_id,
+        runtime_session_id=session.id,
+        source_kind=SOURCE_KIND_SESSION_SUMMARY,
+        source_id=str(session.id),
+        occurred_at=occurred_at,
+        chunks=[
+            SessionSearchChunk(
+                content="summary: the run that fixed the connection pool",
+                chunk_index=0,
+                role="system",
+            )
+        ],
+    )
+    db_session.commit()
+    return stored
+
+
+def _embedded_ids(db_session, account_id):
+    rows = (
+        db_session.query(models.SessionSearchDocument)
+        .filter(
+            models.SessionSearchDocument.account_id == account_id,
+            models.SessionSearchDocument.embedding_state == EMBEDDING_STATE_EMBEDDED,
+        )
+        .all()
+    )
+    return {str(row.id) for row in rows}
+
+
+def test_summaries_only_embeds_the_summary_and_leaves_the_transcript(
+    db_session, test_user
+):
+    """The shipped scope: one vector per session, not one per turn."""
+    account_id = str(test_user.account_id)
+    session = _session(db_session, account_id)
+    _chunks(db_session, account_id=account_id, session=session, count=30)
+    _summary_chunk(db_session, account_id=account_id, session=session)
+    _opt_in(db_session, account_id, scope=EMBEDDING_SCOPE_SUMMARIES_ONLY)
+    provider = FakeProvider()
+
+    result = run_account_batch(
+        db_session, account_id=account_id, provider=provider, batch_size=64
+    )
+
+    assert result.status == STATUS_OK
+    assert result.embedded == 1
+    assert result.pending == 0
+    embedded = (
+        db_session.query(models.SessionSearchDocument)
+        .filter(
+            models.SessionSearchDocument.account_id == account_id,
+            models.SessionSearchDocument.embedding_state == EMBEDDING_STATE_EMBEDDED,
+        )
+        .all()
+    )
+    assert [row.source_kind for row in embedded] == [SOURCE_KIND_SESSION_SUMMARY]
+    # The transcript is not embedded and not consumed: it is simply not
+    # this account's backlog while the scope says summaries only.
+    still_pending = (
+        db_session.query(models.SessionSearchDocument)
+        .filter(
+            models.SessionSearchDocument.account_id == account_id,
+            models.SessionSearchDocument.source_kind == SOURCE_KIND_TRANSCRIPT_MESSAGE,
+            models.SessionSearchDocument.embedding_state == EMBEDDING_STATE_PENDING,
+        )
+        .count()
+    )
+    assert still_pending == 30
+    # Nothing outside the scope was ever sent to the provider.
+    assert len(provider.calls) == 1
+    assert len(provider.calls[0]) == 1
+
+
+def test_full_embeds_every_chunk_of_the_session(db_session, test_user):
+    """The opt in for transcript recall embeds the transcript."""
+    account_id = str(test_user.account_id)
+    session = _session(db_session, account_id)
+    _chunks(db_session, account_id=account_id, session=session, count=30)
+    _summary_chunk(db_session, account_id=account_id, session=session)
+    _opt_in(db_session, account_id, scope=EMBEDDING_SCOPE_FULL)
+
+    result = run_account_batch(
+        db_session, account_id=account_id, provider=FakeProvider(), batch_size=64
+    )
+
+    assert result.status == STATUS_OK
+    assert result.embedded == 31
+    assert result.pending == 0
+
+
+def test_widening_the_scope_embeds_the_backlog_and_keeps_existing_vectors(
+    db_session, test_user
+):
+    """full picks up what summaries_only left, without redoing the summary."""
+    account_id = str(test_user.account_id)
+    session = _session(db_session, account_id)
+    _chunks(db_session, account_id=account_id, session=session, count=30)
+    _summary_chunk(db_session, account_id=account_id, session=session)
+    _opt_in(db_session, account_id, scope=EMBEDDING_SCOPE_SUMMARIES_ONLY)
+
+    first = run_account_batch(
+        db_session, account_id=account_id, provider=FakeProvider(), batch_size=64
+    )
+    assert first.embedded == 1
+    summary_row = (
+        db_session.query(models.SessionSearchDocument)
+        .filter(
+            models.SessionSearchDocument.account_id == account_id,
+            models.SessionSearchDocument.source_kind == SOURCE_KIND_SESSION_SUMMARY,
+        )
+        .one()
+    )
+    embedded_at = summary_row.embedded_at
+    attempts = summary_row.embedding_attempts
+
+    crud_session_embedding_setting.set_scope(
+        db_session, account_id=account_id, scope=EMBEDDING_SCOPE_FULL, commit=True
+    )
+    second = run_account_batch(
+        db_session, account_id=account_id, provider=FakeProvider(), batch_size=64
+    )
+
+    assert second.status == STATUS_OK
+    assert second.embedded == 30
+    db_session.refresh(summary_row)
+    # The chunk that was already embedded is not claimed again: widening the
+    # scope is not a re-embed.
+    assert summary_row.embedded_at == embedded_at
+    assert summary_row.embedding_attempts == attempts
+
+
+def test_narrowing_the_scope_stops_new_vectors_and_deletes_none(db_session, test_user):
+    """summaries_only after full keeps every vector already written."""
+    account_id = str(test_user.account_id)
+    session = _session(db_session, account_id)
+    _chunks(db_session, account_id=account_id, session=session, count=30)
+    # Written last, so the first small batch is transcript chunks only and
+    # the summary is still waiting when the scope narrows.
+    _summary_chunk(
+        db_session,
+        account_id=account_id,
+        session=session,
+        occurred_at=OCCURRED_AT + timedelta(hours=1),
+    )
+    _opt_in(db_session, account_id, scope=EMBEDDING_SCOPE_FULL)
+
+    first = run_account_batch(
+        db_session, account_id=account_id, provider=FakeProvider(), batch_size=10
+    )
+    assert first.embedded == 10
+    before = _embedded_ids(db_session, account_id)
+
+    crud_session_embedding_setting.set_scope(
+        db_session,
+        account_id=account_id,
+        scope=EMBEDDING_SCOPE_SUMMARIES_ONLY,
+        commit=True,
+    )
+    provider = FakeProvider()
+    second = run_account_batch(
+        db_session, account_id=account_id, provider=provider, batch_size=10
+    )
+
+    # The summary is still in scope, the 20 transcript chunks left are not,
+    # and no vector written under `full` is removed.
+    assert second.status == STATUS_OK
+    assert second.embedded == 1
+    assert second.pending == 0
+    after = _embedded_ids(db_session, account_id)
+    assert before < after
+    new_rows = (
+        db_session.query(models.SessionSearchDocument)
+        .filter(models.SessionSearchDocument.id.in_(after - before))
+        .all()
+    )
+    assert [row.source_kind for row in new_rows] == [SOURCE_KIND_SESSION_SUMMARY]
+    assert len(provider.calls) == 1

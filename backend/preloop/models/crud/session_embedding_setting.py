@@ -17,6 +17,8 @@ from sqlalchemy.orm import Session
 
 from ..models.session_embedding_setting import (
     EMBEDDING_PROVIDERS,
+    EMBEDDING_SCOPE_SUMMARIES_ONLY,
+    EMBEDDING_SCOPES,
     PROVIDER_LOCAL,
     PROVIDER_OPENAI_COMPATIBLE,
     SessionEmbeddingSetting,
@@ -172,6 +174,23 @@ def validate_openai_compatible_base_url(url: str) -> str:
     return cleaned
 
 
+def validate_scope(scope: str) -> str:
+    """Return a known scope, or raise.
+
+    Raises:
+        SessionEmbeddingConfigError: The value is not a scope this build
+            knows. Guessing here would either embed more than an account
+            asked for or quietly embed nothing.
+    """
+    cleaned = (scope or "").strip()
+    if cleaned not in EMBEDDING_SCOPES:
+        raise SessionEmbeddingConfigError(
+            "invalid_scope",
+            f"scope must be one of {', '.join(EMBEDDING_SCOPES)}",
+        )
+    return cleaned
+
+
 class CRUDSessionEmbeddingSetting(CRUDBase[SessionEmbeddingSetting]):
     """CRUD operations for :class:`SessionEmbeddingSetting`."""
 
@@ -197,6 +216,7 @@ class CRUDSessionEmbeddingSetting(CRUDBase[SessionEmbeddingSetting]):
             enabled=False,
             provider=PROVIDER_OPENAI_COMPATIBLE,
             dimensions=EMBEDDING_DIMENSIONS,
+            scope=EMBEDDING_SCOPE_SUMMARIES_ONLY,
         )
         db.add(setting)
         db.flush()
@@ -215,18 +235,24 @@ class CRUDSessionEmbeddingSetting(CRUDBase[SessionEmbeddingSetting]):
         base_url: Optional[str] = None,
         dimensions: int = EMBEDDING_DIMENSIONS,
         daily_cap_usd: Optional[float] = None,
+        scope: Optional[str] = None,
         user_id: Optional[Any] = None,
         now: Optional[datetime] = None,
         commit: bool = False,
     ) -> SessionEmbeddingSetting:
         """Turn embedding on for one account, naming what it will talk to.
 
+        ``scope`` is optional: omitting it keeps whatever the row already
+        says, so a re-enable does not silently widen what is embedded, and a
+        first opt in takes the ``summaries_only`` default.
+
         Raises:
             SessionEmbeddingConfigError: The provider is unknown, the model is
                 missing, an OpenAI compatible provider has no base url, the
                 base url is not https, targets a private IP literal, or
-                resolves to a loopback, link-local, or metadata host, or the
-                requested width is not the width the corpus column stores.
+                resolves to a loopback, link-local, or metadata host, the
+                requested width is not the width the corpus column stores, or
+                the scope is not a scope this build knows.
         """
         if provider not in EMBEDDING_PROVIDERS:
             raise SessionEmbeddingConfigError(
@@ -264,6 +290,7 @@ class CRUDSessionEmbeddingSetting(CRUDBase[SessionEmbeddingSetting]):
             raise SessionEmbeddingConfigError(
                 "invalid_daily_cap", "the daily cap cannot be negative"
             )
+        cleaned_scope = validate_scope(scope) if scope is not None else None
 
         setting = self.get_or_create(db, account_id=account_id)
         setting.enabled = True
@@ -274,6 +301,8 @@ class CRUDSessionEmbeddingSetting(CRUDBase[SessionEmbeddingSetting]):
         setting.daily_cap_usd = (
             float(daily_cap_usd) if daily_cap_usd is not None else None
         )
+        if cleaned_scope is not None:
+            setting.scope = cleaned_scope
         setting.enabled_at = now or datetime.now(UTC)
         setting.enabled_by_user_id = user_id
         # A fresh opt in starts clean: yesterday's cap is not today's state.
@@ -293,6 +322,34 @@ class CRUDSessionEmbeddingSetting(CRUDBase[SessionEmbeddingSetting]):
         if setting is None:
             return None
         setting.enabled = False
+        db.flush()
+        if commit:
+            db.commit()
+            db.refresh(setting)
+        return setting
+
+    def set_scope(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        scope: str,
+        commit: bool = False,
+    ) -> SessionEmbeddingSetting:
+        """Say how much of a session this account embeds from now on.
+
+        Narrowing to ``summaries_only`` deletes nothing: vectors already
+        written stay, and the next worker pass simply stops claiming
+        transcript chunks. Widening to ``full`` hands the backlog back to the
+        worker, which still works through it under the daily cap.
+
+        Raises:
+            SessionEmbeddingConfigError: The scope is not one this build
+                knows.
+        """
+        cleaned = validate_scope(scope)
+        setting = self.get_or_create(db, account_id=account_id)
+        setting.scope = cleaned
         db.flush()
         if commit:
             db.commit()

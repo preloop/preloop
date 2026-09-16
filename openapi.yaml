@@ -11782,6 +11782,64 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/runtime-sessions/settings/embedding:
+    get:
+      tags:
+      - Runtime Sessions
+      summary: Read this account's session embedding setting
+      description: 'Return the setting, creating the shipped default row if there
+        is none.
+
+
+        An account that never opted in reads ``enabled = false`` and
+
+        ``scope = summaries_only``, which is what it would get if it opted in
+
+        without saying anything else.'
+      operationId: read_session_embedding_setting_api_v1_runtime_sessions_settings_embedding_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEmbeddingSettingResponse'
+      security:
+      - bearerAuth: []
+    put:
+      tags:
+      - Runtime Sessions
+      summary: Set how much of a session this account embeds
+      description: 'Change the scope. Existing vectors are never touched by this call.
+
+
+        Narrowing to ``summaries_only`` stops new transcript chunks being
+
+        embedded from the next worker pass; widening to ``full`` gives the
+
+        untouched backlog back to the worker, still under the daily cap.'
+      operationId: update_session_embedding_setting_api_v1_runtime_sessions_settings_embedding_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionEmbeddingSettingUpdate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEmbeddingSettingResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/roles:
     get:
       tags:
@@ -25591,6 +25649,89 @@ components:
         \    threshold: Finite threshold in [0, 1] this deployment screens at.\n \
         \   primary_outcome: Optional lowercase label naming the dominant rule\n \
         \       category; omitted for benign content."
+    SessionEmbeddingSettingResponse:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+          description: Whether this account has opted in to embedding.
+        scope:
+          type: string
+          enum:
+          - summaries_only
+          - full
+          title: Scope
+          description: How much of a session is embedded.
+        scope_help:
+          type: string
+          title: Scope Help
+          description: One sentence on what the scopes cost.
+          default: summaries_only embeds each session's generated title and summary,
+            which is about one short chunk per session; full also embeds transcripts,
+            which is roughly forty times the vectors and the provider spend for the
+            same sessions. Keyword search covers the whole corpus either way.
+        provider:
+          type: string
+          title: Provider
+          description: Provider family the vectors come from.
+        model_identifier:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Identifier
+          description: Model name as the provider knows it.
+        base_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Base Url
+          description: Endpoint the text is posted to, when there is one.
+        dimensions:
+          type: integer
+          title: Dimensions
+          description: Width of the stored vectors.
+        daily_cap_usd:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Daily Cap Usd
+          description: Account cap in USD; null falls back to the deployment.
+        degraded_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Degraded Reason
+          description: Why the last run did less than it wanted to.
+        degraded_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Degraded At
+          description: When that degraded state was recorded.
+      type: object
+      required:
+      - enabled
+      - scope
+      - provider
+      - dimensions
+      title: SessionEmbeddingSettingResponse
+      description: What one account's embedding setting says right now.
+    SessionEmbeddingSettingUpdate:
+      properties:
+        scope:
+          type: string
+          enum:
+          - summaries_only
+          - full
+          title: Scope
+          description: summaries_only (default) or full.
+      additionalProperties: false
+      type: object
+      required:
+      - scope
+      title: SessionEmbeddingSettingUpdate
+      description: The one thing this endpoint lets an account change.
     SessionSearchDegraded:
       properties:
         keyword:
