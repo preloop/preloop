@@ -79,6 +79,22 @@ def test_an_unknown_scope_is_rejected_with_422(client):
     assert response.status_code == 422
 
 
+def test_a_scope_this_build_does_not_know_reads_as_the_default(
+    client, db_session, test_user
+):
+    """A newer-build row must not 500 the console; the worker already degrades."""
+    setting = crud_session_embedding_setting.get_or_create(
+        db_session, account_id=test_user.account_id
+    )
+    setting.scope = "titles_only_and_more"
+    db_session.flush()
+
+    response = client.get(SETTING_URL)
+
+    assert response.status_code == 200
+    assert response.json()["scope"] == EMBEDDING_SCOPE_SUMMARIES_ONLY
+
+
 def test_an_unrecognised_field_is_rejected_with_422(client):
     """This body carries scope alone; opting in names a provider elsewhere."""
     response = client.put(

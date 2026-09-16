@@ -26,7 +26,10 @@ from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.crud import crud_session_embedding_setting
 from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
-from preloop.models.models.session_embedding_setting import SessionEmbeddingSetting
+from preloop.models.models.session_embedding_setting import (
+    SessionEmbeddingSetting,
+    effective_scope,
+)
 from preloop.models.models.user import User
 from preloop.schemas.session_embedding_setting import (
     SCOPE_HELP_TEXT,
@@ -48,10 +51,10 @@ def _to_response(setting: SessionEmbeddingSetting) -> SessionEmbeddingSettingRes
     """Publish the stored row, including why a run may have stopped short."""
     return SessionEmbeddingSettingResponse(
         enabled=bool(setting.enabled),
-        # The column is a string and the schema is a Literal. Every write
-        # path validates before it stores, so the cast states that rather
-        # than re-checking it here.
-        scope=cast(SessionEmbeddingScope, setting.scope),
+        # The column is a string and the schema is a Literal. Writes refuse
+        # unknown values, but a row from a newer build can still carry one.
+        # Mirror the worker: report the default, never 500.
+        scope=cast(SessionEmbeddingScope, effective_scope(setting.scope)),
         scope_help=SCOPE_HELP_TEXT,
         provider=setting.provider,
         model_identifier=setting.model_identifier,

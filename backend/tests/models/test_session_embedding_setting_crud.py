@@ -16,6 +16,7 @@ from preloop.models.models.session_embedding_setting import (
     EMBEDDING_SCOPE_SUMMARIES_ONLY,
     PROVIDER_LOCAL,
     PROVIDER_OPENAI_COMPATIBLE,
+    effective_scope,
 )
 from preloop.models.models.session_search_document import (
     EMBEDDING_DIMENSIONS,
@@ -281,3 +282,6 @@ def test_a_scope_this_build_does_not_know_embeds_less_not_more(db_session, test_
     db_session.flush()
 
     assert setting.embedded_source_kinds == (SOURCE_KIND_SESSION_SUMMARY,)
+    assert effective_scope(setting.scope) == EMBEDDING_SCOPE_SUMMARIES_ONLY
+    assert effective_scope(EMBEDDING_SCOPE_FULL) == EMBEDDING_SCOPE_FULL
+    assert effective_scope(None) == EMBEDDING_SCOPE_SUMMARIES_ONLY

@@ -74,6 +74,19 @@ SCOPE_SOURCE_KINDS: dict[str, Optional[tuple[str, ...]]] = {
 }
 
 
+def effective_scope(scope: Optional[str]) -> str:
+    """The scope this build will actually apply.
+
+    An unknown stored value is the default, never ``full``. The worker and
+    the read API both use this so a row from a newer build cannot silently
+    embed more than this build understands, and cannot 500 the console.
+    """
+    cleaned = (scope or EMBEDDING_SCOPE_SUMMARIES_ONLY).strip()
+    if cleaned not in SCOPE_SOURCE_KINDS:
+        return EMBEDDING_SCOPE_SUMMARIES_ONLY
+    return cleaned
+
+
 def source_kinds_for_scope(scope: Optional[str]) -> Optional[tuple[str, ...]]:
     """Source kinds a scope embeds, or ``None`` when it embeds all of them.
 
@@ -81,10 +94,7 @@ def source_kinds_for_scope(scope: Optional[str]) -> Optional[tuple[str, ...]]:
     row that somehow carries a scope this build does not know embeds less
     than asked, never more.
     """
-    cleaned = (scope or EMBEDDING_SCOPE_SUMMARIES_ONLY).strip()
-    if cleaned not in SCOPE_SOURCE_KINDS:
-        cleaned = EMBEDDING_SCOPE_SUMMARIES_ONLY
-    return SCOPE_SOURCE_KINDS[cleaned]
+    return SCOPE_SOURCE_KINDS[effective_scope(scope)]
 
 
 #: Reason codes recorded on the row when a run could not do its work. These
