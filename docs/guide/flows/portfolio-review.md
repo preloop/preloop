@@ -22,6 +22,7 @@ cover.
 | Result schema | `preloop.review.portfolio/v1` |
 | Lens it runs | Docs Currency Review (`preloop.review.docscurrency/v1`), inline, unchanged |
 | Write tools | none, apart from the built-in `ask_user` question channel |
+| Report publication | platform step after the agent exits: `PORTFOLIO.md` on `preloop/report/portfolio`, as a pull request |
 | Inline project cap | `max_inline_projects`, default 5, hard cap 8 |
 
 ## What it is not
@@ -37,8 +38,10 @@ cover.
   security-shaped gets one referral finding with a `file:line` pointer,
   never a value.
 - **Not a modernisation plan.** Nothing is fixed, upgraded, refactored or
-  rewritten, and no pull request is opened. The output is a report and a
-  ranked list of follow ups a human approved.
+  rewritten. The output is a report and a ranked list of follow ups a
+  human approved. The one pull request a run can produce contains that
+  report and nothing else, and the agent does not open it (see
+  [Where the report lands](#where-the-report-lands)).
 - **Not a filer.** The preset has no write tools, so approving a follow
   up records the approval; it does not open anything.
   `rollup.issues_filed` is always `0` and `follow_ups[].filed` is always
@@ -235,6 +238,102 @@ and the lenses this preset does not run.
 and every discovery row under 2 KB, so a 25 project portfolio still fits
 with detail moved into the evidence pack.
 
+## Where the report lands
+
+A report nobody opens is a report nobody reads. So the run does not stop
+at the evidence pack: `evidence/portfolio-report.md` is also offered to
+the repository as a pull request, where a portfolio owner reviews it the
+way they review everything else, and merges it (or does not).
+
+The agent has nothing to do with that. It has no write tools, no git
+credentials in its tool surface and no provider it can call. Publication
+is a **platform step that runs after the agent process has exited**,
+using the flow's existing git clone and pull request configuration. The
+agent's whole contribution is the file on disk: whatever
+`evidence/portfolio-report.md` contains when the agent finishes is what
+gets published.
+
+```yaml
+git_clone_config:
+  create_pull_request: true          # required; a direct commit is never attempted
+  report_publication:
+    enabled: true
+    source_path: evidence/portfolio-report.md   # workspace relative
+    destination_path: PORTFOLIO.md              # repository relative
+    commit_message: Update the portfolio review report
+    # branch: reports/portfolio                 # optional override
+```
+
+### The branch naming rule
+
+The branch is derived from the destination document, never from the
+execution: `preloop/report/` followed by the destination path lowercased
+with its extension dropped and every run of non-alphanumeric characters
+turned into a single `-`.
+
+| `destination_path` | branch |
+| --- | --- |
+| `PORTFOLIO.md` | `preloop/report/portfolio` |
+| `docs/reviews/portfolio.md` | `preloop/report/docs-reviews-portfolio` |
+
+Because the name has nothing run-specific in it, every run of the same
+flow pushes to the same branch, and the open pull request tracking that
+branch **updates in place**. You get one pull request per document that
+keeps being refreshed, not one per run. Two documents in one repository
+get two branches and therefore two independent pull requests. Set
+`report_publication.branch` if your repository has its own convention;
+the rule above then does not apply, but the stability requirement still
+does: a branch that changes between runs would open a second pull
+request.
+
+### What it will not do
+
+- **It will not commit to your default branch.** The default branch is
+  only ever read, as the start point of the report branch on the first
+  run, and used as the pull request base. A protected default branch is
+  the expected case, not an obstacle: there is no direct commit for it
+  to refuse.
+- **It will not carry anything but the report.** The commit is built in
+  a throwaway worktree and staged with a single pathspec, so it contains
+  exactly one changed file. A checkout the run left dirty (it read many
+  projects it does not trust) cannot contribute a byte.
+- **It will not republish an unchanged report.** If the regenerated
+  document is byte identical to the one on the branch, nothing is
+  committed, nothing is pushed and no provider call is made. The run
+  records `outcome: unchanged`, `reason: identical_document`, and the
+  existing pull request is left exactly as it was.
+
+### When publication fails
+
+Publication cannot fail a run. The report is the deliverable, and it is
+already in the evidence pack before publication is attempted; a
+repository that refuses the push does not retroactively spoil a review
+that happened. The execution stays successful, the artifact is intact,
+and the run result carries the reason under `report_publication`:
+
+```json
+{ "outcome": "failed", "reason": "push_failed",
+  "branch": "preloop/report/portfolio", "document": "PORTFOLIO.md",
+  "log": "evidence/report-publication.log" }
+```
+
+`outcome` is one of `published`, `unchanged` or `failed`. `reason` comes
+from a closed list, so it is a diagnosis rather than a provider error
+string: `identical_document`, `report_missing`, `checkout_unavailable`,
+`base_branch_unavailable`, `worktree_failed`, `copy_failed`,
+`stage_failed`, `commit_failed`, `push_failed`,
+`pull_request_unavailable`, `pull_request_disabled`,
+`provider_unsupported`, `repository_missing`, `repository_ambiguous`,
+`invalid_configuration`. The git and provider output behind it is kept in
+`evidence/report-publication.log`. This field is written by the platform
+from the container's own output; an agent's `result.json` cannot author
+it, which is what makes it evidence rather than a claim.
+
+Because the branch is stable, failures heal by themselves: the next run
+retries on the same branch, and a run whose push landed but whose pull
+request call did not (`pull_request_unavailable`) opens the pull request
+on its next attempt.
+
 ## Payload knobs
 
 | key | default | meaning |
@@ -259,4 +358,11 @@ with detail moved into the evidence pack.
 - An inline run cannot honestly review more than 8 projects; beyond that
   the report asks for delegation instead of pretending.
 - Approval is recorded, never executed: nothing in this preset files an
-  issue, opens a pull request or edits a file.
+  issue or edits a project. The agent opens no pull request either; the
+  single pull request a run can produce is opened by the platform after
+  the agent exits, contains only the report, and changes nothing about
+  the projects it describes.
+- Publication is best effort by design. It is not a delivery guarantee:
+  a run can be a complete, successful review whose report never reached
+  the repository, and the reason for that is recorded rather than
+  raised.

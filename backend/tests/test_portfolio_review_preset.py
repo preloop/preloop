@@ -433,7 +433,6 @@ class TestPresetDefinition:
         assert data["agent_type"] == "codex"
         assert data["agent_config"]["sandbox_type"] == "exec"
         assert data["agent_config"]["enable_auto_lint"] is False
-        assert data["git_clone_config"] is None
         assert data["trigger_config"] is None
         assert data["trigger_event_source"] is None
         assert data["trigger_event_types"] is None
@@ -459,6 +458,54 @@ class TestPresetDefinition:
             "ask_user, which is a question channel, not a write tool" in norm
         )
         assert "you never open a pull request" in norm
+
+    def test_publishes_the_report_without_granting_the_agent_a_write_tool(self):
+        """Issue #648: the report lands in a repository as a pull request,
+        and the preset that publishes it still has no write tools. The
+        publication is a platform step after the agent has exited."""
+        data = _load_preset()
+        config = data["git_clone_config"]
+        assert config["enabled"] is True
+        # A pull request, never a direct commit: this is what makes the
+        # flow safe against a protected default branch.
+        assert config["create_pull_request"] is True
+        assert config["pull_request_title"]
+        assert config["pull_request_description"]
+        publication = config["report_publication"]
+        assert publication["enabled"] is True
+        assert publication["source_path"] == "evidence/portfolio-report.md"
+        # One file, at the repository root.
+        assert publication["destination_path"] == "PORTFOLIO.md"
+        assert "/" not in publication["destination_path"]
+        assert publication["commit_message"]
+        # No branch override: the stable default is derived from the
+        # document path, so a re-run finds the open pull request.
+        assert publication.get("branch") is None
+        # The agent gains nothing from publication being configured.
+        assert data["allowed_mcp_servers"] == []
+        assert data["allowed_mcp_tools"] == [{"name": "ask_user"}]
+
+    def test_the_prompt_says_publication_is_not_the_agents_job(self):
+        norm = _norm(_prompt())
+        assert "THE PLATFORM PUBLISHES THE REPORT, NOT YOU" in norm
+        assert "AFTER you have exited" in norm
+        assert "you still never commit, never push, never open a pull request" in norm
+        assert "the file on disk is what gets published" in norm
+
+    def test_the_publication_config_is_a_valid_git_clone_config(self):
+        """The preset is loaded through the same schema the API uses, so a
+        broken publication block fails here rather than at run time."""
+        from preloop.models.schemas.flow import GitCloneConfig
+        from preloop.services.report_publication import (
+            resolve_report_publication,
+        )
+
+        config = GitCloneConfig.model_validate(_load_preset()["git_clone_config"])
+        plan = resolve_report_publication(config.model_dump())
+        assert plan is not None
+        assert plan.source_path == "/workspace/evidence/portfolio-report.md"
+        assert plan.destination_path == "PORTFOLIO.md"
+        assert plan.branch == "preloop/report/portfolio"
 
     def test_nothing_is_ever_filed(self):
         """Approving a follow up is not filing it: this preset has no
