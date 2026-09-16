@@ -1,0 +1,62 @@
+# Trial: run a Preloop flow from GitHub Actions with the CLI.
+#
+# Two ways in, both opt-in so the webhook-driven reviewer is not doubled:
+#   1. Add the label `preloop-ci-review` to a pull request.
+#   2. Run the workflow by hand with a pull request number.
+#
+# The CLI blocks while the execution runs (stdin is not a TTY), streams the
+# execution log into this job, and exits non-zero on FAILED, STOPPED or
+# TIMEOUT, so the check goes red when the review does. Compute stays where the
+# flow says (hosted, or a private runner via `runner_pool`); this job only
+# triggers and waits. See docs/guide/flows/ci-trigger.md.
+#
+# Required repository settings:
+#   secret   PRELOOP_TOKEN  account API token for the account that owns the flow
+#   variable PRELOOP_URL    optional, defaults to https://preloop.ai
+#   variable PRELOOP_FLOW   optional, flow id or name, defaults to "Pull Request Reviewer"
+name: Preloop flow trigger
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to review
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: preloop-flow-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'preloop-ci-review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Install the Preloop CLI
+        run: curl -fsSL https://preloop.ai/install/cli | sh
+
+      - name: Trigger the flow and wait for the verdict
+        env:
+          PRELOOP_TOKEN: ${{ secrets.PRELOOP_TOKEN }}
+          PRELOOP_URL: ${{ vars.PRELOOP_URL || 'https://preloop.ai' }}
+          PRELOOP_FLOW: ${{ vars.PRELOOP_FLOW || 'Pull Request Reviewer' }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+          PR_URL: ${{ github.event.pull_request.html_url || format('{0}/pull/{1}', github.event.repository.html_url, inputs.pr) }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PRELOOP_TOKEN}" ]; then
+            echo "PRELOOP_TOKEN secret is not set" >&2
+            exit 1
+          fi
+          payload=$(jq -cn --arg url "$PR_URL" --argjson number "$PR_NUMBER" \
+            --arg repo "${{ github.repository }}" --arg sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            '{pull_request: {url: $url, number: $number, head_sha: $sha}, repository: {full_name: $repo}, source: "github-actions"}')
+          echo "$payload" | preloop flow trigger "$PRELOOP_FLOW" --payload - --timeout 40m
