@@ -11782,6 +11782,235 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/runtime-sessions/search/saved:
+    post:
+      tags:
+      - Runtime Sessions
+      summary: Save a session search under a name
+      description: 'Save a query, mode, filters and snippet preferences under a name.
+
+
+        The filters are validated here, so a saved search that cannot run cannot
+
+        be stored. Visibility defaults to private; sharing is a separate edit.'
+      operationId: create_saved_session_search_api_v1_runtime_sessions_search_saved_post
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionSavedSearchCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionSavedSearchRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Runtime Sessions
+      summary: List saved session searches
+      description: 'Return the caller''s saved searches plus the ones shared with
+        the account.
+
+
+        Most recently run first, so the searches somebody actually repeats are at
+
+        the top of the list.'
+      operationId: list_saved_session_searches_api_v1_runtime_sessions_search_saved_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionSavedSearchList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runtime-sessions/search/saved/{saved_search_id}:
+    get:
+      tags:
+      - Runtime Sessions
+      summary: Read one saved session search
+      description: Return one saved search the caller may see.
+      operationId: get_saved_session_search_api_v1_runtime_sessions_search_saved__saved_search_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: saved_search_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Saved Search Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionSavedSearchRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      tags:
+      - Runtime Sessions
+      summary: Rename, edit or share a saved session search
+      description: 'Change a saved search the caller wrote.
+
+
+        Renaming, changing the question and sharing are one route because they are
+
+        one thing: this saved question is not what it was. Only the author may do
+
+        any of them.'
+      operationId: update_saved_session_search_api_v1_runtime_sessions_search_saved__saved_search_id__patch
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: saved_search_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Saved Search Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionSavedSearchUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionSavedSearchRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Runtime Sessions
+      summary: Delete a saved session search
+      description: Delete a saved search the caller wrote. The sessions are untouched.
+      operationId: delete_saved_session_search_api_v1_runtime_sessions_search_saved__saved_search_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: saved_search_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Saved Search Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runtime-sessions/search/saved/{saved_search_id}/run:
+    post:
+      tags:
+      - Runtime Sessions
+      summary: Run a saved session search
+      description: 'Run a saved search against the corpus as it is now.
+
+
+        The answer is the search endpoint''s answer, degraded block and all: a
+
+        saved semantic search on a deployment whose semantic half cannot run comes
+
+        back as keyword results with a reason, not as an error. Alongside it the
+
+        response names every saved filter that no longer resolves, and says
+
+        whether the ranking constants have moved since the search was saved.
+
+
+        The body is optional: it carries paging only, because the saved search
+
+        owns everything else about the question.'
+      operationId: run_saved_session_search_api_v1_runtime_sessions_search_saved__saved_search_id__run_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: saved_search_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Saved Search Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/SessionSavedSearchRunRequest'
+              - type: 'null'
+              title: Paging
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionSavedSearchRunResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/roles:
     get:
       tags:
@@ -25591,6 +25820,330 @@ components:
         \    threshold: Finite threshold in [0, 1] this deployment screens at.\n \
         \   primary_outcome: Optional lowercase label naming the dominant rule\n \
         \       category; omitted for benign content."
+    SessionSavedSearchCreate:
+      properties:
+        name:
+          type: string
+          maxLength: 120
+          minLength: 1
+          title: Name
+          description: Label shown in the saved list. Unique per author inside an
+            account, compared with surrounding whitespace stripped.
+        query:
+          type: string
+          maxLength: 512
+          minLength: 1
+          title: Query
+          description: Search text, parsed exactly as the search endpoint parses it.
+        mode:
+          type: string
+          enum:
+          - keyword
+          - semantic
+          - hybrid
+          title: Mode
+          description: 'Mode to run in. Saved as asked: a semantic search saved on
+            a day the provider was down is still a semantic search, and a run that
+            cannot serve the mode answers with the degraded block rather than an error.'
+          default: keyword
+        filters:
+          $ref: '#/components/schemas/SessionSearchFilters'
+          description: Filters, validated here and stored as the validated object,
+            so an unrunnable search cannot be saved.
+        max_snippets_per_session:
+          type: integer
+          maximum: 10.0
+          minimum: 0.0
+          title: Max Snippets Per Session
+          description: Snippets per session this saved search asks for.
+          default: 3
+        include_snippet_text:
+          type: boolean
+          title: Include Snippet Text
+          description: Whether runs of this saved search return snippet text.
+          default: true
+        visibility:
+          type: string
+          enum:
+          - private
+          - account
+          title: Visibility
+          description: Defaults to private. Sharing with the account is a deliberate
+            step, not something a save does on the author's behalf.
+          default: private
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - query
+      title: SessionSavedSearchCreate
+      description: Save one named search.
+    SessionSavedSearchList:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/SessionSavedSearchRead'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+          description: Saved searches visible to this caller.
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+      type: object
+      required:
+      - total
+      - limit
+      - offset
+      title: SessionSavedSearchList
+      description: A page of saved searches visible to the caller.
+    SessionSavedSearchRead:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        query:
+          type: string
+          title: Query
+          description: Query as parsed, with whitespace collapsed.
+        mode:
+          type: string
+          enum:
+          - keyword
+          - semantic
+          - hybrid
+          title: Mode
+        filters:
+          $ref: '#/components/schemas/SessionSearchFilters'
+        max_snippets_per_session:
+          type: integer
+          title: Max Snippets Per Session
+        include_snippet_text:
+          type: boolean
+          title: Include Snippet Text
+        visibility:
+          type: string
+          enum:
+          - private
+          - account
+          title: Visibility
+        owner_user_id:
+          type: string
+          format: uuid
+          title: Owner User Id
+          description: The author, inside this account.
+        owned_by_caller:
+          type: boolean
+          title: Owned By Caller
+          description: Whether the caller is the author. Only the author may rename,
+            edit, share or delete it; everyone else in the account may run a shared
+            one.
+        shared_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Shared At
+          description: When it was last shared with the account; null while private.
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        last_run_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Run At
+          description: When it last ran, by anyone in the account.
+        run_count:
+          type: integer
+          title: Run Count
+          description: How many times it has been run through this endpoint.
+          default: 0
+        ranking_changed:
+          type: boolean
+          title: Ranking Changed
+          description: Whether the ranking constants have changed since this search
+            was saved or last edited. True means a run's ordering is not the one it
+            was saved under; nothing about the query itself changed.
+          default: false
+        filter_schema_changed:
+          type: boolean
+          title: Filter Schema Changed
+          description: Whether the stored filters were validated against an older
+            filter schema than the one running now.
+          default: false
+      type: object
+      required:
+      - id
+      - name
+      - query
+      - mode
+      - filters
+      - max_snippets_per_session
+      - include_snippet_text
+      - visibility
+      - owner_user_id
+      - owned_by_caller
+      - created_at
+      - updated_at
+      title: SessionSavedSearchRead
+      description: One saved search as its account sees it.
+    SessionSavedSearchRunRequest:
+      properties:
+        limit:
+          type: integer
+          maximum: 50.0
+          minimum: 1.0
+          title: Limit
+          description: Sessions per page, at most 50.
+          default: 20
+        offset:
+          type: integer
+          minimum: 0.0
+          title: Offset
+          description: Sessions to skip.
+          default: 0
+      additionalProperties: false
+      type: object
+      title: SessionSavedSearchRunRequest
+      description: Paging for one run. The saved search owns everything else.
+    SessionSavedSearchRunResponse:
+      properties:
+        saved_search:
+          $ref: '#/components/schemas/SessionSavedSearchRead'
+        unresolved_filters:
+          items:
+            $ref: '#/components/schemas/SessionSavedSearchUnresolvedFilter'
+          type: array
+          title: Unresolved Filters
+          description: Saved filters that no longer name anything in this account.
+            Empty when everything the search names still exists.
+        ranking_changed:
+          type: boolean
+          title: Ranking Changed
+          description: Same flag as on the saved search, repeated here so a client
+            rendering only the run does not have to read it out of the saved search
+            block.
+          default: false
+        search:
+          $ref: '#/components/schemas/SessionSearchResponse'
+          description: The ranked page, exactly as the search endpoint would have
+            answered the same question, degraded block included.
+      type: object
+      required:
+      - saved_search
+      - search
+      title: SessionSavedSearchRunResponse
+      description: The saved question, what no longer resolves in it, and the answer.
+    SessionSavedSearchUnresolvedFilter:
+      properties:
+        field:
+          type: string
+          title: Field
+          description: Filter key, as named in the saved payload.
+        value:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Value
+          description: Saved value, rendered as a string for display.
+        reason:
+          type: string
+          title: Reason
+          description: 'Why it does not resolve. One of: flow_not_found, api_key_not_found,
+            source_kind_unknown, field_no_longer_defined.'
+        applied:
+          type: boolean
+          title: Applied
+          description: Whether the run still applied this filter. A filter naming
+            a deleted flow is still applied, because corpus rows keep the flow id
+            they were written with; only a key the schema no longer defines is left
+            out, and it is reported here rather than dropped in silence.
+      type: object
+      required:
+      - field
+      - reason
+      - applied
+      title: SessionSavedSearchUnresolvedFilter
+      description: One saved filter that no longer points at anything in the account.
+    SessionSavedSearchUpdate:
+      properties:
+        name:
+          anyOf:
+          - type: string
+            maxLength: 120
+            minLength: 1
+          - type: 'null'
+          title: Name
+        query:
+          anyOf:
+          - type: string
+            maxLength: 512
+            minLength: 1
+          - type: 'null'
+          title: Query
+        mode:
+          anyOf:
+          - type: string
+            enum:
+            - keyword
+            - semantic
+            - hybrid
+          - type: 'null'
+          title: Mode
+        filters:
+          anyOf:
+          - $ref: '#/components/schemas/SessionSearchFilters'
+          - type: 'null'
+        max_snippets_per_session:
+          anyOf:
+          - type: integer
+            maximum: 10.0
+            minimum: 0.0
+          - type: 'null'
+          title: Max Snippets Per Session
+        include_snippet_text:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Include Snippet Text
+        visibility:
+          anyOf:
+          - type: string
+            enum:
+            - private
+            - account
+          - type: 'null'
+          title: Visibility
+          description: Set to 'account' to share with the account, back to 'private'
+            to unshare. Only the author may change it.
+      additionalProperties: false
+      type: object
+      title: SessionSavedSearchUpdate
+      description: 'Change a saved search. Every field is optional; at least one is
+        required.
+
+
+        Renaming, re-querying and sharing are the same operation on purpose: they
+
+        are all "this saved question changed", and splitting them into three
+
+        routes would say nothing extra.'
     SessionSearchDegraded:
       properties:
         keyword:

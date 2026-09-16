@@ -170,5 +170,10 @@ batches to an OpenAI-compatible endpoint or a local model, caps spend, and
 records purpose-tagged usage. The shared API key is allow-listed.
 `POST /api/v1/runtime-sessions/search` reads it in `keyword`, `semantic` or
 `hybrid` mode, fusing the two candidate lists by rank; a half that cannot run
-is reported in a degraded block with keyword results, never as an error.
+is reported in a degraded block with keyword results, never as an error. A
+question worth repeating can be saved under a name in `session_saved_search`
+and re-run from `/runtime-sessions/search/saved`; a saved search stores the
+question and never the answer, is private until its author shares it with the
+account, and a run says which of its filters no longer resolve.
 Operator knobs: [Session embedding](docs/operations/session-embedding.md).
+Saved searches: [Saved session searches](docs/guide/session-saved-searches.md).

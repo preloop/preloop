@@ -99,6 +99,7 @@ from .runtime_session_replay_run import RuntimeSessionReplayRun
 from .secret_reference import SecretReference
 from .session_embedding_setting import SessionEmbeddingSetting
 from .session_search_backfill_state import SessionSearchBackfillState
+from .session_saved_search import SessionSavedSearch
 from .session_search_document import SessionSearchDocument
 from .tool_cost_flag import ToolCostFlag
 from .tool_output_filter import ToolOutputFilter
@@ -238,6 +239,7 @@ __all__ = [
     "SecretReference",
     "SessionEmbeddingSetting",
     "SessionSearchBackfillState",
+    "SessionSavedSearch",
     "SessionSearchDocument",
     "ToolCostFlag",
     "ToolOutputFilter",
