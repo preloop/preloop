@@ -46,6 +46,7 @@ from preloop.services.flow_delegation import (
     CallableFlowsError,
     validate_callable_flows,
 )
+from preloop.services import flow_tree_stop
 from preloop.services.model_routing import (
     ModelRoutingError,
     model_usable_for_agent as _model_usable_for_agent,
@@ -1570,6 +1571,16 @@ async def send_execution_command(
 
     # Handle stop command - stop container directly
     if command_data.command == "stop":
+        # A parent parked on the flows it started leaves the park here, before
+        # any I/O, and terminally (#689). From this write on, a child reaching
+        # a terminal state claims nothing and the sweep lists nothing, so the
+        # stop cannot race a resume into existence while the container teardown
+        # below takes its seconds. The tree itself is stopped after the status
+        # update, once this execution is unambiguously terminal.
+        stops_a_tree = flow_tree_stop.parked_on_children(execution)
+        if stops_a_tree:
+            flow_tree_stop.close_children_park(db, parent=execution)
+
         session_reference = execution.agent_session_reference
         stoppable = execution.status in [
             "RUNNING",
@@ -1671,6 +1682,25 @@ async def send_execution_command(
         crud_flow_execution.update(db=db, db_obj=execution, obj_in=update_data)
         db.commit()
 
+        # Stopping a parent stops the flows it was waiting for (#689): the
+        # decision, why it is the one taken, and what the operator sees are in
+        # preloop/services/flow_tree_stop.py. Never fails the stop: this
+        # execution is already terminal and every write below is retried by
+        # nothing, so a failure here must be visible in the log rather than as
+        # a 500 on a stop that did happen.
+        if stops_a_tree:
+            try:
+                await flow_tree_stop.stop_tree_for_stopped_parent(
+                    db,
+                    parent=execution,
+                    account_id=current_user.account_id,
+                    nats_client=nats_client,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to stop the tree of execution %s", execution_id
+                )
+
         # Try to send stop command via NATS (best effort - don't fail if this doesn't work)
         try:
             from preloop.services.flow_orchestrator import (
@@ -1762,8 +1792,9 @@ def _reject_oversized_workspace_seeds(
 # trusted control state, not as data. ``_resume`` and ``_answers`` steer the
 # park/resume handshake (approval_park.py), ``_answers_prompt`` and
 # ``_feedback_prompt`` are concatenated into the agent prompt, ``_ci_failure``
-# carries CI feedback, and ``_workspace_file_paths`` / ``_subject`` are audit
-# stamps a caller must not be able to author.
+# carries CI feedback, and ``_workspace_file_paths`` / ``_subject`` /
+# ``_stop_coverage`` are audit stamps a caller must not be able to author: a
+# forged coverage record would claim a stopped tree reached work it never did.
 #
 # This list is deliberately not "every key FlowCreate does not define". The
 # body is documented as free-form template data: flow_orchestrator.py:1252
@@ -1787,6 +1818,7 @@ RESERVED_TRIGGER_KEYS = frozenset(
         "_answers_prompt",
         "_children",
         "_children_prompt",
+        "_stop_coverage",
         "_feedback_prompt",
         "_ci_failure",
         "_workspace_file_paths",

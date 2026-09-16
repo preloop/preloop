@@ -33,8 +33,10 @@ the return value of the ``run_flow`` call the parent made.
 
 Not here, on purpose: cost ceilings (#631), the console execution tree
 (#634), approvals raised inside a child (#635), and what happens to children
-when an operator stops a parked parent, which is decided and implemented on
-#689 and is why this module never touches the stop path.
+when an operator stops a parked parent, which is decided and implemented in
+``flow_tree_stop`` (#689) and is why this module never touches the stop path.
+A deadline here expires the parent's wait and leaves the children running; a
+stop there ends them, because the two are not the same event.
 """
 
 from __future__ import annotations

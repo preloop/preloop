@@ -513,6 +513,16 @@ class ExecutionTreeNode(FlowExecutionListResponse):
             "delegation that passed no label."
         ),
     )
+    stop_reason: Optional[str] = Field(
+        None,
+        description=(
+            "Why this execution was stopped, when something other than the "
+            "run itself ended it: an account kill switch, or the stop of the "
+            "execution that started it. Null for every row nobody stopped, "
+            "which lets the tree show which children a parent's stop ended "
+            "and which had finished on their own."
+        ),
+    )
 
 
 class ExecutionTreeResponse(BaseModel):

@@ -254,8 +254,9 @@ A parked parent has its own deadline, `FLOW_DELEGATION_CHILD_WAIT_SECONDS`.
 When it passes, the parent resumes anyway and every child that is still
 running is reported with an expired record saying so. The parent writes a
 report with declared coverage instead of the platform reporting a missing
-result. The children are left alone: stopping a parent's children is not
-part of this behaviour.
+result. The children are left alone: a deadline is the parent giving up on
+waiting, not an operator ending the work. An operator ending the work is the
+next section, and it does stop the children.
 
 If the resume never lands (a worker died between confirming the park and
 claiming it), the execution monitor's sweep picks the parent up and resumes
@@ -266,6 +267,58 @@ once: the claim is a single conditional update, and the loser does nothing.
 | --- | --- | --- |
 | `FLOW_DELEGATION_WAIT_SECONDS` | `90` | How long `run_flow(wait=true)` waits in process before parking the run. `0` parks immediately. |
 | `FLOW_DELEGATION_CHILD_WAIT_SECONDS` | `21600` | How long a parked parent waits for its children before it is resumed anyway with expired records. Six hours. |
+
+## Stopping a parent parked on children
+
+**Stopping a parent stops the flows it was waiting for.** An operator who
+stops a tree stops it because it is costing too much or because it is doing
+the wrong thing, and a stop that leaves the expensive half of the work
+running is not the stop anybody asked for. The alternative, letting the
+children finish and reaping their results, keeps work already paid for, but
+it keeps it for a run that will never read it: nothing resumes a stopped
+execution, so the results would land in a record nobody is waiting on while
+the spend keeps climbing. Discarded work is a cost the operator chose; spend
+after a stop is a cost the operator was not told about.
+
+What happens, in order, when the stop arrives:
+
+1. The parent leaves `WAITING_FOR_CHILDREN` first, terminally. From that
+   write on, a child finishing cannot claim the park, the resume sweep does
+   not list the row, and the park is closed rather than left claimable.
+2. Every execution under that parent, at any depth, that is not already
+   terminal is stopped: the status goes `STOPPED`, `stop_reason` names the
+   parent, and the durable stop intent is written so a container or a
+   runner's job is torn down by the same poll an account kill switch uses.
+3. A child that had already finished is left exactly as it is. So is a child
+   that finishes while the stop is in flight: its terminal state, its result
+   and its cost are all kept, and the coverage reports it as having finished
+   during the stop rather than as stopped by it.
+4. If a child won the race and a resume execution already exists, that
+   resume is stopped too. A resume is the parent carrying on, and the tree is
+   what the operator stopped.
+
+The parent's record then declares the coverage it reached, under
+`_stop_coverage` in its trigger details:
+
+```json
+{
+  "decision": "stop_children_with_parent",
+  "stopped_at": "2026-09-16T09:12:44+00:00",
+  "children_total": 3,
+  "counts": {"completed": 1, "stopped": 2, "finished_first": 0, "left_running": 0},
+  "own_cost_usd": 0.5,
+  "tree_cost_usd": 1.2
+}
+```
+
+`tree_cost_usd` is what the tree had cost at the moment of the stop, the
+parent's own spend included. The execution tree shows the same thing per row:
+a child this stop ended carries its `stop_reason`, so the page distinguishes
+"stopped with its parent" from "stopped" and from "finished before the stop".
+
+A run that started flows and never waited for them is not parked on anything,
+so stopping it stops that run only. Stopping a tree is not a refund: a child
+that was stopped was still paid for, and nothing here adjusts billing.
 
 ## Reading the tree
 

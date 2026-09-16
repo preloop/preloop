@@ -44,6 +44,16 @@ MATRIX_OVERRIDES_KEY = "_matrix"
 # asserts the two spellings agree.
 DELEGATION_DETAILS_KEY = "delegation"
 
+# Reserved key under which a parent that an operator stopped records the
+# coverage its delegation tree had reached at that moment inside
+# FlowExecution.trigger_event_details. Shape:
+# {"schema_version": 1, "decision", "stopped_at", "counts", "children",
+#  "tree_cost_usd", "own_cost_usd", "truncated"}. Written only by
+# preloop.services.flow_tree_stop when the stop cascades into the children
+# (#689); never accepted from a trigger body, which is why it is in
+# RESERVED_TRIGGER_KEYS.
+STOP_COVERAGE_KEY = "_stop_coverage"
+
 # Reserved key under which the controller records the model/harness chosen
 # for one execution (matched routing rule or the flow default). Written only
 # by the controller after validating account-owned models. Never accepted
