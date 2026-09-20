@@ -75,6 +75,21 @@ def test_reasoning_response_shapes_are_scanned(payload: dict) -> None:
     assert "VALID" in text
 
 
+@pytest.mark.parametrize("include_reasoning", [True, False])
+@pytest.mark.parametrize("summary", [[], [{"text": "Safe summary"}]])
+def test_output_text_is_scanned_alongside_reasoning_items(
+    include_reasoning: bool, summary: list[dict]
+) -> None:
+    payload = {
+        "output": [{"type": "reasoning", "summary": summary}],
+        "output_text": EMAIL,
+    }
+    text = canonical_response_text(payload, include_reasoning=include_reasoning)
+    assert EMAIL in text
+    if include_reasoning and summary:
+        assert "Safe summary" in text
+
+
 def test_opaque_reasoning_is_not_treated_as_plaintext() -> None:
     payload = {
         "content": [
@@ -88,6 +103,21 @@ def test_opaque_reasoning_is_not_treated_as_plaintext() -> None:
 @pytest.mark.parametrize(
     "fragments",
     [
+        [
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [{"type": "reasoning", "summary": []}],
+                    "output_text": EMAIL,
+                },
+            }
+        ],
+        [
+            {
+                "type": "response.completed",
+                "response": {"output": None, "output_text": EMAIL},
+            }
+        ],
         [
             {"choices": [{"delta": {"reasoning_content": "alice@"}}]},
             {"choices": [{"delta": {"reasoning_content": "example.com"}}]},

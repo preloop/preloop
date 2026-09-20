@@ -307,9 +307,15 @@ def canonical_response_text(
             if isinstance(choice, dict)
         )
     if isinstance(payload.get("output"), list) and payload["output"]:
-        return _response_block_text(
+        block_text = _response_block_text(
             payload["output"], include_reasoning=include_reasoning
         )
+        direct_text = payload.get("output_text")
+        # Bridges can return the final answer only in this convenience field,
+        # even when output contains reasoning. Scan both representations.
+        if isinstance(direct_text, str) and direct_text not in block_text:
+            return "\n".join(part for part in (block_text, direct_text) if part)
+        return block_text
     if isinstance(payload.get("candidates"), list):
         return "\n".join(
             _response_block_text(
@@ -342,25 +348,20 @@ def _reasoning_text(message: Any) -> str:
     )
 
 
-def _extract_stream_reasoning(event: str) -> tuple[str, bool]:
+def _extract_stream_reasoning(payloads: Sequence[Dict[str, Any]]) -> tuple[str, bool]:
     """Assemble reasoning separately so final-text snapshots cannot erase it."""
     parts: List[str] = []
     snapshot = False
-    for match in _SSE_DATA_RE.finditer(event):
-        try:
-            payload = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(payload, dict):
-            continue
+    for payload in payloads:
         event_type = str(payload.get("type") or "")
         if event_type == "response.completed":
             response = payload.get("response") or {}
             if isinstance(response, dict):
+                output = response.get("output")
                 reasoning = _response_block_text(
                     [
                         item
-                        for item in response.get("output", [])
+                        for item in (output if isinstance(output, list) else [])
                         if isinstance(item, dict) and item.get("type") == "reasoning"
                     ]
                 )
@@ -938,16 +939,9 @@ def extract_stream_text(event: str) -> str:
     return text
 
 
-def _extract_stream_fragment(event: str) -> tuple[str, bool]:
-    """Return ``(text, is_full_snapshot)`` for one SSE event.
-
-    Snapshot events (Responses ``response.completed``) carry the full
-    assembled ``output_text``. Callers that also collected incremental
-    deltas must prefer the snapshot to avoid concatenating the full
-    text on top of the deltas.
-    """
-    parts: List[str] = []
-    is_snapshot = False
+def _stream_event_payloads(event: str) -> List[Dict[str, Any]]:
+    """Parse each SSE data object once for both final and reasoning text."""
+    payloads: List[Dict[str, Any]] = []
     for match in _SSE_DATA_RE.finditer(event):
         raw = match.group(1).strip()
         if not raw or raw == "[DONE]":
@@ -956,8 +950,18 @@ def _extract_stream_fragment(event: str) -> tuple[str, bool]:
             payload = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        if not isinstance(payload, dict):
-            continue
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return payloads
+
+
+def _extract_stream_fragment(
+    event: str, *, payloads: Optional[Sequence[Dict[str, Any]]] = None
+) -> tuple[str, bool]:
+    """Return final text and whether the payload contains a full snapshot."""
+    parts: List[str] = []
+    is_snapshot = False
+    for payload in _stream_event_payloads(event) if payloads is None else payloads:
         event_type = payload.get("type")
 
         # OpenAI chat/completions (and LiteLLM OpenAI-shape streams).
@@ -1046,12 +1050,15 @@ def wrap_stream_for_response_policy(
     try:
         for event in events:
             buffered.append(event)
-            reasoning, reasoning_is_snapshot = _extract_stream_reasoning(event)
+            event_payloads = _stream_event_payloads(event)
+            reasoning, reasoning_is_snapshot = _extract_stream_reasoning(event_payloads)
             if reasoning_is_snapshot:
                 reasoning_snapshot = reasoning
             elif reasoning:
                 reasoning_parts.append(reasoning)
-            fragment, is_snapshot = _extract_stream_fragment(event)
+            fragment, is_snapshot = _extract_stream_fragment(
+                event, payloads=event_payloads
+            )
             if is_snapshot:
                 snapshot_text = fragment
             elif fragment:

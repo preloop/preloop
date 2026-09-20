@@ -8208,26 +8208,6 @@ class OpenAIGatewayService:
                     text_parts.append(content.get("text", ""))
         return "".join(text_parts)
 
-    @staticmethod
-    def _responses_payload_output_text(response_payload: Dict[str, Any]) -> str:
-        """Return the assistant text of a Responses API object.
-
-        ``output_text`` is an SDK convenience field: Preloop synthesizes it on
-        the transcode path, but a real upstream Responses object forwarded
-        verbatim by the passthrough (#159) does not carry it. Response policy
-        and usage recording need the text either way, so fall back to walking
-        the ``output`` items.
-        """
-        direct = response_payload.get("output_text")
-        if isinstance(direct, str) and direct:
-            return direct
-        output_items = response_payload.get("output")
-        if not isinstance(output_items, list):
-            return ""
-        return OpenAIGatewayService._response_output_text(
-            [item for item in output_items if isinstance(item, dict)]
-        )
-
     def _normalize_openai_tools(self, tools: Any) -> Any:
         """Normalize Responses API tools to chat-completions tool format.
 
