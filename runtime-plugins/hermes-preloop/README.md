@@ -102,10 +102,13 @@ file alongside it first). `verify` checks the config shape and that the plugin
 loads.
 
 Config discovery order: `--config <path>` (if given), then
-`$HERMES_HOME/config.yaml`, then `~/.hermes/config.yaml`. When no config file
-exists yet, `$HERMES_HOME/config.yaml` is preferred if the variable is set so
-the new file lands where Hermes will read it. Pass `--config` explicitly to
-override.
+`$HERMES_HOME/config.yaml` and `config.yml`, then `~/.hermes/config.yaml` and
+`config.yml`. When several of those files exist, the plugin prefers the first
+that contains a `preloop.control` block, so a systemd user unit with a
+different `HERMES_HOME` does not mask the file onboarding wrote. When no
+config file exists yet, `$HERMES_HOME/config.yaml` is preferred if the
+variable is set so the new file lands where Hermes will read it. Pass
+`--config` explicitly to override.
 
 ### Or let the Preloop CLI do all of it
 
@@ -196,8 +199,8 @@ rejected and never opts you into ungoverned execution.
 ## Configuration reference
 
 The plugin reads the `preloop.control` block from the discovered Hermes config
-(`$HERMES_HOME/config.yaml` or `~/.hermes/config.yaml`; see
-[Connect it](#connect-it)):
+(`$HERMES_HOME/config.yaml` or `.yml`, then `~/.hermes/config.yaml` or `.yml`;
+see [Connect it](#connect-it)):
 
 ```yaml
 preloop:
@@ -322,8 +325,9 @@ hosted service. *Preloop Enterprise* is the commercial self-hosted edition.
 
 ## Learn more
 
-- Docs: [docs.preloop.ai](https://docs.preloop.ai), and the
-  [Hermes reference](https://docs.preloop.ai/guide/clients/hermes/)
+- Docs: [docs.preloop.ai](https://docs.preloop.ai), the
+  [Hermes reference](https://docs.preloop.ai/guide/clients/hermes/), and the
+  in-repo [Hermes recovery guide](../../docs/guide/hermes.md)
 - Source: [github.com/preloop/preloop](https://github.com/preloop/preloop). This
   plugin lives in
   [`runtime-plugins/hermes-preloop`](https://github.com/preloop/preloop/tree/main/runtime-plugins/hermes-preloop)
