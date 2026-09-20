@@ -142,8 +142,11 @@ marker, so a successful `command_result` is sufficient.
 
 The orchestrator `TimeoutBudget` still bounds the poll loop. When the budget
 expires it calls `AgentControlExecutor.stop`, which sends `send_message` with
-`interrupt: true` at the dispatched session and marks the bound command
-failed with reason `stopped`.
+`interrupt: true` and `session_mode: current` (no tracking-session UUID).
+Plugins interrupt their most recently owned session. The bound command is
+marked `stopped` only after that interrupt is delivered; a failed interrupt
+leaves the command non-terminal so the operator can see the remote session
+is still live. The execution itself still fails with the timeout message.
 
 Start refuses (classified `runner_error`) when the target is missing,
 inactive, not an allow-listed Agent Control kind, has no verified control

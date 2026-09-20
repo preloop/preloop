@@ -63,6 +63,26 @@ def _target_display_name(agent: Any, fallback: str) -> str:
     return fallback
 
 
+def _aware_utc(value: datetime) -> datetime:
+    """Return ``value`` as timezone-aware UTC."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
+def _command_expired_before_delivery(
+    record: Any, *, now: Optional[datetime] = None
+) -> bool:
+    """True when a still-pending command has passed ``expires_at``."""
+    if record is None or record.status != "pending":
+        return False
+    expires_at = record.expires_at
+    if expires_at is None:
+        return False
+    current = now or datetime.now(UTC)
+    return _aware_utc(expires_at) <= _aware_utc(current)
+
+
 def _result_is_failure(payload: Optional[Dict[str, Any]]) -> bool:
     if not payload:
         return False
@@ -263,47 +283,59 @@ class AgentControlExecutor(AgentExecutor):
                 session_mode="new",
                 require_delivery=True,
             )
-        except AgentControlDispatchError:
-            self._raise_not_connected(agent, target_id)
-        history_session = create_command_history_session(
-            self.db,
-            agent=agent,
-            start_new_session=True,
-        )
-        if history_session is not None:
-            crud_runtime_session_activity.log_agent_control_message(
-                self.db,
-                account_id=agent.account_id,
-                runtime_session_id=history_session.id,
-                message=prompt,
-                status="delivered" if dispatched.local_delivery else "queued",
-                metadata={
-                    "command_id": dispatched.command_id,
-                    "managed_agent_id": str(agent.id),
-                    "agent_name": agent.display_name,
-                    "input_mode": "text",
-                    "session_mode": "new",
-                    "start_new_session": True,
-                    "source_metadata": metadata,
-                    "local_delivery": dispatched.local_delivery,
-                    "published": dispatched.subject is not None,
-                    "subject": dispatched.subject,
-                },
-            )
+        except AgentControlDispatchError as exc:
+            name = _target_display_name(agent, target_id)
+            raise AgentStartError(
+                f"{_NOT_CONNECTED.format(name=name)}: {exc}",
+                category="runner_error",
+            ) from exc
         reference = f"{_SESSION_PREFIX}:{agent.id}:{dispatched.command_id}"
-        execution_id = self._execution_id(execution_context)
-        if execution_id is not None:
-            crud_flow_execution.bind_agent_control_command(
+        try:
+            history_session = create_command_history_session(
                 self.db,
-                execution_id=execution_id,
-                command_id=dispatched.command_id,
-                managed_agent_id=agent.id,
-                runtime_session_id=agent.runtime_session_id,
-                history_session_id=(
-                    history_session.id if history_session is not None else None
-                ),
-                session_reference=reference,
-                commit=True,
+                agent=agent,
+                start_new_session=True,
+            )
+            if history_session is not None:
+                crud_runtime_session_activity.log_agent_control_message(
+                    self.db,
+                    account_id=agent.account_id,
+                    runtime_session_id=history_session.id,
+                    message=prompt,
+                    status="delivered" if dispatched.local_delivery else "queued",
+                    metadata={
+                        "command_id": dispatched.command_id,
+                        "managed_agent_id": str(agent.id),
+                        "agent_name": agent.display_name,
+                        "input_mode": "text",
+                        "session_mode": "new",
+                        "start_new_session": True,
+                        "source_metadata": metadata,
+                        "local_delivery": dispatched.local_delivery,
+                        "published": dispatched.subject is not None,
+                        "subject": dispatched.subject,
+                    },
+                )
+            execution_id = self._execution_id(execution_context)
+            if execution_id is not None:
+                crud_flow_execution.bind_agent_control_command(
+                    self.db,
+                    execution_id=execution_id,
+                    command_id=dispatched.command_id,
+                    managed_agent_id=agent.id,
+                    runtime_session_id=agent.runtime_session_id,
+                    history_session_id=(
+                        history_session.id if history_session is not None else None
+                    ),
+                    session_reference=reference,
+                    commit=True,
+                )
+        except Exception:
+            logger.exception(
+                "Failed to bind persistent flow command %s after delivery; "
+                "the execution remains observable via %s",
+                dispatched.command_id,
+                reference,
             )
         return reference
 
@@ -355,12 +387,8 @@ class AgentControlExecutor(AgentExecutor):
         if record is None:
             return AgentStatus.FAILED
         now = datetime.now(UTC)
-        expires_at = record.expires_at
-        if record.status == "pending" and expires_at is not None:
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=UTC)
-            if expires_at <= now:
-                return AgentStatus.FAILED
+        if _command_expired_before_delivery(record, now=now):
+            return AgentStatus.FAILED
         result = crud_agent_control_command.command_result_payload(record)
         if record.status in {"pending", "delivered"}:
             return AgentStatus.RUNNING
@@ -398,7 +426,9 @@ class AgentControlExecutor(AgentExecutor):
             if isinstance(error, str) and error.strip():
                 error_message = error.strip()
         if status == AgentStatus.FAILED and not error_message:
-            if record is not None and record.last_error:
+            if _command_expired_before_delivery(record):
+                error_message = "Agent Control command expired before delivery"
+            elif record is not None and record.last_error:
                 error_message = record.last_error
             elif record is not None and record.status == "expired":
                 error_message = "Agent Control command expired"
@@ -452,7 +482,19 @@ class AgentControlExecutor(AgentExecutor):
             )
             since = created
             chronological = list(reversed(activities))
+            live_shared = (
+                session_id is not None
+                and str(runtime_session_id) == str(session_id)
+                and (history_id is None or str(history_id) != str(session_id))
+            )
             for activity in chronological:
+                if live_shared:
+                    meta = getattr(activity, "metadata_", None) or {}
+                    command_id = (
+                        meta.get("command_id") if isinstance(meta, dict) else None
+                    )
+                    if str(command_id or "") != str(record.command_id):
+                        continue
                 stamped = activity.timestamp
                 if since is not None and stamped is not None:
                     activity_at = stamped
@@ -470,7 +512,13 @@ class AgentControlExecutor(AgentExecutor):
         return lines
 
     async def stop(self, session_reference: str) -> None:
-        """Interrupt the dispatched session and mark the command stopped."""
+        """Interrupt the runtime's current session if delivery succeeds.
+
+        Start opens a plugin-owned session the backend never learns the native
+        id of, so stop does not target the synthetic tracking row. A failed
+        interrupt leaves the command non-terminal so the operator can see the
+        remote session is still live.
+        """
         record = self._load_command(session_reference)
         binding = self._binding(session_reference)
         managed_agent_id = binding.get("managed_agent_id")
@@ -487,23 +535,8 @@ class AgentControlExecutor(AgentExecutor):
                 account_id=account_id,
                 agent_id=str(managed_agent_id),
             )
-        history_session_id = binding.get("history_session_id")
+        interrupted = False
         if agent is not None:
-            identity: Dict[str, Any] = {}
-            target_id = history_session_id
-            if target_id:
-                from preloop.models.crud import crud_runtime_session
-
-                target = crud_runtime_session.get_account_session(
-                    self.db,
-                    account_id=account_id,
-                    runtime_session_id=str(target_id),
-                )
-                if target is not None:
-                    identity = {
-                        "session_source_id": target.session_source_id,
-                        "session_reference": target.session_reference,
-                    }
             try:
                 await dispatch_operator_message(
                     self.db,
@@ -518,20 +551,21 @@ class AgentControlExecutor(AgentExecutor):
                         ),
                     },
                     start_new_session=False,
-                    target_session_id=target_id,
+                    target_session_id=None,
                     source="flow_execution",
                     interrupt=True,
-                    session_mode="existing" if target_id else "current",
-                    session_identity=identity,
-                    require_delivery=False,
+                    session_mode="current",
+                    require_delivery=True,
                 )
+                interrupted = True
             except AgentControlDispatchError:
                 logger.warning(
-                    "Failed to interrupt persistent flow command %s",
+                    "Failed to interrupt persistent flow command %s; "
+                    "leaving the command non-terminal",
                     session_reference,
                     exc_info=True,
                 )
-        if record is not None:
+        if interrupted and record is not None:
             crud_agent_control_command.mark_terminal_result(
                 self.db,
                 account_id=record.account_id,
