@@ -27,16 +27,16 @@ router = APIRouter()
 
 
 def policies_console_enabled() -> bool:
-    """Whether the Policies console page is exposed (default off).
+    """Whether the Policies console page is exposed (default on).
 
-    The page is still under construction, so it ships hidden. Operators opt in
-    with ``PRELOOP_POLICIES_CONSOLE=true|1|yes|on``. Instance admins see the
+    Operators can hide it with ``PRELOOP_POLICIES_CONSOLE=false``.
+    Instance admins see the
     page regardless: that check lives in the console, not here.
 
     Returns:
-        True when the environment opts the page in.
+        True unless the environment disables the page.
     """
-    return os.getenv("PRELOOP_POLICIES_CONSOLE", "").strip().lower() in (
+    return os.getenv("PRELOOP_POLICIES_CONSOLE", "true").strip().lower() in (
         "1",
         "true",
         "yes",
@@ -84,8 +84,8 @@ def get_features(db: Session = Depends(get_db_session)) -> Dict[str, Any]:
     # setdefault so a plugin that already set the flag keeps its value.
     result["features"].setdefault("session_optimization", True)
 
-    # Policies console: off by default while the page is being reworked. The
-    # backend policy APIs stay open; only the console page is gated. Instance
+    # Policies console is available by default. Operators may hide the page;
+    # backend policy APIs retain their permission checks. Instance
     # admins bypass the flag in the console shell.
     result["features"].setdefault("policies_console", policies_console_enabled())
 

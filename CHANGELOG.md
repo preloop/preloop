@@ -1007,6 +1007,9 @@ avatars.
 
 ### Changed
 
+- Enable the Policies console by default for users with policy permissions.
+  Operators can still hide it with `PRELOOP_POLICIES_CONSOLE=false`.
+
 - CI prefers a matching system Python (through a venv) and only then
   falls back to `actions/setup-python`. The action has no Debian 12
   builds, so a self-hosted bookworm runner with `python3.11` already
@@ -1268,6 +1271,8 @@ avatars.
 
 ### Fixed
 
+- Keep repeated model policy approvals on the application event loop, including
+  background optimization jobs, so pooled database connections remain usable.
 - Hermes fail-closed errors name the config file that was read and the
   `HERMES_HOME` / `HOME` values that selected it, so a systemd user unit
   pointing at a different YAML is visible. Discovery prefers the candidate

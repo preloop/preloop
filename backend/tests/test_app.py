@@ -137,6 +137,8 @@ def test_lifespan_startup_and_shutdown(
     Note: NATS and other services are skipped in TESTING mode, so we only
     test the core startup/shutdown logic (Sentry and database).
     """
+    from preloop.services import model_content_policy
+
     with patch.dict(os.environ, {"INIT_DB": "true", "TESTING": "true"}):
         app = create_app()
         with TestClient(app) as client:
@@ -144,6 +146,8 @@ def test_lifespan_startup_and_shutdown(
             mock_init_sentry.assert_called_once()
             mock_setup_database.assert_called_once()
             # NATS is skipped in TESTING mode, so we don't check it
+            assert model_content_policy._APPROVAL_EVENT_LOOP.is_running()
+        assert model_content_policy._APPROVAL_EVENT_LOOP is None
 
 
 @patch("preloop.api.app.setup_database", side_effect=Exception("DB setup failed"))

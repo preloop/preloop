@@ -45,7 +45,7 @@ class TestGetFeatures:
                 "first_account_pending": False,
                 "registration_bootstrap_pending": False,
                 "session_optimization": True,
-                "policies_console": False,
+                "policies_console": True,
                 "passkeys": True,
             },
         }
@@ -75,7 +75,7 @@ class TestGetFeatures:
                 "first_account_pending": False,
                 "registration_bootstrap_pending": False,
                 "session_optimization": True,
-                "policies_console": False,
+                "policies_console": True,
                 "passkeys": True,
             },
         }
@@ -137,10 +137,10 @@ class TestGetFeatures:
 
     @patch("preloop.api.auth.bootstrap.crud_user")
     @patch("preloop.api.endpoints.features.get_plugin_manager")
-    def test_policies_console_off_by_default(
+    def test_policies_console_on_by_default(
         self, mock_get_plugin_manager, mock_crud_user
     ):
-        """The Policies console page is hidden unless an operator opts in."""
+        """Regular users can discover Policies without an operator opting in."""
         from preloop.api.endpoints.features import get_features
 
         mock_plugin_manager = MagicMock()
@@ -155,7 +155,7 @@ class TestGetFeatures:
             os.environ.pop("PRELOOP_POLICIES_CONSOLE", None)
             result = get_features(db=MagicMock())
 
-        assert result["features"]["policies_console"] is False
+        assert result["features"]["policies_console"] is True
 
     @pytest.mark.parametrize("value", ["true", "1", "yes", "on", "TRUE", " Yes "])
     @patch("preloop.api.auth.bootstrap.crud_user")
@@ -179,10 +179,33 @@ class TestGetFeatures:
 
         assert result["features"]["policies_console"] is True
 
+    @pytest.mark.parametrize("value", ["false", "0", "no", "off", "FALSE", " No ", ""])
+    @patch("preloop.api.auth.bootstrap.crud_user")
+    @patch("preloop.api.endpoints.features.get_plugin_manager")
+    def test_policies_console_env_override_disables(
+        self, mock_get_plugin_manager, mock_crud_user, value
+    ):
+        """PRELOOP_POLICIES_CONSOLE opts the page out, case and space tolerant."""
+        from preloop.api.endpoints.features import get_features
+
+        mock_plugin_manager = MagicMock()
+        mock_plugin_manager.get_enabled_features.return_value = {
+            "plugins": [],
+            "features": {},
+        }
+        mock_get_plugin_manager.return_value = mock_plugin_manager
+        mock_crud_user.has_any_users.return_value = True
+
+        with patch.dict(os.environ, {"PRELOOP_POLICIES_CONSOLE": value}):
+            result = get_features(db=MagicMock())
+
+        assert result["features"]["policies_console"] is False
+
+    @pytest.mark.parametrize("enabled", [True, False])
     @patch("preloop.api.auth.bootstrap.crud_user")
     @patch("preloop.api.endpoints.features.get_plugin_manager")
     def test_policies_console_respects_plugin_value(
-        self, mock_get_plugin_manager, mock_crud_user
+        self, mock_get_plugin_manager, mock_crud_user, enabled
     ):
         """setdefault semantics: a plugin that already set the flag wins."""
         from preloop.api.endpoints.features import get_features
@@ -190,7 +213,7 @@ class TestGetFeatures:
         mock_plugin_manager = MagicMock()
         mock_plugin_manager.get_enabled_features.return_value = {
             "plugins": [],
-            "features": {"policies_console": True},
+            "features": {"policies_console": enabled},
         }
         mock_get_plugin_manager.return_value = mock_plugin_manager
         mock_crud_user.has_any_users.return_value = True
@@ -199,7 +222,7 @@ class TestGetFeatures:
             os.environ.pop("PRELOOP_POLICIES_CONSOLE", None)
             result = get_features(db=MagicMock())
 
-        assert result["features"]["policies_console"] is True
+        assert result["features"]["policies_console"] is enabled
 
     @patch("preloop.api.auth.bootstrap.crud_user")
     @patch("preloop.api.endpoints.features.get_plugin_manager")

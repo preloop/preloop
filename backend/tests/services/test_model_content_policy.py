@@ -533,3 +533,99 @@ def test_response_rule_added_after_empty_request_preflight_blocks_output() -> No
         )
     assert out == ["data: content_policy_denied\n\n", "data: [DONE]\n\n"]
     assert load.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_worker_approval_holds_reuse_application_event_loop() -> None:
+    """Repeated HTTP worker holds must not strand pooled async DB connections."""
+    import asyncio
+
+    from anyio import to_thread
+
+    application_loop = asyncio.get_running_loop()
+    seen = []
+
+    async def approval() -> bool:
+        seen.append(asyncio.get_running_loop())
+        await asyncio.sleep(0)
+        return True
+
+    for _ in range(2):
+        assert await to_thread.run_sync(lambda: _await_model_io_hold(approval()))
+
+    assert seen == [application_loop, application_loop]
+    assert not any(loop.is_closed() for loop in seen)
+
+
+@pytest.mark.asyncio
+async def test_plain_executor_approvals_use_registered_application_loop() -> None:
+    """Background optimization jobs use ordinary executor threads, not AnyIO."""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from preloop.services.model_content_policy import set_model_io_approval_loop
+
+    loop = asyncio.get_running_loop()
+    seen = []
+
+    async def approval() -> bool:
+        seen.append(asyncio.get_running_loop())
+        return True
+
+    set_model_io_approval_loop(loop)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            for _ in range(2):
+                assert await loop.run_in_executor(
+                    executor, lambda: _await_model_io_hold(approval())
+                )
+    finally:
+        set_model_io_approval_loop(None)
+    assert seen == [loop, loop]
+
+
+def test_plain_executor_without_loop_fails_closed() -> None:
+    """Executor threads without a registered loop must not use asyncio.run."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from preloop.services.model_content_policy import set_model_io_approval_loop
+
+    async def approval() -> bool:
+        return True
+
+    set_model_io_approval_loop(None)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(lambda: _await_model_io_hold(approval()))
+        with pytest.raises(RuntimeError, match="application event loop"):
+            future.result()
+
+
+def test_registered_loop_schedule_failure_closes_wrapper() -> None:
+    """A loop that dies between is_running() and schedule must not leak hold()."""
+    import inspect
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import MagicMock, patch
+
+    from preloop.services.model_content_policy import set_model_io_approval_loop
+
+    async def approval() -> bool:
+        return True
+
+    captured: dict[str, object] = {}
+
+    def fake_schedule(coro: object, _loop: object) -> object:
+        captured["coro"] = coro
+        raise RuntimeError("Event loop is closed")
+
+    loop = MagicMock()
+    loop.is_running.return_value = True
+    set_model_io_approval_loop(loop)
+    try:
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_schedule):
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(lambda: _await_model_io_hold(approval()))
+                with pytest.raises(RuntimeError, match="Event loop is closed"):
+                    future.result()
+        assert inspect.getcoroutinestate(captured["coro"]) == inspect.CORO_CLOSED
+    finally:
+        set_model_io_approval_loop(None)

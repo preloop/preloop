@@ -544,9 +544,9 @@ export class ConsoleShell extends LitElement {
   }
 
   /**
-   * The Policies page ships as a preview: hidden unless the instance opts in
-   * through the `policies_console` feature flag, or the viewer is an instance
-   * admin. Normal `view_policies` permission still applies on top of that.
+   * The Policies page is enabled by default. Operators may hide it through
+   * the `policies_console` feature flag; instance admins bypass that flag.
+   * Normal `view_policies` permission still applies on top of that.
    */
   private _canShowPolicies(): boolean {
     if (!this._featuresLoaded || !this._permissionsLoaded) {
