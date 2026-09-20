@@ -529,6 +529,9 @@ class AgentControlExecutor(AgentExecutor):
         """
         record = self._load_command(session_reference)
         binding = self._binding(session_reference)
+        # `_binding()` already parses a missing `_agent_control` dict. Keep
+        # this fallback so a partial binding without managed_agent_id still
+        # interrupts from the session reference.
         managed_agent_id = binding.get("managed_agent_id")
         if not managed_agent_id:
             try:
