@@ -567,7 +567,10 @@ func runAuthLogout(cmd *cobra.Command, args []string) error {
 
 	if logoutAll {
 		if err := revokeAllSessions(); err != nil {
-			fmt.Println("Could not reach the server; local credentials cleared, other sessions remain valid")
+			fmt.Printf(
+				"Could not reach the server; local credentials cleared, other sessions remain valid (%v)\n",
+				err,
+			)
 		}
 	}
 

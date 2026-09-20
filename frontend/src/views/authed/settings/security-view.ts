@@ -1,6 +1,11 @@
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { changePassword, fetchWithAuth, getFeatures } from '../../../api';
+import {
+  changePassword,
+  fetchWithAuth,
+  getFeatures,
+  performLocalSignOut,
+} from '../../../api';
 import { confirmDialog } from '../../../components/confirm-dialog';
 import {
   PasskeySummary,
@@ -140,19 +145,7 @@ export class SecurityView extends LitElement {
       // Local sign-out still proceeds. Other sessions stay valid if the
       // server was unreachable, matching the CLI offline path.
     }
-    this._performLocalSignOut();
-  }
-
-  private _performLocalSignOut(): void {
-    localStorage.removeItem('accessToken');
-    localStorage.removeItem('refreshToken');
-    window.dispatchEvent(
-      new CustomEvent('auth-change', { bubbles: true, composed: true })
-    );
-    this._navigate('/');
-    fetch('/logout', { method: 'GET' }).catch(() => {
-      // Best effort: local credentials are already gone.
-    });
+    performLocalSignOut((url) => this._navigate(url));
   }
 
   private _navigate(url: string): void {

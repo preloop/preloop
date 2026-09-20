@@ -405,6 +405,28 @@ export function coalesceKey(url: string, passive?: boolean): string {
   return passive === true ? `passive|${url}` : url;
 }
 
+/**
+ * Clear local JWT credentials and return to the marketing page.
+ *
+ * Shared by the header Sign out control and Security "Sign out everywhere"
+ * so those two paths cannot drift (tokens, auth-change, navigation, /logout).
+ */
+export function performLocalSignOut(
+  navigate: (url: string) => void = (url) => {
+    window.location.assign(url);
+  }
+): void {
+  localStorage.removeItem('accessToken');
+  localStorage.removeItem('refreshToken');
+  window.dispatchEvent(
+    new CustomEvent('auth-change', { bubbles: true, composed: true })
+  );
+  navigate('/');
+  fetch('/logout', { method: 'GET' }).catch(() => {
+    // Best effort: local credentials are already gone.
+  });
+}
+
 export async function fetchWithAuth(
   url: string,
   options: AuthFetchOptions = {}

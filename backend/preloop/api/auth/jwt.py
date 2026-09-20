@@ -373,6 +373,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 def create_access_token(
     data: Dict[str, Any],
     expires_delta: Optional[timedelta] = None,
+    *,
     auth_generation: int = 0,
 ) -> str:
     """Create a JWT access token.
@@ -402,6 +403,7 @@ def create_refresh_token(
     sub: str,
     scopes: Optional[List[str]] = None,
     session_started_at: Optional[datetime] = None,
+    *,
     auth_generation: int = 0,
 ) -> str:
     """Create a JWT refresh token carrying the session start claim.
