@@ -120,7 +120,9 @@ existing approvals inbox. The ticket includes rule id, detector
 summary, and a SHA-256 of the scanned text. It does not store the full
 prompt or a raw preview. HTTP workers and background optimization jobs
 run the hold on the application event loop. Callers with no loop fail
-closed instead of creating a temporary loop.
+closed instead of creating a temporary loop. A required approval pauses
+a background optimization worker for the approval window (default 5
+minutes, configurable up to 30 days).
 
 ## YAML example
 

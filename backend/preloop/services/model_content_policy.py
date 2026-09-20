@@ -643,7 +643,12 @@ def _await_model_io_hold(awaitable: Any) -> bool:
         try:
             loop = _APPROVAL_EVENT_LOOP
             if loop is not None and loop.is_running():
-                return asyncio.run_coroutine_threadsafe(hold(), loop).result()
+                wrapper = hold()
+                try:
+                    return asyncio.run_coroutine_threadsafe(wrapper, loop).result()
+                except BaseException:
+                    wrapper.close()
+                    raise
             return from_thread.run(hold)
         except BaseException as exc:
             awaitable.close()

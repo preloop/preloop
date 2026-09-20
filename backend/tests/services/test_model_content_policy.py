@@ -598,3 +598,29 @@ def test_plain_executor_without_loop_fails_closed() -> None:
         future = executor.submit(lambda: _await_model_io_hold(approval()))
         with pytest.raises(RuntimeError, match="application event loop"):
             future.result()
+
+
+def test_registered_loop_schedule_failure_closes_wrapper() -> None:
+    """A loop that dies between is_running() and schedule must not leak hold()."""
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import MagicMock, patch
+
+    from preloop.services.model_content_policy import set_model_io_approval_loop
+
+    async def approval() -> bool:
+        return True
+
+    loop = MagicMock()
+    loop.is_running.return_value = True
+    set_model_io_approval_loop(loop)
+    try:
+        with patch(
+            "asyncio.run_coroutine_threadsafe",
+            side_effect=RuntimeError("Event loop is closed"),
+        ):
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(lambda: _await_model_io_hold(approval()))
+                with pytest.raises(RuntimeError, match="Event loop is closed"):
+                    future.result()
+    finally:
+        set_model_io_approval_loop(None)
