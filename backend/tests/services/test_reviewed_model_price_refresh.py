@@ -921,6 +921,11 @@ def test_alibaba_time_bands_feed_estimates_idle_and_busy(payload: dict) -> None:
 
     reset_live_state_for_tests()
     entry = _alibaba_entry(payload)
+    # Pin effectiveness before the frozen idle/busy timestamps. The payload
+    # fixture uses now-1 day, which is later than 2026-09-19 04:00 UTC
+    # once the clock passes that time the following day, and
+    # live_tariff then fail-closes as "before effective".
+    entry["effective_from"] = "2026-09-01T00:00:00+00:00"
     entry["alibaba_policy"].pop("tiers")
     entry["alibaba_policy"]["model_identifier"] = "banded-chat"
     entry["alibaba_policy"]["time_bands"] = {
