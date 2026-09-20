@@ -107,7 +107,9 @@ class TestPromptContract:
         assert "exact expected_revision" in prompt
         assert "developer who will never read the execution output" in prompt
         assert "diagnostic receipt, not the sole triage deliverable" in prompt
-        assert "A conflict requires fresh context and re-evaluation" in prompt
+        assert "this execution's revision is stale" in prompt
+        assert "Do not retarget this execution to newer human requirements" in prompt
+        assert "retry only that exact assessment" in prompt
         assert "do not blindly repeat writes" in prompt
         assert "provider writes are not atomic compare-and-swap" in prompt
 
@@ -155,8 +157,8 @@ class TestPromptContract:
         assert "—" not in yaml.dump(preset, allow_unicode=True)
 
 
-class TestPromptEnforcedWriteBound:
-    def test_guide_documents_prompt_enforced_write_bound(self) -> None:
+class TestAuthenticatedWriteBound:
+    def test_guide_documents_authenticated_write_bound(self) -> None:
         guide = (
             Path(__file__).resolve().parents[2]
             / "docs"
@@ -165,13 +167,12 @@ class TestPromptEnforcedWriteBound:
             / "issue-triage.md"
         )
         text = guide.read_text()
-        assert "triage-only restriction is prompt-enforced" in text
-        assert "approval policy to `update_issue`" in text
-        assert "approval gates are deployment-specific" in text
-        assert (
-            "approval gates are deployment-specific.\n\n"
-            "The first provider adapters support GitHub and GitLab."
-        ) in text
+        assert "Broad `update_issue` metadata writes are rejected" in text
+        assert "Mutating REST" in text
+        assert "execution credential's restrictions" in text
+        assert "does not claim atomic provider compare-and-swap" in text
+        assert "128 KiB" in text
+        assert "Caller-supplied packets are discarded" in text
 
 
 class TestLoaderIntegration:

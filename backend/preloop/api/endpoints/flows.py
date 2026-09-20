@@ -24,6 +24,7 @@ from preloop.models.models.user import User
 from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
 from preloop.services.execution_metrics import project_execution_totals
 from preloop.services.kill_switch import FlowHaltActiveError
+from preloop.services.issue_triage_controller import TriageControllerError
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.utils.hashing import compute_content_hash
 from preloop.utils.audit import log_config_change
@@ -1995,6 +1996,8 @@ async def trigger_flow_execution(
                 trigger_event_data=trigger_event_data,
                 triggered_by=_display_name(current_user),
             )
+        except TriageControllerError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ModelRoutingError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except FlowHaltActiveError:
@@ -2007,6 +2010,8 @@ async def trigger_flow_execution(
             trigger_event_data=trigger_event_data,
             triggered_by=_display_name(current_user),
         )
+    except TriageControllerError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ModelRoutingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FlowHaltActiveError:
@@ -2075,6 +2080,8 @@ async def retry_flow_execution(
             retry_of_execution_id=original.id,
             triggered_by=_display_name(current_user),
         )
+    except TriageControllerError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ModelRoutingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FlowHaltActiveError:

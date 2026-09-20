@@ -2127,6 +2127,68 @@ def test_display_name_prefers_the_person_over_the_login():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["manual", "matrix", "retry"])
+@pytest.mark.parametrize("expected_conflict", [True, False])
+async def test_triage_entry_conflicts_are_client_errors_without_hiding_bugs(
+    mock_account: Account,
+    mocker: MockerFixture,
+    entry: str,
+    expected_conflict: bool,
+) -> None:
+    """Only explicit controller rejection becomes a reviewable HTTP conflict."""
+    from preloop.services.issue_triage_controller import TriageControllerError
+
+    flow_id, execution_id = uuid.uuid4(), uuid.uuid4()
+    mocker.patch.object(flows.crud_flow, "get", return_value=MagicMock(id=flow_id))
+    mocker.patch.object(
+        flows.crud_flow_execution,
+        "get",
+        return_value=MagicMock(
+            id=execution_id,
+            flow_id=flow_id,
+            status="FAILED",
+            trigger_event_details={},
+        ),
+    )
+    mocker.patch.object(flows, "_validate_matrix", return_value=[{}])
+    rejection = (
+        TriageControllerError("triage_context_changed")
+        if expected_conflict
+        else ValueError("unexpected_internal_bug")
+    )
+    trigger = MagicMock()
+    trigger.trigger_flow = mocker.AsyncMock(side_effect=rejection)
+    trigger.trigger_flow_matrix = mocker.AsyncMock(side_effect=rejection)
+    mocker.patch(
+        "preloop.services.flow_trigger_service.FlowTriggerService",
+        return_value=trigger,
+    )
+    with pytest.raises(HTTPException if expected_conflict else ValueError) as caught:
+        if entry == "retry":
+            await maybe_await(
+                flows.retry_flow_execution(
+                    db=MagicMock(),
+                    execution_id=execution_id,
+                    current_user=mock_account,
+                )
+            )
+        else:
+            await maybe_await(
+                flows.trigger_flow_execution(
+                    db=MagicMock(),
+                    flow_id=flow_id,
+                    current_user=mock_account,
+                    trigger_event_data={"matrix": [{}]} if entry == "matrix" else {},
+                )
+            )
+    if expected_conflict:
+        assert caught.value.status_code == 409
+        assert caught.value.detail == "triage_context_changed"
+    else:
+        assert str(caught.value) == "unexpected_internal_bug"
+
+
+@pytest.mark.asyncio
 async def test_retry_flow_execution_success_failed(
     mock_account: Account, mocker: MockerFixture
 ):

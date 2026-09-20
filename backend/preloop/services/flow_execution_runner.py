@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional, Set
 
-from preloop.models.crud import crud_flow, crud_flow_execution
+from preloop.models.crud import crud_flow, crud_flow_execution, crud_issue_lifecycle
 from preloop.models.db.session import get_db_session
 from preloop.models.schemas.flow_execution import FlowExecutionUpdate
 from preloop.services.flow_execution_dispatcher import (
@@ -258,11 +258,15 @@ async def claim_and_run_execution(
     session_reference: Optional[str] = None
     execution_id_str = str(execution_id)
     try:
+        claim_options = {}
+        if crud_issue_lifecycle.has_triage_execution(db, execution_id=execution_id):
+            claim_options["allow_same_worker"] = False
         execution = crud_flow_execution.claim_execution(
             db,
             execution_id=execution_id,
             worker_id=worker_id,
             stale_after_seconds=stale_after,
+            **claim_options,
         )
         if execution is None:
             queued_reason = crud_flow_execution.get_queued_reason(
@@ -400,8 +404,8 @@ async def claim_and_run_execution(
         )
         raise
     finally:
-        _active_claimed_execution_ids.discard(execution_id_str)
         if claimed:
+            _active_claimed_execution_ids.discard(execution_id_str)
             try:
                 crud_flow_execution.release_claim(
                     db, execution_id=execution_id, worker_id=worker_id

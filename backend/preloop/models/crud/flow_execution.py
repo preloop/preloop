@@ -2409,6 +2409,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         stale_after_seconds: int = 120,
         account_cap: Optional[int] = None,
         enforce_account_cap: bool = True,
+        allow_same_worker: bool = True,
     ) -> Optional[FlowExecution]:
         """Atomically claim an active execution for a worker.
 
@@ -2442,6 +2443,9 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             account_cap: Override the resolved per-account cap (tests, callers
                 that already know it).
             enforce_account_cap: Set False to skip the cap entirely.
+            allow_same_worker: Allow reentry by the same worker identity. Durable
+                triage disables this so duplicate local or broker callbacks
+                cannot concurrently orchestrate the same execution.
 
         Returns:
             The claimed execution row, or ``None`` if another worker holds a
@@ -2469,7 +2473,9 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 self._recovery_eligible(),
                 or_(
                     FlowExecution.orchestrator_worker_id.is_(None),
-                    FlowExecution.orchestrator_worker_id == worker_id,
+                    (FlowExecution.orchestrator_worker_id == worker_id)
+                    if allow_same_worker
+                    else False,
                     FlowExecution.orchestrator_heartbeat_at.is_(None),
                     FlowExecution.orchestrator_heartbeat_at < stale_before,
                 ),

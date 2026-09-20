@@ -297,62 +297,70 @@ describe('RunPresetDialog', () => {
       if (anyCreated) expect(alert?.textContent).to.contain('View run');
     });
   }
-  it('names each issue and reports the run that is already working', async () => {
-    const results = [
-      {
-        issue_id: issueId,
-        issue_key: 'example/repo#42',
-        execution_id: 'existing-run',
-        execution_status: 'RUNNING',
-        execution_url: '/console/flows/executions/existing-run',
-        coalesced: true,
-      },
-      {
-        issue_id: '33333333-3333-3333-3333-333333333333',
-        issue_key: 'example/repo#43',
-        execution_id: 'new-run',
-        execution_status: 'PENDING',
-        execution_url: '/console/flows/executions/new-run',
-      },
-    ];
-    fetchStub = sinon.stub(window, 'fetch').callsFake(async (_input, init) => {
-      const confirm = JSON.parse(String(init?.body || '{}')).confirm_create;
-      return new Response(
-        JSON.stringify({
-          execution_id: confirm ? 'new-run' : null,
-          execution_url: confirm ? '/console/flows/executions/new-run' : null,
-          flow_id: 'triage-flow',
-          flow_name: 'Issue Triage Assistant',
-          flow_created: false,
-          results: confirm ? results : [],
-        }),
-        { status: 200 }
+  for (const status of ['RUNNING', 'SUCCEEDED', 'FAILED']) {
+    it(`names each issue and reports the reused ${status.toLowerCase()} run`, async () => {
+      const results = [
+        {
+          issue_id: issueId,
+          issue_key: 'example/repo#42',
+          execution_id: 'existing-run',
+          execution_status: status,
+          execution_url: '/console/flows/executions/existing-run',
+          coalesced: true,
+        },
+        {
+          issue_id: '33333333-3333-3333-3333-333333333333',
+          issue_key: 'example/repo#43',
+          execution_id: 'new-run',
+          execution_status: 'PENDING',
+          execution_url: '/console/flows/executions/new-run',
+        },
+      ];
+      fetchStub = sinon
+        .stub(window, 'fetch')
+        .callsFake(async (_input, init) => {
+          const confirm = JSON.parse(String(init?.body || '{}')).confirm_create;
+          return new Response(
+            JSON.stringify({
+              execution_id: confirm ? 'new-run' : null,
+              execution_url: confirm
+                ? '/console/flows/executions/new-run'
+                : null,
+              flow_id: 'triage-flow',
+              flow_name: 'Issue Triage Assistant',
+              flow_created: false,
+              results: confirm ? results : [],
+            }),
+            { status: 200 }
+          );
+        });
+      await openRunPresetDialog({
+        presetSlug: 'issue-triage-assistant',
+        targets: results.map((item) => ({
+          kind: 'issue' as const,
+          issue_id: item.issue_id,
+        })),
+        issueKey: 'selected issues',
+        role: 'triage',
+      });
+      await clickFooter('Run');
+      await aTimeout(30);
+      const alert = document.body.querySelector('sl-alert');
+      expect(alert).to.exist;
+      expect(alert?.getAttribute('variant')).to.equal(
+        status === 'FAILED' ? 'warning' : 'success'
       );
+      const text = alert?.textContent || '';
+      expect(text).to.contain('1 run created.');
+      expect(text).to.contain('1 existing run reused.');
+      expect(text).to.not.contain('already running');
+      expect(text).to.contain(
+        `example/repo#42: Existing run reused (${status.toLowerCase()}).`
+      );
+      expect(text).to.contain('example/repo#43: Run created.');
+      expect(text).to.not.contain('Issue 1:');
     });
-    await openRunPresetDialog({
-      presetSlug: 'issue-triage-assistant',
-      targets: results.map((item) => ({
-        kind: 'issue' as const,
-        issue_id: item.issue_id,
-      })),
-      issueKey: 'selected issues',
-      role: 'triage',
-    });
-    await clickFooter('Run');
-    await aTimeout(30);
-    const alert = document.body.querySelector('sl-alert');
-    expect(alert).to.exist;
-    // Nothing failed, so the batch is not an attention state.
-    expect(alert?.getAttribute('variant')).to.equal('success');
-    const text = alert?.textContent || '';
-    expect(text).to.contain('1 run created.');
-    expect(text).to.contain('1 target was already running.');
-    expect(text).to.contain(
-      'example/repo#42: A run is already working on this target.'
-    );
-    expect(text).to.contain('example/repo#43: Run created.');
-    expect(text).to.not.contain('Issue 1:');
-  });
+  }
 
   it('falls back to a position when the issue key is unknown', async () => {
     fetchStub = sinon.stub(window, 'fetch').callsFake(async (_input, init) => {

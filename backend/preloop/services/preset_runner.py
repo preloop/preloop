@@ -793,8 +793,12 @@ async def run_preset_on_target(
     )
     issue_key = _issue_display_key(issue)
 
-    active = _active_run_for_target(
-        db, flow, trigger_event_data, account_id=current_user.account_id
+    active = (
+        _active_run_for_target(
+            db, flow, trigger_event_data, account_id=current_user.account_id
+        )
+        if preset_slug != TRIAGE_SLUG
+        else None
     )
     if active is not None:
         item = _coalesced_item(active, issue_id=str(issue_id), issue_key=issue_key)
@@ -849,13 +853,25 @@ async def run_preset_on_target(
     if raw_execution_id is None:
         raise _http(500, "Flow trigger did not return an execution id")
     execution_id = str(raw_execution_id)
-    return {
+    response: Dict[str, Any] = {
         "execution_id": execution_id,
         "flow_id": str(flow.id),
         "flow_name": flow.name,
         "flow_created": created,
         "execution_url": f"/console/flows/executions/{execution_id}",
     }
+    if result.get("coalesced"):
+        response["results"] = [
+            {
+                "issue_id": str(issue_id),
+                "issue_key": issue_key,
+                "execution_id": execution_id,
+                "execution_status": result.get("status"),
+                "execution_url": response["execution_url"],
+                "coalesced": True,
+            }
+        ]
+    return response
 
 
 async def _run_preset_on_issue_batch(
@@ -963,13 +979,6 @@ async def _run_preset_on_issue_batch(
             trigger_event_data = build_issue_trigger_payload(
                 issue, project, tracker, git_only=False
             )
-            active = _active_run_for_target(
-                db, flow, trigger_event_data, account_id=current_user.account_id
-            )
-            if active is not None:
-                item_result = _coalesced_item(active, issue_id=key, issue_key=issue_key)
-                results.append(item_result)
-                continue
             result = await trigger_service.trigger_flow(
                 flow_id=flow.id,
                 test_mode=False,
@@ -994,6 +1003,8 @@ async def _run_preset_on_issue_batch(
                 "execution_status": result.get("status"),
                 "execution_url": f"/console/flows/executions/{execution_id}",
             }
+            if result.get("coalesced"):
+                item_result["coalesced"] = True
         except FlowDispatchError as exc:
             # Dispatch may fail after the row is committed. Keep its identity
             # so callers inspect the existing run instead of submitting it twice.
@@ -1015,7 +1026,11 @@ async def _run_preset_on_issue_batch(
         except ValueError as exc:
             item_result = {"issue_id": key, "issue_key": issue_key, "error": str(exc)}
         results.append(item_result)
-        if first_execution_id is None and item_result.get("execution_id"):
+        if (
+            first_execution_id is None
+            and item_result.get("execution_id")
+            and not item_result.get("coalesced")
+        ):
             first_execution_id = item_result["execution_id"]
             first_execution_url = item_result["execution_url"]
 

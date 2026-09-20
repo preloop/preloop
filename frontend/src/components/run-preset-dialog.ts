@@ -208,8 +208,14 @@ export class RunPresetDialog extends LitElement {
 
   private showRunResultToast(result: RunPresetResponse): void {
     const items = result.results;
-    const failures = items?.filter((item) => item.error).length || 0;
-    const running = items?.filter((item) => item.coalesced).length || 0;
+    const failures =
+      items?.filter(
+        (item) =>
+          item.error ||
+          (item.coalesced &&
+            ['FAILED', 'CANCELLED'].includes(item.execution_status || ''))
+      ).length || 0;
+    const reused = items?.filter((item) => item.coalesced).length || 0;
     const created =
       items?.filter((item) => item.execution_id && !item.coalesced).length || 0;
     const alert = Object.assign(document.createElement('sl-alert'), {
@@ -228,8 +234,8 @@ export class RunPresetDialog extends LitElement {
       ? (created
           ? `${created} ${created === 1 ? 'run' : 'runs'} created.`
           : 'No runs were created.') +
-        (running
-          ? ` ${running} ${running === 1 ? 'target was' : 'targets were'} already running.`
+        (reused
+          ? ` ${reused} existing ${reused === 1 ? 'run' : 'runs'} reused.`
           : '') +
         (failures
           ? ` ${failures} ${failures === 1 ? 'target needs' : 'targets need'} attention.`
@@ -259,7 +265,7 @@ export class RunPresetDialog extends LitElement {
         const outcome =
           item.error ||
           (item.coalesced
-            ? 'A run is already working on this target.'
+            ? `Existing run reused${item.execution_status ? ` (${item.execution_status.toLowerCase()})` : ''}.`
             : 'Run created.');
         line.append(document.createTextNode(`${label}: ${outcome} `));
         if (item.execution_url) addRunLink(line, item.execution_url);

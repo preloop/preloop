@@ -189,7 +189,7 @@ async def get_tracker_client(
     # --- Assemble the full configuration ---
     # This will be passed as connection_details to the tracker client
     # Start with project-specific tracker settings from the database
-    full_config: Dict[str, Any] = project.tracker_settings or {}
+    full_config: Dict[str, Any] = dict(project.tracker_settings or {})
 
     # Add URL and other connection details from the main tracker object
     # The token/api_key is passed separately to the factory
