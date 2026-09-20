@@ -3307,7 +3307,7 @@ async def list_attention_dismissals(
 
 
 @router.put(
-    "/attention/dismissals/{item_id}",
+    "/attention/dismissals/{item_id:path}",
     response_model=AttentionDismissalResponse,
 )
 @require_permission("manage_agents")
@@ -3354,7 +3354,7 @@ async def upsert_attention_dismissal(
 
 
 @router.delete(
-    "/attention/dismissals/{item_id}",
+    "/attention/dismissals/{item_id:path}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 @require_permission("manage_agents")
