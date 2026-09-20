@@ -602,6 +602,7 @@ def test_plain_executor_without_loop_fails_closed() -> None:
 
 def test_registered_loop_schedule_failure_closes_wrapper() -> None:
     """A loop that dies between is_running() and schedule must not leak hold()."""
+    import inspect
     from concurrent.futures import ThreadPoolExecutor
     from unittest.mock import MagicMock, patch
 
@@ -610,17 +611,21 @@ def test_registered_loop_schedule_failure_closes_wrapper() -> None:
     async def approval() -> bool:
         return True
 
+    captured: dict[str, object] = {}
+
+    def fake_schedule(coro: object, _loop: object) -> object:
+        captured["coro"] = coro
+        raise RuntimeError("Event loop is closed")
+
     loop = MagicMock()
     loop.is_running.return_value = True
     set_model_io_approval_loop(loop)
     try:
-        with patch(
-            "asyncio.run_coroutine_threadsafe",
-            side_effect=RuntimeError("Event loop is closed"),
-        ):
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_schedule):
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(lambda: _await_model_io_hold(approval()))
                 with pytest.raises(RuntimeError, match="Event loop is closed"):
                     future.result()
+        assert inspect.getcoroutinestate(captured["coro"]) == inspect.CORO_CLOSED
     finally:
         set_model_io_approval_loop(None)
