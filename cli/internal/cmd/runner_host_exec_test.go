@@ -556,7 +556,7 @@ func TestHostExecProfilesEmptyJSONArrayOnRegisterAndHello(t *testing.T) {
 	FlagToken = "tok"
 	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
 	client := api.NewClientWithToken(server.URL, "tok")
-	state, err := loadOrRegisterRunner(client, "box", "host", nil, 2)
+	state, err := loadOrRegisterRunner(client, "box", "host", []string{}, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -656,7 +656,7 @@ func TestHostExecProfilesOneProfileUnchangedOnRegisterAndHello(t *testing.T) {
 	FlagToken = "tok"
 	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
 	client := api.NewClientWithToken(server.URL, "tok")
-	state, err := loadOrRegisterRunner(client, "box", "host", nil, 2)
+	state, err := loadOrRegisterRunner(client, "box", "host", []string{}, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
