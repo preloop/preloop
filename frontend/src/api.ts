@@ -1254,12 +1254,15 @@ export async function restoreAttentionItem(itemId: string): Promise<void> {
   }
 }
 
+export type CostUsageBreakdown =
+  'models' | 'flows' | 'sessions' | 'tools' | 'days' | 'imported';
+
 export async function getCostAnalyticsSummary(
-  params: GatewayUsageSummaryParams = {}
+  params: GatewayUsageSummaryParams & { breakdowns?: CostUsageBreakdown[] } = {}
 ): Promise<CostAnalyticsSummaryResponse> {
-  const response = await fetchWithAuth(
-    `/api/v1/cost/summary${buildGatewayUsageQuery(params)}`
-  );
+  const query = new URLSearchParams(buildGatewayUsageQuery(params));
+  params.breakdowns?.forEach((name) => query.append('breakdown', name));
+  const response = await fetchWithAuth(`/api/v1/cost/summary?${query}`);
   if (!response.ok) {
     const refused = await historyUnavailableError(response);
     if (refused) throw refused;

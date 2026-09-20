@@ -24,6 +24,11 @@ avatars.
 
 ### Added
 
+- Cost summaries accept optional `include_breakdown=false` and repeatable
+  `breakdown` selections while preserving the full response by default.
+  The Cost console shows totals first and loads tab details independently,
+  with section retries and protection against stale date-range responses.
+
 - Pi and DeepSeek Harness agents: CLI installation and onboarding, console/API
   identities, ephemeral Docker/Kubernetes/private-runner flows, native tool
   approvals, lifecycle events, and message/interrupt control of active sessions.
@@ -1260,6 +1265,15 @@ avatars.
 
 - Keep repeated model policy approvals on the application event loop, including
   background optimization jobs, so pooled database connections remain usable.
+- Hermes fail-closed errors name the config file that was read and the
+  `HERMES_HOME` / `HOME` values that selected it, so a systemd user unit
+  pointing at a different YAML is visible. Discovery prefers the candidate
+  (`config.yaml` or `config.yml` under `$HERMES_HOME` then `~/.hermes`)
+  that actually contains `preloop.control`. Offboard, `preloop agents
+  restore Hermes`, and `preloop agents install-plugin Hermes` restart the
+  gateway the same way onboarding does, and on Linux print `hermes-*`
+  systemd user units with the exact restart command. Guide:
+  [hermes.md](docs/guide/hermes.md). `preloop-hermes-plugin` 0.3.1.
 
 - Alibaba Model Studio flow estimates cover the Singapore International
   native catalog, not only chat SKUs. `GET /api/v1/models` is fetched

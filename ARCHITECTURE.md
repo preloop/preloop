@@ -37,6 +37,10 @@ records were true when written; the signing key lives beside the records.
 
 Cloud analytics history is resolved through a billing plugin service at reporting boundaries. Physical retention preserves longer subscription promises through account-locked CRUD updates and remains separate from audit/evidence policy and live governance. See [Cloud analytics history and stored records](docs/guide/flows/evidence-storage.md#cloud-analytics-history-and-stored-records).
 
+The Cost console loads totals independently of settings and tab breakdowns.
+Selective reporting queries and per-section loading states are described in
+[Progressive reporting](docs/architecture/cost.md#progressive-reporting).
+
 ## High-Level Architecture
 
 ```mermaid

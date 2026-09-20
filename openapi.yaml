@@ -8762,6 +8762,38 @@ paths:
           title: Exclude Retries
         description: Exclude rows marked as retries of an identical earlier request.
           Retries consume real provider tokens, so they count by default.
+      - name: include_breakdown
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Include breakdowns; false returns totals and pricing context
+            only.
+          default: true
+          title: Include Breakdown
+        description: Include breakdowns; false returns totals and pricing context
+          only.
+      - name: breakdown
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              enum:
+              - models
+              - flows
+              - sessions
+              - tools
+              - days
+              - imported
+              type: string
+          - type: 'null'
+          description: Optional breakdown selection. Repeat for multiple sections;
+            omitted returns all. Ignored when include_breakdown=false.
+          title: Breakdown
+        description: Optional breakdown selection. Repeat for multiple sections; omitted
+          returns all. Ignored when include_breakdown=false.
       responses:
         '200':
           description: Successful Response

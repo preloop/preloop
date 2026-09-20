@@ -5,8 +5,8 @@
 
 .DESCRIPTION
   Downloads the matching preloop-windows-* binary from GitHub Releases into
-  %LOCALAPPDATA%\Preloop\bin, unblocks Mark of the Web, and adds the directory
-  to the user PATH.
+  %LOCALAPPDATA%\Preloop\bin after verifying its SHA256 against the release
+  checksums, and adds the directory to the user PATH.
 
   Recommended install (PowerShell):
 
@@ -113,35 +113,28 @@ $checksumsTmp = Join-Path ([System.IO.Path]::GetTempPath()) ("preloop-checksums-
 try {
   Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
 
-  # SHA256SUMS verification is defense in depth. Do not block installation if
-  # GitHub's checksum asset is temporarily unavailable or malformed.
-  try {
-    Invoke-WebRequest -Uri $checksumsUrl -OutFile $checksumsTmp -UseBasicParsing
-    $assetPattern = "^\s*([0-9A-Fa-f]{64})\s+\*?$([Regex]::Escape($asset))\s*$"
-    $checksumMatch = Select-String -Path $checksumsTmp -Pattern $assetPattern | Select-Object -First 1
-    if ($null -eq $checksumMatch) {
-      Write-Warning "Could not find a SHA256 checksum for $asset; continuing without verification."
-    } else {
-      $expectedHash = $checksumMatch.Matches[0].Groups[1].Value
-      $actualHash = (Get-FileHash -Path $tmp -Algorithm SHA256).Hash
-      if (-not $actualHash.Equals($expectedHash, [StringComparison]::OrdinalIgnoreCase)) {
-        Write-Warning "SHA256 verification failed for $asset; continuing with the downloaded file."
-      } else {
-        Write-Host "  SHA256 verified"
-      }
+  # Require one unambiguous checksum before replacing or executing the CLI.
+  # A failed download or verification leaves any existing installation intact.
+  Invoke-WebRequest -Uri $checksumsUrl -OutFile $checksumsTmp -UseBasicParsing
+  $expectedHashes = @()
+  foreach ($line in Get-Content -LiteralPath $checksumsTmp) {
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    if ($line -notmatch '^\s*([0-9A-Fa-f]{64})\s+\*?(\S+)\s*$') {
+      throw "Malformed release SHA256SUMS; installation stopped."
     }
-  } catch {
-    Write-Warning "Could not verify SHA256 for $asset; continuing without verification. $($_.Exception.Message)"
+    if ($Matches[2] -ceq $asset) { $expectedHashes += $Matches[1] }
   }
+  if ($expectedHashes.Count -ne 1) {
+    throw "Expected exactly one SHA256 checksum for $asset; found $($expectedHashes.Count). Installation stopped."
+  }
+  $actualHash = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash
+  if (-not $actualHash.Equals($expectedHashes[0], [StringComparison]::OrdinalIgnoreCase)) {
+    throw "SHA256 verification failed for $asset; installation stopped."
+  }
+  Write-Host "  SHA256 verified"
 
-  Move-Item -Force -Path $tmp -Destination $target
-  # Remove Mark of the Web so SmartScreen/Defender treat a verified download
-  # less harshly after the user explicitly installed it.
-  $unblockErr = $null
-  Unblock-File -Path $target -ErrorAction SilentlyContinue -ErrorVariable unblockErr
-  if ($unblockErr) {
-    Write-Debug "Could not unblock $target: $unblockErr"
-  }
+  # Preserve download-zone metadata and let Windows security evaluate the file.
+  Move-Item -Force -LiteralPath $tmp -Destination $target
 } finally {
   if (Test-Path -LiteralPath $tmp) {
     Remove-Item -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
@@ -168,9 +161,8 @@ if (-not (Test-Path -LiteralPath $clientIdFile)) {
 }
 
 Write-Host ""
-Write-Host "If Microsoft Defender quarantines preloop.exe, restore it from Protection history,"
-Write-Host "verify the SHA256 against the GitHub release, then add an exclusion for:"
-Write-Host "  $installDir"
+Write-Host "If Microsoft Defender flags preloop.exe, leave protection enabled and report"
+Write-Host "the detection name, release version, and SHA256 for investigation."
 Write-Host "Details: https://github.com/preloop/preloop/blob/main/docs/windows-cli.md"
 
 & $target version

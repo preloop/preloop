@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -1994,6 +1995,18 @@ func runAgentsInstallPlugin(cmd *cobra.Command, args []string) error {
 			err,
 		)
 	}
+	if runtimeSessionSourceTypeForAgent(agentName) == "claude_code" {
+		// npm install -g <source folder> links the folder as-is, so prepare an
+		// unbuilt Claude plugin checkout before installing it. This keeps the
+		// standalone command aligned with the onboarding installer.
+		if buildErr := buildClaudePluginSourceIfNeeded(
+			executable,
+			agentControlPluginInstallTarget(AgentConfig{Name: agentName}),
+			cmd.ErrOrStderr(),
+		); buildErr != nil {
+			return fmt.Errorf("failed to prepare Preloop runtime plugin source: %w", buildErr)
+		}
+	}
 	// OpenClaw's plugin trust gate (plugins.allow) must admit the plugin or
 	// the install registers nothing; ensure it before installing so the
 	// standalone command matches what onboarding writes.
@@ -2006,7 +2019,14 @@ func runAgentsInstallPlugin(cmd *cobra.Command, args []string) error {
 			)
 		}
 	}
-	command := exec.Command(executable, installArgs...)
+	var command *exec.Cmd
+	if runtimeSessionSourceTypeForAgent(agentName) == "claude_code" {
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		command = exec.CommandContext(ctx, executable, installArgs...)
+	} else {
+		command = exec.Command(executable, installArgs...)
+	}
 	output, err := command.CombinedOutput()
 	if len(output) > 0 {
 		_, _ = cmd.ErrOrStderr().Write(output)
@@ -2083,6 +2103,7 @@ func runAgentsInstallHermesPlugin(cmd *cobra.Command, agentName string, dryRun b
 			hermesManualPluginInstallCommand(installTarget),
 		)
 	}
+	restartHermesGatewayAfterReconfig(agent, cmd.OutOrStdout())
 	fmt.Fprintf(
 		cmd.OutOrStdout(),
 		"\nInstalled %s into Hermes' virtualenv via pip. Run `preloop agents validate %s` to verify plugin load and control readiness.\n",
@@ -2105,7 +2126,18 @@ func agentControlPluginInstallCommand(agentName string) (string, []string, error
 			agentName,
 		)
 	}
-	return installer, []string{"plugins", "install", installTarget}, nil
+	return installer, agentControlPluginInstallArgs(installer, installTarget), nil
+}
+
+// agentControlPluginInstallArgs keeps standalone installation and onboarding
+// on the same installer-specific command shape. npm packages are command-line
+// plugins, so they must be installed globally rather than through the
+// OpenClaw-style plugin subcommand.
+func agentControlPluginInstallArgs(installer, installTarget string) []string {
+	if installer == "npm" {
+		return []string{"install", "-g", installTarget}
+	}
+	return []string{"plugins", "install", installTarget}
 }
 
 func mergeStringMaps(base map[string]interface{}, overlays ...map[string]interface{}) map[string]interface{} {
@@ -2194,6 +2226,7 @@ func runAgentsRestore(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("✓ Restored %s config from %s\n", resolveAgentDisplayName(agent), state.BackupPath)
+	restartHermesGatewayAfterReconfig(agent, os.Stdout)
 	printMutatingCommandUndo(
 		os.Stdout,
 		fmt.Sprintf(
@@ -2402,6 +2435,7 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 
 	fmt.Printf("✓ Offboarded %s\n", resolveAgentDisplayName(agent))
 	fmt.Printf("  Restored config: %s\n", agent.ConfigPath)
+	restartHermesGatewayAfterReconfig(agent, os.Stdout)
 	printMutatingCommandUndo(
 		os.Stdout,
 		fmt.Sprintf(

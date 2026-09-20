@@ -1,0 +1,39 @@
+name: Windows Security Validation Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-security-tests:
+    name: Windows security script tests
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      PRELOOP_DISABLE_TELEMETRY: 'true'
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned Pester
+        run: |
+          Save-Module Pester -RequiredVersion 5.7.1 -Path "$env:RUNNER_TEMP/pester-modules" -Force
+      - name: Test Defender validation failure paths
+        run: |
+          Import-Module "$env:RUNNER_TEMP/pester-modules/Pester/5.7.1/Pester.psd1" -Force
+          $result = Invoke-Pester -Path scripts/tests/windows-defender.Tests.ps1 -PassThru
+          if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'Defender validation tests failed.' }
+      - name: Test installer integrity failure paths
+        run: ./scripts/test-install-cli.ps1
+      - name: Enable Defender on the disposable hosted runner
+        run: ./scripts/prepare-windows-defender.ps1
+      - name: Verify actual scanner availability
+        run: |
+          . ./scripts/test-windows-defender.ps1
+          Assert-DefenderCoverage | Out-Null
+          Invoke-DefenderFileScan -FilePath "$env:SystemRoot/System32/where.exe" -LogPath "$env:RUNNER_TEMP/defender-smoke.log"

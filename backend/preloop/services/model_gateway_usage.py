@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy.orm import Session
-
 from preloop.models.crud import (
     crud_account,
     crud_api_usage,
@@ -23,10 +21,6 @@ from preloop.schemas.gateway_usage import (
     AccountGatewayUsageSearchResponse,
     AccountGatewayUsageSummaryResponse,
     AccountRateLimitReportResponse,
-    RateLimitByModel,
-    RateLimitBySession,
-    RateLimitSnapshotItem,
-    RateLimitTotals,
     FlowGatewayUsageSummaryResponse,
     GatewayBudgetSummary,
     GatewayTokenUsage,
@@ -34,11 +28,17 @@ from preloop.schemas.gateway_usage import (
     GatewayUsageByExecution,
     GatewayUsageByFlow,
     GatewayUsageByModel,
-    GatewayUsageSearchResultItem,
     GatewayUsageBySession,
+    GatewayUsageSearchResultItem,
+    RateLimitByModel,
+    RateLimitBySession,
+    RateLimitSnapshotItem,
+    RateLimitTotals,
+    UsageBreakdown,
 )
-from preloop.services.tool_usage_stats import ToolUsageStatsService
 from preloop.services.analytics_history import restrict_history_window
+from preloop.services.tool_usage_stats import ToolUsageStatsService
+from sqlalchemy.orm import Session
 
 #: Window every usage report falls back to when the caller names no dates.
 DEFAULT_USAGE_WINDOW_DAYS = 30
@@ -172,6 +172,7 @@ class ModelGatewayUsageService:
         runtime_principal_id: Optional[str] = None,
         include_breakdown: bool = True,
         exclude_retries: bool = False,
+        breakdowns: Optional[set[UsageBreakdown]] = None,
     ) -> AccountGatewayUsageSummaryResponse:
         start_date, end_date = self._normalize_period(start_date, end_date)
         start_date, end_date = restrict_history_window(
@@ -185,7 +186,18 @@ class ModelGatewayUsageService:
             runtime_principal_id=runtime_principal_id,
             exclude_retries=exclude_retries,
         )
-        if include_breakdown:
+        # None preserves the historical full response. An explicit selection
+        # runs only the requested aggregates; lightweight readers run none.
+        selected = (
+            (
+                {"models", "flows", "sessions", "tools", "days"}
+                if breakdowns is None
+                else breakdowns
+            )
+            if include_breakdown
+            else set()
+        )
+        if "models" in selected:
             usage_by_model = crud_api_usage.get_gateway_usage_by_model(
                 self.db,
                 account_id=str(account.id),
@@ -193,6 +205,9 @@ class ModelGatewayUsageService:
                 end_date=end_date,
                 runtime_principal_id=runtime_principal_id,
             )
+        else:
+            usage_by_model = []
+        if "flows" in selected:
             usage_by_flow = crud_api_usage.get_gateway_usage_by_flow(
                 self.db,
                 account_id=str(account.id),
@@ -203,6 +218,9 @@ class ModelGatewayUsageService:
                 # including flows outside the recent-session/top-flow lists.
                 limit=None,
             )
+        else:
+            usage_by_flow = []
+        if "sessions" in selected:
             usage_by_session = crud_api_usage.get_gateway_usage_by_session(
                 self.db,
                 account_id=str(account.id),
@@ -213,11 +231,17 @@ class ModelGatewayUsageService:
                 # not be reconstructed by summing this truncated activity list.
                 limit=250,
             )
+        else:
+            usage_by_session = []
+        if "tools" in selected:
             usage_by_tool = ToolUsageStatsService(self.db).get_account_usage_by_tool(
                 account_id=str(account.id),
                 start_date=start_date,
                 end_date=end_date,
             )
+        else:
+            usage_by_tool = []
+        if "days" in selected:
             requests_by_day = crud_api_usage.get_gateway_usage_timeseries(
                 self.db,
                 account_id=str(account.id),
@@ -226,10 +250,6 @@ class ModelGatewayUsageService:
                 runtime_principal_id=runtime_principal_id,
             )
         else:
-            usage_by_model = []
-            usage_by_flow = []
-            usage_by_session = []
-            usage_by_tool = []
             requests_by_day = []
 
         budget_cfg = self._normalize_budget_config(

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -1012,13 +1013,25 @@ func verifyHermesEntryPointPlugin() map[string]interface{} {
 	return result
 }
 
+// hermesSystemdGOOS is the GOOS used to decide whether to probe systemd user
+// units. Tests override it so a fake systemctl on PATH can be exercised off
+// Linux.
+var hermesSystemdGOOS = runtime.GOOS
+
 // restartHermesGatewayAfterReconfig reloads the Hermes messaging gateway so MCP
 // server changes written during onboarding take effect before config validation
-// and live checks run.
+// and live checks run. It also best-effort lists systemd user units named
+// hermes-* so the operator knows a respawner exists.
 func restartHermesGatewayAfterReconfig(agent AgentConfig, writer io.Writer) map[string]interface{} {
 	result := map[string]interface{}{}
 	if !isHermesAgent(agent) {
 		return result
+	}
+
+	units := listHermesSystemdUserUnits()
+	if len(units) > 0 {
+		result["systemd_user_units"] = units
+		warnHermesSystemdUserUnits(writer, units)
 	}
 
 	hermesPath, err := resolveRuntimeExecutable("hermes")
@@ -1070,4 +1083,75 @@ func restartHermesGatewayAfterReconfig(agent AgentConfig, writer io.Writer) map[
 		fmt.Fprintln(writer, "  Hermes gateway restarted.") //nolint:errcheck
 	}
 	return result
+}
+
+// listHermesSystemdUserUnits returns names of systemd user units matching
+// hermes-*. Linux only, best effort: a missing systemctl, a failed listing, or
+// a non-Linux host yields an empty slice and never fails the caller. --all is
+// required so an enabled-but-inactive unit (loaded, not currently running)
+// still surfaces; list-units without it hides those respawners.
+func listHermesSystemdUserUnits() []string {
+	if hermesSystemdGOOS != "linux" {
+		return nil
+	}
+	systemctlPath, err := exec.LookPath("systemctl")
+	if err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(
+		ctx,
+		systemctlPath,
+		"--user",
+		"list-units",
+		"hermes-*",
+		"--all",
+		"--no-legend",
+	)
+	cmd.Env = append(os.Environ(), "SYSTEMD_PAGER=")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil
+	}
+	return parseHermesSystemdUnitNames(string(output))
+}
+
+// parseHermesSystemdUnitNames extracts unit names that start with hermes-
+// from `systemctl --user list-units --all --no-legend` output.
+func parseHermesSystemdUnitNames(output string) []string {
+	var units []string
+	seen := map[string]struct{}{}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		name := strings.TrimSpace(fields[0])
+		if !strings.HasPrefix(name, "hermes-") {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		units = append(units, name)
+	}
+	return units
+}
+
+// warnHermesSystemdUserUnits prints the units and the exact restart command.
+func warnHermesSystemdUserUnits(writer io.Writer, units []string) {
+	if writer == nil || len(units) == 0 {
+		return
+	}
+	fmt.Fprintf(
+		writer,
+		"  Found systemd user units that can respawn Hermes: %s.\n"+
+			"  Restart with: systemctl --user restart %s\n"+
+			"  Stop them before killing processes: systemctl --user stop %s\n",
+		strings.Join(units, ", "),
+		strings.Join(units, " "),
+		strings.Join(units, " "),
+	) //nolint:errcheck
 }
