@@ -1909,6 +1909,9 @@ avatars.
 - **Preloop-bot label events were dropped**: `_is_preloop_triggered_event`
   no longer skips `issue_labeled` / `issue_unlabeled`, so
   `update_issue` adding `agent-ready` can start an implementation flow.
+- **Attention dismissals**: marking a model item fixed or restoring it
+  returned 404 when the model alias contained a slash (reported and fixed
+  by Alex Lennon, Dynamic Devices).
 
 ### Removed
 
