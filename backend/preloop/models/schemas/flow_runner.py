@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from preloop.models.models.flow_runner import (
     DEFAULT_RUNNER_CONCURRENCY,
@@ -33,9 +33,18 @@ class RunnerRegisterRequest(BaseModel):
     ephemeral: bool = False
     runner_id: Optional[UUID] = None
     instance_id: Optional[UUID] = None
-    host_exec_profiles: List[HostExecProfileAdvertisement] = Field(
+    host_exec_profiles: Optional[List[HostExecProfileAdvertisement]] = Field(
         default_factory=list, max_length=64
     )
+
+    @field_validator("host_exec_profiles", mode="before")
+    @classmethod
+    def accept_null_host_exec_profiles(cls, value: Any) -> Any:
+        """Map JSON null to an empty list so older clients can still register."""
+        if value is None:
+            return []
+        return value
+
     #: How many jobs this process is willing to run at once. It may lower the
     #: stored ceiling for as long as it is connected; it never raises it.
     concurrency: Optional[int] = Field(None, ge=1, le=MAX_RUNNER_CONCURRENCY)

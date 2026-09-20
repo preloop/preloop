@@ -1271,6 +1271,9 @@ avatars.
 
 ### Fixed
 
+- Private runner registration and the WebSocket hello send an empty
+  `host_exec_profiles` list when none are configured, and registration
+  accepts JSON `null` so older clients cannot be locked out (#838).
 - Keep repeated model policy approvals on the application event loop, including
   background optimization jobs, so pooled database connections remain usable.
 - Hermes fail-closed errors name the config file that was read and the

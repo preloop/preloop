@@ -483,3 +483,220 @@ exit 0
 		t.Fatalf("exit=%v", outcome.exitCode)
 	}
 }
+
+func decodeHostExecProfiles(t *testing.T, payload map[string]any) []any {
+	t.Helper()
+	raw, ok := payload["host_exec_profiles"]
+	if !ok {
+		t.Fatal("host_exec_profiles key missing")
+	}
+	if raw == nil {
+		t.Fatal("host_exec_profiles is JSON null")
+	}
+	profiles, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("host_exec_profiles type %T, want JSON array", raw)
+	}
+	return profiles
+}
+
+func TestHostExecProfilesEmptyJSONArrayOnRegisterAndHello(t *testing.T) {
+	testenv.SetTempHome(t)
+
+	registered := make(chan map[string]any, 1)
+	hello := make(chan map[string]any, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/runners/register" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			select {
+			case registered <- body:
+			default:
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":         "11111111-1111-4111-8111-111111111111",
+				"account_id": "22222222-2222-4222-8222-222222222222",
+				"name":       "box",
+				"status":     "online",
+				"token":      "runner-token",
+				"created_at": "2026-08-17T00:00:00Z",
+				"updated_at": "2026-08-17T00:00:00Z",
+			})
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "/ws") {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close() //nolint:errcheck
+		_ = conn.WriteJSON(map[string]any{"type": "hello"})
+		var msg map[string]any
+		if err := conn.ReadJSON(&msg); err != nil {
+			return
+		}
+		select {
+		case hello <- msg:
+		default:
+		}
+		for {
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	oldToken, oldURL := FlagToken, FlagURL
+	FlagURL = server.URL
+	FlagToken = "tok"
+	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
+	client := api.NewClientWithToken(server.URL, "tok")
+	state, err := loadOrRegisterRunner(client, "box", "host", []string{}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case body := <-registered:
+		if got := decodeHostExecProfiles(t, body); len(got) != 0 {
+			t.Fatalf("register host_exec_profiles = %#v, want []", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("registration request not captured")
+	}
+
+	interrupt := make(chan os.Signal, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- runnerForegroundLoop(state, interrupt, io.Discard, 2)
+	}()
+	select {
+	case msg := <-hello:
+		if got := decodeHostExecProfiles(t, msg); len(got) != 0 {
+			t.Fatalf("hello host_exec_profiles = %#v, want []", got)
+		}
+	case <-time.After(5 * time.Second):
+		interrupt <- os.Interrupt
+		t.Fatal("hello message not captured")
+	}
+	interrupt <- os.Interrupt
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("runner did not exit")
+	}
+}
+
+func TestHostExecProfilesOneProfileUnchangedOnRegisterAndHello(t *testing.T) {
+	skipNoShebangOnWindows(t, "host execution profile advertisement")
+	testenv.SetTempHome(t)
+	root := t.TempDir()
+	writeHostExecProfiles(t, []hostExecProfile{{
+		Name:          "cursor-ask",
+		Executable:    "cursor-agent",
+		Argv:          []string{"--mode=ask"},
+		WorkspaceRoot: root,
+		ModelMap:      map[string]string{"team-fast": "composer-2"},
+	}})
+
+	registered := make(chan map[string]any, 1)
+	hello := make(chan map[string]any, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/runners/register" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			select {
+			case registered <- body:
+			default:
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":         "11111111-1111-4111-8111-111111111111",
+				"account_id": "22222222-2222-4222-8222-222222222222",
+				"name":       "box",
+				"status":     "online",
+				"token":      "runner-token",
+				"created_at": "2026-08-17T00:00:00Z",
+				"updated_at": "2026-08-17T00:00:00Z",
+			})
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "/ws") {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close() //nolint:errcheck
+		_ = conn.WriteJSON(map[string]any{"type": "hello"})
+		var msg map[string]any
+		if err := conn.ReadJSON(&msg); err != nil {
+			return
+		}
+		select {
+		case hello <- msg:
+		default:
+		}
+		for {
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	oldToken, oldURL := FlagToken, FlagURL
+	FlagURL = server.URL
+	FlagToken = "tok"
+	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
+	client := api.NewClientWithToken(server.URL, "tok")
+	state, err := loadOrRegisterRunner(client, "box", "host", []string{}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOneCursorAskProfile := func(payload map[string]any) {
+		t.Helper()
+		profiles := decodeHostExecProfiles(t, payload)
+		if len(profiles) != 1 {
+			t.Fatalf("host_exec_profiles = %#v, want one profile", profiles)
+		}
+		profile, ok := profiles[0].(map[string]any)
+		if !ok {
+			t.Fatalf("profile type %T", profiles[0])
+		}
+		if profile["name"] != "cursor-ask" {
+			t.Fatalf("name = %v", profile["name"])
+		}
+	}
+	select {
+	case body := <-registered:
+		assertOneCursorAskProfile(body)
+	case <-time.After(2 * time.Second):
+		t.Fatal("registration request not captured")
+	}
+
+	interrupt := make(chan os.Signal, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- runnerForegroundLoop(state, interrupt, io.Discard, 2)
+	}()
+	select {
+	case msg := <-hello:
+		assertOneCursorAskProfile(msg)
+	case <-time.After(5 * time.Second):
+		interrupt <- os.Interrupt
+		t.Fatal("hello message not captured")
+	}
+	interrupt <- os.Interrupt
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("runner did not exit")
+	}
+}

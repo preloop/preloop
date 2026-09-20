@@ -98,3 +98,62 @@ def test_register_profiles_can_be_selected_for_lease(
         payload=payload,
     )
     assert leased is not None and leased.id == runner_id
+
+
+def _register_client(db_session: Session, test_user: models.User) -> TestClient:
+    app = FastAPI()
+    app.include_router(runners.router, prefix="/api/v1")
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_active_user] = lambda: test_user
+    return TestClient(app)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"name": "desk-mac", "host_exec_profiles": None},
+        {"name": "desk-mac"},
+        {"name": "desk-mac", "host_exec_profiles": []},
+    ],
+)
+def test_register_null_missing_or_empty_host_exec_profiles_stores_none(
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, object],
+) -> None:
+    monkeypatch.setattr(runners, "emit_runner_updated", lambda *args: None)
+    with _register_client(db_session, test_user) as client:
+        response = client.post("/api/v1/runners/register", json=payload)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["capabilities"] == {"host_exec_profiles": []}
+    saved = crud_flow_runner.get(
+        db_session, id=UUID(data["id"]), account_id=str(test_user.account_id)
+    )
+    assert saved is not None
+    assert saved.capabilities == {"host_exec_profiles": []}
+
+
+def test_register_one_valid_host_exec_profile_is_stored(
+    db_session: Session, test_user: models.User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runners, "emit_runner_updated", lambda *args: None)
+    profile = {
+        "name": "cursor-ask",
+        "capabilities": ["host_exec", "cursor_cli"],
+        "models": ["team-fast"],
+    }
+    with _register_client(db_session, test_user) as client:
+        response = client.post(
+            "/api/v1/runners/register",
+            json={"name": "desk-mac", "host_exec_profiles": [profile]},
+        )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["capabilities"] == {"host_exec_profiles": [profile]}
+    saved = crud_flow_runner.get(
+        db_session, id=UUID(data["id"]), account_id=str(test_user.account_id)
+    )
+    assert saved is not None
+    assert saved.capabilities == {"host_exec_profiles": [profile]}

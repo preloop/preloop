@@ -549,3 +549,49 @@ async def test_invalid_log_batch_error_echoes_batch_id(
             "batch_id": batch_id,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_hello_null_host_exec_profiles_leaves_capabilities_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hello/heartbeat with JSON null must not raise; advertisements stay empty."""
+    runner = SimpleNamespace(
+        id=uuid4(),
+        account_id=uuid4(),
+        status="online",
+        publication_capabilities=None,
+        ephemeral=False,
+        capabilities={"host_exec_profiles": [{"name": "stale"}]},
+        assignments=[],
+        capacity=1,
+        free_slots=1,
+        reported_concurrency=None,
+    )
+    websocket = MagicMock()
+    websocket.accept = AsyncMock()
+    websocket.send_json = AsyncMock()
+    websocket.receive_json = AsyncMock(
+        side_effect=[
+            {"type": "heartbeat", "host_exec_profiles": None},
+            WebSocketDisconnect(),
+        ]
+    )
+    monkeypatch.setattr(runners, "_authenticate_runner", lambda *args: runner)
+    monkeypatch.setattr(runners, "emit_runner_updated", MagicMock())
+    monkeypatch.setattr(runners.crud_flow_runner, "get", lambda *args, **kwargs: runner)
+    monkeypatch.setattr(runners.crud_flow_runner, "touch_heartbeat", MagicMock())
+    monkeypatch.setattr(
+        runners.crud_flow_runner,
+        "set_reported_concurrency",
+        lambda *args, **kwargs: runner,
+    )
+    monkeypatch.setattr(
+        runners.crud_flow_runner,
+        "set_publication_capabilities",
+        _stub_capability_writer(runner),
+    )
+
+    await runners.runner_ws(websocket, runner.id, MagicMock())
+
+    assert runner.capabilities == {"host_exec_profiles": []}

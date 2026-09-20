@@ -24823,10 +24823,12 @@ components:
           - type: 'null'
           title: Instance Id
         host_exec_profiles:
-          items:
-            $ref: '#/components/schemas/HostExecProfileAdvertisement'
-          type: array
-          maxItems: 64
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/HostExecProfileAdvertisement'
+            type: array
+            maxItems: 64
+          - type: 'null'
           title: Host Exec Profiles
         concurrency:
           anyOf:

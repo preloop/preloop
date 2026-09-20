@@ -111,8 +111,9 @@ def register_runner(
     current_user: User = Depends(get_current_active_user),
 ):
     """Register a new runner or resume an existing one for this account."""
+    advertised = body.host_exec_profiles or []
     capabilities = normalize_host_exec_advertisements(
-        [profile.model_dump() for profile in body.host_exec_profiles]
+        [profile.model_dump() for profile in advertised]
     )
     # A CI account registers a new ephemeral runner per job. Reap the ones
     # whose job died without unregistering before adding another.
