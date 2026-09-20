@@ -6,7 +6,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
-import { getAIModels } from '../api';
+import { fetchWithAuth, getAIModels } from '../api';
 import type { AIModel } from '../types';
 import {
   pickDefaultModel,
@@ -138,6 +138,9 @@ export class PreloopAgentDeployer extends LitElement {
   private sshPort = '22';
 
   @state()
+  private sshHostKey = '';
+
+  @state()
   private sshAuthType: 'password' | 'key' = 'password';
 
   @state()
@@ -156,7 +159,13 @@ export class PreloopAgentDeployer extends LitElement {
   private deployComputeSize = 'standard';
 
   @state()
-  private deployEnableVnc = false;
+  private deploymentError = '';
+
+  @state()
+  private deploymentSucceeded = false;
+
+  private deploymentRequestId = '';
+  private deploymentRequestSignature = '';
 
   @state()
   private isAddingAIModel = false;
@@ -170,8 +179,21 @@ export class PreloopAgentDeployer extends LitElement {
   @state()
   private showComputePromo = false;
 
+  @state()
+  private gcpConfigured = false;
+
   async connectedCallback() {
     super.connectedCallback();
+    void fetchWithAuth('/api/v1/agent-deployments/capabilities', {
+      passive: true,
+    })
+      .then(async (response) => {
+        if (response.ok)
+          this.gcpConfigured = Boolean((await response.json()).gcp);
+      })
+      .catch(() => {
+        this.gcpConfigured = false;
+      });
     if (this.aiModels.length === 0) {
       this.aiModels = await getAIModels().catch(() => []);
     }
@@ -208,24 +230,43 @@ export class PreloopAgentDeployer extends LitElement {
   }
 
   private runtimeInstallCommand(agentType: 'hermes' | 'openclaw'): string {
-    return agentType === 'hermes'
-      ? 'pipx install hermes-agent'
-      : 'npm install -g openclaw@latest';
+    const url =
+      agentType === 'hermes'
+        ? 'https://hermes-agent.nousresearch.com/install.sh'
+        : 'https://openclaw.ai/install.sh';
+    const args =
+      agentType === 'hermes' ? '--non-interactive' : '--no-onboard --no-prompt';
+    return `(installer=$(mktemp) && curl -fsSL ${url} -o "$installer" && bash "$installer" ${args}; status=$?; rm -f "$installer"; exit "$status")`;
   }
 
   private runtimeOnboardCommand(agentType: 'hermes' | 'openclaw'): string {
     const agentName = agentType === 'hermes' ? 'hermes' : 'openclaw';
-    const base = `preloop agents onboard ${agentName} -y`;
+    const base = `preloop agents onboard ${agentName} -y${this.cliModelArgument()}`;
     if (window.location.hostname === 'preloop.ai') {
       return base;
     }
     return `export PRELOOP_URL=${window.location.origin} && ${base}`;
   }
 
+  private cliModelArgument(): string {
+    const model = this.aiModels.find(
+      (candidate) => candidate.id === this.deployModel
+    );
+    if (!model) return '';
+    const gateway = (model.meta_data?.gateway || {}) as Record<string, unknown>;
+    const explicit = gateway.model_alias;
+    const alias =
+      typeof explicit === 'string' && explicit.trim()
+        ? explicit.trim()
+        : `${(model.provider_name || 'openai').trim().toLowerCase()}/${(model.model_identifier || '').trim()}`;
+    // Models are user-configured. Quote aliases as one literal shell argument.
+    return ` --model '${alias.replace(/'/g, "'\\''")}'`;
+  }
+
   private runtimeInstallAndOnboardCommand(
     agentType: 'hermes' | 'openclaw'
   ): string {
-    const base = `preloop agents install-runtime ${agentType} -y`;
+    const base = `preloop agents install-runtime ${agentType} -y${this.cliModelArgument()}`;
     if (window.location.hostname === 'preloop.ai') {
       return base;
     }
@@ -233,7 +274,7 @@ export class PreloopAgentDeployer extends LitElement {
   }
 
   private handleFreshVmSelection() {
-    if (this.computeFeatureEnabled) {
+    if (this.gcpConfigured) {
       this.deploySubStep = 'fresh-vm-premium';
     } else {
       if (this.isEnterprise) {
@@ -250,111 +291,93 @@ export class PreloopAgentDeployer extends LitElement {
   }
 
   private startDeployBootSequence() {
-    this.isBooting = true;
-    this.bootLogs = [];
-    const selectedModel = this.aiModels.find((m) => m.id === this.deployModel);
-    const modelName = selectedModel ? selectedModel.name : this.deployModel;
-    const logs = [
-      '[system] Initializing virtual environment metadata...',
-      `[system] Provisioning secure cloud container for agent ${this.deployAgentType.toUpperCase()} (Compute Size: ${this.deployComputeSize.toUpperCase()})...`,
-      '[system] Mounting 20GB encrypted sandboxed virtual volume...',
-      '[system] Booting Debian Linux kernel environment...',
-      '[system] Configuring network route interfaces and proxy gateways...',
-      `[system] Injecting secure Preloop Audit Firewall & LLM proxy credentials for model ${modelName.toUpperCase()}...`,
-      `[system] Downloading & starting ${this.deployAgentType} autonomous micro-service runtime...`,
-      '[system] Handshaking and establishing low-latency telemetry channel with Preloop API Gateway...',
-      'SUCCESS: Autonomous Agent Node fully provisioned and securely active!',
-    ];
-
-    let index = 0;
-    const addLog = () => {
-      if (index < logs.length) {
-        this.bootLogs = [...this.bootLogs, logs[index]];
-        index++;
-        this.requestUpdate();
-        setTimeout(addLog, 600);
-      } else {
-        const mockAgent = {
-          id: 'agent-vm-' + Math.random().toString(36).substr(2, 9),
-          display_name: 'Secure VM ' + this.deployAgentType.toUpperCase(),
-          agent_kind: this.deployAgentType,
-          session_source_type: 'kube_virt',
-          session_source_id: 'vm-' + this.deployAgentType + '-01',
-          session_reference: 'Preloop VM Instance',
-          enrolled_via: 'kube_virt',
-          lifecycle_state: 'active',
-          last_seen_at: new Date().toISOString(),
-          tags: {
-            compute: 'kube_virt',
-            vnc: this.deployEnableVnc ? 'true' : 'false',
-            size: this.deployComputeSize,
-            model: this.deployModel,
-          },
-        };
-
-        this.dispatchEvent(
-          new CustomEvent('deploy-agent-success', {
-            bubbles: true,
-            composed: true,
-            detail: { agent: mockAgent },
-          })
-        );
-      }
-    };
-    addLog();
+    return this.deployAgent('gcp');
   }
 
   private startSshDeployBootSequence() {
+    return this.deployAgent('ssh');
+  }
+
+  private async deployAgent(target: 'ssh' | 'gcp') {
+    if (this.isBooting) return;
     this.isBooting = true;
-    this.bootLogs = [];
-    const selectedModel = this.aiModels.find((m) => m.id === this.deployModel);
-    const modelName = selectedModel ? selectedModel.name : this.deployModel;
-    const logs = [
-      `[ssh] Connecting to target host ${this.sshHost}:${this.sshPort}...`,
-      `[ssh] Authorized successfully as user "${this.sshUsername}"...`,
-      '[ssh] Validating base Linux dependencies (Python 3, Docker/Podman)...',
-      '[ssh] Creating sandboxed operational root /opt/preloop-agent...',
-      `[ssh] Downloading latest governed agent ${this.deployAgentType.toUpperCase()} bundle...`,
-      '[ssh] Installing secure Preloop governance policies & firewalls...',
-      `[ssh] Handshaking secure proxy gateway for model ${modelName.toUpperCase()}...`,
-      'SUCCESS: Persistent governed agent node successfully activated via SSH!',
+    this.deploymentError = '';
+    this.deploymentSucceeded = false;
+    this.bootLogs = [
+      'Submitting deployment. Installation and verified onboarding may take up to 15 minutes.',
     ];
-
-    let index = 0;
-    const addLog = () => {
-      if (index < logs.length) {
-        this.bootLogs = [...this.bootLogs, logs[index]];
-        index++;
-        this.requestUpdate();
-        setTimeout(addLog, 600);
-      } else {
-        const mockAgent = {
-          id: 'agent-ssh-' + Math.random().toString(36).substr(2, 9),
-          display_name: 'SSH Governed ' + this.deployAgentType.toUpperCase(),
-          agent_kind: this.deployAgentType,
-          session_source_type: 'ssh',
-          session_source_id: 'ssh-' + this.sshUsername + '@' + this.sshHost,
-          session_reference: 'Preloop SSH Governed Host',
-          enrolled_via: 'ssh',
-          lifecycle_state: 'active',
-          last_seen_at: new Date().toISOString(),
-          tags: {
-            compute: 'ssh',
-            host: this.sshHost,
-            model: this.deployModel,
-          },
-        };
-
-        this.dispatchEvent(
-          new CustomEvent('deploy-agent-success', {
-            bubbles: true,
-            composed: true,
-            detail: { agent: mockAgent },
-          })
+    const request = {
+      target,
+      runtime: this.deployAgentType,
+      model_id: this.deployModel,
+      compute_size: this.deployComputeSize,
+      ...(target === 'ssh'
+        ? {
+            ssh: {
+              host: this.sshHost.trim(),
+              port: Number(this.sshPort || '22'),
+              username: this.sshUsername.trim(),
+              host_key: this.sshHostKey.trim(),
+              ...(this.sshAuthType === 'password'
+                ? { password: this.sshPassword }
+                : { private_key: this.sshPrivateKey }),
+            },
+          }
+        : {}),
+    };
+    const signature = JSON.stringify(request);
+    if (signature !== this.deploymentRequestSignature) {
+      this.deploymentRequestId = crypto.randomUUID();
+      this.deploymentRequestSignature = signature;
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 930_000);
+    try {
+      const response = await fetchWithAuth('/api/v1/agent-deployments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...request,
+          idempotency_key: this.deploymentRequestId,
+        }),
+        signal: controller.signal,
+      });
+      const result = await response.json();
+      if (!response.ok || result.status !== 'succeeded' || !result.agent?.id) {
+        const detail = result.detail;
+        throw new Error(
+          typeof detail === 'string'
+            ? detail
+            : detail?.error ||
+                result.error ||
+                'Deployment did not complete. No connected agent was confirmed.'
         );
       }
-    };
-    addLog();
+      this.bootLogs = [
+        ...(result.logs || []),
+        'SUCCESS: Runtime installation and agent onboarding verified.',
+      ];
+      this.deploymentSucceeded = true;
+      this.sshPassword = '';
+      this.sshPrivateKey = '';
+      this.deploymentRequestSignature = '';
+      this.dispatchEvent(
+        new CustomEvent('deploy-agent-success', {
+          bubbles: true,
+          composed: true,
+          detail: { agent: result.agent },
+        })
+      );
+    } catch (error) {
+      this.deploymentError = controller.signal.aborted
+        ? 'The deployment request timed out. Check Agents before retrying; the server may still be completing installation.'
+        : error instanceof Error
+          ? error.message
+          : 'Deployment failed.';
+      this.bootLogs = [...this.bootLogs, this.deploymentError];
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private handleBack() {
@@ -531,7 +554,7 @@ export class PreloopAgentDeployer extends LitElement {
       <sl-select
         label="Agent runtime"
         value=${this.deployAgentType}
-        help-text="Hermes is the Preloop runtime; OpenClaw is the open source alternative."
+        help-text="Choose the agent runtime to install and connect to Preloop."
         @sl-change=${(e: any) => {
           this.deployAgentType = e.target.value;
           this.requestUpdate();
@@ -545,7 +568,7 @@ export class PreloopAgentDeployer extends LitElement {
 
   render() {
     if (this.isBooting) {
-      return this.renderSimulatedBoot();
+      return this.renderDeploymentProgress();
     }
 
     return html`
@@ -657,7 +680,7 @@ export class PreloopAgentDeployer extends LitElement {
           }
         )}
         ${
-          this.isEnterprise
+          this.isEnterprise || this.gcpConfigured
             ? this.renderOptionCard(
                 'cpu',
                 'Deploy on a fresh cloud VM',
@@ -713,7 +736,9 @@ export class PreloopAgentDeployer extends LitElement {
         'Run these commands on the host. The agent connects outbound to Preloop, so inbound SSH access is not required.'
       )}
 
-      <div class="wizard-form">${this.renderRuntimeField()}</div>
+      <div class="wizard-form">
+        ${this.renderRuntimeField()} ${this.renderModelField()}
+      </div>
 
       <div class="command-steps">
         ${this.renderCommandStep(
@@ -763,6 +788,8 @@ export class PreloopAgentDeployer extends LitElement {
     const canDeploy =
       Boolean(this.sshHost) &&
       Boolean(this.sshUsername) &&
+      Boolean(this.sshHostKey.trim()) &&
+      Boolean(this.deployModel) &&
       (this.sshAuthType === 'password'
         ? Boolean(this.sshPassword)
         : Boolean(this.sshPrivateKey));
@@ -794,6 +821,14 @@ export class PreloopAgentDeployer extends LitElement {
           .value=${this.sshPort}
           @sl-input=${(e: any) => (this.sshPort = e.target.value)}
         ></sl-input>
+
+        <sl-textarea
+          label="SSH host public key"
+          help-text="Verify this key with the host administrator over a trusted channel. Paste its OpenSSH public key (for example ssh-ed25519 AAAA...)."
+          rows="2"
+          .value=${this.sshHostKey}
+          @sl-input=${(e: any) => (this.sshHostKey = e.target.value)}
+        ></sl-textarea>
 
         <sl-radio-group
           label="Authentication"
@@ -867,9 +902,9 @@ export class PreloopAgentDeployer extends LitElement {
 
   private renderFreshVmStep() {
     const sizeLabels: Record<string, string> = {
-      standard: 'Standard (2 vCPU, 4GB RAM)',
-      performance: 'Performance (4 vCPU, 8GB RAM)',
-      'high-mem': 'High memory (8 vCPU, 16GB RAM)',
+      standard: 'Standard (2 vCPU, 8GB RAM)',
+      performance: 'Performance (4 vCPU, 16GB RAM)',
+      'high-mem': 'High memory (4 vCPU, 32GB RAM)',
     };
     return html`
       ${this.renderStepHeader(
@@ -886,21 +921,14 @@ export class PreloopAgentDeployer extends LitElement {
           help-text="Sizes the sandbox the agent runs in. You can change it later."
           @sl-change=${(e: any) => (this.deployComputeSize = e.target.value)}
         >
-          <sl-option value="standard">Standard (2 vCPU, 4GB RAM)</sl-option>
+          <sl-option value="standard">Standard (2 vCPU, 8GB RAM)</sl-option>
           <sl-option value="performance"
-            >Performance (4 vCPU, 8GB RAM)</sl-option
+            >Performance (4 vCPU, 16GB RAM)</sl-option
           >
-          <sl-option value="high-mem">High memory (8 vCPU, 16GB RAM)</sl-option>
+          <sl-option value="high-mem">High memory (4 vCPU, 32GB RAM)</sl-option>
         </sl-select>
 
         ${this.renderModelField()}
-
-        <sl-checkbox
-          ?checked=${this.deployEnableVnc}
-          @sl-change=${(e: any) => (this.deployEnableVnc = e.target.checked)}
-        >
-          Enable VNC graphical desktop access
-        </sl-checkbox>
 
         <div class="wizard-summary">
           <div class="wizard-summary-title">About to provision</div>
@@ -913,14 +941,16 @@ export class PreloopAgentDeployer extends LitElement {
             sizeLabels[this.deployComputeSize] || this.deployComputeSize
           )}
           ${this.renderSummaryRow('Model', this.selectedModelName())}
-          ${this.renderSummaryRow('VNC', this.deployEnableVnc ? 'On' : 'Off')}
         </div>
       </div>
 
       ${this.renderActions(
         true,
         html`
-          <sl-button variant="primary" @click=${this.startDeployBootSequence}
+          <sl-button
+            variant="primary"
+            ?disabled=${!this.deployModel}
+            @click=${this.startDeployBootSequence}
             >Provision VM agent node</sl-button
           >
         `
@@ -928,24 +958,26 @@ export class PreloopAgentDeployer extends LitElement {
     `;
   }
 
-  private renderSimulatedBoot() {
-    const done = this.bootLogs.some((log) => log.startsWith('SUCCESS'));
+  private renderDeploymentProgress() {
+    const done = this.deploymentSucceeded;
+    const failed = Boolean(this.deploymentError);
     return html`
       <div class="wizard-shell">
         <div class="wizard-header">
           <h3 class="wizard-title boot-title">
-            ${done ? nothing : html`<sl-spinner></sl-spinner>`}
+            ${done || failed ? nothing : html`<sl-spinner></sl-spinner>`}
             <span>
               ${
                 done
                   ? 'Agent node provisioned'
-                  : 'Provisioning the secure agent node'
+                  : failed
+                    ? 'Agent deployment failed'
+                    : 'Provisioning the secure agent node'
               }
             </span>
           </h3>
           <p class="wizard-copy">
-            Preloop is preparing the environment, installing the runtime and
-            enrolling the agent.
+            ${failed ? 'Review the error below and check the host before trying again.' : done ? 'The server verified the installed runtime and its Preloop enrollment.' : 'Preloop is preparing the environment, installing the runtime and enrolling the agent. Keep this dialog open until verification finishes.'}
           </p>
         </div>
 
@@ -961,13 +993,14 @@ export class PreloopAgentDeployer extends LitElement {
         </div>
 
         ${
-          done
+          done || failed
             ? html`
                 <div class="wizard-actions">
                   <sl-button
                     variant="primary"
                     @click=${() => {
                       this.isBooting = false;
+                      if (!done) return;
                       this.dispatchEvent(
                         new CustomEvent('deploy-wizard-done', {
                           bubbles: true,
@@ -976,7 +1009,7 @@ export class PreloopAgentDeployer extends LitElement {
                       );
                     }}
                   >
-                    View the connected agent
+                    ${done ? 'View the connected agent' : 'Back to deployment settings'}
                   </sl-button>
                 </div>
               `

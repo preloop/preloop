@@ -3,8 +3,11 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/preloop/preloop/cli/internal/testenv"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -209,5 +212,27 @@ func TestListGatewayModelChoicesWarnsOnAPIFailure(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "showing local inference only") {
 		t.Fatalf("expected soft-fail wording, got %q", out.String())
+	}
+}
+
+func TestOpenClawDryRunHonorsSelectedAccountModelOnFreshHost(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	model := aiModelResponse{ID: "selected", ProviderName: "openai", ModelIdentifier: "chosen-model", HasAPIKey: true, MetaData: map[string]interface{}{"gateway": map[string]interface{}{"model_alias": "team/chosen-model"}}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/ai-models" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]aiModelResponse{model})
+	}))
+	defer server.Close()
+	t.Setenv("PRELOOP_URL", server.URL)
+	output := captureStdout(t, func() error {
+		return executeManagedEnrollment(AgentConfig{Name: "OpenClaw", ConfigPath: filepath.Join(home, ".openclaw", "openclaw.json")}, managedEnrollmentOptions{Client: api.NewClientWithToken(server.URL, "token"), PreferredModel: "team/chosen-model", DryRun: true, AutoApprove: true, Output: io.Discard})
+	})
+	if !strings.Contains(output, "Managed model: preloop/team/chosen-model") {
+		t.Fatalf("selected model lost: %s", output)
 	}
 }

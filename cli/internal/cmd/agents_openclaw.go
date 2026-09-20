@@ -532,10 +532,12 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	// to MCP-only hides the choice from the operator. Non-interactive runs
 	// (--yes / --dry-run / PRELOOP_CONFIRM) keep the degrade behavior; the
 	// preview note explains how to resolve it.
+	selectedOpenClawModel := strings.EqualFold(agent.Name, "OpenClaw") && strings.TrimSpace(opts.PreferredModel) != ""
+	managedGatewayEnabled := supportsManagedGateway(agent) || selectedOpenClawModel
 	gatewayHints := managedGatewayResolutionHints{
 		PreferredModelAlias: strings.TrimSpace(opts.PreferredModel),
 	}
-	if supportsManagedGateway(agent) &&
+	if managedGatewayEnabled &&
 		!opts.DryRun &&
 		!opts.AutoApprove &&
 		!opts.SkipConfirmation &&
@@ -550,7 +552,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		}
 		gatewayHints.PreferredProviderID = selectedProvider
 	}
-	if supportsManagedGateway(agent) {
+	if managedGatewayEnabled {
 		inferredForPicker, pickerErr := resolveManagedGatewayUpstreamWithHints(agent, gatewayHints)
 		if pickerErr != nil {
 			return pickerErr
@@ -581,7 +583,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	if staleEntries := detectStaleOpenClawPluginEntries(agent, plan.ManagedDocument); len(staleEntries) > 0 {
 		plan.Notes = append(plan.Notes, staleOpenClawPluginEntriesNote(staleEntries))
 	}
-	if supportsManagedGateway(agent) {
+	if managedGatewayEnabled {
 		upstream, upstreamErr := resolveManagedGatewayUpstreamWithHints(agent, gatewayHints)
 		if upstreamErr != nil {
 			return upstreamErr
@@ -727,7 +729,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 
 	var aiModelNotes []string
 	modelBindings := make([]managedAgentModelBindingSyncItem, 0)
-	if strings.EqualFold(strings.TrimSpace(agent.Name), "openclaw") {
+	if strings.EqualFold(strings.TrimSpace(agent.Name), "openclaw") && !selectedOpenClawModel {
 		parsed, err := parseOpenClawConfig(agent.ConfigPath)
 		if err != nil {
 			return err
@@ -770,7 +772,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	if err != nil {
 		return err
 	}
-	if supportsManagedGateway(agent) {
+	if managedGatewayEnabled {
 		upstream, upstreamErr := resolveManagedGatewayUpstreamWithHints(agent, gatewayHints)
 		if upstreamErr != nil {
 			return upstreamErr
@@ -1051,7 +1053,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	// with the alias we are about to route (and offer to fix it) before the
 	// live check turns it into an opaque 403. Dry runs returned right after
 	// printing the plan, so only the confirmation flags decide interactivity.
-	if supportsManagedGateway(agent) && strings.TrimSpace(plan.ManagedModelAlias) != "" {
+	if managedGatewayEnabled && strings.TrimSpace(plan.ManagedModelAlias) != "" {
 		interactiveAllowlist := !opts.AutoApprove &&
 			!opts.SkipConfirmation &&
 			!nonInteractiveAutoConfirm() &&
@@ -1738,6 +1740,9 @@ func parseOpenClawMCP(path string) (map[string]MCPDef, error) {
 
 func parseOpenClawConfig(path string) (*openClawParsedConfig, error) {
 	document, err := loadJSON5Document(path)
+	if os.IsNotExist(err) {
+		document, err = map[string]interface{}{}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -4550,6 +4555,8 @@ func runtimeExecutableFallbackPaths(command string) []string {
 	}
 	candidates := []string{
 		filepath.Join(homeDir, ".local", "bin", command),
+		filepath.Join(homeDir, ".npm-global", "bin", command),
+		filepath.Join(homeDir, ".openclaw", "bin", command),
 		filepath.Join(homeDir, "Library", "pnpm", command),
 	}
 	if nvmMatches, globErr := filepath.Glob(
@@ -4629,6 +4636,10 @@ func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[s
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	args := agentControlPluginInstallArgs(installer, installTarget)
+	if strings.EqualFold(agent.Name, "OpenClaw") {
+		// Onboarding already authorizes installing the official Preloop package.
+		args = append(args, "--force", "--accept-capabilities")
+	}
 	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
 		cancel()
 		ctx, cancel = context.WithTimeout(context.Background(), 120*time.Second)
@@ -4779,7 +4790,7 @@ func installOpenClawPluginViaNpmTarball(
 	installCtx, installCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer installCancel()
 	output, err := exec.CommandContext(
-		installCtx, installerPath, "plugins", "install", tarballs[0],
+		installCtx, installerPath, "plugins", "install", tarballs[0], "--force", "--accept-capabilities",
 	).CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(output))
@@ -6599,6 +6610,12 @@ func gatewayAliasForAIModel(model aiModelResponse) string {
 }
 
 func loadAgentConfigDocument(agent AgentConfig) (map[string]interface{}, error) {
+	if allowsSynthesizedEmptyConfig(agent) {
+		if _, err := os.Stat(agent.ConfigPath); os.IsNotExist(err) {
+			return map[string]interface{}{}, nil
+		}
+	}
+
 	if strings.EqualFold(strings.TrimSpace(agent.Name), "openclaw") {
 		return loadJSON5Document(agent.ConfigPath)
 	}
@@ -7031,7 +7048,7 @@ func allowsSynthesizedEmptyConfig(agent AgentConfig) bool {
 		return true
 	}
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
-	case "opencode":
+	case "opencode", "openclaw":
 		return true
 	case "hermes":
 		return true

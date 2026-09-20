@@ -1009,7 +1009,7 @@ func TestEnsureAgentControlRuntimePluginsInstallsSupportedDiscoveredAgents(t *te
 		t.Fatalf("expected plugin installer to run: %v", err)
 	}
 	log := strings.TrimSpace(string(logBytes))
-	want := "plugins install " + sourcePath
+	want := "plugins install " + sourcePath + " --force --accept-capabilities"
 	if log != want {
 		t.Fatalf("expected one OpenClaw plugin install %q, got %q", want, log)
 	}

@@ -601,11 +601,11 @@ func missingManagedGatewayValidationPrerequisite(
 // buildOpenClawLiveValidationSpec builds the gateway request used to verify
 // an OpenClaw onboarding. OpenClaw's managed config points its primary model
 // at the “preloop“ provider and stores the durable gateway token on that
-// provider. The probe must use the exact configured model ref because
-// OpenClaw itself sends “preloop/<alias>“ to the OpenAI-compatible gateway.
+// provider. OpenClaw removes the provider prefix from its wire model. Match
+// that alias for both the request and the canonical gateway usage lookup.
 func buildOpenClawLiveValidationSpec(ctx liveValidationContext) (gatewayLiveValidationSpec, error) {
 	token := resolveOpenClawManagedGatewayToken(ctx.Document)
-	modelAlias := strings.TrimSpace(extractOpenClawPrimaryModel(ctx.Document))
+	modelAlias := strings.TrimPrefix(strings.TrimSpace(extractOpenClawPrimaryModel(ctx.Document)), "preloop/")
 	if modelAlias == "" {
 		for _, binding := range ctx.ManagedAgent.Agent.ConfiguredModels {
 			if strings.TrimSpace(binding.GatewayAlias) != "" {

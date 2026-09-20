@@ -791,6 +791,11 @@ func hermesVenvBinDirCandidates() []string {
 		dirs = append(dirs, filepath.Join(installDir, "venv", "bin"))
 	}
 	if hermesPath, err := resolveRuntimeExecutable("hermes"); err == nil {
+		// pipx exposes ~/.local/bin/hermes as a symlink into its venv.
+		// Follow it before checking pyvenv.cfg, without accepting system Python.
+		if resolved, resolveErr := filepath.EvalSymlinks(hermesPath); resolveErr == nil {
+			hermesPath = resolved
+		}
 		hermesBinDir := filepath.Dir(hermesPath)
 		if _, statErr := os.Stat(filepath.Join(filepath.Dir(hermesBinDir), "pyvenv.cfg")); statErr == nil {
 			dirs = append(dirs, hermesBinDir)
@@ -917,6 +922,26 @@ func installHermesPluginViaPip(installTarget string, writer io.Writer) (bool, st
 	output, err := exec.CommandContext(
 		ctx, pythonPath, "-m", "pip", "install", "--upgrade", installTarget,
 	).CombinedOutput()
+	if err != nil && strings.Contains(string(output), "No module named pip") {
+		// Hermes' official installer creates an unseeded uv virtualenv.
+		// Target that interpreter explicitly; never fall back to system pip.
+		uvPath, uvErr := resolveRuntimeExecutable("uv")
+		if uvErr != nil {
+			hermesHome := os.Getenv("HERMES_HOME")
+			if hermesHome == "" {
+				if home, homeErr := os.UserHomeDir(); homeErr == nil {
+					hermesHome = filepath.Join(home, ".hermes")
+				}
+			}
+			candidate := filepath.Join(hermesHome, "bin", "uv")
+			if hermesHome != "" && isExecutableRegularFile(candidate) {
+				uvPath, uvErr = candidate, nil
+			}
+		}
+		if uvErr == nil {
+			output, err = exec.CommandContext(ctx, uvPath, "pip", "install", "--python", pythonPath, "--upgrade", installTarget).CombinedOutput()
+		}
+	}
 	if err != nil {
 		message := strings.TrimSpace(string(output))
 		if message == "" {

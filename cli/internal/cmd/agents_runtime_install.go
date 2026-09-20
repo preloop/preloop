@@ -75,41 +75,27 @@ func runtimeInstallSpecForKind(kind string) (runtimeInstallSpec, error) {
 		return runtimeInstallSpec{
 			kind:             hermesSourceType,
 			displayName:      hermesAgentName,
-			installCommand:   []string{"pipx", "install", "hermes-agent"},
-			installSummary:   "pipx install hermes-agent",
+			installCommand:   officialRuntimeInstallCommand("https://hermes-agent.nousresearch.com/install.sh", "--non-interactive"),
+			installSummary:   "official Hermes installer (--non-interactive)",
 			onboardAgentName: hermesAgentName,
 			postInstallNotes: []string{
 				"Ensure ~/.local/bin is on your PATH so the hermes command is available.",
 				"After onboarding, restart the Hermes gateway if it is already running: hermes gateway restart",
 			},
-			prerequisiteCheck: func() error {
-				if _, err := exec.LookPath("pipx"); err != nil {
-					return fmt.Errorf(
-						"pipx is required to install Hermes; install pipx first (https://pipx.pypa.io) or pass --skip-install after installing Hermes manually",
-					)
-				}
-				return nil
-			},
+			prerequisiteCheck: officialRuntimeInstallPrerequisites,
 		}, nil
 	case "openclaw":
 		return runtimeInstallSpec{
 			kind:             "openclaw",
 			displayName:      "OpenClaw",
-			installCommand:   []string{"npm", "install", "-g", "openclaw@latest"},
-			installSummary:   "npm install -g openclaw@latest",
+			installCommand:   officialRuntimeInstallCommand("https://openclaw.ai/install.sh", "--no-onboard --no-prompt"),
+			installSummary:   "official OpenClaw installer (--no-onboard --no-prompt)",
 			onboardAgentName: "OpenClaw",
 			postInstallNotes: []string{
 				"Ensure the npm global bin directory is on your PATH so the openclaw command is available.",
 				"Optional: run `openclaw onboard --install-daemon` to install the OpenClaw gateway service.",
 			},
-			prerequisiteCheck: func() error {
-				if _, err := exec.LookPath("npm"); err != nil {
-					return fmt.Errorf(
-						"npm is required to install OpenClaw; install Node.js/npm first or pass --skip-install after installing OpenClaw manually",
-					)
-				}
-				return nil
-			},
+			prerequisiteCheck: officialRuntimeInstallPrerequisites,
 		}, nil
 	default:
 		return runtimeInstallSpec{}, fmt.Errorf(
@@ -117,6 +103,26 @@ func runtimeInstallSpecForKind(kind string) (runtimeInstallSpec, error) {
 			kind,
 		)
 	}
+}
+
+// officialRuntimeInstallCommand delegates runtime dependencies and user-local
+// installation to each publisher. The URLs and arguments are fixed literals;
+// download failures cannot be hidden by a successful shell pipeline.
+func officialRuntimeInstallCommand(url, args string) []string {
+	return []string{"bash", "-c", `set -eu
+script=$(mktemp)
+trap 'rm -f "$script"' EXIT
+curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 ` + url + ` --output "$script"
+bash "$script" ` + args}
+}
+
+func officialRuntimeInstallPrerequisites() error {
+	for _, command := range []string{"bash", "curl"} {
+		if _, err := exec.LookPath(command); err != nil {
+			return fmt.Errorf("%s is required for the official runtime installer; install it or pass --skip-install after installing the runtime manually", command)
+		}
+	}
+	return nil
 }
 
 func runAgentsInstallRuntime(cmd *cobra.Command, args []string) error {

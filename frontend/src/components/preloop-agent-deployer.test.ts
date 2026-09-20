@@ -180,6 +180,7 @@ describe('PreloopAgentDeployer', () => {
     (el as any).sshHost = '192.168.1.100';
     (el as any).sshUsername = 'ubuntu';
     (el as any).sshPassword = 'secret';
+    (el as any).sshHostKey = 'ssh-ed25519 AAAA-test';
     el.requestUpdate();
     await el.updateComplete;
     const enabled = el.shadowRoot?.querySelector(
@@ -206,13 +207,14 @@ describe('PreloopAgentDeployer', () => {
     const vmSummary = (
       el.shadowRoot?.querySelector('.wizard-summary')?.textContent || ''
     ).replace(/\s+/g, ' ');
-    expect(vmSummary).to.contain('Standard (2 vCPU, 4GB RAM)');
-    expect(vmSummary).to.contain('VNC');
+    expect(vmSummary).to.contain('Standard (2 vCPU, 8GB RAM)');
+    expect(vmSummary).not.to.contain('VNC');
   });
 
   it('renders the provisioning log from theme tokens and finishes with one action', async () => {
     const el = await mount({ hideBack: true });
     (el as any).isBooting = true;
+    (el as any).deploymentSucceeded = true;
     (el as any).bootLogs = [
       '[ssh] Connecting to target host...',
       'SUCCESS: Persistent governed agent node successfully activated via SSH!',
@@ -237,6 +239,118 @@ describe('PreloopAgentDeployer', () => {
     finish.click();
     await el.updateComplete;
     expect(done).to.equal(true);
+  });
+
+  it('includes the selected model in CLI install and separate onboard commands', async () => {
+    const el = await mount();
+    (el as any).deployModel = 'm2';
+    await goTo(el, 'cli-install');
+    const commands = Array.from(
+      el.shadowRoot!.querySelectorAll('.command-code')
+    ).map((node) => node.textContent || '');
+    expect(
+      commands.some((command) =>
+        command.includes(
+          "install-runtime hermes -y --model 'anthropic/claude-sonnet'"
+        )
+      )
+    ).to.equal(true);
+    expect(
+      commands.some((command) =>
+        command.includes(
+          "agents onboard hermes -y --model 'anthropic/claude-sonnet'"
+        )
+      )
+    ).to.equal(true);
+    expect(el.shadowRoot!.querySelector('sl-select[label="AI model"]')).to
+      .exist;
+  });
+
+  it('shell quotes configured gateway aliases in copyable commands', async () => {
+    const el = await mount();
+    el.aiModels = [
+      {
+        ...MODELS[0],
+        meta_data: { gateway: { model_alias: "team's $(echo unsafe) model" } },
+      },
+    ] as any;
+    (el as any).deployModel = 'm1';
+    await goTo(el, 'cli-install');
+    const command = (el as any).runtimeInstallAndOnboardCommand('openclaw');
+    expect(command).to.contain("--model 'team'\\''s $(echo unsafe) model'");
+  });
+
+  it('submits real SSH credentials and only emits the server-confirmed agent', async () => {
+    const el = await mount();
+    Object.assign(el, {
+      sshHost: 'example.org',
+      sshUsername: 'ubuntu',
+      sshPassword: 'secret',
+      sshHostKey: 'ssh-ed25519 AAAA',
+      deployModel: 'm1',
+    });
+    const success = sinon.spy();
+    el.addEventListener('deploy-agent-success', success);
+    let resolveRequest!: (response: Response) => void;
+    fetchStub.callsFake((_url: string, options?: RequestInit) =>
+      options?.method === 'POST'
+        ? new Promise<Response>((resolve) => {
+            resolveRequest = resolve;
+          })
+        : Promise.resolve(new Response(JSON.stringify({ gcp: true })))
+    );
+    const pending = (el as any).startSshDeployBootSequence();
+    await el.updateComplete;
+    expect(success.called).to.equal(false);
+    const post = fetchStub
+      .getCalls()
+      .find((call) => call.args[1]?.method === 'POST')!;
+    const body = JSON.parse(post.args[1].body);
+    expect(body.ssh.host_key).to.equal('ssh-ed25519 AAAA');
+    expect(body.model_id).to.equal('m1');
+    expect(body.idempotency_key).to.be.a('string');
+    const agent = { id: 'confirmed-agent', display_name: 'Hermes' };
+    resolveRequest(
+      new Response(
+        JSON.stringify({ status: 'succeeded', agent, logs: ['Installed'] })
+      )
+    );
+    await pending;
+    expect(success.calledOnce).to.equal(true);
+    expect(success.firstCall.args[0].detail.agent).to.deep.equal(agent);
+    expect((el as any).sshPassword).to.equal('');
+  });
+
+  it('shows server failures without fabricated success or agent inventory', async () => {
+    const el = await mount();
+    const success = sinon.spy();
+    el.addEventListener('deploy-agent-success', success);
+    fetchStub.resolves(
+      new Response(JSON.stringify({ detail: 'SSH host key mismatch' }), {
+        status: 502,
+      })
+    );
+    await (el as any).startSshDeployBootSequence();
+    await el.updateComplete;
+    expect(success.called).to.equal(false);
+    expect(el.shadowRoot!.textContent).to.contain('SSH host key mismatch');
+    expect(el.shadowRoot!.textContent).to.contain(
+      'Back to deployment settings'
+    );
+    expect(el.shadowRoot!.querySelector('sl-spinner')).to.equal(null);
+  });
+
+  it('shows configured cloud provisioning on a self-hosted community instance', async () => {
+    fetchStub.resolves(new Response(JSON.stringify({ ssh: true, gcp: true })));
+    const el = await mount();
+    el.isEnterprise = false;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await el.updateComplete;
+    const cloud = cardByText(el, 'Deploy on a fresh cloud VM');
+    expect(cloud).to.exist;
+    cloud!.click();
+    await el.updateComplete;
+    expect((el as any).deploySubStep).to.equal('fresh-vm-premium');
   });
 
   it('does not overflow horizontally at 390px on any step', async () => {

@@ -153,6 +153,7 @@ var agentSpecs = []agentSpec{
 			".openclaw-dev/openclaw.json",
 			".openclaw-dev/openclaw.json5",
 		},
+		DetectionCommands:   []string{"openclaw"},
 		DetectionPaths:      []string{".openclaw", ".openclaw/openclaw.json.bak", ".config/openclaw", "Library/pnpm/openclaw"},
 		BootstrapConfigPath: ".openclaw/openclaw.json",
 		Parser:              parseOpenClawMCP,
@@ -161,6 +162,7 @@ var agentSpecs = []agentSpec{
 		Name:                hermesAgentName,
 		ConfigPaths:         hermesConfigRelativePaths,
 		DetectionPaths:      hermesDetectionPaths,
+		DetectionCommands:   []string{"hermes"},
 		BootstrapConfigPath: hermesBootstrapConfigPath,
 		Parser:              parseHermesConfig,
 	},
@@ -3558,7 +3560,7 @@ func detectInstalledAgent(home string, spec agentSpec) (string, bool) {
 		}
 	}
 	for _, command := range spec.DetectionCommands {
-		if _, err := exec.LookPath(command); err == nil {
+		if _, err := resolveRuntimeExecutable(command); err == nil {
 			return bootstrapPath, true
 		}
 	}
@@ -4094,6 +4096,8 @@ func applyManagedGatewayForAgent(
 	familyAliases []string,
 ) (managedMCPEnrollmentPlan, error) {
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
+	case "openclaw":
+		return applyOpenClawSelectedGateway(plan, baseURL, token, modelAlias)
 	case "codex cli":
 		return applyCodexManagedGateway(plan, baseURL, token, modelAlias)
 	case "opencode":
@@ -4109,6 +4113,33 @@ func applyManagedGatewayForAgent(
 	default:
 		return plan, nil
 	}
+}
+
+func applyOpenClawSelectedGateway(plan managedMCPEnrollmentPlan, baseURL, token, modelAlias string) (managedMCPEnrollmentPlan, error) {
+	alias := strings.TrimPrefix(modelAlias, "preloop/")
+	providers := ensureObjectPath(ensureObjectPath(plan.ManagedDocument, "models"), "providers")
+	providers[openClawManagedProviderID] = buildOpenClawManagedProvider(
+		[]openClawConfiguredModel{{ModelAlias: alias, ModelID: alias, IsPrimary: true}},
+		strings.TrimRight(baseURL, "/")+openClawGatewayPath, "openai-completions", token,
+	)
+	defaults := ensureObjectPath(ensureObjectPath(plan.ManagedDocument, "agents"), "defaults")
+	defaults["model"] = map[string]interface{}{"primary": "preloop/" + alias}
+	plan.ManagedModelAlias = alias
+	plan.ManagedProviderName = openClawManagedProviderID
+	filtered := plan.Notes[:0]
+	for _, note := range plan.Notes {
+		if note != "OpenClaw MCP was managed, but no configured model could be rewritten to the Preloop gateway." {
+			filtered = append(filtered, note)
+		}
+	}
+	plan.Notes = filtered
+	sanitized, err := deepCopyMap(plan.ManagedDocument)
+	if err != nil {
+		return managedMCPEnrollmentPlan{}, err
+	}
+	sanitizeConfigSnapshot(sanitized)
+	plan.SanitizedManaged = sanitized
+	return plan, nil
 }
 
 func applyCodexManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, modelAlias string) (managedMCPEnrollmentPlan, error) {
