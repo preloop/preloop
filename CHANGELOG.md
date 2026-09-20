@@ -1271,6 +1271,9 @@ avatars.
 
 ### Fixed
 
+- Apply response content policies to returned reasoning and thinking text as
+  well as final answers, including buffered streams and reasoning summaries.
+
 - Keep repeated model policy approvals on the application event loop, including
   background optimization jobs, so pooled database connections remain usable.
 - Hermes fail-closed errors name the config file that was read and the

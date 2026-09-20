@@ -195,6 +195,7 @@ from preloop.services.session_search_index import (
 from preloop.services.model_content_policy import (
     enforce_request_policy,
     enforce_response_policy,
+    canonical_response_text,
     wrap_stream_for_response_policy,
 )
 from preloop.services import operator_notes
@@ -1534,7 +1535,7 @@ class OpenAIGatewayService:
                 self,
                 payload=payload,
                 ai_model=model,
-                response_text=assistant_content,
+                response_text=canonical_response_text(response_dict),
                 provider="openai",
             )
             usage = self._normalize_usage(
@@ -1721,7 +1722,7 @@ class OpenAIGatewayService:
                 self,
                 payload=payload,
                 ai_model=model,
-                response_text=self._responses_payload_output_text(response_payload),
+                response_text=canonical_response_text(response_payload),
                 provider="openai",
             )
             self._record_gateway_request(
@@ -2067,22 +2068,11 @@ class OpenAIGatewayService:
                     ),
                     usage=usage,
                 )
-            anthropic_text = ""
-            if isinstance(response_payload, dict):
-                content_blocks = response_payload.get("content") or []
-                if isinstance(content_blocks, list):
-                    anthropic_text = "\n".join(
-                        str(block.get("text") or "")
-                        for block in content_blocks
-                        if isinstance(block, dict)
-                    )
-                if not anthropic_text:
-                    anthropic_text = self._extract_assistant_text(response_dict)
             enforce_response_policy(
                 self,
                 payload=payload,
                 ai_model=model,
-                response_text=anthropic_text,
+                response_text=canonical_response_text(response_payload),
                 provider="anthropic",
             )
             self._record_gateway_request(
