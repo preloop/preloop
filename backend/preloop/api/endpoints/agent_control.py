@@ -55,6 +55,7 @@ from preloop.services.account_realtime import (
 )
 from preloop.sync.services.event_bus import get_nats_client
 from preloop.services.agent_control_dispatch import (
+    CONTROL_NEW_SESSION_UNSUPPORTED_KINDS,
     SUPPORTED_CONTROL_AGENT_KINDS,
     AgentControlDispatchError,
     agent_has_control_config,
@@ -1248,7 +1249,7 @@ async def _route_managed_agent_prompt(
             status_code=status.HTTP_409_CONFLICT,
             detail="Managed agent is not active",
         )
-    if getattr(agent, "agent_kind", None) in {"pi", "deepseek"} and (
+    if getattr(agent, "agent_kind", None) in CONTROL_NEW_SESSION_UNSUPPORTED_KINDS and (
         request.start_new_session
         or request.spawn_worktree
         or request.input_mode != "text"

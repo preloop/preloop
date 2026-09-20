@@ -311,3 +311,123 @@ async def test_timeout_calls_stop_when_command_never_completes(
     assert stopped == [reference]
     assert await executor.get_status(reference) == AgentStatus.FAILED
     assert await executor.is_stopped(reference) is True
+
+
+@pytest.mark.asyncio
+async def test_user_stop_reports_success_when_result_wins_the_race(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stop press racing command_result reports SUCCEEDED, not a timeout.
+
+    mark_terminal_result keeps the first payload, so an interrupt cannot
+    overwrite a completed result. The monitor must then fall through to the
+    real status instead of re-dispatching interrupt every poll.
+    """
+    _patch_monitor_side_channels(monkeypatch)
+    account_id = uuid4()
+    execution_id = uuid4()
+    agent_id = uuid4()
+    command = SimpleNamespace(
+        status="pending",
+        expires_at=None,
+        envelope={"payload": {"text": "review"}},
+        last_error=None,
+        account_id=account_id,
+        managed_agent_id=agent_id,
+        command_id="cmd-stop-race-1",
+        runtime_session_id=uuid4(),
+        created_at=None,
+        delivered_at=None,
+        acked_at=None,
+        kind="command",
+    )
+    interrupts: list[str] = []
+
+    async def fake_dispatch(*args: Any, **kwargs: Any) -> SimpleNamespace:
+        if kwargs.get("interrupt"):
+            interrupts.append(str(kwargs.get("session_mode")))
+            command.status = "acked"
+            command.envelope = {
+                COMMAND_RESULT_ENVELOPE_KEY: {
+                    "status": "completed",
+                    "reply_text": "Review posted",
+                }
+            }
+        return SimpleNamespace(
+            command_id=command.command_id,
+            local_delivery=True,
+            subject=None,
+        )
+
+    def fake_mark(*args: Any, **kwargs: Any) -> SimpleNamespace:
+        existing = (command.envelope or {}).get(COMMAND_RESULT_ENVELOPE_KEY)
+        if existing:
+            return command
+        command.status = "failed" if kwargs.get("failed") else "acked"
+        command.last_error = kwargs.get("error")
+        command.envelope = {
+            COMMAND_RESULT_ENVELOPE_KEY: kwargs["result_payload"],
+        }
+        return command
+
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.crud_managed_agent.get_for_account",
+        lambda *args, **kwargs: SimpleNamespace(
+            id=agent_id,
+            account_id=account_id,
+            display_name="Review node",
+            lifecycle_state="active",
+            agent_kind="openclaw",
+            session_source_type="openclaw",
+            session_source_id="openclaw-example",
+            runtime_session_id=uuid4(),
+            control_last_heartbeat_at=None,
+        ),
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.agent_has_control_config",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.control_heartbeat_is_fresh",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.dispatch_operator_message",
+        fake_dispatch,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.create_command_history_session",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.crud_flow_execution.bind_agent_control_command",
+        MagicMock(),
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.crud_agent_control_command.get_by_command_id",
+        lambda *args, **kwargs: command,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.crud_agent_control_command.mark_terminal_result",
+        fake_mark,
+    )
+
+    orchestrator = _orchestrator(account_id, execution_id, agent_id, timeout_seconds=15)
+    context = {
+        "agent_type": "codex",
+        "agent_config": orchestrator.flow.agent_config,
+        "prompt": "Review https://github.com/example/repo/pull/1",
+        "execution_id": str(execution_id),
+        "flow_id": str(orchestrator.flow_id),
+        "flow_name": orchestrator.flow.name,
+        "account_id": account_id,
+    }
+    reference, executor = await orchestrator._start_agent_session(context)
+    orchestrator._stop_requested.set()
+    result = await orchestrator._monitor_agent_execution(reference, executor)
+
+    assert result["status"] == "SUCCEEDED"
+    assert result.get("output_summary") == "Review posted"
+    assert interrupts == ["current"]
+    assert await executor.is_stopped(reference) is False

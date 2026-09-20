@@ -40,6 +40,9 @@ SUPPORTED_CONTROL_AGENT_KINDS = {
     "pi",
     "deepseek",
 }
+# Pi and DeepSeek accept text on an already-open session only. Shared so the
+# operator endpoint and persistent executor refuse start_new_session together.
+CONTROL_NEW_SESSION_UNSUPPORTED_KINDS = {"pi", "deepseek"}
 
 _UNAVAILABLE_DETAIL = "Managed agent command channel is unavailable"
 

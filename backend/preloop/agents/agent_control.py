@@ -19,6 +19,7 @@ from preloop.models.crud import (
     crud_runtime_session_activity,
 )
 from preloop.services.agent_control_dispatch import (
+    CONTROL_NEW_SESSION_UNSUPPORTED_KINDS,
     SUPPORTED_CONTROL_AGENT_KINDS,
     AgentControlDispatchError,
     agent_has_control_config,
@@ -240,7 +241,7 @@ class AgentControlExecutor(AgentExecutor):
         ).lower()
         if agent_kind not in SUPPORTED_CONTROL_AGENT_KINDS:
             self._raise_not_connected(agent, target_id)
-        if agent_kind in {"pi", "deepseek"}:
+        if agent_kind in CONTROL_NEW_SESSION_UNSUPPORTED_KINDS:
             raise AgentStartError(
                 f"persistent target {_target_display_name(agent, target_id)} "
                 "supports text messages to active sessions only",

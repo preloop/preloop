@@ -4955,29 +4955,44 @@ class FlowExecutionOrchestrator:
                 if stop_request:
                     # Persisted intent survives a worker restart and a quick
                     # scope re-enable. A runner halt flag is only a request.
+                    from preloop.agents.agent_control import AgentControlExecutor
+
+                    already_terminal = False
                     try:
-                        await agent_executor.stop(session_reference)
-                        if await agent_executor.is_stopped(session_reference) is True:
-                            crud_flow_execution.confirm_stop(
-                                self.db, execution_id=self.execution_log.id
-                            )
-                            return {
-                                "status": "STOPPED",
-                                "error_message": "Execution terminated after account kill-switch request",
-                                "actions_taken": self.execution_logger.get_actions_taken(),
-                                "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
-                                "result": await self._capture_result_artifact(
-                                    agent_executor, session_reference
-                                ),
+                        if isinstance(agent_executor, AgentControlExecutor):
+                            status = await agent_executor.get_status(session_reference)
+                            already_terminal = status in {
+                                AgentStatus.SUCCEEDED,
+                                AgentStatus.FAILED,
+                                AgentStatus.STOPPED,
                             }
+                        if not already_terminal:
+                            await agent_executor.stop(session_reference)
+                            if (
+                                await agent_executor.is_stopped(session_reference)
+                                is True
+                            ):
+                                crud_flow_execution.confirm_stop(
+                                    self.db, execution_id=self.execution_log.id
+                                )
+                                return {
+                                    "status": "STOPPED",
+                                    "error_message": "Execution terminated after account kill-switch request",
+                                    "actions_taken": self.execution_logger.get_actions_taken(),
+                                    "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                                    "result": await self._capture_result_artifact(
+                                        agent_executor, session_reference
+                                    ),
+                                }
                     except Exception:
                         logger.exception(
                             "Stop requested but not confirmed for %s",
                             self.execution_log.id,
                         )
-                    await asyncio.sleep(poll_interval)
-                    elapsed += poll_interval
-                    continue
+                    if not already_terminal:
+                        await asyncio.sleep(poll_interval)
+                        elapsed += poll_interval
+                        continue
 
                 # Parked on a human decision: the approval path recorded a
                 # park request on this row because the question will not be
@@ -4994,40 +5009,49 @@ class FlowExecutionOrchestrator:
                     logger.info(
                         f"User requested stop for execution {self.execution_log.id}"
                     )
-                    await agent_executor.stop(session_reference)
                     from preloop.agents.agent_control import AgentControlExecutor
 
-                    if (
-                        isinstance(agent_executor, AgentControlExecutor)
-                        and await agent_executor.is_stopped(session_reference)
-                        is not True
-                    ):
-                        await asyncio.sleep(poll_interval)
-                        elapsed += poll_interval
-                        continue
-                    await self._publish_update("user_stopped", {"elapsed": elapsed})
-                    self.execution_logger.log_milestone(
-                        "user_requested_stop", {"elapsed": elapsed}
-                    )
-                    # Return explicitly: falling through to the end of the
-                    # while loop would report this as "Execution timed out
-                    # after {max_wait_time} seconds", which is wrong and very
-                    # confusing (executions stopped after 45s were reported as
-                    # 3600s timeouts).
-                    return {
-                        "status": "STOPPED",
-                        "error_message": (
-                            f"Execution stopped by user request after {elapsed} seconds."
-                        ),
-                        "actions_taken": self.execution_logger.get_actions_taken(),
-                        "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
-                        # An eval run may have already written result.json
-                        # before the user stopped it; the container is kept
-                        # (AutoRemove=False) so capture still works.
-                        "result": await self._capture_result_artifact(
-                            agent_executor, session_reference
-                        ),
-                    }
+                    already_terminal = False
+                    if isinstance(agent_executor, AgentControlExecutor):
+                        status = await agent_executor.get_status(session_reference)
+                        already_terminal = status in {
+                            AgentStatus.SUCCEEDED,
+                            AgentStatus.FAILED,
+                            AgentStatus.STOPPED,
+                        }
+                    if not already_terminal:
+                        await agent_executor.stop(session_reference)
+                        if (
+                            isinstance(agent_executor, AgentControlExecutor)
+                            and await agent_executor.is_stopped(session_reference)
+                            is not True
+                        ):
+                            await asyncio.sleep(poll_interval)
+                            elapsed += poll_interval
+                            continue
+                        await self._publish_update("user_stopped", {"elapsed": elapsed})
+                        self.execution_logger.log_milestone(
+                            "user_requested_stop", {"elapsed": elapsed}
+                        )
+                        # Return explicitly: falling through to the end of the
+                        # while loop would report this as "Execution timed out
+                        # after {max_wait_time} seconds", which is wrong and very
+                        # confusing (executions stopped after 45s were reported as
+                        # 3600s timeouts).
+                        return {
+                            "status": "STOPPED",
+                            "error_message": (
+                                f"Execution stopped by user request after {elapsed} seconds."
+                            ),
+                            "actions_taken": self.execution_logger.get_actions_taken(),
+                            "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                            # An eval run may have already written result.json
+                            # before the user stopped it; the container is kept
+                            # (AutoRemove=False) so capture still works.
+                            "result": await self._capture_result_artifact(
+                                agent_executor, session_reference
+                            ),
+                        }
 
                 # Get status with error handling
                 try:
