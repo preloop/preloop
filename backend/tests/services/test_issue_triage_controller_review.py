@@ -127,7 +127,6 @@ async def test_apply_lock_survives_durable_intent_and_serializes_competing_claim
 ) -> None:
     """Separate database connections observe intent but cannot overtake the apply."""
     with _committed_rig(db_engine, monkeypatch) as rig, Session(db_engine) as second:
-        first = rig.db
         execution, request = await _claim(rig)
         entered, release = asyncio.Event(), asyncio.Event()
 
@@ -175,6 +174,9 @@ async def test_session_lock_releases_after_error_without_losing_committed_receip
 ) -> None:
     with _committed_rig(db_engine, monkeypatch) as rig, Session(db_engine) as second:
         first = rig.db
+        provider_failure = AsyncMock(
+            side_effect=RuntimeError("simulated provider failure")
+        )
         with pytest.raises(RuntimeError, match="simulated"):
             async with crud_issue_lifecycle.triage_locked(
                 first, rig.account_id, rig.issue.id
@@ -185,7 +187,8 @@ async def test_session_lock_releases_after_error_without_losing_committed_receip
                     receipt={"expected_revisions": ["durable-intent"]},
                 )
                 crud_issue_lifecycle.commit(first)
-                raise RuntimeError("simulated provider failure")
+                await provider_failure()
+        provider_failure.assert_awaited_once()
         async with asyncio.timeout(2):
             async with crud_issue_lifecycle.triage_locked(
                 second, rig.account_id, rig.issue.id

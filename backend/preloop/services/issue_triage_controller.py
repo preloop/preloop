@@ -539,6 +539,8 @@ async def apply_controlled_triage(
                             result.issue.updated_at.replace("Z", "+00:00")
                         )
                     except ValueError:
+                        # Preserve the last valid provider timestamp while still
+                        # caching verified content, labels and the apply receipt.
                         pass
                 crud_issue_lifecycle.triage_snapshot(db, issue=issue, values=values)
                 result.cache_updated = True

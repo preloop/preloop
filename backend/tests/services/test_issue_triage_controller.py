@@ -1,6 +1,7 @@
 """Durable triage retry, freshness, and bounded-packet controller regressions."""
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -21,6 +22,37 @@ from tests.services.test_issue_triage_controller_review import (
     _committed_rig,
     _rig,
 )
+
+
+@pytest.mark.asyncio
+async def test_invalid_provider_timestamp_preserves_verified_assessment(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = _rig(db_session, monkeypatch)
+    last_valid = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    CRUDBase(models.Issue).update(
+        db_session, db_obj=rig.issue, obj_in={"last_updated_external": last_valid}
+    )
+    last_valid = rig.issue.last_updated_external
+    rig.provider.issue.updated_at = "not-an-iso-timestamp"
+    execution, request = await _claim(rig)
+
+    result = await _apply(rig, execution, request)
+
+    assert result.status == "updated" and result.cache_updated
+    stored = crud_issue_lifecycle.get_issue(
+        db_session, account_id=rig.account_id, issue_id=rig.issue.id
+    )
+    assert stored.last_updated_external == last_valid
+    assert stored.description == rig.provider.issue.body
+    assert stored.meta_data["labels"] == rig.provider.issue.labels
+    row = crud_issue_lifecycle.triage_for_execution(
+        db_session, account_id=rig.account_id, execution_id=execution.id
+    )
+    assert (
+        row.state == "assessed"
+        and row.data["packet"]["assessment"] == request.assessment
+    )
 
 
 @pytest.mark.asyncio
