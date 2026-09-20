@@ -501,3 +501,146 @@ def test_unknown_command_marks_return_none(db_session, create_account) -> None:
         )
         is None
     )
+
+
+def test_mark_terminal_result_is_idempotent(db_session, create_account) -> None:
+    account = create_account()
+    agent = _create_agent(db_session, account.id)
+    command_id = str(uuid4())
+    crud_agent_control_command.create_command(
+        db_session,
+        account_id=account.id,
+        managed_agent_id=agent.id,
+        runtime_session_id=None,
+        command_id=command_id,
+        envelope=_envelope(
+            account_id=account.id,
+            managed_agent_id=agent.id,
+            command_id=command_id,
+        ),
+    )
+    crud_agent_control_command.mark_acked(
+        db_session,
+        account_id=account.id,
+        command_id=command_id,
+        managed_agent_id=agent.id,
+        acked_at=datetime.now(UTC),
+    )
+
+    first = crud_agent_control_command.mark_terminal_result(
+        db_session,
+        account_id=account.id,
+        managed_agent_id=agent.id,
+        command_id=command_id,
+        result_payload={"status": "completed", "reply_text": "done"},
+    )
+    second = crud_agent_control_command.mark_terminal_result(
+        db_session,
+        account_id=account.id,
+        managed_agent_id=agent.id,
+        command_id=command_id,
+        result_payload={"status": "failed", "error": "should-not-stick"},
+        failed=True,
+        error="should-not-stick",
+    )
+
+    payload = crud_agent_control_command.command_result_payload(second)
+    assert first is not None
+    assert second is not None
+    assert second.status == "acked"
+    assert payload == {"status": "completed", "reply_text": "done"}
+    assert second.last_error is None
+
+
+def test_mark_terminal_result_two_callers_keep_first_payload(
+    db_session, create_account
+) -> None:
+    """A result and a stop racing each other keep the first committed payload."""
+    import threading
+
+    from sqlalchemy.orm import sessionmaker
+
+    account = create_account()
+    agent = _create_agent(db_session, account.id)
+    command_id = str(uuid4())
+    crud_agent_control_command.create_command(
+        db_session,
+        account_id=account.id,
+        managed_agent_id=agent.id,
+        runtime_session_id=None,
+        command_id=command_id,
+        envelope=_envelope(
+            account_id=account.id,
+            managed_agent_id=agent.id,
+            command_id=command_id,
+        ),
+    )
+    crud_agent_control_command.mark_acked(
+        db_session,
+        account_id=account.id,
+        command_id=command_id,
+        managed_agent_id=agent.id,
+        acked_at=datetime.now(UTC),
+    )
+    factory = sessionmaker(bind=db_session.get_bind())
+    barrier = threading.Barrier(2)
+    seen: list[dict] = []
+
+    def _write(*, failed: bool, payload: dict, error: str | None) -> None:
+        session = factory()
+        try:
+            barrier.wait(timeout=5)
+            crud_agent_control_command.mark_terminal_result(
+                session,
+                account_id=account.id,
+                managed_agent_id=agent.id,
+                command_id=command_id,
+                result_payload=payload,
+                failed=failed,
+                error=error,
+            )
+            record = crud_agent_control_command.get_by_command_id(
+                session,
+                account_id=account.id,
+                command_id=command_id,
+                managed_agent_id=agent.id,
+            )
+            seen.append(crud_agent_control_command.command_result_payload(record) or {})
+        finally:
+            session.close()
+
+    first = threading.Thread(
+        target=_write,
+        kwargs={
+            "failed": False,
+            "payload": {"status": "completed", "reply_text": "done"},
+            "error": None,
+        },
+    )
+    second = threading.Thread(
+        target=_write,
+        kwargs={
+            "failed": True,
+            "payload": {"status": "failed", "error": "stopped"},
+            "error": "stopped",
+        },
+    )
+    first.start()
+    second.start()
+    first.join(timeout=10)
+    second.join(timeout=10)
+    db_session.expire_all()
+    winner = crud_agent_control_command.command_result_payload(
+        crud_agent_control_command.get_by_command_id(
+            db_session,
+            account_id=account.id,
+            command_id=command_id,
+            managed_agent_id=agent.id,
+        )
+    )
+    assert winner is not None
+    assert winner in (
+        {"status": "completed", "reply_text": "done"},
+        {"status": "failed", "error": "stopped"},
+    )
+    assert all(item == winner for item in seen)

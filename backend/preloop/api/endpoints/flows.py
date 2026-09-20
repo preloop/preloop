@@ -1823,6 +1823,7 @@ RESERVED_TRIGGER_KEYS = frozenset(
         "_ci_failure",
         "_workspace_file_paths",
         "_subject",
+        "_agent_control",
     }
 )
 

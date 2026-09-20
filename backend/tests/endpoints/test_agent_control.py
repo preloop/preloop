@@ -635,6 +635,128 @@ def test_agent_control_ws_command_result_is_persisted(
     assert operator_message.status == "completed"
     assert agent_reply.status == "completed"
     assert agent_reply.metadata_["role"] == "assistant"
+    db_session.expire_all()
+    command = crud_agent_control_command.get_by_command_id(
+        db_session,
+        account_id=test_user.account_id,
+        command_id="cmd-result-1",
+        managed_agent_id=managed_agent.id,
+    )
+    payload = crud_agent_control_command.command_result_payload(command)
+    assert payload is not None
+    assert payload["reply_text"] == "ACK"
+
+    with client.websocket_connect(
+        f"/api/v1/agents/control/ws?token={token_body['token']}"
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "presence"
+        websocket.send_json(
+            {
+                "type": "status",
+                "name": "command_result",
+                "message_id": "result-1-repeat",
+                "payload": {
+                    "command_id": "cmd-result-1",
+                    "status": "failed",
+                    "reply_text": "should-not-stick",
+                    "error": "should-not-stick",
+                },
+            }
+        )
+        websocket.send_json({"type": "heartbeat", "message_id": "hb-3", "payload": {}})
+        assert websocket.receive_json()["name"] == "heartbeat"
+
+    db_session.expire_all()
+    repeated = crud_agent_control_command.get_by_command_id(
+        db_session,
+        account_id=test_user.account_id,
+        command_id="cmd-result-1",
+        managed_agent_id=managed_agent.id,
+    )
+    assert crud_agent_control_command.command_result_payload(repeated) == payload
+    result_rows = [
+        item
+        for item in crud_runtime_session_activity.list_for_runtime_session(
+            db_session,
+            account_id=test_user.account_id,
+            runtime_session_id=runtime_session.id,
+        )
+        if (item.metadata_ or {}).get("source") == "agent_control_result"
+        or (item.activity_type == "agent_control_message" and item.summary == "ACK")
+    ]
+    assert len(result_rows) == 1
+
+
+def test_agent_control_ws_command_error_marks_pre_ack_command_failed(
+    client,
+    db_session,
+    test_user,
+):
+    """A command_error may land before ack and still mark the row terminal."""
+    token_body = _issue_runtime_token(client, session_source_id="openclaw-error")
+    runtime_session = crud_runtime_session.get_by_source(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="openclaw",
+        session_source_id="openclaw-error",
+    )
+    managed_agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="openclaw",
+        session_source_id="openclaw-error",
+    )
+    assert runtime_session is not None
+    assert managed_agent is not None
+
+    crud_agent_control_command.create_command(
+        db_session,
+        account_id=test_user.account_id,
+        managed_agent_id=managed_agent.id,
+        runtime_session_id=runtime_session.id,
+        command_id="cmd-error-pending",
+        envelope={"type": "command", "message_id": "cmd-error-pending"},
+    )
+    crud_agent_control_command.mark_delivered(
+        db_session,
+        account_id=test_user.account_id,
+        command_id="cmd-error-pending",
+        delivered_at=datetime.now(UTC),
+    )
+
+    with client.websocket_connect(
+        f"/api/v1/agents/control/ws?token={token_body['token']}"
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "presence"
+        websocket.send_json(
+            {
+                "type": "status",
+                "name": "command_error",
+                "message_id": "error-1",
+                "payload": {
+                    "command_id": "cmd-error-pending",
+                    "status": "failed",
+                    "error": "runtime crashed",
+                },
+            }
+        )
+        websocket.send_json(
+            {"type": "heartbeat", "message_id": "hb-err", "payload": {}}
+        )
+        assert websocket.receive_json()["name"] == "heartbeat"
+
+    db_session.expire_all()
+    command = crud_agent_control_command.get_by_command_id(
+        db_session,
+        account_id=test_user.account_id,
+        command_id="cmd-error-pending",
+        managed_agent_id=managed_agent.id,
+    )
+    assert command is not None
+    assert command.status == "failed"
+    payload = crud_agent_control_command.command_result_payload(command)
+    assert payload is not None
+    assert payload["error"] == "runtime crashed"
 
 
 @patch("preloop.api.endpoints.agent_control.get_nats_client")

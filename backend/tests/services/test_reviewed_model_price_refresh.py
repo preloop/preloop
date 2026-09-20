@@ -946,19 +946,33 @@ def test_alibaba_time_bands_feed_estimates_idle_and_busy(payload: dict) -> None:
     )
     try:
         assert updater.apply(payload) == 1
+        # Estimates fail closed before effective_from. The fixture stamps
+        # that as now-1d, so a calendar-fixed 2026-09-19 04:00 UTC is in
+        # the past for the rest of this day. Pick the next 04:00/16:00 UTC
+        # after the stamp: 04:00 is 12:00 UTC+8 (busy), 16:00 is midnight
+        # UTC+8 (idle).
+        effective = datetime.fromisoformat(
+            str(entry["effective_from"]).replace("Z", "+00:00")
+        )
+        if effective.tzinfo is None:
+            effective = effective.replace(tzinfo=timezone.utc)
+        busy_at = (effective + timedelta(days=1)).replace(
+            hour=4, minute=0, second=0, microsecond=0
+        )
+        idle_at = busy_at.replace(hour=16)
         busy = estimate(
             model,
             prompt_tokens=10_000,
             completion_tokens=1_000,
             usage_details=None,
-            observed_at=datetime(2026, 9, 19, 4, 0, tzinfo=timezone.utc),
+            observed_at=busy_at,
         )
         idle = estimate(
             model,
             prompt_tokens=10_000,
             completion_tokens=1_000,
             usage_details=None,
-            observed_at=datetime(2026, 9, 19, 16, 0, tzinfo=timezone.utc),
+            observed_at=idle_at,
         )
         assert busy == pytest.approx(0.0042)
         assert idle == pytest.approx(0.0021)

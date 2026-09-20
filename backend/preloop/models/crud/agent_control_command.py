@@ -9,12 +9,18 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from preloop.models import models
 
 from .base import CRUDBase
 
 AgentControlCommand = models.AgentControlCommand
+
+# Server-owned terminal payload stored on the persisted envelope after a
+# command_result / command_error. Pending redelivery never includes this key
+# because results arrive only after the command has left pending.
+COMMAND_RESULT_ENVELOPE_KEY = "_result"
 
 
 @dataclass(frozen=True)
@@ -225,6 +231,81 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
             command_id=command_id,
             managed_agent_id=managed_agent_id,
         )
+
+    def mark_terminal_result(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        command_id: str,
+        result_payload: Dict[str, Any],
+        failed: bool = False,
+        error: Optional[str] = None,
+        managed_agent_id: Optional[Union[uuid.UUID, str]] = None,
+        commit: bool = True,
+    ) -> Optional[AgentControlCommand]:
+        """Record a terminal command_result / command_error on the row.
+
+        A repeated final payload does not flip an already-terminal command
+        (failed, expired, cancelled, or a row that already stores a result).
+        Success leaves status ``acked``; an error moves pending/delivered/acked
+        to ``failed``. The row is locked for update so a concurrent
+        ``command_result`` and timeout ``stop`` cannot both write; the first
+        commit keeps the payload.
+
+        Args:
+            db: Database session.
+            account_id: Owning account.
+            command_id: Envelope id.
+            result_payload: Sanitized runtime result (reply_text, error, ...).
+            failed: True when this is a command_error or failed status.
+            error: Optional last_error text when ``failed`` is True.
+            managed_agent_id: Optional agent scope.
+            commit: Whether to commit.
+
+        Returns:
+            The command row, or None when it does not exist.
+        """
+        query = db.query(AgentControlCommand).filter(
+            AgentControlCommand.account_id == account_id,
+            AgentControlCommand.command_id == command_id,
+            AgentControlCommand.kind == "command",
+        )
+        if managed_agent_id is not None:
+            query = query.filter(
+                AgentControlCommand.managed_agent_id == managed_agent_id
+            )
+        record = query.with_for_update().populate_existing().first()
+        if record is None:
+            return None
+        envelope = dict(record.envelope) if isinstance(record.envelope, dict) else {}
+        if isinstance(envelope.get(COMMAND_RESULT_ENVELOPE_KEY), dict):
+            return record
+        if record.status in {"expired", "cancelled"}:
+            return record
+        if record.status == "failed":
+            return record
+        envelope[COMMAND_RESULT_ENVELOPE_KEY] = dict(result_payload)
+        record.envelope = envelope
+        flag_modified(record, "envelope")
+        if failed and record.status in {"pending", "delivered", "acked"}:
+            record.status = "failed"
+            record.last_error = (error or "command_error")[:2000]
+        if commit:
+            db.commit()
+            db.refresh(record)
+        else:
+            db.flush()
+        return record
+
+    def command_result_payload(
+        self, record: Optional[AgentControlCommand]
+    ) -> Optional[Dict[str, Any]]:
+        """Return the stored terminal result payload, if any."""
+        if record is None or not isinstance(record.envelope, dict):
+            return None
+        payload = record.envelope.get(COMMAND_RESULT_ENVELOPE_KEY)
+        return dict(payload) if isinstance(payload, dict) else None
 
     def get_undelivered_for_agent(
         self,

@@ -1,5 +1,9 @@
 """Tests for agent factory."""
 
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+from uuid import uuid4
+
 import pytest
 
 from preloop.agents.factory import create_agent_executor, SUPPORTED_AGENT_TYPES
@@ -172,3 +176,77 @@ class TestAgentFactory:
         for agent_type in invalid_types:
             with pytest.raises(ValueError):
                 create_agent_executor(agent_type, {})
+
+
+class TestPersistentFactorySelection:
+    """Persistent config must select AgentControlExecutor before runner pools."""
+
+    def test_persistent_config_selects_agent_control_executor(self) -> None:
+        from preloop.agents.agent_control import AgentControlExecutor
+        from preloop.agents.factory import create_executor_for_execution
+
+        target = uuid4()
+        account_id = uuid4()
+        executor = create_executor_for_execution(
+            "codex",
+            {
+                "execution_path": "persistent",
+                "target_agent_id": str(target),
+            },
+            flow=SimpleNamespace(
+                account_id=account_id,
+                runner_pool="office-mac",
+                agent_config={
+                    "execution_path": "persistent",
+                    "target_agent_id": str(target),
+                },
+            ),
+            db=MagicMock(),
+            execution_context={},
+        )
+        assert isinstance(executor, AgentControlExecutor)
+        assert executor.config["target_agent_id"] == str(target)
+
+    def test_nested_agent_config_wrapper_selects_persistent(self) -> None:
+        from preloop.agents.agent_control import AgentControlExecutor
+        from preloop.agents.factory import create_executor_for_execution
+
+        target = uuid4()
+        executor = create_executor_for_execution(
+            "codex",
+            {
+                "agent_config": {
+                    "execution_path": "persistent",
+                    "target_agent_id": str(target),
+                }
+            },
+            flow=SimpleNamespace(account_id=uuid4(), runner_pool=None),
+            db=MagicMock(),
+        )
+        assert isinstance(executor, AgentControlExecutor)
+
+    def test_missing_target_fails_fast(self) -> None:
+        from preloop.agents.errors import AgentStartError
+        from preloop.agents.factory import create_executor_for_execution
+
+        with pytest.raises(AgentStartError, match="missing") as excinfo:
+            create_executor_for_execution(
+                "codex",
+                {"execution_path": "persistent"},
+                flow=SimpleNamespace(account_id=uuid4()),
+                db=MagicMock(),
+            )
+        assert excinfo.value.category == "runner_error"
+
+    def test_ephemeral_without_execution_path_stays_container(self) -> None:
+        from preloop.agents.codex import CodexAgent
+        from preloop.agents.factory import create_executor_for_execution
+
+        executor = create_executor_for_execution(
+            "codex",
+            {"model": "gpt-5.4"},
+            flow=SimpleNamespace(runner_pool=None, account_id=uuid4()),
+            db=MagicMock(),
+            execution_context={},
+        )
+        assert isinstance(executor, CodexAgent)

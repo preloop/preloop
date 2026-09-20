@@ -24,6 +24,14 @@ avatars.
 
 ### Added
 
+- Persistent flow execution: a flow with
+  `agent_config.execution_path = "persistent"` delivers the rendered prompt
+  to `target_agent_id` as one audited Agent Control `send_message`. The
+  execution binds the command id, takes its terminal status from
+  `command_result` / `command_error`, and the flow timeout interrupts the
+  session. Missing or offline targets fail at start; there is no ephemeral
+  fallback.
+
 - Cost summaries accept optional `include_breakdown=false` and repeatable
   `breakdown` selections while preserving the full response by default.
   The Cost console shows totals first and loads tab details independently,
