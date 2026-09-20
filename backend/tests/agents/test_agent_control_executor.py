@@ -419,6 +419,43 @@ async def test_stop_does_not_mark_when_interrupt_fails(
 
 
 @pytest.mark.asyncio
+async def test_stop_uses_session_reference_when_bind_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = _command_record(status="delivered")
+    executor, reference = _status_executor(monkeypatch, record)
+    agent = _agent(id=record.managed_agent_id, account_id=record.account_id)
+    dispatched: dict[str, Any] = {}
+
+    async def fake_dispatch(*args: Any, **kwargs: Any) -> SimpleNamespace:
+        dispatched.update(kwargs)
+        return SimpleNamespace(command_id="cmd-stop", local_delivery=True, subject=None)
+
+    mark = MagicMock(return_value=record)
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.crud_managed_agent.get_for_account",
+        lambda *args, **kwargs: agent,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.dispatch_operator_message",
+        fake_dispatch,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.crud_agent_control_command.mark_terminal_result",
+        mark,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.crud_flow_execution.get",
+        lambda *args, **kwargs: SimpleNamespace(trigger_event_details={}),
+    )
+
+    await executor.stop(reference)
+
+    assert dispatched["interrupt"] is True
+    mark.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_start_returns_reference_when_bind_fails(
     monkeypatch: pytest.MonkeyPatch, connected_patches
 ) -> None:

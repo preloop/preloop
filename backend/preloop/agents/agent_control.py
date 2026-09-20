@@ -522,6 +522,11 @@ class AgentControlExecutor(AgentExecutor):
         record = self._load_command(session_reference)
         binding = self._binding(session_reference)
         managed_agent_id = binding.get("managed_agent_id")
+        if not managed_agent_id:
+            try:
+                managed_agent_id, _ = parse_control_session_reference(session_reference)
+            except ValueError:
+                managed_agent_id = None
         account_id = str(
             getattr(record, "account_id", None)
             or self.account_id
