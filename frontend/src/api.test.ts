@@ -73,6 +73,14 @@ describe('api', () => {
         .find((c) => String(c.args[0]) === '/logout');
       expect(logoutCall, 'expected GET /logout').to.exist;
     });
+
+    it('does not throw when fetch returns a non-Promise', () => {
+      fetchStub.returns(undefined);
+      const navigate = sinon.stub();
+      expect(() => performLocalSignOut(navigate)).not.to.throw();
+      expect(localStorage.getItem('accessToken')).to.equal(null);
+      expect(navigate).to.have.been.calledWith('/');
+    });
   });
 
   describe('fetchWithAuth', () => {
