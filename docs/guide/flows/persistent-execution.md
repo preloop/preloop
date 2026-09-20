@@ -18,12 +18,15 @@ immediately when:
 
 * the flow has no `target_agent_id`
 * the target is missing, inactive, or not an Agent Control kind
+* the target only accepts text on an already-open session (currently Pi
+  and DeepSeek); persistent start always opens a new session
 * Agent Control is not verified on that agent
 * the agent's control heartbeat is stale (it is offline)
 
 The flow form shows each target's Agent Control state and disables agents that
 are not online. If you save an offline target, start still fails until that
-agent reconnects.
+agent reconnects. Connected Pi and DeepSeek targets can still appear in the
+picker; start refuses them because they cannot open a new session.
 
 ## What happens at run time
 

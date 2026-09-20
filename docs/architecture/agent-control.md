@@ -154,7 +154,11 @@ itself still fails with the timeout message.
 Start refuses (classified `runner_error`) when the target is missing,
 inactive, not an allow-listed Agent Control kind, has no verified control
 config, or has a stale heartbeat (the same three-heartbeat window the
-console uses for `plugin_connected`).
+console uses for `plugin_connected`). Allow-listed kinds that only accept
+text on an already-open session (currently Pi and DeepSeek) also fail at
+start: persistent dispatch always sends `start_new_session=true`. The
+operator endpoint uses the same
+`CONTROL_NEW_SESSION_UNSUPPORTED_KINDS` set.
 
 ### Not covered yet
 
