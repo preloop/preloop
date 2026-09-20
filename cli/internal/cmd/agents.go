@@ -2083,6 +2083,7 @@ func runAgentsInstallHermesPlugin(cmd *cobra.Command, agentName string, dryRun b
 			hermesManualPluginInstallCommand(installTarget),
 		)
 	}
+	restartHermesGatewayAfterReconfig(agent, cmd.OutOrStdout())
 	fmt.Fprintf(
 		cmd.OutOrStdout(),
 		"\nInstalled %s into Hermes' virtualenv via pip. Run `preloop agents validate %s` to verify plugin load and control readiness.\n",
@@ -2194,6 +2195,7 @@ func runAgentsRestore(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("✓ Restored %s config from %s\n", resolveAgentDisplayName(agent), state.BackupPath)
+	restartHermesGatewayAfterReconfig(agent, os.Stdout)
 	printMutatingCommandUndo(
 		os.Stdout,
 		fmt.Sprintf(
@@ -2402,6 +2404,7 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 
 	fmt.Printf("✓ Offboarded %s\n", resolveAgentDisplayName(agent))
 	fmt.Printf("  Restored config: %s\n", agent.ConfigPath)
+	restartHermesGatewayAfterReconfig(agent, os.Stdout)
 	printMutatingCommandUndo(
 		os.Stdout,
 		fmt.Sprintf(

@@ -133,6 +133,7 @@ def test_search_summary_no_hermes_home(
     monkeypatch.setenv("HOME", str(tmp_path))
     summary = _config_search_summary()
     assert str(tmp_path / ".hermes" / "config.yaml") in summary
+    assert str(tmp_path / ".hermes" / "config.yml") in summary
     assert "HERMES_HOME" not in summary  # env var not set
 
 
@@ -143,7 +144,9 @@ def test_search_summary_with_hermes_home(
     monkeypatch.setenv("HOME", str(tmp_path))
     summary = _config_search_summary()
     assert str(tmp_path / "hh" / "config.yaml") in summary
+    assert str(tmp_path / "hh" / "config.yml") in summary
     assert str(tmp_path / ".hermes" / "config.yaml") in summary
+    assert str(tmp_path / ".hermes" / "config.yml") in summary
 
 
 # ---------------------------------------------------------------------------
@@ -281,3 +284,81 @@ def test_explicit_config_takes_precedence_over_discovery(
     # Confirm the explicit path is actually used (not HERMES_HOME).
     block = plugin._read_control_block()
     assert block["runtime"] == "hermes"
+
+
+def test_prefers_yml_sibling_that_has_control_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """yaml without control, yml with control: pick the yml file."""
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    hermes_dir = tmp_path / ".hermes"
+    hermes_dir.mkdir()
+    (hermes_dir / "config.yaml").write_text("model: {}\n")
+    yml = hermes_dir / "config.yml"
+    _write_hermes_config(yml)
+    assert _discover_config_path() == yml
+
+
+def test_prefers_yaml_sibling_that_has_control_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """yml without control, yaml with control: pick the yaml file."""
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    hermes_dir = tmp_path / ".hermes"
+    hermes_dir.mkdir()
+    (hermes_dir / "config.yml").write_text("model: {}\n")
+    yaml_path = hermes_dir / "config.yaml"
+    _write_hermes_config(yaml_path)
+    assert _discover_config_path() == yaml_path
+
+
+def test_prefers_home_config_with_control_over_hermes_home_without(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A systemd HERMES_HOME file without the block must not mask onboarding."""
+    hermes_home = tmp_path / "install"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text("model: {}\n")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    home_config = tmp_path / ".hermes" / "config.yaml"
+    _write_hermes_config(home_config)
+    assert _discover_config_path() == home_config
+
+
+def test_prefers_hermes_home_with_control_over_home_without(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The inverse ordering: HERMES_HOME has the block, HOME does not."""
+    hermes_home = tmp_path / "install"
+    hermes_home.mkdir()
+    hermes_config = hermes_home / "config.yaml"
+    _write_hermes_config(hermes_config)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    home_config = tmp_path / ".hermes" / "config.yaml"
+    home_config.parent.mkdir(parents=True)
+    home_config.write_text("model: {}\n")
+    assert _discover_config_path() == hermes_config
+
+
+def test_missing_control_block_error_names_resolved_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    config = tmp_path / ".hermes" / "config.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text("model: {}\n")
+    plugin = HermesPreloopPlugin()
+    with pytest.raises(ValueError) as exc_info:
+        plugin._read_control_block()
+    msg = str(exc_info.value)
+    assert "missing preloop.control config block" in msg
+    assert str(config) in msg
+    assert "HERMES_HOME=<unset>" in msg
+    assert f"HOME={tmp_path}" in msg
+    assert "preloop agents validate Hermes" in msg
+    assert "systemctl --user restart hermes-gateway.service" in msg

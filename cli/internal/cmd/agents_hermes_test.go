@@ -3,7 +3,10 @@ package cmd
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1406,5 +1409,305 @@ func TestRestartHermesGatewayAfterReconfigFailure(t *testing.T) {
 		result["gateway_restarted"] != false ||
 		!strings.Contains(result["gateway_restart_error"].(string), "restart failed") {
 		t.Fatalf("expected failed Hermes gateway restart, got %#v", result)
+	}
+}
+
+func TestParseHermesSystemdUnitNames(t *testing.T) {
+	output := strings.Join([]string{
+		"hermes-gateway.service loaded active running Hermes Gateway",
+		"hermes-matrix-monitor.service loaded active running Hermes Matrix",
+		"unrelated.service loaded active running Other",
+		"",
+	}, "\n")
+	got := parseHermesSystemdUnitNames(output)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 hermes units, got %#v", got)
+	}
+	if got[0] != "hermes-gateway.service" || got[1] != "hermes-matrix-monitor.service" {
+		t.Fatalf("unexpected units: %#v", got)
+	}
+}
+
+func TestRestartHermesGatewayAfterReconfigPrintsSystemdUnits(t *testing.T) {
+	skipNoShebangOnWindows(t, "Hermes systemd unit listing")
+	previousGOOS := hermesSystemdGOOS
+	hermesSystemdGOOS = "linux"
+	t.Cleanup(func() { hermesSystemdGOOS = previousGOOS })
+
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(binDir, "hermes"),
+		[]byte("#!/bin/sh\n[ \"$1\" = gateway ] && [ \"$2\" = restart ]\n"),
+		0755,
+	); err != nil {
+		t.Fatalf("failed to write fake Hermes binary: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(binDir, "systemctl"),
+		[]byte("#!/bin/sh\n"+
+			"if [ \"$1\" = --user ] && [ \"$2\" = list-units ]; then\n"+
+			"  echo 'hermes-gateway.service loaded active running Hermes Gateway'\n"+
+			"  echo 'hermes-matrix-monitor.service loaded active running Hermes Matrix'\n"+
+			"  exit 0\nfi\nexit 1\n"),
+		0755,
+	); err != nil {
+		t.Fatalf("failed to write fake systemctl: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	var buf bytes.Buffer
+	result := restartHermesGatewayAfterReconfig(
+		AgentConfig{Name: hermesAgentName},
+		&buf,
+	)
+	if result["gateway_restart_status"] != "restarted" || result["gateway_restarted"] != true {
+		t.Fatalf("expected successful restart, got %#v", result)
+	}
+	units, _ := result["systemd_user_units"].([]string)
+	if len(units) != 2 {
+		t.Fatalf("expected systemd units in result, got %#v", result)
+	}
+	printed := buf.String()
+	if !strings.Contains(printed, "systemctl --user restart hermes-gateway.service hermes-matrix-monitor.service") {
+		t.Fatalf("expected exact restart command, got %q", printed)
+	}
+	if !strings.Contains(printed, "systemctl --user stop hermes-gateway.service hermes-matrix-monitor.service") {
+		t.Fatalf("expected exact stop command, got %q", printed)
+	}
+}
+
+func TestRestartHermesGatewayAfterReconfigSkipsSystemdOffLinux(t *testing.T) {
+	previousGOOS := hermesSystemdGOOS
+	hermesSystemdGOOS = "darwin"
+	t.Cleanup(func() { hermesSystemdGOOS = previousGOOS })
+	if units := listHermesSystemdUserUnits(); len(units) != 0 {
+		t.Fatalf("expected no systemd probe off Linux, got %#v", units)
+	}
+}
+
+func TestRunAgentsRestoreRestartsHermesGateway(t *testing.T) {
+	skipNoShebangOnWindows(t, "Hermes restore gateway restart")
+	home := testenv.SetTempHome(t)
+	configPath := filepath.Join(home, hermesBootstrapConfigPath)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		t.Fatalf("failed to create hermes dir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("model: {}\n"), 0644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+	backupPath := filepath.Join(home, "backup.yaml")
+	if err := os.WriteFile(backupPath, []byte("model:\n  default: local\n"), 0644); err != nil {
+		t.Fatalf("failed to write backup: %v", err)
+	}
+	agent := normalizeDiscoveredAgent(AgentConfig{
+		Name:       hermesAgentName,
+		ConfigPath: configPath,
+	})
+	if err := saveLocalEnrollmentState(&localEnrollmentState{
+		AgentName:          agent.Name,
+		ConfigPath:         configPath,
+		BackupPath:         backupPath,
+		ConfigExisted:      true,
+		RuntimePrincipalID: runtimePrincipalIDForAgent(agent),
+	}); err != nil {
+		t.Fatalf("saveLocalEnrollmentState: %v", err)
+	}
+
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(binDir, "hermes"),
+		[]byte("#!/bin/sh\n[ \"$1\" = gateway ] && [ \"$2\" = restart ]\n"),
+		0755,
+	); err != nil {
+		t.Fatalf("failed to write fake Hermes binary: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	cmd := agentsRestoreCmd
+	if err := cmd.Flags().Set("yes", "true"); err != nil {
+		t.Fatalf("failed to set yes flag: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Flags().Set("yes", "false")
+	})
+
+	out := captureStdout(t, func() error {
+		return runAgentsRestore(cmd, []string{"Hermes"})
+	})
+	if !strings.Contains(out, "Hermes gateway restarted") {
+		t.Fatalf("expected gateway restart after restore, got:\n%s", out)
+	}
+}
+
+func TestExecuteOffboardRestartsHermesGateway(t *testing.T) {
+	skipNoShebangOnWindows(t, "Hermes offboard gateway restart")
+	home := testenv.SetTempHome(t)
+	configPath := filepath.Join(home, hermesBootstrapConfigPath)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		t.Fatalf("failed to create hermes dir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("model: {}\n"), 0644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+	backupPath := filepath.Join(home, "backup.yaml")
+	if err := os.WriteFile(backupPath, []byte("model:\n  default: local\n"), 0644); err != nil {
+		t.Fatalf("failed to write backup: %v", err)
+	}
+	agent := normalizeDiscoveredAgent(AgentConfig{
+		Name:       hermesAgentName,
+		ConfigPath: configPath,
+	})
+	principalID := runtimePrincipalIDForAgent(agent)
+	if err := saveLocalEnrollmentState(&localEnrollmentState{
+		AgentName:          agent.Name,
+		DisplayName:        resolveAgentDisplayName(agent),
+		ConfigPath:         configPath,
+		BackupPath:         backupPath,
+		ConfigExisted:      true,
+		RuntimePrincipalID: principalID,
+	}); err != nil {
+		t.Fatalf("saveLocalEnrollmentState: %v", err)
+	}
+
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(binDir, "hermes"),
+		[]byte("#!/bin/sh\n[ \"$1\" = gateway ] && [ \"$2\" = restart ]\n"),
+		0755,
+	); err != nil {
+		t.Fatalf("failed to write fake Hermes binary: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/agents":
+			_ = json.NewEncoder(w).Encode(managedAgentListResponse{
+				Items: []managedAgentSummary{{
+					ID:                "mgr-hermes-1",
+					DisplayName:       hermesAgentName,
+					SessionSourceType: hermesSourceType,
+					SessionSourceID:   principalID,
+					LifecycleState:    "active",
+				}},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/agents/mgr-hermes-1":
+			_ = json.NewEncoder(w).Encode(managedAgentDetailResponse{
+				Agent: managedAgentSummary{
+					ID:                "mgr-hermes-1",
+					DisplayName:       hermesAgentName,
+					SessionSourceType: hermesSourceType,
+					SessionSourceID:   principalID,
+					LifecycleState:    "active",
+				},
+			})
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/agents/mgr-hermes-1":
+			_ = json.NewEncoder(w).Encode(managedAgentSummary{
+				ID:             "mgr-hermes-1",
+				LifecycleState: "decommissioned",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/mcp-servers":
+			_ = json.NewEncoder(w).Encode([]interface{}{})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/ai-models":
+			_ = json.NewEncoder(w).Encode([]interface{}{})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/flows"):
+			_ = json.NewEncoder(w).Encode([]interface{}{})
+		default:
+			if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/") {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"items": []interface{}{}})
+				return
+			}
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	originalURL, originalToken := FlagURL, FlagToken
+	FlagURL = server.URL
+	FlagToken = "tok"
+	t.Cleanup(func() {
+		FlagURL = originalURL
+		FlagToken = originalToken
+	})
+
+	out := captureStdout(t, func() error {
+		return executeOffboard(agent, true, offboardCleanupNo, offboardCleanupNo)
+	})
+	if !strings.Contains(out, "Hermes gateway restarted") {
+		t.Fatalf("expected gateway restart after offboard, got:\n%s", out)
+	}
+}
+
+func TestRunAgentsInstallPluginHermesRestartsGateway(t *testing.T) {
+	skipNoShebangOnWindows(t, "Hermes install-plugin gateway restart")
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	testenv.SetHome(t, home)
+	t.Setenv("PRELOOP_RUNTIME_PLUGINS_DIR", filepath.Join(dir, "runtime-plugins"))
+
+	installDir := filepath.Join(dir, "hermes-agent")
+	venvBin := filepath.Join(installDir, "venv", "bin")
+	if err := os.MkdirAll(venvBin, 0755); err != nil {
+		t.Fatalf("failed to create venv bin: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(venvBin, "python3"),
+		[]byte("#!/bin/sh\nexit 0\n"),
+		0755,
+	); err != nil {
+		t.Fatalf("failed to write fake venv python: %v", err)
+	}
+
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+	restartMarker := filepath.Join(dir, "restarted")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = gateway ] && [ \"$2\" = restart ]; then\n" +
+		"  : > \"" + restartMarker + "\"\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$1\" = plugins ] && [ \"$2\" = enable ]; then\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"echo \"Hermes Agent 1.2.3\"\n" +
+		"echo \"Install directory: " + installDir + "\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "hermes"), []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write fake hermes: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	cmd := agentsInstallPluginCmd
+	if err := cmd.Flags().Set("dry-run", "false"); err != nil {
+		t.Fatalf("failed to clear dry-run: %v", err)
+	}
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	t.Cleanup(func() {
+		cmd.SetOut(nil)
+		cmd.SetErr(nil)
+	})
+
+	if err := runAgentsInstallPlugin(cmd, []string{"hermes"}); err != nil {
+		t.Fatalf("install-plugin failed: %v\n%s", err, buf.String())
+	}
+	if _, err := os.Stat(restartMarker); err != nil {
+		t.Fatalf("expected hermes gateway restart, marker missing: %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "Hermes gateway restarted") {
+		t.Fatalf("expected restart message, got %q", buf.String())
 	}
 }
