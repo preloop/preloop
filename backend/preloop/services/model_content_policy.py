@@ -62,6 +62,14 @@ logger = logging.getLogger(__name__)
 MODEL_IO_META_KEY = "model_io_rules"
 CONTENT_POLICY_ERROR_CODE = "content_policy_denied"
 CONTENT_POLICY_MESSAGE = "Blocked by content policy"
+_APPROVAL_EVENT_LOOP: Optional[asyncio.AbstractEventLoop] = None
+
+
+def set_model_io_approval_loop(loop: Optional[asyncio.AbstractEventLoop]) -> None:
+    """Bind background executor approval holds to the application lifespan."""
+    global _APPROVAL_EVENT_LOOP
+    _APPROVAL_EVENT_LOOP = loop
+
 
 # Hung detectors are abandoned on timeout rather than joined. A small
 # dedicated pool keeps ``ThreadPoolExecutor.__exit__`` from blocking the
@@ -605,6 +613,13 @@ async def hold_for_model_io_approval(
     return approved
 
 
+def _missing_event_loop(exc: BaseException) -> bool:
+    """True when AnyIO cannot bridge because this is not a worker thread."""
+    name = type(exc).__name__
+    message = str(exc)
+    return name == "NoEventLoopError" or "AnyIO worker thread" in message
+
+
 def _await_model_io_hold(awaitable: Any) -> bool:
     """Run an HTTP worker's approval hold on the application event loop.
 
@@ -613,6 +628,8 @@ def _await_model_io_hold(awaitable: Any) -> bool:
     and poisons the shared async connection pool for subsequent requests.
     FastAPI sync endpoints and Starlette's sync stream iterators both run in
     AnyIO worker threads, which can bridge back to the application loop.
+    The lifespan also registers that loop for ordinary executor callers such
+    as background optimization jobs. Callers with neither bridge fail closed.
     """
     if not asyncio.iscoroutine(awaitable):
         return bool(awaitable)
@@ -624,9 +641,21 @@ def _await_model_io_hold(awaitable: Any) -> bool:
         asyncio.get_running_loop()
     except RuntimeError:
         try:
+            loop = _APPROVAL_EVENT_LOOP
+            if loop is not None and loop.is_running():
+                return asyncio.run_coroutine_threadsafe(hold(), loop).result()
             return from_thread.run(hold)
-        except BaseException:
+        except BaseException as exc:
             awaitable.close()
+            if _missing_event_loop(exc):
+                logger.warning(
+                    "model I/O approval hold has no application event loop; "
+                    "failing closed"
+                )
+                raise RuntimeError(
+                    f"{CONTENT_POLICY_MESSAGE}: approval hold requires the "
+                    "application event loop"
+                ) from exc
             raise
     awaitable.close()
     raise RuntimeError(

@@ -994,6 +994,9 @@ avatars.
 
 ### Changed
 
+- Enable the Policies console by default for users with policy permissions.
+  Operators can still hide it with `PRELOOP_POLICIES_CONSOLE=false`.
+
 - CI prefers a matching system Python (through a venv) and only then
   falls back to `actions/setup-python`. The action has no Debian 12
   builds, so a self-hosted bookworm runner with `python3.11` already
@@ -1254,6 +1257,9 @@ avatars.
   came from.
 
 ### Fixed
+
+- Keep repeated model policy approvals on the application event loop, including
+  background optimization jobs, so pooled database connections remain usable.
 
 - Alibaba Model Studio flow estimates cover the Singapore International
   native catalog, not only chat SKUs. `GET /api/v1/models` is fetched

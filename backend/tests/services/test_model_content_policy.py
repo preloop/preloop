@@ -555,3 +555,46 @@ async def test_worker_approval_holds_reuse_application_event_loop() -> None:
 
     assert seen == [application_loop, application_loop]
     assert not any(loop.is_closed() for loop in seen)
+
+
+@pytest.mark.asyncio
+async def test_plain_executor_approvals_use_registered_application_loop() -> None:
+    """Background optimization jobs use ordinary executor threads, not AnyIO."""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from preloop.services.model_content_policy import set_model_io_approval_loop
+
+    loop = asyncio.get_running_loop()
+    seen = []
+
+    async def approval() -> bool:
+        seen.append(asyncio.get_running_loop())
+        return True
+
+    set_model_io_approval_loop(loop)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            for _ in range(2):
+                assert await loop.run_in_executor(
+                    executor, lambda: _await_model_io_hold(approval())
+                )
+    finally:
+        set_model_io_approval_loop(None)
+    assert seen == [loop, loop]
+
+
+def test_plain_executor_without_loop_fails_closed() -> None:
+    """Executor threads without a registered loop must not use asyncio.run."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from preloop.services.model_content_policy import set_model_io_approval_loop
+
+    async def approval() -> bool:
+        return True
+
+    set_model_io_approval_loop(None)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(lambda: _await_model_io_hold(approval()))
+        with pytest.raises(RuntimeError, match="application event loop"):
+            future.result()

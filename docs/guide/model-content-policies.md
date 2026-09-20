@@ -118,7 +118,9 @@ OpenAI-compatible clients can surface that message.
 (`require_approval` / `approval_service`). The hold appears in the
 existing approvals inbox. The ticket includes rule id, detector
 summary, and a SHA-256 of the scanned text. It does not store the full
-prompt or a raw preview.
+prompt or a raw preview. HTTP workers and background optimization jobs
+run the hold on the application event loop. Callers with no loop fail
+closed instead of creating a temporary loop.
 
 ## YAML example
 
