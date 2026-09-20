@@ -61,6 +61,7 @@ describe('api', () => {
 
   describe('performLocalSignOut', () => {
     it('clears tokens, navigates home, and hits /logout', () => {
+      fetchStub.resolves(new Response(null, { status: 204 }));
       const navigate = sinon.stub();
       performLocalSignOut(navigate);
 

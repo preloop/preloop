@@ -422,7 +422,7 @@ export function performLocalSignOut(
     new CustomEvent('auth-change', { bubbles: true, composed: true })
   );
   navigate('/');
-  fetch('/logout', { method: 'GET' }).catch(() => {
+  void Promise.resolve(fetch('/logout', { method: 'GET' })).catch(() => {
     // Best effort: local credentials are already gone.
   });
 }
