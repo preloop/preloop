@@ -648,11 +648,13 @@ export class PreloopFlowForm extends LitElement {
 
       if (this.flowExecutionPath === 'persistent') {
         if (!this.targetAgentId && this.longRunningAgents.length > 0) {
-          const enabledAgents = this.longRunningAgents.filter(
-            (a) => getAgentControlState(a).enabled
+          const enabledAgents = this.persistentControlAgents();
+          const onlineAgents = enabledAgents.filter(
+            (a) => getAgentControlState(a).online
           );
-          if (enabledAgents.length > 0) {
-            this.targetAgentId = enabledAgents[0].id;
+          const pick = onlineAgents[0] || enabledAgents[0];
+          if (pick) {
+            this.targetAgentId = pick.id;
           }
         }
         this.updateModelSelectionForAgent();
@@ -1441,6 +1443,22 @@ export class PreloopFlowForm extends LitElement {
         }
       </sl-card>
     `;
+  }
+
+  private persistentControlAgents(): any[] {
+    return this.longRunningAgents.filter(
+      (a) => getAgentControlState(a).enabled
+    );
+  }
+
+  private selectedPersistentTarget(): any | undefined {
+    return this.longRunningAgents.find((a) => a.id === this.targetAgentId);
+  }
+
+  private selectedPersistentTargetIsOffline(): boolean {
+    const agent = this.selectedPersistentTarget();
+    if (!agent) return false;
+    return !getAgentControlState(agent).online;
   }
 
   private buildAgentConfig(): Record<string, unknown> {
@@ -2994,11 +3012,14 @@ export class PreloopFlowForm extends LitElement {
                             !this.targetAgentId &&
                             this.longRunningAgents.length > 0
                           ) {
-                            const enabledAgents = this.longRunningAgents.filter(
-                              (a) => getAgentControlState(a).enabled
+                            const enabledAgents =
+                              this.persistentControlAgents();
+                            const onlineAgents = enabledAgents.filter(
+                              (a) => getAgentControlState(a).online
                             );
-                            if (enabledAgents.length > 0) {
-                              this.targetAgentId = enabledAgents[0].id;
+                            const pick = onlineAgents[0] || enabledAgents[0];
+                            if (pick) {
+                              this.targetAgentId = pick.id;
                             }
                           }
                           this.updateModelSelectionForAgent();
@@ -3033,16 +3054,35 @@ export class PreloopFlowForm extends LitElement {
                     }}
                     required
                   >
-                    ${this.longRunningAgents
-                      .filter((a) => getAgentControlState(a).enabled)
-                      .map(
-                        (a) =>
-                          html`<sl-option .value=${a.id}
-                            >${a.display_name}
-                            (${a.agent_kind || 'ssh'})</sl-option
-                          >`
-                      )}
+                    ${this.persistentControlAgents().map((a) => {
+                      const state = getAgentControlState(a);
+                      return html`<sl-option
+                        .value=${a.id}
+                        ?disabled=${!state.online}
+                        >${a.display_name || a.name} (${a.agent_kind || 'ssh'})
+                        — ${state.label}</sl-option
+                      >`;
+                    })}
                   </sl-select>
+                  ${
+                    this.selectedPersistentTargetIsOffline()
+                      ? html`
+                          <sl-alert
+                            variant="warning"
+                            open
+                            style="margin-top: var(--sl-spacing-medium);"
+                            data-testid="persistent-target-offline"
+                          >
+                            <sl-icon
+                              slot="icon"
+                              name="exclamation-triangle"
+                            ></sl-icon>
+                            This agent is not connected to Agent Control; the
+                            flow will fail at start until it reconnects.
+                          </sl-alert>
+                        `
+                      : nothing
+                  }
                 `
               : html`
                   <sl-select

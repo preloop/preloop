@@ -65,6 +65,12 @@ STOP_COVERAGE_KEY = "_stop_coverage"
 # "rule_id"?, "label_snapshot", "reason"}.
 ROUTING_RECORD_KEY = "_model_routing"
 
+# Reserved key under which a persistent Agent Control execution binds the
+# dispatched command. Shape: {"command_id", "managed_agent_id",
+# "runtime_session_id"?, "history_session_id"?}. Written by
+# AgentControlExecutor after dispatch; never accepted from a trigger body.
+AGENT_CONTROL_BINDING_KEY = "_agent_control"
+
 
 def resolve_matrix_agent_selection(
     trigger_event_details: Optional[dict],

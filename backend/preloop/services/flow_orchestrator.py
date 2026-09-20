@@ -3015,14 +3015,17 @@ class FlowExecutionOrchestrator:
                 from preloop.services.kill_switch import FlowHaltActiveError
 
                 raise FlowHaltActiveError("Account kill switch prevented agent launch")
+            from preloop.agents.agent_control import AgentControlExecutor
             from preloop.agents.remote_runner import RemoteRunnerExecutor
             from preloop.services.checkpoint_runtime import checkpoint_context
 
-            # Private state stays on its owning host. Resolve the actual executor
-            # before minting any hosted artifact capabilities.
+            # Private state stays on its owning host. Persistent Agent Control
+            # targets already have a workspace; do not mint hosted artifacts.
             execution_context["checkpoint_env"] = (
                 {}
-                if isinstance(agent_executor, RemoteRunnerExecutor)
+                if isinstance(
+                    agent_executor, (RemoteRunnerExecutor, AgentControlExecutor)
+                )
                 else checkpoint_context(self.db, execution_context)
             )
             if "evidence_env" not in execution_context:

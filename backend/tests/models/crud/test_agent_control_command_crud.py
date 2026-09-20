@@ -501,3 +501,52 @@ def test_unknown_command_marks_return_none(db_session, create_account) -> None:
         )
         is None
     )
+
+
+def test_mark_terminal_result_is_idempotent(db_session, create_account) -> None:
+    account = create_account()
+    agent = _create_agent(db_session, account.id)
+    command_id = str(uuid4())
+    crud_agent_control_command.create_command(
+        db_session,
+        account_id=account.id,
+        managed_agent_id=agent.id,
+        runtime_session_id=None,
+        command_id=command_id,
+        envelope=_envelope(
+            account_id=account.id,
+            managed_agent_id=agent.id,
+            command_id=command_id,
+        ),
+    )
+    crud_agent_control_command.mark_acked(
+        db_session,
+        account_id=account.id,
+        command_id=command_id,
+        managed_agent_id=agent.id,
+        acked_at=datetime.now(UTC),
+    )
+
+    first = crud_agent_control_command.mark_terminal_result(
+        db_session,
+        account_id=account.id,
+        managed_agent_id=agent.id,
+        command_id=command_id,
+        result_payload={"status": "completed", "reply_text": "done"},
+    )
+    second = crud_agent_control_command.mark_terminal_result(
+        db_session,
+        account_id=account.id,
+        managed_agent_id=agent.id,
+        command_id=command_id,
+        result_payload={"status": "failed", "error": "should-not-stick"},
+        failed=True,
+        error="should-not-stick",
+    )
+
+    payload = crud_agent_control_command.command_result_payload(second)
+    assert first is not None
+    assert second is not None
+    assert second.status == "acked"
+    assert payload == {"status": "completed", "reply_text": "done"}
+    assert second.last_error is None
