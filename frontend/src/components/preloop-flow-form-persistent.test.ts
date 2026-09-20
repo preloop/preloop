@@ -121,4 +121,23 @@ describe('PreloopFlowForm persistent target picker', () => {
       'This agent is not connected to Agent Control; the flow will fail at start until it reconnects.'
     );
   });
+
+  it('shows the runtime select in ephemeral mode without the offline warning', async () => {
+    const element = await mount();
+    (
+      element as unknown as { flowExecutionPath: 'ephemeral' | 'persistent' }
+    ).flowExecutionPath = 'ephemeral';
+    element.requestUpdate();
+    await element.updateComplete;
+
+    const runtime = [
+      ...(element.shadowRoot?.querySelectorAll('sl-select') || []),
+    ].find((select) => select.getAttribute('label') === 'Agent runtime');
+    expect(runtime).to.exist;
+    expect(
+      element.shadowRoot?.querySelector(
+        '[data-testid="persistent-target-offline"]'
+      )
+    ).to.not.exist;
+  });
 });

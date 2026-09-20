@@ -4995,6 +4995,16 @@ class FlowExecutionOrchestrator:
                         f"User requested stop for execution {self.execution_log.id}"
                     )
                     await agent_executor.stop(session_reference)
+                    from preloop.agents.agent_control import AgentControlExecutor
+
+                    if (
+                        isinstance(agent_executor, AgentControlExecutor)
+                        and await agent_executor.is_stopped(session_reference)
+                        is not True
+                    ):
+                        await asyncio.sleep(poll_interval)
+                        elapsed += poll_interval
+                        continue
                     await self._publish_update("user_stopped", {"elapsed": elapsed})
                     self.execution_logger.log_milestone(
                         "user_requested_stop", {"elapsed": elapsed}

@@ -143,10 +143,13 @@ marker, so a successful `command_result` is sufficient.
 The orchestrator `TimeoutBudget` still bounds the poll loop. When the budget
 expires it calls `AgentControlExecutor.stop`, which sends `send_message` with
 `interrupt: true` and `session_mode: current` (no tracking-session UUID).
-Plugins interrupt their most recently owned session. The bound command is
-marked `stopped` only after that interrupt is delivered; a failed interrupt
-leaves the command non-terminal so the operator can see the remote session
-is still live. The execution itself still fails with the timeout message.
+That interrupts the agent's **current** session — the most recently owned
+plugin session — which is usually this flow but can be a later operator
+turn if one started. Native session ids from ack/presence are not persisted
+on the binding yet. The bound command is marked `stopped` only after that
+interrupt is delivered; a failed interrupt leaves the command non-terminal
+so the operator can see the remote session is still live. The execution
+itself still fails with the timeout message.
 
 Start refuses (classified `runner_error`) when the target is missing,
 inactive, not an allow-listed Agent Control kind, has no verified control

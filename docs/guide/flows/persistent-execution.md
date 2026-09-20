@@ -33,8 +33,9 @@ agent reconnects.
    acked without a result.
 4. A successful `command_result` marks the execution succeeded. A
    `command_error`, expiry, or stop marks it failed.
-5. If the flow timeout budget expires, Preloop interrupts the session and
-   stops waiting.
+5. If the flow timeout budget expires, Preloop interrupts the agent's
+   **current** session (`session_mode: current`) and stops waiting. That is
+   usually this flow's turn; it is not a guarantee if another session started.
 
 See [Flow execution on a persistent agent](../../architecture/agent-control.md#flow-execution-on-a-persistent-agent)
 for the envelope, binding, and status table.

@@ -249,7 +249,9 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
         A repeated final payload does not flip an already-terminal command
         (failed, expired, cancelled, or a row that already stores a result).
         Success leaves status ``acked``; an error moves pending/delivered/acked
-        to ``failed``.
+        to ``failed``. The row is locked for update so a concurrent
+        ``command_result`` and timeout ``stop`` cannot both write; the first
+        commit keeps the payload.
 
         Args:
             db: Database session.
@@ -264,14 +266,18 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
         Returns:
             The command row, or None when it does not exist.
         """
-        record = self.get_by_command_id(
-            db,
-            account_id=account_id,
-            command_id=command_id,
-            managed_agent_id=managed_agent_id,
+        query = db.query(AgentControlCommand).filter(
+            AgentControlCommand.account_id == account_id,
+            AgentControlCommand.command_id == command_id,
+            AgentControlCommand.kind == "command",
         )
-        if record is None or record.kind != "command":
-            return record
+        if managed_agent_id is not None:
+            query = query.filter(
+                AgentControlCommand.managed_agent_id == managed_agent_id
+            )
+        record = query.with_for_update().populate_existing().first()
+        if record is None:
+            return None
         envelope = dict(record.envelope) if isinstance(record.envelope, dict) else {}
         if isinstance(envelope.get(COMMAND_RESULT_ENVELOPE_KEY), dict):
             return record

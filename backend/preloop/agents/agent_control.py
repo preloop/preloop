@@ -240,6 +240,12 @@ class AgentControlExecutor(AgentExecutor):
         ).lower()
         if agent_kind not in SUPPORTED_CONTROL_AGENT_KINDS:
             self._raise_not_connected(agent, target_id)
+        if agent_kind in {"pi", "deepseek"}:
+            raise AgentStartError(
+                f"persistent target {_target_display_name(agent, target_id)} "
+                "supports text messages to active sessions only",
+                category="runner_error",
+            )
         if not agent_has_control_config(self.db, account_id=account_id, agent=agent):
             self._raise_not_connected(agent, target_id)
         if not control_heartbeat_is_fresh(agent.control_last_heartbeat_at):
@@ -512,12 +518,14 @@ class AgentControlExecutor(AgentExecutor):
         return lines
 
     async def stop(self, session_reference: str) -> None:
-        """Interrupt the runtime's current session if delivery succeeds.
+        """Interrupt the agent's current session if delivery succeeds.
 
         Start opens a plugin-owned session the backend never learns the native
-        id of, so stop does not target the synthetic tracking row. A failed
-        interrupt leaves the command non-terminal so the operator can see the
-        remote session is still live.
+        id of, so stop does not target a tracking UUID. The interrupt uses
+        ``session_mode=current`` (the agent's current session, which may not
+        be this flow if another turn started). A failed interrupt leaves the
+        command non-terminal so the operator can see the remote session is
+        still live.
         """
         record = self._load_command(session_reference)
         binding = self._binding(session_reference)

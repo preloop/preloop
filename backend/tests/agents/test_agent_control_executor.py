@@ -246,6 +246,22 @@ async def test_start_stale_heartbeat_fails(
     assert excinfo.value.category == "runner_error"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["pi", "deepseek"])
+async def test_start_harness_kinds_reject_new_session(
+    monkeypatch: pytest.MonkeyPatch, connected_patches, kind: str
+) -> None:
+    agent = _agent(agent_kind=kind, session_source_type=kind)
+    executor = _executor(agent_id=agent.id, account_id=agent.account_id)
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.crud_managed_agent.get_for_account",
+        lambda *args, **kwargs: agent,
+    )
+    with pytest.raises(AgentStartError, match="active sessions only") as excinfo:
+        await executor.start({"prompt": "do work", "account_id": agent.account_id})
+    assert excinfo.value.category == "runner_error"
+
+
 def _status_executor(monkeypatch: pytest.MonkeyPatch, record: SimpleNamespace):
     executor = _executor(agent_id=record.managed_agent_id, account_id=record.account_id)
     monkeypatch.setattr(
