@@ -17,6 +17,7 @@ import {
   repriceCost,
   syncProviderBillingConnection,
   type BudgetPolicy,
+  type CostUsageBreakdown,
 } from '../../api';
 import type {
   AIModel,
@@ -214,6 +215,20 @@ export class CostView extends AuthedElement {
   // core reload (e.g. date-range change) so the aux data re-fetches for the new
   // range when its tab is next shown.
   @state() private loadedTabs = new Set<string>();
+  @state() private activeTab = 'agents';
+  @state() private sectionStates: Record<
+    string,
+    'loading' | 'ready' | 'error'
+  > = {};
+  @state() private sectionErrors: Record<string, string> = {};
+  @state() private contextLoading = true;
+  @state() private contextError: string | null = null;
+  @state() private budgetContextReady = false;
+  @state() private pricingContextReady = false;
+  private loadGeneration = 0;
+  private currentPeriod: DateRangeParams | null = null;
+  private readyBreakdowns = new Set<CostUsageBreakdown>();
+  private pendingBreakdowns = new Map<CostUsageBreakdown, Promise<void>>();
   // Per-tab sort state. Keys reference the column identifiers used in each tab.
   @state() private agentSort: SortState = { key: 'cost', dir: 'desc' };
   @state() private toolSort: SortState = {
@@ -560,21 +575,31 @@ export class CostView extends AuthedElement {
     void this.load();
   }
 
+  disconnectedCallback() {
+    ++this.loadGeneration;
+    super.disconnectedCallback();
+  }
+
   /**
    * `?panel=pricing` is how an attention item about unpriced models lands on
    * the part of this page that fixes it, instead of at the top of a long page
    * with no hint where to look.
    */
   protected updated(): void {
-    if (this.loading || !this.requestedPanel) {
+    if (
+      this.loading ||
+      !this.requestedPanel ||
+      (this.requestedPanel === 'pricing' && !this.pricingContextReady)
+    ) {
       return;
     }
     const panel = this.requestedPanel;
-    this.requestedPanel = null;
     const target =
       this.renderRoot.querySelector(`#panel-${panel}`) ||
       this.renderRoot.querySelector('#panel-pricing-catalog');
-    target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (!target) return;
+    this.requestedPanel = null;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
   private requestedPanel: string | null = null;
@@ -612,12 +637,6 @@ export class CostView extends AuthedElement {
     };
   }
 
-  private async loadBudgetPolicies() {
-    this.budgetPolicies = await getBudgetPolicies().catch(
-      () => [] as BudgetPolicy[]
-    );
-  }
-
   private handleBudgetPoliciesChanged(
     event: CustomEvent<{ policies: BudgetPolicy[] }>
   ) {
@@ -627,42 +646,29 @@ export class CostView extends AuthedElement {
   // Build the agent_id -> owner_username map used by the Users tab. Owner is
   // resolved from the account's managed agents; a failed lookup leaves the map
   // empty and flips `ownerAttributionAvailable` so the tab degrades gracefully.
-  private async loadAgentOwners() {
-    try {
-      const response = await getAccountAgents({ limit: 100 });
-      const map = new Map<string, string>();
-      const bySource: Array<{ sourceId: string; owner: string }> = [];
-      for (const agent of response.items) {
-        if (agent.owner_username) {
-          map.set(agent.id, agent.owner_username);
-          if (agent.session_source_id) {
-            bySource.push({
-              sourceId: agent.session_source_id,
-              owner: agent.owner_username,
-            });
-          }
-        }
+  private async loadAgentOwners(generation: number) {
+    const response = await getAccountAgents({ limit: 100 });
+    const map = new Map<string, string>();
+    const bySource: Array<{ sourceId: string; owner: string }> = [];
+    for (const agent of response.items) {
+      if (agent.owner_username) {
+        map.set(agent.id, agent.owner_username);
+        if (agent.session_source_id)
+          bySource.push({
+            sourceId: agent.session_source_id,
+            owner: agent.owner_username,
+          });
       }
-      // Longest source id first so the most specific agent wins in prefix match.
-      bySource.sort((a, b) => b.sourceId.length - a.sourceId.length);
-      this.agentOwnerMap = map;
-      this.agentOwnerBySource = bySource;
-      this.ownerAttributionAvailable = true;
-      // Single-user account → attribute otherwise-unowned spend to that user.
-      try {
-        const users = await getUsers(0, 100);
-        const list = users.users || [];
-        this.fallbackOwner =
-          list.length === 1 ? list[0].username || list[0].email || null : null;
-      } catch {
-        this.fallbackOwner = null;
-      }
-    } catch {
-      this.agentOwnerMap = new Map();
-      this.agentOwnerBySource = [];
-      this.fallbackOwner = null;
-      this.ownerAttributionAvailable = false;
     }
+    bySource.sort((a, b) => b.sourceId.length - a.sourceId.length);
+    const users = await getUsers(0, 100).catch(() => null);
+    if (generation !== this.loadGeneration) return;
+    this.agentOwnerMap = map;
+    this.agentOwnerBySource = bySource;
+    this.ownerAttributionAvailable = true;
+    const list = users?.users || [];
+    this.fallbackOwner =
+      list.length === 1 ? list[0].username || list[0].email || null : null;
   }
 
   // Resolve a session's owner: prefer the backend-resolved agent_id, else
@@ -692,13 +698,9 @@ export class CostView extends AuthedElement {
 
   // Fetch the tool cost flag count so the Tools tab can decide between the full
   // <tool-cost-flags-panel> and a lightweight inline notice.
-  private async loadToolFlagCount() {
-    try {
-      const flags = await getToolCostFlags();
-      this.toolFlagCount = flags.length;
-    } catch {
-      this.toolFlagCount = 0;
-    }
+  private async loadToolFlagCount(generation: number) {
+    const flags = await getToolCostFlags();
+    if (generation === this.loadGeneration) this.toolFlagCount = flags.length;
   }
 
   // Date-range selector change handler. Defined as a bound arrow property so
@@ -719,123 +721,242 @@ export class CostView extends AuthedElement {
   };
 
   private async load() {
+    const generation = ++this.loadGeneration;
+    const range = this.selectedRange;
+    const period = this.getDateParams(range);
     this.loading = true;
     this.error = null;
-    // A core reload (initial mount or date-range change) invalidates any
-    // per-tab auxiliary data, which is scoped to the summary window. Clearing
-    // this lets the lazy loaders re-run for the newly loaded range the next
-    // time each tab is shown (see D).
-    this.loadedTabs = new Set<string>();
+    this.previousRangeSummary = null;
+    this.currentPeriod = null;
+    this.loadedTabs = new Set();
+    this.sectionStates = {};
+    this.sectionErrors = {};
+    this.readyBreakdowns = new Set();
+    this.pendingBreakdowns = new Map();
+    this.budgetContextReady = false;
+    this.pricingContextReady = false;
+    void this.loadContext(generation);
     try {
-      // Current-period summary drives first paint. Previous-period comparison
-      // is secondary and loads in the background (backend has no single-call
-      // delta endpoint).
-      const [summary, aiModels, features] = await Promise.all([
-        getCostAnalyticsSummary(this.getDateParams()),
-        getAIModels(),
-        getFeatures().catch(() => ({ features: {} })),
-      ]);
+      const summary = await getCostAnalyticsSummary({
+        ...period,
+        includeBreakdown: false,
+      });
+      if (generation !== this.loadGeneration) return;
       this.summary = summary;
+      this.currentPeriod = {
+        startDate: summary.period_start,
+        endDate: summary.period_end,
+      };
       this.loadedAt = new Date().toISOString();
-      this.featureFlags = features.features || {};
-      await this.loadBudgetPolicies();
-      this.aiModels = aiModels;
-      if (this.featureFlags.model_price_overrides === true) {
-        // Passive: this list decorates the cost tables on page load. A plan
-        // without the capability answers 402, which is an answer about the
-        // account, not about anything the reader just clicked.
-        this.pricingOverrides = await getModelPriceOverrides({
-          activeOnly: true,
-          passive: true,
-        }).catch(() => []);
-      } else {
-        this.pricingOverrides = [];
-      }
-      void this.loadPreviousRangeSummary();
-      // Per-tab auxiliary data (owner map for Users, flag count for Tools) is
-      // fetched lazily via handleTabShow when a tab is first opened, not up
-      // front, to keep the initial load fast (see D).
+      this.loading = false;
+      void this.loadPreviousRangeSummary(generation, range);
+      void this.loadTab(this.activeTab, generation);
+      if (summary.imported_usage?.event_count)
+        void this.loadTab('imported', generation);
     } catch (error) {
+      if (generation !== this.loadGeneration) return;
+      this.summary = null;
       this.error =
         error instanceof Error
           ? error.message
           : 'Failed to load cost analytics';
     } finally {
-      this.loading = false;
+      if (generation === this.loadGeneration) this.loading = false;
     }
   }
 
-  private async loadPreviousRangeSummary(): Promise<void> {
-    const range = this.selectedRange;
-    const cacheKey = `preloop.cost.previous_summary.v1:${range}`;
-    try {
-      const cached = sessionStorage.getItem(cacheKey);
-      if (cached) {
-        const parsed = JSON.parse(cached) as {
-          cachedAt: number;
-          data: CostAnalyticsSummaryResponse;
-        };
-        if (
-          parsed?.data &&
-          Date.now() - parsed.cachedAt < 120_000 &&
-          !this.previousRangeSummary
-        ) {
-          this.previousRangeSummary = parsed.data;
-        }
-      }
-    } catch {
-      // ignore cache read errors
-    }
+  private async loadContext(generation = this.loadGeneration) {
+    this.contextLoading = true;
+    this.contextError = null;
+    const tasks = [
+      {
+        label: 'model choices',
+        request: getAIModels().then((models) => {
+          if (generation === this.loadGeneration) this.aiModels = models;
+        }),
+      },
+      {
+        label: 'budget policies',
+        request: getBudgetPolicies().then((policies) => {
+          if (generation !== this.loadGeneration) return;
+          this.budgetPolicies = policies;
+          this.budgetContextReady = true;
+        }),
+      },
+      {
+        label: 'pricing settings',
+        request: getFeatures().then(async (features) => {
+          if (generation !== this.loadGeneration) return;
+          this.featureFlags = features.features || {};
+          const overrides = this.modelPriceOverridesEnabled
+            ? await getModelPriceOverrides({ activeOnly: true, passive: true })
+            : [];
+          if (generation !== this.loadGeneration) return;
+          this.pricingOverrides = overrides;
+          this.pricingContextReady = true;
+        }),
+      },
+    ];
+    const results = await Promise.allSettled(tasks.map((task) => task.request));
+    if (generation !== this.loadGeneration) return;
+    const failed = tasks
+      .filter((_, index) => results[index].status === 'rejected')
+      .map((task) => task.label);
+    this.contextError = failed.length
+      ? `Could not load ${failed.join(', ')}.`
+      : null;
+    this.contextLoading = false;
+  }
 
+  private async loadPreviousRangeSummary(
+    generation: number,
+    range: DateRangePreset
+  ): Promise<void> {
     try {
-      const previousSummary = await getCostAnalyticsSummary(
-        this.getPreviousDateParams(range)
-      );
-      // Ignore if the user changed range while this request was in flight.
-      if (this.selectedRange !== range) return;
-      this.previousRangeSummary = previousSummary;
-      try {
-        sessionStorage.setItem(
-          cacheKey,
-          JSON.stringify({ cachedAt: Date.now(), data: previousSummary })
-        );
-      } catch {
-        // ignore cache write errors
-      }
+      const previous = await getCostAnalyticsSummary({
+        ...this.getPreviousDateParams(range),
+        includeBreakdown: false,
+      });
+      if (generation === this.loadGeneration)
+        this.previousRangeSummary = previous;
     } catch {
-      if (this.selectedRange === range && !this.previousRangeSummary) {
-        this.previousRangeSummary = null;
-      }
+      if (generation === this.loadGeneration) this.previousRangeSummary = null;
     }
   }
 
-  // Lazily loads a tab's auxiliary data the first time it is shown. Triggered by
-  // the sl-tab-group `sl-tab-show` event. The Users tab needs the agent -> owner
-  // map (see G); the Tools tab needs the flag count. Other tabs are driven
-  // entirely by the core summary and need no extra fetch.
+  private async loadBreakdowns(
+    names: CostUsageBreakdown[],
+    generation: number
+  ) {
+    if (generation !== this.loadGeneration || !this.currentPeriod) return;
+    const missing = names.filter(
+      (name) =>
+        !this.readyBreakdowns.has(name) && !this.pendingBreakdowns.has(name)
+    );
+    if (missing.length) {
+      const request = getCostAnalyticsSummary({
+        ...this.currentPeriod,
+        breakdowns: missing,
+      })
+        .then((result) => {
+          if (generation !== this.loadGeneration || !this.summary) return;
+          const fields = {
+            models: 'usage_by_model',
+            flows: 'usage_by_flow',
+            sessions: 'usage_by_session',
+            tools: 'usage_by_tool',
+            days: 'requests_by_day',
+            imported: 'imported_usage',
+          } as const;
+          const next = { ...this.summary };
+          for (const name of missing) {
+            const field = fields[name];
+            // Merge only selected sections, never a later request's totals.
+            if (name === 'imported' && next.imported_usage) {
+              next.imported_usage = {
+                ...next.imported_usage,
+                usage_by_model: result.imported_usage?.usage_by_model ?? [],
+                usage_by_conversation:
+                  result.imported_usage?.usage_by_conversation ?? [],
+              };
+            } else {
+              Object.assign(next, { [field]: result[field] });
+            }
+            this.readyBreakdowns.add(name);
+          }
+          this.summary = next;
+        })
+        .finally(() => {
+          if (generation !== this.loadGeneration) return;
+          for (const name of missing) this.pendingBreakdowns.delete(name);
+        });
+      for (const name of missing) this.pendingBreakdowns.set(name, request);
+    }
+    await Promise.all(names.map((name) => this.pendingBreakdowns.get(name)));
+  }
+
+  private async loadTab(tab: string, generation = this.loadGeneration) {
+    if (
+      !this.currentPeriod ||
+      generation !== this.loadGeneration ||
+      this.loadedTabs.has(tab) ||
+      this.sectionStates[tab] === 'loading'
+    )
+      return;
+    const sections: Record<string, CostUsageBreakdown[]> = {
+      agents: ['sessions', 'flows'],
+      sessions: ['sessions'],
+      users: ['sessions'],
+      tools: ['tools'],
+      imported: ['imported'],
+      reconciliation: [],
+    };
+    if (!(tab in sections)) return;
+    this.sectionStates = { ...this.sectionStates, [tab]: 'loading' };
+    try {
+      await Promise.all([
+        this.loadBreakdowns(sections[tab], generation),
+        tab === 'users' ? this.loadAgentOwners(generation) : undefined,
+        tab === 'tools' ? this.loadToolFlagCount(generation) : undefined,
+        tab === 'reconciliation'
+          ? this.loadReconciliation(generation)
+          : undefined,
+      ]);
+      if (generation !== this.loadGeneration) return;
+      this.loadedTabs = new Set(this.loadedTabs).add(tab);
+      this.sectionStates = { ...this.sectionStates, [tab]: 'ready' };
+    } catch (error) {
+      if (generation !== this.loadGeneration) return;
+      this.sectionErrors = {
+        ...this.sectionErrors,
+        [tab]:
+          error instanceof Error
+            ? error.message
+            : 'Could not load this section.',
+      };
+      this.sectionStates = { ...this.sectionStates, [tab]: 'error' };
+    }
+  }
+
   private async handleTabShow(event: CustomEvent<{ name: string }>) {
     const tab = event.detail?.name;
-    if (!tab || this.loadedTabs.has(tab)) {
-      return;
+    if (!tab) return;
+    this.activeTab = tab;
+    await this.loadTab(tab);
+  }
+
+  private renderSectionState(section: string) {
+    if (this.sectionStates[section] === 'error') {
+      return html`<div data-section=${section} role="alert">
+        ${this.sectionErrors[section]}
+        <sl-button size="small" @click=${() => void this.loadTab(section)}
+          >Retry</sl-button
+        >
+      </div>`;
     }
-    // Mark before awaiting so a rapid re-show does not double-fetch.
-    this.loadedTabs = new Set(this.loadedTabs).add(tab);
-    if (tab === 'users') {
-      await this.loadAgentOwners();
-    } else if (tab === 'tools') {
-      await this.loadToolFlagCount();
-    } else if (tab === 'reconciliation') {
-      await this.loadReconciliation();
-    }
+    return html`<div
+      data-section=${section}
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <sl-spinner></sl-spinner> Loading ${section}…
+    </div>`;
+  }
+
+  private renderTab(tab: string, render: () => unknown) {
+    return this.sectionStates[tab] === 'ready'
+      ? render()
+      : this.renderSectionState(tab);
   }
 
   // Fetches provider connections and the estimated-vs-actual comparison for
   // the current date range. Only called when the Reconciliation tab is shown.
-  private async loadReconciliation() {
+  private async loadReconciliation(generation = this.loadGeneration) {
     this.reconciliationLoading = true;
     this.reconciliationError = null;
     try {
-      const range = this.getDateParams();
+      const range = this.currentPeriod || this.getDateParams();
       const [connections, reconciliation] = await Promise.all([
         getProviderBillingConnections().catch(() => []),
         getCostReconciliation({
@@ -843,15 +964,18 @@ export class CostView extends AuthedElement {
           endDate: range.endDate,
         }),
       ]);
+      if (generation !== this.loadGeneration) return;
       this.providerConnections = connections;
       this.reconciliation = reconciliation;
     } catch (error) {
+      if (generation !== this.loadGeneration) return;
       this.reconciliationError =
         error instanceof Error
           ? error.message
           : 'Failed to load reconciliation data';
     } finally {
-      this.reconciliationLoading = false;
+      if (generation === this.loadGeneration)
+        this.reconciliationLoading = false;
     }
   }
 
@@ -1646,52 +1770,54 @@ export class CostView extends AuthedElement {
           </div>
         </div>
         ${
-          rows.length
-            ? html`<div class="analytics-table-wrap">
-                <table
-                  class="styled-table"
-                  aria-label="Imported usage by model"
-                >
-                  <thead>
-                    <tr>
-                      ${columns.map((column) =>
-                        this.renderSortableHeader(
-                          column,
-                          this.importedSort,
-                          (key) =>
-                            (this.importedSort = this.toggleSort(
-                              this.importedSort,
-                              key
-                            ))
-                        )
+          this.sectionStates.imported !== 'ready'
+            ? this.renderSectionState('imported')
+            : rows.length
+              ? html`<div class="analytics-table-wrap">
+                  <table
+                    class="styled-table"
+                    aria-label="Imported usage by model"
+                  >
+                    <thead>
+                      <tr>
+                        ${columns.map((column) =>
+                          this.renderSortableHeader(
+                            column,
+                            this.importedSort,
+                            (key) =>
+                              (this.importedSort = this.toggleSort(
+                                this.importedSort,
+                                key
+                              ))
+                          )
+                        )}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${rows.map(
+                        (row) => html`
+                          <tr>
+                            <td>${row.model_alias || 'Unknown'}</td>
+                            <td>${row.source || 'Unknown'}</td>
+                            <td>${this.formatNumber(row.request_count)}</td>
+                            <td>${this.formatNumber(row.total_tokens)}</td>
+                            <td>${this.formatCurrency(row.imported_cost)}</td>
+                            <td>
+                              ${
+                                row.last_event_at
+                                  ? new Date(row.last_event_at).toLocaleString()
+                                  : '-'
+                              }
+                            </td>
+                          </tr>
+                        `
                       )}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${rows.map(
-                      (row) => html`
-                        <tr>
-                          <td>${row.model_alias || 'Unknown'}</td>
-                          <td>${row.source || 'Unknown'}</td>
-                          <td>${this.formatNumber(row.request_count)}</td>
-                          <td>${this.formatNumber(row.total_tokens)}</td>
-                          <td>${this.formatCurrency(row.imported_cost)}</td>
-                          <td>
-                            ${
-                              row.last_event_at
-                                ? new Date(row.last_event_at).toLocaleString()
-                                : '-'
-                            }
-                          </td>
-                        </tr>
-                      `
-                    )}
-                  </tbody>
-                </table>
-              </div>`
-            : html`<div class="empty">No per-model imported usage yet.</div>`
+                    </tbody>
+                  </table>
+                </div>`
+              : html`<div class="empty">No per-model imported usage yet.</div>`
         }
-        ${this.renderImportedConversations(imported.usage_by_conversation ?? [])}
+        ${this.sectionStates.imported === 'ready' ? this.renderImportedConversations(imported.usage_by_conversation ?? []) : nothing}
       </sl-card>
     `;
   }
@@ -1851,10 +1977,24 @@ export class CostView extends AuthedElement {
           @sl-tab-show=${(event: CustomEvent<{ name: string }>) =>
             void this.handleTabShow(event)}
         >
-          <sl-tab slot="nav" panel="agents">Agents</sl-tab>
-          <sl-tab slot="nav" panel="tools">Tools</sl-tab>
-          <sl-tab slot="nav" panel="sessions">Sessions</sl-tab>
-          <sl-tab slot="nav" panel="users">Users</sl-tab>
+          <sl-tab
+            slot="nav"
+            panel="agents"
+            ?active=${this.activeTab === 'agents'}
+            >Agents</sl-tab
+          >
+          <sl-tab slot="nav" panel="tools" ?active=${this.activeTab === 'tools'}
+            >Tools</sl-tab
+          >
+          <sl-tab
+            slot="nav"
+            panel="sessions"
+            ?active=${this.activeTab === 'sessions'}
+            >Sessions</sl-tab
+          >
+          <sl-tab slot="nav" panel="users" ?active=${this.activeTab === 'users'}
+            >Users</sl-tab
+          >
           ${
             this.reconciliationEnabled
               ? html`<sl-tab slot="nav" panel="reconciliation"
@@ -1862,16 +2002,22 @@ export class CostView extends AuthedElement {
                 >`
               : nothing
           }
-          <sl-tab-panel name="agents">${this.renderAgentsTab()}</sl-tab-panel>
-          <sl-tab-panel name="tools">${this.renderToolsTab()}</sl-tab-panel>
-          <sl-tab-panel name="sessions"
-            >${this.renderSessionsTab()}</sl-tab-panel
+          <sl-tab-panel name="agents"
+            >${this.renderTab('agents', () => this.renderAgentsTab())}</sl-tab-panel
           >
-          <sl-tab-panel name="users">${this.renderUsersTab()}</sl-tab-panel>
+          <sl-tab-panel name="tools"
+            >${this.renderTab('tools', () => this.renderToolsTab())}</sl-tab-panel
+          >
+          <sl-tab-panel name="sessions"
+            >${this.renderTab('sessions', () => this.renderSessionsTab())}</sl-tab-panel
+          >
+          <sl-tab-panel name="users"
+            >${this.renderTab('users', () => this.renderUsersTab())}</sl-tab-panel
+          >
           ${
             this.reconciliationEnabled
               ? html`<sl-tab-panel name="reconciliation"
-                  >${this.renderReconciliationTab()}</sl-tab-panel
+                  >${this.renderTab('reconciliation', () => this.renderReconciliationTab())}</sl-tab-panel
                 >`
               : nothing
           }
@@ -2499,8 +2645,10 @@ export class CostView extends AuthedElement {
   private renderControls() {
     return html`
       <div class="actions-stack">
-        ${this.renderBudgets()}
-        ${this.modelPriceOverridesEnabled ? this.renderPricing() : null}
+        ${this.contextError ? html`<sl-alert variant="warning" open>${this.contextError}<sl-button @click=${() => void this.loadContext()}>Retry</sl-button></sl-alert>` : nothing}
+        ${this.contextLoading ? html`<div role="status"><sl-spinner></sl-spinner> Loading cost settings…</div>` : nothing}
+        ${this.budgetContextReady ? this.renderBudgets() : nothing}
+        ${this.pricingContextReady && this.modelPriceOverridesEnabled ? this.renderPricing() : nothing}
       </div>
     `;
   }
@@ -2824,7 +2972,9 @@ export class CostView extends AuthedElement {
                 open
                 role="alert"
                 aria-live="assertive"
-                >${this.error}</sl-alert
+                >${this.error}<sl-button @click=${() => void this.load()}
+                  >Retry</sl-button
+                ></sl-alert
               >`
             : null
         }
@@ -2841,21 +2991,23 @@ export class CostView extends AuthedElement {
                   <span>Loading cost analytics...</span>
                 </div>
               </sl-card>`
-            : html`
-                <div
-                  class="results ${updating ? 'is-updating' : ''}"
-                  aria-busy=${updating ? 'true' : 'false'}
-                >
-                  ${this.renderMetrics()} ${this.renderCatalogInfo()}
-                  ${this.renderUnpricedNotice()}
-                  <div class="column-layout dashboard extra-wide">
-                    <div class="main-column">
-                      ${this.renderBreakdown()} ${this.renderImportedUsage()}
+            : hasAnswer
+              ? html`
+                  <div
+                    class="results ${updating ? 'is-updating' : ''}"
+                    aria-busy=${updating ? 'true' : 'false'}
+                  >
+                    ${this.renderMetrics()} ${this.renderCatalogInfo()}
+                    ${this.renderUnpricedNotice()}
+                    <div class="column-layout dashboard extra-wide">
+                      <div class="main-column">
+                        ${this.renderBreakdown()} ${this.renderImportedUsage()}
+                      </div>
+                      <div class="side-column">${this.renderControls()}</div>
                     </div>
-                    <div class="side-column">${this.renderControls()}</div>
                   </div>
-                </div>
-              `
+                `
+              : nothing
         }
         ${this.renderDialogs()}
       </div>

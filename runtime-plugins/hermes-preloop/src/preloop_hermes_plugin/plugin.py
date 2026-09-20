@@ -56,6 +56,14 @@ PERMISSION_HTTP_HEADROOM_SECONDS = 15.0
 # the aiohttp timeout fires first and produces a precise error message; this is
 # only a backstop against the coroutine wedging somewhere other than the socket.
 BRIDGE_HEADROOM_SECONDS = 15.0
+# Filenames the CLI also probes (see hermesConfigRelativePaths). `.yml` is
+# included so a sibling of the canonical `.yaml` cannot hide `preloop.control`.
+_HERMES_CONFIG_FILENAMES = ("config.yaml", "config.yml")
+_CONTROL_CONFIG_REMEDIATION = (
+    "run `preloop agents validate Hermes`; if the path differs from the "
+    "one onboarding wrote, restart the Hermes gateway and any systemd "
+    "user units (`systemctl --user restart hermes-gateway.service`)"
+)
 
 
 class _BridgeLoop:
@@ -149,8 +157,22 @@ class HermesPreloopPlugin:
         self._bridge_timeout_seconds: float | None = None
 
     def load_config(self) -> AgentControlConfig:
-        """Load the `preloop.control` block from Hermes configuration."""
-        return load_hermes_control_config(_discover_config_path(self.config_path))
+        """Load the `preloop.control` block from Hermes configuration.
+
+        Returns:
+            The parsed Agent Control config.
+
+        Raises:
+            ValueError: If the resolved file has no usable control block. The
+                message names the path and the discovery inputs so an operator
+                can tell a systemd unit is reading a different file than
+                onboarding wrote.
+        """
+        path = _discover_config_path(self.config_path)
+        try:
+            return load_hermes_control_config(path)
+        except ValueError as exc:
+            raise ValueError(_control_config_error(str(exc), path)) from exc
 
     def capabilities(self) -> AgentControlCapabilities:
         """Advertise the Hermes control surface exposed by this plugin."""
@@ -470,34 +492,60 @@ class HermesPreloopPlugin:
         return self._control_settings
 
     def _read_control_block(self) -> dict[str, Any]:
-        """Read the raw ``preloop.control`` mapping from Hermes config."""
+        """Read the raw ``preloop.control`` mapping from Hermes config.
+
+        Returns:
+            The ``preloop.control`` mapping.
+
+        Raises:
+            ValueError: If the file is missing the control block. Fail-closed
+                behaviour is unchanged; only the message names the path.
+        """
         path = _discover_config_path(self.config_path)
         document = yaml.safe_load(path.read_text())
         if not isinstance(document, dict):
-            raise ValueError("Hermes config root must be an object")
+            raise ValueError(
+                _control_config_error("Hermes config root must be an object", path)
+            )
         preloop = document.get("preloop")
         control = preloop.get("control") if isinstance(preloop, dict) else None
         if not isinstance(control, dict):
-            raise ValueError("missing preloop.control config block")
+            raise ValueError(
+                _control_config_error("missing preloop.control config block", path)
+            )
         return control
 
     def verify(self) -> None:
         """Validate local plugin load and config shape."""
-        config = self.load_config()
-        block = self._read_control_block()
-        runtime = block.get("runtime")
-        if runtime != self.runtime_name:
-            raise ValueError(f"Expected Hermes runtime config, got {runtime!r}")
-        if not config.control_ws_url:
-            raise ValueError("preloop.control.control_ws_url is required")
-        if not config.bearer_token:
-            raise ValueError("preloop.control.bearer_token is required")
-        approval = block.get("tool_approval")
-        if "tool_approval" in block and not isinstance(approval, dict):
-            raise ValueError("tool_approval must be an object")
-        approval = approval if isinstance(approval, dict) else {}
-        _validate_approval_settings(approval)
-        _resolve_permission_timeout(approval)
+        path = _discover_config_path(self.config_path)
+        previous = self.config_path
+        self.config_path = path
+        try:
+            config = self.load_config()
+            block = self._read_control_block()
+            runtime = block.get("runtime")
+            if runtime != self.runtime_name:
+                raise ValueError(f"Expected Hermes runtime config, got {runtime!r}")
+            if not config.control_ws_url:
+                raise ValueError(
+                    _control_config_error(
+                        "preloop.control.control_ws_url is required", path
+                    )
+                )
+            if not config.bearer_token:
+                raise ValueError(
+                    _control_config_error(
+                        "preloop.control.bearer_token is required", path
+                    )
+                )
+            approval = block.get("tool_approval")
+            if "tool_approval" in block and not isinstance(approval, dict):
+                raise ValueError("tool_approval must be an object")
+            approval = approval if isinstance(approval, dict) else {}
+            _validate_approval_settings(approval)
+            _resolve_permission_timeout(approval)
+        finally:
+            self.config_path = previous
 
     def login(self, base_url: str) -> None:
         """Bootstrap Preloop auth and write Hermes Agent Control config."""
@@ -595,42 +643,127 @@ def register(ctx: Any) -> None:
     plugin.register(ctx)
 
 
-def _discover_config_path(explicit: Path | None = None) -> Path:
-    """Resolve the Hermes config path using sensible defaults.
+def _env_presence(name: str) -> str:
+    """Format ``NAME=value`` or ``NAME=<unset>`` for operator diagnostics."""
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return f"{name}=<unset>"
+    return f"{name}={value}"
 
-    Priority: *explicit* > ``$HERMES_HOME/config.yaml`` >
-    ``~/.hermes/config.yaml``.  Returns the first candidate that exists.
-    When nothing exists yet (first-time login / creation), the preferred
-    fallback is ``$HERMES_HOME/config.yaml`` if the env var is set, so
-    the new file lands where Hermes will actually read it.
+
+def _control_config_error(message: str, resolved: Path) -> str:
+    """Attach the resolved path, discovery inputs, and a one-line remedy.
+
+    Args:
+        message: The fail-closed reason (unchanged in meaning).
+        resolved: The config path the plugin actually read.
+
+    Returns:
+        A single error string. Fail-closed behaviour is unchanged.
+    """
+    diagnosis = (
+        f"read {resolved}; {_env_presence('HERMES_HOME')}, {_env_presence('HOME')}"
+    )
+    return f"{message} ({diagnosis}). {_CONTROL_CONFIG_REMEDIATION}"
+
+
+def _candidate_config_paths(explicit: Path | None = None) -> list[Path]:
+    """Return config paths in CLI-aligned order, de-duplicated.
+
+    Args:
+        explicit: An operator-supplied path, which short-circuits search.
+
+    Returns:
+        Ordered candidates. ``explicit`` is the only entry when set.
+    """
+    if explicit is not None:
+        return [explicit]
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    def add(path: Path) -> None:
+        if path in seen:
+            return
+        seen.add(path)
+        candidates.append(path)
+
+    hermes_home = os.environ.get("HERMES_HOME")
+    if hermes_home:
+        for name in _HERMES_CONFIG_FILENAMES:
+            add(Path(hermes_home) / name)
+    home_hermes = Path.home() / ".hermes"
+    for name in _HERMES_CONFIG_FILENAMES:
+        add(home_hermes / name)
+    return candidates
+
+
+def _control_block_from_path(path: Path) -> dict[str, Any] | None:
+    """Return the ``preloop.control`` mapping, or None if it is absent.
+
+    Args:
+        path: A candidate Hermes YAML file.
+
+    Returns:
+        The control mapping when present and a dict, otherwise None.
+        Unreadable or malformed files are treated as no control block.
+    """
+    try:
+        document = yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    preloop = document.get("preloop")
+    control = preloop.get("control") if isinstance(preloop, dict) else None
+    if isinstance(control, dict):
+        return control
+    return None
+
+
+def _discover_config_path(explicit: Path | None = None) -> Path:
+    """Resolve the Hermes config path using CLI-aligned defaults.
+
+    Priority: *explicit*, then ``$HERMES_HOME/config.yaml`` and
+    ``config.yml``, then ``~/.hermes/config.yaml`` and ``config.yml``.
+    When several candidates exist, prefer the first that contains a
+    ``preloop.control`` mapping so a systemd unit with a different
+    ``HERMES_HOME`` (or a ``.yml`` sibling) cannot mask the file
+    onboarding wrote. Returns the first existing candidate when none
+    contain the block. When nothing exists yet (first-time login), the
+    preferred fallback is ``$HERMES_HOME/config.yaml`` if the env var is
+    set, so the new file lands where Hermes will actually read it.
+
+    Args:
+        explicit: An operator-supplied path, which wins unconditionally.
+
+    Returns:
+        The path the plugin will read or create.
     """
     if explicit is not None:
         return explicit
+    candidates = _candidate_config_paths()
+    existing = [path for path in candidates if path.exists()]
+    for path in existing:
+        if _control_block_from_path(path) is not None:
+            return path
+    if existing:
+        return existing[0]
     hermes_home = os.environ.get("HERMES_HOME")
     if hermes_home:
-        candidate = Path(hermes_home) / "config.yaml"
-        if candidate.exists():
-            return candidate
-    default = Path.home() / ".hermes" / "config.yaml"
-    if default.exists():
-        return default
-    # Nothing exists yet -- prefer $HERMES_HOME when set so the file is
-    # created where Hermes will look for it.
-    if hermes_home:
         return Path(hermes_home) / "config.yaml"
-    return default
+    return Path.home() / ".hermes" / "config.yaml"
 
 
 def _config_search_summary(explicit: Path | None = None) -> str:
-    """Build a human-readable list of config paths that were tried."""
-    if explicit is not None:
-        return str(explicit)
-    candidates: list[str] = []
-    hermes_home = os.environ.get("HERMES_HOME")
-    if hermes_home:
-        candidates.append(str(Path(hermes_home) / "config.yaml"))
-    candidates.append(str(Path.home() / ".hermes" / "config.yaml"))
-    return ", ".join(candidates)
+    """Build a human-readable list of config paths that were tried.
+
+    Args:
+        explicit: An operator-supplied path, which is the only try.
+
+    Returns:
+        Comma-separated candidate paths.
+    """
+    return ", ".join(str(path) for path in _candidate_config_paths(explicit))
 
 
 def main() -> None:

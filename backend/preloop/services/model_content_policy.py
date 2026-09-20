@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 from uuid import UUID
 
+from anyio import from_thread
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -61,6 +62,14 @@ logger = logging.getLogger(__name__)
 MODEL_IO_META_KEY = "model_io_rules"
 CONTENT_POLICY_ERROR_CODE = "content_policy_denied"
 CONTENT_POLICY_MESSAGE = "Blocked by content policy"
+_APPROVAL_EVENT_LOOP: Optional[asyncio.AbstractEventLoop] = None
+
+
+def set_model_io_approval_loop(loop: Optional[asyncio.AbstractEventLoop]) -> None:
+    """Bind background executor approval holds to the application lifespan."""
+    global _APPROVAL_EVENT_LOOP
+    _APPROVAL_EVENT_LOOP = loop
+
 
 # Hung detectors are abandoned on timeout rather than joined. A small
 # dedicated pool keeps ``ThreadPoolExecutor.__exit__`` from blocking the
@@ -559,11 +568,17 @@ async def hold_for_model_io_approval(
     Returns True when approved. False when declined, expired, or the
     workflow is missing (fail closed).
     """
-    try:
-        workflow_id = _resolve_workflow_id(db, account_id, decision.approval_workflow)
-    finally:
-        if release_after_lookup is not None:
-            release_after_lookup()
+
+    def lookup_workflow() -> Optional[str]:
+        try:
+            return _resolve_workflow_id(db, account_id, decision.approval_workflow)
+        finally:
+            if release_after_lookup is not None:
+                release_after_lookup()
+
+    # HTTP workers can all be waiting on approvals. Use the loop executor
+    # rather than requesting another slot from the same AnyIO worker limiter.
+    workflow_id = await asyncio.to_thread(lookup_workflow)
     if not workflow_id:
         logger.error(
             "model I/O require_approval has no workflow rule_id=%s",
@@ -598,21 +613,56 @@ async def hold_for_model_io_approval(
     return approved
 
 
-def _await_model_io_hold(awaitable: Any) -> bool:
-    """Drive ``hold_for_model_io_approval`` from sync gateway methods.
+def _missing_event_loop(exc: BaseException) -> bool:
+    """True when AnyIO cannot bridge because this is not a worker thread."""
+    name = type(exc).__name__
+    message = str(exc)
+    return name == "NoEventLoopError" or "AnyIO worker thread" in message
 
-    FastAPI ``def`` endpoints and Starlette ``iterate_in_threadpool`` run
-    the gateway off the event loop, so ``asyncio.run`` is safe there. If
-    a loop is already running, blocking ``Future.result()`` would freeze
-    the worker; callers in that context must ``await`` the coroutine.
-    Patched sync mocks (tests) are returned as-is.
+
+def _await_model_io_hold(awaitable: Any) -> bool:
+    """Run an HTTP worker's approval hold on the application event loop.
+
+    Async database connections belong to the application's loop. Creating a
+    temporary loop with ``asyncio.run`` closes that loop after one approval
+    and poisons the shared async connection pool for subsequent requests.
+    FastAPI sync endpoints and Starlette's sync stream iterators both run in
+    AnyIO worker threads, which can bridge back to the application loop.
+    The lifespan also registers that loop for ordinary executor callers such
+    as background optimization jobs. Callers with neither bridge fail closed.
     """
     if not asyncio.iscoroutine(awaitable):
         return bool(awaitable)
+
+    async def hold() -> bool:
+        return bool(await awaitable)
+
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return bool(asyncio.run(awaitable))
+        try:
+            loop = _APPROVAL_EVENT_LOOP
+            if loop is not None and loop.is_running():
+                wrapper = hold()
+                try:
+                    return asyncio.run_coroutine_threadsafe(wrapper, loop).result()
+                except BaseException:
+                    wrapper.close()
+                    raise
+            return from_thread.run(hold)
+        except BaseException as exc:
+            awaitable.close()
+            if _missing_event_loop(exc):
+                logger.warning(
+                    "model I/O approval hold has no application event loop; "
+                    "failing closed"
+                )
+                raise RuntimeError(
+                    f"{CONTENT_POLICY_MESSAGE}: approval hold requires the "
+                    "application event loop"
+                ) from exc
+            raise
+    awaitable.close()
     raise RuntimeError(
         "model I/O require_approval cannot block a running event loop; "
         "await hold_for_model_io_approval from async callers"

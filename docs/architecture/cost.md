@@ -2,6 +2,34 @@
 
 Cost analytics turns gateway telemetry into explainable spend and budget health. This chapter covers the `ApiUsage` ledger, OSS API/UX boundaries, and the Enterprise plugin split.
 
+## Progressive reporting
+
+The Cost console requests `GET /api/v1/cost/summary?include_breakdown=false`
+for its first paint and previous-period comparison. This keeps account totals,
+budget, pricing/unpriced context, and separately reported imported totals, but
+skips the grouped breakdown queries. Settings and model metadata load separately
+and do not block those totals.
+
+Callers can select details with repeated `breakdown` parameters: `models`,
+`flows`, `sessions`, `tools`, `days`, or `imported`. For example,
+`?breakdown=sessions&breakdown=flows` loads the Agents tab without computing
+tool costs or the daily timeseries. With no new parameters, the endpoint
+retains its full historical response. `include_breakdown=false` takes precedence
+over a selection. Unselected arrays are empty because they were not requested;
+clients must distinguish this from a loaded section with no data.
+
+Agents, Sessions and Users share an in-flight/session breakdown within the
+current view. Tools and user ownership load when their tabs are opened. Imported
+details load separately when imported totals identify visible content. Each
+section has its own loading/error/retry state. Range changes invalidate loaded
+sections and reject late responses, then reload the tab that remains selected.
+All details use the effective period returned with the initial totals.
+The console does not persist previous-period results across account sessions.
+
+This changes request scheduling and selected query execution only. Account
+isolation, history policies, ledger accounting, attribution, reporting limits,
+and full-query ordering remain unchanged. It adds no rollups or response cache.
+
 ## Cost Analytics and Budgeting
 *   **Purpose:** Turn model usage telemetry into explainable spend, enforceable budgets, and optimization guidance.
 *   **Canonical Ledger:** `ApiUsage` remains the source of truth for model call tokens, estimated cost, provider, model, runtime principal, API key, flow, managed agent, and runtime-session attribution.

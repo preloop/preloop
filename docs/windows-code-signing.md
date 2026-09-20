@@ -8,7 +8,7 @@
 Preloop’s release workflow can Authenticode-sign Windows CLI binaries via
 [SignPath Foundation](https://signpath.org/) (free for open-source projects).
 Signing is **optional until credentials are configured**: releases still
-publish unsigned binaries so tagging is never blocked.
+may publish unsigned binaries, but the required Defender validation must pass.
 
 CI wiring lives in `.github/workflows/release.yml` (`sign-windows-cli` job)
 and `.signpath/artifact-configurations/windows-cli.xml`.
@@ -20,7 +20,8 @@ Once SignPath secrets/vars are present on `preloop/preloop`:
 1. Release builds embed PE version metadata (`CompanyName`, `ProductName`, …)
 2. Windows `*.exe` artifacts are uploaded to GitHub Actions
 3. SignPath signs them (Authenticode)
-4. Signed binaries (and `SHA256SUMS`) are attached to the GitHub Release
+4. Finalized binaries pass the required Defender validation below
+5. Signed binaries (and `SHA256SUMS`) are attached to the GitHub Release
 
 No private key is stored in GitHub. SignPath holds the certificate on an HSM.
 
@@ -84,7 +85,7 @@ Optional:
    ```
 
 Until step 3 is done, the workflow prints a warning and publishes **unsigned**
-binaries (same as today).
+binaries only after the Defender gate passes.
 
 ## Priority checklist (P0 / P1 / P2)
 
@@ -118,3 +119,43 @@ After each Windows release (especially before SignPath reputation builds):
 ## User-facing docs
 
 See [windows-cli.md](./windows-cli.md) for install paths and Defender recovery.
+
+## Required Defender release validation
+
+The `validate-windows-cli` job runs after signing and blocks `create-release`
+unless the finalized Windows AMD64 and ARM64 artifacts pass validation. It
+first runs `prepare-windows-defender.ps1` on its disposable GitHub-hosted runner
+to enable protections and remove the hosted build image's inherited exclusions
+before downloading release executables. Setup refuses other environments and
+fails if policy prevents enabling protection. The separate required Windows
+security test workflow exercises this setup and the actual scanner on PRs.
+
+Validation updates Defender intelligence, requires active antivirus, real-time, behavior,
+cloud and download protection without exclusions, and scans both executables.
+It runs `version`, `--help`, and `agents discover --no-onboard-prompt` on AMD64 with telemetry
+disabled, then observes the unchanged files for ten minutes. A threat event,
+remediation, missing or changed file, failed command, or unavailable required
+protection fails the job. The workflow never adds exclusions, disables
+protection, or removes Mark of the Web. The validator does not change security
+settings; runner setup only strengthens them. Runner environments that cannot meet
+these requirements block publication instead of reporting a clean scan.
+
+The `windows-defender-report` Actions artifact retains JSON evidence and scan
+and command logs even on failure. The report records hashes, Authenticode
+status, OS, scanner engine/platform/signature versions, timestamps, and detected
+threats. ARM64 coverage is a static scan on AMD64; the job does not claim native
+ARM64 execution, SmartScreen reputation, corporate EDR acceptance, or that
+future security intelligence will always return the same verdict. Signing
+identifies the publisher and does not guarantee a clean malware verdict.
+
+To reproduce on a disposable AMD64 Windows host with Defender already enabled:
+
+```powershell
+$env:PRELOOP_DISABLE_TELEMETRY = 'true'
+./scripts/test-windows-defender.ps1 -ArtifactDirectory ./windows-artifacts `
+  -ReportPath ./windows-defender-report/result.json -ObservationSeconds 600
+```
+
+The directory must contain the finalized `preloop-windows-amd64.exe` and
+`preloop-windows-arm64.exe`. Retain the report and submit a suspected false
+positive to Microsoft with its exact release hash; do not bypass a failed gate.

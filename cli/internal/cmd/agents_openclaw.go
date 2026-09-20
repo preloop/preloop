@@ -4628,12 +4628,11 @@ func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[s
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	args := []string{"plugins", "install", installTarget}
+	args := agentControlPluginInstallArgs(installer, installTarget)
 	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
 		cancel()
 		ctx, cancel = context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
-		args = []string{"install", "-g", installTarget}
 		// npm install -g <source folder> symlinks the folder as-is: it does
 		// not install the folder's devDependencies, so the TypeScript build
 		// (prepare script) cannot run and npm silently skips creating the

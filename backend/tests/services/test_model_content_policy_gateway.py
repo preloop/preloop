@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from anyio import to_thread
 
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
@@ -125,7 +126,8 @@ def test_response_deny_after_provider_returns():
     assert "deny-out" in exc_info.value.message
 
 
-def test_require_approval_rejected_does_not_call_provider():
+@pytest.mark.asyncio
+async def test_require_approval_rejected_does_not_call_provider() -> None:
     service = _service()
     rule = ModelIORule.model_validate(
         {
@@ -155,17 +157,19 @@ def test_require_approval_rejected_does_not_call_provider():
         ) as hold,
     ):
         with pytest.raises(ModelGatewayAPIError):
-            service.create_chat_completion(
+            await to_thread.run_sync(
+                service.create_chat_completion,
                 {
                     "model": "gpt-5",
                     "messages": [{"role": "user", "content": "Hi"}],
-                }
+                },
             )
     hold.assert_called_once()
     mock_call.assert_not_called()
 
 
-def test_require_approval_approved_continues_to_provider():
+@pytest.mark.asyncio
+async def test_require_approval_approved_continues_to_provider() -> None:
     service = _service()
     rule = ModelIORule.model_validate(
         {
@@ -206,11 +210,12 @@ def test_require_approval_approved_continues_to_provider():
             return_value=True,
         ),
     ):
-        result = service.create_chat_completion(
+        result = await to_thread.run_sync(
+            service.create_chat_completion,
             {
                 "model": "gpt-5",
                 "messages": [{"role": "user", "content": "Hi"}],
-            }
+            },
         )
     assert result["choices"][0]["message"]["content"] == "ok"
 

@@ -85,11 +85,95 @@ sequenceDiagram
     WS-->>Operator: Stream status/result
 ```
 
+## Flow execution on a persistent agent
+
+A flow can target a live managed agent instead of provisioning an ephemeral
+container. The flow form stores `agent_config.execution_path = "persistent"`
+and `agent_config.target_agent_id`. `create_executor_for_execution` selects
+`AgentControlExecutor` for that config **before** private-runner pool
+resolution. Missing `target_agent_id` fails at start with `AgentStartError`;
+there is no fallback onto a hosted container.
+
+### Envelope
+
+The orchestrator already renders the flow prompt. The executor sends that
+string as one audited `send_message` with `start_new_session=true`,
+`input_mode=text`, and metadata:
+
+| Key | Source |
+| --- | --- |
+| `source` | always `flow_execution` |
+| `flow_id`, `flow_execution_id`, `flow_name` | execution context |
+| `trigger_event_source` | trigger payload |
+| `repository`, `ref` | trigger payload when present |
+| `timeout_seconds` | the flow's timeout budget |
+
+The envelope shape is the same one runtime plugins already accept (`text`,
+`metadata`, `input_mode`, `session_mode`, `start_new_session`, optional
+`cwd`). Persist-before-deliver is unchanged: the command row is written, then
+local WebSocket or NATS delivery runs.
+
+### Binding
+
+The session reference is `control:{managed_agent_id}:{command_id}`. The
+command id is stored on the execution under
+`trigger_event_details._agent_control` (with the live and history session
+ids) so stop and status can recover both ids without a schema migration.
+Trigger bodies cannot set `_agent_control`; it is a reserved key.
+
+### Status mapping
+
+| Agent Control command | Executor `AgentStatus` | Flow execution |
+| --- | --- | --- |
+| `pending` or `delivered` | `RUNNING` | stays running |
+| `acked` without a result | `RUNNING` | stays running |
+| `acked` plus `command_result` (success) | `SUCCEEDED` | `SUCCEEDED` |
+| `command_error`, `failed`, or `expired` | `FAILED` | `FAILED` |
+| operator/timeout `stop` | `FAILED` (`error=stopped`) | `STOPPED` or timeout failure |
+
+A repeated final `command_result` / `command_error` does not flip a terminal
+command or duplicate session activity.
+
+The container confirmation contract (`PRELOOP_AGENT_EXEC_START` plus success
+sentinel / `result.json`) does not apply: this path never emits the start
+marker, so a successful `command_result` is sufficient.
+
+### Timeout and stop
+
+The orchestrator `TimeoutBudget` still bounds the poll loop. When the budget
+expires it calls `AgentControlExecutor.stop`, which sends `send_message` with
+`interrupt: true` and `session_mode: current` (no tracking-session UUID).
+That interrupts the agent's **current** session — the most recently owned
+plugin session — which is usually this flow but can be a later operator
+turn if one started. Native session ids from ack/presence are not persisted
+on the binding yet. The bound command is marked `stopped` only after that
+interrupt is delivered; a failed interrupt leaves the command non-terminal
+so the operator can see the remote session is still live. The execution
+itself still fails with the timeout message.
+
+Start refuses (classified `runner_error`) when the target is missing,
+inactive, not an allow-listed Agent Control kind, has no verified control
+config, or has a stale heartbeat (the same three-heartbeat window the
+console uses for `plugin_connected`). Allow-listed kinds that only accept
+text on an already-open session (currently Pi and DeepSeek) also fail at
+start: persistent dispatch always sends `start_new_session=true`. The
+operator endpoint uses the same
+`CONTROL_NEW_SESSION_UNSUPPORTED_KINDS` set.
+
+### Not covered yet
+
+* Workspace / clone contract on the persistent host (no `git_clone_config`
+  checkout, no `cwd`/`workspace_root` requirement).
+* Preset support matrix (PR-review and other presets still assume an
+  ephemeral clone).
+* Expanding the Agent Control kind allow-list (for example Codex). That is a
+  separate change.
+
 ## Managed CLI/Desktop Agent Enrollment
 *   **Discovery Entry Point:** `preloop agents discover` can stay read-only (`--json`, `--no-onboard-prompt`) or hand off interactively into managed enrollment, with `--yes` available for auto-onboarding.
 *   **Shared Enrollment Engine:** `preloop agents enroll <agent>` and discovery-triggered onboarding both create or reuse a managed runtime identity, import representable MCP servers, mint a durable credential, back up the local config, and rewrite supported local endpoints to Preloop-managed MCP and gateway URLs. For Agent Control, the CLI writes the `preloop.control` contract and can delegate installation to runtime-native plugin managers, but it does not itself own the long-lived Agent Control WebSocket or execute operator commands.
 *   **OpenClaw Coverage:** The current OpenClaw adapter supports legacy and newer config locations, JSON5 parsing, gateway-backed model rewrites, and conservative import of command-backed MCP entries such as `mcporter` when an upstream URL can be inferred safely.
-*   **Hermes Coverage:** The Hermes adapter discovers `~/.hermes/config.yaml`/`.yml` or installed-but-unconfigured Hermes markers, preserves existing `mcp_servers`, adds a managed `preloop` HTTP MCP server, rewrites supported model configuration to Preloop's `/openai/v1` gateway, and can import provider-specific environment keys or ChatGPT/Codex OAuth material when present.
+*   **Hermes Coverage:** The Hermes adapter discovers `~/.hermes/config.yaml`/`.yml` or installed-but-unconfigured Hermes markers, preserves existing `mcp_servers`, adds a managed `preloop` HTTP MCP server, rewrites supported model configuration to Preloop's `/openai/v1` gateway, and can import provider-specific environment keys or ChatGPT/Codex OAuth material when present. Onboarding, offboard, restore, and `install-plugin` restart the Hermes gateway; on Linux they also print systemd user units named `hermes-*`. Operational recovery (systemd-first stop, config-path diagnosis) is in [Hermes: onboarding, rollback, and systemd recovery](../guide/hermes.md).
 *   **Credential Boundary:** OpenClaw model credentials may be declared inline under `models.providers` or indirectly through `auth.profiles`; the enrollment path imports model metadata either way, but profile-backed provider secrets may still require manual configuration inside Preloop.
 *   **Durable Identity:** `ManagedAgent.agent_kind` is now stored alongside `session_source_type` so operator UX and reporting do not depend on an active runtime session to recover the agent family.
 *   **Explicit Model Association:** Onboarding now persists direct managed-agent to AI-model bindings instead of inferring one configured model indirectly from `AIModel.meta_data`.

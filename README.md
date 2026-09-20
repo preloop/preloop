@@ -121,7 +121,7 @@ Ship it with `preloop policy apply <file>` (`validate` / `diff` / `export` also 
   <a href="frontend/public/assets/screenshots/quickstart/dark/audit_page.png"><img alt="Governed agent activity in the Preloop console" src="frontend/public/assets/screenshots/quickstart/dark/audit_page-800.webp" style="width: 49%; min-width: 320px; border-radius: 12px; margin-left: 1%;" /></a>
 </div>
 
-Talk details for OpenClaw, Hermes, and Claude Code: [OpenClaw](https://docs.preloop.ai/integrations/openclaw/), [runtime adapters](https://docs.preloop.ai/integrations/agent-control-runtime-adapters/).
+Talk details for OpenClaw, Hermes, and Claude Code: [OpenClaw](https://docs.preloop.ai/integrations/openclaw/), [Hermes](docs/guide/hermes.md), [runtime adapters](https://docs.preloop.ai/integrations/agent-control-runtime-adapters/).
 
 ## Getting started
 
@@ -213,7 +213,7 @@ The [disposable capacity lab](scripts/capacity/README.md) measures authenticated
 
 Release assets carry signed Sigstore build provenance and checksums. See [verification instructions](./docs/release-verification.md).
 
-Windows CLI release binaries: optional VirusTotal scanning; SignPath Authenticode signing is pending. [windows-cli.md](./docs/windows-cli.md), [windows-code-signing.md](./docs/windows-code-signing.md), [code-signing-policy.md](./docs/code-signing-policy.md).
+Windows CLI release binaries pass a required Defender scan and ten-minute observation before publication. Optional VirusTotal scanning and SignPath Authenticode signing provide additional release checks; signing is pending. [windows-cli.md](./docs/windows-cli.md), [windows-code-signing.md](./docs/windows-code-signing.md), [code-signing-policy.md](./docs/code-signing-policy.md).
 
 Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 

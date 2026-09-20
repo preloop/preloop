@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -13,6 +13,8 @@ from preloop.utils.agent_kind import (
     is_valid_agent_kind,
     normalize_agent_kind,
 )
+
+UsageBreakdown = Literal["models", "flows", "sessions", "tools", "days", "imported"]
 
 
 def _agree_direction_pair(

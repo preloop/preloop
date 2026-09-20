@@ -193,7 +193,14 @@ async def test_delete_flow(mock_account: Account, mocker: MockerFixture):
         new_callable=MagicMock,
     )
     mock_crud_flow_execution.get_running_by_flow.return_value = []
-    mock_flow = MagicMock()
+    mock_flow = schemas.FlowResponse(
+        id=flow_id,
+        name="Example flow",
+        account_id=mock_account.account_id,
+        is_preset=False,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
     mock_crud_flow.get.return_value = mock_flow
 
     # Act

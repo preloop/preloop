@@ -4,6 +4,7 @@ This FastAPI application provides HTTP endpoints for authentication and manageme
 of issue tracking systems.
 """
 
+import asyncio
 import logging
 import os
 import sys
@@ -297,7 +298,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Start the NATS consumer for WebSocket broadcasting only on the core API.
     if not is_testing and is_api_role:
         from preloop.services.websocket_manager import manager, nats_consumer
-        import asyncio
 
         # Start the NATS consumer as a background task
         loop = asyncio.get_event_loop()
@@ -595,10 +595,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         start_reviewed_price_refresh,
     )
 
+    from preloop.services.model_content_policy import set_model_io_approval_loop
+
     price_refresher = start_reviewed_price_refresh()
+    set_model_io_approval_loop(asyncio.get_running_loop())
     try:
         yield
     finally:
+        set_model_io_approval_loop(None)
         if price_refresher is not None:
             await price_refresher.stop()
 

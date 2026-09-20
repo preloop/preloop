@@ -143,6 +143,10 @@ describe('CostView', () => {
           headers: { 'Content-Type': 'application/json' },
         });
       }
+      if (url.includes('/api/v1/agents'))
+        return new Response(JSON.stringify({ items: [] }));
+      if (url.includes('/api/v1/users'))
+        return new Response(JSON.stringify({ users: [] }));
       if (url.includes('/api/v1/ai-models')) {
         return new Response(JSON.stringify([]), {
           status: 200,
@@ -413,6 +417,9 @@ describe('CostView', () => {
     const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
     await waitUntil(
       () => (element as unknown as { loading: boolean }).loading === false
+    );
+    await element['handleTabShow'](
+      new CustomEvent('sl-tab-show', { detail: { name: 'users' } })
     );
     await element.updateComplete;
 

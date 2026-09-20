@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "preloop-hermes-plugin"
-version = "0.3.0"
+version = "0.3.1"
 description = "Approve or deny your Hermes agent's dangerous tool calls from your phone, watch, Slack or the web, and talk to a running session from anywhere."
 readme = "README.md"
 requires-python = ">=3.11"

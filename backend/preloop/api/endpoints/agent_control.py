@@ -54,6 +54,17 @@ from preloop.services.account_realtime import (
     emit_account_event,
 )
 from preloop.sync.services.event_bus import get_nats_client
+from preloop.services.agent_control_dispatch import (
+    CONTROL_NEW_SESSION_UNSUPPORTED_KINDS,
+    SUPPORTED_CONTROL_AGENT_KINDS,
+    AgentControlDispatchError,
+    agent_has_control_config,
+    build_operator_envelope,
+    command_source,
+    create_command_history_session,
+    dispatch_operator_message,
+    persist_and_deliver_command,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -110,14 +121,6 @@ _SERIALIZATION_ERRORS = (
 )
 
 HEARTBEAT_TOUCH_INTERVAL = timedelta(seconds=15)
-SUPPORTED_CONTROL_AGENT_KINDS = {
-    "hermes",
-    "openclaw",
-    "claude_code",
-    "opencode",
-    "pi",
-    "deepseek",
-}
 
 
 def _connection_context_from_auth(
@@ -178,50 +181,8 @@ def _load_control_identity(db: Session, token: str) -> AgentControlConnectionCon
 
 
 def _agent_has_control_config(db: Session, *, account_id: str, agent: Any) -> bool:
-    agent_kind = str(agent.agent_kind or agent.session_source_type or "").lower()
-    if agent_kind not in SUPPORTED_CONTROL_AGENT_KINDS:
-        return False
-
-    enrollments = (
-        crud_managed_agent_enrollment.get_latest_for_agent_by_type(
-            db,
-            account_id=account_id,
-            agent_id=str(agent.id),
-            enrollment_type="cli_managed_config",
-        )
-        or crud_managed_agent_enrollment.get_latest_for_agent(
-            db, account_id=account_id, agent_id=str(agent.id)
-        ),
-        crud_managed_agent_enrollment.get_latest_for_agent_by_type(
-            db,
-            account_id=account_id,
-            agent_id=str(agent.id),
-            enrollment_type="runtime_plugin_control",
-        ),
-    )
-    for enrollment in enrollments:
-        if enrollment is None:
-            continue
-        validation = (
-            enrollment.validation_result
-            if isinstance(enrollment.validation_result, dict)
-            else {}
-        )
-        validation_control_ready = bool(
-            validation.get("control_channel_configured")
-            or (
-                validation.get("control_plugin_verified")
-                and validation.get("control_ws_url_ok")
-                and validation.get("control_bearer_token_ok")
-            )
-        )
-        if validation_control_ready:
-            return True
-
-    # A CLI-written config without validation means the install is intentional
-    # but the runtime plugin has not been proven available yet. Keep command
-    # routing closed until the adapter reports the validation flags above.
-    return False
+    """True when the agent kind is allow-listed and control config is verified."""
+    return agent_has_control_config(db, account_id=account_id, agent=agent)
 
 
 class AgentControlConnectionManager:
@@ -437,11 +398,7 @@ def _connection_envelope(
 
 def _command_source(metadata: dict[str, Any]) -> Optional[str]:
     """Best-effort originating surface (console|mobile|watch|api) for audit."""
-    for key in ("source", "surface", "via", "device"):
-        value = metadata.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()[:32]
-    return "api"
+    return command_source(metadata)
 
 
 def _operator_command_envelope(
@@ -450,23 +407,13 @@ def _operator_command_envelope(
     name: str,
     payload: dict[str, Any],
 ) -> AgentControlEnvelope:
-    if agent.runtime_session_id is None:
+    try:
+        return build_operator_envelope(agent, name=name, payload=payload)
+    except AgentControlDispatchError as exc:
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Managed agent is not online",
-        )
-    return AgentControlEnvelope(
-        type="command",
-        name=name,
-        message_id=str(uuid.uuid4()),
-        account_id=agent.account_id,
-        managed_agent_id=agent.id,
-        runtime_session_id=agent.runtime_session_id,
-        session_source_type=agent.session_source_type,
-        session_source_id=agent.session_source_id,
-        timestamp=datetime.now(UTC),
-        payload=payload,
-    )
+            status_code=exc.status_code,
+            detail=str(exc),
+        ) from exc
 
 
 def _touch_presence(
@@ -883,7 +830,11 @@ def _persist_agent_control_result(
         managed_agent_id=context.managed_agent_id,
         command_id=command_id.strip(),
     )
-    if command is None or command.kind != "command" or command.status != "acked":
+    if command is None or command.kind != "command":
+        return
+    # Results are recorded after ack. Errors may land on a still-pending
+    # command if the runtime never acknowledged delivery.
+    if inbound.name == "command_result" and command.status != "acked":
         return
 
     default_status = "failed" if inbound.name == "command_error" else "completed"
@@ -896,6 +847,7 @@ def _persist_agent_control_result(
     elif isinstance(error_text, str) and error_text.strip():
         message = error_text.strip()
 
+    sanitized = _sanitize_agent_control_payload(inbound.payload)
     crud_runtime_session_activity.log_agent_control_result(
         db,
         account_id=context.account_id,
@@ -903,7 +855,22 @@ def _persist_agent_control_result(
         fallback_runtime_session_id=context.runtime_session_id,
         status=result_status,
         message=message,
-        metadata=_sanitize_agent_control_payload(inbound.payload),
+        metadata=sanitized,
+        commit=False,
+    )
+    failed = inbound.name == "command_error" or result_status in {
+        "failed",
+        "error",
+    }
+    error_text = inbound.payload.get("error")
+    crud_agent_control_command.mark_terminal_result(
+        db,
+        account_id=context.account_id,
+        managed_agent_id=context.managed_agent_id,
+        command_id=command_id.strip(),
+        result_payload=sanitized,
+        failed=failed,
+        error=error_text if isinstance(error_text, str) else None,
         commit=commit,
     )
 
@@ -1252,34 +1219,11 @@ def _command_history_session(
     agent: Any,
     request: AgentControlSendMessageRequest,
 ) -> Optional[models.RuntimeSession]:
-    if request.target_session_id is not None:
-        return crud_runtime_session.get_account_session(
-            db,
-            account_id=str(agent.account_id),
-            runtime_session_id=str(request.target_session_id),
-        )
-    if not request.start_new_session:
-        if agent.runtime_session_id is None:
-            return None
-        return crud_runtime_session.get_account_session(
-            db,
-            account_id=str(agent.account_id),
-            runtime_session_id=str(agent.runtime_session_id),
-        )
-
-    now = datetime.now(UTC)
-    command_session_id = f"{agent.session_source_id}-{uuid.uuid4()}"
-    return crud_runtime_session.upsert_by_source(
+    return create_command_history_session(
         db,
-        account_id=agent.account_id,
-        session_source_type=agent.session_source_type,
-        session_source_id=command_session_id,
-        session_reference="Agent Control new session",
-        runtime_principal_type=agent.session_source_type,
-        runtime_principal_id=agent.session_source_id,
-        runtime_principal_name=agent.display_name,
-        started_at=now,
-        last_activity_at=now,
+        agent=agent,
+        start_new_session=request.start_new_session,
+        target_session_id=request.target_session_id,
     )
 
 
@@ -1305,7 +1249,7 @@ async def _route_managed_agent_prompt(
             status_code=status.HTTP_409_CONFLICT,
             detail="Managed agent is not active",
         )
-    if getattr(agent, "agent_kind", None) in {"pi", "deepseek"} and (
+    if getattr(agent, "agent_kind", None) in CONTROL_NEW_SESSION_UNSUPPORTED_KINDS and (
         request.start_new_session
         or request.spawn_worktree
         or request.input_mode != "text"
@@ -1328,83 +1272,33 @@ async def _route_managed_agent_prompt(
         agent=agent,
         request=request,
     )
-    payload: dict[str, Any] = {
-        "text": request.message,
-        "metadata": request.metadata,
-        "input_mode": request.input_mode,
-        "session_mode": session_mode,
-        "target_session_id": str(request.target_session_id)
-        if request.target_session_id
-        else None,
-        "start_new_session": request.start_new_session,
-        "voice": request.voice,
-        "spawn_worktree": request.spawn_worktree,
-        "interrupt": request.interrupt,
-    }
-    payload.update(_existing_session_identity(target_session))
-    envelope = _operator_command_envelope(
-        agent,
-        name="send_message",
-        payload=payload,
-    )
-    # Persist the command durably BEFORE any delivery attempt so agents that
-    # reconnect after downtime can recover missed instructions.
-    now = datetime.now(UTC)
-    command_ttl_seconds = int(settings.agent_control_command_ttl_seconds)
-    expires_at = now + timedelta(seconds=command_ttl_seconds)
-    crud_agent_control_command.create_command(
-        db,
-        account_id=agent.account_id,
-        managed_agent_id=agent.id,
-        runtime_session_id=agent.runtime_session_id,
-        command_id=envelope.message_id,
-        envelope=envelope.model_dump(mode="json"),
-        source=_command_source(request.metadata),
-        created_by_user_id=current_user.id,
-        expires_at=expires_at,
-    )
+    try:
+        dispatched = await dispatch_operator_message(
+            db,
+            managed_agent=agent,
+            text=request.message,
+            metadata=request.metadata,
+            start_new_session=request.start_new_session,
+            target_session_id=request.target_session_id,
+            source=_command_source(request.metadata),
+            input_mode=request.input_mode,
+            interrupt=request.interrupt,
+            spawn_worktree=request.spawn_worktree,
+            voice=request.voice,
+            session_mode=session_mode,
+            session_identity=_existing_session_identity(target_session),
+            created_by_user_id=current_user.id,
+            require_delivery=True,
+        )
+    except AgentControlDispatchError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
-    # create_command refreshes its row after committing. End that read
-    # transaction before the guarded sender checks out its own connection.
-    # Snapshot before rollback; reading an expired agent here would reacquire it.
-    delivery_agent_id = str(agent.id)
-    await run_db_off_loop(partial(control_connection.release_read_transaction, db))
-    command_status = "pending"
-    local_delivery = await agent_control_manager.send_to_agent(
-        managed_agent_id=delivery_agent_id,
-        envelope=envelope,
-    )
-    if local_delivery:
-        command_status = "delivered"
-    subject = None
-    if not local_delivery:
-        # NATS publish is best-effort fan-out to other pods; the pod holding
-        # the WebSocket marks the command delivered when it actually sends,
-        # so the row stays pending here.
-        subject = await _publish_command(envelope)
-        if subject is None:
-            # Savepoint so a failed mark_failed cannot roll back the already
-            # committed create_command (or other outer session work).
-            try:
-                with db.begin_nested():
-                    crud_agent_control_command.mark_failed(
-                        db,
-                        account_id=str(agent.account_id),
-                        managed_agent_id=str(agent.id),
-                        command_id=envelope.message_id,
-                        error="Managed agent command channel is unavailable",
-                        commit=False,
-                    )
-                db.commit()
-            except _DB_DELIVERY_ERRORS:
-                logger.exception(
-                    "Failed to mark Agent Control command %s failed",
-                    envelope.message_id,
-                )
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Managed agent command channel is unavailable",
-            )
+    envelope = dispatched.envelope
+    local_delivery = dispatched.local_delivery
+    subject = dispatched.subject
+    command_status = dispatched.command_status
+    expires_at = dispatched.expires_at
+    command_ttl_seconds = dispatched.command_ttl_seconds
 
     history_session = _command_history_session(db, agent=agent, request=request)
     if history_session is not None:
@@ -1597,56 +1491,22 @@ async def _route_session_action(
     }
     payload.update(_existing_session_identity(target_session))
     envelope = _operator_command_envelope(agent, name=name, payload=payload)
-    now = datetime.now(UTC)
-    command_ttl_seconds = int(settings.agent_control_command_ttl_seconds)
-    expires_at = now + timedelta(seconds=command_ttl_seconds)
-    crud_agent_control_command.create_command(
-        db,
-        account_id=agent.account_id,
-        managed_agent_id=agent.id,
-        runtime_session_id=agent.runtime_session_id,
-        command_id=envelope.message_id,
-        envelope=envelope.model_dump(mode="json"),
-        source=_command_source(prompt.metadata),
-        created_by_user_id=current_user.id,
-        expires_at=expires_at,
-    )
-    # create_command refreshes its row after committing. End that read
-    # transaction before the guarded sender checks out its own connection.
-    # Snapshot before rollback; reading an expired agent here would reacquire it.
-    delivery_agent_id = str(agent.id)
-    await run_db_off_loop(partial(control_connection.release_read_transaction, db))
-    command_status = "pending"
-    local_delivery = await agent_control_manager.send_to_agent(
-        managed_agent_id=delivery_agent_id,
-        envelope=envelope,
-    )
-    if local_delivery:
-        command_status = "delivered"
-    subject = None
-    if not local_delivery:
-        subject = await _publish_command(envelope)
-        if subject is None:
-            try:
-                with db.begin_nested():
-                    crud_agent_control_command.mark_failed(
-                        db,
-                        account_id=str(agent.account_id),
-                        managed_agent_id=str(agent.id),
-                        command_id=envelope.message_id,
-                        error="Managed agent command channel is unavailable",
-                        commit=False,
-                    )
-                db.commit()
-            except _DB_DELIVERY_ERRORS:
-                logger.exception(
-                    "Failed to mark Agent Control command %s failed",
-                    envelope.message_id,
-                )
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Managed agent command channel is unavailable",
-            )
+    try:
+        dispatched = await persist_and_deliver_command(
+            db,
+            agent=agent,
+            envelope=envelope,
+            source=_command_source(prompt.metadata),
+            created_by_user_id=current_user.id,
+            require_delivery=True,
+        )
+    except AgentControlDispatchError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    command_status = dispatched.command_status
+    subject = dispatched.subject
+    local_delivery = dispatched.local_delivery
+    expires_at = dispatched.expires_at
+    command_ttl_seconds = dispatched.command_ttl_seconds
     emit_account_event(
         build_account_event(
             account_id=str(current_user.account_id),

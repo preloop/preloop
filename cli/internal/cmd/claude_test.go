@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,142 @@ func TestClaudePluginInstallMetadata(t *testing.T) {
 	}
 	if got := agentControlPluginVerifyCommand(agent); got != "preloop-claude-plugin" {
 		t.Fatalf("verify: %q", got)
+	}
+}
+
+func TestAgentControlPluginInstallCommandUsesNpmGlobalInstall(t *testing.T) {
+	t.Setenv("PRELOOP_RUNTIME_PLUGINS_DIR", t.TempDir())
+
+	command, args, err := agentControlPluginInstallCommand("Claude Code")
+	if err != nil {
+		t.Fatalf("unexpected install command error: %v", err)
+	}
+	if command != "npm" {
+		t.Fatalf("expected npm installer, got %q", command)
+	}
+	want := []string{"install", "-g", "@preloop-ai/claude-plugin"}
+	if len(args) != len(want) {
+		t.Fatalf("install args = %#v, want %#v", args, want)
+	}
+	for index, value := range want {
+		if args[index] != value {
+			t.Fatalf("install args = %#v, want %#v", args, want)
+		}
+	}
+}
+
+func TestRunAgentsInstallPluginClaudeCodeDryRunPrintsNpmGlobalInstall(t *testing.T) {
+	t.Setenv("PRELOOP_RUNTIME_PLUGINS_DIR", t.TempDir())
+	cmd := agentsInstallPluginCmd
+	if err := cmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("failed to set dry-run: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Flags().Set("dry-run", "false")
+		cmd.SetOut(nil)
+	})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+
+	if err := runAgentsInstallPlugin(cmd, []string{"Claude Code"}); err != nil {
+		t.Fatalf("dry run failed: %v", err)
+	}
+	got := strings.TrimSpace(buf.String())
+	want := "npm install -g @preloop-ai/claude-plugin"
+	if got != want {
+		t.Fatalf("dry-run command = %q, want %q", got, want)
+	}
+}
+
+func TestRunAgentsInstallPluginClaudeCodeExecutesNpmGlobalInstall(t *testing.T) {
+	skipNoShebangOnWindows(t, "Claude Code install-plugin npm arguments")
+	t.Setenv("PRELOOP_RUNTIME_PLUGINS_DIR", t.TempDir())
+	npmDir := t.TempDir()
+	writeFakeNpm(t, npmDir, "$@", 0)
+	t.Setenv("PATH", npmDir)
+
+	cmd := agentsInstallPluginCmd
+	if err := cmd.Flags().Set("dry-run", "false"); err != nil {
+		t.Fatalf("failed to clear dry-run: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Flags().Set("dry-run", "false")
+		cmd.SetOut(nil)
+		cmd.SetErr(nil)
+	})
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+
+	if err := runAgentsInstallPlugin(cmd, []string{"Claude Code"}); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+	got := strings.TrimSpace(stderr.String())
+	want := "install -g @preloop-ai/claude-plugin"
+	if got != want {
+		t.Fatalf("executed npm args = %q, want %q", got, want)
+	}
+}
+
+func TestRunAgentsInstallPluginClaudeCodeBuildsSourceBeforeGlobalInstall(t *testing.T) {
+	skipNoShebangOnWindows(t, "Claude Code source plugin build")
+	pluginsRoot := t.TempDir()
+	source := filepath.Join(pluginsRoot, "claude-preloop")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatalf("failed to create source folder: %v", err)
+	}
+	t.Setenv("PRELOOP_RUNTIME_PLUGINS_DIR", pluginsRoot)
+
+	npmDir := t.TempDir()
+	invocations := filepath.Join(t.TempDir(), "npm-invocations")
+	entry := filepath.Join(source, "dist", "index.js")
+	dist := filepath.Dir(entry)
+	t.Setenv("PRELOOP_TEST_NPM_INVOCATIONS", invocations)
+	t.Setenv("PRELOOP_TEST_CLAUDE_PLUGIN_ENTRY", entry)
+	t.Setenv("PRELOOP_TEST_CLAUDE_PLUGIN_DIST", dist)
+	npmPath := filepath.Join(npmDir, "npm")
+	npmScript := `#!/bin/sh
+printf '%s\n' "$*" >> "$PRELOOP_TEST_NPM_INVOCATIONS"
+if [ "$1" = "run" ] && [ "$2" = "build" ]; then
+  /bin/mkdir -p "$PRELOOP_TEST_CLAUDE_PLUGIN_DIST"
+  : > "$PRELOOP_TEST_CLAUDE_PLUGIN_ENTRY"
+fi
+`
+	if err := os.WriteFile(npmPath, []byte(npmScript), 0o755); err != nil {
+		t.Fatalf("failed to write fake npm: %v", err)
+	}
+	t.Setenv("PATH", npmDir)
+
+	cmd := agentsInstallPluginCmd
+	if err := cmd.Flags().Set("dry-run", "false"); err != nil {
+		t.Fatalf("failed to clear dry-run: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Flags().Set("dry-run", "false")
+		cmd.SetOut(nil)
+		cmd.SetErr(nil)
+	})
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runAgentsInstallPlugin(cmd, []string{"Claude Code"}); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+	got, err := os.ReadFile(invocations)
+	if err != nil {
+		t.Fatalf("failed to read npm invocations: %v", err)
+	}
+	want := []string{
+		"install --no-audit --no-fund",
+		"run build",
+		"install -g " + source,
+	}
+	if lines := strings.Split(strings.TrimSpace(string(got)), "\n"); len(lines) != len(want) {
+		t.Fatalf("npm invocations = %q, want %#v", got, want)
+	} else {
+		for index, expected := range want {
+			if lines[index] != expected {
+				t.Fatalf("npm invocations = %#v, want %#v", lines, want)
+			}
+		}
 	}
 }
 

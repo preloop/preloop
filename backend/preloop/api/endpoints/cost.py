@@ -36,6 +36,7 @@ from preloop.schemas.cost_analytics import (
     RepriceResponse,
     UnpricedModelUsage,
 )
+from preloop.schemas.gateway_usage import UsageBreakdown
 from preloop.services.gateway_accounting_check import run_accounting_checks
 from preloop.services.ledger_backfill import (
     apply_ledger_backfill,
@@ -87,17 +88,30 @@ def get_cost_summary(
             "Retries consume real provider tokens, so they count by default."
         ),
     ),
+    include_breakdown: bool = Query(
+        True,
+        description="Include breakdowns; false returns totals and pricing context only.",
+    ),
+    breakdown: Optional[list[UsageBreakdown]] = Query(
+        None,
+        description="Optional breakdown selection. Repeat for multiple sections; omitted returns all. Ignored when include_breakdown=false.",
+    ),
     db: Session = Depends(get_db_session),
     current_user: User = Depends(get_current_active_user),
 ) -> CostAnalyticsSummaryResponse:
     """Return the OSS cost overview using gateway usage and pricing metadata."""
     account = get_account_or_404(db, current_user)
+    selected = set(breakdown) if breakdown is not None else None
+    include_imported = include_breakdown and (
+        selected is None or "imported" in selected
+    )
     summary = ModelGatewayUsageService(db).get_account_summary(
         account=account,
         start_date=start_date,
         end_date=end_date,
         runtime_principal_id=runtime_principal_id,
-        include_breakdown=True,
+        include_breakdown=include_breakdown,
+        breakdowns=selected,
         exclude_retries=exclude_retries,
     )
     # Imported (observed) spend is reported as a SEPARATE block, using the
@@ -126,7 +140,9 @@ def get_cost_summary(
                     end_date=summary.period_end,
                     runtime_principal_id=runtime_principal_id,
                 )
-            ],
+            ]
+            if include_imported
+            else [],
             # Per-conversation rollup for the console: subagent workers
             # (parent_conversation_id) nest under their parent thread, and
             # estimated vs reconciled amounts stay separate fields — the UI
@@ -140,7 +156,9 @@ def get_cost_summary(
                     end_date=summary.period_end,
                     runtime_principal_id=runtime_principal_id,
                 )
-            ],
+            ]
+            if include_imported
+            else [],
         )
     return CostAnalyticsSummaryResponse(
         period_start=summary.period_start,

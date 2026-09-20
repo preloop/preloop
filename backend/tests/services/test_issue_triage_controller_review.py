@@ -446,6 +446,78 @@ async def test_persistent_triage_refused_before_claim_or_provider_access(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("identity_source", ["execution", "context"])
+async def test_persistent_dispatch_rejects_renamed_reserved_triage(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch, identity_source: str
+) -> None:
+    """Renaming after reservation cannot trade scoped keys for a managed agent key."""
+    from preloop.agents.errors import AgentStartError
+    from preloop.agents.factory import create_executor_for_execution
+
+    rig = _rig(db_session, monkeypatch)
+    execution, _ = await _claim(rig)
+    config = {"execution_path": "persistent", "target_agent_id": str(uuid4())}
+    CRUDBase(models.Flow).update(
+        db_session,
+        db_obj=rig.flow,
+        obj_in={"name": "Renamed ordinary flow", "agent_config": config},
+    )
+    assert not controller.is_triage_flow(db_session, rig.flow)
+
+    def forbidden_executor(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Persistent executor constructed for durable triage execution")
+
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.AgentControlExecutor", forbidden_executor
+    )
+    with pytest.raises(AgentStartError, match="triage_persistent_executor_unsupported"):
+        create_executor_for_execution(
+            "codex",
+            config,
+            db=db_session,
+            flow=rig.flow,
+            execution=execution if identity_source == "execution" else None,
+            execution_context={
+                "execution_id": str(execution.id),
+                "account_id": str(rig.account_id),
+            }
+            if identity_source == "context"
+            else None,
+        )
+
+
+@pytest.mark.parametrize("flow_kind", ["implementer", "reviewer"])
+def test_persistent_dispatch_preserves_ordinary_execution_credentials(
+    db_session: Session, flow_kind: str
+) -> None:
+    """Persisted ordinary executions remain eligible for Agent Control dispatch."""
+    from preloop.agents.agent_control import AgentControlExecutor
+    from preloop.agents.factory import create_executor_for_execution
+    from preloop.models.crud import crud_flow_execution
+    from preloop.models.schemas.flow_execution import FlowExecutionCreate
+
+    _, _, flow, _ = lifecycle_rig.__wrapped__(db_session)
+    config = {"execution_path": "persistent", "target_agent_id": str(uuid4())}
+    CRUDBase(models.Flow).update(
+        db_session,
+        db_obj=flow,
+        obj_in={"name": flow_kind, "agent_config": config},
+    )
+    execution = crud_flow_execution.create(
+        db_session,
+        obj_in=FlowExecutionCreate(flow_id=flow.id, status="PENDING"),
+    )
+    assert not controller.is_triage_execution(
+        db_session, execution_id=execution.id, account_id=flow.account_id
+    )
+    executor = create_executor_for_execution(
+        "codex", config, db=db_session, flow=flow, execution=execution
+    )
+    assert isinstance(executor, AgentControlExecutor)
+    assert executor.config["target_agent_id"] == config["target_agent_id"]
+
+
+@pytest.mark.asyncio
 async def test_duplicate_worker_delivery_cannot_reenter_same_triage_execution(
     db_engine: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

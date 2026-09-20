@@ -6,11 +6,13 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 from sqlalchemy import ColumnElement, and_, func, or_
 from sqlalchemy.orm import Session, joinedload, load_only, with_expression
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.future import select
 
 from preloop.models import models
 
 from preloop.models.models.flow_execution import (
+    AGENT_CONTROL_BINDING_KEY,
     DELEGATION_DETAILS_KEY,
     STOP_COVERAGE_KEY,
     TRIGGER_SUBJECT_KEY,
@@ -341,6 +343,65 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             )
 
         return db_obj
+
+    def bind_agent_control_command(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        command_id: str,
+        managed_agent_id: Any,
+        runtime_session_id: Any = None,
+        history_session_id: Any = None,
+        session_reference: Optional[str] = None,
+        commit: bool = True,
+    ) -> Optional[FlowExecution]:
+        """Bind a persistent Agent Control command to one flow execution.
+
+        Stores the command id under ``AGENT_CONTROL_BINDING_KEY`` in
+        ``trigger_event_details`` and sets ``agent_session_reference`` to
+        ``control:{managed_agent_id}:{command_id}`` so the stop path can
+        recover both ids without a migration.
+
+        Args:
+            db: Database session.
+            execution_id: Flow execution to update.
+            command_id: Persisted Agent Control command id.
+            managed_agent_id: Target managed agent.
+            runtime_session_id: Live control session at dispatch, if any.
+            history_session_id: Tracking session minted for a new session.
+            session_reference: Override for ``agent_session_reference``.
+            commit: Whether to commit.
+
+        Returns:
+            The updated execution, or None when it does not exist.
+        """
+        execution = self.get(db, id=execution_id)
+        if execution is None:
+            return None
+        details = dict(execution.trigger_event_details or {})
+        details[AGENT_CONTROL_BINDING_KEY] = {
+            "command_id": command_id,
+            "managed_agent_id": str(managed_agent_id),
+            "runtime_session_id": (
+                str(runtime_session_id) if runtime_session_id else None
+            ),
+            "history_session_id": (
+                str(history_session_id) if history_session_id else None
+            ),
+        }
+        execution.trigger_event_details = details
+        flag_modified(execution, "trigger_event_details")
+        execution.agent_session_reference = session_reference or (
+            f"control:{managed_agent_id}:{command_id}"
+        )
+        db.add(execution)
+        if commit:
+            db.commit()
+            db.refresh(execution)
+        else:
+            db.flush()
+        return execution
 
     def set_evidence_archive(
         self, db: Session, *, db_obj: FlowExecution, archive: bytes
