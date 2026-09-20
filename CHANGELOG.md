@@ -1923,6 +1923,17 @@ avatars.
 
 ### Security
 
+- **Revoke CLI and console JWT sessions.** `user.auth_generation` is
+  carried in every JWT as `gen`. `POST /auth/sessions/revoke-all` (CLI:
+  `preloop auth logout --all`; console: Sign out everywhere) increments
+  it so every outstanding access and refresh token is rejected. Tokens
+  minted before this change have no `gen` and are treated as generation
+  0, so the first bump invalidates them too. `POST /oauth/revoke` no
+  longer reports success for a CLI JWT; it returns
+  `unsupported_token_type` and points at revoke-all. The CLI refresh
+  path now refuses an inactive user. API keys and runner tokens are
+  unchanged.
+
 - **Frontend `fflate` 0.7.5**: override the `deck.gl` transitive so ZIP64
   inflate cannot loop on a malformed archive (GHSA-px8p-9vwx-vf98 /
   Dependabot #126).

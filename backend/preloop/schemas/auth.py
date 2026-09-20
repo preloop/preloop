@@ -27,6 +27,9 @@ class TokenData(BaseModel):
     # When the login session originally started ("sat" claim). Carried through
     # refresh-token rotations so the sliding session window can be capped.
     session_started_at: Optional[datetime] = None
+    # Per-user token generation ("gen" claim). None when the token was minted
+    # before the claim existed; enforcement treats that as generation 0.
+    gen: Optional[int] = None
 
 
 class User(BaseModel):

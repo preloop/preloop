@@ -105,12 +105,27 @@ preloop login --loopback             # Force local loopback OAuth
 preloop signup                       # Open the sign-up page, then authenticate the CLI
 preloop auth login                   # Same as preloop login
 preloop auth signup                  # Same as preloop signup
-preloop auth logout                  # Log out and clear credentials
+preloop auth logout                  # Clear local credentials
+preloop auth logout --all            # Revoke every session, then clear local credentials
 preloop auth status                  # Show authentication status
 preloop auth token                   # Print token for scripting
 ```
 
 The login flow resolves the API URL in this order: `--url`, `PRELOOP_URL`, config file, then the default `https://preloop.ai`.
+
+### Signing out and revoking a login
+
+`preloop auth logout` only deletes the tokens stored on this machine. Other
+CLI hosts and the console stay signed in. To revoke every JWT session for
+the signed-in user (this host, other hosts, and the console), run
+`preloop auth logout --all`. That calls `POST /auth/sessions/revoke-all`,
+which increments the user's `auth_generation` so every outstanding access
+and refresh token fails the next time it is used. API keys and runner
+tokens are not affected.
+
+If the server cannot be reached, `--all` still clears the local file and
+prints that other sessions remain valid. The console Account Security page
+has the same control as **Sign out everywhere**.
 
 ### Policy Management
 

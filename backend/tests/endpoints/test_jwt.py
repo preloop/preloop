@@ -165,6 +165,7 @@ class TestGetCurrentUser:
         user.email = "test@example.com"
         user.is_active = True
         user.account_id = str(uuid.uuid4())
+        user.auth_generation = 0
         return user
 
     def test_get_current_user_with_jwt(self, mock_user):
@@ -253,6 +254,39 @@ class TestGetCurrentUser:
                 "error" in exc_info.value.detail.lower()
                 or "Inactive" in exc_info.value.detail
             )
+
+    def test_get_current_user_rejects_stale_generation(self, mock_user):
+        """A token whose gen is behind the user's auth_generation is revoked."""
+        mock_user.auth_generation = 2
+        token = jwt_module.create_access_token(
+            {"sub": str(mock_user.id)}, auth_generation=1
+        )
+
+        with patch.object(jwt_module.crud_user, "get", return_value=mock_user):
+            with pytest.raises(HTTPException) as exc_info:
+                jwt_module.get_current_user(token, db=MagicMock())
+
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.detail == jwt_module.SESSION_REVOKED_DETAIL
+
+    def test_get_current_user_rejects_missing_gen_after_bump(self, mock_user):
+        """Tokens minted before gen existed are treated as generation 0."""
+        mock_user.auth_generation = 1
+        token = jwt.encode(
+            {
+                "sub": str(mock_user.id),
+                "exp": datetime.now(UTC) + timedelta(hours=1),
+            },
+            jwt_module.SECRET_KEY,
+            algorithm=jwt_module.ALGORITHM,
+        )
+
+        with patch.object(jwt_module.crud_user, "get", return_value=mock_user):
+            with pytest.raises(HTTPException) as exc_info:
+                jwt_module.get_current_user(token, db=MagicMock())
+
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.detail == jwt_module.SESSION_REVOKED_DETAIL
 
     def test_get_current_user_not_found(self):
         """Test failure when user doesn't exist."""

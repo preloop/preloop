@@ -242,6 +242,7 @@ func snapshotLoginFlags() func() {
 	originalLoginLoopback := loginLoopback
 	originalLoginCode := loginCode
 	originalLoginForce := loginForce
+	originalLogoutAll := logoutAll
 
 	return func() {
 		loginToken = originalLoginToken
@@ -249,6 +250,7 @@ func snapshotLoginFlags() func() {
 		loginLoopback = originalLoginLoopback
 		loginCode = originalLoginCode
 		loginForce = originalLoginForce
+		logoutAll = originalLogoutAll
 	}
 }
 
@@ -557,5 +559,113 @@ func TestPrintAlreadyLoggedInNamesTheInvokedCommand(t *testing.T) {
 				t.Fatalf("did not expect %q in %q", tt.notWant, buf.String())
 			}
 		})
+	}
+}
+
+func TestRunAuthLogoutClearsLocallyAndMentionsAll(t *testing.T) {
+	tempHome := t.TempDir()
+	testenv.SetHome(t, tempHome)
+	restore := snapshotLoginFlags()
+	defer restore()
+	logoutAll = false
+
+	if err := config.Save(&config.Config{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		APIURL:       "http://example.test",
+	}); err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	output := captureStdout(t, func() error {
+		return runAuthLogout(authLogoutCmd, nil)
+	})
+
+	if config.IsAuthenticated() {
+		t.Fatal("expected local credentials to be cleared")
+	}
+	if !strings.Contains(output, "Successfully logged out") {
+		t.Fatalf("expected logout confirmation, got %q", output)
+	}
+	if !strings.Contains(output, "preloop auth logout --all") {
+		t.Fatalf("expected pointer to --all, got %q", output)
+	}
+}
+
+func TestRunAuthLogoutAllPostsThenClears(t *testing.T) {
+	tempHome := t.TempDir()
+	testenv.SetHome(t, tempHome)
+	restore := snapshotLoginFlags()
+	defer restore()
+	logoutAll = true
+
+	posted := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/auth/sessions/revoke-all" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer access-token" {
+			t.Fatalf("expected stored bearer token, got %q", got)
+		}
+		posted = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"auth_generation":1}`))
+	}))
+	defer server.Close()
+
+	if err := config.Save(&config.Config{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		APIURL:       server.URL,
+	}); err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	output := captureStdout(t, func() error {
+		return runAuthLogout(authLogoutCmd, nil)
+	})
+
+	if !posted {
+		t.Fatal("expected logout --all to POST revoke-all")
+	}
+	if config.IsAuthenticated() {
+		t.Fatal("expected local credentials to be cleared")
+	}
+	if !strings.Contains(output, "Successfully logged out") {
+		t.Fatalf("expected logout confirmation, got %q", output)
+	}
+	if strings.Contains(output, "other sessions remain valid") {
+		t.Fatalf("did not expect offline warning, got %q", output)
+	}
+}
+
+func TestRunAuthLogoutAllOfflineStillClears(t *testing.T) {
+	tempHome := t.TempDir()
+	testenv.SetHome(t, tempHome)
+	restore := snapshotLoginFlags()
+	defer restore()
+	logoutAll = true
+	FlagURL = "http://127.0.0.1:1"
+
+	if err := config.Save(&config.Config{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		APIURL:       "http://127.0.0.1:1",
+	}); err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	output := captureStdout(t, func() error {
+		return runAuthLogout(authLogoutCmd, nil)
+	})
+
+	if config.IsAuthenticated() {
+		t.Fatal("expected local credentials to be cleared after an offline --all")
+	}
+	if !strings.Contains(output, "Could not reach the server; local credentials cleared, other sessions remain valid") {
+		t.Fatalf("expected offline warning, got %q", output)
 	}
 }

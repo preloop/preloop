@@ -58,6 +58,8 @@ async def impersonate_user(
 
     # Create impersonation token (8 hour expiry)
     access_token_expires = timedelta(hours=8)
+    from preloop.api.auth.jwt import user_auth_generation
+
     access_token = create_access_token(
         data={
             "sub": str(target_user.id),
@@ -66,6 +68,7 @@ async def impersonate_user(
             "impersonation_started_at": datetime.now(timezone.utc).isoformat(),
         },
         expires_delta=access_token_expires,
+        auth_generation=user_auth_generation(target_user),
     )
 
     # Log the impersonation in audit log

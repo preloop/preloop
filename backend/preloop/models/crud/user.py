@@ -3,7 +3,7 @@
 import uuid
 from typing import Any, List, Optional
 
-from sqlalchemy import text
+from sqlalchemy import text, update
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -316,6 +316,32 @@ class CRUDUser(CRUDBase[models.User]):
         else:
             db.flush()
         return user
+
+    def bump_auth_generation(self, db: Session, user_id: Any) -> int:
+        """Atomically increment the user's JWT generation and return it.
+
+        Args:
+            db: Database session.
+            user_id: User whose outstanding JWT sessions should be revoked.
+
+        Returns:
+            The new ``auth_generation`` value.
+
+        Raises:
+            ValueError: If no user exists with ``user_id``.
+        """
+        stmt = (
+            update(models.User)
+            .where(models.User.id == user_id)
+            .values(auth_generation=models.User.auth_generation + 1)
+            .returning(models.User.auth_generation)
+        )
+        result = db.execute(stmt)
+        row = result.first()
+        if row is None:
+            raise ValueError(f"User {user_id} not found")
+        db.commit()
+        return int(row[0])
 
 
 # Create instance

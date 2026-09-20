@@ -1,6 +1,7 @@
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { changePassword, getFeatures } from '../../../api';
+import { changePassword, fetchWithAuth, getFeatures } from '../../../api';
+import { confirmDialog } from '../../../components/confirm-dialog';
 import {
   PasskeySummary,
   deletePasskey,
@@ -111,6 +112,51 @@ export class SecurityView extends LitElement {
         error instanceof Error ? error.message : 'An unknown error occurred.';
       this.changePasswordMessage = `Failed to change password: ${errorMessage}`;
     }
+  }
+
+  /**
+   * Revoke every JWT session for this user, then clear local credentials
+   * the same way the header Sign out control does.
+   */
+  async handleSignOutEverywhere() {
+    const confirmed = await confirmDialog({
+      title: 'Sign out everywhere',
+      message: 'Revoke every CLI and console session for this account?',
+      detail:
+        'You will need to sign in again on every device. API keys and runner tokens are not affected.',
+      confirmLabel: 'Sign out everywhere',
+      variant: 'danger',
+    });
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await fetchWithAuth('/api/v1/auth/sessions/revoke-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+    } catch {
+      // Local sign-out still proceeds. Other sessions stay valid if the
+      // server was unreachable, matching the CLI offline path.
+    }
+    this._performLocalSignOut();
+  }
+
+  private _performLocalSignOut(): void {
+    localStorage.removeItem('accessToken');
+    localStorage.removeItem('refreshToken');
+    window.dispatchEvent(
+      new CustomEvent('auth-change', { bubbles: true, composed: true })
+    );
+    this._navigate('/');
+    fetch('/logout', { method: 'GET' }).catch(() => {
+      // Best effort: local credentials are already gone.
+    });
+  }
+
+  private _navigate(url: string): void {
+    window.location.assign(url);
   }
 
   render() {
@@ -226,6 +272,15 @@ export class SecurityView extends LitElement {
                 `
               : ''
           }
+          <div class="sign-out-everywhere">
+            <sl-button
+              variant="danger"
+              outline
+              data-testid="sign-out-everywhere"
+              @click="${this.handleSignOutEverywhere}"
+              >Sign out everywhere</sl-button
+            >
+          </div>
         </div>
         <div class="side-column"></div>
       </div>
@@ -274,6 +329,14 @@ export class SecurityView extends LitElement {
       .passkey-item small {
         color: var(--sl-color-neutral-500);
         margin-left: 0.5rem;
+      }
+
+      .sign-out-everywhere {
+        margin-top: var(--sl-spacing-large);
+      }
+
+      .sign-out-everywhere sl-button {
+        width: auto;
       }
     `,
   ];
