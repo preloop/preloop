@@ -1274,6 +1274,9 @@ avatars.
 - Apply response content policies to returned reasoning and thinking text as
   well as final answers, including buffered streams and reasoning summaries.
 
+- Private runner registration and the WebSocket hello send an empty
+  `host_exec_profiles` list when none are configured, and registration
+  accepts JSON `null` so older clients cannot be locked out (#838).
 - Keep repeated model policy approvals on the application event loop, including
   background optimization jobs, so pooled database connections remain usable.
 - Hermes fail-closed errors name the config file that was read and the
@@ -1912,6 +1915,9 @@ avatars.
 - **Preloop-bot label events were dropped**: `_is_preloop_triggered_event`
   no longer skips `issue_labeled` / `issue_unlabeled`, so
   `update_issue` adding `agent-ready` can start an implementation flow.
+- **Attention dismissals**: marking a model item fixed or restoring it
+  returned 404 when the model alias contained a slash (reported and fixed
+  by Alex Lennon, Dynamic Devices).
 
 ### Removed
 

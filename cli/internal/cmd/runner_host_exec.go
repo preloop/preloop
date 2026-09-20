@@ -187,7 +187,10 @@ func validateHostExecArgv(argv []string) error {
 func hostExecAdvertisements() []hostExecAdvertisement {
 	profiles, err := loadHostExecProfiles()
 	if err != nil || len(profiles) == 0 {
-		return nil
+		// A non-nil empty slice marshals as [], not JSON null. Registration
+		// and the WebSocket hello both send this key; the control plane
+		// treats a missing key differently from an explicit empty list.
+		return []hostExecAdvertisement{}
 	}
 	out := make([]hostExecAdvertisement, 0, len(profiles))
 	for _, profile := range profiles {
