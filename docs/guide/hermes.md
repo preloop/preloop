@@ -157,7 +157,7 @@ systemctl --user restart hermes-gateway.service hermes-matrix-monitor.service
 Unit names vary. Use the names the CLI printed, or:
 
 ```bash
-systemctl --user list-units 'hermes-*' --no-legend
+systemctl --user list-units 'hermes-*' --all --no-legend
 ```
 
 ## Prove the plugin sees the right config

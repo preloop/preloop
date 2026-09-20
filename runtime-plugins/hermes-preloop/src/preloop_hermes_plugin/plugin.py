@@ -517,28 +517,35 @@ class HermesPreloopPlugin:
 
     def verify(self) -> None:
         """Validate local plugin load and config shape."""
-        config = self.load_config()
-        block = self._read_control_block()
         path = _discover_config_path(self.config_path)
-        runtime = block.get("runtime")
-        if runtime != self.runtime_name:
-            raise ValueError(f"Expected Hermes runtime config, got {runtime!r}")
-        if not config.control_ws_url:
-            raise ValueError(
-                _control_config_error(
-                    "preloop.control.control_ws_url is required", path
+        previous = self.config_path
+        self.config_path = path
+        try:
+            config = self.load_config()
+            block = self._read_control_block()
+            runtime = block.get("runtime")
+            if runtime != self.runtime_name:
+                raise ValueError(f"Expected Hermes runtime config, got {runtime!r}")
+            if not config.control_ws_url:
+                raise ValueError(
+                    _control_config_error(
+                        "preloop.control.control_ws_url is required", path
+                    )
                 )
-            )
-        if not config.bearer_token:
-            raise ValueError(
-                _control_config_error("preloop.control.bearer_token is required", path)
-            )
-        approval = block.get("tool_approval")
-        if "tool_approval" in block and not isinstance(approval, dict):
-            raise ValueError("tool_approval must be an object")
-        approval = approval if isinstance(approval, dict) else {}
-        _validate_approval_settings(approval)
-        _resolve_permission_timeout(approval)
+            if not config.bearer_token:
+                raise ValueError(
+                    _control_config_error(
+                        "preloop.control.bearer_token is required", path
+                    )
+                )
+            approval = block.get("tool_approval")
+            if "tool_approval" in block and not isinstance(approval, dict):
+                raise ValueError("tool_approval must be an object")
+            approval = approval if isinstance(approval, dict) else {}
+            _validate_approval_settings(approval)
+            _resolve_permission_timeout(approval)
+        finally:
+            self.config_path = previous
 
     def login(self, base_url: str) -> None:
         """Bootstrap Preloop auth and write Hermes Agent Control config."""

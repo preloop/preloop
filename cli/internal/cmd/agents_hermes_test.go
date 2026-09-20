@@ -1449,9 +1449,12 @@ func TestRestartHermesGatewayAfterReconfigPrintsSystemdUnits(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(binDir, "systemctl"),
 		[]byte("#!/bin/sh\n"+
-			"if [ \"$1\" = --user ] && [ \"$2\" = list-units ]; then\n"+
+			"for arg in \"$@\"; do\n"+
+			"  if [ \"$arg\" = --all ]; then saw_all=1; fi\n"+
+			"done\n"+
+			"if [ \"$1\" = --user ] && [ \"$2\" = list-units ] && [ -n \"$saw_all\" ]; then\n"+
 			"  echo 'hermes-gateway.service loaded active running Hermes Gateway'\n"+
-			"  echo 'hermes-matrix-monitor.service loaded active running Hermes Matrix'\n"+
+			"  echo 'hermes-matrix-monitor.service loaded inactive dead Hermes Matrix'\n"+
 			"  exit 0\nfi\nexit 1\n"),
 		0755,
 	); err != nil {

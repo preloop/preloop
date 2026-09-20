@@ -263,6 +263,7 @@ def test_verify_discovers_home_fallback(
 
     plugin = HermesPreloopPlugin()
     plugin.verify()  # must not raise
+    assert plugin.config_path is None
 
 
 def test_explicit_config_takes_precedence_over_discovery(

@@ -1087,7 +1087,9 @@ func restartHermesGatewayAfterReconfig(agent AgentConfig, writer io.Writer) map[
 
 // listHermesSystemdUserUnits returns names of systemd user units matching
 // hermes-*. Linux only, best effort: a missing systemctl, a failed listing, or
-// a non-Linux host yields an empty slice and never fails the caller.
+// a non-Linux host yields an empty slice and never fails the caller. --all is
+// required so an enabled-but-inactive unit (loaded, not currently running)
+// still surfaces; list-units without it hides those respawners.
 func listHermesSystemdUserUnits() []string {
 	if hermesSystemdGOOS != "linux" {
 		return nil
@@ -1104,6 +1106,7 @@ func listHermesSystemdUserUnits() []string {
 		"--user",
 		"list-units",
 		"hermes-*",
+		"--all",
 		"--no-legend",
 	)
 	cmd.Env = append(os.Environ(), "SYSTEMD_PAGER=")
@@ -1115,7 +1118,7 @@ func listHermesSystemdUserUnits() []string {
 }
 
 // parseHermesSystemdUnitNames extracts unit names that start with hermes-
-// from `systemctl --user list-units --no-legend` output.
+// from `systemctl --user list-units --all --no-legend` output.
 func parseHermesSystemdUnitNames(output string) []string {
 	var units []string
 	seen := map[string]struct{}{}
