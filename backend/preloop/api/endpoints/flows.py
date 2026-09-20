@@ -2357,6 +2357,9 @@ def delete_flow(
 
     # A committed deletion detaches the ORM row. Resolve relationship-backed
     # response fields (such as ai_model_name) while its session is available.
+    # Validate before mutating: a stored row that fails FlowResponse should
+    # remain so operators can inspect it, rather than being deleted and then
+    # returning HTTP 500 (a retry would 404 and hide the failed delete).
     response = schemas.FlowResponse.model_validate(flow)
     flow_name = flow.name
     crud_flow.remove(db=db, id=flow_id, account_id=current_user.account_id)

@@ -317,5 +317,6 @@ async def test_async_approval_replay_blocks_halted_account(
         result = await mcp.call_registered_tool_without_policy(
             "get_issue", {}, account_id=str(test_user.account_id)
         )
+    assert result.is_error
     assert "kill switch" in result.content[0].text
     dispatch.assert_not_awaited()

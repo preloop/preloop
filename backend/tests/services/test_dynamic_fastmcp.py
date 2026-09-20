@@ -832,6 +832,7 @@ class TestMCPCallTool:
         result = await dynamic_mcp.call_tool("tool1", {})
 
         assert isinstance(result, ToolResult)
+        assert result.is_error
         assert len(result.content) == 1
         assert "No user context available" in result.content[0].text
 
@@ -846,6 +847,7 @@ class TestMCPCallTool:
             result = await dynamic_mcp.call_tool("unauthorized_tool", {})
 
         assert isinstance(result, ToolResult)
+        assert result.is_error
         assert len(result.content) == 1
         assert "Access denied" in result.content[0].text
 
@@ -957,6 +959,7 @@ class TestMCPCallTool:
 
         mock_super.assert_not_called()
         assert isinstance(result, ToolResult)
+        assert result.is_error
         assert "disabled" in result.content[0].text.lower()
 
     async def test_call_default_disabled_builtin_tool_rejected(
@@ -989,6 +992,7 @@ class TestMCPCallTool:
 
         mock_super.assert_not_called()
         assert isinstance(result, ToolResult)
+        assert result.is_error
         assert "disabled" in result.content[0].text.lower()
 
     async def test_call_disabled_permission_prompt_returns_behavior_schema(
@@ -1179,6 +1183,7 @@ class TestMCPCallTool:
         # Tool must NOT have been executed.
         mock_super.assert_not_called()
         assert isinstance(result, ToolResult)
+        assert result.is_error
         assert "approval workflow" in result.content[0].text.lower()
         assert "configure" in result.content[0].text.lower()
 
@@ -2092,4 +2097,5 @@ class TestSendNoteToolExposure:
 
         mock_super.assert_not_called()
         assert isinstance(result, ToolResult)
+        assert result.is_error
         assert "disabled" in result.content[0].text.lower()

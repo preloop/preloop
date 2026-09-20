@@ -17,6 +17,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
 from fastmcp import FastMCP
 from fastmcp.tools import Tool
+from fastmcp.tools.tool import ToolResult
+from mcp.types import TextContent
 
 from preloop.services.dynamic_mcp_server import (
     UserContext,
@@ -31,6 +33,14 @@ from preloop.services import kill_switch as kill_switch_service
 from preloop.services.subject_governance import is_tool_enabled_for_subject
 
 logger = logging.getLogger(__name__)
+
+
+def _tool_error_result(text: str) -> ToolResult:
+    """Return an MCP error result so refusals survive output-schema checks."""
+    return ToolResult(
+        content=[TextContent(type="text", text=text)],
+        is_error=True,
+    )
 
 
 def _configs_visible_to_caller(
@@ -1242,9 +1252,6 @@ async def {internal_name}({params_str}) -> str:
         Returns:
             ToolResult from tool execution
         """
-        from fastmcp.tools.tool import ToolResult
-        from mcp.types import TextContent
-
         arguments = arguments or {}
 
         # Extract justification from arguments before it reaches the tool function.
@@ -1270,16 +1277,8 @@ async def {internal_name}({params_str}) -> str:
                 logger.warning(
                     f"Blocked direct invocation of internal proxied tool name: {name}"
                 )
-                from fastmcp.tools.tool import ToolResult
-                from mcp.types import TextContent
-
-                return ToolResult(
-                    content=[
-                        TextContent(
-                            type="text",
-                            text=f"Access denied: Cannot invoke internal tool name '{name}' directly",
-                        )
-                    ]
+                return _tool_error_result(
+                    f"Access denied: Cannot invoke internal tool name '{name}' directly"
                 )
 
             logger.info(
@@ -1327,17 +1326,9 @@ async def {internal_name}({params_str}) -> str:
                     f"Kill-switch check failed for tool '{name}': {e}. "
                     f"Blocking tool call (fail closed)."
                 )
-                return ToolResult(
-                    content=[
-                        TextContent(
-                            type="text",
-                            text=(
-                                "Error: Unable to verify account halt state "
-                                f"for tool '{name}'. Please try again."
-                            ),
-                        )
-                    ],
-                    is_error=True,
+                return _tool_error_result(
+                    "Error: Unable to verify account halt state "
+                    f"for tool '{name}'. Please try again."
                 )
             if tools_are_halted:
                 logger.warning(
@@ -1356,10 +1347,7 @@ async def {internal_name}({params_str}) -> str:
                             "message": kill_switch_service.TOOL_DENIAL_MESSAGE,
                         }
                     )
-                return ToolResult(
-                    content=[TextContent(type="text", text=denied_text)],
-                    is_error=True,
-                )
+                return _tool_error_result(denied_text)
 
         # ── Server-side justification enforcement ─────────────────────────
         # Schema injection alone isn't sufficient — clients can skip
@@ -1447,29 +1435,12 @@ async def {internal_name}({params_str}) -> str:
                                     ),
                                 }
                             )
-                        return ToolResult(
-                            content=[
-                                TextContent(
-                                    type="text",
-                                    text=denied_text,
-                                )
-                            ]
-                        )
+                        return _tool_error_result(denied_text)
                 if requires_justification and not justification:
-                    from fastmcp.tools.tool import ToolResult
-                    from mcp.types import TextContent
-
-                    return ToolResult(
-                        content=[
-                            TextContent(
-                                type="text",
-                                text=(
-                                    f"Justification required: Tool '{name}' requires a "
-                                    f"'justification' parameter explaining why this tool "
-                                    f"is being called."
-                                ),
-                            )
-                        ]
+                    return _tool_error_result(
+                        f"Justification required: Tool '{name}' requires a "
+                        f"'justification' parameter explaining why this tool "
+                        f"is being called."
                     )
             except Exception as e:
                 # SECURITY: Fail closed — if we cannot verify whether
@@ -1479,28 +1450,14 @@ async def {internal_name}({params_str}) -> str:
                     f"Justification enforcement check failed for '{name}': {e}. "
                     f"Blocking tool call (fail closed)."
                 )
-                from fastmcp.tools.tool import ToolResult
-                from mcp.types import TextContent
-
-                return ToolResult(
-                    content=[
-                        TextContent(
-                            type="text",
-                            text=(
-                                f"Error: Unable to verify justification requirements "
-                                f"for tool '{name}'. Please try again."
-                            ),
-                        )
-                    ]
+                return _tool_error_result(
+                    f"Error: Unable to verify justification requirements "
+                    f"for tool '{name}'. Please try again."
                 )
 
         if not user_context:
             logger.warning("No user context available for tool call")
-            return ToolResult(
-                content=[
-                    TextContent(type="text", text="Error: No user context available")
-                ]
-            )
+            return _tool_error_result("Error: No user context available")
 
         # Check if user has access to this tool
         available_tools = await self.list_tools(run_middleware=run_middleware)
@@ -1509,14 +1466,7 @@ async def {internal_name}({params_str}) -> str:
                 f"User {user_context.username} attempted to call "
                 f"unauthorized tool: {name}"
             )
-            return ToolResult(
-                content=[
-                    TextContent(
-                        type="text",
-                        text=f"Access denied: Tool '{name}' is not available",
-                    )
-                ]
-            )
+            return _tool_error_result(f"Access denied: Tool '{name}' is not available")
 
         # ── Generate correlation_id for audit grouping ──────────────────
         correlation_id = str(uuid.uuid4())
@@ -1569,11 +1519,7 @@ async def {internal_name}({params_str}) -> str:
 
             if action == "deny":
                 denial_msg = reason or "Tool call denied by access rule"
-                return ToolResult(
-                    content=[
-                        TextContent(type="text", text=f"Access denied: {denial_msg}")
-                    ]
-                )
+                return _tool_error_result(f"Access denied: {denial_msg}")
 
             if action == "require_approval":
                 # Carry the matched rule through to require_approval() so it
@@ -1600,18 +1546,11 @@ async def {internal_name}({params_str}) -> str:
                         "approval workflow is configured (rule, tool config, "
                         "and account default are all unset). Blocking the call."
                     )
-                    return ToolResult(
-                        content=[
-                            TextContent(
-                                type="text",
-                                text=(
-                                    f"Tool '{name}' requires approval but no "
-                                    "approval workflow is configured for this "
-                                    "account. Configure an approval workflow "
-                                    "(or mark one as default) and retry."
-                                ),
-                            )
-                        ]
+                    return _tool_error_result(
+                        f"Tool '{name}' requires approval but no "
+                        "approval workflow is configured for this "
+                        "account. Configure an approval workflow "
+                        "(or mark one as default) and retry."
                     )
             else:
                 _rule_workflow_id_var.set(None)
@@ -1630,18 +1569,11 @@ async def {internal_name}({params_str}) -> str:
             # error to the agent.
             _rule_workflow_id_var.set(None)
             _rule_context_var.set(None)
-            return ToolResult(
-                content=[
-                    TextContent(
-                        type="text",
-                        text=(
-                            f"Access denied: policy evaluation for '{name}' "
-                            "failed and the request was blocked as a safety "
-                            "measure. Please retry; if this persists, contact "
-                            "your Preloop administrator."
-                        ),
-                    )
-                ]
+            return _tool_error_result(
+                f"Access denied: policy evaluation for '{name}' "
+                "failed and the request was blocked as a safety "
+                "measure. Please retry; if this persists, contact "
+                "your Preloop administrator."
             )
 
         # ── Translate and execute ───────────────────────────────────────
@@ -1928,12 +1860,7 @@ async def {internal_name}({params_str}) -> str:
         # The durable approval owns this dispatch, even without HTTP context.
         denial = await self._halt_dispatch_denial(account_id)
         if denial:
-            from fastmcp.tools.tool import ToolResult
-            from mcp.types import TextContent
-
-            return ToolResult(
-                content=[TextContent(type="text", text=denial)], is_error=True
-            )
+            return _tool_error_result(denial)
         translation_token = None
         if name in self._registered_proxied_tools:
             translation_token = _is_proxy_translation_var.set(True)

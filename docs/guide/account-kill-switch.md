@@ -16,7 +16,9 @@ and optional `scopes`. Omit scopes for a full halt:
 - `tools` denies MCP dispatch, including approved calls awaiting replay. Pending
   approvals retain their remaining timeout. Recovery adds exactly the time each
   pending request spent frozen, even if no worker polled during the incident.
-  Requests already expired before activation are not revived.
+  Requests already expired before activation are not revived. Refusals are
+  returned as MCP tool errors (`isError: true`), so clients must read the
+  denial text from an error result, not only from a successful tool response.
 - `flows` blocks new launch admission and durably requests termination of managed
   executions that were already admitted. Waiting executions without a runtime
   remain pending until recovery. A launch admitted immediately before activation

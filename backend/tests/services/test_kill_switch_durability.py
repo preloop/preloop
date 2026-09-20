@@ -269,6 +269,7 @@ async def test_replay_uses_explicit_account_without_http_context():
         "write", {}, account_id="approval-owner"
     )
     mcp._halt_dispatch_denial.assert_awaited_once_with("approval-owner")
+    assert result.is_error
     assert result.content[0].text == "owner halted"
 
 

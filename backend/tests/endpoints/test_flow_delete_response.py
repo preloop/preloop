@@ -52,4 +52,5 @@ def test_delete_model_backed_flow_response(
     assert (
         crud_flow.get(db_session, id=flow_id, account_id=test_user.account_id) is None
     )
-    assert client.delete(f"/api/v1/flows/{flow_id}").status_code == 404
+    follow_up = client.delete(f"/api/v1/flows/{flow_id}")
+    assert follow_up.status_code == 404
