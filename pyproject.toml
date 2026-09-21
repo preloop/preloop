@@ -71,7 +71,7 @@ dependencies = [
     "stripe>=12.4.0",
     "maxminddb>=2.6.0",  # Local GeoIP lookups (EE growth plugin; no IPs leave the server)
     "user-agents>=2.2.0",  # User-agent parsing for analytics enrichment (EE growth plugin)
-    "fastmcp>=3.2.0,<4.0.0",  # v4 requires mcp>=2; see the mcp pin below
+    "fastmcp>=3.2.0,<5.0.0",  # v4 requires mcp>=2; see the mcp pin below
     "mcp>=1.0.0,<2",  # mcp 2.x dropped streamablehttp_client; mcp_client_pool imports it
     "aiodocker>=0.21.0", # Added for agent container execution
     "kubernetes_asyncio>=30.5.0", # Added for Kubernetes agent execution
