@@ -1,12 +1,12 @@
 {
  "_preloop_meta": {
   "source_url": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
-  "fetched_at": "2026-09-21T01:53:38.398949+00:00",
+  "fetched_at": "2026-09-21T02:00:06.309355+00:00",
   "model_count": 1003,
   "overlay_sources": [
    {
     "url": "https://docs.z.ai/guides/overview/pricing.md",
-    "fetched_at": "2026-09-21T01:53:38.385782+00:00",
+    "fetched_at": "2026-09-21T02:00:06.295636+00:00",
     "section": "Text Models"
    }
   ]
@@ -5933,14 +5933,18 @@
   "max_input_tokens": 997952,
   "max_output_tokens": 32768,
   "max_tokens": 32768,
-  "mode": "chat"
+  "mode": "chat",
+  "input_cost_per_token": 5e-08,
+  "output_cost_per_token": 4e-07
  },
  "dashscope/qwen-flash-2025-07-28": {
   "litellm_provider": "dashscope",
   "max_input_tokens": 997952,
   "max_output_tokens": 32768,
   "max_tokens": 32768,
-  "mode": "chat"
+  "mode": "chat",
+  "input_cost_per_token": 5e-08,
+  "output_cost_per_token": 4e-07
  },
  "dashscope/qwen-max": {
   "input_cost_per_token": 1.6e-06,
@@ -5994,21 +5998,30 @@
   "max_input_tokens": 997952,
   "max_output_tokens": 32768,
   "max_tokens": 32768,
-  "mode": "chat"
+  "mode": "chat",
+  "input_cost_per_token": 4e-07,
+  "output_cost_per_reasoning_token": 4e-06,
+  "output_cost_per_token": 1.2e-06
  },
  "dashscope/qwen-plus-2025-09-11": {
   "litellm_provider": "dashscope",
   "max_input_tokens": 997952,
   "max_output_tokens": 32768,
   "max_tokens": 32768,
-  "mode": "chat"
+  "mode": "chat",
+  "input_cost_per_token": 4e-07,
+  "output_cost_per_reasoning_token": 4e-06,
+  "output_cost_per_token": 1.2e-06
  },
  "dashscope/qwen-plus-latest": {
   "litellm_provider": "dashscope",
   "max_input_tokens": 997952,
   "max_output_tokens": 32768,
   "max_tokens": 32768,
-  "mode": "chat"
+  "mode": "chat",
+  "input_cost_per_token": 4e-07,
+  "output_cost_per_reasoning_token": 4e-06,
+  "output_cost_per_token": 1.2e-06
  },
  "dashscope/qwen-turbo": {
   "input_cost_per_token": 5e-08,
@@ -6061,49 +6074,65 @@
   "max_input_tokens": 997952,
   "max_output_tokens": 65536,
   "max_tokens": 65536,
-  "mode": "chat"
+  "mode": "chat",
+  "cache_read_input_token_cost": 8e-08,
+  "input_cost_per_token": 3e-07,
+  "output_cost_per_token": 1.5e-06
  },
  "dashscope/qwen3-coder-flash-2025-07-28": {
   "litellm_provider": "dashscope",
   "max_input_tokens": 997952,
   "max_output_tokens": 65536,
   "max_tokens": 65536,
-  "mode": "chat"
+  "mode": "chat",
+  "input_cost_per_token": 3e-07,
+  "output_cost_per_token": 1.5e-06
  },
  "dashscope/qwen3-coder-plus": {
   "litellm_provider": "dashscope",
   "max_input_tokens": 997952,
   "max_output_tokens": 65536,
   "max_tokens": 65536,
-  "mode": "chat"
+  "mode": "chat",
+  "cache_read_input_token_cost": 1e-07,
+  "input_cost_per_token": 1e-06,
+  "output_cost_per_token": 5e-06
  },
  "dashscope/qwen3-coder-plus-2025-07-22": {
   "litellm_provider": "dashscope",
   "max_input_tokens": 997952,
   "max_output_tokens": 65536,
   "max_tokens": 65536,
-  "mode": "chat"
+  "mode": "chat",
+  "input_cost_per_token": 1e-06,
+  "output_cost_per_token": 5e-06
  },
  "dashscope/qwen3-max": {
   "litellm_provider": "dashscope",
   "max_input_tokens": 258048,
   "max_output_tokens": 65536,
   "max_tokens": 65536,
-  "mode": "chat"
+  "mode": "chat",
+  "input_cost_per_token": 1.2e-06,
+  "output_cost_per_token": 6e-06
  },
  "dashscope/qwen3-max-2026-01-23": {
   "litellm_provider": "dashscope",
   "max_input_tokens": 258048,
   "max_output_tokens": 65536,
   "max_tokens": 65536,
-  "mode": "chat"
+  "mode": "chat",
+  "input_cost_per_token": 1.2e-06,
+  "output_cost_per_token": 6e-06
  },
  "dashscope/qwen3-max-preview": {
   "litellm_provider": "dashscope",
   "max_input_tokens": 258048,
   "max_output_tokens": 65536,
   "max_tokens": 65536,
-  "mode": "chat"
+  "mode": "chat",
+  "input_cost_per_token": 1.2e-06,
+  "output_cost_per_token": 6e-06
  },
  "dashscope/qwen3-next-80b-a3b-instruct": {
   "input_cost_per_token": 1.5e-07,
@@ -6164,14 +6193,18 @@
   "max_input_tokens": 260096,
   "max_output_tokens": 32768,
   "max_tokens": 32768,
-  "mode": "chat"
+  "mode": "chat",
+  "input_cost_per_token": 2e-07,
+  "output_cost_per_token": 1.6e-06
  },
  "dashscope/qwen3.5-plus": {
   "litellm_provider": "dashscope",
   "max_input_tokens": 991808,
   "max_output_tokens": 65536,
   "max_tokens": 65536,
-  "mode": "chat"
+  "mode": "chat",
+  "input_cost_per_token": 4e-07,
+  "output_cost_per_token": 2.4e-06
  },
  "dashscope/qwen3.7-max": {
   "cache_read_input_token_cost": 5e-07,
@@ -6188,7 +6221,10 @@
   "max_input_tokens": 991808,
   "max_output_tokens": 65536,
   "max_tokens": 65536,
-  "mode": "chat"
+  "mode": "chat",
+  "cache_read_input_token_cost": 8e-08,
+  "input_cost_per_token": 4e-07,
+  "output_cost_per_token": 1.6e-06
  },
  "dashscope/qwen3.8-flash": {
   "cache_creation_input_token_cost": 2e-07,
