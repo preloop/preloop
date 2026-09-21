@@ -4362,17 +4362,17 @@ cd /workspace
 
         q_path = shlex.quote(full_path)
         return f"""
-echo "Preparing clone directory: {full_path}"
+echo "Preparing clone directory:" {q_path}
 if [ -d {q_path} ] && [ ! -w {q_path} ]; then
-    echo "WARNING: {full_path} exists but is not writable; replacing it"
+    echo "WARNING:" {q_path} "exists but is not writable; replacing it"
     rm -rf {q_path}
 fi
 if [ -d {q_path} ]; then
     if [ -d {q_path}/.git ]; then
-        echo "WARNING: {full_path} already contains a git repository, will reset it"
+        echo "WARNING:" {q_path} "already contains a git repository, will reset it"
         rm -rf {q_path}
     elif [ "$(ls -A {q_path} 2>/dev/null)" ]; then
-        echo "WARNING: {full_path} is not empty, cleaning up non-essential files..."
+        echo "WARNING:" {q_path} "is not empty, cleaning up non-essential files..."
         # Move any existing files to a backup location, preserving only reports if they exist
         mkdir -p /tmp/workspace-backup
         mv {q_path}/* /tmp/workspace-backup/ 2>/dev/null || true

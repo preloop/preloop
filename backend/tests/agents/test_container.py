@@ -1024,16 +1024,37 @@ class TestGitShellQuoting:
         self, container_executor, tmp_path
     ):
         """CRI workingDir is created as root; UID 10000 cannot mkdir .git inside it."""
+        import os
         import shlex
+        import shutil
 
         target = tmp_path / "workspace"
         target.mkdir()
-        # Empty, like CRI workingDir. 0555 so the current user cannot mkdir .git.
-        target.chmod(0o555)
         shell = container_executor._build_git_pre_clone_shell(str(target))
         quoted = shlex.quote(str(target))
         assert f"[ ! -w {quoted} ]" in shell
-        subprocess.run(["bash", "-c", shell], check=True)
+        assert f"rm -rf {quoted}" in shell
+        # Empty, like CRI workingDir. 0555 so a non-root user cannot mkdir .git.
+        # Root always passes bash -w (CI job containers), so drop privileges.
+        target.chmod(0o555)
+        run: list[str]
+        if os.geteuid() == 0:
+            setpriv = shutil.which("setpriv")
+            if not setpriv:
+                pytest.skip("root always passes [ -w ]; setpriv not available")
+            tmp_path.chmod(0o777)
+            run = [
+                setpriv,
+                "--reuid=65534",
+                "--regid=65534",
+                "--clear-groups",
+                "bash",
+                "-c",
+                shell,
+            ]
+        else:
+            run = ["bash", "-c", shell]
+        subprocess.run(run, check=True)
         assert not target.exists()
 
     def test_git_branch_setup_shell_quotes_trigger_derived_values(
