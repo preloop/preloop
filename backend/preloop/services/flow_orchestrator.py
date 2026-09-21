@@ -4320,11 +4320,7 @@ class FlowExecutionOrchestrator:
         if self._post_exec_no_commits:
             return
         self._post_exec_no_commits = True
-        _, _, branch = line.partition(" ")
-        logger.info(
-            "Post-execution git block found no commit on %s",
-            branch.strip() or "the working branch",
-        )
+        logger.info("Post-execution git block found no commit on the working branch")
 
     def _no_progress_guard_config(self) -> Optional[NoProgressGuardConfig]:
         """The live guard's deadlines for this flow, or None when it is off."""
