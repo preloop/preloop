@@ -172,7 +172,10 @@ The plugin reads its own OpenClaw plugin entry, at
 Do not write Agent Control metadata as a top-level `preloop` object. OpenClaw
 builds that validate config schemas reject unknown root keys. `enabled: false`
 is the supported pause switch: the package stays installed, but the plugin
-registers no hooks and opens no control channel.
+registers no hooks and opens no control channel. The pause switch applies
+when OpenClaw loads the plugin through `register()`. The standalone
+`preloop-openclaw-plugin run` command still starts the Agent Control channel;
+that is an explicit CLI start, not host registration.
 
 | Key | Default | What it does |
 |---|---|---|
@@ -224,7 +227,9 @@ preloop-openclaw-plugin run --config ~/.openclaw/openclaw.json
 ```
 
 `verify` checks the config shape and that the plugin loads. `run` opens the
-Agent Control WebSocket and advertises capabilities without OpenClaw attached.
+Agent Control WebSocket and advertises capabilities without OpenClaw attached,
+including when `enabled` is `false`, because `run` is an explicit CLI start
+rather than the host `register()` path.
 In Preloop the agent should show as online, and Talk controls should appear in
 the console and mobile apps. To test message delivery end to end, run the
 plugin inside OpenClaw itself (not via `run`, which has no session attached),
