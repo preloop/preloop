@@ -1,7 +1,8 @@
-import { html, fixture, expect } from '@open-wc/testing';
+import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import '../../../components/view-header.ts';
+import { resetConfirmDialogForTests } from '../../../components/confirm-dialog';
 import './security-view';
 import type { SecurityView } from './security-view';
 
@@ -14,6 +15,16 @@ describe('SecurityView', () => {
       .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
         const method = (init?.method || 'GET').toUpperCase();
+
+        if (
+          url.includes('/api/v1/auth/sessions/revoke-all') &&
+          method === 'POST'
+        ) {
+          return new Response(JSON.stringify({ auth_generation: 1 }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
 
         if (
           url.includes('/api/v1/auth/users/me/password') &&
@@ -43,6 +54,7 @@ describe('SecurityView', () => {
   afterEach(() => {
     fetchStub?.restore();
     localStorage.clear();
+    resetConfirmDialogForTests();
   });
 
   it('renders the change password form', async () => {
@@ -129,5 +141,42 @@ describe('SecurityView', () => {
     expect((element as any).changePasswordMessage).to.contain(
       'Failed to change password'
     );
+  });
+
+  it('signs out everywhere after confirmation', async () => {
+    fetchStub = createFetchStub();
+    const element = (await fixture(
+      html`<security-view></security-view>`
+    )) as SecurityView;
+    await element.updateComplete;
+    const navigate = sinon.stub(element as any, '_navigate');
+
+    (
+      element.shadowRoot?.querySelector(
+        '[data-testid="sign-out-everywhere"]'
+      ) as HTMLElement
+    ).click();
+
+    await waitUntil(
+      () => !!document.querySelector('confirm-dialog'),
+      'confirm dialog'
+    );
+    const dialog = document.querySelector('confirm-dialog')!;
+    const confirmBtn = dialog.shadowRoot?.querySelector(
+      '[data-testid="confirm-dialog-confirm"]'
+    ) as HTMLElement;
+    expect(confirmBtn, 'expected the danger confirm control').to.exist;
+    confirmBtn.click();
+
+    await waitUntil(() => navigate.called, 'local sign-out');
+
+    const call = fetchStub
+      .getCalls()
+      .find((c) => String(c.args[0]).includes('/auth/sessions/revoke-all'));
+    expect(call, 'expected revoke-all POST').to.exist;
+    expect((call?.args[1]?.method || '').toUpperCase()).to.equal('POST');
+    expect(localStorage.getItem('accessToken')).to.equal(null);
+    expect(localStorage.getItem('refreshToken')).to.equal(null);
+    expect(navigate).to.have.been.calledWith('/');
   });
 });

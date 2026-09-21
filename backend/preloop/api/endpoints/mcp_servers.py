@@ -539,7 +539,7 @@ async def create_mcp_oauth_authorize_token(
 
     from datetime import timedelta
 
-    from preloop.api.auth.jwt import create_access_token
+    from preloop.api.auth.jwt import create_access_token, user_auth_generation
 
     authorize_token = create_access_token(
         {
@@ -548,6 +548,7 @@ async def create_mcp_oauth_authorize_token(
             "server_id": server_id,
         },
         expires_delta=timedelta(seconds=MCP_OAUTH_AUTHORIZE_TTL_SECONDS),
+        auth_generation=user_auth_generation(current_user),
     )
     return {"authorize_token": authorize_token}
 

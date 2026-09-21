@@ -33,6 +33,8 @@ from preloop.api.auth.jwt import (
     decode_token,
     get_current_active_user,
     get_password_hash,
+    reject_stale_token_generation,
+    user_auth_generation,
     verify_password,
 )
 from preloop.config import settings
@@ -749,14 +751,20 @@ async def verify_email(
         # buys no session: is_active is the account-level decision and this
         # endpoint must not reopen it.
         if user.is_active:
+            generation = user_auth_generation(user)
             access_token = create_access_token(
                 data={"sub": str(user.id), "scopes": []},
                 expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+                auth_generation=generation,
             )
             response.update(
                 {
                     "access_token": access_token,
-                    "refresh_token": create_refresh_token(sub=str(user.id), scopes=[]),
+                    "refresh_token": create_refresh_token(
+                        sub=str(user.id),
+                        scopes=[],
+                        auth_generation=generation,
+                    ),
                     "token_type": "bearer",
                     "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
                 }
@@ -954,15 +962,19 @@ async def login_form(
 
     # Create access token with user information
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    generation = user_auth_generation(user)
     access_token = create_access_token(
         data={"sub": str(user.id), "scopes": form_data.scopes or []},
         expires_delta=access_token_expires,
+        auth_generation=generation,
     )
 
     # Create refresh token with longer expiration; a fresh login starts a new
     # sliding session window (sat claim).
     refresh_token = create_refresh_token(
-        sub=str(user.id), scopes=form_data.scopes or []
+        sub=str(user.id),
+        scopes=form_data.scopes or [],
+        auth_generation=generation,
     )
 
     return {
@@ -1006,14 +1018,18 @@ async def login_json(
 
     # Create access token with user information
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    generation = user_auth_generation(user)
     access_token = create_access_token(
         data={"sub": str(user.id), "scopes": []},
         expires_delta=access_token_expires,
+        auth_generation=generation,
     )
 
     # Create refresh token with longer expiration; a fresh login starts a new
     # sliding session window (sat claim).
-    refresh_token = create_refresh_token(sub=str(user.id), scopes=[])
+    refresh_token = create_refresh_token(
+        sub=str(user.id), scopes=[], auth_generation=generation
+    )
 
     return {
         "access_token": access_token,
@@ -1076,6 +1092,8 @@ def refresh_token(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        reject_stale_token_generation(user, token_data)
+
         # A session may not outlive the verification requirement either: a
         # user who was signed in when the setting went on stops rotating.
         enforce_verified_email(user)
@@ -1096,9 +1114,11 @@ def refresh_token(
 
         # Create a new access token
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        generation = user_auth_generation(user)
         access_token = create_access_token(
             data={"sub": token_data.sub, "scopes": token_data.scopes},
             expires_delta=access_token_expires,
+            auth_generation=generation,
         )
 
         # Rotate the refresh token, carrying the original session start
@@ -1107,6 +1127,7 @@ def refresh_token(
             sub=token_data.sub,
             scopes=token_data.scopes,
             session_started_at=session_started_at,
+            auth_generation=generation,
         )
 
         return {
@@ -1124,6 +1145,21 @@ def refresh_token(
             detail="Invalid refresh token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+@router.post("/sessions/revoke-all")
+def revoke_all_sessions(
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> Dict[str, int]:
+    """Revoke every JWT session for the signed-in user.
+
+    Increments ``auth_generation`` so every outstanding access and refresh
+    token (including this request's) fails the generation check on the next
+    use. API keys and runner tokens are unchanged.
+    """
+    new_generation = crud_user.bump_auth_generation(db, user_id=current_user.id)
+    return {"auth_generation": new_generation}
 
 
 @router.get("/users/me", response_model=AuthUserResponse)
@@ -1943,11 +1979,15 @@ async def complete_onboarding(
 
     # Create access and refresh tokens for auto-login
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    generation = user_auth_generation(user)
     access_token = create_access_token(
         data={"sub": str(user.id), "scopes": []},
         expires_delta=access_token_expires,
+        auth_generation=generation,
     )
-    refresh_token = create_refresh_token(sub=str(user.id), scopes=[])
+    refresh_token = create_refresh_token(
+        sub=str(user.id), scopes=[], auth_generation=generation
+    )
 
     return {
         "access_token": access_token,

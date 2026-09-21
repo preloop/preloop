@@ -140,3 +140,20 @@ def test_user_account_relationship(db_session, create_account, create_user):
     # Check reverse relationship
     db_session.refresh(account)
     assert user in account.users
+
+
+def test_new_user_defaults_auth_generation_to_zero(db_session, create_user):
+    """Existing and new users start at generation 0."""
+    user = create_user(username="genzero", email="genzero@example.com")
+    assert user.auth_generation == 0
+
+
+def test_bump_auth_generation_increments(db_session, create_user):
+    """bump_auth_generation is atomic and returns the new value."""
+    user = create_user(username="genbump", email="genbump@example.com")
+    first = crud_user.bump_auth_generation(db_session, user_id=user.id)
+    second = crud_user.bump_auth_generation(db_session, user_id=user.id)
+    assert first == 1
+    assert second == 2
+    db_session.refresh(user)
+    assert user.auth_generation == 2

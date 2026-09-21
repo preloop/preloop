@@ -371,13 +371,18 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def create_access_token(
-    data: Dict[str, Any], expires_delta: Optional[timedelta] = None
+    data: Dict[str, Any],
+    expires_delta: Optional[timedelta] = None,
+    *,
+    auth_generation: int = 0,
 ) -> str:
     """Create a JWT access token.
 
     Args:
         data: Data to encode in the token.
         expires_delta: Token expiration time delta.
+        auth_generation: The user's current ``auth_generation``. Written into
+            the payload as ``gen`` so a later bump can revoke the token.
 
     Returns:
         JWT access token.
@@ -389,7 +394,7 @@ def create_access_token(
     else:
         expire = datetime.now(UTC) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 
-    to_encode.update({"exp": expire})
+    to_encode.update({"exp": expire, "gen": auth_generation})
 
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -398,6 +403,8 @@ def create_refresh_token(
     sub: str,
     scopes: Optional[List[str]] = None,
     session_started_at: Optional[datetime] = None,
+    *,
+    auth_generation: int = 0,
 ) -> str:
     """Create a JWT refresh token carrying the session start claim.
 
@@ -407,6 +414,8 @@ def create_refresh_token(
         session_started_at: When this login session originally started. On
             first login this is now; on rotation the previous token's value is
             carried forward so MAX_SESSION_DAYS caps the sliding window.
+        auth_generation: The user's current ``auth_generation``. Written into
+            the payload as ``gen``.
 
     Returns:
         Encoded JWT refresh token.
@@ -420,6 +429,7 @@ def create_refresh_token(
             "sat": int(started.timestamp()),
         },
         expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+        auth_generation=auth_generation,
     )
 
 
@@ -450,6 +460,13 @@ def decode_token(token: str) -> TokenData:
         exp = payload.get("exp")
         refresh = payload.get("refresh", False)
         sat = payload.get("sat")
+        gen_raw = payload.get("gen")
+        gen: Optional[int] = None
+        if gen_raw is not None:
+            try:
+                gen = int(gen_raw)
+            except (TypeError, ValueError):
+                gen = None
 
         return TokenData(
             sub=sub,
@@ -457,11 +474,55 @@ def decode_token(token: str) -> TokenData:
             exp=datetime.fromtimestamp(exp) if exp else None,
             refresh=refresh,
             session_started_at=(datetime.fromtimestamp(sat, tz=UTC) if sat else None),
+            gen=gen,
         )
     except PyJWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+SESSION_REVOKED_DETAIL = "Session revoked, please sign in again"
+
+
+def token_auth_generation(token_data: TokenData) -> int:
+    """Return the token's generation, treating a missing ``gen`` as 0."""
+    if token_data.gen is None:
+        return 0
+    return int(token_data.gen)
+
+
+def user_auth_generation(user: User) -> int:
+    """Return the user's auth generation, defaulting unset values to 0."""
+    value = getattr(user, "auth_generation", 0)
+    # bool is a subclass of int; reject it. MagicMock and other stand-ins
+    # used in tests are not ints and must not win a ``<`` comparison.
+    if type(value) is int:
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
+def reject_stale_token_generation(user: User, token_data: TokenData) -> None:
+    """Reject a JWT whose ``gen`` is behind the user's auth generation.
+
+    Args:
+        user: The user loaded for this token.
+        token_data: Decoded token claims.
+
+    Raises:
+        HTTPException: 401 when the token generation is stale.
+    """
+    if token_auth_generation(token_data) < user_auth_generation(user):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=SESSION_REVOKED_DETAIL,
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -570,6 +631,8 @@ def get_current_user(
                     detail="Inactive user",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
+
+            reject_stale_token_generation(user, token_data)
 
             return user  # Return the full User object
         except (HTTPException, SQLAlchemyPoolTimeout):
@@ -733,6 +796,7 @@ def get_user_from_token_if_valid_sync(token: str, db_session: Any) -> Optional[U
 
         user = crud_user.get(db_session, id=user_id)
         if user and user.is_active:
+            reject_stale_token_generation(user, token_data)
             return user
 
     except SQLAlchemyPoolTimeout:

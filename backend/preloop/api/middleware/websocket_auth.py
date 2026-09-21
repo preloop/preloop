@@ -147,7 +147,10 @@ class WebSocketAuthMiddleware:
             User object if valid, None otherwise
         """
         try:
-            from preloop.api.auth.jwt import decode_token
+            from preloop.api.auth.jwt import (
+                decode_token,
+                reject_stale_token_generation,
+            )
             from preloop.models.crud import crud_user
             from preloop.services.db_executor import detach_user, run_db_async
 
@@ -161,6 +164,7 @@ class WebSocketAuthMiddleware:
                 """Load the user in a short-lived session on a worker thread."""
                 user = crud_user.get(db, id=user_id)
                 if user and user.is_active:
+                    reject_stale_token_generation(user, token_data)
                     return detach_user(db, user)
                 return None
 

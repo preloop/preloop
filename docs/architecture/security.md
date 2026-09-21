@@ -38,6 +38,21 @@ Preloop implements authentication and multi-tenancy:
 - Token-based authentication with refresh token support
 - Email verification for new user accounts
 - Integration points for SSO and OAuth providers (future)
+- Per-user `auth_generation` (JWT `gen` claim). `POST /auth/sessions/revoke-all`
+  increments it; `get_current_user`, `POST /auth/refresh`, the CLI JWT
+  branch of `POST /oauth/token`, and the WebSocket upgrade
+  (`WebSocketAuthMiddleware`) reject a token whose `gen` is behind the
+  user. Tokens minted before the claim existed are treated as generation 0,
+  so one bump also invalidates them. API keys and runner tokens are
+  unchanged. `preloop auth logout --all` and the console Sign out everywhere
+  control call that endpoint.
+- Console refresh tokens (`POST /auth/refresh`) carry `sat` and are capped
+  at `MAX_SESSION_DAYS` (default 30). CLI login refresh tokens stay
+  long-lived (`CLI_JWT_REFRESH_TOKEN_EXPIRE_DAYS`, default 365); revocation
+  is the control for those, not the session cap.
+- `POST /oauth/revoke` still revokes opaque MCP tokens. When the token
+  decodes as one of our JWTs it returns 400 `unsupported_token_type` and
+  points at `POST /auth/sessions/revoke-all` instead of claiming success.
 
 **Multi-User Architecture:**
 - **Account Model:** Represents an organization/company
@@ -67,7 +82,7 @@ Preloop implements authentication and multi-tenancy:
 - [x] Sensitive data masked in logs (see Redaction Policy below)
 - [ ] Rate limiting to prevent abuse (partial implementation exists)
 - [ ] 2FA/MFA support for user accounts
-- [ ] Session management and token revocation
+- [x] Session revocation via per-user token generation (`auth_generation`)
 - [ ] Regular security audits and dependency updates
 
 > **Enterprise Security**: Preloop Cloud and Preloop Enterprise add RBAC and comprehensive audit logging. Contact sales@preloop.ai for more information.

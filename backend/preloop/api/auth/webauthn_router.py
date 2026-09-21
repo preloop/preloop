@@ -54,6 +54,7 @@ from preloop.api.auth.jwt import (
     create_access_token,
     create_refresh_token,
     get_current_active_user,
+    user_auth_generation,
 )
 from preloop.models.crud import crud_audit_log, crud_user, crud_webauthn_credential
 from preloop.models.db.session import get_db_session
@@ -471,11 +472,15 @@ def authentication_verify(
         thread.daemon = True
         thread.start()
 
+    generation = user_auth_generation(user)
     access_token = create_access_token(
         data={"sub": str(user.id), "scopes": []},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        auth_generation=generation,
     )
-    refresh_token = create_refresh_token(sub=str(user.id), scopes=[])
+    refresh_token = create_refresh_token(
+        sub=str(user.id), scopes=[], auth_generation=generation
+    )
 
     return {
         "access_token": access_token,

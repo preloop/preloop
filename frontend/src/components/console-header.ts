@@ -1059,15 +1059,7 @@ export class ConsoleHeader extends LitElement {
   }
 
   async signOut() {
-    localStorage.removeItem('accessToken');
-    localStorage.removeItem('refreshToken');
-    window.dispatchEvent(
-      new CustomEvent('auth-change', { bubbles: true, composed: true })
-    );
-    window.location.href = '/';
-    fetch('/logout', { method: 'GET' }).catch((error) => {
-      console.error('Logout request to server failed:', error);
-    });
+    api.performLocalSignOut();
   }
 
   private isUnexpiredPendingApproval(approval: ApprovalRequest): boolean {

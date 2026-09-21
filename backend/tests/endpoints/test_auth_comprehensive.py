@@ -88,6 +88,7 @@ def mock_user():
     user.account_id = uuid.uuid4()
     user.full_name = "Test User"
     user.email_verified = True
+    user.auth_generation = 0
     return user
 
 
@@ -415,6 +416,91 @@ class TestTokenRefresh:
 
         assert response.status_code == 401
         assert "Session expired" in response.json()["detail"]
+
+    def test_refresh_rejects_stale_generation(self, db_session_mock, mock_user):
+        """A refresh token whose gen is behind the user is rejected."""
+        mock_user.auth_generation = 2
+        refresh_token = create_refresh_token(
+            sub=str(mock_user.id), scopes=[], auth_generation=1
+        )
+
+        with patch("preloop.api.auth.router.crud_user") as mock_crud:
+            mock_crud.get.return_value = mock_user
+
+            response = client.post(
+                "/auth/refresh",
+                json={"refresh_token": refresh_token},
+            )
+
+        assert response.status_code == 401
+        assert "Session revoked" in response.json()["detail"]
+
+    def test_refresh_rejects_missing_gen_after_bump(self, db_session_mock, mock_user):
+        """A pre-change refresh token is treated as gen 0 and dies after a bump."""
+        mock_user.auth_generation = 1
+        legacy_refresh = jwt.encode(
+            {
+                "sub": str(mock_user.id),
+                "scopes": [],
+                "refresh": True,
+                "exp": datetime.now(timezone.utc) + timedelta(days=7),
+            },
+            settings.security.secret_key,
+            algorithm="HS256",
+        )
+
+        with patch("preloop.api.auth.router.crud_user") as mock_crud:
+            mock_crud.get.return_value = mock_user
+
+            response = client.post(
+                "/auth/refresh",
+                json={"refresh_token": legacy_refresh},
+            )
+
+        assert response.status_code == 401
+        assert "Session revoked" in response.json()["detail"]
+
+    def test_revoke_all_bumps_and_old_refresh_fails(self, db_session_mock, mock_user):
+        """revoke-all increments generation; the previous refresh token dies."""
+        from preloop.api.auth.jwt import get_current_active_user
+
+        mock_user.auth_generation = 0
+        old_refresh = create_refresh_token(
+            sub=str(mock_user.id), scopes=[], auth_generation=0
+        )
+        app.dependency_overrides[get_current_active_user] = lambda: mock_user
+        try:
+            with patch("preloop.api.auth.router.crud_user") as mock_crud:
+
+                def _bump(db, user_id):
+                    mock_user.auth_generation = 1
+                    return 1
+
+                mock_crud.bump_auth_generation.side_effect = _bump
+                mock_crud.get.return_value = mock_user
+
+                revoke = client.post("/auth/sessions/revoke-all")
+                assert revoke.status_code == 200
+                assert revoke.json() == {"auth_generation": 1}
+
+                stale = client.post(
+                    "/auth/refresh",
+                    json={"refresh_token": old_refresh},
+                )
+                assert stale.status_code == 401
+                assert "Session revoked" in stale.json()["detail"]
+
+                fresh = create_refresh_token(
+                    sub=str(mock_user.id), scopes=[], auth_generation=1
+                )
+                rotated = client.post(
+                    "/auth/refresh",
+                    json={"refresh_token": fresh},
+                )
+                assert rotated.status_code == 200
+                assert "access_token" in rotated.json()
+        finally:
+            app.dependency_overrides.pop(get_current_active_user, None)
 
     def test_refresh_legacy_token_without_sat_still_works(
         self, db_session_mock, mock_user

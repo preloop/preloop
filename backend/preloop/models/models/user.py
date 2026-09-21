@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Boolean
@@ -60,6 +60,8 @@ class User(Base):
         onboarding_claim_hash: SHA-256 of the outstanding single-use token
             that claims a checkout-created account (null when none is
             outstanding).
+        auth_generation: Integer carried in JWT ``gen`` claims. Bumping it
+            rejects every outstanding access and refresh token for this user.
         created_at: When the user was created.
         updated_at: When the user was last updated.
     """
@@ -162,6 +164,18 @@ class User(Base):
         String(64),
         nullable=True,
         comment="SHA-256 of the outstanding single-use onboarding claim token",
+    )
+
+    # Per-user generation for JWT session revocation. Tokens carry this
+    # value as ``gen``. Incrementing it (POST /auth/sessions/revoke-all)
+    # makes every outstanding access and refresh token fail the generation
+    # check. Tokens minted before the claim existed are treated as gen 0.
+    auth_generation: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+        comment="Incremented to revoke all outstanding JWT sessions",
     )
 
     # Relationships

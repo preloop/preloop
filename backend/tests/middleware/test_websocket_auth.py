@@ -149,3 +149,53 @@ class TestWebSocketAuthMiddleware:
         middleware.app.assert_called_once()
         assert scope["state"]["user"] == mock_user
         assert scope["state"]["is_authenticated"] is True
+
+    @pytest.mark.asyncio
+    async def test_authenticated_path_rejects_stale_generation(self, middleware):
+        """A bumped auth_generation must reject the /ws upgrade."""
+        from uuid import uuid4
+
+        from preloop.api.auth.jwt import create_access_token
+
+        user_id = uuid4()
+        token = create_access_token(
+            {"sub": str(user_id)},
+            auth_generation=0,
+        )
+        mock_user = MagicMock()
+        mock_user.id = user_id
+        mock_user.account_id = "account-456"
+        mock_user.username = "testuser"
+        mock_user.is_active = True
+        mock_user.auth_generation = 1
+
+        async def _run_db(fn):
+            return fn(MagicMock())
+
+        with (
+            patch("preloop.models.crud.crud_user.get", return_value=mock_user),
+            patch(
+                "preloop.services.db_executor.run_db_async",
+                side_effect=_run_db,
+            ),
+            patch(
+                "preloop.services.db_executor.detach_user",
+                side_effect=lambda _db, user: user,
+            ),
+        ):
+            scope = {
+                "type": "websocket",
+                "path": "/api/v1/ws",
+                "headers": [(b"authorization", f"Bearer {token}".encode())],
+                "query_string": b"",
+                "state": {},
+            }
+            receive = AsyncMock()
+            send = AsyncMock()
+            await middleware(scope, receive, send)
+
+        send.assert_called()
+        close = send.call_args[0][0]
+        assert close["type"] == "websocket.close"
+        assert close["code"] == 1008
+        middleware.app.assert_not_called()

@@ -123,8 +123,11 @@ var authSignupCmd = &cobra.Command{
 var authLogoutCmd = &cobra.Command{
 	Use:   "logout",
 	Short: "Log out of Preloop",
-	Long:  `Log out of your Preloop account and remove stored credentials.`,
-	RunE:  runAuthLogout,
+	Long: `Log out of your Preloop account and remove stored credentials.
+
+By default this only clears this machine. Use --all to also revoke every
+other CLI and console session for this user.`,
+	RunE: runAuthLogout,
 }
 
 // authStatusCmd represents the auth status command.
@@ -163,6 +166,10 @@ var (
 	// initiated via 'preloop signup'. When true, the browser is sent to the
 	// sign-up page first instead of the sign-in page.
 	signupRequested bool
+	// logoutAll asks the server to bump this user's auth generation so
+	// every CLI and console JWT session is revoked, then clears local
+	// credentials.
+	logoutAll bool
 )
 
 func init() {
@@ -176,6 +183,13 @@ func init() {
 	configureLoginFlags(authSignupCmd)
 	configureLoginFlags(loginCmd)
 	configureLoginFlags(signupCmd)
+
+	authLogoutCmd.Flags().BoolVar(
+		&logoutAll,
+		"all",
+		false,
+		"revoke every CLI and console session for this user, then clear local credentials",
+	)
 }
 
 // runAuthSignup is the entry point for 'preloop signup'. It mirrors
@@ -551,12 +565,33 @@ func runAuthLogout(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	if logoutAll {
+		if err := revokeAllSessions(); err != nil {
+			fmt.Printf(
+				"Could not reach the server; local credentials cleared, other sessions remain valid (%v)\n",
+				err,
+			)
+		}
+	}
+
 	if err := config.Clear(); err != nil {
 		return fmt.Errorf("failed to clear credentials: %w", err)
 	}
 
 	fmt.Println("Successfully logged out")
+	if !logoutAll {
+		fmt.Println("Local credentials cleared. Other sessions stay signed in; use `preloop auth logout --all` to sign out everywhere.")
+	}
 	return nil
+}
+
+func revokeAllSessions() error {
+	client, err := api.NewClient(FlagToken, FlagURL)
+	if err != nil {
+		return err
+	}
+	var result map[string]int
+	return client.Post("/api/v1/auth/sessions/revoke-all", map[string]any{}, &result)
 }
 
 // runAuthStatus shows the current authentication status.
