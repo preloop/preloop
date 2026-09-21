@@ -3,11 +3,13 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1848,5 +1850,94 @@ func TestRunAgentsInstallPluginOpenCodeRegistersPlugin(t *testing.T) {
 	doc, _ = loadJSONDocument(configPath)
 	if plugins, _ := doc["plugin"].([]interface{}); len(plugins) != 1 {
 		t.Fatalf("expected one entry after re-install, got %v", plugins)
+	}
+}
+
+func TestManagedSidecarCreatesIsolatedDependenciesOnFreshHost(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX runtime installer")
+	}
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	bin := t.TempDir()
+	t.Setenv("PATH", bin)
+	log := filepath.Join(home, "uv.log")
+	t.Setenv("SIDECAR_TEST_LOG", log)
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(content), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("python3", "#!/bin/sh\nexit 1\n")
+	write("uv", `#!/bin/sh
+printf '%s\n' "$*" >> "$SIDECAR_TEST_LOG"
+if [ "$1" = venv ]; then
+ /bin/mkdir -p "$4/bin"
+ printf '#!/bin/sh\nexit 0\n' > "$4/bin/python"
+ /bin/chmod 700 "$4/bin/python"
+fi
+`)
+	got, err := managedAgentControlSidecarPython()
+	want := filepath.Join(home, ".preloop-agent-control", "venv", "bin", "python")
+	if err != nil || got != want {
+		t.Fatalf("python=%q, err=%v", got, err)
+	}
+	commands, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(commands), "pip install --python "+want+" aiohttp>=3.9,<4 PyYAML>=6,<7") {
+		t.Fatalf("unexpected provisioning: %s", commands)
+	}
+	// Reuse a healthy owned environment without reinstalling dependencies.
+	if _, err := managedAgentControlSidecarPython(); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := os.ReadFile(log)
+	if string(again) != string(commands) {
+		t.Fatal("healthy environment reinstalled")
+	}
+}
+
+func TestManagedSidecarDependencyInstallFailureIsNotReady(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX runtime installer")
+	}
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	bin := t.TempDir()
+	t.Setenv("PATH", bin)
+	for _, name := range []string{"python3", "uv"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := ensureManagedAgentControlSidecar(AgentConfig{Name: "OpenClaw"}, io.Discard)
+	if result["control_plugin_verified"] != false {
+		t.Fatalf("failed dependency setup reported ready: %#v", result)
+	}
+	if !strings.Contains(fmt.Sprint(result["control_plugin_verification"]), "failed to prepare") {
+		t.Fatalf("missing actionable failure: %#v", result)
+	}
+	if err := managedRuntimeControlReadinessError(AgentConfig{Name: "OpenClaw"}, result); err == nil {
+		t.Fatal("failed bootstrap allowed onboarding success")
+	}
+}
+
+func TestManagedRuntimeRequiresVerifiedControlForCompletion(t *testing.T) {
+	for _, name := range []string{"OpenClaw", hermesAgentName} {
+		for _, state := range []map[string]interface{}{
+			{"validation_passed": true, "preloop_server_present": true, "gateway_provider_ok": true},
+			{"control_plugin_verified": true, "control_channel_configured": false},
+			{"control_plugin_verified": false, "control_channel_configured": true},
+		} {
+			if err := managedRuntimeControlReadinessError(AgentConfig{Name: name}, state); err == nil {
+				t.Fatalf("%s accepted incomplete control: %#v", name, state)
+			}
+		}
+		if err := managedRuntimeControlReadinessError(AgentConfig{Name: name}, map[string]interface{}{"control_plugin_verified": true, "control_channel_configured": true}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

@@ -37,6 +37,7 @@ func init() {
 	agentsCmd.AddCommand(agentsInstallRuntimeCmd)
 	agentsInstallRuntimeCmd.Flags().Bool("dry-run", false, "preview install and onboarding steps without running them")
 	agentsInstallRuntimeCmd.Flags().Bool("skip-install", false, "skip upstream runtime installation and only onboard an already-installed agent")
+	agentsInstallRuntimeCmd.Flags().Bool("install-only", false, "install the upstream runtime without authentication or Preloop onboarding")
 	agentsInstallRuntimeCmd.Flags().BoolP("yes", "y", false, "skip onboarding confirmation prompts")
 	agentsInstallRuntimeCmd.Flags().BoolP("force", "f", false, "alias for --yes")
 	agentsInstallRuntimeCmd.Flags().Bool("live-validate", true, "after onboarding, run a supported live validation prompt through the agent")
@@ -133,6 +134,10 @@ func runAgentsInstallRuntime(cmd *cobra.Command, args []string) error {
 
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	skipInstall, _ := cmd.Flags().GetBool("skip-install")
+	installOnly, _ := cmd.Flags().GetBool("install-only")
+	if installOnly && skipInstall {
+		return fmt.Errorf("--install-only and --skip-install cannot be combined")
+	}
 	autoApprove := isAutoApprove(cmd)
 	liveValidate, _ := cmd.Flags().GetBool("live-validate")
 	skipLiveValidate, _ := cmd.Flags().GetBool("skip-live-validate")
@@ -143,6 +148,9 @@ func runAgentsInstallRuntime(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Would install %s with: %s\n", spec.displayName, spec.installSummary)
 		if skipInstall {
 			fmt.Println("Would skip upstream runtime installation (--skip-install).")
+		}
+		if installOnly {
+			return nil
 		}
 		fmt.Printf("Would onboard with: preloop agents onboard %s", spec.onboardAgentName)
 		if preferredModel != "" {
@@ -167,6 +175,9 @@ func runAgentsInstallRuntime(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to install %s: %w", spec.displayName, err)
 		}
 		fmt.Fprintf(os.Stdout, "✓ Installed %s\n", spec.displayName) //nolint:errcheck
+	}
+	if installOnly {
+		return nil
 	}
 
 	discovered, err := discoverAgents(io.Discard, false)
@@ -216,7 +227,19 @@ func runRuntimeInstallCommand(command []string, writer io.Writer) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, command[1:]...)
+	cmd.Env = runtimeInstallerEnvironment()
 	cmd.Stdout = writer
 	cmd.Stderr = writer
 	return cmd.Run()
+}
+
+// Upstream installers do not need the caller's Preloop bootstrap credential.
+func runtimeInstallerEnvironment() []string {
+	var environment []string
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "PRELOOP_TOKEN=") {
+			environment = append(environment, entry)
+		}
+	}
+	return environment
 }

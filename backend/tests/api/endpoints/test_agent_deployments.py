@@ -1,5 +1,6 @@
 """Endpoint authorization, model ownership and verified deployment results."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -137,4 +138,98 @@ def test_verified_account_model_presence_and_version_return_real_summary():
                 evidence=evidence,
             )
             == summary
+        )
+
+
+@pytest.mark.parametrize(
+    "failure", [None, RuntimeError("failed"), asyncio.CancelledError()]
+)
+@pytest.mark.asyncio
+async def test_bootstrap_credential_is_revoked_on_success_failure_and_cancellation(
+    failure,
+):
+    cleanup_db = MagicMock()
+    cleanup_context = MagicMock()
+    cleanup_context.__enter__.return_value = cleanup_db
+    record = SimpleNamespace(id=uuid4())
+    with (
+        patch.object(
+            api.crud_api_key,
+            "create_runtime_key",
+            return_value=(record, "temporary-bootstrap"),
+        ) as create,
+        patch.object(api.crud_api_key, "get", return_value=record),
+        patch.object(api.crud_api_key, "update") as update,
+        patch.object(
+            api,
+            "get_session_factory",
+            return_value=MagicMock(return_value=cleanup_context),
+        ),
+    ):
+
+        async def execute():
+            async with api.deployment_credential(
+                account_id="account", user_id=uuid4(), request_id=uuid4()
+            ) as token:
+                assert token == "temporary-bootstrap"
+                if failure is not None:
+                    raise failure
+
+        try:
+            if failure is None:
+                await execute()
+            else:
+                with pytest.raises(type(failure)):
+                    await execute()
+        finally:
+            update.assert_called_once_with(
+                cleanup_db, db_obj=record, obj_in={"is_active": False}
+            )
+    assert create.call_args.kwargs["expires_at"].tzinfo is not None
+    assert create.call_args.kwargs["key_value"].startswith("deploy_")
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_key_creation_keeps_loop_responsive_and_revokes_key():
+    import threading
+
+    loop_thread = threading.get_ident()
+    started = threading.Event()
+    finish = threading.Event()
+    record = SimpleNamespace(id=uuid4())
+    cleanup_db = MagicMock()
+    context = MagicMock()
+    context.__enter__.return_value = cleanup_db
+
+    def create(*args, **kwargs):
+        assert threading.get_ident() != loop_thread
+        started.set()
+        assert finish.wait(5)
+        return record, "temporary-bootstrap"
+
+    async def execute():
+        async with api.deployment_credential(
+            account_id="account", user_id=uuid4(), request_id=uuid4()
+        ):
+            pytest.fail("Cancelled creation must not begin deployment")
+
+    with (
+        patch.object(api.crud_api_key, "create_runtime_key", side_effect=create),
+        patch.object(api.crud_api_key, "get", return_value=record),
+        patch.object(api.crud_api_key, "update") as update,
+        patch.object(
+            api, "get_session_factory", return_value=MagicMock(return_value=context)
+        ),
+    ):
+        task = asyncio.create_task(execute())
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)
+        finally:
+            finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        update.assert_called_once_with(
+            cleanup_db, db_obj=record, obj_in={"is_active": False}
         )

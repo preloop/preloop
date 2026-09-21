@@ -1,25 +1,31 @@
 """Operator initiated real agent deployment over SSH or onto a new GCE VM."""
 
 import asyncio
-from datetime import timedelta
-from typing import Any
+import secrets
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+from typing import Any, AsyncIterator, Callable, TypeVar
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
-from preloop.api.auth.jwt import create_access_token
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import (
     crud_account,
     crud_ai_model,
+    crud_api_key,
     crud_audit_log,
     crud_managed_agent,
     crud_managed_agent_ai_model_binding,
     crud_user_role,
 )
-from preloop.models.db.session import get_db_session, release_transaction
+from preloop.models.db.session import (
+    get_session_factory,
+)
 from preloop.schemas.agent_deployment import AgentDeploymentRequest
 from preloop.services.agent_deployment import (
     DeploymentError,
@@ -32,6 +38,62 @@ from preloop.services.model_runtime_resolver import effective_gateway_alias
 from preloop.utils.permissions import require_permission
 
 router = APIRouter(prefix="/agent-deployments", tags=["Agent deployment"])
+
+
+T = TypeVar("T")
+
+
+async def deployment_db(operation: Callable[[Session], T]) -> T:
+    """Keep each CRUD transaction and session lifetime entirely off the loop."""
+
+    def execute() -> T:
+        with get_session_factory()() as db:
+            return operation(db)
+
+    return await run_db_off_loop(execute)
+
+
+@asynccontextmanager
+async def deployment_credential(
+    *, account_id: str, user_id: UUID, request_id: UUID
+) -> AsyncIterator[str]:
+    """Mint a hashed bootstrap key, revoked after success, failure or cancellation.
+
+    The explicitly trusted target needs the owner's legacy API permissions.
+    Installers run before the key is exported; enrollment mints a separate
+    durable runtime credential. Expiry backs up revocation if the server dies.
+    """
+
+    key_id: UUID | None = None
+
+    def create(db: Session) -> str:
+        nonlocal key_id
+        record, token = crud_api_key.create_runtime_key(
+            db,
+            account_id=account_id,
+            user_id=user_id,
+            name=f"Agent deployment bootstrap {request_id}",
+            scopes=["*"],
+            expires_at=datetime.now(UTC) + timedelta(minutes=20),
+            context_data={"agent_deployment_id": str(request_id)},
+            key_value=f"deploy_{secrets.token_urlsafe(32)}",
+        )
+        key_id = record.id
+        return token
+
+    def revoke(db: Session, key_id: UUID) -> None:
+        record = crud_api_key.get(db, id=key_id, account_id=account_id)
+        if record is not None:
+            crud_api_key.update(db, db_obj=record, obj_in={"is_active": False})
+
+    try:
+        # deployment_db drains its worker before propagating cancellation, so
+        # key_id is available for revocation even if creation was interrupted.
+        token = await deployment_db(create)
+        yield token
+    finally:
+        if key_id is not None:
+            await deployment_db(lambda db: revoke(db, key_id))
 
 
 def authorize_deployment(db: Session, user: models.User) -> None:
@@ -103,19 +165,11 @@ def verify_registered_agent(
     return summary
 
 
-@router.post("")
 @require_permission("manage_agents")
-async def deploy_agent(
-    payload: AgentDeploymentRequest,
-    current_user: models.User = Depends(get_current_active_user),
-    db: Session = Depends(get_db_session),
-) -> dict[str, Any]:
-    """Complete bounded installation and live onboarding before returning success.
-
-    SSH credentials remain in this request's memory. A generated, short-lived
-    user token is passed over the verified SSH connection for the CLI to mint
-    the runtime's own credentials; no provider key or GCP credential is sent.
-    """
+def prepare_deployment(
+    *, db: Session, current_user: models.User, payload: AgentDeploymentRequest
+) -> str:
+    """Authorize and resolve the model in the database worker thread."""
     authorize_deployment(db, current_user)
     if not deployment_capabilities()[payload.target]:
         raise HTTPException(
@@ -129,115 +183,142 @@ async def deploy_agent(
     alias = effective_gateway_alias(model)
     if not alias:
         raise HTTPException(400, "The selected model must have gateway routing enabled")
+    return alias
+
+
+@router.post("")
+async def deploy_agent(
+    payload: AgentDeploymentRequest,
+    current_user: models.User = Depends(get_current_active_user),
+) -> dict[str, Any]:
+    """Install and verify remotely while offloading short CRUD transactions.
+
+    SSH credentials remain in request memory. A revocable bootstrap key allows
+    enrollment to mint the runtime's own credentials on the verified target.
+    """
     account_id, user_id = str(current_user.account_id), current_user.id
+    alias = await deployment_db(
+        lambda db: prepare_deployment(db=db, current_user=current_user, payload=payload)
+    )
     origin = settings.preloop_url.rstrip("/")
     if not origin.startswith("https://"):
         raise HTTPException(503, "Remote deployment requires an HTTPS PRELOOP_URL")
-    token = create_access_token(
-        {"sub": str(user_id)}, expires_delta=timedelta(minutes=20)
-    )
     details = {
         "runtime": payload.runtime,
         "model_id": str(payload.model_id),
         "target": payload.target,
         "request_id": str(payload.idempotency_key),
     }
-    crud_audit_log.log_action(
-        db,
-        account_id=account_id,
-        user_id=user_id,
-        action="agent_deployment_started",
-        resource_type="agent_deployment",
-        resource_id=str(payload.idempotency_key),
-        status="success",
-        details=details,
+    if payload.ssh is not None:
+        details.update({"ssh_host": payload.ssh.host, "ssh_port": payload.ssh.port})
+    await deployment_db(
+        lambda db: crud_audit_log.log_action(
+            db,
+            account_id=account_id,
+            user_id=user_id,
+            action="agent_deployment_started",
+            resource_type="agent_deployment",
+            resource_id=str(payload.idempotency_key),
+            status="success",
+            details=details,
+        )
     )
-    release_transaction(db)
-    vm_name = None
-    try:
-        # Reserve two hundred seconds for GCE failure cleanup. The proxy/client
-        # deadline is longer, so timeout never silently abandons a billable VM.
-        async with asyncio.timeout(700):
-            if payload.target == "gcp":
-                async with provision_gcp(
-                    account_id, payload.idempotency_key, payload.compute_size
-                ) as (ssh, vm_name):
+    async with deployment_credential(
+        account_id=account_id, user_id=user_id, request_id=payload.idempotency_key
+    ) as token:
+        vm_name = None
+        try:
+            # Reserve two hundred seconds for GCE failure cleanup. The proxy/client
+            # deadline is longer, so timeout never silently abandons a billable VM.
+            async with asyncio.timeout(700):
+                if payload.target == "gcp":
+                    async with provision_gcp(
+                        account_id, payload.idempotency_key, payload.compute_size
+                    ) as (ssh, vm_name):
+                        evidence = await install_over_ssh(
+                            ssh,
+                            runtime=payload.runtime,
+                            alias=alias,
+                            url=origin,
+                            token=token,
+                            request_id=payload.idempotency_key,
+                        )
+                        summary = await deployment_db(
+                            lambda db: verify_registered_agent(
+                                db,
+                                account_id=account_id,
+                                model_id=str(payload.model_id),
+                                runtime=payload.runtime,
+                                alias=alias,
+                                evidence=evidence,
+                            )
+                        )
+                else:
+                    assert payload.ssh is not None
                     evidence = await install_over_ssh(
-                        ssh,
+                        payload.ssh,
                         runtime=payload.runtime,
                         alias=alias,
                         url=origin,
                         token=token,
                         request_id=payload.idempotency_key,
                     )
-                    summary = verify_registered_agent(
-                        db,
-                        account_id=account_id,
-                        model_id=str(payload.model_id),
-                        runtime=payload.runtime,
-                        alias=alias,
-                        evidence=evidence,
+                    summary = await deployment_db(
+                        lambda db: verify_registered_agent(
+                            db,
+                            account_id=account_id,
+                            model_id=str(payload.model_id),
+                            runtime=payload.runtime,
+                            alias=alias,
+                            evidence=evidence,
+                        )
                     )
-            else:
-                assert payload.ssh is not None
-                evidence = await install_over_ssh(
-                    payload.ssh,
-                    runtime=payload.runtime,
-                    alias=alias,
-                    url=origin,
-                    token=token,
-                    request_id=payload.idempotency_key,
-                )
-                summary = verify_registered_agent(
+        except (DeploymentError, TimeoutError) as exc:
+            message = (
+                str(exc)
+                if isinstance(exc, DeploymentError)
+                else "Agent deployment timed out; the SSH connection was closed and any newly provisioned VM was cleaned up"
+            )
+            await deployment_db(
+                lambda db: crud_audit_log.log_action(
                     db,
                     account_id=account_id,
-                    model_id=str(payload.model_id),
-                    runtime=payload.runtime,
-                    alias=alias,
-                    evidence=evidence,
+                    user_id=user_id,
+                    action="agent_deployment_failed",
+                    resource_type="agent_deployment",
+                    resource_id=str(payload.idempotency_key),
+                    status="failure",
+                    details={**details, "error": message},
                 )
-    except (DeploymentError, TimeoutError) as exc:
-        message = (
-            str(exc)
-            if isinstance(exc, DeploymentError)
-            else "Agent deployment timed out; the SSH connection was closed and any newly provisioned VM was cleaned up"
+            )
+            raise HTTPException(502, message) from exc
+        await deployment_db(
+            lambda db: crud_audit_log.log_action(
+                db,
+                account_id=account_id,
+                user_id=user_id,
+                action="agent_deployment_completed",
+                resource_type="managed_agent",
+                resource_id=evidence.agent_id,
+                status="success",
+                details={
+                    **details,
+                    "runtime_version": evidence.runtime_version,
+                    "vm_name": vm_name,
+                },
+            )
         )
-        crud_audit_log.log_action(
-            db,
-            account_id=account_id,
-            user_id=user_id,
-            action="agent_deployment_failed",
-            resource_type="agent_deployment",
-            resource_id=str(payload.idempotency_key),
-            status="failure",
-            details={**details, "error": message},
-        )
-        raise HTTPException(502, message) from exc
-    crud_audit_log.log_action(
-        db,
-        account_id=account_id,
-        user_id=user_id,
-        action="agent_deployment_completed",
-        resource_type="managed_agent",
-        resource_id=evidence.agent_id,
-        status="success",
-        details={
-            **details,
+        return {
+            "id": str(payload.idempotency_key),
+            "status": "succeeded",
+            "agent_id": evidence.agent_id,
+            "agent": summary,
             "runtime_version": evidence.runtime_version,
+            "model_alias": alias,
             "vm_name": vm_name,
-        },
-    )
-    return {
-        "id": str(payload.idempotency_key),
-        "status": "succeeded",
-        "agent_id": evidence.agent_id,
-        "agent": summary,
-        "runtime_version": evidence.runtime_version,
-        "model_alias": alias,
-        "vm_name": vm_name,
-        "logs": [
-            "SSH host identity verified",
-            "Runtime installed and validated",
-            "Agent registration and selected model verified",
-        ],
-    }
+            "logs": [
+                "SSH host identity verified",
+                "Runtime installed and validated",
+                "Agent registration and selected model verified",
+            ],
+        }

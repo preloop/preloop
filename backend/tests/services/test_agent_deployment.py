@@ -246,10 +246,12 @@ async def test_failed_timed_out_and_cancelled_deployments_cleanup(gcp_env, failu
         patch.object(gcp, "_access_token", AsyncMock(return_value="cloud-token")),
         patch.object(gcp.asyncssh, "connect", return_value=connection),
     ):
-        with pytest.raises(type(failure)):
-            async with gcp.provision_gcp("account", uuid4(), "standard"):
-                raise failure
-    vm.cleanup.assert_awaited_once()
+        try:
+            with pytest.raises(type(failure)):
+                async with gcp.provision_gcp("account", uuid4(), "standard"):
+                    raise failure
+        finally:
+            vm.cleanup.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -403,3 +405,99 @@ async def test_gcp_transport_error_is_safe_and_preserves_uncertain_ownership(gcp
         await vm.request("POST", "instances", {})
     assert "private-token" not in str(exc.value)
     assert vm.created
+
+
+@pytest.mark.parametrize(
+    "scenario", ["success", "bad-checksum", "control-not-ready", "wrong-model"]
+)
+def test_generated_script_verifies_download_and_onboarding_without_child_stdin(
+    tmp_path, monkeypatch, scenario
+):
+    """Execute real Bash with fake publishers, including a stdin-hungry CLI."""
+    import hashlib
+    import os
+    import shutil
+    import subprocess
+
+    if not shutil.which("bash") or not shutil.which("sha256sum"):
+        pytest.skip("Bash and sha256sum are required for the Linux bootstrap test")
+    agent_id = str(uuid4())
+    alias = "selected/model"
+    status = {
+        "remote_state": {
+            "agent": {"id": agent_id, "model_gateway_configured": True},
+            "enrollments": [
+                {
+                    "validation_result": {
+                        "validation_passed": True,
+                        "live_validation_status": "passed",
+                        "live_validation_model_alias": "other/model"
+                        if scenario == "wrong-model"
+                        else alias,
+                        "control_plugin_verified": scenario != "control-not-ready",
+                        "control_channel_configured": scenario != "control-not-ready",
+                    }
+                }
+            ],
+        }
+    }
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(status))
+    cli = tmp_path / "publisher-cli"
+    cli.write_text(
+        '#!/bin/sh\ncase " $* " in\n'
+        '  *" --install-only "*) test -z "$PRELOOP_TOKEN" || exit 1 ;;\n'
+        '  *" --skip-install "*) test -n "$PRELOOP_TOKEN" || exit 1 ;;\n'
+        'esac\nif [ "$1 $2" = "agents status" ]; then\n'
+        'cat "$TEST_STATUS_FILE"\nelse\ncat >/dev/null\nfi\n'
+    )
+    cli.chmod(0o700)
+    checksum = hashlib.sha256(cli.read_bytes()).hexdigest()
+    monkeypatch.setenv("PRELOOP_DEPLOY_CLI_URL", "https://publisher.example/cli")
+    monkeypatch.setenv(
+        "PRELOOP_DEPLOY_CLI_SHA256",
+        "0" * 64 if scenario == "bad-checksum" else checksum,
+    )
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    for name, content in {
+        "curl": '#!/bin/sh\nwhile [ "$1" != "-o" ]; do shift; done\ncp "$TEST_CLI_FILE" "$2"\n',
+        "flock": "#!/bin/sh\nexit 0\n",
+        "hermes": "#!/bin/sh\necho 'Hermes 0.21.3'\n",
+    }.items():
+        path = bindir / name
+        path.write_text(content)
+        path.chmod(0o700)
+    environment = dict(
+        os.environ,
+        HOME=str(tmp_path / "home"),
+        PATH=str(bindir) + os.pathsep + os.environ["PATH"],
+        TEST_CLI_FILE=str(cli),
+        TEST_STATUS_FILE=str(status_path),
+    )
+    script = service.installation_script(
+        "hermes", alias, "https://test.example", "private-token", uuid4()
+    )
+    result = subprocess.run(
+        ["bash", "-s"],
+        input=script,
+        text=True,
+        capture_output=True,
+        env=environment,
+        timeout=10,
+    )
+    assert "private-token" not in result.stdout + result.stderr
+    if scenario == "success":
+        assert result.returncode == 0, result.stderr
+        evidence = json.loads(result.stdout)
+        assert evidence["agent_id"] == agent_id
+        assert evidence["model_alias"] == alias
+        assert evidence["runtime_version"] == "Hermes 0.21.3"
+    else:
+        assert result.returncode != 0
+        marker = {
+            "bad-checksum": "PRELOOP_DEPLOY_CHECKSUM_FAILED",
+            "control-not-ready": "PRELOOP_DEPLOY_CONTROL_NOT_READY",
+            "wrong-model": "PRELOOP_DEPLOY_ONBOARDING_INCOMPLETE",
+        }[scenario]
+        assert marker in result.stdout

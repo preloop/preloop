@@ -19,8 +19,6 @@ import asyncssh
 
 from preloop.schemas.agent_deployment import AgentDeploymentSSH
 
-DEPLOYMENT_TIMEOUT = 900
-
 
 class DeploymentError(Exception):
     """A safe, operator-facing failure without upstream output or secrets."""
@@ -128,10 +126,13 @@ def installation_script(
     return (
         assignments
         + r"""
-set -eu
+set -euo pipefail
+deploy_stage=PRELOOP_DEPLOY_PREREQUISITES_FAILED
+trap 'printf "%s\n" "$deploy_stage"' ERR
 umask 077
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.hermes/hermes-agent/venv/bin:$PATH"
-export PRELOOP_URL="$deploy_origin" PRELOOP_TOKEN="$deploy_token"
+export PRELOOP_URL="$deploy_origin"
+unset PRELOOP_TOKEN
 export PRELOOP_DISABLE_TELEMETRY=true
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
@@ -141,31 +142,51 @@ mkdir -p "$HOME/.local/state/preloop"
 exec 9>"$HOME/.local/state/preloop/deployment.lock"
 flock -n 9 || { echo PRELOOP_DEPLOY_BUSY; exit 75; }
 if [ -n "$deploy_cli_url" ]; then
+  deploy_stage=PRELOOP_DEPLOY_DOWNLOAD_FAILED
   curl -fsSL --connect-timeout 20 "$deploy_cli_url" -o "$work/preloop"
+  deploy_stage=PRELOOP_DEPLOY_CHECKSUM_FAILED
   printf '%s  %s\n' "$deploy_checksum" "$work/preloop" | sha256sum -c - >/dev/null
+  deploy_stage=PRELOOP_DEPLOY_CLI_FAILED
   mkdir -p "$HOME/.local/bin"
   install -m 700 "$work/preloop" "$HOME/.local/bin/preloop"
 else
+  deploy_stage=PRELOOP_DEPLOY_DOWNLOAD_FAILED
   curl -fsSL --connect-timeout 20 https://preloop.ai/install/cli -o "$work/install"
-  sh "$work/install" >"$work/install.log" 2>&1 || { echo PRELOOP_DEPLOY_CLI_FAILED; exit 1; }
+  deploy_stage=PRELOOP_DEPLOY_CLI_FAILED
+  sh "$work/install" </dev/null >"$work/install.log" 2>&1 || { echo PRELOOP_DEPLOY_CLI_FAILED; exit 1; }
 fi
-preloop agents install-runtime "$deploy_runtime" -y --model "$deploy_alias" >"$work/runtime.log" 2>&1 || { echo PRELOOP_DEPLOY_RUNTIME_FAILED; exit 1; }
+deploy_stage=PRELOOP_DEPLOY_RUNTIME_FAILED
+preloop agents install-runtime "$deploy_runtime" --install-only -y </dev/null >"$work/runtime.log" 2>&1 || { echo PRELOOP_DEPLOY_RUNTIME_FAILED; exit 1; }
+# Third-party runtime installers never receive the bootstrap bearer. Only the
+# trusted CLI enrollment phase gets it; the API revokes it when this ends.
+export PRELOOP_TOKEN="$deploy_token"
+deploy_stage=PRELOOP_DEPLOY_ONBOARDING_INCOMPLETE
+preloop agents install-runtime "$deploy_runtime" --skip-install -y --model "$deploy_alias" </dev/null >"$work/onboard.log" 2>&1 || { echo PRELOOP_DEPLOY_ONBOARDING_INCOMPLETE; exit 1; }
 # Validate the real runtime and live managed gateway before announcing success.
-preloop agents validate "$deploy_runtime" --live >"$work/validate.log" 2>&1 || { echo PRELOOP_DEPLOY_VALIDATION_FAILED; exit 1; }
-"$deploy_runtime" --version >"$work/version" 2>/dev/null
-preloop agents status "$deploy_runtime" --json >"$work/status.json" 2>/dev/null
+deploy_stage=PRELOOP_DEPLOY_VALIDATION_FAILED
+preloop agents validate "$deploy_runtime" --live </dev/null >"$work/validate.log" 2>&1 || { echo PRELOOP_DEPLOY_VALIDATION_FAILED; exit 1; }
+deploy_stage=PRELOOP_DEPLOY_VERSION_UNAVAILABLE
+"$deploy_runtime" --version </dev/null >"$work/version" 2>/dev/null
+deploy_stage=PRELOOP_DEPLOY_STATUS_FAILED
+preloop agents status "$deploy_runtime" --json </dev/null >"$work/status.json" 2>/dev/null
+deploy_stage=PRELOOP_DEPLOY_ONBOARDING_INCOMPLETE
 python3 - "$work" "$deploy_alias" <<'PRELOOP_EVIDENCE'
 import json,pathlib,sys
 p=pathlib.Path(sys.argv[1])
 s=json.loads((p/'status.json').read_text())
 a=(s.get('remote_state') or {}).get('agent') or {}
 validations=[e.get('validation_result') or {} for e in (s.get('remote_state') or {}).get('enrollments', [])]
-valid=next((v for v in validations if v.get('validation_passed') is True and v.get('live_validation_status')=='passed' and v.get('live_validation_model_alias')==sys.argv[2] and v.get('control_plugin_verified') is True and v.get('control_channel_configured') is True), None)
+valid=next((v for v in validations if v.get('validation_passed') is True and v.get('live_validation_status')=='passed' and v.get('live_validation_model_alias')==sys.argv[2]), None)
 if not a.get('id') or not a.get('model_gateway_configured') or valid is None:
-    raise SystemExit('PRELOOP_DEPLOY_ONBOARDING_INCOMPLETE')
+    print('PRELOOP_DEPLOY_ONBOARDING_INCOMPLETE')
+    raise SystemExit(1)
+if valid.get('control_plugin_verified') is not True or valid.get('control_channel_configured') is not True:
+    print('PRELOOP_DEPLOY_CONTROL_NOT_READY')
+    raise SystemExit(1)
 version=(p/'version').read_text().strip()
 if not version or len(version)>512:
-    raise SystemExit('PRELOOP_DEPLOY_VERSION_UNAVAILABLE')
+    print('PRELOOP_DEPLOY_VERSION_UNAVAILABLE')
+    raise SystemExit(1)
 print(json.dumps({'agent_id':a['id'],'runtime_version':version,'model_alias':valid['live_validation_model_alias']}))
 PRELOOP_EVIDENCE
 """
@@ -232,6 +253,11 @@ async def install_over_ssh(
                             if line
                             in {
                                 "PRELOOP_DEPLOY_BUSY",
+                                "PRELOOP_DEPLOY_PREREQUISITES_FAILED",
+                                "PRELOOP_DEPLOY_DOWNLOAD_FAILED",
+                                "PRELOOP_DEPLOY_CHECKSUM_FAILED",
+                                "PRELOOP_DEPLOY_STATUS_FAILED",
+                                "PRELOOP_DEPLOY_CONTROL_NOT_READY",
                                 "PRELOOP_DEPLOY_CLI_FAILED",
                                 "PRELOOP_DEPLOY_RUNTIME_FAILED",
                                 "PRELOOP_DEPLOY_VALIDATION_FAILED",

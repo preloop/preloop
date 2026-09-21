@@ -4462,15 +4462,12 @@ paths:
       tags:
       - Agent deployment
       summary: Deploy Agent
-      description: 'Complete bounded installation and live onboarding before returning
-        success.
+      description: 'Install and verify remotely while offloading short CRUD transactions.
 
 
-        SSH credentials remain in this request''s memory. A generated, short-lived
+        SSH credentials remain in request memory. A revocable bootstrap key allows
 
-        user token is passed over the verified SSH connection for the CLI to mint
-
-        the runtime''s own credentials; no provider key or GCP credential is sent.'
+        enrollment to mint the runtime''s own credentials on the verified target.'
       operationId: deploy_agent_api_v1_agent_deployments_post
       requestBody:
         content:

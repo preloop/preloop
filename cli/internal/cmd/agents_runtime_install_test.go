@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/preloop/preloop/cli/internal/testenv"
+	"github.com/spf13/cobra"
 )
 
 func TestRuntimeInstallSpecForKind(t *testing.T) {
@@ -165,5 +166,39 @@ func TestFreshOpenClawEnrollmentSynthesizesMissingConfig(t *testing.T) {
 	}
 	if _, err := buildOpenClawManagedMCPEnrollmentPlan(agent, "https://preloop.example", "runtime-token"); err == nil {
 		t.Fatal("malformed existing config must fail")
+	}
+}
+
+func TestRuntimeInstallOnlyDoesNotAuthenticateOrOnboard(t *testing.T) {
+	skipNoShebangOnWindows(t, "publisher installer")
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	bin := t.TempDir()
+	marker := filepath.Join(bin, "installed")
+	script := "#!/bin/sh\nwhile [ \"$1\" != --output ]; do shift; done\nshift\nprintf '#!/bin/sh\\ntest -z \"$PRELOOP_TOKEN\" || exit 99\\ntouch " + marker + "\\n' > \"$1\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PRELOOP_TOKEN", "must-not-reach-installer")
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("install-only", true, "")
+	if err := runAgentsInstallRuntime(cmd, []string{"openclaw"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Flags().Bool("skip-install", true, "")
+	if err := runAgentsInstallRuntime(cmd, []string{"openclaw"}); err == nil {
+		t.Fatal("contradictory install flags accepted")
+	}
+}
+
+func TestRuntimeInstallerDoesNotInheritBootstrapToken(t *testing.T) {
+	skipNoShebangOnWindows(t, "installer environment")
+	t.Setenv("PRELOOP_TOKEN", "must-not-reach-installer")
+	if err := runRuntimeInstallCommand([]string{"sh", "-c", `test -z "$PRELOOP_TOKEN"`}, io.Discard); err != nil {
+		t.Fatal(err)
 	}
 }

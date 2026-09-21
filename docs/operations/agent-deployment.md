@@ -30,7 +30,12 @@ link-local, multicast and metadata destinations are always refused.
 Linux targets need Bash, curl, Python 3, flock, internet access to the runtime
 publishers, and any sudo access required by their official installers. Agent
 installation may take several minutes. Configure the reverse proxy read timeout
-to at least 930 seconds. The API bounds work to 700 seconds and reserves up to
+to at least 930 seconds. The shipped Docker and Helm console nginx templates
+apply this budget to the exact deployment endpoint. For an NGINX ingress in
+front of the console, also set `ingress.annotations` keys
+`nginx.ingress.kubernetes.io/proxy-read-timeout` and
+`nginx.ingress.kubernetes.io/proxy-send-timeout` to `"930"` (or longer).
+The API bounds work to 700 seconds and reserves up to
 200 seconds to clean up a failed GCP VM. Closing the browser may not cancel a
 request already accepted by the server. Check the agent registry and GCP
 resource before retrying; reuse the deployment's idempotency key after an
@@ -69,7 +74,20 @@ The deployment API is synchronous: `POST /api/v1/agent-deployments` accepts
 `idempotency_key`, `runtime` (`hermes` or `openclaw`), `model_id`, `target`
 (`ssh` or `gcp`), optional `compute_size`, and SSH connection fields for SSH.
 `GET /api/v1/agent-deployments/capabilities` reports configured methods.
-Secrets are used only in request memory; account-scoped start/failure/completion
+SSH secrets are used only in request memory. Enrollment uses a hashed temporary
+API key with the initiating owner's permissions, a twenty-minute expiry, and
+revocation after success, failure, or cancellation. Official runtime and uv
+installers run before this key is exported; the CLI's `--install-only` phase
+requires no login and skips enrollment. Only the trusted target's subsequent
+`--skip-install` onboarding phase receives it. The target is trusted with these
+bootstrap permissions; this is not a narrower enrollment-only scope.
+
+OpenClaw control uses a healthy existing Python environment or installs uv,
+aiohttp and PyYAML in `~/.preloop-agent-control/venv`, without system pip.
+Installation refuses successful onboarding if the required control plugin or
+channel is not ready.
+
+Account-scoped start/failure/completion
 audit events record identifiers and the observed runtime version.
 
 For disposable environments, set `PRELOOP_DEPLOY_GCP_MAX_RUN_SECONDS=14400`.

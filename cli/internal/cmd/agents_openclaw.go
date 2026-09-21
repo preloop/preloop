@@ -1022,6 +1022,13 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	if err := saveLocalEnrollmentState(backupState); err != nil {
 		return err
 	}
+	if controlErr := managedRuntimeControlReadinessError(agent, validationResult); controlErr != nil {
+		validationResult["validation_passed"] = false
+		if _, err := validateManagedEnrollmentRecord(client, agent, enrollment.ID, validationResult, "validation_failed"); err != nil {
+			return fmt.Errorf("%w; could not save incomplete enrollment: %v", controlErr, err)
+		}
+		return controlErr
+	}
 
 	// Live validation runs by default whenever the agent kind supports it.
 	// It is suppressed only by an explicit ``--skip-live-validate`` (or
@@ -5216,20 +5223,77 @@ func managedAgentControlSidecarDir() (string, error) {
 	return filepath.Join(homeDir, ".preloop-agent-control"), nil
 }
 
+func managedRuntimeControlReadinessError(agent AgentConfig, validation map[string]interface{}) error {
+	if !isHermesAgent(agent) && !isOpenClawAgent(agent) {
+		return nil
+	}
+	if validation["control_plugin_verified"] == true && validation["control_channel_configured"] == true {
+		return nil
+	}
+	return fmt.Errorf("%s onboarding is incomplete: Agent Control is not ready (%v); fix the control plugin failure and rerun preloop agents onboard %s", resolveAgentDisplayName(agent), validation["control_plugin_verification"], shellQuoteAgentName(resolveAgentDisplayName(agent)))
+}
+
 func managedAgentControlSidecarPython() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	sidecarDir := filepath.Join(homeDir, ".preloop-agent-control")
+	venvPath := filepath.Join(sidecarDir, "venv")
+	venvPython := filepath.Join(venvPath, "bin", "python")
 	hermesPython := filepath.Join(homeDir, ".hermes", "hermes-agent", "venv", "bin", "python")
-	if info, err := os.Stat(hermesPython); err == nil && !info.IsDir() {
-		return hermesPython, nil
+	for _, candidate := range []string{venvPython, hermesPython} {
+		if managedSidecarDependenciesAvailable(ctx, candidate) {
+			return candidate, nil
+		}
 	}
 	pythonPath, err := exec.LookPath("python3")
 	if err != nil {
 		return "", fmt.Errorf("python3 is required for the managed Agent Control sidecar")
 	}
-	return pythonPath, nil
+	if managedSidecarDependenciesAvailable(ctx, pythonPath) {
+		return pythonPath, nil
+	}
+	// Keep runtime dependencies out of externally managed system Python. uv
+	// can create an isolated environment even when python3-venv/pip is absent.
+	if err := os.MkdirAll(sidecarDir, 0700); err != nil {
+		return "", err
+	}
+	uvPath, err := resolveRuntimeExecutable("uv")
+	if err != nil {
+		uvPath = filepath.Join(homeDir, ".hermes", "bin", "uv")
+		if _, err := os.Stat(uvPath); err != nil {
+			uvPath = filepath.Join(sidecarDir, "bin", "uv")
+			if _, err := os.Stat(uvPath); err != nil {
+				command := officialRuntimeInstallCommand("https://astral.sh/uv/install.sh", "")
+				cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+				cmd.Env = append(runtimeInstallerEnvironment(), "UV_INSTALL_DIR="+filepath.Dir(uvPath), "UV_NO_MODIFY_PATH=1")
+				if err := cmd.Run(); err != nil {
+					return "", fmt.Errorf("failed to install managed Agent Control dependencies: uv bootstrap failed: %w", err)
+				}
+			}
+		}
+	}
+	for _, args := range [][]string{
+		{"venv", "--python", pythonPath, venvPath},
+		{"pip", "install", "--python", venvPython, "aiohttp>=3.9,<4", "PyYAML>=6,<7"},
+	} {
+		command := exec.CommandContext(ctx, uvPath, args...)
+		command.Env = runtimeInstallerEnvironment()
+		if err := command.Run(); err != nil {
+			return "", fmt.Errorf("failed to prepare managed Agent Control environment: %w", err)
+		}
+	}
+	if !managedSidecarDependenciesAvailable(ctx, venvPython) {
+		return "", fmt.Errorf("managed Agent Control environment is missing aiohttp or PyYAML")
+	}
+	return venvPython, nil
+}
+
+func managedSidecarDependenciesAvailable(ctx context.Context, pythonPath string) bool {
+	return exec.CommandContext(ctx, pythonPath, "-c", "import aiohttp, yaml").Run() == nil
 }
 
 func stopManagedAgentControlSidecars(runtimeKey string) {

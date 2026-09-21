@@ -317,3 +317,20 @@ def test_permission_check_has_scoped_workflow_timeout(configs: dict[str, str]) -
             generic_body = _resolve(config, url)
             assert generic_body is not None
             assert "proxy_read_timeout 300s;" in generic_body, name
+
+
+def test_agent_deployment_has_scoped_install_and_cleanup_timeout(
+    configs: dict[str, str],
+) -> None:
+    """A real installer can exceed the ordinary API's five-minute budget."""
+    for name, config in configs.items():
+        body = _resolve(config, "/api/v1/agent-deployments")
+        assert body is not None
+        assert "proxy_pass $api_backend;" in body, name
+        assert "proxy_read_timeout 930s;" in body, name
+        assert "proxy_send_timeout 930s;" in body, name
+        assert "proxy_connect_timeout 10s;" in body, name
+        for url in ("/api/v1/agent-deployments/capabilities", "/api/v1/accounts"):
+            ordinary = _resolve(config, url)
+            assert ordinary is not None
+            assert "proxy_read_timeout 300s;" in ordinary, name
