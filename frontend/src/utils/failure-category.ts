@@ -70,6 +70,11 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'The agent exited cleanly but never signalled that it had finished, so Preloop cannot say the work is done.',
   },
+  agent_no_progress: {
+    label: 'agent no progress',
+    tooltip:
+      'The agent read and planned but never changed a file, so the run ended with nothing to show for the tokens it spent.',
+  },
   tool_error: {
     label: 'tool error',
     tooltip: 'A command the agent ran in its own workspace exited non-zero.',

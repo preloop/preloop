@@ -107,6 +107,14 @@ STAGING_MESSAGES = [
         "channel: the FLOW_EXECUTION_SUCCESS sentinel was not printed",
         "no_confirmation",
     ),
+    # The live guard's own stop message (#851). Production execution
+    # a50ba8ff read files for 54 minutes, spent 10.13M prompt tokens and
+    # edited nothing; it was recorded as "unknown".
+    (
+        "Execution stopped after 1500 seconds with no change in the "
+        "workspace: the agent read and planned but never edited a file.",
+        "agent_no_progress",
+    ),
     ("Execution timed out after 3600 seconds", "timeout"),
     ("Execution stopped by user request after 45 seconds.", "cancelled"),
     ("Traceback (most recent call last): ModuleNotFoundError: no numpy", "tool_error"),

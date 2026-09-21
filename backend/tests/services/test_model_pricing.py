@@ -432,7 +432,10 @@ class TestQwenProviderPricing:
             "qwen3.8-max",
             "qwen3.7-max",
             "qwen3.7-plus",
-            "qwen3.6-flash",
+            # qwen3.6-flash left the list with the 2026-09-21 refresh:
+            # upstream litellm no longer publishes a dashscope row for it.
+            # Qwen traffic prices through alibaba_international_prices.json
+            # (which still carries qwen3.6-flash), not this fallback table.
             "qwen3.5-plus",
             "qwen3-max",
             "qwen3-coder-plus",
@@ -472,6 +475,50 @@ class TestQwenProviderPricing:
         assert estimate.source == "catalog"
         # 1M input at $2/M plus 1M output at $6/M.
         assert estimate.cost == pytest.approx(8.0, rel=1e-6)
+
+
+@pytest.mark.parametrize("provider_name", ["google", "gemini"])
+def test_gemini_38_flash_bills_cached_input_at_the_cache_rate(
+    provider_name: str,
+) -> None:
+    """Gemini 3.8 Flash rows price from the catalog, cache reads included.
+
+    Both provider spellings Preloop stores for Gemini map onto the same
+    ``gemini/`` catalog namespace. Production billed 94% of a day's Gemini
+    tokens at the full input rate because the only prices available were
+    interim overrides without a cache-read rate (issue #850); the catalog
+    entry carries one, so the estimator has to use it.
+    """
+    load_catalog(force=True)
+    ai_model = AIModel(provider_name=provider_name, model_identifier="gemini-3.8-flash")
+    candidates = list(_iter_litellm_model_candidates(ai_model))
+    assert "gemini/gemini-3.8-flash" in candidates
+
+    estimate = estimate_ai_model_usage_cost_detailed(
+        ai_model,
+        prompt_tokens=1_000_000,
+        completion_tokens=0,
+        total_tokens=1_000_000,
+        usage_details={
+            "prompt_tokens": 1_000_000,
+            "completion_tokens": 0,
+            "prompt_tokens_details": {"cached_tokens": 900_000},
+        },
+    )
+    assert estimate.source == "catalog"
+    # 100k uncached at $0.75/M plus 900k cached at $0.075/M. Billing the
+    # cache reads as ordinary input would cost $0.75, 5.3x as much.
+    assert estimate.cost == pytest.approx(0.1425, rel=1e-6)
+
+    uncached = estimate_ai_model_usage_cost_detailed(
+        ai_model,
+        prompt_tokens=1_000_000,
+        completion_tokens=1_000_000,
+        total_tokens=2_000_000,
+    )
+    assert uncached.source == "catalog"
+    # 1M input at $0.75/M plus 1M output at $3.75/M.
+    assert uncached.cost == pytest.approx(4.5, rel=1e-6)
 
 
 def test_model_price_override_serializes_adjustment_terms() -> None:
@@ -896,6 +943,84 @@ class TestUpdateModelPriceOverlays:
         assert filtered["text-embedding-fixture"]["mode"] == "embedding"
         # Capability flags are still stripped from the kept embedding row.
         assert "supports_vision" not in filtered["text-embedding-fixture"]
+
+    def test_update_model_flattens_tier_only_upstream_prices(self) -> None:
+        """A row priced only by ``tiered_pricing`` keeps its lowest tier.
+
+        Upstream moved dashscope rows (qwen-flash, qwen3-max, qwen3.7-plus)
+        to a tier list with no top-level price. The field filter drops that
+        list, so before this flattening a refresh vendored those models with
+        limits and no price and their usage recorded as unpriced.
+        """
+        script = _load_update_model_prices()
+        upstream = {
+            "dashscope/tiered-fixture": {
+                "litellm_provider": "dashscope",
+                "mode": "chat",
+                "max_input_tokens": 997952,
+                "tiered_pricing": [
+                    {
+                        "input_cost_per_token": 2.5e-07,
+                        "output_cost_per_token": 2e-06,
+                        "range": [256000.0, 1000000.0],
+                    },
+                    {
+                        "input_cost_per_token": 5e-08,
+                        "output_cost_per_token": 4e-07,
+                        "cache_read_input_token_cost": 1e-08,
+                        "range": [0, 256000.0],
+                    },
+                ],
+            },
+            "dashscope/flat-fixture": {
+                "litellm_provider": "dashscope",
+                "mode": "chat",
+                "input_cost_per_token": 2e-06,
+                "output_cost_per_token": 6e-06,
+                "tiered_pricing": [
+                    {
+                        "input_cost_per_token": 9e-06,
+                        "output_cost_per_token": 9e-06,
+                        "range": [0, 256000.0],
+                    }
+                ],
+            },
+            # Upstream has shipped explicit null cost fields, and rows that
+            # price one direction flat and the other only in tiers. Both
+            # must come out fully priced, not half priced.
+            "dashscope/null-and-mixed-fixture": {
+                "litellm_provider": "dashscope",
+                "mode": "chat",
+                "input_cost_per_token": None,
+                "output_cost_per_token": 6e-06,
+                "tiered_pricing": [
+                    {
+                        "input_cost_per_token": 1.5e-06,
+                        "output_cost_per_token": 9e-06,
+                        "range": [0, 256000.0],
+                    }
+                ],
+            },
+        }
+
+        filtered = script.filter_catalog(upstream)
+
+        tiered = filtered["dashscope/tiered-fixture"]
+        # Lowest published tier, not the first list element.
+        assert tiered["input_cost_per_token"] == 5e-08
+        assert tiered["output_cost_per_token"] == 4e-07
+        assert tiered["cache_read_input_token_cost"] == 1e-08
+        # The tier list itself is not vendored: the snapshot stays flat.
+        assert "tiered_pricing" not in tiered
+        assert tiered["max_input_tokens"] == 997952
+        # A row that publishes a flat price keeps it; tiers do not override.
+        assert filtered["dashscope/flat-fixture"]["input_cost_per_token"] == 2e-06
+        assert filtered["dashscope/flat-fixture"]["output_cost_per_token"] == 6e-06
+        # An explicit null is no price and takes the tier's value; the flat
+        # output price on the same row still wins over its tier.
+        mixed = filtered["dashscope/null-and-mixed-fixture"]
+        assert mixed["input_cost_per_token"] == 1.5e-06
+        assert mixed["output_cost_per_token"] == 6e-06
 
     def test_update_model_moonshot_keys_survive_stub_litellm_merge(self) -> None:
         script = _load_update_model_prices()
