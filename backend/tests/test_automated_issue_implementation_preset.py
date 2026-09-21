@@ -148,7 +148,28 @@ class TestPromptContract:
     def test_implements_tests_lint_and_commits(self, prompt):
         assert "fails before your change and passes after it" in prompt
         assert "the linter" in prompt
-        assert "Commit locally with a message that says why, not only what" in prompt
+        assert "Commit locally at each milestone" in prompt
+        assert "a message that says why, not only what" in prompt
+
+    def test_commits_land_as_the_work_lands(self, prompt):
+        """A run that is cut short should keep the work it already did (#851).
+
+        The old wording invited one commit at the end, so a run that hit the
+        wall left an empty branch behind.
+        """
+        assert "Commit locally at each milestone" in prompt
+        assert "Do not save every commit for the end" in prompt
+        assert "keeps whatever is committed and loses the rest" in prompt
+        assert "first commit within 20 minutes" in prompt
+        assert "WIP commits are fine" in prompt
+
+    def test_reading_is_scoped_to_ranges(self, prompt):
+        """Whole-file reads spend the context that the edits need (#851)."""
+        assert "Read by range, not by whole file" in prompt
+        assert "Your context is finite" in prompt
+        assert "`grep -n`" in prompt
+        assert "sed -n '120,180p'" in prompt
+        assert "Read a whole file only when it is genuinely small" in prompt
 
     def test_unrunnable_checks_are_reported_not_faked(self, prompt):
         assert "do not fake it" in prompt

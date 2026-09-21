@@ -40,6 +40,23 @@ Example stored document:
 
 Use whatever labels the project already has. Preloop does not ship a default label set for routing.
 
+## Model by label
+
+**Model by label**, under the rules above, is the short form of the same idea: one label, one model, one reasoning effort. Add a rule, type the label, pick a model, pick an effort. Leaving the model empty keeps the flow's own model, so a rule can say "same model, think harder" without naming one.
+
+The list lives at `agent_config.model_by_label` and is empty by default:
+
+```json
+[
+  { "label": "complexity:high", "ai_model_id": "11111111-1111-1111-1111-111111111111", "reasoning_effort": "high" },
+  { "label": "complexity:low", "reasoning_effort": "low" }
+]
+```
+
+The short form carries a model and an effort and nothing else. Switching harness per label is what the routing rules above are for. First match wins, and the explicit `model_routing` rules are evaluated first, so a detailed rule always beats the short form. A label that appears twice is rejected on save, because the second copy could never apply. The reasoning effort is `low`, `medium` or `high`; Codex receives it as `model_reasoning_effort` in its `config.toml`, and a harness that does not accept the value ignores it rather than failing the run.
+
+When a label rule decides the run, the execution records the matched label, the rule id and the effort alongside the model and harness, and the execution log carries a `model_by_label` milestone. Labels still come only from the trusted label snapshot, so a webhook body cannot introduce a rule or select one that is not on the issue.
+
 ## What is recorded
 
 Each execution stores the chosen rule or default, the label snapshot, model id, and harness under reserved `_model_routing` on `trigger_event_details`. Retries keep that selection even if you later edit the flow's rules. Native continuation of the same conversation also keeps it; a different model or harness requires an explicit new execution. A mismatch blocks the repair turn before agent launch. New executions record their default identity even without routing rules. Legacy runs without a complete recorded model and harness cannot be retried or resumed automatically because their original identity cannot be proven; start a new execution explicitly. Durable feedback threads show `model_identity_unavailable` when their pinned selection cannot be used.

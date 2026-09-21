@@ -264,6 +264,18 @@ export function get_meta_for_route(
   config: BrandConfig,
   posts: BlogPost[] = []
 ): RouteMeta {
+  const meta = get_route_meta(route, config, posts);
+  return {
+    ...meta,
+    og_image: absolute_url(meta.og_image, config),
+  };
+}
+
+function get_route_meta(
+  route: string,
+  config: BrandConfig,
+  posts: BlogPost[] = []
+): RouteMeta {
   const meta = config.landing?.meta || {};
   const default_title = meta.title || config.name || 'Preloop';
   const default_description = meta.description || '';
@@ -472,11 +484,15 @@ function get_origin(config: BrandConfig): string {
   return `https://${config.domain}`;
 }
 
-function absolute_url(path: string, config: BrandConfig): string {
+/**
+ * Resolve a site-relative path against the brand's public origin.
+ * Already-absolute http(s) and protocol-relative URLs are returned unchanged.
+ */
+export function absolute_url(path: string, config: BrandConfig): string {
   if (!path) {
     return '';
   }
-  if (/^https?:\/\//i.test(path)) {
+  if (/^(?:https?:)?\/\//i.test(path)) {
     return path;
   }
   const origin = get_origin(config);

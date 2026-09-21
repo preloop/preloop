@@ -13,6 +13,8 @@ import {
   FLOW_LIST_MAX_PAGES,
   createFlow,
   updateFlow,
+  deleteModelPriceOverride,
+  updateModelPriceOverride,
   listProjectsForOrg,
   uploadAvatar,
   validateTrackerToken,
@@ -1016,6 +1018,59 @@ describe('api', () => {
       );
     });
   });
+  describe('price override write refusals', () => {
+    const messageOf = async (call: Promise<unknown>) => {
+      try {
+        await call;
+      } catch (e: unknown) {
+        return (e as Error).message;
+      }
+      return '';
+    };
+
+    const refusal = (status: number, body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+    it('delete surfaces the detail string, so a refusal says why', async () => {
+      fetchStub.resolves(
+        refusal(403, {
+          detail: 'Only an account owner can remove a price override.',
+        })
+      );
+      expect(await messageOf(deleteModelPriceOverride('override-1'))).to.equal(
+        'Only an account owner can remove a price override.'
+      );
+
+      fetchStub.resolves(refusal(404, { detail: 'Price override not found' }));
+      expect(await messageOf(deleteModelPriceOverride('override-1'))).to.equal(
+        'Price override not found'
+      );
+    });
+
+    it('update surfaces the detail string', async () => {
+      fetchStub.resolves(
+        refusal(422, { detail: 'effective_until must follow effective_from' })
+      );
+      expect(
+        await messageOf(updateModelPriceOverride('override-1', {}))
+      ).to.equal('effective_until must follow effective_from');
+    });
+
+    it('falls back when the refusal carries no reason', async () => {
+      fetchStub.resolves(refusal(500, {}));
+      expect(await messageOf(deleteModelPriceOverride('override-1'))).to.equal(
+        'Failed to delete model price override'
+      );
+      fetchStub.resolves(refusal(500, {}));
+      expect(
+        await messageOf(updateModelPriceOverride('override-1', {}))
+      ).to.equal('Failed to update model price override');
+    });
+  });
+
   describe('startCheckout', () => {
     /**
      * Every answer the server can give, and what the person who clicked sees.

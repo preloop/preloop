@@ -14,6 +14,10 @@ describe('AIModelDetailView', () => {
   let pricingQuote: any;
   let featureFlags: Record<string, boolean>;
   let overrideWrites: { url: string; method: string; body: any }[];
+  // A refusal for the delete tests, and a hook that lets the account's price
+  // actually change under a successful one.
+  let overrideDeleteFailure: { status: number; detail: string } | null;
+  let onOverrideDelete: (() => void) | null;
   let modelWrites: { method: string; body: any }[];
   let repriceCalls: any[];
   let repriceResponse: any;
@@ -42,6 +46,8 @@ describe('AIModelDetailView', () => {
     };
     featureFlags = {};
     overrideWrites = [];
+    overrideDeleteFailure = null;
+    onOverrideDelete = null;
     modelWrites = [];
     repriceCalls = [];
     repriceResponse = {
@@ -130,11 +136,25 @@ describe('AIModelDetailView', () => {
         }
 
         if (url.includes('/api/v1/billing/cost/pricing-overrides')) {
+          const method = (init?.method || 'GET').toUpperCase();
           overrideWrites.push({
             url,
-            method: (init?.method || 'GET').toUpperCase(),
+            method,
             body: init?.body ? JSON.parse(String(init.body)) : null,
           });
+          if (method === 'DELETE') {
+            if (overrideDeleteFailure) {
+              return new Response(
+                JSON.stringify({ detail: overrideDeleteFailure.detail }),
+                {
+                  status: overrideDeleteFailure.status,
+                  headers: { 'Content-Type': 'application/json' },
+                }
+              );
+            }
+            onOverrideDelete?.();
+            return new Response(null, { status: 204 });
+          }
           return new Response(JSON.stringify({ id: 'override-1' }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -999,6 +1019,216 @@ describe('AIModelDetailView', () => {
       pricingCard(element).querySelector('[data-testid="reprice-offer"]'),
       'a future start date has no past window to reprice'
     ).to.not.exist;
+  });
+
+  describe('removing the override', () => {
+    // The price this account set, which is the only kind that can be taken
+    // back. Per 1M in the response; the stored row is per 1K.
+    const overridePricing = () => ({
+      ai_model_id: 'model-1',
+      model_alias: 'anthropic/claude-sonnet-4',
+      provider_name: 'Anthropic',
+      source: 'override',
+      price: {
+        input_per_1m: 0,
+        output_per_1m: 0,
+        cached_input_per_1m: null,
+        blended_per_1m: null,
+        request_price: null,
+      },
+      currency: 'USD',
+      override_id: 'override-1',
+      effective_from: '2026-08-01T00:00:00Z',
+      effective_until: null,
+      catalog_key: null,
+      fetch_supported: false,
+      fetch_provider_label: 'Anthropic',
+    });
+
+    const removeButton = (element: AIModelDetailView) =>
+      pricingCard(element).querySelector(
+        '[data-testid="remove-override"]'
+      ) as HTMLElement | null;
+
+    const removeDialog = (element: AIModelDetailView) =>
+      pricingCard(element).querySelector(
+        '[data-testid="remove-override-dialog"]'
+      ) as HTMLElement;
+
+    const deletes = () =>
+      overrideWrites.filter((write) => write.method === 'DELETE');
+
+    beforeEach(() => {
+      featureFlags = { model_price_overrides: true };
+    });
+
+    it('offers the removal only for a price this account set', async () => {
+      const element = await mountModel();
+      // The fixture is priced from the catalog: there is nothing to remove.
+      expect(removeButton(element), 'catalog price has no override').to.not
+        .exist;
+
+      pricingResponse = {
+        ...pricingResponse,
+        source: 'none',
+        override_id: null,
+        price: {
+          input_per_1m: null,
+          output_per_1m: null,
+          cached_input_per_1m: null,
+          blended_per_1m: null,
+          request_price: null,
+        },
+      };
+      const unpriced = await mountModel();
+      expect(removeButton(unpriced), 'an unpriced model has nothing to remove')
+        .to.not.exist;
+
+      pricingResponse = overridePricing();
+      const overridden = await mountModel();
+      expect(removeButton(overridden), 'an override can be taken back').to
+        .exist;
+    });
+
+    it('confirms with the rates, deletes once and re-reads the price', async () => {
+      pricingResponse = overridePricing();
+      // The removal is real: the next read of the price is the catalog's.
+      onOverrideDelete = () => {
+        pricingResponse = {
+          ...overridePricing(),
+          source: 'catalog',
+          override_id: null,
+          effective_from: null,
+          catalog_key: 'anthropic/claude-sonnet-4',
+          price: {
+            input_per_1m: 3,
+            output_per_1m: 15,
+            cached_input_per_1m: 0.3,
+            blended_per_1m: null,
+            request_price: null,
+          },
+        };
+      };
+      const element = await mountModel();
+
+      removeButton(element)!.click();
+      await element.updateComplete;
+      const prompt = removeDialog(element).textContent!.replace(/\s+/g, ' ');
+      expect(prompt).to.contain('anthropic/claude-sonnet-4');
+      expect(prompt).to.contain('input $0 per 1M');
+      expect(prompt).to.contain('output $0 per 1M');
+      expect(prompt).to.contain('effective from Aug 1, 2026');
+      expect(deletes(), 'the confirm alone sends nothing').to.have.length(0);
+
+      (
+        removeDialog(element).querySelector(
+          '[data-testid="confirm-remove-override"]'
+        ) as HTMLElement
+      ).click();
+      await waitUntil(() => deletes().length > 0, 'no delete was sent');
+      await waitUntil(
+        () => (element as any).pricing?.source === 'catalog',
+        'the price was not re-read'
+      );
+      await element.updateComplete;
+
+      expect(deletes()).to.have.length(1);
+      expect(deletes()[0].url).to.contain(
+        '/api/v1/billing/cost/pricing-overrides/override-1'
+      );
+      const card = pricingCard(element).textContent!.replace(/\s+/g, ' ');
+      expect(card).to.contain('Provider catalog');
+      expect(card).to.contain('Catalog entry anthropic/claude-sonnet-4');
+      expect(card).to.not.contain('Account override');
+      expect(removeButton(element), 'a catalog price has nothing to remove').to
+        .not.exist;
+    });
+
+    it('offers the reprice after a removal when the model has usage', async () => {
+      pricingResponse = overridePricing();
+      const element = await mountModel();
+
+      removeButton(element)!.click();
+      await element.updateComplete;
+      (
+        removeDialog(element).querySelector(
+          '[data-testid="confirm-remove-override"]'
+        ) as HTMLElement
+      ).click();
+      await waitUntil(
+        () => Boolean((element as any).repriceSince),
+        'no reprice window after the removal'
+      );
+      await element.updateComplete;
+
+      const card = pricingCard(element).textContent!.replace(/\s+/g, ' ');
+      expect(card).to.contain(
+        'Rows recorded under it keep the old cost until they are repriced'
+      );
+      const offer = pricingCard(element).querySelector(
+        '[data-testid="reprice-offer"]'
+      ) as HTMLElement;
+      expect(offer, 'the offer follows the removal').to.exist;
+      // Not run for the reader: the reprice is still theirs to ask for.
+      expect(repriceCalls).to.have.length(0);
+
+      (
+        offer.querySelector('[data-testid="apply-past-usage"]') as HTMLElement
+      ).click();
+      await waitUntil(() => repriceCalls.length > 0, 'reprice requested');
+      // The rows to fix already have a cost: the old one.
+      expect(repriceCalls[0].only_unpriced).to.equal(false);
+      expect(repriceCalls[0].start_date).to.equal('2026-08-01T00:00:00.000Z');
+    });
+
+    it('sends nothing when the confirm is cancelled', async () => {
+      pricingResponse = overridePricing();
+      const element = await mountModel();
+
+      removeButton(element)!.click();
+      await element.updateComplete;
+      (
+        removeDialog(element).querySelector(
+          '[data-testid="cancel-remove-override"]'
+        ) as HTMLElement
+      ).click();
+      await element.updateComplete;
+
+      expect(deletes()).to.have.length(0);
+      expect((element as any).overrideRemoveOpen).to.equal(false);
+      expect((element as any).pricing.source).to.equal('override');
+      expect(removeButton(element), 'the override is still there').to.exist;
+    });
+
+    it('keeps the override on screen when the delete is refused', async () => {
+      pricingResponse = overridePricing();
+      overrideDeleteFailure = {
+        status: 403,
+        detail: 'Only an account owner can remove a price override.',
+      };
+      const element = await mountModel();
+
+      removeButton(element)!.click();
+      await element.updateComplete;
+      (
+        removeDialog(element).querySelector(
+          '[data-testid="confirm-remove-override"]'
+        ) as HTMLElement
+      ).click();
+      await waitUntil(
+        () => Boolean((element as any).pricingError),
+        'the refusal was swallowed'
+      );
+      await element.updateComplete;
+
+      expect(
+        pricingCard(element).querySelector('.price-error')!.textContent!.trim()
+      ).to.contain('Only an account owner can remove a price override.');
+      expect((element as any).pricing.source).to.equal('override');
+      expect(pricingCard(element).textContent).to.contain('Account override');
+      expect(removeButton(element), 'nothing was removed').to.exist;
+      expect((element as any).repriceSince).to.equal(null);
+    });
   });
 
   it('leaves legacy async completion unconfirmed', async () => {

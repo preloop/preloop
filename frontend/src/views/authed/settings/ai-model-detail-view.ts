@@ -26,6 +26,7 @@ import '../../../components/add-ai-model-modal';
 import {
   createModelPriceOverride,
   deleteAIModel,
+  deleteModelPriceOverride,
   dismissAttentionItem,
   getAttentionDismissals,
   restoreAttentionItem,
@@ -201,6 +202,13 @@ export class AIModelDetailView extends LitElement {
 
   @state()
   private pricingNotice: string | null = null;
+
+  /** True while the confirm dialog for dropping the override is open. */
+  @state()
+  private overrideRemoveOpen = false;
+
+  @state()
+  private overrideRemoving = false;
 
   /**
    * The effective date of the price just saved, or null when nothing was
@@ -1259,6 +1267,139 @@ export class AIModelDetailView extends LitElement {
     }
   }
 
+  /** What the override in force charges, in one line, for the confirm text. */
+  private describeOverrideRates(): string {
+    const price = this.pricing?.price;
+    const parts: string[] = [];
+    if (typeof price?.input_per_1m === 'number') {
+      parts.push(`input ${this.formatPrice(price.input_per_1m)} per 1M`);
+    }
+    if (typeof price?.output_per_1m === 'number') {
+      parts.push(`output ${this.formatPrice(price.output_per_1m)} per 1M`);
+    }
+    if (typeof price?.cached_input_per_1m === 'number') {
+      parts.push(
+        `cached input ${this.formatPrice(price.cached_input_per_1m)} per 1M`
+      );
+    }
+    if (typeof price?.blended_per_1m === 'number') {
+      parts.push(`blended ${this.formatPrice(price.blended_per_1m)} per 1M`);
+    }
+    if (typeof price?.request_price === 'number') {
+      parts.push(`${this.formatPrice(price.request_price)} per request`);
+    }
+    return parts.length ? parts.join(', ') : 'no rates';
+  }
+
+  /**
+   * Where a post-removal reprice would have to start, or null when there is
+   * nothing to reprice. Usage recorded under the override starts at its
+   * effective date; when that is unknown the visible window is the honest
+   * bound. A model with no requests in the window gets no offer.
+   */
+  private repriceWindowStart(effectiveFrom: string | null): string | null {
+    if (!(this.summary?.total_requests || 0)) {
+      return null;
+    }
+    const candidate =
+      effectiveFrom && new Date(effectiveFrom).getTime() <= Date.now()
+        ? effectiveFrom
+        : (this.summary?.period_start ?? null);
+    if (!candidate) {
+      return null;
+    }
+    const time = new Date(candidate).getTime();
+    if (!Number.isFinite(time) || time > Date.now()) {
+      return null;
+    }
+    return new Date(time).toISOString();
+  }
+
+  /**
+   * Drop the account override so this model is costed from the catalog again,
+   * or not at all. Only the override goes: recorded usage keeps the cost it
+   * was given, which the notice says and the reprice offer can undo.
+   */
+  private async removeOverride(): Promise<void> {
+    const overrideId = this.pricing?.override_id;
+    if (!overrideId || this.overrideRemoving) {
+      return;
+    }
+    const removedFrom = this.pricing?.effective_from ?? null;
+    this.overrideRemoving = true;
+    this.pricingError = null;
+    this.pricingNotice = null;
+    try {
+      await deleteModelPriceOverride(overrideId);
+      this.overrideRemoveOpen = false;
+      await this.loadPricing();
+      const since = this.repriceWindowStart(removedFrom);
+      this.repriceSince = since;
+      this.repriceNotice = null;
+      this.repriceError = null;
+      this.pricingNotice = since
+        ? 'Override removed. Rows recorded under it keep the old cost until they are repriced.'
+        : 'Override removed. New requests are costed from the provider catalog.';
+    } catch (error) {
+      // Nothing was removed: the card still shows the override, and says why.
+      this.pricingError =
+        error instanceof Error
+          ? error.message
+          : 'Failed to remove the price override.';
+    } finally {
+      this.overrideRemoving = false;
+    }
+  }
+
+  private renderRemoveOverrideDialog() {
+    const pricing = this.pricing;
+    // Rendered only while it is being asked: the card already carries the
+    // model's own delete dialog, and one confirm at a time is enough.
+    if (!this.overrideRemoveOpen) {
+      return '';
+    }
+    return html`
+      <sl-dialog
+        label="Remove price override"
+        data-testid="remove-override-dialog"
+        open
+        @sl-after-hide=${(event: Event) => {
+          if (event.target === event.currentTarget) {
+            this.overrideRemoveOpen = false;
+          }
+        }}
+      >
+        <div class="meta-line">
+          Remove the price override on
+          ${pricing?.model_alias || this.model?.name || 'this model'}? It
+          charges
+          ${this.describeOverrideRates()}${
+            pricing?.effective_from
+              ? `, effective from ${this.formatDate(pricing.effective_from)}`
+              : ''
+          }.
+          New requests are costed from the provider catalog, or land unpriced
+          when the catalog does not list this model. Usage already recorded
+          keeps the cost it was given.
+        </div>
+        <div slot="footer">
+          <sl-button
+            data-testid="cancel-remove-override"
+            @click=${() => (this.overrideRemoveOpen = false)}
+            >Cancel</sl-button
+          >
+          <sl-button
+            variant="danger"
+            data-testid="confirm-remove-override"
+            ?loading=${this.overrideRemoving}
+            @click=${() => void this.removeOverride()}
+            >Remove override</sl-button
+          >
+        </div>
+      </sl-dialog>
+    `;
+  }
+
   /**
    * Recost usage already recorded, from the date the saved price starts.
    *
@@ -2203,6 +2344,21 @@ export class AIModelDetailView extends LitElement {
               : ''
           }
           ${
+            // Only a price this account set can be taken back. A catalog price
+            // or no price at all has nothing to remove, so nothing is offered.
+            this.canEditPrice && source === 'override' && pricing?.override_id
+              ? html`<sl-button
+                  size="small"
+                  data-testid="remove-override"
+                  @click=${() => {
+                    this.pricingError = null;
+                    this.overrideRemoveOpen = true;
+                  }}
+                  >Remove override</sl-button
+                >`
+              : ''
+          }
+          ${
             pricing?.fetch_supported
               ? html`<sl-button
                   size="small"
@@ -2228,6 +2384,7 @@ export class AIModelDetailView extends LitElement {
                 price above comes from the provider catalog.
               </div>`
         }
+        ${this.renderRemoveOverrideDialog()}
       </sl-card>
     `;
   }

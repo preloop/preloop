@@ -4059,3 +4059,118 @@ class TestNoProgressRetry:
         failures = _milestones(orchestrator, "no_progress_retry_failed")
         assert len(failures) == 1
         assert "flow is paused" in failures[0]["details"]["reason"]
+
+
+class TestRoutedReasoningEffort:
+    """A label rule can ask for more thinking, not just another model (#851).
+
+    The effort is written by the controller onto the routing record, so the
+    only job here is carrying it into the parameters the harness reads and
+    saying on the execution which label decided.
+    """
+
+    def _orchestrator(self, record):
+        from preloop.models.models.flow_execution import ROUTING_RECORD_KEY
+
+        orchestrator = FlowExecutionOrchestrator(
+            db=MagicMock(spec=Session),
+            flow_id=uuid4(),
+            trigger_event_data={ROUTING_RECORD_KEY: record} if record else {},
+            nats_client=MagicMock(),
+        )
+        orchestrator.execution_logger = MagicMock()
+        return orchestrator
+
+    def test_effort_reaches_the_model_parameters(self):
+        orchestrator = self._orchestrator(
+            {
+                "schema_version": 1,
+                "source": "label",
+                "matched_label": "complexity:high",
+                "rule_id": "by-label-1",
+                "reasoning_effort": "high",
+                "agent_type": "codex",
+                "ai_model_id": str(uuid4()),
+            }
+        )
+        context = {"model_parameters": {"temperature": 0.2}}
+
+        applied = orchestrator._apply_routed_reasoning_effort(context)
+
+        assert applied == "high"
+        assert context["model_parameters"]["reasoning_effort"] == "high"
+        # The model row's own parameters survive the overlay.
+        assert context["model_parameters"]["temperature"] == 0.2
+
+    def test_the_execution_says_which_label_decided(self):
+        orchestrator = self._orchestrator(
+            {
+                "schema_version": 1,
+                "source": "label",
+                "matched_label": "complexity:high",
+                "rule_id": "by-label-1",
+                "reasoning_effort": "high",
+                "agent_type": "codex",
+            }
+        )
+
+        orchestrator._apply_routed_reasoning_effort({})
+
+        milestone, details = orchestrator.execution_logger.log_milestone.call_args[0]
+        assert milestone == "model_by_label"
+        assert details["label"] == "complexity:high"
+        assert details["reasoning_effort"] == "high"
+
+    def test_a_label_rule_without_an_effort_still_shows_up(self):
+        orchestrator = self._orchestrator(
+            {
+                "schema_version": 1,
+                "source": "label",
+                "matched_label": "complexity:low",
+                "rule_id": "by-label-2",
+                "agent_type": "codex",
+            }
+        )
+        context = {"model_parameters": {}}
+
+        assert orchestrator._apply_routed_reasoning_effort(context) is None
+        assert "reasoning_effort" not in context["model_parameters"]
+        assert orchestrator.execution_logger.log_milestone.called
+
+    def test_a_default_run_is_left_alone(self):
+        orchestrator = self._orchestrator(
+            {
+                "schema_version": 1,
+                "source": "default",
+                "agent_type": "codex",
+            }
+        )
+        context = {"model_parameters": {"temperature": 0.2}}
+
+        assert orchestrator._apply_routed_reasoning_effort(context) is None
+        assert context["model_parameters"] == {"temperature": 0.2}
+        assert not orchestrator.execution_logger.log_milestone.called
+
+    def test_a_run_with_no_routing_record_is_left_alone(self):
+        orchestrator = self._orchestrator(None)
+        context = {}
+
+        assert orchestrator._apply_routed_reasoning_effort(context) is None
+        assert context == {}
+
+    def test_a_nonsense_effort_is_ignored(self):
+        """The record is controller-written, but a stale one must not crash
+        a run either."""
+        orchestrator = self._orchestrator(
+            {
+                "schema_version": 1,
+                "source": "label",
+                "matched_label": "complexity:high",
+                "reasoning_effort": {"effort": "high"},
+                "agent_type": "codex",
+            }
+        )
+        context = {"model_parameters": {}}
+
+        assert orchestrator._apply_routed_reasoning_effort(context) is None
+        assert "reasoning_effort" not in context["model_parameters"]

@@ -19,14 +19,20 @@ from preloop.models.models.flow_execution import (
     resolve_execution_agent_selection,
 )
 from preloop.models.models.user import User
-from preloop.models.schemas.flow import FlowCreate, ModelRoutingConfig
+from preloop.models.schemas.flow import (
+    FlowCreate,
+    ModelByLabelConfig,
+    ModelRoutingConfig,
+)
 from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 from preloop.services.flow_trigger_service import FlowTriggerService
 from preloop.services.model_routing import (
     ModelRoutingError,
+    by_label_rules,
     extract_trusted_labels,
     first_matching_rule,
     native_handoff_required,
+    parse_model_by_label,
     parse_model_routing,
     prepare_execution_routing,
     rule_matches_labels,
@@ -1735,3 +1741,333 @@ class TestNoProgressEscalation:
                 original,
                 {"ai_model_id": str(FOREIGN_MODEL)},
             )
+
+
+class TestModelByLabel:
+    """``agent_config.model_by_label``: one label, one model, one effort (#851).
+
+    The short shape desugars into the same ordered engine as
+    ``model_routing``, so a label can only ever have one answer.
+    """
+
+    @pytest.mark.asyncio
+    async def test_first_match_wins_and_is_recorded(
+        self, db_session: Session, test_user: User
+    ):
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        big = _usable_model(db_session, test_user.account_id, name="Big")
+        flow = _flow(
+            db_session,
+            test_user,
+            ai_model_id=default.id,
+            extra_config={
+                "model_by_label": [
+                    {
+                        "label": "complexity:high",
+                        "ai_model_id": str(big.id),
+                        "reasoning_effort": "high",
+                    },
+                    {"label": "complexity:low", "reasoning_effort": "low"},
+                ]
+            },
+        )
+        service = FlowTriggerService(db_session)
+        nats_patch, dispatch_patch = _patch_dispatch()
+        with nats_patch, dispatch_patch:
+            result = await service.trigger_flow(
+                flow_id=flow.id,
+                test_mode=True,
+                trigger_event_data={
+                    "type": "issue_labeled",
+                    "payload": {
+                        "issue": {
+                            "labels": [
+                                {"name": "bug"},
+                                {"name": "complexity:high"},
+                                {"name": "complexity:low"},
+                            ]
+                        }
+                    },
+                },
+            )
+        record = (
+            db_session.query(FlowExecution)
+            .filter_by(id=result["id"])
+            .one()
+            .trigger_event_details[ROUTING_RECORD_KEY]
+        )
+        assert record["ai_model_id"] == str(big.id)
+        assert record["source"] == "label"
+        assert record["matched_label"] == "complexity:high"
+        assert record["reasoning_effort"] == "high"
+        assert "complexity:high" in record["reason"]
+
+    @pytest.mark.asyncio
+    async def test_no_match_runs_the_flow_default(
+        self, db_session: Session, test_user: User
+    ):
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        big = _usable_model(db_session, test_user.account_id, name="Big")
+        flow = _flow(
+            db_session,
+            test_user,
+            ai_model_id=default.id,
+            extra_config={
+                "model_by_label": [
+                    {"label": "complexity:high", "ai_model_id": str(big.id)}
+                ]
+            },
+        )
+        service = FlowTriggerService(db_session)
+        nats_patch, dispatch_patch = _patch_dispatch()
+        with nats_patch, dispatch_patch:
+            result = await service.trigger_flow(
+                flow_id=flow.id,
+                test_mode=True,
+                trigger_event_data={"payload": {"labels": ["bug"]}},
+            )
+        record = (
+            db_session.query(FlowExecution)
+            .filter_by(id=result["id"])
+            .one()
+            .trigger_event_details[ROUTING_RECORD_KEY]
+        )
+        assert record["ai_model_id"] == str(default.id)
+        assert record["source"] == "default"
+        assert "reasoning_effort" not in record
+        assert "matched_label" not in record
+
+    def test_gitlab_label_titles_match(self, db_session: Session, test_user: User):
+        """GitLab spells a label ``title``; GitHub spells it ``name``."""
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        big = _usable_model(db_session, test_user.account_id, name="Big")
+        flow = _flow(
+            db_session,
+            test_user,
+            ai_model_id=default.id,
+            extra_config={
+                "model_by_label": [
+                    {"label": "complexity:high", "ai_model_id": str(big.id)}
+                ]
+            },
+        )
+        details = prepare_execution_routing(
+            db_session,
+            flow,
+            {
+                "type": "issue_labeled",
+                "payload": {
+                    "object_attributes": {"iid": 7},
+                    "labels": [{"title": "complexity:high"}],
+                },
+            },
+        )
+        record = details[ROUTING_RECORD_KEY]
+        assert record["ai_model_id"] == str(big.id)
+        assert record["matched_label"] == "complexity:high"
+
+    def test_effort_only_rule_keeps_the_flow_model(
+        self, db_session: Session, test_user: User
+    ):
+        """ "Same model, think harder" is the common case."""
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        flow = _flow(
+            db_session,
+            test_user,
+            ai_model_id=default.id,
+            extra_config={
+                "model_by_label": [
+                    {"label": "complexity:high", "reasoning_effort": "high"}
+                ]
+            },
+        )
+        record = prepare_execution_routing(
+            db_session,
+            flow,
+            {"payload": {"labels": [{"name": "complexity:high"}]}},
+        )[ROUTING_RECORD_KEY]
+        assert record["ai_model_id"] == str(default.id)
+        assert record["agent_type"] == "codex"
+        assert record["reasoning_effort"] == "high"
+
+    def test_explicit_routing_rules_are_evaluated_first(
+        self, db_session: Session, test_user: User
+    ):
+        """One engine, one answer: the richer shape an operator reached for
+        on purpose decides before the shorthand."""
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        fast = _usable_model(db_session, test_user.account_id, name="Fast")
+        big = _usable_model(db_session, test_user.account_id, name="Big")
+        flow = _flow(
+            db_session,
+            test_user,
+            ai_model_id=default.id,
+            routing=_policy(
+                _rule("fast-path", any_labels=["complexity:high"], model_id=fast.id)
+            ),
+            extra_config={
+                "model_by_label": [
+                    {"label": "complexity:high", "ai_model_id": str(big.id)}
+                ]
+            },
+        )
+        record = prepare_execution_routing(
+            db_session, flow, {"payload": {"labels": ["complexity:high"]}}
+        )[ROUTING_RECORD_KEY]
+        assert record["ai_model_id"] == str(fast.id)
+        assert record["source"] == "rule"
+        assert record["rule_id"] == "fast-path"
+
+    def test_a_webhook_cannot_plant_a_label_rule(
+        self, db_session: Session, test_user: User
+    ):
+        """Policy is read from the flow, never from the event body."""
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        foreign = _usable_model(db_session, test_user.account_id, name="Foreign")
+        flow = _flow(db_session, test_user, ai_model_id=default.id)
+        record = prepare_execution_routing(
+            db_session,
+            flow,
+            {
+                "payload": {
+                    "labels": ["complexity:high"],
+                    "model_by_label": [
+                        {"label": "complexity:high", "ai_model_id": str(foreign.id)}
+                    ],
+                },
+                "model_by_label": [
+                    {"label": "complexity:high", "ai_model_id": str(foreign.id)}
+                ],
+            },
+        )[ROUTING_RECORD_KEY]
+        assert record["ai_model_id"] == str(default.id)
+        assert record["source"] == "default"
+
+    def test_a_foreign_model_is_refused_on_save(
+        self, db_session: Session, test_user: User
+    ):
+        other_account = crud_account.create(
+            db_session, obj_in={"organization_name": f"Other {uuid4().hex[:8]}"}
+        )
+        foreign = _usable_model(db_session, other_account.id, name="Foreign")
+        config = {
+            "model_by_label": [
+                {"label": "complexity:high", "ai_model_id": str(foreign.id)}
+            ]
+        }
+        with pytest.raises(ModelRoutingError, match="not found"):
+            validate_stored_model_routing(db_session, config, test_user.account_id)
+
+    def test_an_invalid_document_is_refused_on_save(
+        self, db_session: Session, test_user: User
+    ):
+        config = {"model_by_label": [{"label": "complexity:high"}]}
+        with pytest.raises(ModelRoutingError, match="invalid"):
+            validate_stored_model_routing(db_session, config, test_user.account_id)
+
+    def test_a_rule_with_nothing_to_run_on_fails_closed(
+        self, db_session: Session, test_user: User
+    ):
+        """No model on the rule and none on the flow is not a run."""
+        flow = _flow(
+            db_session,
+            test_user,
+            ai_model_id=None,
+            agent_type="codex",
+            extra_config={
+                "model_by_label": [
+                    {"label": "complexity:high", "reasoning_effort": "high"}
+                ]
+            },
+        )
+        with pytest.raises(ModelRoutingError, match="cannot run"):
+            prepare_execution_routing(
+                db_session, flow, {"payload": {"labels": ["complexity:high"]}}
+            )
+
+    def test_a_duplicate_label_is_refused(self):
+        with pytest.raises(ValidationError):
+            ModelByLabelConfig.model_validate(
+                [
+                    {"label": "complexity:high", "reasoning_effort": "high"},
+                    {"label": "complexity:high", "reasoning_effort": "low"},
+                ]
+            )
+
+    def test_an_unknown_effort_is_refused(self):
+        with pytest.raises(ValidationError):
+            ModelByLabelConfig.model_validate(
+                [{"label": "complexity:high", "reasoning_effort": "maximum"}]
+            )
+
+    def test_desugaring_preserves_stored_order(
+        self, db_session: Session, test_user: User
+    ):
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        flow = _flow(
+            db_session,
+            test_user,
+            ai_model_id=default.id,
+            extra_config={
+                "model_by_label": [
+                    {"label": "first", "reasoning_effort": "low"},
+                    {"label": "second", "reasoning_effort": "high"},
+                ]
+            },
+        )
+        pairs = by_label_rules(
+            parse_model_by_label(flow.agent_config),
+            flow,
+        )
+        assert [entry.label for _, entry in pairs] == ["first", "second"]
+        assert [rule.id for rule, _ in pairs] == ["by-label-1", "by-label-2"]
+
+    def test_a_harness_override_is_refused_on_a_label_rule(self):
+        """The short form is model and effort only.
+
+        Switching harness per label is what ``model_routing`` is for, and a
+        field the console cannot edit is a field the next console save would
+        quietly drop.
+        """
+        with pytest.raises(ValidationError):
+            ModelByLabelConfig.model_validate(
+                [{"label": "complexity:high", "agent_type": "opencode"}]
+            )
+
+    def test_an_explicit_rule_named_like_a_label_rule_keeps_its_own_identity(
+        self, db_session: Session, test_user: User
+    ):
+        """``by-label-1`` is a legal id for a hand-written rule.
+
+        Attribution is by object identity, so a collision cannot hand an
+        explicit rule somebody else's label or, worse, a reasoning effort it
+        never asked for.
+        """
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        fast = _usable_model(db_session, test_user.account_id, name="Fast")
+        big = _usable_model(db_session, test_user.account_id, name="Big")
+        flow = _flow(
+            db_session,
+            test_user,
+            ai_model_id=default.id,
+            routing=_policy(
+                _rule("by-label-1", any_labels=["urgent"], model_id=fast.id)
+            ),
+            extra_config={
+                "model_by_label": [
+                    {
+                        "label": "complexity:high",
+                        "ai_model_id": str(big.id),
+                        "reasoning_effort": "high",
+                    }
+                ]
+            },
+        )
+        record = prepare_execution_routing(
+            db_session, flow, {"payload": {"labels": ["urgent"]}}
+        )[ROUTING_RECORD_KEY]
+        assert record["ai_model_id"] == str(fast.id)
+        assert record["source"] == "rule"
+        assert record["rule_id"] == "by-label-1"
+        assert "matched_label" not in record
+        assert "reasoning_effort" not in record

@@ -49,10 +49,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -76,7 +76,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -101,10 +101,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -128,7 +128,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ./frontend
           platforms: linux/amd64,linux/arm64
@@ -634,22 +634,6 @@ jobs:
           config: cliff.toml
           args: --latest --strip header
 
-      - name: Finalize changelog
-        id: changelog_body
-        env:
-          CHANGELOG_CONTENT: ${{ steps.changelog.outputs.content }}
-          CHANGELOG_OUTCOME: ${{ steps.changelog.outcome }}
-        run: |
-          {
-            echo "content<<EOF"
-            if [ -n "$CHANGELOG_CONTENT" ]; then
-              printf '%s\n' "$CHANGELOG_CONTENT"
-            else
-              echo "_Changelog generation was unavailable for this release (${CHANGELOG_OUTCOME:-unknown})._"
-            fi
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Compute package version
         id: version
         run: |
@@ -708,81 +692,95 @@ jobs:
           cp "$BUNDLE_PATH" "release-assets/preloop-${GITHUB_REF_NAME}.intoto.jsonl"
           ls -la release-assets/
 
+      # git-cliff's `content` output is the full notes string. Putting that in
+      # `env:` or in `action-gh-release` `body:` exceeds Linux ARG_MAX
+      # ("Argument list too long") on a large tag. Keep notes on disk and pass
+      # the path. `outputs.changelog` is the file path, not the text.
+      - name: Compose release notes
+        env:
+          CLIFF_CHANGELOG: ${{ steps.changelog.outputs.changelog }}
+          CHANGELOG_OUTCOME: ${{ steps.changelog.outcome }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.package_version }}
+          REF_NAME: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          notes=release-notes.md
+          cat > "$notes" <<EOF
+          ## Install Standalone CLI
+
+          macOS / Linux:
+
+          \`\`\`bash
+          curl -fsSL https://preloop.ai/install/cli | sh
+          \`\`\`
+
+          ### Windows binaries
+
+          Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+          Download \`preloop-windows-amd64.exe\` or \`preloop-windows-arm64.exe\` from the assets below (Authenticode signing via SignPath pending certificate approval — verify with \`SHA256SUMS\`), or install with PowerShell:
+
+          \`\`\`powershell
+          irm https://preloop.ai/install/cli.ps1 | iex
+          \`\`\`
+
+          Verify against \`SHA256SUMS\`. Pin with \`PRELOOP_VERSION=${PACKAGE_VERSION}\`.
+
+          Code signing policy: [docs/code-signing-policy.md](https://github.com/preloop/preloop/blob/main/docs/code-signing-policy.md). Defender notes: [docs/windows-cli.md](https://github.com/preloop/preloop/blob/main/docs/windows-cli.md).
+
+          ## Install Open Source Edition
+
+          \`\`\`bash
+          curl -fsSL https://preloop.ai/install/oss | sh
+          \`\`\`
+
+          This downloads the versioned \`docker-compose.release.yaml\`, writes a local \`.env\`, and starts the OSS stack with Docker Compose.
+
+          ## Helm
+
+          \`\`\`bash
+          helm install preloop https://github.com/preloop/preloop/releases/download/${REF_NAME}/preloop-${PACKAGE_VERSION}.tgz
+          \`\`\`
+
+          For ingress and custom hostname, see [Kubernetes Setup](https://github.com/preloop/preloop#kubernetes-setup) and the [chart README](https://github.com/preloop/preloop/blob/main/helm/preloop/README.md).
+
+          ## SBOM
+
+          CycloneDX 1.6 SBOMs are attached for each shipped component:
+
+          - \`preloop-sbom-backend-${PACKAGE_VERSION}.cdx.json\`
+          - \`preloop-sbom-frontend-${PACKAGE_VERSION}.cdx.json\`
+          - \`preloop-sbom-cli-${PACKAGE_VERSION}.cdx.json\` (linux/amd64 build constraints)
+
+          Their digests are in \`SHA256SUMS\` and their build provenance is in the attestation bundle. Regenerate locally with \`scripts/generate_sbom.sh\`.
+
+          ## Verify release provenance
+
+          Each attached payload and \`SHA256SUMS\` has signed Sigstore build provenance.
+          Download an asset and \`preloop-${REF_NAME}.intoto.jsonl\`, then run:
+
+          \`\`\`bash
+          gh attestation verify ./preloop-linux-amd64 --bundle ./preloop-${REF_NAME}.intoto.jsonl --repo preloop/preloop --signer-workflow preloop/preloop/.github/workflows/release.yml --source-ref refs/tags/${REF_NAME} --source-digest ${SOURCE_SHA} --deny-self-hosted-runners
+          \`\`\`
+
+          Replace the binary filename to verify any other attached payload.
+          See [release verification](https://github.com/preloop/preloop/blob/main/docs/release-verification.md) for details and scope.
+
+          ## Changelog
+
+          EOF
+          if [ -n "${CLIFF_CHANGELOG:-}" ] && [ -f "$CLIFF_CHANGELOG" ] && [ -s "$CLIFF_CHANGELOG" ]; then
+            cat "$CLIFF_CHANGELOG" >> "$notes"
+          else
+            echo "_Changelog generation was unavailable for this release (${CHANGELOG_OUTCOME:-unknown})._" >> "$notes"
+          fi
+
       - name: Create Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: release-assets/*
-          body: |
-            ## Install Standalone CLI
-
-            macOS / Linux:
-
-            ```bash
-            curl -fsSL https://preloop.ai/install/cli | sh
-            ```
-
-            ### Windows binaries
-
-            Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
-
-            Download `preloop-windows-amd64.exe` or `preloop-windows-arm64.exe` from the assets below (Authenticode signing via SignPath pending certificate approval — verify with `SHA256SUMS`), or install with PowerShell:
-
-            ```powershell
-            irm https://preloop.ai/install/cli.ps1 | iex
-            ```
-
-            Verify against `SHA256SUMS`. Pin with `PRELOOP_VERSION=${{ steps.version.outputs.package_version }}`.
-
-            Code signing policy: [docs/code-signing-policy.md](https://github.com/preloop/preloop/blob/main/docs/code-signing-policy.md). Defender notes: [docs/windows-cli.md](https://github.com/preloop/preloop/blob/main/docs/windows-cli.md).
-
-            ## Install Open Source Edition
-
-            ```bash
-            curl -fsSL https://preloop.ai/install/oss | sh
-            ```
-
-            This downloads the versioned `docker-compose.release.yaml`, writes a local `.env`, and starts the OSS stack with Docker Compose.
-
-            ## Helm
-
-            ```bash
-            helm install preloop \
-              https://github.com/preloop/preloop/releases/download/${{ github.ref_name }}/preloop-${{ steps.version.outputs.package_version }}.tgz
-            ```
-
-            For ingress and custom hostname, see [Kubernetes Setup](https://github.com/preloop/preloop#kubernetes-setup) and the [chart README](https://github.com/preloop/preloop/blob/main/helm/preloop/README.md).
-
-            ## SBOM
-
-            CycloneDX 1.6 SBOMs are attached for each shipped component:
-
-            - `preloop-sbom-backend-${{ steps.version.outputs.package_version }}.cdx.json`
-            - `preloop-sbom-frontend-${{ steps.version.outputs.package_version }}.cdx.json`
-            - `preloop-sbom-cli-${{ steps.version.outputs.package_version }}.cdx.json` (linux/amd64 build constraints)
-
-            Their digests are in `SHA256SUMS` and their build provenance is in the attestation bundle. Regenerate locally with `scripts/generate_sbom.sh`.
-
-            ## Verify release provenance
-
-            Each attached payload and `SHA256SUMS` has signed Sigstore build provenance.
-            Download an asset and `preloop-${{ github.ref_name }}.intoto.jsonl`, then run:
-
-            ```bash
-            gh attestation verify ./preloop-linux-amd64 \
-              --bundle ./preloop-${{ github.ref_name }}.intoto.jsonl \
-              --repo preloop/preloop \
-              --signer-workflow preloop/preloop/.github/workflows/release.yml \
-              --source-ref refs/tags/${{ github.ref_name }} \
-              --source-digest ${{ github.sha }} \
-              --deny-self-hosted-runners
-            ```
-
-            Replace the binary filename to verify any other attached payload.
-            See [release verification](https://github.com/preloop/preloop/blob/main/docs/release-verification.md) for details and scope.
-
-            ## Changelog
-
-            ${{ steps.changelog_body.outputs.content }}
+          body_path: release-notes.md
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
 

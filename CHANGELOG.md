@@ -37,6 +37,9 @@ avatars.
   on a stronger model or a higher reasoning effort. Both keys are unset by
   default, so existing flows are unaffected, and a run with any workspace
   change is never nudged or stopped by the guard.
+- Price overrides can be read, edited and removed in the console: the Cost page
+  lists every override with its rates, effective dates and notes, and a model's
+  detail page can drop its override and fall back to the catalog price.
 - A model whose requests carry no price can be marked "unpriced is expected"
   (or snoozed for seven days) from the Models list or the model detail page.
   The marker is stored as `model-unpriced:<alias>` with a stable
@@ -51,6 +54,16 @@ avatars.
   remain supported. Persistent agent execution,
   matrix runs and delegated triage runs are rejected because those paths cannot
   preserve the required execution scope and shared revision ownership.
+
+- Model by label: `agent_config.model_by_label` maps a complexity label to a
+  model and a reasoning effort, first match wins, evaluated at trigger time
+  after the existing `model_routing` rules. A rule that only names an effort
+  keeps the flow's model and asks it to think harder; Codex receives the
+  choice as `model_reasoning_effort` in `config.toml`. The flow form in the
+  console edits the list, the chosen label and effort are logged on the
+  execution, and a label that arrives on an untrusted webhook payload can
+  never introduce a rule of its own. The list is empty by default, so
+  existing flows route exactly as before.
 
 - Agent harnesses are told the context window and output ceiling of the
   model they run on. Codex gets `model_context_window` and
@@ -1045,6 +1058,14 @@ avatars.
   `/console/settings/emergency`, off the billing surface.
 
 ### Changed
+
+- The issue implementation preset asks for a commit at each milestone, with
+  the first one within 20 minutes of the first edit and WIP commits
+  explicitly allowed, so a run that is cut short keeps the work it already
+  did instead of leaving an empty branch. Phase 1 now asks the agent to read
+  by range with `grep -n` and `sed -n` instead of reading whole files, which
+  leaves context for the edits. Flows derived from this preset are flagged
+  with `preset_update_available`.
 
 - Enable the Policies console by default for users with policy permissions.
   Operators can still hide it with `PRELOOP_POLICIES_CONSOLE=false`.
