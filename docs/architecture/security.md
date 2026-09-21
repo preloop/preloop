@@ -39,11 +39,13 @@ Preloop implements authentication and multi-tenancy:
 - Email verification for new user accounts
 - Integration points for SSO and OAuth providers (future)
 - Per-user `auth_generation` (JWT `gen` claim). `POST /auth/sessions/revoke-all`
-  increments it; `get_current_user`, `POST /auth/refresh`, and the CLI JWT
-  branch of `POST /oauth/token` reject a token whose `gen` is behind the
+  increments it; `get_current_user`, `POST /auth/refresh`, the CLI JWT
+  branch of `POST /oauth/token`, and the WebSocket upgrade
+  (`WebSocketAuthMiddleware`) reject a token whose `gen` is behind the
   user. Tokens minted before the claim existed are treated as generation 0,
   so one bump also invalidates them. API keys and runner tokens are
-  unchanged.
+  unchanged. `preloop auth logout --all` and the console Sign out everywhere
+  control call that endpoint.
 - Console refresh tokens (`POST /auth/refresh`) carry `sat` and are capped
   at `MAX_SESSION_DAYS` (default 30). CLI login refresh tokens stay
   long-lived (`CLI_JWT_REFRESH_TOKEN_EXPIRE_DAYS`, default 365); revocation
