@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -124,6 +125,76 @@ def test_claim_execution_stale_lease_reclaimable(
     assert reclaimed.orchestrator_worker_id == "worker-b"
 
 
+def test_exclusive_claim_blocks_same_worker_but_preserves_recovery(
+    db_session: Session, flow_for_claim
+) -> None:
+    """Triage's exclusive mode retains heartbeat, release and stale takeover."""
+    execution = _create_pending_execution(db_session, flow_for_claim.id)
+    options = {
+        "execution_id": execution.id,
+        "worker_id": "worker-a",
+        "allow_same_worker": False,
+    }
+    first = crud_flow_execution.claim_execution(db_session, **options)
+    assert first is not None
+    assert crud_flow_execution.claim_execution(db_session, **options) is None
+    assert crud_flow_execution.touch_heartbeat(
+        db_session, execution_id=execution.id, worker_id="worker-a"
+    )
+    assert crud_flow_execution.release_claim(
+        db_session, execution_id=execution.id, worker_id="worker-a"
+    )
+    released = crud_flow_execution.claim_execution(db_session, **options)
+    assert released is not None
+    released.orchestrator_heartbeat_at = datetime.now(timezone.utc) - timedelta(
+        seconds=300
+    )
+    db_session.commit()
+    assert crud_flow_execution.claim_execution(db_session, **options) is not None
+
+
+@pytest.mark.asyncio
+async def test_local_triage_callbacks_use_the_worker_claim_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated local callbacks cannot directly start unclaimed orchestration."""
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    callbacks = []
+    service = FlowTriggerService(MagicMock())
+    monkeypatch.setattr(service, "_flows_halted", lambda _: False)
+    local_db = MagicMock()
+    monkeypatch.setattr(service, "_create_orchestrator_session", lambda: local_db)
+    monkeypatch.setattr(
+        "preloop.models.crud.crud_issue_lifecycle.has_triage_execution",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "preloop.services.flow_execution_dispatcher.flow_execution_worker_enabled",
+        lambda: False,
+    )
+    claim = AsyncMock()
+    direct = AsyncMock()
+    monkeypatch.setattr(
+        "preloop.services.flow_execution_runner.claim_and_run_execution", claim
+    )
+    monkeypatch.setattr(
+        "preloop.services.flow_execution_runner.run_existing_execution", direct
+    )
+    monkeypatch.setattr(
+        "preloop.services.flow_trigger_service.asyncio.create_task", callbacks.append
+    )
+    execution = MagicMock(id=uuid.uuid4(), status="PENDING")
+    flow = MagicMock(account_id=uuid.uuid4())
+    await service._start_flow_execution(flow, {}, None, precreated_execution=execution)
+    await service._start_flow_execution(flow, {}, None, precreated_execution=execution)
+    assert len(callbacks) == 2
+    await asyncio.gather(*callbacks)
+    assert claim.await_count == 2
+    assert all(call.args == (str(execution.id),) for call in claim.await_args_list)
+    direct.assert_not_awaited()
+
+
 def test_touch_heartbeat_and_release(db_session: Session, flow_for_claim) -> None:
     execution = _create_pending_execution(db_session, flow_for_claim.id)
     claimed = crud_flow_execution.claim_execution(
@@ -237,6 +308,11 @@ async def test_redispatch_calls_execute_and_resume(
 
     service = ExecutionRecoveryService()
     with (
+        patch.object(
+            crud_flow_execution,
+            "list_stale_or_unclaimed_active",
+            return_value=[pending, running],
+        ),
         patch(
             "preloop.services.flow_execution_dispatcher.dispatch_execute",
             new_callable=AsyncMock,

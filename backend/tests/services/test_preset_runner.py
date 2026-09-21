@@ -806,7 +806,11 @@ async def test_reviewer_slug_still_rejected_on_issue_target() -> None:
 
 
 @pytest.mark.asyncio
-async def test_implementer_batch_targets_rejected() -> None:
+@pytest.mark.parametrize("preset_slug", [IMPLEMENTER_SLUG, REVIEWER_SLUG])
+@pytest.mark.parametrize("confirm_create", [False, True])
+async def test_nontriage_batch_targets_rejected(
+    preset_slug: str, confirm_create: bool
+) -> None:
     user = _user(uuid.uuid4())
     targets = [
         _Simple(kind="issue", issue_id=uuid.uuid4()),
@@ -816,9 +820,9 @@ async def test_implementer_batch_targets_rejected() -> None:
         await run_preset_on_target(
             MagicMock(),
             current_user=user,
-            preset_slug=IMPLEMENTER_SLUG,
+            preset_slug=preset_slug,
             targets=targets,
-            confirm_create=False,
+            confirm_create=confirm_create,
             triggered_by="Jane Doe",
         )
     assert exc.value.status_code == 400
@@ -1152,7 +1156,9 @@ def _active_execution(payload: dict, *, status: str = "RUNNING") -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_single_run_coalesces_onto_an_active_run_for_the_same_issue() -> None:
+async def test_implementation_run_coalesces_onto_an_active_run_for_the_same_issue() -> (
+    None
+):
     """A second click must not start a second agent on one issue."""
     from preloop.models.schemas.flow import RunPresetResponse
 
@@ -1161,7 +1167,7 @@ async def test_single_run_coalesces_onto_an_active_run_for_the_same_issue() -> N
     project, tracker = _github_project_tracker()
     payload = build_issue_trigger_payload(issue, project, tracker, git_only=False)
     active = _active_execution(payload["payload"])
-    flow = _account_flow(name="Issue Triage Assistant")
+    flow = _account_flow(name="Automated Issue Implementation")
     trigger = AsyncMock()
 
     with (
@@ -1185,7 +1191,7 @@ async def test_single_run_coalesces_onto_an_active_run_for_the_same_issue() -> N
         response = await run_preset_on_target(
             MagicMock(),
             current_user=_user(uuid.uuid4()),
-            preset_slug=TRIAGE_SLUG,
+            preset_slug=IMPLEMENTER_SLUG,
             target=_Simple(kind="issue", issue_id=issue_id),
             confirm_create=True,
             triggered_by="Jane Doe",
@@ -1203,6 +1209,59 @@ async def test_single_run_coalesces_onto_an_active_run_for_the_same_issue() -> N
     assert item["error"] is None
     lookup = crud_execution.get_running_by_flow.call_args.kwargs
     assert lookup["tracker_object_key"] == "github:example/repo:issue:42"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("coalesced", [True, False])
+async def test_triage_single_run_uses_revision_controller_receipt(
+    coalesced: bool,
+) -> None:
+    """An active older revision cannot hide the controller's current decision."""
+    issue_id, execution_id = uuid.uuid4(), uuid.uuid4()
+    issue = _triage_issue()
+    project, tracker = _github_project_tracker()
+    trigger = AsyncMock(
+        return_value={
+            "id": str(execution_id),
+            "status": "SUCCEEDED" if coalesced else "PENDING",
+            "coalesced": coalesced,
+        }
+    )
+    with (
+        patch(
+            "preloop.services.preset_runner._load_visible_issue",
+            return_value=(issue, project, tracker),
+        ),
+        patch(
+            "preloop.services.preset_runner.resolve_or_create_flow",
+            return_value=(_account_flow(name="Issue Triage Assistant"), False),
+        ),
+        patch(
+            "preloop.services.preset_runner._active_run_for_target",
+            side_effect=AssertionError(
+                "Object-only lookup must not swallow a revision"
+            ),
+        ),
+        patch(
+            "preloop.services.flow_trigger_service.FlowTriggerService.trigger_flow",
+            trigger,
+        ),
+    ):
+        response = await run_preset_on_target(
+            MagicMock(),
+            current_user=_user(uuid.uuid4()),
+            preset_slug=TRIAGE_SLUG,
+            target=_Simple(kind="issue", issue_id=issue_id),
+            confirm_create=True,
+            triggered_by="Jane Doe",
+        )
+    trigger.assert_awaited_once()
+    assert response["execution_id"] == str(execution_id)
+    if coalesced:
+        assert response["results"][0]["coalesced"] is True
+        assert response["results"][0]["execution_status"] == "SUCCEEDED"
+    else:
+        assert "results" not in response
 
 
 @pytest.mark.asyncio
@@ -1225,7 +1284,12 @@ async def test_batch_coalesces_only_the_issue_that_is_already_running() -> None:
     )
     active = _active_execution(running_payload["payload"], status="WAITING_FOR_HUMAN")
     new_execution_id = str(uuid.uuid4())
-    trigger = AsyncMock(return_value={"id": new_execution_id, "status": "PENDING"})
+    trigger = AsyncMock(
+        side_effect=[
+            {"id": str(active.id), "status": active.status, "coalesced": True},
+            {"id": new_execution_id, "status": "PENDING"},
+        ]
+    )
 
     def _load(_db, *, issue_id, account_id):  # noqa: ARG001
         if issue_id == running_id:
@@ -1246,8 +1310,8 @@ async def test_batch_coalesces_only_the_issue_that_is_already_running() -> None:
             trigger,
         ),
     ):
-        crud_execution.get_running_by_flow.side_effect = (
-            lambda *args, **kwargs: [active]
+        crud_execution.get_running_by_flow.side_effect = lambda *args, **kwargs: (
+            [active]
             if kwargs.get("tracker_object_key") == "github:example/repo:issue:42"
             else []
         )
@@ -1263,7 +1327,7 @@ async def test_batch_coalesces_only_the_issue_that_is_already_running() -> None:
             triggered_by="Jane Doe",
         )
 
-    trigger.assert_awaited_once()
+    assert trigger.await_count == 2
     result = RunPresetResponse.model_validate(response).model_dump()
     coalesced, started = result["results"]
     assert coalesced["coalesced"] is True

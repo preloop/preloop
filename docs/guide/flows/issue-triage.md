@@ -22,7 +22,9 @@ The preset ships as `backend/presets/001-issue-triage-assistant.yaml`
    only obsolete siblings in the selected family.
 4. The tool reads the provider state back and synchronizes the observed issue
    through CRUD. Its receipt identifies completed operations, conflicts and
-   partial failures. `result.json` records that diagnostic receipt.
+   partial failures. A successful controlled run also persists a versioned
+   assessment packet in the issue lifecycle ledger. `result.json` records the
+   diagnostic receipt; it cannot supply or authorize a persisted packet.
 
 Existing complexity schemes take precedence. Supported vocabulary includes explicit
 complexity, effort, size or difficulty families and unambiguous standalone schemes.
@@ -41,45 +43,57 @@ must not be mixed with `description`, `status`, `priority`, `assignee`, `labels`
 reactions; such a call is rejected rather than half applied.
 
 The triage write requires the existing `edit_issues` permission and follows normal
-MCP availability and approval policies. Project and tracker identity come from
-account-scoped stored records. The preset prompt restricts `update_issue` to the
-triage write: it does not change assignees or dispatch labels, create follow-up
-issues, or start implementation.
-
-The previous `apply_issue_triage` tool advertised a bounded schema
-(`expected_revision`, `assessment`, `complexity_label`, and optional `title`
-only). That mechanical bound is gone: the preset's write tool is full
-`update_issue`, and the triage-only restriction is prompt-enforced. Issue text
-and comments are untrusted data, so a prompt-injected agent could issue a
-non-triage write (replace the description, close the issue) that the old tool
-pair made impossible. Account owners who want a mechanical gate should attach an
-approval policy to `update_issue` for this flow. The preset does not pin one:
-approval gates are deployment-specific.
+MCP availability and approval policies. Account, project, tracker and execution
+identity come from authenticated stored records. An execution created for triage
+can write only its bound issue, using the assessed revision and unchanged project
+policy and flow configuration. Broad `update_issue` metadata writes are rejected
+for its credential, even when the MCP request context is absent. Mutating REST
+routes also reject triage runtime credentials, so the same key cannot create
+follow-up issues, change dispatch labels or launch an implementation through a
+second API. Ordinary human, implementer and reviewer credentials retain their
+existing behavior. Renaming a flow or explicitly retrying its failed run does not
+remove the original execution credential's restrictions.
 
 The first provider adapters support GitHub and GitLab. Other providers report an
-unsupported operation rather than claiming an update.
+unsupported operation before reserving an execution rather than claiming an update.
+Triage requires an execution-scoped agent credential. Persistent agent execution
+is rejected because its existing agent credential does not provide that scope.
 
 The service checks the issue baseline before mutations and verifies the final
 state. These are optimistic checks, not atomic provider compare-and-swap. A stale
-baseline requires fresh context and re-evaluation. Partial failures retain the
-observed provider state and operation receipts; retrying must account for writes
-that already succeeded. Human edits during the provider read/write window remain
-a documented limitation.
+baseline requires a new revision assessment. The controller serializes local
+claims and applies using the existing tenant/issue advisory-lock key. A dedicated
+connection holds the lock across durable intent commits, so a lost provider
+response or process failure cannot erase the suppression receipt. External human
+edits between the provider read and write remain a documented limitation; the
+controller does not claim atomic provider compare-and-swap.
+
+Lock connections use a separate pool that preserves the data engine's connection
+settings. Each process admits at most two concurrent lock holders or waiters
+(one when the data pool size is one). Excess callers receive retryable
+`triage_operation_in_progress` immediately, before checking out a lock connection;
+manual HTTP requests report this as a conflict. Admitted callers retain the bounded
+ten-second advisory-lock wait and same-revision coalescing. Retry a busy request
+after the active operation finishes. Size PostgreSQL's connection budget for up
+to two additional connections per process, including every API and worker process.
+The default synchronous, asynchronous, health and lock pools total at most 63
+connections per process. Disposing the data engine also disposes its lock pool.
 
 Automatic triage suppresses matching self-generated updates using server-written
 receipts, expected edit fields and provider snapshots. Final receipts also match
 the observed provider update time; pending write expectations expire. Suppression
 keys on the receipt, not on which tools a flow selected, so an event that carries no
 trusted receipt stays eligible for every flow. Marker text alone does not suppress
-an event. Manual runs remain eligible, as do reopening and later human
-edits. Rapid human edits can still
-enqueue multiple runs; this is not durable per-revision coalescing.
+an event. Manual runs and later human edits reach the same durable revision
+controller. Different revisions can have separate executions; an older execution
+cannot apply its assessment over a newer observed revision.
 
 Automatic triage also skips an issue update whose provider change set touches
 neither the title nor the description. GitLab reports an assignee, milestone or
 due-date edit as a plain issue update, and triage has nothing new to read in one.
 The check needs a provider change set: a delivery without one (Jira, a replayed
-payload, a manual run) still runs. Only flows created from this preset are held
+payload, a manual run) still passes this relevance filter. Only flows created
+from this preset are held
 back, so a GitLab assignment still reaches other flows that subscribe to issue
 updates. A flow counts as one of those when it records this preset as its
 source, or, for flows created before that link existed, when its name is exactly
@@ -100,8 +114,8 @@ issue list and choose **Run triage on selected**. Both call
 runs use `test_mode=false`. Implementer and reviewer run-preset behavior is
 unchanged; batch `targets` is triage-only.
 
-For non-Git trackers, the packet keeps the issue key and known URL. It does
-not invent a repository, clone URL, default branch, or author from an assignee.
+Unsupported tracker targets report a per-item error. Triage never invents a
+repository, clone URL, default branch, or author from an assignee.
 
 Batch results report each issue separately, each with its issue key so a
 25-row selection says which issue needs attention. If dispatch fails after an
@@ -109,17 +123,63 @@ execution was created, its ID, status and link remain in the response with a
 warning. The console shows these warnings and run links; inspect an existing run
 before retrying. Other valid issues in the batch continue.
 
-A manual run reuses a run that is already active on the same flow and the same
-issue instead of starting a second agent on it. That item comes back with
-`coalesced: true` and the existing execution's ID, status and link, and the
-console says a run is already working on the target. The same guard covers the
-implementer and reviewer run actions, matching the one-active-run-per-object rule
-the webhook path already applies. It keys on an active execution for the object,
-not on the assessed issue revision, so it is not durable idempotency: once a run
-finishes, the next request starts a new one. Detection is best effort and a
-lookup failure starts the requested run rather than refusing it. For trackers
-other than GitHub and GitLab the packet carries no object key, so those manual
-runs are never coalesced.
+Manual single/batch actions and automatic issue events reserve one execution for
+the same current issue revision and effective context. The controller fetches
+fresh provider state under the issue lock; a browser or webhook cannot provide
+an authoritative revision. The identity includes the saved flow configuration,
+project/provider scope and existing `project.settings.issue_lifecycle` policy.
+Changes to the selected complexity family also require a fresh assessment.
+
+Repeated requests return `coalesced: true`, the original execution ID, its current
+status and its link. Successful completed assessments are replayed without
+starting another agent. The controller maps its verified output revision back to
+the original assessment, so its own body/tag changes do not create a new run.
+New human content reaches a new claim even while an older execution is active.
+If the durable lookup fails, triage reports an error instead of starting an
+untracked run. Implementer and reviewer actions retain their existing best-effort
+active-run reuse.
+
+An unacknowledged dispatch retains its committed `PENDING` execution; retrying
+reuses that execution and the existing worker delivery/claim path. Running or
+completed executions are not dispatched again. A normal repeated request also
+returns a terminal failure so callers can inspect it. An explicit execution retry
+can replace a failed, cancelled, stopped, timed-out or aborted attempt under the
+same lock, preserving its lineage and archived credential binding. Successful
+assessments remain immutable replays.
+
+Triage supports issue single/batch actions and issue events. Matrix and delegated
+child runs are rejected because a shared revision claim cannot be reassigned to
+another execution tree.
+
+## Recovery and stored context
+
+Before each provider effect, the controller commits its expected provider states
+and the bounded original assessment request. If a response is lost after a body
+or label update, it can complete that exact request when the current provider
+state matches the recorded intent. A recovery cannot replace the assessment or
+classification with different text. Explicit retry executions receive the stored
+recovery request. If human edits or project policy changed, recovery refuses the
+old claim; a fresh request assesses the new context. Partial writes, unavailable
+complexity or failed local synchronization never produce an applicable packet.
+
+A successful controlled apply stores a version-1 packet of at most 128 KiB with
+the assessment (at most 16,000 characters), selected label and complexity family,
+account/project/issue/flow/execution identities, policy/context fingerprints and
+both assessed and resulting revisions. The verified result has separate provider,
+triage-scope and full-body readiness revisions. Human text outside the managed
+section and unrelated labels remain intact. The controller explicitly marks
+repository/source and PR coverage as unknown; an agent's prose does not turn those
+fields into authenticated coverage evidence.
+
+The existing readiness controller loads this packet from server persistence only
+when its resulting full-body revision, current complexity family, account/project
+and effective flow/policy context still match. A disabled flow or inapplicable
+packet produces explicit unknown context. Caller-supplied packets are discarded.
+Readiness still requires its existing reviewed contract, approved environment and
+policy-authorized transition before dispatch; the assessment neither creates
+that contract nor grants implementation authority. No second scheduler or new
+automatic dispatch policy is introduced. Ad hoc human tool calls retain scoped,
+serialized issue updates, but do not mint an execution-bound reusable packet.
 
 ## Diagnostic result
 

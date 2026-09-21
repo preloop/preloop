@@ -15,10 +15,11 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, event, inspect, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import TimeoutError as SQLAlchemyPoolTimeout
 from sqlalchemy.orm import Session
 
 from preloop.models import models
-from preloop.models.db.session import get_db_session
+from preloop.models.db.session import _database_pool_kwargs, get_db_session
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.openai_gateway import OpenAIGatewayService
 from tests.endpoints.test_gateway_pool_lifetime import (
@@ -38,9 +39,20 @@ gateway_pool = _gateway_pool
 def worker_pool(
     gateway_pool: GatewayPoolFixture,
 ) -> Generator[tuple[GatewayPoolFixture, list[Session]], None, None]:
-    """Extend the existing one-slot rig with a separate two-slot request pool."""
+    """Extend the existing one-slot rig with a separate two-slot request pool.
+
+    The third concurrent stream must *queue* for a slot while the first two
+    finish auth/prep and release. Production waits
+    ``DATABASE_POOL_TIMEOUT`` (5s). A 0.5s timeout was shorter than
+    Responses auth/prep on CI, so the third request died before any worker
+    reached the held provider, and the mini-app rendered that as an opaque
+    HTTP 500.
+    """
     engine = create_engine(
-        gateway_pool.engine.url, pool_size=2, max_overflow=0, pool_timeout=0.5
+        gateway_pool.engine.url,
+        pool_size=2,
+        max_overflow=0,
+        pool_timeout=_database_pool_kwargs()["pool_timeout"],
     )
     request_sessions: list[Session] = []
 
@@ -51,15 +63,26 @@ def worker_pool(
 
     gateway_pool.app.dependency_overrides[get_db_session] = request_db
 
-    async def gateway_error(request: Any, exc: ModelGatewayAPIError) -> JSONResponse:
+    async def gateway_error(_request: Any, exc: ModelGatewayAPIError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
             content=exc.to_payload(),
             headers=exc.response_headers(),
         )
 
+    async def pool_timeout(_request: Any, exc: SQLAlchemyPoolTimeout) -> JSONResponse:
+        # Match create_app(): a saturated pool is 503, not a swallowed 500.
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": ("Database connections are saturated. Please retry shortly.")
+            },
+            headers={"Retry-After": "1"},
+        )
+
     # Match the application error renderer without starting external services.
     gateway_pool.app.add_exception_handler(ModelGatewayAPIError, gateway_error)
+    gateway_pool.app.add_exception_handler(SQLAlchemyPoolTimeout, pool_timeout)
     try:
         yield (
             GatewayPoolFixture(
@@ -72,6 +95,14 @@ def worker_pool(
         )
     finally:
         engine.dispose()
+
+
+def test_worker_pool_queues_for_the_production_checkout_timeout(
+    worker_pool: tuple[GatewayPoolFixture, list[Session]],
+) -> None:
+    """The third stream must wait as long as production, not fail in 0.5s."""
+    rig, _sessions = worker_pool
+    assert rig.engine.pool.timeout() == _database_pool_kwargs()["pool_timeout"]
 
 
 class ThreeHeldProviders(HeldProvider):
@@ -225,6 +256,7 @@ async def test_three_streams_keep_two_slot_pool_and_worker_sessions_independent(
                         provider.all_handshakes,
                         tasks,
                         message="three requests did not reach the held provider",
+                        timeout=20,
                     )
                     await assert_idle(client)
                     provider.release_handshakes.set()
@@ -232,6 +264,7 @@ async def test_three_streams_keep_two_slot_pool_and_worker_sessions_independent(
                         provider.all_streams,
                         tasks,
                         message="three responses did not reach held stream pulls",
+                        timeout=20,
                     )
                     preparation_sessions = await assert_idle(client)
                     assert all(not task.done() for task in tasks)
