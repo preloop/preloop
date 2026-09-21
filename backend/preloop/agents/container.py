@@ -1462,22 +1462,21 @@ class ContainerAgentExecutor(AgentExecutor):
         memory_request = os.getenv("AGENT_MEMORY_REQUEST", "512Mi")
         cpu_request = os.getenv("AGENT_CPU_REQUEST", "250m")
 
-        # Determine working directory based on git clone configuration
+        # Keep the process cwd on the emptyDir mount root. The CRI creates
+        # workingDir as root after fsGroup chown, so a clone subdirectory
+        # that does not exist yet becomes root:root 0755. Unprivileged
+        # harnesses (DeepSeek/Pi, UID 10000) then fail git clone with
+        # `/workspace/workspace/.git: Permission denied`. Launch scripts
+        # cd into the checkout after clone.
         working_dir = "/workspace"
         git_clone_config = execution_context.get("git_clone_config")
         if git_clone_config:
             repositories = git_clone_config.get("repositories", [])
             if repositories:
-                # Use the first repository's clone path as working directory
-                clone_path = repositories[0].get("clone_path", "/workspace")
-                if clone_path.startswith("/"):
-                    # Absolute path
-                    working_dir = clone_path
-                else:
-                    # Relative path - prepend /workspace/
-                    working_dir = f"/workspace/{clone_path}"
                 self.logger.info(
-                    f"Setting pod working directory to git repository: {working_dir}"
+                    "Pod working directory stays %s; clone target is %s",
+                    working_dir,
+                    self._resolve_repository_clone_path(repositories[0], 0),
                 )
 
         # Check if subclass provided custom command/args (e.g., CodexAgent)
@@ -4361,18 +4360,23 @@ cd /workspace
     def _build_git_pre_clone_shell(self, full_path: str) -> str:
         """Build shell that prepares the clone target directory."""
 
+        q_path = shlex.quote(full_path)
         return f"""
-echo "Preparing clone directory: {full_path}"
-if [ -d "{full_path}" ]; then
-    if [ -d "{full_path}/.git" ]; then
-        echo "WARNING: {full_path} already contains a git repository, will reset it"
-        rm -rf "{full_path}"
-    elif [ "$(ls -A {full_path} 2>/dev/null)" ]; then
-        echo "WARNING: {full_path} is not empty, cleaning up non-essential files..."
+echo "Preparing clone directory:" {q_path}
+if [ -d {q_path} ] && [ ! -w {q_path} ]; then
+    echo "WARNING:" {q_path} "exists but is not writable; replacing it"
+    rm -rf {q_path}
+fi
+if [ -d {q_path} ]; then
+    if [ -d {q_path}/.git ]; then
+        echo "WARNING:" {q_path} "already contains a git repository, will reset it"
+        rm -rf {q_path}
+    elif [ "$(ls -A {q_path} 2>/dev/null)" ]; then
+        echo "WARNING:" {q_path} "is not empty, cleaning up non-essential files..."
         # Move any existing files to a backup location, preserving only reports if they exist
         mkdir -p /tmp/workspace-backup
-        mv {full_path}/* /tmp/workspace-backup/ 2>/dev/null || true
-        mv {full_path}/.[!.]* /tmp/workspace-backup/ 2>/dev/null || true
+        mv {q_path}/* /tmp/workspace-backup/ 2>/dev/null || true
+        mv {q_path}/.[!.]* /tmp/workspace-backup/ 2>/dev/null || true
         echo "Backed up existing files to /tmp/workspace-backup"
     fi
 fi

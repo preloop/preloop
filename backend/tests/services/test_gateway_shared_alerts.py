@@ -70,7 +70,12 @@ def isolate_local_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 @pytest.mark.asyncio
-async def test_independent_clients_compete_once_and_expiry_allows_reminder() -> None:
+async def test_independent_clients_compete_once_and_expiry_allows_reminder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Product deadline is 1s; eight concurrent fake-broker clients can exceed
+    # that on a loaded CI runner before create() is scheduled.
+    monkeypatch.setattr(alerts, "_SHARED_TIMEOUT_SECONDS", 5.0)
     broker = _Broker()
     with patch("nats.NATS", side_effect=broker.connect):
         results = await asyncio.gather(

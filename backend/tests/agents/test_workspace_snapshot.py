@@ -286,7 +286,7 @@ class TestRestorePathSelection:
 
         commands = executor._prepare_init_commands(self._context())
 
-        assert "if [ -d /workspace/repo/.git ]" not in commands
+        assert "skipping git clone" not in commands
         assert "git clone" in commands
 
     def test_kubernetes_runner_falls_back_to_clone(self):
