@@ -24,6 +24,13 @@ avatars.
 
 ### Added
 
+- A model whose requests carry no price can be marked "unpriced is expected"
+  (or snoozed for seven days) from the Models list or the model detail page.
+  The marker is stored as `model-unpriced:<alias>` with a stable
+  `unpriced:<alias>` fingerprint, so a new unpriced request does not bring the
+  model back, and the Models count, the row badge and the inbox's
+  "N models unpriced" item all honour it. Restore undoes it.
+
 - Persistent flow execution: a flow with
   `agent_config.execution_path = "persistent"` delivers the rendered prompt
   to `target_agent_id` as one audited Agent Control `send_message`. The

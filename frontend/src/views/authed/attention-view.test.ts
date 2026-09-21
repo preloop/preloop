@@ -1030,6 +1030,98 @@ describe('AttentionView', () => {
     expect(dismissalWrites[0].body.reason).to.equal('expected');
   });
 
+  /**
+   * #848: the marker is taken on the Models page (one control per row, where
+   * the model's price lives), and the inbox honours it: a model somebody
+   * declared unpriced by design is not counted, not listed, and does not come
+   * back when it serves another unpriced request.
+   */
+  describe('models marked unpriced-by-design', () => {
+    const unpricedModel = (alias: string, provider: string, requests = 12) => ({
+      ai_model_id: `model-${alias}`,
+      model_alias: alias,
+      provider_name: provider,
+      request_count: requests,
+      token_usage: {
+        prompt_tokens: 4,
+        completion_tokens: 4,
+        total_tokens: 40,
+      },
+      estimated_cost: 0,
+      unpriced_request_count: requests,
+      zero_priced_request_count: 0,
+      last_request_at: new Date(Date.now() - 60_000).toISOString(),
+    });
+
+    const marker = (alias: string) => ({
+      id: `dismissal-${alias}`,
+      item_id: `model-unpriced:${alias}`,
+      fingerprint: `unpriced:${alias}`,
+      reason: 'expected',
+      snooze_until: null,
+      dismissed_by_user_id: 'user-1',
+      dismissed_by_username: 'tester',
+      created_at: new Date(Date.now() - 86_400_000).toISOString(),
+    });
+
+    beforeEach(() => {
+      usageByModel = [
+        unpricedModel('openrouter/stealth/ox-alpha', 'openrouter', 30),
+        unpricedModel('local/qwen-3-coder', 'ollama', 12),
+      ];
+    });
+
+    it('counts and lists only the models nobody has marked', async () => {
+      dismissalsResponse = [marker('local/qwen-3-coder')];
+
+      const el = await mount();
+
+      const row = el.shadowRoot!.querySelector(
+        '[data-item-id="pricing:catalog"]'
+      ) as HTMLElement;
+      expect(row, 'pricing row').to.exist;
+      const text = row.textContent!.replace(/\s+/g, ' ');
+      expect(text).to.contain('1 model without a price');
+      expect(text).to.contain('openrouter/stealth/ox-alpha');
+      expect(text).to.not.contain('local/qwen-3-coder');
+      // The row says what ends the question for good.
+      expect(text).to.contain('Apply to past usage');
+    });
+
+    it('emits no pricing row once every unpriced model is marked', async () => {
+      dismissalsResponse = [
+        marker('local/qwen-3-coder'),
+        marker('openrouter/stealth/ox-alpha'),
+      ];
+
+      const el = await mount();
+
+      expect(el.shadowRoot!.querySelector('[data-item-id="pricing:catalog"]'))
+        .to.not.exist;
+    });
+
+    // The failure marker for the same alias is a different claim.
+    it('keeps both models listed under a failure marker', async () => {
+      dismissalsResponse = [
+        {
+          ...marker('local/qwen-3-coder'),
+          item_id: 'model:local/qwen-3-coder',
+          fingerprint: 'last:2026-09-14T09:00:00Z',
+          reason: 'fixed',
+        },
+      ];
+
+      const el = await mount();
+
+      const row = el.shadowRoot!.querySelector(
+        '[data-item-id="pricing:catalog"]'
+      ) as HTMLElement;
+      expect(row.textContent!.replace(/\s+/g, ' ')).to.contain(
+        '2 models without a price'
+      );
+    });
+  });
+
   it('drops the log prefix from the error it shows and groups by', async () => {
     // Runners hand the executor a logfmt line: nine of twelve runs in the
     // round-4 review showed nothing but "timestamp=2026-09-03T19:32:45.726Z".
