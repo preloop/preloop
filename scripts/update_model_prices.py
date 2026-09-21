@@ -15,6 +15,8 @@ snapshot of litellm's ``model_prices_and_context_window.json``:
 - embedding entries without a per-token input price dropped: the ledger
   bills tokens, so a per-query multimodal row could only record $0,
 - entries past their ``deprecation_date`` dropped,
+- entries priced only through ``tiered_pricing`` flattened onto the lowest
+  published tier, so a tier-only row is not vendored priceless,
 - fields stripped to what pricing needs (cost fields + provider/mode/limits;
   capability flags are omitted. ``litellm.register_model`` merges per key,
   so bundled entries keep their flags).
@@ -189,6 +191,62 @@ def _entry_relevant(entry: Any, today: str) -> bool:
     return True
 
 
+def _flatten_tiered_pricing(entry: Any) -> Any:
+    """Lift the lowest published tier's costs onto a tier-only entry.
+
+    Upstream moved several dashscope rows (``qwen-flash``, ``qwen3-max``,
+    ``qwen3.7-plus``, ...) from flat ``input_cost_per_token`` fields to a
+    ``tiered_pricing`` list keyed by context-length range, leaving no
+    top-level price. ``_strip_entry`` drops that list, so without this the
+    rows would land in the snapshot carrying limits and no price at all and
+    their usage would record as unpriced even though upstream publishes a
+    rate.
+
+    Preloop vendors the lowest tier (the rate below the first context
+    threshold), which is exactly what the snapshot already held for these
+    keys before upstream changed shape. Tier-aware billing is a separate
+    concern; this only keeps a priced model priced.
+
+    Merging is per field: a cost the entry publishes flat wins over the
+    tier, while a missing key and an explicit ``null`` both count as no
+    price and take the tier's value. So a row that prices input flat and
+    output only in tiers comes out fully priced rather than half priced.
+
+    Args:
+        entry: One upstream model entry (any type; non-dicts pass through).
+
+    Returns:
+        The entry, or a copy with the lowest tier's cost fields added.
+    """
+    if not isinstance(entry, dict):
+        return entry
+    tiers = entry.get("tiered_pricing")
+    if not isinstance(tiers, list) or not tiers:
+        return entry
+
+    def tier_start(tier: Any) -> float:
+        bounds = tier.get("range") if isinstance(tier, dict) else None
+        if isinstance(bounds, list) and bounds and isinstance(bounds[0], (int, float)):
+            return float(bounds[0])
+        return 0.0
+
+    candidates = [tier for tier in tiers if isinstance(tier, dict)]
+    if not candidates:
+        return entry
+    lowest = min(candidates, key=tier_start)
+    merged = dict(entry)
+    for field, value in lowest.items():
+        if KEEP_FIELD_SUBSTRING not in field or not isinstance(value, (int, float)):
+            continue
+        # Field by field: a flat price the entry publishes itself wins, but a
+        # missing key and an explicit null are both "no price" and take the
+        # tier's value. Upstream has shipped null cost fields before, and a
+        # row can price one direction flat and the other only in tiers.
+        if merged.get(field) is None:
+            merged[field] = value
+    return merged
+
+
 def _strip_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
     """Keep only pricing-relevant fields of one model entry."""
     return {
@@ -201,10 +259,15 @@ def _strip_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
 def filter_catalog(raw: Dict[str, Any]) -> Dict[str, Any]:
     """Reduce the upstream map to current, billable, Preloop-routed models."""
     today = datetime.now(timezone.utc).date().isoformat()
+    flattened = (
+        (key, _flatten_tiered_pricing(value))
+        for key, value in raw.items()
+        if key != "sample_spec"
+    )
     return {
         key: _strip_entry(value)
-        for key, value in raw.items()
-        if key != "sample_spec" and _entry_relevant(value, today)
+        for key, value in flattened
+        if _entry_relevant(value, today)
     }
 
 

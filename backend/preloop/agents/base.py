@@ -145,6 +145,43 @@ class AgentExecutor(ABC):
         """Confirm runtime termination after stop; unknown evidence stays false."""
         return False
 
+    async def probe_workspace_changed(self, session_reference: str) -> Optional[bool]:
+        """Whether the live checkout holds any tracked or untracked change.
+
+        The no-progress guard's only evidence (#851): a run that has edited
+        nothing after its deadline is reminded, then stopped. Runtimes that
+        cannot inspect a live workspace return None, which the guard reads as
+        "no answer" and never as "clean" - a stop must rest on a probe that
+        actually ran.
+
+        Args:
+            session_reference: Reference to the running agent session.
+
+        Returns:
+            True when something changed, False when the checkout is provably
+            clean, None when this runtime cannot say.
+        """
+        return None
+
+    async def deliver_live_nudge(self, session_reference: str, prompt: str) -> bool:
+        """Deliver one short prompt into the session that is still running.
+
+        Used by the no-progress guard, and only for runtimes that advertise
+        ``supports_inplace_completion_nudge``: the same resume mechanism the
+        completion contract uses, called while the harness is still working
+        rather than after it exited.
+
+        Args:
+            session_reference: Reference to the running agent session.
+            prompt: The reminder text.
+
+        Returns:
+            True when the reminder was handed to the runtime. False means the
+            run gets no reminder, only the stop that follows the grace
+            period.
+        """
+        return False
+
     @abstractmethod
     async def get_result(self, session_reference: str) -> AgentExecutionResult:
         """

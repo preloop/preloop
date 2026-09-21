@@ -1590,6 +1590,159 @@ def test_environment_profile_rejects_mismatched_routing_harness(
         prepare_execution_routing(db_session, flow, {"payload": {"labels": ["docs"]}})
 
 
+class TestNoProgressEscalation:
+    """The retry a run that changed nothing gets, on a stronger setting (#851).
+
+    The escalation rides the same routing record every other selection uses,
+    so the run page, the cost attribution and the orchestrator all read it
+    from the one place they already read.
+    """
+
+    async def _failed_original(self, db_session, service, flow) -> FlowExecution:
+        """The run that changed anything, as the guard leaves it: FAILED."""
+        nats_patch, dispatch_patch = _patch_dispatch()
+        with nats_patch, dispatch_patch:
+            first = await service.trigger_flow(
+                flow_id=flow.id,
+                test_mode=True,
+                trigger_event_data={"payload": {"labels": ["bug"]}},
+            )
+        original = db_session.query(FlowExecution).filter_by(id=first["id"]).one()
+        original.status = "FAILED"
+        original.failure_category = "agent_no_progress"
+        db_session.flush()
+        return original
+
+    async def _retry(self, db_session, service, flow, original, escalation):
+        nats_patch, dispatch_patch = _patch_dispatch()
+        with nats_patch, dispatch_patch:
+            retry = await service.trigger_flow(
+                flow_id=flow.id,
+                test_mode=False,
+                trigger_event_data=dict(original.trigger_event_details or {}),
+                retry_of_execution_id=original.id,
+                triggered_by="Preloop no-progress guard",
+                no_progress_escalation=escalation,
+            )
+        return db_session.query(FlowExecution).filter_by(id=retry["id"]).one()
+
+    @pytest.mark.asyncio
+    async def test_retry_runs_on_the_escalated_model(
+        self, db_session: Session, test_user: User
+    ):
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        strong = _usable_model(db_session, test_user.account_id, name="Strong")
+        flow = _flow(db_session, test_user, ai_model_id=default.id)
+        service = FlowTriggerService(db_session)
+        original = await self._failed_original(db_session, service, flow)
+
+        row = await self._retry(
+            db_session,
+            service,
+            flow,
+            original,
+            {"ai_model_id": str(strong.id), "reasoning_effort": "high"},
+        )
+
+        record = row.trigger_event_details[ROUTING_RECORD_KEY]
+        assert record["ai_model_id"] == str(strong.id)
+        assert record["reasoning_effort"] == "high"
+        assert record["source"] == "no_progress_escalation"
+        assert str(original.id) in record["reason"]
+        # The escalation must beat the retry pin, which otherwise re-uses
+        # exactly the model that already failed to produce anything.
+        _, selected_model = resolve_execution_agent_selection(row.trigger_event_details)
+        assert str(selected_model) == str(strong.id)
+
+    @pytest.mark.asyncio
+    async def test_effort_only_escalation_keeps_the_flow_model(
+        self, db_session: Session, test_user: User
+    ):
+        """The cheapest escalation: same model, more thinking."""
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        flow = _flow(db_session, test_user, ai_model_id=default.id)
+        service = FlowTriggerService(db_session)
+        original = await self._failed_original(db_session, service, flow)
+
+        row = await self._retry(
+            db_session,
+            service,
+            flow,
+            original,
+            {"ai_model_id": None, "reasoning_effort": "high"},
+        )
+
+        record = row.trigger_event_details[ROUTING_RECORD_KEY]
+        assert record["ai_model_id"] == str(default.id)
+        assert record["reasoning_effort"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_escalation_changes_nothing(
+        self, db_session: Session, test_user: User
+    ):
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        flow = _flow(db_session, test_user, ai_model_id=default.id)
+        service = FlowTriggerService(db_session)
+        original = await self._failed_original(db_session, service, flow)
+
+        row = await self._retry(
+            db_session,
+            service,
+            flow,
+            original,
+            {"ai_model_id": None, "reasoning_effort": None},
+        )
+
+        record = row.trigger_event_details[ROUTING_RECORD_KEY]
+        assert record["ai_model_id"] == str(default.id)
+        assert record.get("source") != "no_progress_escalation"
+
+    @pytest.mark.asyncio
+    async def test_a_normal_trigger_is_never_escalated(
+        self, db_session: Session, test_user: User
+    ):
+        """Without ``retry_of_execution_id`` there is nothing to escalate."""
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        strong = _usable_model(db_session, test_user.account_id, name="Strong")
+        flow = _flow(db_session, test_user, ai_model_id=default.id)
+        service = FlowTriggerService(db_session)
+        nats_patch, dispatch_patch = _patch_dispatch()
+        with nats_patch, dispatch_patch:
+            result = await service.trigger_flow(
+                flow_id=flow.id,
+                test_mode=True,
+                trigger_event_data={"payload": {}},
+                no_progress_escalation={"ai_model_id": str(strong.id)},
+            )
+
+        record = (
+            db_session.query(FlowExecution)
+            .filter_by(id=result["id"])
+            .one()
+            .trigger_event_details[ROUTING_RECORD_KEY]
+        )
+        assert record["ai_model_id"] == str(default.id)
+
+    @pytest.mark.asyncio
+    async def test_a_model_the_account_cannot_use_is_refused(
+        self, db_session: Session, test_user: User
+    ):
+        """Fail closed: a retry that will 400 is worse than no retry."""
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        flow = _flow(db_session, test_user, ai_model_id=default.id)
+        service = FlowTriggerService(db_session)
+        original = await self._failed_original(db_session, service, flow)
+
+        with pytest.raises(ModelRoutingError, match="not found"):
+            await self._retry(
+                db_session,
+                service,
+                flow,
+                original,
+                {"ai_model_id": str(FOREIGN_MODEL)},
+            )
+
+
 class TestModelByLabel:
     """``agent_config.model_by_label``: one label, one model, one effort (#851).
 

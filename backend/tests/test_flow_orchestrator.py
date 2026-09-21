@@ -3547,6 +3547,520 @@ class TestFlowTimeoutSecondsField:
         assert flow.timeout_seconds == 7200
 
 
+class _ProbeExecutor:
+    """Runtime whose workspace answers are scripted (#851).
+
+    ``answers`` is consumed one probe at a time and the last value repeats,
+    so a test spells the sequence it wants to exercise and nothing else.
+    """
+
+    supports_inplace_completion_nudge = True
+
+    def __init__(self, answers, *, deliver=True):
+        self._answers = list(answers)
+        self._deliver = deliver
+        self.probe_count = 0
+        self.nudges = []
+        self.stopped = []
+
+    async def probe_workspace_changed(self, session_reference):
+        self.probe_count += 1
+        if len(self._answers) > 1:
+            return self._answers.pop(0)
+        return self._answers[0] if self._answers else None
+
+    async def deliver_live_nudge(self, session_reference, prompt):
+        self.nudges.append(prompt)
+        return self._deliver
+
+    async def stop(self, session_reference):
+        self.stopped.append(session_reference)
+
+
+def _no_progress_orchestrator(
+    mock_nats_client, event_data, agent_config, *, retry_of=None, trigger_details=None
+):
+    """Orchestrator with just enough state for the guard's own decisions."""
+    orchestrator = FlowExecutionOrchestrator(
+        db=MagicMock(),
+        flow_id=uuid4(),
+        trigger_event_data=event_data,
+        nats_client=mock_nats_client,
+    )
+    orchestrator.flow = MagicMock(id=uuid4(), agent_config=agent_config)
+    orchestrator.agent_type = "codex"
+    orchestrator.execution_log = MagicMock(
+        id=uuid4(),
+        retry_of_execution_id=retry_of,
+        trigger_event_details=trigger_details or {},
+    )
+    return orchestrator
+
+
+class TestNoProgressLiveGuard:
+    """One reminder, then a stop, for a run that has changed nothing (#851).
+
+    The guard's only evidence is the workspace. Everything here is about
+    what it does with an answer it does not have, an answer it does not
+    like, and the one answer that ends its involvement for good.
+    """
+
+    GUARD = {"no_progress_after_seconds": 900, "no_progress_grace_seconds": 600}
+
+    @pytest.mark.asyncio
+    async def test_unconfigured_flow_is_never_probed(
+        self, mock_nats_client, event_data
+    ):
+        """Default off: no probe, no nudge, no stop, whatever the elapsed."""
+        orchestrator = _no_progress_orchestrator(
+            mock_nats_client, event_data, {"max_iterations": 10}
+        )
+        executor = _ProbeExecutor([False])
+
+        assert await orchestrator._check_no_progress(executor, "s-1", 86_400) is False
+        assert executor.probe_count == 0
+        assert executor.nudges == []
+
+    @pytest.mark.asyncio
+    async def test_nothing_happens_before_the_deadline(
+        self, mock_nats_client, event_data
+    ):
+        orchestrator = _no_progress_orchestrator(
+            mock_nats_client, event_data, self.GUARD
+        )
+        executor = _ProbeExecutor([False])
+
+        assert await orchestrator._check_no_progress(executor, "s-1", 899) is False
+        assert executor.probe_count == 0
+
+    @pytest.mark.asyncio
+    async def test_clean_workspace_at_the_deadline_gets_exactly_one_reminder(
+        self, mock_nats_client, event_data
+    ):
+        orchestrator = _no_progress_orchestrator(
+            mock_nats_client, event_data, self.GUARD
+        )
+        executor = _ProbeExecutor([False])
+
+        assert await orchestrator._check_no_progress(executor, "s-1", 900) is False
+        # Still inside the grace period: reminded, not stopped, not reminded
+        # a second time.
+        assert await orchestrator._check_no_progress(executor, "s-1", 1_000) is False
+
+        assert len(executor.nudges) == 1
+        nudge = _milestones(orchestrator, "no_progress_nudge")
+        assert len(nudge) == 1
+        assert nudge[0]["details"]["delivered"] is True
+        assert nudge[0]["details"]["elapsed"] == 900
+        assert _milestones(orchestrator, "no_progress_stop") == []
+
+    @pytest.mark.asyncio
+    async def test_still_clean_after_the_grace_period_stops_the_run(
+        self, mock_nats_client, event_data
+    ):
+        orchestrator = _no_progress_orchestrator(
+            mock_nats_client, event_data, self.GUARD
+        )
+        executor = _ProbeExecutor([False])
+
+        await orchestrator._check_no_progress(executor, "s-1", 900)
+        # One second short of the grace period: still the run's own time.
+        assert await orchestrator._check_no_progress(executor, "s-1", 1_499) is False
+        # The first probe after it, one minute later, ends the run.
+        assert await orchestrator._check_no_progress(executor, "s-1", 1_560) is True
+
+        stops = _milestones(orchestrator, "no_progress_stop")
+        assert len(stops) == 1
+        assert stops[0]["details"]["grace_seconds"] == 600
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_a_workspace_diff_is_never_touched(
+        self, mock_nats_client, event_data
+    ):
+        """The rule that keeps this from interrupting working runs."""
+        orchestrator = _no_progress_orchestrator(
+            mock_nats_client, event_data, self.GUARD
+        )
+        # Changed once, then the file is reverted: the guard has already
+        # stood down and must not come back.
+        executor = _ProbeExecutor([True, False])
+
+        assert await orchestrator._check_no_progress(executor, "s-1", 900) is False
+        assert await orchestrator._check_no_progress(executor, "s-1", 5_000) is False
+
+        assert executor.probe_count == 1
+        assert executor.nudges == []
+        assert _milestones(orchestrator, "no_progress_stop") == []
+
+    @pytest.mark.asyncio
+    async def test_an_unanswered_probe_is_not_a_clean_workspace(
+        self, mock_nats_client, event_data
+    ):
+        """Kubernetes, an unreadable checkout, a failed exec: no verdict."""
+        orchestrator = _no_progress_orchestrator(
+            mock_nats_client, event_data, self.GUARD
+        )
+        executor = _ProbeExecutor([None])
+
+        for elapsed in (900, 1_500, 9_000):
+            assert (
+                await orchestrator._check_no_progress(executor, "s-1", elapsed) is False
+            )
+
+        assert executor.nudges == []
+        assert _milestones(orchestrator, "no_progress_nudge") == []
+        assert _milestones(orchestrator, "no_progress_stop") == []
+
+    @pytest.mark.asyncio
+    async def test_a_failing_probe_is_not_a_clean_workspace(
+        self, mock_nats_client, event_data
+    ):
+        orchestrator = _no_progress_orchestrator(
+            mock_nats_client, event_data, self.GUARD
+        )
+        executor = _ProbeExecutor([False])
+        executor.probe_workspace_changed = AsyncMock(
+            side_effect=RuntimeError("docker exec failed")
+        )
+
+        assert await orchestrator._check_no_progress(executor, "s-1", 900) is False
+        assert _milestones(orchestrator, "no_progress_nudge") == []
+
+    @pytest.mark.asyncio
+    async def test_a_runtime_without_resume_gets_the_stop_without_a_reminder(
+        self, mock_nats_client, event_data
+    ):
+        orchestrator = _no_progress_orchestrator(
+            mock_nats_client, event_data, self.GUARD
+        )
+        executor = _ProbeExecutor([False])
+        executor.supports_inplace_completion_nudge = False
+
+        await orchestrator._check_no_progress(executor, "s-1", 900)
+        assert executor.nudges == []
+        nudge = _milestones(orchestrator, "no_progress_nudge")[0]
+        assert nudge["details"]["delivered"] is False
+        assert "resume" in nudge["details"]["detail"]
+
+        # The clock still runs, so the stop is not deferred forever.
+        assert await orchestrator._check_no_progress(executor, "s-1", 1_500) is True
+
+    @pytest.mark.asyncio
+    async def test_an_undelivered_reminder_still_ends_in_a_stop(
+        self, mock_nats_client, event_data
+    ):
+        orchestrator = _no_progress_orchestrator(
+            mock_nats_client, event_data, self.GUARD
+        )
+        executor = _ProbeExecutor([False], deliver=False)
+
+        await orchestrator._check_no_progress(executor, "s-1", 900)
+        assert (
+            _milestones(orchestrator, "no_progress_nudge")[0]["details"]["delivered"]
+            is False
+        )
+        assert await orchestrator._check_no_progress(executor, "s-1", 1_500) is True
+
+    @pytest.mark.asyncio
+    async def test_the_probe_runs_at_most_once_a_minute(
+        self, mock_nats_client, event_data
+    ):
+        """The poll loop ticks every 5 seconds; the probe is a container exec."""
+        orchestrator = _no_progress_orchestrator(
+            mock_nats_client, event_data, self.GUARD
+        )
+        executor = _ProbeExecutor([False])
+
+        for elapsed in range(900, 960, 5):
+            await orchestrator._check_no_progress(executor, "s-1", elapsed)
+
+        assert executor.probe_count == 1
+
+    def test_the_reminder_asks_for_an_edit_and_a_commit(self):
+        from preloop.agents.completion_nudge import build_no_progress_nudge_prompt
+
+        prompt = build_no_progress_nudge_prompt(900)
+        assert "15 minutes" in prompt
+        assert "commit" in prompt
+        assert "/workspace/result.json" in prompt
+        # It must not read as the completion reminder, which says the
+        # opposite ("do not start new work").
+        assert _sentinel_in_log_lines(prompt.splitlines()) is False
+
+
+class TestNoProgressClassification:
+    """``agent_no_progress``: the agent failed and produced no commit."""
+
+    async def _run(
+        self,
+        db_session,
+        test_flow,
+        mock_nats_client,
+        event_data,
+        executor,
+        *,
+        no_commits,
+    ):
+        with patch(
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
+            return_value=executor,
+        ):
+            orchestrator = FlowExecutionOrchestrator(
+                db=db_session,
+                flow_id=test_flow.id,
+                trigger_event_data=event_data,
+                nats_client=mock_nats_client,
+            )
+            orchestrator._agent_exec_started = True
+            # What the log reader would have set from the container's own
+            # post-execution git block.
+            orchestrator._post_exec_no_commits = no_commits
+            await orchestrator.run()
+            return orchestrator
+
+    @pytest.mark.asyncio
+    async def test_agent_failure_without_a_commit_is_named(
+        self, db_session: Session, test_flow: Flow, mock_nats_client, event_data
+    ):
+        executor = _confirmation_executor(
+            artifact={"status": "failure", "summary": "could not find the module"}
+        )
+
+        orchestrator = await self._run(
+            db_session,
+            test_flow,
+            mock_nats_client,
+            event_data,
+            executor,
+            no_commits=True,
+        )
+
+        assert orchestrator.execution_log.status == "FAILED"
+        assert orchestrator.execution_log.failure_category == "agent_no_progress"
+
+    @pytest.mark.asyncio
+    async def test_agent_failure_after_a_commit_keeps_its_own_category(
+        self, db_session: Session, test_flow: Flow, mock_nats_client, event_data
+    ):
+        """A run that produced work and then failed is a different problem."""
+        executor = _confirmation_executor(
+            artifact={"status": "failure", "summary": "tests still red"}
+        )
+
+        orchestrator = await self._run(
+            db_session,
+            test_flow,
+            mock_nats_client,
+            event_data,
+            executor,
+            no_commits=False,
+        )
+
+        assert orchestrator.execution_log.status == "FAILED"
+        assert orchestrator.execution_log.failure_category != "agent_no_progress"
+
+    @pytest.mark.asyncio
+    async def test_a_crash_before_the_git_block_is_not_no_progress(
+        self, db_session: Session, test_flow: Flow, mock_nats_client, event_data
+    ):
+        """No marker was printed, so no claim is made about the workspace."""
+        executor = _confirmation_executor(
+            status=AgentStatus.FAILED,
+            exit_code=137,
+            error_message="Container exited with code 137",
+        )
+
+        orchestrator = await self._run(
+            db_session,
+            test_flow,
+            mock_nats_client,
+            event_data,
+            executor,
+            no_commits=False,
+        )
+
+        assert orchestrator.execution_log.status == "FAILED"
+        assert orchestrator.execution_log.failure_category != "agent_no_progress"
+
+    @pytest.mark.asyncio
+    async def test_a_successful_run_without_commits_is_not_a_failure(
+        self, db_session: Session, test_flow: Flow, mock_nats_client, event_data
+    ):
+        """Review flows commit nothing by design."""
+        executor = _confirmation_executor(artifact={"status": "success"})
+
+        orchestrator = await self._run(
+            db_session,
+            test_flow,
+            mock_nats_client,
+            event_data,
+            executor,
+            no_commits=True,
+        )
+
+        assert orchestrator.execution_log.status == "SUCCEEDED"
+        assert orchestrator.execution_log.failure_category is None
+
+    @pytest.mark.asyncio
+    async def test_the_marker_is_read_off_the_log_stream(
+        self, mock_nats_client, event_data
+    ):
+        orchestrator = _no_progress_orchestrator(mock_nats_client, event_data, {})
+        orchestrator._agent_exec_started = True
+        orchestrator._sync_runtime_tool_activity_metrics = AsyncMock(return_value=None)
+        executor = _confirmation_executor()
+
+        async def stream(session_ref):
+            yield AGENT_EXEC_START_MARKER
+            yield "No commits on preloop/issue-851, skipping push"
+            yield "PRELOOP_NO_COMMITS preloop/issue-851"
+
+        executor.stream_logs = stream
+        await orchestrator._stream_logs_to_nats(executor, "s-1")
+
+        assert orchestrator._post_exec_no_commits is True
+
+
+class TestNoProgressRetry:
+    """At most one escalated retry, and never a retry of a retry."""
+
+    RETRY_ON = {
+        "retry_on_no_progress": {
+            "enabled": True,
+            "ai_model_id": "22222222-2222-4222-8222-222222222222",
+            "reasoning_effort": "high",
+        }
+    }
+
+    def _trigger_service(self):
+        service = MagicMock()
+        service.trigger_flow = AsyncMock(return_value={"id": str(uuid4())})
+        return service
+
+    @pytest.mark.asyncio
+    async def test_one_retry_is_created_with_the_escalation(
+        self, mock_nats_client, event_data
+    ):
+        orchestrator = _no_progress_orchestrator(
+            mock_nats_client,
+            event_data,
+            self.RETRY_ON,
+            trigger_details={"payload": {"number": 851}},
+        )
+        service = self._trigger_service()
+
+        with patch(
+            "preloop.services.flow_trigger_service.FlowTriggerService",
+            return_value=service,
+        ):
+            await orchestrator._retry_after_no_progress("agent_no_progress")
+
+        service.trigger_flow.assert_awaited_once()
+        kwargs = service.trigger_flow.await_args.kwargs
+        assert kwargs["retry_of_execution_id"] == orchestrator.execution_log.id
+        assert kwargs["test_mode"] is False
+        assert kwargs["no_progress_escalation"] == {
+            "ai_model_id": "22222222-2222-4222-8222-222222222222",
+            "reasoning_effort": "high",
+        }
+        assert kwargs["trigger_event_data"]["payload"] == {"number": 851}
+        assert len(_milestones(orchestrator, "no_progress_retry_started")) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_original_routing_record_is_not_carried_over(
+        self, mock_nats_client, event_data
+    ):
+        """The escalation writes a new one; the old model must not win."""
+        from preloop.models.models.flow_execution import ROUTING_RECORD_KEY
+
+        orchestrator = _no_progress_orchestrator(
+            mock_nats_client,
+            event_data,
+            self.RETRY_ON,
+            trigger_details={ROUTING_RECORD_KEY: {"ai_model_id": "old-model"}},
+        )
+        service = self._trigger_service()
+
+        with patch(
+            "preloop.services.flow_trigger_service.FlowTriggerService",
+            return_value=service,
+        ):
+            await orchestrator._retry_after_no_progress("agent_no_progress")
+
+        payload = service.trigger_flow.await_args.kwargs["trigger_event_data"]
+        assert ROUTING_RECORD_KEY not in payload
+
+    @pytest.mark.asyncio
+    async def test_a_retry_is_never_retried(self, mock_nats_client, event_data):
+        orchestrator = _no_progress_orchestrator(
+            mock_nats_client, event_data, self.RETRY_ON, retry_of=uuid4()
+        )
+        service = self._trigger_service()
+
+        with patch(
+            "preloop.services.flow_trigger_service.FlowTriggerService",
+            return_value=service,
+        ):
+            await orchestrator._retry_after_no_progress("agent_no_progress")
+
+        service.trigger_flow.assert_not_awaited()
+        assert len(_milestones(orchestrator, "no_progress_retry_skipped")) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_default_flow_retries_nothing(self, mock_nats_client, event_data):
+        orchestrator = _no_progress_orchestrator(
+            mock_nats_client, event_data, {"max_iterations": 10}
+        )
+        service = self._trigger_service()
+
+        with patch(
+            "preloop.services.flow_trigger_service.FlowTriggerService",
+            return_value=service,
+        ):
+            await orchestrator._retry_after_no_progress("agent_no_progress")
+
+        service.trigger_flow.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_other_failures_are_not_retried_by_this_path(
+        self, mock_nats_client, event_data
+    ):
+        orchestrator = _no_progress_orchestrator(
+            mock_nats_client, event_data, self.RETRY_ON
+        )
+        service = self._trigger_service()
+
+        with patch(
+            "preloop.services.flow_trigger_service.FlowTriggerService",
+            return_value=service,
+        ):
+            await orchestrator._retry_after_no_progress("model_transient")
+            await orchestrator._retry_after_no_progress(None)
+
+        service.trigger_flow.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_retry_that_cannot_start_does_not_raise(
+        self, mock_nats_client, event_data
+    ):
+        """The original execution is already terminal and correctly written."""
+        orchestrator = _no_progress_orchestrator(
+            mock_nats_client, event_data, self.RETRY_ON
+        )
+        service = self._trigger_service()
+        service.trigger_flow = AsyncMock(side_effect=RuntimeError("flow is paused"))
+
+        with patch(
+            "preloop.services.flow_trigger_service.FlowTriggerService",
+            return_value=service,
+        ):
+            await orchestrator._retry_after_no_progress("agent_no_progress")
+
+        failures = _milestones(orchestrator, "no_progress_retry_failed")
+        assert len(failures) == 1
+        assert "flow is paused" in failures[0]["details"]["reason"]
+
+
 class TestRoutedReasoningEffort:
     """A label rule can ask for more thinking, not just another model (#851).
 

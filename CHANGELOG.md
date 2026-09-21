@@ -24,6 +24,17 @@ avatars.
 
 ### Added
 
+- No-progress guard for runs that never edit anything. A live run whose
+  checkout is still provably clean after `agent_config.no_progress_after_seconds`
+  gets one reminder delivered into the session that is still running, and is
+  stopped after a further `no_progress_grace_seconds` (default 600) if nothing
+  has changed. Terminally, an agent that reports failure while the container's
+  post-execution git block found no commit is now classified
+  `agent_no_progress` instead of `unknown`, and
+  `agent_config.retry_on_no_progress` can create exactly one retry, optionally
+  on a stronger model or a higher reasoning effort. Both keys are unset by
+  default, so existing flows are unaffected, and a run with any workspace
+  change is never nudged or stopped by the guard.
 - A model whose requests carry no price can be marked "unpriced is expected"
   (or snoozed for seven days) from the Models list or the model detail page.
   The marker is stored as `model-unpriced:<alias>` with a stable
@@ -1314,6 +1325,13 @@ avatars.
   came from.
 
 ### Fixed
+
+- **`@preloop-ai/openclaw-plugin` 0.3.1**: `config.enabled=false` now
+  registers nothing (no Agent Control channel, no tool-call hook), matching
+  the manifest. Previously the flag was advertised and ignored (#857).
+- Refresh the vendored model price catalog so Gemini 3.8 Flash is priced from
+  the catalog, cache-read rate included, for both the `google` and `gemini`
+  provider spellings (#850).
 
 - Apply response content policies to returned reasoning and thinking text as
   well as final answers, including buffered streams and reasoning summaries.

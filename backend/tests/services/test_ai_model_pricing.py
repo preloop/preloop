@@ -45,6 +45,37 @@ def test_effective_pricing_reads_the_catalog_in_per_million(db_session, test_use
     assert pricing.fetch_provider_label == "OpenAI"
 
 
+@pytest.mark.parametrize("provider_name", ["google", "gemini"])
+def test_effective_pricing_prices_gemini_38_flash_from_the_catalog(
+    db_session, test_user, provider_name
+):
+    """Both Gemini provider spellings read 3.8 Flash's catalog price.
+
+    The pricing card showed ``source: "none"`` for these rows once the
+    interim overrides were removed, because the vendored snapshot stopped
+    at Gemini 3.5 (issue #850). The cache-read rate is asserted too: the
+    overrides lacked it and cache hits were billed at the input rate.
+    """
+    model_price_catalog.load_catalog(force=True)
+    model = _model(
+        db_session,
+        test_user.account_id,
+        name=f"Gemini 3.8 Flash ({provider_name})",
+        provider_name=provider_name,
+        model_identifier="gemini-3.8-flash",
+    )
+
+    pricing = ai_model_pricing.get_effective_pricing(
+        db_session, account_id=test_user.account_id, ai_model=model
+    )
+
+    assert pricing.source == "catalog"
+    assert pricing.catalog_key in ("gemini-3.8-flash", "gemini/gemini-3.8-flash")
+    assert pricing.price.input_per_1m == 0.75
+    assert pricing.price.output_per_1m == 3.75
+    assert pricing.price.cached_input_per_1m == 0.075
+
+
 def test_effective_pricing_reports_a_model_nothing_can_price(db_session, test_user):
     """No override, no configured price, no catalog entry: say so plainly."""
     model = _model(

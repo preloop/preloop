@@ -49,6 +49,13 @@ it*, not about severity:
     The agent exited 0 but never confirmed completion on either channel. The
     work may well have succeeded; this is Preloop's contract failing, not the
     provider's.
+``agent_no_progress``
+    The agent ran and reported failure, and the container's post-execution git
+    block found nothing to push: no commit, and (for a live run stopped by the
+    no-progress guard) not even an uncommitted edit. The run spent its budget
+    reading and planning. Nothing upstream broke, so a retry only helps when it
+    changes something about the attempt, which is what
+    ``agent_config.retry_on_no_progress`` does.
 ``setup_failed``
     A repository setup command (``git_clone_config.setup_commands``) failed
     after the clone/restore and before the agent ever started. Nothing the
@@ -100,6 +107,7 @@ FAILURE_CATEGORY_MODEL_QUOTA = "model_quota"
 FAILURE_CATEGORY_PROVIDER_BILLING = "provider_billing"
 FAILURE_CATEGORY_MODEL_CONFIG = "model_config"
 FAILURE_CATEGORY_NO_CONFIRMATION = "no_confirmation"
+FAILURE_CATEGORY_AGENT_NO_PROGRESS = "agent_no_progress"
 FAILURE_CATEGORY_SETUP_FAILED = "setup_failed"
 FAILURE_CATEGORY_VERIFICATION_FAILED = "verification_failed"
 FAILURE_CATEGORY_VERIFICATION_BLOCKED = "verification_blocked"
@@ -118,6 +126,7 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_MODEL_QUOTA,
     FAILURE_CATEGORY_MODEL_CONFIG,
     FAILURE_CATEGORY_NO_CONFIRMATION,
+    FAILURE_CATEGORY_AGENT_NO_PROGRESS,
     FAILURE_CATEGORY_SETUP_FAILED,
     FAILURE_CATEGORY_VERIFICATION_FAILED,
     FAILURE_CATEGORY_VERIFICATION_BLOCKED,
@@ -284,6 +293,19 @@ _VERIFICATION_FAILED_RE = re.compile(
     r"|Isolated verification check .+ failed with exit",
     re.IGNORECASE,
 )
+# The no-progress guard's own stop sentence, and the sentence the explicit
+# failure path writes when the post-execution git block found no commit. Both
+# are Preloop's own words, so they identify the failing layer directly. The
+# wording deliberately avoids "timed out", which would be read by the timeout
+# rule below: a run that never edited anything is not a run that ran out of
+# time.
+_AGENT_NO_PROGRESS_RE = re.compile(
+    r"no change in the workspace"
+    r"|made no changes after"
+    r"|without changing the workspace"
+    r"|produced no commit",
+    re.IGNORECASE,
+)
 # The completion-contract message written by the orchestrator.
 _NO_CONFIRMATION_RE = re.compile(
     r"success sentinel|flow_execution_success|did not confirm\s+success",
@@ -316,6 +338,7 @@ _AGENT_ERROR_RE = re.compile(
 # the completion contract is that thing even if the logs also contain a
 # transient blip the executor's analyser latched onto.
 _STRUCTURAL_MESSAGE_RULES = (
+    (_AGENT_NO_PROGRESS_RE, FAILURE_CATEGORY_AGENT_NO_PROGRESS),
     (_HOSTED_TARIFF_RE, FAILURE_CATEGORY_MODEL_CONFIG),
     (_PROVIDER_BILLING_RE, FAILURE_CATEGORY_PROVIDER_BILLING),
     (_SETUP_FAILED_RE, FAILURE_CATEGORY_SETUP_FAILED),
