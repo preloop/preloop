@@ -110,6 +110,12 @@ prompt_template: |
   CONTRIBUTING, any agent instructions file (AGENTS.md, CLAUDE.md), the
   test layout, and the code you are about to change.
 
+  Read by range, not by whole file. Your context is finite and reading a
+  large file end to end spends it on lines you will never touch. Locate
+  what you need with `grep -n` first, then read the region around the hit
+  with `sed -n '120,180p' path/to/file`. Read a whole file only when it is
+  genuinely small or you are about to rewrite it.
+
   Write a short plan for yourself, at most ten lines: the files you expect
   to touch, the tests you will add, and the acceptance criteria you are
   working to. Keep it proportional. A one-line fix does not need a design.
@@ -136,9 +142,12 @@ prompt_template: |
   4. If a check cannot run in this environment (a missing database, a
      missing network service, a missing secret), do not fake it. Record
      the exact command and the reason under "skipped" in your summary.
-  5. Commit locally with a message that says why, not only what. One
-     logical commit is usually enough; split it when the change has
-     genuinely separate parts.
+  5. Commit locally at each milestone, with a message that says why, not
+     only what. Do not save every commit for the end: a run that is cut
+     short keeps whatever is committed and loses the rest. Make the first
+     commit within 20 minutes of starting to edit, even if it is a work in
+     progress; WIP commits are fine and you can refine them later. Several
+     small commits are as acceptable as one logical commit.
 
   ═══════════════════════════════════════════════════════════
   PHASE 2R: RESUME (when Resume from is set)

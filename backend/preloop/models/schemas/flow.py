@@ -10,6 +10,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    RootModel,
     TypeAdapter,
     field_serializer,
     field_validator,
@@ -963,6 +964,75 @@ class ModelRoutingRule(BaseModel):
     def serialize_model_id(self, value: UUID) -> str:
         """Store model ids as strings inside agent_config JSON."""
         return str(value)
+
+
+class ModelByLabelRule(BaseModel):
+    """One complexity label to one model and reasoning effort (#851).
+
+    The short form of a routing rule, for the common case an operator wants
+    from the console: "issues labelled complexity:high run on the big model,
+    thinking hard". It desugars into the same ordered rules engine as
+    ``model_routing``, so the two can never disagree about a label.
+
+    Deliberately model and effort only. Switching harness per label is what
+    ``model_routing`` is for, and a field the console cannot edit is a field
+    the next console save would quietly drop.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(
+        min_length=1,
+        max_length=64,
+        description="Label that selects this rule, matched against the issue's current labels.",
+    )
+    ai_model_id: Optional[UUID] = Field(
+        default=None,
+        description="Model to run on. Omit to keep the flow's selected model.",
+    )
+    reasoning_effort: Optional[Literal["low", "medium", "high"]] = Field(
+        default=None,
+        description="Reasoning effort for this run. Omit to leave the model's own default.",
+    )
+
+    @field_validator("label")
+    @classmethod
+    def strip_label(cls, value: str) -> str:
+        """A label with surrounding spaces never matches; reject it early."""
+        label = value.strip()
+        if not label:
+            raise ValueError("label must be non-empty")
+        return label
+
+    @model_validator(mode="after")
+    def require_an_override(self) -> "ModelByLabelRule":
+        """A rule that changes nothing is a rule somebody mis-saved."""
+        if not self.ai_model_id and not self.reasoning_effort:
+            raise ValueError(
+                "each model_by_label rule must set ai_model_id and/or reasoning_effort"
+            )
+        return self
+
+    @field_serializer("ai_model_id")
+    def serialize_model_id(self, value: Optional[UUID]) -> Optional[str]:
+        """Store model ids as strings inside agent_config JSON."""
+        return str(value) if value is not None else None
+
+
+class ModelByLabelConfig(RootModel[List[ModelByLabelRule]]):
+    """``agent_config.model_by_label``: an ordered list, first match wins."""
+
+    root: List[ModelByLabelRule] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def unique_labels(self) -> "ModelByLabelConfig":
+        """A label twice means one of the two never applies."""
+        seen: set[str] = set()
+        for rule in self.root:
+            if rule.label in seen:
+                raise ValueError(f"duplicate model_by_label label '{rule.label}'")
+            seen.add(rule.label)
+        return self
 
 
 class ModelRoutingConfig(BaseModel):
