@@ -51,7 +51,9 @@ Canonical text fields:
 
 - `request.text`: concatenated message contents (and Responses `input`
   when present)
-- `response.text`: assembled assistant text
+- `response.text`: assembled assistant text plus returned reasoning/thinking text
+  (including DeepSeek reasoning content, Anthropic thinking, and Responses
+  reasoning summaries). Opaque encrypted reasoning and signatures are not text.
 
 Also available:
 

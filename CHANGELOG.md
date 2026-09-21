@@ -1271,6 +1271,9 @@ avatars.
 
 ### Fixed
 
+- Apply response content policies to returned reasoning and thinking text as
+  well as final answers, including buffered streams and reasoning summaries.
+
 - Private runner registration and the WebSocket hello send an empty
   `host_exec_profiles` list when none are configured, and registration
   accepts JSON `null` so older clients cannot be locked out (#838).

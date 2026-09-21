@@ -244,6 +244,145 @@ def _content_to_text(content: Any) -> str:
     return str(content)
 
 
+def _response_block_text(value: Any, *, include_reasoning: bool = True) -> str:
+    """Read textual response fields, excluding opaque signatures/ciphertext."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(
+            filter(
+                None,
+                (
+                    _response_block_text(item, include_reasoning=include_reasoning)
+                    for item in value
+                ),
+            )
+        )
+    if isinstance(value, dict):
+        if not include_reasoning and value.get("type") == "reasoning":
+            return ""
+        return "\n".join(
+            filter(
+                None,
+                (
+                    _response_block_text(
+                        value.get(key), include_reasoning=include_reasoning
+                    )
+                    for key in (
+                        "text",
+                        "content",
+                        "thinking",
+                        "reasoning_content",
+                        "reasoning",
+                        "reasoning_details",
+                        "summary",
+                        "parts",
+                        "refusal",
+                    )
+                    if include_reasoning
+                    or key
+                    not in {
+                        "thinking",
+                        "reasoning_content",
+                        "reasoning",
+                        "reasoning_details",
+                        "summary",
+                    }
+                ),
+            )
+        )
+    return ""
+
+
+def canonical_response_text(
+    payload: Dict[str, Any], *, include_reasoning: bool = True
+) -> str:
+    """Scan final and returned reasoning text across supported response shapes."""
+    if isinstance(payload.get("choices"), list):
+        return "\n".join(
+            _response_block_text(
+                choice.get("message"), include_reasoning=include_reasoning
+            )
+            for choice in payload["choices"]
+            if isinstance(choice, dict)
+        )
+    if isinstance(payload.get("output"), list) and payload["output"]:
+        block_text = _response_block_text(
+            payload["output"], include_reasoning=include_reasoning
+        )
+        direct_text = payload.get("output_text")
+        # Bridges can return the final answer only in this convenience field,
+        # even when output contains reasoning. Scan both representations.
+        if isinstance(direct_text, str) and direct_text not in block_text:
+            return "\n".join(part for part in (block_text, direct_text) if part)
+        return block_text
+    if isinstance(payload.get("candidates"), list):
+        return "\n".join(
+            _response_block_text(
+                candidate.get("content"), include_reasoning=include_reasoning
+            )
+            for candidate in payload["candidates"]
+            if isinstance(candidate, dict)
+        )
+    return _response_block_text(payload, include_reasoning=include_reasoning) or str(
+        payload.get("output_text") or ""
+    )
+
+
+def _reasoning_text(message: Any) -> str:
+    if not isinstance(message, dict):
+        return ""
+    return "\n".join(
+        filter(
+            None,
+            (
+                _response_block_text(message.get(key))
+                for key in (
+                    "reasoning_content",
+                    "reasoning",
+                    "reasoning_details",
+                    "thinking",
+                )
+            ),
+        )
+    )
+
+
+def _extract_stream_reasoning(payloads: Sequence[Dict[str, Any]]) -> tuple[str, bool]:
+    """Assemble reasoning separately so final-text snapshots cannot erase it."""
+    parts: List[str] = []
+    snapshot = False
+    for payload in payloads:
+        event_type = str(payload.get("type") or "")
+        if event_type == "response.completed":
+            response = payload.get("response") or {}
+            if isinstance(response, dict):
+                output = response.get("output")
+                reasoning = _response_block_text(
+                    [
+                        item
+                        for item in (output if isinstance(output, list) else [])
+                        if isinstance(item, dict) and item.get("type") == "reasoning"
+                    ]
+                )
+                # Some providers omit reasoning from the completed snapshot.
+                # Retain collected reasoning deltas in that case.
+                if reasoning:
+                    parts.append(reasoning)
+                    snapshot = True
+            continue
+        if "reasoning" in event_type and isinstance(payload.get("delta"), str):
+            parts.append(payload["delta"])
+            continue
+        for choice in payload.get("choices") or []:
+            if isinstance(choice, dict):
+                parts.append(_reasoning_text(choice.get("delta")))
+                parts.append(_reasoning_text(choice.get("message")))
+        parts.append(_reasoning_text(payload.get("delta")))
+        parts.append(_reasoning_text(payload.get("content_block")))
+    return "".join(parts), snapshot
+
+
 def _sha256_hex(payload: bytes) -> str:
     """SHA-256 hex digest of ``payload``.
 
@@ -800,16 +939,9 @@ def extract_stream_text(event: str) -> str:
     return text
 
 
-def _extract_stream_fragment(event: str) -> tuple[str, bool]:
-    """Return ``(text, is_full_snapshot)`` for one SSE event.
-
-    Snapshot events (Responses ``response.completed``) carry the full
-    assembled ``output_text``. Callers that also collected incremental
-    deltas must prefer the snapshot to avoid concatenating the full
-    text on top of the deltas.
-    """
-    parts: List[str] = []
-    is_snapshot = False
+def _stream_event_payloads(event: str) -> List[Dict[str, Any]]:
+    """Parse each SSE data object once for both final and reasoning text."""
+    payloads: List[Dict[str, Any]] = []
     for match in _SSE_DATA_RE.finditer(event):
         raw = match.group(1).strip()
         if not raw or raw == "[DONE]":
@@ -818,32 +950,47 @@ def _extract_stream_fragment(event: str) -> tuple[str, bool]:
             payload = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        if not isinstance(payload, dict):
-            continue
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return payloads
+
+
+def _extract_stream_fragment(
+    event: str, *, payloads: Optional[Sequence[Dict[str, Any]]] = None
+) -> tuple[str, bool]:
+    """Return final text and whether the payload contains a full snapshot."""
+    parts: List[str] = []
+    is_snapshot = False
+    for payload in _stream_event_payloads(event) if payloads is None else payloads:
         event_type = payload.get("type")
 
         # OpenAI chat/completions (and LiteLLM OpenAI-shape streams).
         choices = payload.get("choices") or []
-        if choices and isinstance(choices[0], dict):
-            delta = choices[0].get("delta") or {}
-            if isinstance(delta, dict):
-                content = delta.get("content")
-                if isinstance(content, str):
-                    parts.append(content)
-            message = choices[0].get("message") or {}
-            if isinstance(message, dict):
-                msg_content = message.get("content")
-                if isinstance(msg_content, str):
-                    parts.append(msg_content)
+        if choices:
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                delta = choice.get("delta") or {}
+                if isinstance(delta, dict):
+                    content = delta.get("content")
+                    if isinstance(content, str):
+                        parts.append(content)
+                message = choice.get("message") or {}
+                if isinstance(message, dict):
+                    msg_content = message.get("content")
+                    if isinstance(msg_content, str):
+                        parts.append(msg_content)
             continue
 
         # OpenAI Responses API: incremental output_text.delta is a string.
         # Completed events nest the full text under response.output_text.
         if event_type == "response.completed":
             resp = payload.get("response")
-            if isinstance(resp, dict) and isinstance(resp.get("output_text"), str):
-                parts.append(resp["output_text"])
+            if isinstance(resp, dict) and ("output_text" in resp or "output" in resp):
+                parts.append(canonical_response_text(resp, include_reasoning=False))
                 is_snapshot = True
+            continue
+        if "reasoning" in str(event_type or ""):
             continue
         if isinstance(payload.get("delta"), str):
             parts.append(payload["delta"])
@@ -898,10 +1045,20 @@ def wrap_stream_for_response_policy(
     buffered: List[str] = []
     delta_parts: List[str] = []
     snapshot_text: Optional[str] = None
+    reasoning_parts: List[str] = []
+    reasoning_snapshot: Optional[str] = None
     try:
         for event in events:
             buffered.append(event)
-            fragment, is_snapshot = _extract_stream_fragment(event)
+            event_payloads = _stream_event_payloads(event)
+            reasoning, reasoning_is_snapshot = _extract_stream_reasoning(event_payloads)
+            if reasoning_is_snapshot:
+                reasoning_snapshot = reasoning
+            elif reasoning:
+                reasoning_parts.append(reasoning)
+            fragment, is_snapshot = _extract_stream_fragment(
+                event, payloads=event_payloads
+            )
             if is_snapshot:
                 snapshot_text = fragment
             elif fragment:
@@ -909,7 +1066,23 @@ def wrap_stream_for_response_policy(
     except ModelGatewayAPIError:
         raise
 
-    assembled = snapshot_text if snapshot_text is not None else "".join(delta_parts)
+    def assemble(parts: List[str], snapshot: Optional[str]) -> str:
+        deltas = "".join(parts)
+        if snapshot is None or snapshot == deltas:
+            return deltas
+        # Both representations are replayed. A sanitized/shortened completion
+        # snapshot must not erase sensitive text present in earlier deltas.
+        return "\n".join(part for part in (deltas, snapshot) if part)
+
+    assembled = "\n".join(
+        filter(
+            None,
+            (
+                assemble(delta_parts, snapshot_text),
+                assemble(reasoning_parts, reasoning_snapshot),
+            ),
+        )
+    )
     try:
         enforce_response_policy(
             gateway,

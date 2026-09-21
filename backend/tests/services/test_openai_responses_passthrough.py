@@ -946,20 +946,17 @@ def test_upstream_response_object_without_output_text_still_yields_text(
 ):
     """``output_text`` is an SDK convenience field, not a wire field.
 
-    Response policy and usage recording both need the assistant text, and a
-    real upstream Responses object only carries it inside ``output`` items.
+    Response policies scan text from real upstream Responses objects, which
+    carry it inside ``output`` items without an ``output_text`` field.
     """
-    text = OpenAIGatewayService._responses_payload_output_text(
-        _upstream_responses_object()
+    from preloop.services.model_content_policy import canonical_response_text
+
+    text = canonical_response_text(
+        _upstream_responses_object(), include_reasoning=False
     )
     assert text == "Hello from Zen"
-    assert (
-        OpenAIGatewayService._responses_payload_output_text(
-            {"output_text": "direct", "output": []}
-        )
-        == "direct"
-    )
-    assert OpenAIGatewayService._responses_payload_output_text({}) == ""
+    assert canonical_response_text({"output_text": "direct", "output": []}) == "direct"
+    assert canonical_response_text({}) == ""
 
 
 class _HttpxLikeClient:
