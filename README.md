@@ -218,3 +218,7 @@ Windows CLI release binaries pass a required Defender scan and ten-minute observ
 Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 
 Execution environment profiles and hosted checkpoint recovery are documented in [Environments and recovery](docs/guide/flows/environments-and-recovery.md).
+
+Operators can enable verified SSH and GCP agent deployment from the console.
+See [remote agent deployment](docs/operations/agent-deployment.md) for host-key
+verification, dedicated cloud credentials, and proxy timeout configuration.

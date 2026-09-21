@@ -240,3 +240,14 @@ with a stdin provider to keep prompts outside argv. Execution-scoped credentials
 can request native approvals only for their own active flow session. See the
 [adapter guide](runtime-plugins/harness-preloop/README.md) for version pins,
 capability limits, and publication order.
+
+### Remote agent deployment
+
+The optional agent-deployment API authorizes account owners and administrators,
+then runs CLI installation and live onboarding through a host-key-pinned SSH
+connection. The GCP adapter creates a uniquely named VM without cloud identity,
+reads its host key through the authenticated Compute API, and removes resources
+on failure. Before returning success, the API checks the account's registered
+agent and selected model binding through CRUD. Credentials stay in request
+memory; audit events contain deployment identifiers and outcomes. See
+[operator configuration](docs/operations/agent-deployment.md).

@@ -76,11 +76,11 @@ func TestBuildOpenClawLiveValidationSpec_UsesManagedGatewayProvider(t *testing.T
 	if spec.Token != "openclaw-managed-token" {
 		t.Fatalf("expected token from provider.preloop.apiKey, got %q", spec.Token)
 	}
-	if spec.ModelAlias != "preloop/openai/gpt-5.4" {
+	if spec.ModelAlias != "openai/gpt-5.4" {
 		t.Fatalf("expected OpenClaw model ref to remain prefixed, got %q", spec.ModelAlias)
 	}
 	body := decodeBuilderPayload(t, spec.Body)
-	if body["model"] != "preloop/openai/gpt-5.4" {
+	if body["model"] != "openai/gpt-5.4" {
 		t.Fatalf("expected body.model to match OpenClaw model ref, got %#v", body["model"])
 	}
 	if _, ok := body["temperature"]; ok {
