@@ -1,7 +1,9 @@
 import { expect } from '@open-wc/testing';
 
 import type { BrandConfig } from './brand-config';
+import type { BlogPost } from './blog-seo';
 import {
+  absolute_url,
   buildAboutPageSchema,
   buildArticleSchema,
   buildFAQPageSchema,
@@ -234,6 +236,102 @@ describe('brand-seo', () => {
 
     expect(faq_page).to.exist;
     expect(faq_page?.mainEntity).to.have.length(2);
+  });
+});
+
+function social_image_tags(og_image: string): {
+  og: string;
+  twitter: string;
+} {
+  return {
+    og: `<meta property="og:image" content="${og_image}">`,
+    twitter: `<meta name="twitter:image" content="${og_image}">`,
+  };
+}
+
+describe('absolute og:image and twitter:image URLs', () => {
+  const release_post: BlogPost = {
+    slug: 'preloop-0-16-0',
+    title: 'Preloop 0.16.0',
+    description: 'Release notes for 0.16.0.',
+    date: '2026-09-18',
+    og_image: '/assets/blog/preloop-0-16-0.jpg',
+  };
+
+  it('resolves a site-relative og_image against the brand origin on brand pages', () => {
+    const meta = get_meta_for_route('/', test_config);
+    const tags = social_image_tags(meta.og_image);
+
+    expect(meta.og_image).to.equal(
+      'https://preloop.ai/assets/mcp-firewall.svg'
+    );
+    expect(tags.og).to.equal(
+      '<meta property="og:image" content="https://preloop.ai/assets/mcp-firewall.svg">'
+    );
+    expect(tags.twitter).to.equal(
+      '<meta name="twitter:image" content="https://preloop.ai/assets/mcp-firewall.svg">'
+    );
+  });
+
+  it('resolves a site-relative og_image against the brand origin on blog posts', () => {
+    const meta = get_meta_for_route('/blog/preloop-0-16-0', test_config, [
+      release_post,
+    ]);
+    const tags = social_image_tags(meta.og_image);
+
+    expect(meta.og_image).to.equal(
+      'https://preloop.ai/assets/blog/preloop-0-16-0.jpg'
+    );
+    expect(tags.og).to.equal(
+      '<meta property="og:image" content="https://preloop.ai/assets/blog/preloop-0-16-0.jpg">'
+    );
+    expect(tags.twitter).to.equal(
+      '<meta name="twitter:image" content="https://preloop.ai/assets/blog/preloop-0-16-0.jpg">'
+    );
+  });
+
+  it('leaves an already-absolute og_image unchanged', () => {
+    const config: BrandConfig = {
+      ...test_config,
+      landing: {
+        ...test_config.landing,
+        meta: {
+          ...test_config.landing.meta,
+          og_image: 'https://cdn.example.com/hero.jpg',
+        },
+      },
+    };
+    const brand_meta = get_meta_for_route('/', config);
+    const post_meta = get_meta_for_route('/blog/preloop-0-16-0', config, [
+      { ...release_post, og_image: 'https://cdn.example.com/post.jpg' },
+    ]);
+
+    expect(brand_meta.og_image).to.equal('https://cdn.example.com/hero.jpg');
+    expect(post_meta.og_image).to.equal('https://cdn.example.com/post.jpg');
+    expect(absolute_url('https://cdn.example.com/hero.jpg', config)).to.equal(
+      'https://cdn.example.com/hero.jpg'
+    );
+  });
+
+  it('uses the brand domain rather than a hardcoded origin', () => {
+    const white_label: BrandConfig = {
+      ...test_config,
+      domain: 'acme.example',
+    };
+    const brand_meta = get_meta_for_route('/', white_label);
+    const post_meta = get_meta_for_route('/blog/preloop-0-16-0', white_label, [
+      release_post,
+    ]);
+
+    expect(brand_meta.og_image).to.equal(
+      'https://acme.example/assets/mcp-firewall.svg'
+    );
+    expect(post_meta.og_image).to.equal(
+      'https://acme.example/assets/blog/preloop-0-16-0.jpg'
+    );
+    expect(absolute_url('/assets/mcp-firewall.svg', white_label)).to.equal(
+      'https://acme.example/assets/mcp-firewall.svg'
+    );
   });
 });
 

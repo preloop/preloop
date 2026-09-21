@@ -7,6 +7,7 @@ import * as path from 'path';
 import { BrandConfig } from './src/brand-config';
 import { collectLandingPublicAssetPaths } from './src/brand-landing-assets';
 import {
+  absolute_url,
   get_canonical_url,
   get_meta_for_route,
   get_regulation_nav_links,
@@ -802,6 +803,7 @@ export function brandPlugin(
       // Get route-specific metadata
       const meta = get_meta_for_route(route, brandConfig, blogPosts);
       const canonicalUrl = get_canonical_url(route, brandConfig);
+      const ogImageUrl = absolute_url(meta.og_image, brandConfig);
 
       // Replace <title>
       html = html.replace(
@@ -839,7 +841,7 @@ export function brandPlugin(
       // Replace Open Graph image
       html = html.replace(
         /<meta\s+property="og:image"\s+content="[\s\S]*?">/,
-        `<meta property="og:image" content="${meta.og_image}">`
+        `<meta property="og:image" content="${ogImageUrl}">`
       );
 
       // Replace Open Graph URL
@@ -875,7 +877,7 @@ export function brandPlugin(
       // Replace Twitter card image
       html = html.replace(
         /<meta\s+name="twitter:image"\s+content="[\s\S]*?">/,
-        `<meta name="twitter:image" content="${meta.og_image}">`
+        `<meta name="twitter:image" content="${ogImageUrl}">`
       );
 
       // Replace Twitter site handle
@@ -1179,6 +1181,7 @@ function generateFullHtmlPage(
 ): string {
   const meta = get_meta_for_route(route, config, blogPosts);
   const canonicalUrl = get_canonical_url(route, config);
+  const ogImageUrl = absolute_url(meta.og_image, config);
   let html = indexHtml;
 
   // Replace <title>
@@ -1213,7 +1216,7 @@ function generateFullHtmlPage(
   // Replace Open Graph image
   html = html.replace(
     /<meta\s+property="og:image"\s+content="[\s\S]*?">/,
-    `<meta property="og:image" content="${meta.og_image}">`
+    `<meta property="og:image" content="${ogImageUrl}">`
   );
 
   // Replace Open Graph URL
@@ -1249,7 +1252,7 @@ function generateFullHtmlPage(
   // Replace Twitter card image
   html = html.replace(
     /<meta\s+name="twitter:image"\s+content="[\s\S]*?">/,
-    `<meta name="twitter:image" content="${meta.og_image}">`
+    `<meta name="twitter:image" content="${ogImageUrl}">`
   );
 
   html = upsertStructuredDataTag(html, route, config, blogPosts);
