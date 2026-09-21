@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import shlex
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from aiodocker.exceptions import DockerError
 
@@ -14,6 +14,10 @@ from preloop.utils.execve_limits import (
     prompt_transport_env,
 )
 from preloop.services.mcp_config_service import MCPConfigService
+from preloop.services.model_context_limits import (
+    ModelContextLimits,
+    limits_for_execution,
+)
 from preloop.services.model_runtime_resolver import gateway_url_for_api
 
 from .cli_session import (
@@ -518,7 +522,10 @@ fi
         flow_name = execution_context.get("flow_name", "unknown")
 
         auth_block = self._build_codex_auth_config(
-            model, model_provider, model_endpoint
+            model,
+            model_provider,
+            model_endpoint,
+            limits_for_execution(execution_context),
         )
 
         # Native CLI session persistence blocks (mostly empty on cold start).
@@ -725,8 +732,55 @@ exit $CODEX_EXIT_CODE
         # Call parent implementation which will use the args and env
         return await super()._start_kubernetes_pod(execution_context)
 
+    def _build_codex_limit_lines(
+        self, model: str, limits: Optional[ModelContextLimits]
+    ) -> str:
+        """The ``model_context_window`` / ``model_max_output_tokens`` lines.
+
+        Codex falls back to a conservative window when ``config.toml`` says
+        nothing, so a model with a large window compacts far too early and
+        re-reads what it just dropped (#851). Preloop knows the real numbers
+        from the model row or the vendored price catalog, and passes on only
+        what it actually knows: an unknown limit is omitted so the harness
+        keeps its own default rather than trusting a number Preloop guessed.
+
+        Args:
+            model: The model identifier, for the log line.
+            limits: Resolved limits, or None when nothing was resolved.
+
+        Returns:
+            Zero, one or two TOML lines, newline-terminated when non-empty.
+        """
+        limits = limits or ModelContextLimits()
+        lines = []
+        if limits.context_window is not None:
+            lines.append(f"model_context_window = {limits.context_window}")
+        if limits.max_output_tokens is not None:
+            lines.append(f"model_max_output_tokens = {limits.max_output_tokens}")
+        if not lines:
+            logger.info(
+                "No context window or output ceiling known for model %s "
+                "(neither the model row nor the vendored price catalog has "
+                "one); codex keeps its own defaults",
+                model,
+            )
+            return ""
+        logger.info(
+            "Codex context limits for %s: window=%s (%s) output=%s (%s)",
+            model,
+            limits.context_window,
+            limits.context_window_source or "unknown",
+            limits.max_output_tokens,
+            limits.max_output_tokens_source or "unknown",
+        )
+        return "\n".join(lines) + "\n"
+
     def _build_codex_auth_config(
-        self, model: str, model_provider: str, model_endpoint: str
+        self,
+        model: str,
+        model_provider: str,
+        model_endpoint: str,
+        limits: Optional[ModelContextLimits] = None,
     ) -> str:
         """
         Build the auth.json and config.toml shell script block for Codex CLI.
@@ -740,11 +794,14 @@ exit $CODEX_EXIT_CODE
             model: Model identifier (e.g., "gpt-5.4", "claude-sonnet-4-20250514")
             model_provider: Provider name (e.g., "openai", "anthropic")
             model_endpoint: API base URL for custom providers
+            limits: Context window and output ceiling for this model, when
+                Preloop knows them. Omitted lines leave codex on its defaults.
 
         Returns:
             Shell script block to write auth.json and config.toml
         """
         is_custom = model_provider and model_provider != "openai"
+        limit_lines = self._build_codex_limit_lines(model, limits)
 
         if is_custom:
             # Custom provider: generate provider-specific config
@@ -776,7 +833,7 @@ EOF
 cat > ~/.codex/config.toml << EOF
 model_provider = "{provider_key}"
 model = "{model}"
-
+{limit_lines}
 rmcp_client = true
 
 [model_providers.{provider_key}]
@@ -807,7 +864,7 @@ EOF
 # Create config.toml with model and MCP server configuration
 cat > ~/.codex/config.toml << EOF
 model = "{model}"
-
+{limit_lines}
 rmcp_client = true
 
 [mcp_servers.preloop]
