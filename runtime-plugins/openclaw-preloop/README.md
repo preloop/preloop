@@ -170,10 +170,13 @@ The plugin reads its own OpenClaw plugin entry, at
 ```
 
 Do not write Agent Control metadata as a top-level `preloop` object. OpenClaw
-builds that validate config schemas reject unknown root keys.
+builds that validate config schemas reject unknown root keys. `enabled: false`
+is the supported pause switch: the package stays installed, but the plugin
+registers no hooks and opens no control channel.
 
 | Key | Default | What it does |
 |---|---|---|
+| `enabled` | `true` | Set to `false` to keep the package installed but register nothing: no Agent Control channel and no approval hook. `tool_approval_enabled` only turns the gate off; uninstall removes the plugin |
 | `tool_approval_enabled` | `true` | Set to `false` to turn the native tool-call gate off entirely |
 | `tool_approval_fail_open` | `false` | Fail-closed by default: if Preloop is unreachable, the tool call is **blocked**. Set `true` only if you accept ungoverned execution during an outage |
 | `tool_approval_timeout_seconds` | `86400` | Workflow wait budget, an integer from 30 to 86400 seconds; HTTP adds 15 seconds of headroom |

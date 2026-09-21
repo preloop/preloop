@@ -2,7 +2,7 @@
   "id": "preloop-plugin",
   "name": "Preloop",
   "description": "Hold your OpenClaw agent's dangerous tool calls for approval on phone, watch, Slack, Mattermost, email or the web console, keep an audit trail of every decision, and talk to a running session from anywhere.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "configSchema": {
     "type": "object",
     "additionalProperties": true,
