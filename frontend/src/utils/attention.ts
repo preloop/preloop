@@ -1027,6 +1027,18 @@ function unpricedModelOf(model: GatewayUsageByModel): AttentionUnpricedModel {
  * subscription, a bill settled outside Preloop) is left out entirely: that is
  * an answer too, and repeating the question is how a badge stops being read.
  */
+function unpricedRequestsOfModel(
+  model: GatewayUsageByModel,
+  overrideKeys: Set<string>
+): number {
+  if (model.request_count <= 0) return 0;
+  if (model.unpriced_request_count === undefined) {
+    if (hasPriceOverride(model, overrideKeys)) return 0;
+    return model.estimated_cost ? 0 : model.request_count;
+  }
+  return Math.max(0, model.unpriced_request_count);
+}
+
 function unpricedModelsOf(
   usageSummary: AccountGatewayUsageSummaryResponse,
   overrideKeys: Set<string>,
@@ -1035,22 +1047,13 @@ function unpricedModelsOf(
 ): AttentionUnpricedModel[] {
   return (usageSummary.usage_by_model || [])
     .filter((model) => {
-      if (model.request_count <= 0) return false;
-      if (
-        unpricedModelIsMarked(
-          dismissals,
-          model.model_alias,
-          model.provider_name,
-          now
-        )
-      ) {
-        return false;
-      }
-      if (model.unpriced_request_count === undefined) {
-        if (hasPriceOverride(model, overrideKeys)) return false;
-        return !model.estimated_cost;
-      }
-      return model.unpriced_request_count > 0;
+      if (unpricedRequestsOfModel(model, overrideKeys) <= 0) return false;
+      return !unpricedModelIsMarked(
+        dismissals,
+        model.model_alias,
+        model.provider_name,
+        now
+      );
     })
     .map(unpricedModelOf)
     .sort((left, right) => right.requests - left.requests);
@@ -1060,16 +1063,19 @@ function unpricedModelsOf(
  * Requests the account's marked-expected models account for, so the item's
  * "N requests unpriced" counts only the models it still lists. The summary's
  * aggregate covers every model, marked or not.
+ *
+ * It counts through the same predicate the list filters on, so a marked model
+ * that is priced (or priced by an override, on a server that sends no
+ * `unpriced_request_count`) contributes nothing: subtracting its traffic would
+ * make the count disagree with the models still named.
  */
 function markedUnpricedRequestsOf(
   usageSummary: AccountGatewayUsageSummaryResponse,
+  overrideKeys: Set<string>,
   dismissals: readonly AttentionDismissalRecord[],
   now: Date
 ): number {
   return (usageSummary.usage_by_model || []).reduce((total, model) => {
-    if (model.request_count <= 0) {
-      return total;
-    }
     if (
       !unpricedModelIsMarked(
         dismissals,
@@ -1080,7 +1086,7 @@ function markedUnpricedRequestsOf(
     ) {
       return total;
     }
-    return total + (model.unpriced_request_count ?? model.request_count);
+    return total + unpricedRequestsOfModel(model, overrideKeys);
   }, 0);
 }
 
@@ -1158,7 +1164,7 @@ function pricingItems(
   const unpricedRequests = Math.max(
     0,
     allUnpricedRequests -
-      markedUnpricedRequestsOf(usageSummary, dismissals, now)
+      markedUnpricedRequestsOf(usageSummary, overrideKeys, dismissals, now)
   );
   const stale =
     Boolean(fetchedAt) &&

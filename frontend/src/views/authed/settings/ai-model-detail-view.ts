@@ -863,10 +863,13 @@ export class AIModelDetailView extends LitElement {
    * inbox use, and keyed by the alias the gateway records on every request so
    * a marker made here is the marker they read.
    *
-   * The model-scoped summary carries no unpriced count, so "unpriced" here is
-   * the price in force saying there is none while the window still has
-   * traffic. That is the same question the Models page asks from
-   * `unpriced_request_count`, said from the data this page already loads.
+   * The model-scoped summary carries no unpriced count and this page will not
+   * pull the account-wide overview for one model (that is the request that
+   * emptied the connection pool on 2026-09-03), so "unpriced" is read from the
+   * data the page already has: either no price is in force, or a non-zero
+   * price is in force and the window still recorded no cost, which is the
+   * model priced after the fact with "Apply to past usage" not yet run. A
+   * price of zero is the zero-priced question, not this one, and is left out.
    */
   private get unpricedState(): UnpricedAttentionState {
     const gatewayAlias = this.getGatewayConfig()?.model_alias;
@@ -876,13 +879,30 @@ export class AIModelDetailView extends LitElement {
           (typeof gatewayAlias === 'string' && gatewayAlias.trim()) ||
           this.model?.alias,
         providerName: this.summary?.provider_name || this.model?.provider_name,
-        unpricedRequests:
-          this.pricing?.source === 'none'
-            ? this.summary?.total_requests || 0
-            : 0,
+        unpricedRequests: this.unpricedRequestsInWindow(),
       },
       this.dismissals
     );
+  }
+
+  /** Requests in the window that carry no cost, by the rule above. */
+  private unpricedRequestsInWindow(): number {
+    const requests = this.summary?.total_requests || 0;
+    if (requests <= 0) return 0;
+    // Before the price loads (or when that request failed) the page says
+    // nothing rather than guessing.
+    if (!this.pricing) return 0;
+    if (this.pricing.source === 'none') return requests;
+    const price = this.pricing.price || {};
+    const priced = [
+      price.input_per_1m,
+      price.output_per_1m,
+      price.cached_input_per_1m,
+      price.blended_per_1m,
+      price.request_price,
+    ].some((value) => typeof value === 'number' && value > 0);
+    if (!priced) return 0;
+    return this.summary?.estimated_cost ? 0 : requests;
   }
 
   /**

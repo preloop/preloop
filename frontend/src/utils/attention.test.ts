@@ -1094,6 +1094,57 @@ describe('deriveAttentionItems', () => {
         expect(catalog.detail).to.contain('Apply to past usage');
       });
 
+      // Servers older than wave 8 send no `unpriced_request_count`, so both
+      // the list and the count fall back to "priced at all?". A marked model
+      // that turns out to be priced must not take its whole request count out
+      // of a total the list never counted it in.
+      it('does not swallow the count for a marked model that is priced', () => {
+        const items = derive({
+          usageSummary: summary({
+            price_catalog: { fetched_at: daysAgo(1), model_count: 120 },
+            unpriced_requests: 12,
+            usage_by_model: [
+              {
+                ai_model_id: 'model-1',
+                model_alias: 'openrouter/stealth/ox-alpha',
+                provider_name: 'openrouter',
+                request_count: 400,
+                token_usage: {
+                  prompt_tokens: 1,
+                  completion_tokens: 1,
+                  total_tokens: 900,
+                },
+                estimated_cost: 8.25,
+                zero_priced_request_count: 0,
+                last_request_at: minutesAgo(10),
+              },
+              {
+                ai_model_id: 'model-2',
+                model_alias: 'local/qwen-3-coder',
+                provider_name: 'ollama',
+                request_count: 12,
+                token_usage: {
+                  prompt_tokens: 1,
+                  completion_tokens: 1,
+                  total_tokens: 40,
+                },
+                estimated_cost: 0,
+                zero_priced_request_count: 0,
+                last_request_at: minutesAgo(20),
+              },
+            ],
+          }),
+          dismissals: [unpricedMarker('openrouter/stealth/ox-alpha')],
+        });
+
+        const catalog = items.find((item) => item.id === 'pricing:catalog')!;
+        expect(
+          (catalog.evidence?.unpricedModels || []).map((model) => model.alias)
+        ).to.eql(['local/qwen-3-coder']);
+        expect(catalog.evidence?.unpricedRequests).to.equal(12);
+        expect(catalog.detail).to.contain('12 requests unpriced');
+      });
+
       it('emits no item at all once every unpriced model is marked', () => {
         const items = derive({
           usageSummary: twoUnpricedModels(),

@@ -1343,6 +1343,10 @@ describe('AIModelDetailView attention dismissals', () => {
   let lastFailureAt: string;
   /** #848: what the price in force says, which is how this page reads unpriced. */
   let pricingSource: string;
+  /** #848: cost recorded in the window, which is 0 until usage is repriced. */
+  let summaryCost: number;
+  /** #848: a price in force that is zero, which is the other pricing question. */
+  let pricedAtZero: boolean;
   /** Off for the pages that are only unpriced, not failing. */
   let failuresEnabled: boolean;
   let extraAliasFailures: {
@@ -1365,6 +1369,8 @@ describe('AIModelDetailView attention dismissals', () => {
     summaryRequests = [];
     lastFailureAt = '2026-09-14T09:00:00Z';
     pricingSource = 'catalog';
+    summaryCost = 1.5;
+    pricedAtZero = false;
     failuresEnabled = true;
     extraAliasFailures = [];
 
@@ -1442,7 +1448,7 @@ describe('AIModelDetailView attention dismissals', () => {
               completion_tokens: 100,
               total_tokens: 200,
             },
-            estimated_cost: 1.5,
+            estimated_cost: summaryCost,
             requests_by_day: [],
             usage_by_session: [],
           });
@@ -1463,8 +1469,8 @@ describe('AIModelDetailView attention dismissals', () => {
             provider_name: 'example-provider',
             source: pricingSource,
             price: {
-              input_per_1m: 3,
-              output_per_1m: 15,
+              input_per_1m: pricedAtZero ? 0 : 3,
+              output_per_1m: pricedAtZero ? 0 : 15,
               cached_input_per_1m: null,
               blended_per_1m: null,
               request_price: null,
@@ -1729,6 +1735,41 @@ describe('AIModelDetailView attention dismissals', () => {
       expect(attentionBadge(element).getAttribute('title')).to.contain(
         'marked expected'
       );
+    });
+
+    // A price set today does not reprice yesterday's requests until somebody
+    // runs "Apply to past usage", and until then the Models list and the inbox
+    // keep counting them. This page says the same thing rather than falling
+    // quiet on them.
+    it('still flags a priced model whose window recorded no cost', async () => {
+      pricingSource = 'override';
+      summaryCost = 0;
+
+      const element = await mount();
+
+      expect(attentionBadge(element).textContent!.trim()).to.equal('Attention');
+      expect(
+        element
+          .shadowRoot!.querySelector('[data-testid="unpriced-attention"]')!
+          .textContent!.replace(/\s+/g, ' ')
+      ).to.contain('20 requests');
+    });
+
+    // A price of zero is an answer, and the inbox asks about it separately.
+    it('asks nothing when the price in force is zero', async () => {
+      pricingSource = 'override';
+      pricedAtZero = true;
+      summaryCost = 0;
+
+      const element = await mount();
+
+      // Nothing to say at all: no failures either, so the line is absent.
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="model-attention"]')
+      ).to.equal(null);
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="unpriced-attention"]')
+      ).to.equal(null);
     });
 
     it('snoozes the price question for seven days', async () => {
