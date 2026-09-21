@@ -2086,7 +2086,8 @@ class FlowTriggerService:
         )
 
         coalesced = False
-        if is_triage_flow(self.db, flow):
+        triage_flow = is_triage_flow(self.db, flow)
+        if triage_flow:
             if (
                 parent_execution_id is not None
                 or root_execution_id is not None
@@ -2145,7 +2146,7 @@ class FlowTriggerService:
             "id": str(execution_id),
             "status": execution_status,
             "flow_id": flow_id_str,
-            "coalesced": coalesced,
+            **({"coalesced": coalesced} if triage_flow else {}),
         }
 
     async def trigger_flow_matrix(

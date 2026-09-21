@@ -621,6 +621,8 @@ async def test_manual_and_automatic_triage_share_claim_without_dropping_new_scop
     if lost_dispatch:
         assert first["id"] == failed.value.execution_id
         assert first["coalesced"] is True
+    else:
+        assert first["coalesced"] is False
     initial_dispatch_count = 2 if lost_dispatch else 1
     rows = crud_issue_lifecycle.list_for_issue(
         service.db, account_id=service.account_id, issue_id=service.issue.id
