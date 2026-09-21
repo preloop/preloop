@@ -207,6 +207,11 @@ def _flatten_tiered_pricing(entry: Any) -> Any:
     keys before upstream changed shape. Tier-aware billing is a separate
     concern; this only keeps a priced model priced.
 
+    Merging is per field: a cost the entry publishes flat wins over the
+    tier, while a missing key and an explicit ``null`` both count as no
+    price and take the tier's value. So a row that prices input flat and
+    output only in tiers comes out fully priced rather than half priced.
+
     Args:
         entry: One upstream model entry (any type; non-dicts pass through).
 
@@ -217,12 +222,6 @@ def _flatten_tiered_pricing(entry: Any) -> Any:
         return entry
     tiers = entry.get("tiered_pricing")
     if not isinstance(tiers, list) or not tiers:
-        return entry
-    # An entry that already publishes a flat price keeps it: the tiers are
-    # then extra detail, not the only source of truth.
-    if isinstance(entry.get("input_cost_per_token"), (int, float)) or isinstance(
-        entry.get("output_cost_per_token"), (int, float)
-    ):
         return entry
 
     def tier_start(tier: Any) -> float:
@@ -237,11 +236,13 @@ def _flatten_tiered_pricing(entry: Any) -> Any:
     lowest = min(candidates, key=tier_start)
     merged = dict(entry)
     for field, value in lowest.items():
-        if (
-            KEEP_FIELD_SUBSTRING in field
-            and field not in merged
-            and isinstance(value, (int, float))
-        ):
+        if KEEP_FIELD_SUBSTRING not in field or not isinstance(value, (int, float)):
+            continue
+        # Field by field: a flat price the entry publishes itself wins, but a
+        # missing key and an explicit null are both "no price" and take the
+        # tier's value. Upstream has shipped null cost fields before, and a
+        # row can price one direction flat and the other only in tiers.
+        if merged.get(field) is None:
             merged[field] = value
     return merged
 

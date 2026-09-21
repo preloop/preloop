@@ -985,6 +985,22 @@ class TestUpdateModelPriceOverlays:
                     }
                 ],
             },
+            # Upstream has shipped explicit null cost fields, and rows that
+            # price one direction flat and the other only in tiers. Both
+            # must come out fully priced, not half priced.
+            "dashscope/null-and-mixed-fixture": {
+                "litellm_provider": "dashscope",
+                "mode": "chat",
+                "input_cost_per_token": None,
+                "output_cost_per_token": 6e-06,
+                "tiered_pricing": [
+                    {
+                        "input_cost_per_token": 1.5e-06,
+                        "output_cost_per_token": 9e-06,
+                        "range": [0, 256000.0],
+                    }
+                ],
+            },
         }
 
         filtered = script.filter_catalog(upstream)
@@ -1000,6 +1016,11 @@ class TestUpdateModelPriceOverlays:
         # A row that publishes a flat price keeps it; tiers do not override.
         assert filtered["dashscope/flat-fixture"]["input_cost_per_token"] == 2e-06
         assert filtered["dashscope/flat-fixture"]["output_cost_per_token"] == 6e-06
+        # An explicit null is no price and takes the tier's value; the flat
+        # output price on the same row still wins over its tier.
+        mixed = filtered["dashscope/null-and-mixed-fixture"]
+        assert mixed["input_cost_per_token"] == 1.5e-06
+        assert mixed["output_cost_per_token"] == 6e-06
 
     def test_update_model_moonshot_keys_survive_stub_litellm_merge(self) -> None:
         script = _load_update_model_prices()
