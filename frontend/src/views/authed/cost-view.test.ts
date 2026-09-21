@@ -1494,6 +1494,50 @@ describe('CostView', () => {
       ).to.equal(null);
     });
 
+    it('keeps the row and says why when the edit is refused', async () => {
+      overrideWriteFailure = {
+        status: 422,
+        detail: 'effective_until must follow effective_from',
+      };
+      const element = await loadView();
+
+      rowButton(rows(element)[0], 'edit-override').click();
+      await element.updateComplete;
+      const dialog = element.shadowRoot!.querySelector(
+        'sl-dialog[label="Edit price override"]'
+      )!;
+      (
+        dialog.querySelector('[data-testid="save-override"]') as HTMLElement
+      ).click();
+      await waitUntil(
+        () => writesOfKind('PUT').length > 0,
+        'no update was sent'
+      );
+      await waitUntil(
+        () =>
+          Boolean(
+            (element as unknown as { priceFormError: string | null })
+              .priceFormError
+          ),
+        'the refusal was swallowed'
+      );
+      await element.updateComplete;
+
+      // The refusal is said inside the dialog, which stays open over the row.
+      expect(
+        dialog
+          .querySelector('[data-testid="override-form-error"]')!
+          .textContent!.replace(/\s+/g, ' ')
+      ).to.contain('effective_until must follow effective_from');
+      expect(
+        (element as unknown as { priceDialogOpen: boolean }).priceDialogOpen
+      ).to.equal(true);
+      expect(rows(element)).to.have.length(2);
+      expect(rows(element)[0].getAttribute('data-override-id')).to.equal(
+        'override-active-1'
+      );
+    });
+
     it('keeps the row and says why when the delete is refused', async () => {
       overrideWriteFailure = {
         status: 403,

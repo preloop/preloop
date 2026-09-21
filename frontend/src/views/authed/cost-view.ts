@@ -192,6 +192,9 @@ export class CostView extends AuthedElement {
   @state() private overrideRemoving = false;
   @state() private overrideActionError: string | null = null;
   @state() private overrideRemoved: ModelPriceOverride | null = null;
+  // What the override dialog itself has to say: a refusal or a validation
+  // complaint belongs in the modal, not in the page banner behind it.
+  @state() private priceFormError: string | null = null;
   // Reprice action (billing flag): re-derives cost for unpriced rows in the
   // selected window from stored tokens and current prices.
   @state() private repricing = false;
@@ -794,6 +797,7 @@ export class CostView extends AuthedElement {
     this.pendingBreakdowns = new Map();
     this.budgetContextReady = false;
     this.pricingContextReady = false;
+    this.overrideRemoved = null;
     void this.loadContext(generation);
     try {
       const summary = await getCostAnalyticsSummary({
@@ -1328,6 +1332,7 @@ export class CostView extends AuthedElement {
    */
   private openPriceOverrideEditor(override: ModelPriceOverride | null) {
     this.overrideActionError = null;
+    this.priceFormError = null;
     this.priceEditOverride = override;
     const text = (value: number | null | undefined): string =>
       typeof value === 'number' ? String(value) : '';
@@ -1393,8 +1398,9 @@ export class CostView extends AuthedElement {
   }
 
   private async savePriceOverride() {
+    this.priceFormError = null;
     if (!this.priceModelAlias) {
-      this.error = 'Enter a model alias for the price override.';
+      this.priceFormError = 'Enter a model alias for the price override.';
       return;
     }
     const input = this.priceInput !== '' ? Number(this.priceInput) : null;
@@ -1417,13 +1423,14 @@ export class CostView extends AuthedElement {
       prepaidTokens !== null ||
       prepaidCredit !== null;
     if (!hasPricing) {
-      this.error = 'Enter at least one pricing, discount, or prepaid value.';
+      this.priceFormError =
+        'Enter at least one pricing, discount, or prepaid value.';
       return;
     }
     const currency = (this.priceCurrency || 'USD').toUpperCase();
     const fxRate = this.priceFxRate !== '' ? Number(this.priceFxRate) : null;
     if (currency !== 'USD' && (!fxRate || fxRate <= 0)) {
-      this.error =
+      this.priceFormError =
         'Non-USD overrides need an FX rate to USD so costs can be recorded in USD.';
       return;
     }
@@ -1473,7 +1480,9 @@ export class CostView extends AuthedElement {
       this.prepaidCredit = '';
       await this.load();
     } catch (error) {
-      this.error =
+      // Said inside the dialog the reader is standing in: a page-level banner
+      // behind a modal is a message nobody reads.
+      this.priceFormError =
         error instanceof Error
           ? error.message
           : 'Failed to save price override';
@@ -3138,6 +3147,17 @@ export class CostView extends AuthedElement {
           Override model prices when your Enterprise account has negotiated
           rates, credits, or provider-specific billing terms.
         </p>
+        ${
+          this.priceFormError
+            ? html`<div
+                class="override-error"
+                role="alert"
+                data-testid="override-form-error"
+              >
+                ${this.priceFormError}
+              </div>`
+            : nothing
+        }
         <div class="form-grid">
           <sl-input
             label="Model alias"
@@ -3339,7 +3359,7 @@ export class CostView extends AuthedElement {
             .loading=${this.saving}
             @click=${async () => {
               await this.savePriceOverride();
-              if (!this.error) {
+              if (!this.priceFormError) {
                 this.priceDialogOpen = false;
               }
             }}
