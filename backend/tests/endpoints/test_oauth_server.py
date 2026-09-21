@@ -1,10 +1,13 @@
 """Tests for OAuth server endpoints (/oauth/token, /oauth/revoke)."""
 
+import json
 import time
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from contextlib import ExitStack
 from datetime import timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
+
+import pytest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -227,6 +230,38 @@ class TestTokenRevocation:
         assert response.status_code == 200
         assert response.json()["status"] == "revoked"
 
+    def test_cli_jwt_returns_unsupported_token_type(self, client):
+        """A CLI JWT is not an opaque token; revoke must not claim success."""
+        from preloop.api.auth.jwt import create_access_token
+
+        token = create_access_token(
+            {"sub": str(uuid4()), "scopes": [], "refresh": True},
+            expires_delta=timedelta(days=1),
+        )
+        mock_provider = MagicMock()
+        mock_provider.load_access_token = AsyncMock(return_value=None)
+        mock_crud = MagicMock()
+        mock_crud.get_by_token.return_value = None
+
+        with (
+            patch(
+                "preloop.api.endpoints.oauth_consent.get_oauth_provider",
+                return_value=mock_provider,
+            ),
+            patch(
+                "preloop.models.crud.oauth_mcp_token.crud_oauth_mcp_refresh_token",
+                mock_crud,
+            ),
+            patch("preloop.models.db.session.get_db_session") as mock_gen,
+        ):
+            mock_gen.side_effect = lambda: iter([MagicMock()])
+            response = client.post("/oauth/revoke", data={"token": token})
+
+        assert response.status_code == 400
+        body = response.json()
+        assert body["error"] == "unsupported_token_type"
+        assert "revoke-all" in body["error_description"]
+
 
 @pytest.mark.asyncio
 async def test_issue_jwt_tokens_uses_long_lived_cli_refresh_tokens():
@@ -234,11 +269,13 @@ async def test_issue_jwt_tokens_uses_long_lived_cli_refresh_tokens():
     db_code.user_id = uuid4()
 
     user = MagicMock()
-    captured_expiries = []
+    user.id = db_code.user_id
+    user.auth_generation = 3
+    captured = []
 
     def _capture_token(*args, **kwargs):
-        captured_expiries.append(kwargs.get("expires_delta"))
-        return f"token-{len(captured_expiries)}"
+        captured.append(kwargs)
+        return f"token-{len(captured)}"
 
     with (
         patch("preloop.models.crud.crud_user.get", return_value=user),
@@ -248,5 +285,134 @@ async def test_issue_jwt_tokens_uses_long_lived_cli_refresh_tokens():
         response = await _issue_jwt_tokens(MagicMock(), db_code)
 
     assert response.status_code == 200
-    assert captured_expiries[0] == timedelta(minutes=60)
-    assert captured_expiries[1] == timedelta(days=CLI_JWT_REFRESH_TOKEN_EXPIRE_DAYS)
+    assert captured[0]["expires_delta"] == timedelta(minutes=60)
+    assert captured[0]["auth_generation"] == 3
+    assert captured[1]["expires_delta"] == timedelta(
+        days=CLI_JWT_REFRESH_TOKEN_EXPIRE_DAYS
+    )
+    assert captured[1]["auth_generation"] == 3
+    assert captured[1]["data"]["refresh"] is True
+
+
+def _jwt_refresh_patches(user):
+    mock_crud = MagicMock()
+    mock_crud.get_by_token.return_value = None
+    stack = ExitStack()
+    stack.enter_context(
+        patch(
+            "preloop.models.crud.oauth_mcp_token.crud_oauth_mcp_refresh_token",
+            mock_crud,
+        )
+    )
+    stack.enter_context(
+        patch(
+            "preloop.models.db.session.get_db_session",
+            side_effect=lambda: iter([MagicMock()]),
+        )
+    )
+    stack.enter_context(patch("preloop.models.crud.crud_user.get", return_value=user))
+    return stack
+
+
+@pytest.mark.asyncio
+async def test_oauth_jwt_refresh_rejects_stale_generation():
+    from preloop.api.auth.jwt import create_access_token
+    from preloop.api.endpoints.oauth_server import _handle_refresh_token
+
+    user = MagicMock()
+    user.is_active = True
+    user.auth_generation = 2
+    user.id = uuid4()
+    token = create_access_token(
+        {"sub": str(user.id), "scopes": [], "refresh": True},
+        expires_delta=timedelta(days=1),
+        auth_generation=1,
+    )
+
+    with _jwt_refresh_patches(user):
+        response = await _handle_refresh_token(token, "cli")
+
+    assert response.status_code == 400
+    body = json.loads(response.body)
+    assert body["error"] == "invalid_grant"
+    assert "Session revoked" in body["error_description"]
+
+
+@pytest.mark.asyncio
+async def test_oauth_jwt_refresh_rejects_inactive_user():
+    from preloop.api.auth.jwt import create_access_token
+    from preloop.api.endpoints.oauth_server import _handle_refresh_token
+
+    user = MagicMock()
+    user.is_active = False
+    user.auth_generation = 0
+    user.id = uuid4()
+    token = create_access_token(
+        {"sub": str(user.id), "scopes": [], "refresh": True},
+        expires_delta=timedelta(days=1),
+        auth_generation=0,
+    )
+
+    with _jwt_refresh_patches(user):
+        response = await _handle_refresh_token(token, "cli")
+
+    assert response.status_code == 400
+    body = json.loads(response.body)
+    assert body["error"] == "invalid_grant"
+    assert "inactive" in body["error_description"].lower()
+
+
+@pytest.mark.asyncio
+async def test_oauth_jwt_refresh_rejects_missing_gen_after_bump():
+    import jwt as pyjwt
+    from preloop.api.auth.jwt import SECRET_KEY, ALGORITHM
+    from preloop.api.endpoints.oauth_server import _handle_refresh_token
+
+    user = MagicMock()
+    user.is_active = True
+    user.auth_generation = 1
+    user.id = uuid4()
+    token = pyjwt.encode(
+        {
+            "sub": str(user.id),
+            "scopes": [],
+            "refresh": True,
+            "exp": int((time.time()) + 86400),
+        },
+        SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
+
+    with _jwt_refresh_patches(user):
+        response = await _handle_refresh_token(token, "cli")
+
+    assert response.status_code == 400
+    body = json.loads(response.body)
+    assert body["error"] == "invalid_grant"
+    assert "Session revoked" in body["error_description"]
+
+
+@pytest.mark.asyncio
+async def test_oauth_jwt_refresh_remints_with_current_generation():
+    from preloop.api.auth.jwt import create_access_token, decode_token
+    from preloop.api.endpoints.oauth_server import _handle_refresh_token
+
+    user = MagicMock()
+    user.is_active = True
+    user.auth_generation = 4
+    user.id = uuid4()
+    token = create_access_token(
+        {"sub": str(user.id), "scopes": [], "refresh": True},
+        expires_delta=timedelta(days=365),
+        auth_generation=4,
+    )
+
+    with _jwt_refresh_patches(user):
+        response = await _handle_refresh_token(token, "cli")
+
+    assert response.status_code == 200
+    body = json.loads(response.body)
+    rotated = decode_token(body["refresh_token"])
+    assert rotated.refresh is True
+    assert rotated.gen == 4
+    assert rotated.session_started_at is None

@@ -105,12 +105,27 @@ preloop login --loopback             # Force local loopback OAuth
 preloop signup                       # Open the sign-up page, then authenticate the CLI
 preloop auth login                   # Same as preloop login
 preloop auth signup                  # Same as preloop signup
-preloop auth logout                  # Log out and clear credentials
+preloop auth logout                  # Clear local credentials
+preloop auth logout --all            # Revoke every session, then clear local credentials
 preloop auth status                  # Show authentication status
 preloop auth token                   # Print token for scripting
 ```
 
 The login flow resolves the API URL in this order: `--url`, `PRELOOP_URL`, config file, then the default `https://preloop.ai`.
+
+### Signing out and revoking a login
+
+`preloop auth logout` only deletes the tokens stored on this machine. Other
+CLI hosts and the console stay signed in. To revoke every JWT session for
+the signed-in user (this host, other hosts, and the console), run
+`preloop auth logout --all`. That calls `POST /auth/sessions/revoke-all`,
+which increments the user's `auth_generation` so every outstanding access
+and refresh token fails the next time it is used. API keys and runner
+tokens are not affected.
+
+If the server cannot be reached, `--all` still clears the local file and
+prints that other sessions remain valid. The console Account Security page
+has the same control as **Sign out everywhere**.
 
 ### Policy Management
 
@@ -196,7 +211,7 @@ preloop agents enroll openclaw --yes   # Skip the confirmation prompt
 preloop agents enroll hermes          # Apply managed enrollment for Hermes
 preloop agents enroll hermes --dry-run
 preloop agents install-runtime hermes # Install Hermes locally, then onboard
-preloop agents install-runtime openclaw -y
+preloop agents install-runtime openclaw -y --model openai/gpt-5.4
 preloop agents install-runtime hermes --skip-install -y  # Onboard an existing install
 preloop agents status openclaw         # Show local/remote managed state
 preloop agents status hermes
@@ -215,6 +230,14 @@ preloop agents sync                     # Alias for agents refresh
 `preloop agents discover` is the starting point for agent onboarding. In interactive terminals it can prompt to onboard newly discovered agents one by one. Use `--no-onboard-prompt` to keep discovery read-only in scripts/CI, or `--yes` to auto-onboard all new candidates. `preloop agents enroll openclaw` remains the explicit mutating command.
 
 Managed OpenClaw and Hermes onboarding creates a durable managed credential, backs up the local config, adds or replaces the local MCP config with a managed `preloop` entry, writes a `preloop.control.control_ws_url` contract plus the standalone runtime plugin package name (`preloop-hermes-plugin` or `@preloop-ai/openclaw-plugin`), and may also import existing MCP servers plus rewrite supported model settings to Preloop's OpenAI-compatible gateway. Use `--dry-run` to preview changes first. `preloop agents onboard --all -y` also ensures every discovered OpenClaw/Hermes runtime plugin available to the CLI is installed and verified, including agents that were already onboarded locally and would otherwise be skipped by the config rewrite step.
+
+`install-runtime hermes` and `install-runtime openclaw` use their official
+publisher installers to obtain the current runtime and its dependencies. They
+require Bash and curl on Linux/macOS; OpenClaw's installer also configures a
+user-writable npm prefix. Hermes' published PyPI package can lag current releases,
+so it is not used for fresh runtime installs. Pass `--model <gateway-alias>` to
+select an existing account model, including on a host with no agent configuration.
+Installation may need permission to install operating system dependencies.
 
 The CLI provisions credentials and configuration, and `preloop agents install-plugin <agent>` delegates to the runtime's own plugin marketplace installer. The runtime plugin, not the CLI, owns the long-lived WebSocket connection to `/api/v1/agents/control/ws`, reconnect/backoff, heartbeat and status events, capability advertisement, command receipt, and command execution or message injection into the active agent session. Runtime builds that have not loaded the native Agent Control plugin can ignore the control block safely; MCP firewall and gateway routing can still work, but Agent Control is not enabled. `preloop agents validate` reports `control_config_written`, `control_plugin_installed`, `control_plugin_verified`, and `control_channel_configured` separately so a metadata block is not mistaken for a live control channel.
 

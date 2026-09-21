@@ -532,10 +532,12 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	// to MCP-only hides the choice from the operator. Non-interactive runs
 	// (--yes / --dry-run / PRELOOP_CONFIRM) keep the degrade behavior; the
 	// preview note explains how to resolve it.
+	selectedOpenClawModel := strings.EqualFold(agent.Name, "OpenClaw") && strings.TrimSpace(opts.PreferredModel) != ""
+	managedGatewayEnabled := supportsManagedGateway(agent) || selectedOpenClawModel
 	gatewayHints := managedGatewayResolutionHints{
 		PreferredModelAlias: strings.TrimSpace(opts.PreferredModel),
 	}
-	if supportsManagedGateway(agent) &&
+	if managedGatewayEnabled &&
 		!opts.DryRun &&
 		!opts.AutoApprove &&
 		!opts.SkipConfirmation &&
@@ -550,7 +552,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		}
 		gatewayHints.PreferredProviderID = selectedProvider
 	}
-	if supportsManagedGateway(agent) {
+	if managedGatewayEnabled {
 		inferredForPicker, pickerErr := resolveManagedGatewayUpstreamWithHints(agent, gatewayHints)
 		if pickerErr != nil {
 			return pickerErr
@@ -581,7 +583,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	if staleEntries := detectStaleOpenClawPluginEntries(agent, plan.ManagedDocument); len(staleEntries) > 0 {
 		plan.Notes = append(plan.Notes, staleOpenClawPluginEntriesNote(staleEntries))
 	}
-	if supportsManagedGateway(agent) {
+	if managedGatewayEnabled {
 		upstream, upstreamErr := resolveManagedGatewayUpstreamWithHints(agent, gatewayHints)
 		if upstreamErr != nil {
 			return upstreamErr
@@ -727,7 +729,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 
 	var aiModelNotes []string
 	modelBindings := make([]managedAgentModelBindingSyncItem, 0)
-	if strings.EqualFold(strings.TrimSpace(agent.Name), "openclaw") {
+	if strings.EqualFold(strings.TrimSpace(agent.Name), "openclaw") && !selectedOpenClawModel {
 		parsed, err := parseOpenClawConfig(agent.ConfigPath)
 		if err != nil {
 			return err
@@ -770,7 +772,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	if err != nil {
 		return err
 	}
-	if supportsManagedGateway(agent) {
+	if managedGatewayEnabled {
 		upstream, upstreamErr := resolveManagedGatewayUpstreamWithHints(agent, gatewayHints)
 		if upstreamErr != nil {
 			return upstreamErr
@@ -1020,6 +1022,13 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	if err := saveLocalEnrollmentState(backupState); err != nil {
 		return err
 	}
+	if controlErr := managedRuntimeControlReadinessError(agent, validationResult); controlErr != nil {
+		validationResult["validation_passed"] = false
+		if _, err := validateManagedEnrollmentRecord(client, agent, enrollment.ID, validationResult, "validation_failed"); err != nil {
+			return fmt.Errorf("%w; could not save incomplete enrollment: %v", controlErr, err)
+		}
+		return controlErr
+	}
 
 	// Live validation runs by default whenever the agent kind supports it.
 	// It is suppressed only by an explicit ``--skip-live-validate`` (or
@@ -1051,7 +1060,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	// with the alias we are about to route (and offer to fix it) before the
 	// live check turns it into an opaque 403. Dry runs returned right after
 	// printing the plan, so only the confirmation flags decide interactivity.
-	if supportsManagedGateway(agent) && strings.TrimSpace(plan.ManagedModelAlias) != "" {
+	if managedGatewayEnabled && strings.TrimSpace(plan.ManagedModelAlias) != "" {
 		interactiveAllowlist := !opts.AutoApprove &&
 			!opts.SkipConfirmation &&
 			!nonInteractiveAutoConfirm() &&
@@ -1738,6 +1747,9 @@ func parseOpenClawMCP(path string) (map[string]MCPDef, error) {
 
 func parseOpenClawConfig(path string) (*openClawParsedConfig, error) {
 	document, err := loadJSON5Document(path)
+	if os.IsNotExist(err) {
+		document, err = map[string]interface{}{}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -4550,6 +4562,8 @@ func runtimeExecutableFallbackPaths(command string) []string {
 	}
 	candidates := []string{
 		filepath.Join(homeDir, ".local", "bin", command),
+		filepath.Join(homeDir, ".npm-global", "bin", command),
+		filepath.Join(homeDir, ".openclaw", "bin", command),
 		filepath.Join(homeDir, "Library", "pnpm", command),
 	}
 	if nvmMatches, globErr := filepath.Glob(
@@ -4629,6 +4643,10 @@ func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[s
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	args := agentControlPluginInstallArgs(installer, installTarget)
+	if strings.EqualFold(agent.Name, "OpenClaw") {
+		// Onboarding already authorizes installing the official Preloop package.
+		args = append(args, "--force", "--accept-capabilities")
+	}
 	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
 		cancel()
 		ctx, cancel = context.WithTimeout(context.Background(), 120*time.Second)
@@ -4779,7 +4797,7 @@ func installOpenClawPluginViaNpmTarball(
 	installCtx, installCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer installCancel()
 	output, err := exec.CommandContext(
-		installCtx, installerPath, "plugins", "install", tarballs[0],
+		installCtx, installerPath, "plugins", "install", tarballs[0], "--force", "--accept-capabilities",
 	).CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(output))
@@ -5205,20 +5223,77 @@ func managedAgentControlSidecarDir() (string, error) {
 	return filepath.Join(homeDir, ".preloop-agent-control"), nil
 }
 
+func managedRuntimeControlReadinessError(agent AgentConfig, validation map[string]interface{}) error {
+	if !isHermesAgent(agent) && !isOpenClawAgent(agent) {
+		return nil
+	}
+	if validation["control_plugin_verified"] == true && validation["control_channel_configured"] == true {
+		return nil
+	}
+	return fmt.Errorf("%s onboarding is incomplete: Agent Control is not ready (%v); fix the control plugin failure and rerun preloop agents onboard %s", resolveAgentDisplayName(agent), validation["control_plugin_verification"], shellQuoteAgentName(resolveAgentDisplayName(agent)))
+}
+
 func managedAgentControlSidecarPython() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	sidecarDir := filepath.Join(homeDir, ".preloop-agent-control")
+	venvPath := filepath.Join(sidecarDir, "venv")
+	venvPython := filepath.Join(venvPath, "bin", "python")
 	hermesPython := filepath.Join(homeDir, ".hermes", "hermes-agent", "venv", "bin", "python")
-	if info, err := os.Stat(hermesPython); err == nil && !info.IsDir() {
-		return hermesPython, nil
+	for _, candidate := range []string{venvPython, hermesPython} {
+		if managedSidecarDependenciesAvailable(ctx, candidate) {
+			return candidate, nil
+		}
 	}
 	pythonPath, err := exec.LookPath("python3")
 	if err != nil {
 		return "", fmt.Errorf("python3 is required for the managed Agent Control sidecar")
 	}
-	return pythonPath, nil
+	if managedSidecarDependenciesAvailable(ctx, pythonPath) {
+		return pythonPath, nil
+	}
+	// Keep runtime dependencies out of externally managed system Python. uv
+	// can create an isolated environment even when python3-venv/pip is absent.
+	if err := os.MkdirAll(sidecarDir, 0700); err != nil {
+		return "", err
+	}
+	uvPath, err := resolveRuntimeExecutable("uv")
+	if err != nil {
+		uvPath = filepath.Join(homeDir, ".hermes", "bin", "uv")
+		if _, err := os.Stat(uvPath); err != nil {
+			uvPath = filepath.Join(sidecarDir, "bin", "uv")
+			if _, err := os.Stat(uvPath); err != nil {
+				command := officialRuntimeInstallCommand("https://astral.sh/uv/install.sh", "")
+				cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+				cmd.Env = append(runtimeInstallerEnvironment(), "UV_INSTALL_DIR="+filepath.Dir(uvPath), "UV_NO_MODIFY_PATH=1")
+				if err := cmd.Run(); err != nil {
+					return "", fmt.Errorf("failed to install managed Agent Control dependencies: uv bootstrap failed: %w", err)
+				}
+			}
+		}
+	}
+	for _, args := range [][]string{
+		{"venv", "--python", pythonPath, venvPath},
+		{"pip", "install", "--python", venvPython, "aiohttp>=3.9,<4", "PyYAML>=6,<7"},
+	} {
+		command := exec.CommandContext(ctx, uvPath, args...)
+		command.Env = runtimeInstallerEnvironment()
+		if err := command.Run(); err != nil {
+			return "", fmt.Errorf("failed to prepare managed Agent Control environment: %w", err)
+		}
+	}
+	if !managedSidecarDependenciesAvailable(ctx, venvPython) {
+		return "", fmt.Errorf("managed Agent Control environment is missing aiohttp or PyYAML")
+	}
+	return venvPython, nil
+}
+
+func managedSidecarDependenciesAvailable(ctx context.Context, pythonPath string) bool {
+	return exec.CommandContext(ctx, pythonPath, "-c", "import aiohttp, yaml").Run() == nil
 }
 
 func stopManagedAgentControlSidecars(runtimeKey string) {
@@ -6599,6 +6674,12 @@ func gatewayAliasForAIModel(model aiModelResponse) string {
 }
 
 func loadAgentConfigDocument(agent AgentConfig) (map[string]interface{}, error) {
+	if allowsSynthesizedEmptyConfig(agent) {
+		if _, err := os.Stat(agent.ConfigPath); os.IsNotExist(err) {
+			return map[string]interface{}{}, nil
+		}
+	}
+
 	if strings.EqualFold(strings.TrimSpace(agent.Name), "openclaw") {
 		return loadJSON5Document(agent.ConfigPath)
 	}
@@ -7031,7 +7112,7 @@ func allowsSynthesizedEmptyConfig(agent AgentConfig) bool {
 		return true
 	}
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
-	case "opencode":
+	case "opencode", "openclaw":
 		return true
 	case "hermes":
 		return true

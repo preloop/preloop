@@ -144,7 +144,7 @@ preloop login --url http://localhost:3000
 preloop agents discover
 ```
 
-Console: `http://localhost:3000`. The CLI stores the instance URL in `~/.preloop/config.yaml`. Without `--url` or `PRELOOP_URL`, it defaults to `https://preloop.ai`.
+Console: `http://localhost:3000`. The CLI stores the instance URL in `~/.preloop/config.yaml`. Without `--url` or `PRELOOP_URL`, it defaults to `https://preloop.ai`. `preloop auth logout` clears this machine; `preloop auth logout --all` also revokes every other CLI and console session. Command list: [CLI authentication](cli/README.md#authentication).
 
 Public TLS, SMTP (approvals, invites, password resets), upgrades, and Kubernetes: [Install the OSS stack](https://docs.preloop.ai/self-hosting/installation/), [TLS](https://docs.preloop.ai/self-hosting/tls/), [Upgrading](https://docs.preloop.ai/upgrade/). Helm chart: [`helm/preloop`](helm/preloop) ([private cluster](helm/preloop/README.md#private-cluster)). Docker Compose and Helm are the supported install surfaces; this repository does not ship Terraform modules.
 
@@ -218,3 +218,7 @@ Windows CLI release binaries pass a required Defender scan and ten-minute observ
 Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 
 Execution environment profiles and hosted checkpoint recovery are documented in [Environments and recovery](docs/guide/flows/environments-and-recovery.md).
+
+Operators can enable verified SSH and GCP agent deployment from the console.
+See [remote agent deployment](docs/operations/agent-deployment.md) for host-key
+verification, dedicated cloud credentials, and proxy timeout configuration.

@@ -305,7 +305,11 @@ async def _issue_jwt_tokens(db, db_code):
     """Issue JWT access/refresh tokens for CLI usage."""
     from datetime import timedelta
 
-    from preloop.api.auth.jwt import create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
+    from preloop.api.auth.jwt import (
+        ACCESS_TOKEN_EXPIRE_MINUTES,
+        create_access_token,
+        user_auth_generation,
+    )
     from preloop.models.crud import crud_user
 
     user = crud_user.get(db, id=str(db_code.user_id))
@@ -313,15 +317,18 @@ async def _issue_jwt_tokens(db, db_code):
         return _oauth_error("invalid_grant", "User not found")
 
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    generation = user_auth_generation(user)
     access_token = create_access_token(
         data={"sub": str(user.id), "scopes": []},
         expires_delta=access_token_expires,
+        auth_generation=generation,
     )
 
     refresh_token_expires = timedelta(days=CLI_JWT_REFRESH_TOKEN_EXPIRE_DAYS)
     refresh_token = create_access_token(
         data={"sub": str(user.id), "scopes": [], "refresh": True},
         expires_delta=refresh_token_expires,
+        auth_generation=generation,
     )
 
     return JSONResponse(
@@ -450,35 +457,62 @@ async def _handle_refresh_token(refresh_token_str: str, client_id: str):
         from datetime import timedelta
 
         from preloop.api.auth.jwt import (
+            ACCESS_TOKEN_EXPIRE_MINUTES,
             create_access_token,
             decode_token,
-            ACCESS_TOKEN_EXPIRE_MINUTES,
+            reject_stale_token_generation,
+            user_auth_generation,
         )
+        from preloop.models.crud import crud_user
+        from preloop.models.db.session import get_db_session
 
         token_data = decode_token(refresh_token_str)
         if token_data.refresh and token_data.sub:
-            access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-            access_token = create_access_token(
-                data={"sub": token_data.sub, "scopes": token_data.scopes or []},
-                expires_delta=access_token_expires,
-            )
-            refresh_token_expires = timedelta(days=CLI_JWT_REFRESH_TOKEN_EXPIRE_DAYS)
-            new_refresh = create_access_token(
-                data={
-                    "sub": token_data.sub,
-                    "scopes": token_data.scopes or [],
-                    "refresh": True,
-                },
-                expires_delta=refresh_token_expires,
-            )
-            return JSONResponse(
-                {
-                    "access_token": access_token,
-                    "refresh_token": new_refresh,
-                    "token_type": "bearer",
-                    "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-                }
-            )
+            db = next(get_db_session())
+            try:
+                user = crud_user.get(db, id=token_data.sub)
+                if user is None or not user.is_active:
+                    return _oauth_error("invalid_grant", "User not found or inactive")
+                try:
+                    reject_stale_token_generation(user, token_data)
+                except HTTPException as exc:
+                    return _oauth_error("invalid_grant", str(exc.detail))
+
+                generation = user_auth_generation(user)
+                access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+                access_token = create_access_token(
+                    data={
+                        "sub": token_data.sub,
+                        "scopes": token_data.scopes or [],
+                    },
+                    expires_delta=access_token_expires,
+                    auth_generation=generation,
+                )
+                refresh_token_expires = timedelta(
+                    days=CLI_JWT_REFRESH_TOKEN_EXPIRE_DAYS
+                )
+                new_refresh = create_access_token(
+                    data={
+                        "sub": token_data.sub,
+                        "scopes": token_data.scopes or [],
+                        "refresh": True,
+                    },
+                    expires_delta=refresh_token_expires,
+                    auth_generation=generation,
+                )
+                return JSONResponse(
+                    {
+                        "access_token": access_token,
+                        "refresh_token": new_refresh,
+                        "token_type": "bearer",
+                        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+                    }
+                )
+            finally:
+                db.close()
+    except HTTPException:
+        # decode_token raises 401 for a token that is not one of ours.
+        return _oauth_error("invalid_grant", "Invalid refresh token")
     except Exception:
         # JWT refresh failed; return invalid_grant below.
         pass
@@ -577,6 +611,20 @@ async def revoke_token(token: str = Form(...)):
     except Exception:
         # Token may already be revoked or absent; RFC 7009 still returns success.
         pass
+
+    # A CLI JWT is not in the opaque tables. RFC 7009 §2.2.1 allows
+    # unsupported_token_type instead of a false "revoked".
+    try:
+        from preloop.api.auth.jwt import decode_token
+
+        decode_token(token)
+    except HTTPException:
+        pass
+    else:
+        return _oauth_error(
+            "unsupported_token_type",
+            "CLI login tokens are revoked with POST /auth/sessions/revoke-all",
+        )
 
     # Not found — still return success per RFC 7009
     return JSONResponse({"status": "revoked"})

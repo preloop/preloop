@@ -3,6 +3,7 @@ import sinon from 'sinon';
 import { Router } from './router';
 import {
   fetchWithAuth,
+  performLocalSignOut,
   invalidateApiCaches,
   AuthedElement,
   getFlowExecutions,
@@ -56,6 +57,30 @@ describe('api', () => {
     fetchStub.restore();
     routerGoStub.restore();
     localStorage.clear();
+  });
+
+  describe('performLocalSignOut', () => {
+    it('clears tokens, navigates home, and hits /logout', () => {
+      fetchStub.resolves(new Response(null, { status: 204 }));
+      const navigate = sinon.stub();
+      performLocalSignOut(navigate);
+
+      expect(localStorage.getItem('accessToken')).to.equal(null);
+      expect(localStorage.getItem('refreshToken')).to.equal(null);
+      expect(navigate).to.have.been.calledWith('/');
+      const logoutCall = fetchStub
+        .getCalls()
+        .find((c) => String(c.args[0]) === '/logout');
+      expect(logoutCall, 'expected GET /logout').to.exist;
+    });
+
+    it('does not throw when fetch returns a non-Promise', () => {
+      fetchStub.returns(undefined);
+      const navigate = sinon.stub();
+      expect(() => performLocalSignOut(navigate)).not.to.throw();
+      expect(localStorage.getItem('accessToken')).to.equal(null);
+      expect(navigate).to.have.been.calledWith('/');
+    });
   });
 
   describe('fetchWithAuth', () => {

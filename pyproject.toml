@@ -57,6 +57,7 @@ dependencies = [
     "bcrypt<5.1.0",
     "python-multipart>=0.0.6",
     "Pillow>=10.0.0",  # Avatar decode/resize/re-encode (preloop.services.avatar)
+    "asyncssh>=2.21.1,<3",  # Explicit host-key pinning for agent deployment
     "httpx[http2]>=0.24.1",  # http2 extra required for APNs push notifications
     "tenacity>=8.2.3",
     "python-json-logger>=2.0.0",

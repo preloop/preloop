@@ -1714,3 +1714,74 @@ func TestRunAgentsInstallPluginHermesRestartsGateway(t *testing.T) {
 		t.Fatalf("expected restart message, got %q", buf.String())
 	}
 }
+
+func TestResolveHermesPipPythonFollowsPipxLauncherSymlink(t *testing.T) {
+	skipNoShebangOnWindows(t, "pipx launcher symlink")
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	bin := filepath.Join(home, ".local", "bin")
+	venv := filepath.Join(home, ".local", "share", "pipx", "venvs", "hermes-agent")
+	for _, dir := range []string{bin, filepath.Join(venv, "bin")} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, content := range map[string]string{
+		filepath.Join(venv, "pyvenv.cfg"):     "home=/usr/bin",
+		filepath.Join(venv, "bin", "hermes"):  "#!/bin/sh\necho 'Install directory: /irrelevant/site-packages'\n",
+		filepath.Join(venv, "bin", "python3"): "#!/bin/sh\n",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(venv, "bin", "hermes"), filepath.Join(bin, "hermes")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	got, err := resolveHermesPipPython()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(filepath.Join(venv, "bin", "python3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("got %q, want venv interpreter %q", got, want)
+	}
+}
+
+func TestHermesPluginInstallUsesManagedUVWhenVenvHasNoPip(t *testing.T) {
+	skipNoShebangOnWindows(t, "Hermes managed uv")
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	t.Setenv("HERMES_HOME", "")
+	t.Setenv("PATH", t.TempDir())
+	bin := filepath.Join(home, ".hermes", "hermes-agent", "venv", "bin")
+	uvBin := filepath.Join(home, ".hermes", "bin")
+	for _, dir := range []string{bin, uvBin} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(bin, "python3"), []byte("#!/bin/sh\necho 'No module named pip' >&2\nexit 1\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	capture := filepath.Join(home, "uv-args")
+	if err := os.WriteFile(filepath.Join(uvBin, "uv"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > '"+capture+"'\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	installed, message := installHermesPluginViaPip("preloop-hermes-plugin", io.Discard)
+	if !installed {
+		t.Fatalf("uv fallback failed: %s", message)
+	}
+	args, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "pip\ninstall\n--python\n" + filepath.Join(bin, "python3") + "\n--upgrade\npreloop-hermes-plugin\n"
+	if string(args) != want {
+		t.Fatalf("uv must target Hermes' interpreter: %q", args)
+	}
+}

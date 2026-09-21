@@ -68,7 +68,7 @@ graph LR
 
 ## Preloop API Server (Main Repository)
 *   **Framework:** FastAPI-based RESTful API server.
-*   **Authentication:** JWT authentication and authorization.
+*   **Authentication:** JWT authentication and authorization. Per-user `auth_generation` (JWT `gen`) is incremented by `POST /auth/sessions/revoke-all` so every outstanding access and refresh token is rejected, including the WebSocket upgrade. See [Security](security.md#authentication--authorization).
 *   **MCP Server:** Includes integrated MCP tool endpoints under `/api/v1/mcp/` for direct communication with MCP clients over HTTP.
 *   **Validation:** Request validation using Pydantic models (defined in `preloop.models`).
 *   **Documentation:** Automatic API documentation with Swagger/ReDoc.

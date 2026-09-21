@@ -87,14 +87,19 @@ def test_request_deny_short_circuits_before_provider():
     assert "deny-pii" in exc_info.value.message
 
 
-def test_response_deny_after_provider_returns():
+@pytest.mark.parametrize("text_field", ["content", "reasoning_content", "reasoning"])
+def test_response_deny_after_provider_returns(text_field: str) -> None:
     service = _service()
     upstream = {
         "id": "chatcmpl_1",
         "created": 1,
         "choices": [
             {
-                "message": {"role": "assistant", "content": "Email bob@example.com"},
+                "message": {
+                    "role": "assistant",
+                    "content": "VALID",
+                    text_field: "Email bob@example.com",
+                },
                 "finish_reason": "stop",
             }
         ],

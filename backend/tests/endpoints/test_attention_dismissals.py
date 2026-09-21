@@ -64,6 +64,26 @@ def test_dismissal_is_created_and_listed(client, db_session, test_user):
     assert listed["items"][0]["item_id"] == "agent:agent-1"
 
 
+def test_model_item_id_with_slashes_can_be_created_and_deleted(client):
+    """Model aliases containing slashes survive the dismissal path."""
+    item_id = "model:openai-compatible/qwen2.5-coder"
+    response = client.put(
+        f"{DISMISSALS}/{item_id}",
+        json={
+            "fingerprint": "last:2026-09-12T09:44:03Z",
+            "reason": "fixed",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["item_id"] == item_id
+
+    delete_response = client.delete(f"{DISMISSALS}/{item_id}")
+
+    assert delete_response.status_code == 204
+    assert client.get(DISMISSALS).json() == {"items": [], "total": 0}
+
+
 def test_re_dismissing_replaces_the_row(client, db_session, test_user):
     """A changed fingerprint updates the dismissal instead of duplicating it."""
     client.put(

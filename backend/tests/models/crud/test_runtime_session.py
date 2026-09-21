@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
+import pytest
+
 from preloop.models.crud.runtime_session import (
     _latest_gateway_usage_for_sessions,
     _runtime_session_columns_cache,
@@ -409,3 +411,47 @@ def test_a_held_session_reports_the_hold_in_its_summary(
 
     assert summary["legal_hold"] is True
     assert [item["legal_hold"] for item in listed["items"]] == [True]
+
+
+@pytest.mark.parametrize(
+    "summary_available,parent_available", [(False, False), (True, False), (False, True)]
+)
+def test_session_list_and_detail_support_unmigrated_optional_columns(
+    db_session, create_account, monkeypatch, summary_available, parent_available
+) -> None:
+    """PostgreSQL cannot GROUP BY the NULL fallback for an absent column."""
+    account = create_account()
+    session_id = uuid4()
+    db_session.add(
+        RuntimeSession(
+            id=session_id,
+            account_id=account.id,
+            session_source_type="openclaw",
+            session_source_id=str(session_id),
+            session_reference=str(session_id),
+            runtime_principal_type="openclaw",
+            runtime_principal_id=str(session_id),
+            started_at=datetime.now(UTC),
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        crud_runtime_session, "_summary_columns_available", lambda db: summary_available
+    )
+    monkeypatch.setattr(
+        crud_runtime_session,
+        "_parent_session_id_available",
+        lambda db: parent_available,
+    )
+    listed = crud_runtime_session.list_account_sessions(
+        db_session, account_id=str(account.id)
+    )
+    detail = crud_runtime_session.get_account_session_summary(
+        db_session, account_id=str(account.id), runtime_session_id=str(session_id)
+    )
+    assert listed["total"] == 1
+    assert detail is not None
+    assert detail["id"] == str(session_id)
+    assert detail["parent_session_id"] is None
+    if not summary_available:
+        assert detail["summary"] is None

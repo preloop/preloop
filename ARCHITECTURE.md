@@ -102,7 +102,7 @@ graph LR
 | [Data model](docs/architecture/data-model.md) | `preloop.models`, PostgreSQL + PGVector, schema, and backend project layout. |
 | [MCP](docs/architecture/mcp.md) | FastMCP integration, dynamic tool filtering, and the HTTP MCP request path. |
 | [Realtime](docs/architecture/realtime.md) | Unified WebSocket, MessageRouter topics, and account-scoped pub/sub. |
-| [Security](docs/architecture/security.md) | Auth and tenancy, redaction, secret custody, audit hash chain, record signing, security-screen scoring, and `preloop.security`. |
+| [Security](docs/architecture/security.md) | Auth and tenancy, per-user JWT `auth_generation` / revoke-all, redaction, secret custody, audit hash chain, record signing, security-screen scoring, and `preloop.security`. |
 | [Decisions](docs/architecture/decisions.md) | Why FastAPI, Python, and PostgreSQL, and how the stack is deployed (Compose, Helm, service roles). |
 | [Flows](docs/architecture/flows.md) | Event-driven agentic flows, remote runners, matrix/batch fan-out, delegation and execution trees, label-based model routing, eval artifacts, evidence packs, prompt `truncate(N)`, and the chunked agent launch-payload environment. |
 
@@ -250,3 +250,14 @@ with a stdin provider to keep prompts outside argv. Execution-scoped credentials
 can request native approvals only for their own active flow session. See the
 [adapter guide](runtime-plugins/harness-preloop/README.md) for version pins,
 capability limits, and publication order.
+
+### Remote agent deployment
+
+The optional agent-deployment API authorizes account owners and administrators,
+then runs CLI installation and live onboarding through a host-key-pinned SSH
+connection. The GCP adapter creates a uniquely named VM without cloud identity,
+reads its host key through the authenticated Compute API, and removes resources
+on failure. Before returning success, the API checks the account's registered
+agent and selected model binding through CRUD. Credentials stay in request
+memory; audit events contain deployment identifiers and outcomes. See
+[operator configuration](docs/operations/agent-deployment.md).

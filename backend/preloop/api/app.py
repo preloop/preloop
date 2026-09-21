@@ -813,6 +813,7 @@ def _register_control_plane_routes(
         features,
         issues,
         kill_switch,
+        agent_deployments,
         mcp_servers,
         notification_preferences,
         operator_notes,
@@ -926,6 +927,11 @@ def _register_control_plane_routes(
         approval_bypass.router,
         prefix="/api/v1",
         tags=["Approval Bypasses"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    app.include_router(
+        agent_deployments.router,
+        prefix="/api/v1",
         dependencies=[Depends(get_current_active_user)],
     )
     app.include_router(

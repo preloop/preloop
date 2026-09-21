@@ -268,6 +268,33 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/sessions/revoke-all:
+    post:
+      tags:
+      - Auth
+      summary: Revoke All Sessions
+      description: 'Revoke every JWT session for the signed-in user.
+
+
+        Increments ``auth_generation`` so every outstanding access and refresh
+
+        token (including this request''s) fails the generation check on the next
+
+        use. API keys and runner tokens are unchanged.'
+      operationId: revoke_all_sessions_api_v1_auth_sessions_revoke_all_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: integer
+                type: object
+                title: Response Revoke All Sessions Api V1 Auth Sessions Revoke All
+                  Post
+      security:
+      - OAuth2PasswordBearer: []
   /api/v1/auth/users/me:
     get:
       tags:
@@ -4435,6 +4462,61 @@ paths:
                 type: array
                 title: Response Revoke All Bypasses Api V1 Approval Bypasses Revoke
                   All Post
+      security:
+      - bearerAuth: []
+  /api/v1/agent-deployments/capabilities:
+    get:
+      tags:
+      - Agent deployment
+      summary: Capabilities
+      description: Tell the console which backends the operator actually enabled.
+      operationId: capabilities_api_v1_agent_deployments_capabilities_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: boolean
+                type: object
+                title: Response Capabilities Api V1 Agent Deployments Capabilities
+                  Get
+      security:
+      - bearerAuth: []
+  /api/v1/agent-deployments:
+    post:
+      tags:
+      - Agent deployment
+      summary: Deploy Agent
+      description: 'Install and verify remotely while offloading short CRUD transactions.
+
+
+        SSH credentials remain in request memory. A revocable bootstrap key allows
+
+        enrollment to mint the runtime''s own credentials on the verified target.'
+      operationId: deploy_agent_api_v1_agent_deployments_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentDeploymentRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Deploy Agent Api V1 Agent Deployments Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
   /api/v1/account/kill-switch/status:
@@ -13955,6 +14037,94 @@ components:
       - transcript
       title: AgentControlVoiceTranscriptRequest
       description: Mobile-friendly request for routing a spoken prompt transcript.
+    AgentDeploymentRequest:
+      properties:
+        idempotency_key:
+          type: string
+          format: uuid
+          title: Idempotency Key
+        runtime:
+          type: string
+          enum:
+          - hermes
+          - openclaw
+          title: Runtime
+        model_id:
+          type: string
+          format: uuid
+          title: Model Id
+        target:
+          type: string
+          enum:
+          - ssh
+          - gcp
+          title: Target
+        ssh:
+          anyOf:
+          - $ref: '#/components/schemas/AgentDeploymentSSH'
+          - type: 'null'
+        compute_size:
+          type: string
+          enum:
+          - standard
+          - performance
+          - high-mem
+          title: Compute Size
+          default: standard
+      type: object
+      required:
+      - idempotency_key
+      - runtime
+      - model_id
+      - target
+      title: AgentDeploymentRequest
+      description: A single deployment; reuse its idempotency key when retrying.
+    AgentDeploymentSSH:
+      properties:
+        host:
+          type: string
+          maxLength: 253
+          minLength: 1
+          title: Host
+        port:
+          type: integer
+          maximum: 65535.0
+          minimum: 1.0
+          title: Port
+          default: 22
+        username:
+          type: string
+          maxLength: 64
+          minLength: 1
+          pattern: ^[a-zA-Z_][a-zA-Z0-9_-]*$
+          title: Username
+        host_key:
+          type: string
+          maxLength: 16384
+          minLength: 20
+          title: Host Key
+        password:
+          anyOf:
+          - type: string
+            format: password
+            writeOnly: true
+          - type: 'null'
+          title: Password
+        private_key:
+          anyOf:
+          - type: string
+            format: password
+            writeOnly: true
+          - type: 'null'
+          title: Private Key
+      type: object
+      required:
+      - host
+      - username
+      - host_key
+      title: AgentDeploymentSSH
+      description: An explicit SSH destination and its independently verified host
+        key.
     AgentNameExtractionRequest:
       properties:
         identity_content:
@@ -24823,10 +24993,12 @@ components:
           - type: 'null'
           title: Instance Id
         host_exec_profiles:
-          items:
-            $ref: '#/components/schemas/HostExecProfileAdvertisement'
-          type: array
-          maxItems: 64
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/HostExecProfileAdvertisement'
+            type: array
+            maxItems: 64
+          - type: 'null'
           title: Host Exec Profiles
         concurrency:
           anyOf:
