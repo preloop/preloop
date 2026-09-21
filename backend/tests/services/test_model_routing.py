@@ -2021,3 +2021,53 @@ class TestModelByLabel:
         )
         assert [entry.label for _, entry in pairs] == ["first", "second"]
         assert [rule.id for rule, _ in pairs] == ["by-label-1", "by-label-2"]
+
+    def test_a_harness_override_is_refused_on_a_label_rule(self):
+        """The short form is model and effort only.
+
+        Switching harness per label is what ``model_routing`` is for, and a
+        field the console cannot edit is a field the next console save would
+        quietly drop.
+        """
+        with pytest.raises(ValidationError):
+            ModelByLabelConfig.model_validate(
+                [{"label": "complexity:high", "agent_type": "opencode"}]
+            )
+
+    def test_an_explicit_rule_named_like_a_label_rule_keeps_its_own_identity(
+        self, db_session: Session, test_user: User
+    ):
+        """``by-label-1`` is a legal id for a hand-written rule.
+
+        Attribution is by object identity, so a collision cannot hand an
+        explicit rule somebody else's label or, worse, a reasoning effort it
+        never asked for.
+        """
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        fast = _usable_model(db_session, test_user.account_id, name="Fast")
+        big = _usable_model(db_session, test_user.account_id, name="Big")
+        flow = _flow(
+            db_session,
+            test_user,
+            ai_model_id=default.id,
+            routing=_policy(
+                _rule("by-label-1", any_labels=["urgent"], model_id=fast.id)
+            ),
+            extra_config={
+                "model_by_label": [
+                    {
+                        "label": "complexity:high",
+                        "ai_model_id": str(big.id),
+                        "reasoning_effort": "high",
+                    }
+                ]
+            },
+        )
+        record = prepare_execution_routing(
+            db_session, flow, {"payload": {"labels": ["urgent"]}}
+        )[ROUTING_RECORD_KEY]
+        assert record["ai_model_id"] == str(fast.id)
+        assert record["source"] == "rule"
+        assert record["rule_id"] == "by-label-1"
+        assert "matched_label" not in record
+        assert "reasoning_effort" not in record

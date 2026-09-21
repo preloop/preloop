@@ -45,7 +45,9 @@ AGENT_CONFIG_BY_LABEL_KEY = "model_by_label"
 
 #: Prefix for the rule id a desugared label rule reports on the execution.
 #: It is not a stored id: ``model_by_label`` entries are keyed by their label.
-BY_LABEL_RULE_PREFIX = "by-label:"
+#: An explicit ``model_routing`` rule may legitimately carry the same id, so
+#: a match is attributed by object identity rather than by this string.
+BY_LABEL_RULE_PREFIX = "by-label-"
 
 # Keys that must never be treated as authorized model/harness overrides when
 # they arrive on an untrusted event body (webhook, tracker, or an
@@ -157,7 +159,7 @@ def by_label_rules(
 
     Raises:
         ModelRoutingError: An entry has nothing to run on, because it names
-            neither a model nor a harness and the flow selected none either.
+            no model and the flow selected none either.
     """
     if config is None:
         return []
@@ -166,20 +168,19 @@ def by_label_rules(
     desugared: List[tuple[ModelRoutingRule, ModelByLabelRule]] = []
     for index, entry in enumerate(config.root, start=1):
         model_id = entry.ai_model_id or default_model_id
-        agent_type = entry.agent_type or default_type
-        if not model_id or not agent_type:
+        if not model_id or not default_type:
             raise ModelRoutingError(
                 f"model_by_label rule '{entry.label}' cannot run: it names "
-                "no model or harness and the flow has no selected model and "
-                "harness to fall back on"
+                "no model and the flow has no selected model and harness to "
+                "fall back on"
             )
         desugared.append(
             (
                 ModelRoutingRule(
-                    id=f"by-label-{index}",
+                    id=f"{BY_LABEL_RULE_PREFIX}{index}",
                     labels={"any": [entry.label]},
                     ai_model_id=model_id,
-                    agent_type=agent_type,
+                    agent_type=default_type,
                 ),
                 entry,
             )
@@ -403,21 +404,11 @@ def validate_stored_model_routing(
         # not stored yet: only the targets an entry names itself can be
         # checked here, and resolve time checks the rest.
         for entry in by_label.root:
-            if entry.agent_type:
-                _require_environment_profile_harness(agent_config, entry.agent_type)
             if entry.ai_model_id is None:
                 continue
-            if entry.agent_type:
-                load_usable_model(
-                    db,
-                    ai_model_id=entry.ai_model_id,
-                    agent_type=entry.agent_type,
-                    account_id=account_id,
-                )
-                continue
-            # No harness named, so harness fit is the flow's business at
-            # resolve time. Ownership is still checked here: a model id from
-            # another account must never be storable.
+            # A label rule names no harness, so harness fit is the flow's
+            # business at resolve time. Ownership is checked here: a model id
+            # from another account must never be storable.
             model = crud_ai_model.get(db, id=_model_uuid(entry.ai_model_id))
             if not _account_can_use_model(model, account_id):
                 raise ModelRoutingError(f"ai_model_id '{entry.ai_model_id}' not found")
@@ -625,7 +616,9 @@ def resolve_routing_record(
     # first because they are the richer shape an operator reached for on
     # purpose; the short label rules follow in stored order (#851).
     label_pairs = by_label_rules(parse_model_by_label(agent_config), flow)
-    label_entries = {rule.id: entry for rule, entry in label_pairs}
+    # Keyed by identity, not by id: an operator may name an explicit rule
+    # "by-label-1", and it must not inherit a label rule's effort (#851).
+    label_entries = {id(rule): entry for rule, entry in label_pairs}
     ordered_rules = list(config.rules if config else []) + [
         rule for rule, _ in label_pairs
     ]
@@ -638,7 +631,7 @@ def resolve_routing_record(
             account_id=account_id,
         )
         _require_environment_profile_harness(agent_config, matched.agent_type)
-        entry = label_entries.get(matched.id)
+        entry = label_entries.get(id(matched))
         if entry is None:
             return _record(
                 ai_model_id=matched.ai_model_id,

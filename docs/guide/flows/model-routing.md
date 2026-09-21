@@ -53,7 +53,7 @@ The list lives at `agent_config.model_by_label` and is empty by default:
 ]
 ```
 
-First match wins, and the explicit `model_routing` rules above are evaluated first, so a detailed rule always beats the short form. A label that appears twice is rejected on save, because the second copy could never apply. The reasoning effort is `low`, `medium` or `high`; Codex receives it as `model_reasoning_effort` in its `config.toml`, and a harness that does not accept the value ignores it rather than failing the run.
+The short form carries a model and an effort and nothing else. Switching harness per label is what the routing rules above are for. First match wins, and the explicit `model_routing` rules are evaluated first, so a detailed rule always beats the short form. A label that appears twice is rejected on save, because the second copy could never apply. The reasoning effort is `low`, `medium` or `high`; Codex receives it as `model_reasoning_effort` in its `config.toml`, and a harness that does not accept the value ignores it rather than failing the run.
 
 When a label rule decides the run, the execution records the matched label, the rule id and the effort alongside the model and harness, and the execution log carries a `model_by_label` milestone. Labels still come only from the trusted label snapshot, so a webhook body cannot introduce a rule or select one that is not on the issue.
 

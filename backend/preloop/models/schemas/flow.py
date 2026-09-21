@@ -973,6 +973,10 @@ class ModelByLabelRule(BaseModel):
     from the console: "issues labelled complexity:high run on the big model,
     thinking hard". It desugars into the same ordered rules engine as
     ``model_routing``, so the two can never disagree about a label.
+
+    Deliberately model and effort only. Switching harness per label is what
+    ``model_routing`` is for, and a field the console cannot edit is a field
+    the next console save would quietly drop.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -985,12 +989,6 @@ class ModelByLabelRule(BaseModel):
     ai_model_id: Optional[UUID] = Field(
         default=None,
         description="Model to run on. Omit to keep the flow's selected model.",
-    )
-    agent_type: Optional[str] = Field(
-        default=None,
-        min_length=1,
-        max_length=64,
-        description="Harness to run on. Omit to keep the flow's selected harness.",
     )
     reasoning_effort: Optional[Literal["low", "medium", "high"]] = Field(
         default=None,
@@ -1009,10 +1007,9 @@ class ModelByLabelRule(BaseModel):
     @model_validator(mode="after")
     def require_an_override(self) -> "ModelByLabelRule":
         """A rule that changes nothing is a rule somebody mis-saved."""
-        if not self.ai_model_id and not self.agent_type and not self.reasoning_effort:
+        if not self.ai_model_id and not self.reasoning_effort:
             raise ValueError(
-                "each model_by_label rule must set ai_model_id, agent_type "
-                "and/or reasoning_effort"
+                "each model_by_label rule must set ai_model_id and/or reasoning_effort"
             )
         return self
 
