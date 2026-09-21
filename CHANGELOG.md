@@ -24,6 +24,16 @@ avatars.
 
 ### Added
 
+- Model by label: `agent_config.model_by_label` maps a complexity label to a
+  model and a reasoning effort, first match wins, evaluated at trigger time
+  after the existing `model_routing` rules. A rule that only names an effort
+  keeps the flow's model and asks it to think harder; Codex receives the
+  choice as `model_reasoning_effort` in `config.toml`. The flow form in the
+  console edits the list, the chosen label and effort are logged on the
+  execution, and a label that arrives on an untrusted webhook payload can
+  never introduce a rule of its own. The list is empty by default, so
+  existing flows route exactly as before.
+
 - Agent harnesses are told the context window and output ceiling of the
   model they run on. Codex gets `model_context_window` and
   `model_max_output_tokens` in `config.toml`, OpenCode gets
@@ -1017,6 +1027,14 @@ avatars.
   `/console/settings/emergency`, off the billing surface.
 
 ### Changed
+
+- The issue implementation preset asks for a commit at each milestone, with
+  the first one within 20 minutes of the first edit and WIP commits
+  explicitly allowed, so a run that is cut short keeps the work it already
+  did instead of leaving an empty branch. Phase 1 now asks the agent to read
+  by range with `grep -n` and `sed -n` instead of reading whole files, which
+  leaves context for the edits. Flows derived from this preset are flagged
+  with `preset_update_available`.
 
 - Enable the Policies console by default for users with policy permissions.
   Operators can still hide it with `PRELOOP_POLICIES_CONSOLE=false`.

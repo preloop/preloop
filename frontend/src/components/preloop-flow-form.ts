@@ -392,6 +392,16 @@ export class PreloopFlowForm extends LitElement {
     agent_type: string;
   }> = [];
 
+  // The short label-to-model shape (agent_config.model_by_label). Held apart
+  // from routingRules because it is stored apart: one label, one model, one
+  // effort, which is what most flows actually want.
+  @state()
+  private labelRules: Array<{
+    label: string;
+    ai_model_id: string;
+    reasoning_effort: string;
+  }> = [];
+
   // The custom container image as typed. Undefined means "not touched on this
   // form", in which case the saved value is read back from agent_config. This
   // keeps a typed draft when the runner selection temporarily hides the
@@ -641,6 +651,7 @@ export class PreloopFlowForm extends LitElement {
           this.targetAgentId = cfg.target_agent_id || '';
         }
         this.syncRoutingRulesFromConfig(cfg);
+        this.syncLabelRulesFromConfig(cfg);
       }
 
       // Determine trigger type and load tracker scope data
@@ -1263,6 +1274,197 @@ export class PreloopFlowForm extends LitElement {
     });
   }
 
+  private syncLabelRulesFromConfig(config: unknown) {
+    const cfg =
+      config && typeof config === 'object'
+        ? (config as Record<string, unknown>)
+        : {};
+    const stored = cfg.model_by_label;
+    const rules = Array.isArray(stored) ? stored : [];
+    this.labelRules = rules
+      .filter((rule): rule is Record<string, unknown> =>
+        Boolean(rule && typeof rule === 'object')
+      )
+      .map((rule) => ({
+        label: typeof rule.label === 'string' ? rule.label : '',
+        ai_model_id:
+          typeof rule.ai_model_id === 'string' ? rule.ai_model_id : '',
+        reasoning_effort:
+          typeof rule.reasoning_effort === 'string'
+            ? rule.reasoning_effort
+            : '',
+      }));
+  }
+
+  private normalizedLabelRules() {
+    const seen = new Set<string>();
+    return this.labelRules.map((rule, index) => {
+      const label = rule.label.trim();
+      if (!label) {
+        throw new Error(
+          `Label rule ${index + 1} needs a label. Complete it or remove it before saving.`
+        );
+      }
+      if (!rule.ai_model_id && !rule.reasoning_effort) {
+        throw new Error(
+          `Label rule "${label}" changes nothing. Pick a model, an effort, or remove the rule.`
+        );
+      }
+      if (seen.has(label)) {
+        throw new Error(
+          `Label "${label}" appears twice. Only the first rule would ever apply.`
+        );
+      }
+      seen.add(label);
+      const normalized: Record<string, string> = { label };
+      if (rule.ai_model_id) {
+        normalized.ai_model_id = rule.ai_model_id;
+      }
+      if (rule.reasoning_effort) {
+        normalized.reasoning_effort = rule.reasoning_effort;
+      }
+      return normalized;
+    });
+  }
+
+  private addLabelRule() {
+    this.labelRules = [
+      ...this.labelRules,
+      { label: '', ai_model_id: '', reasoning_effort: '' },
+    ];
+  }
+
+  private removeLabelRule(index: number) {
+    this.labelRules = this.labelRules.filter((_, i) => i !== index);
+  }
+
+  private moveLabelRule(index: number, delta: number) {
+    const target = index + delta;
+    if (target < 0 || target >= this.labelRules.length) {
+      return;
+    }
+    const rules = [...this.labelRules];
+    const [moved] = rules.splice(index, 1);
+    rules.splice(target, 0, moved);
+    this.labelRules = rules;
+  }
+
+  private updateLabelRule(
+    index: number,
+    field: 'label' | 'ai_model_id' | 'reasoning_effort',
+    value: string
+  ) {
+    this.labelRules = this.labelRules.map((rule, i) =>
+      i === index ? { ...rule, [field]: value } : rule
+    );
+  }
+
+  private renderModelByLabelEditor(
+    selectableModels: Array<{ id: string; name: string }>
+  ) {
+    return html`
+      <div data-label-routing-editor>
+        <h5
+          style="font-weight: 600; color: var(--sl-color-neutral-700); margin: var(--sl-spacing-medium) 0 var(--sl-spacing-x-small) 0;"
+        >
+          Model by label
+        </h5>
+        <p class="routing-help">
+          The short form: one label, one model, one reasoning effort. The first
+          rule whose label is on the issue wins, and a rule that sets only an
+          effort keeps this flow's model and asks it to think harder. Routing
+          rules above are evaluated first.
+        </p>
+        <div class="routing-rules">
+          ${this.labelRules.map(
+            (rule, index) => html`
+              <div class="routing-rule" data-label-rule=${index}>
+                <div class="routing-rule-header">
+                  <sl-input
+                    label="Label"
+                    size="small"
+                    placeholder="e.g. complexity:high"
+                    .value=${rule.label}
+                    @sl-input=${(e: Event) =>
+                      this.updateLabelRule(
+                        index,
+                        'label',
+                        (e.target as HTMLInputElement).value
+                      )}
+                    help-text="Matched against the issue's current labels"
+                  ></sl-input>
+                  <div class="routing-rule-actions">
+                    <sl-button
+                      size="small"
+                      variant="text"
+                      ?disabled=${index === 0}
+                      @click=${() => this.moveLabelRule(index, -1)}
+                    >
+                      Up
+                    </sl-button>
+                    <sl-button
+                      size="small"
+                      variant="text"
+                      ?disabled=${index === this.labelRules.length - 1}
+                      @click=${() => this.moveLabelRule(index, 1)}
+                    >
+                      Down
+                    </sl-button>
+                    <sl-button
+                      size="small"
+                      variant="text"
+                      @click=${() => this.removeLabelRule(index)}
+                    >
+                      Remove
+                    </sl-button>
+                  </div>
+                </div>
+                <sl-select
+                  label="Model"
+                  placeholder="This flow's model"
+                  .value=${rule.ai_model_id || ''}
+                  @sl-change=${(e: Event) =>
+                    this.updateLabelRule(
+                      index,
+                      'ai_model_id',
+                      (e.target as HTMLSelectElement).value
+                    )}
+                >
+                  <sl-option value="">This flow's model</sl-option>
+                  ${selectableModels.map(
+                    (m) => html`<sl-option .value=${m.id}>${m.name}</sl-option>`
+                  )}
+                </sl-select>
+                <sl-select
+                  label="Reasoning effort"
+                  .value=${rule.reasoning_effort || ''}
+                  @sl-change=${(e: Event) =>
+                    this.updateLabelRule(
+                      index,
+                      'reasoning_effort',
+                      (e.target as HTMLSelectElement).value
+                    )}
+                >
+                  <sl-option value="">Model default</sl-option>
+                  <sl-option value="low">Low</sl-option>
+                  <sl-option value="medium">Medium</sl-option>
+                  <sl-option value="high">High</sl-option>
+                </sl-select>
+              </div>
+            `
+          )}
+        </div>
+        <sl-button
+          size="small"
+          data-add-label-rule
+          @click=${() => this.addLabelRule()}
+        >
+          Add label rule
+        </sl-button>
+      </div>
+    `;
+  }
+
   private normalizedRoutingRules() {
     return this.routingRules.map((rule, index) => {
       const anyLabels = this.splitLabelList(rule.anyLabels);
@@ -1482,6 +1684,12 @@ export class PreloopFlowForm extends LitElement {
       config.model_routing = { version: 1, rules };
     } else {
       delete config.model_routing;
+    }
+    const labelRules = this.normalizedLabelRules();
+    if (labelRules.length > 0) {
+      config.model_by_label = labelRules;
+    } else {
+      delete config.model_by_label;
     }
     return config;
   }
@@ -2050,6 +2258,7 @@ export class PreloopFlowForm extends LitElement {
     };
     this.triggerType = 'webhook';
     this.routingRules = [];
+    this.labelRules = [];
     this.capturePresetSnapshot();
   }
 
@@ -2083,6 +2292,7 @@ export class PreloopFlowForm extends LitElement {
       is_enabled: true,
     };
     this.syncRoutingRulesFromConfig(preset.agent_config);
+    this.syncLabelRulesFromConfig(preset.agent_config);
     this.sourcePresetId = preset.id;
     await this._autoPopulatePresetFields();
     this.capturePresetSnapshot();
@@ -3134,6 +3344,7 @@ export class PreloopFlowForm extends LitElement {
           </div>
 
           ${this.renderModelRoutingEditor(selectableModels)}
+          ${this.renderModelByLabelEditor(selectableModels)}
           ${this.renderRunnerPoolField()} ${this.renderHostExecProfileField()}
           ${this.renderCustomImageField()}
 
