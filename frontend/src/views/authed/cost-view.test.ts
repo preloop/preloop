@@ -25,6 +25,9 @@ describe('CostView', () => {
   let overridePayload: Record<string, unknown>[];
   let overrideWrites: { url: string; method: string; body: unknown }[];
   let overrideWriteFailure: { status: number; detail: string } | null;
+  // Holds the list GET open, so a test can choose when an in-flight re-read
+  // lands relative to what the reader does next.
+  let holdOverrideList: Promise<void> | null = null;
 
   // One override per shape worth reading: a live negotiated rate on a model
   // the console knows, and a switched-off interim $0 row on one it does not.
@@ -147,6 +150,7 @@ describe('CostView', () => {
     overridePayload = [];
     overrideWrites = [];
     overrideWriteFailure = null;
+    holdOverrideList = null;
     onReprice = null;
     jobStatus = {
       id: 'job-1',
@@ -212,6 +216,7 @@ describe('CostView', () => {
               headers: { 'Content-Type': 'application/json' },
             });
           }
+          if (holdOverrideList) await holdOverrideList;
           return new Response(
             JSON.stringify(
               overridesGated
@@ -1444,6 +1449,37 @@ describe('CostView', () => {
       expect(
         (writesOfKind('PUT')[0].body as Record<string, unknown>).notes
       ).to.equal('Renegotiated by another operator.');
+    });
+
+    it('lets no abandoned re-read repaint the table', async () => {
+      const element = await loadView();
+      let release: () => void = () => {};
+      holdOverrideList = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      // What the held re-read would answer with: one row fewer.
+      overridePayload = [{ ...activeOverride }] as Record<string, unknown>[];
+
+      rowButton(rows(element)[0], 'edit-override').click();
+      await element.updateComplete;
+      // The reader changes their mind before the answer arrives.
+      const cancel = Array.from(
+        element.shadowRoot!.querySelectorAll(
+          'sl-dialog[label="Edit price override"] [slot="footer"] sl-button'
+        )
+      ).find((button) => button.textContent!.trim() === 'Cancel');
+      (cancel as HTMLElement).click();
+      await element.updateComplete;
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await element.updateComplete;
+
+      // The table still says what the last load said, not what an answer to
+      // an edit nobody is having any more says.
+      expect(rows(element)).to.have.length(2);
+      expect(
+        (element as unknown as { priceEditOverride: unknown }).priceEditOverride
+      ).to.equal(null);
     });
 
     it('edits a row through the dialog, pre-filled, and saves with PUT', async () => {

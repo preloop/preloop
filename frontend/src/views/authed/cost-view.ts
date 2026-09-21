@@ -1368,9 +1368,13 @@ export class CostView extends AuthedElement {
         activeOnly: false,
         passive: true,
       });
+      // Only the read the dialog on screen asked for is allowed to paint: an
+      // answer to a cancelled or superseded edit would repaint the table with
+      // a list that is already older than the one after it.
+      if (this.priceEditOverride?.id !== id) return;
       this.pricingOverrides = overrides;
       const fresh = overrides.find((row) => row.id === id);
-      if (fresh && this.priceEditOverride?.id === id) {
+      if (fresh) {
         this.priceEditOverride = fresh;
       }
     } catch {
