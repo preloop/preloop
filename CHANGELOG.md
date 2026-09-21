@@ -1286,11 +1286,16 @@ avatars.
 
 ### Fixed
 
+- Refresh the vendored model price catalog so Gemini 3.8 Flash is priced from
+  the catalog, cache-read rate included, for both the `google` and `gemini`
+  provider spellings (#850).
+
+- Apply response content policies to returned reasoning and thinking text as
+  well as final answers, including buffered streams and reasoning summaries.
+
 - **`@preloop-ai/openclaw-plugin` 0.3.1**: `config.enabled=false` now
   registers nothing (no Agent Control channel, no tool-call hook), matching
   the manifest. Previously the flag was advertised and ignored (#857).
-- Apply response content policies to returned reasoning and thinking text as
-  well as final answers, including buffered streams and reasoning summaries.
 
 - Private runner registration and the WebSocket hello send an empty
   `host_exec_profiles` list when none are configured, and registration
