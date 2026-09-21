@@ -745,6 +745,65 @@ export function modelAttentionFingerprint(
   return `last:${lastFailureAt || ''}`;
 }
 
+/**
+ * The attention item id for one model's unpriced requests, keyed by the same
+ * alias as the failure item so the Models page, the detail page and the inbox
+ * all write and read the same row.
+ */
+export function unpricedModelAttentionItemId(
+  modelAlias: string | null | undefined,
+  providerName: string | null | undefined
+): string {
+  return `model-unpriced:${modelAttentionKey(modelAlias, providerName)}`;
+}
+
+/**
+ * Why an unpriced-model item is showing: the model itself, and nothing about
+ * when it last ran. Stable on purpose, and the opposite of the failure
+ * fingerprint. "This model is unpriced by design" stays true when one more
+ * unpriced request arrives, so a new request must not resurface the marker;
+ * only a price (which stops the item being derived) or Restore ends it.
+ */
+export function unpricedModelAttentionFingerprint(
+  modelAlias: string | null | undefined,
+  providerName: string | null | undefined
+): string {
+  return `unpriced:${modelAttentionKey(modelAlias, providerName)}`;
+}
+
+/** What clears an unpriced model for good, said the same way on every surface. */
+export const UNPRICED_MODEL_FIX_HINT =
+  'Set a price on the model, then "Apply to past usage" on its detail page ' +
+  'to reprice the requests already recorded; without that they keep counting ' +
+  'until they age out of the 30 day window.';
+
+/**
+ * Has somebody declared this model's unpriced requests expected (or snoozed
+ * the question), and does that declaration still hold?
+ *
+ * Exported so the Models page and the model detail page decide it the same
+ * way the inbox does, from the same stored row.
+ */
+export function unpricedModelIsMarked(
+  dismissals: readonly AttentionDismissalRecord[] | null | undefined,
+  modelAlias: string | null | undefined,
+  providerName: string | null | undefined,
+  now: Date
+): boolean {
+  const itemId = unpricedModelAttentionItemId(modelAlias, providerName);
+  const dismissal = (dismissals || []).find(
+    (candidate) => candidate.item_id === itemId
+  );
+  if (!dismissal) {
+    return false;
+  }
+  return dismissalHidesFingerprint(
+    dismissal,
+    unpricedModelAttentionFingerprint(modelAlias, providerName),
+    now
+  );
+}
+
 function modelItems(
   failures: GatewayUsageSearchResultItem[],
   now: Date
@@ -963,22 +1022,72 @@ function unpricedModelOf(model: GatewayUsageByModel): AttentionUnpricedModel {
  * rather than disappearing, except where an account price override says
  * outright what the model costs: an override of $0 is an answer, and the
  * console asked for a price it had already been given.
+ *
+ * A model somebody marked "unpriced is expected" (a local model, a flat-rate
+ * subscription, a bill settled outside Preloop) is left out entirely: that is
+ * an answer too, and repeating the question is how a badge stops being read.
  */
+function unpricedRequestsOfModel(
+  model: GatewayUsageByModel,
+  overrideKeys: Set<string>
+): number {
+  if (model.request_count <= 0) return 0;
+  if (model.unpriced_request_count === undefined) {
+    if (hasPriceOverride(model, overrideKeys)) return 0;
+    return model.estimated_cost ? 0 : model.request_count;
+  }
+  return Math.max(0, model.unpriced_request_count);
+}
+
 function unpricedModelsOf(
   usageSummary: AccountGatewayUsageSummaryResponse,
-  overrideKeys: Set<string>
+  overrideKeys: Set<string>,
+  dismissals: readonly AttentionDismissalRecord[],
+  now: Date
 ): AttentionUnpricedModel[] {
   return (usageSummary.usage_by_model || [])
     .filter((model) => {
-      if (model.request_count <= 0) return false;
-      if (model.unpriced_request_count === undefined) {
-        if (hasPriceOverride(model, overrideKeys)) return false;
-        return !model.estimated_cost;
-      }
-      return model.unpriced_request_count > 0;
+      if (unpricedRequestsOfModel(model, overrideKeys) <= 0) return false;
+      return !unpricedModelIsMarked(
+        dismissals,
+        model.model_alias,
+        model.provider_name,
+        now
+      );
     })
     .map(unpricedModelOf)
     .sort((left, right) => right.requests - left.requests);
+}
+
+/**
+ * Requests the account's marked-expected models account for, so the item's
+ * "N requests unpriced" counts only the models it still lists. The summary's
+ * aggregate covers every model, marked or not.
+ *
+ * It counts through the same predicate the list filters on, so a marked model
+ * that is priced (or priced by an override, on a server that sends no
+ * `unpriced_request_count`) contributes nothing: subtracting its traffic would
+ * make the count disagree with the models still named.
+ */
+function markedUnpricedRequestsOf(
+  usageSummary: AccountGatewayUsageSummaryResponse,
+  overrideKeys: Set<string>,
+  dismissals: readonly AttentionDismissalRecord[],
+  now: Date
+): number {
+  return (usageSummary.usage_by_model || []).reduce((total, model) => {
+    if (
+      !unpricedModelIsMarked(
+        dismissals,
+        model.model_alias,
+        model.provider_name,
+        now
+      )
+    ) {
+      return total;
+    }
+    return total + unpricedRequestsOfModel(model, overrideKeys);
+  }, 0);
 }
 
 /**
@@ -1033,6 +1142,7 @@ function zeroPricedItem(
 function pricingItems(
   usageSummary: AccountGatewayUsageSummaryResponse | null | undefined,
   priceOverrides: AttentionPriceOverride[] | null | undefined,
+  dismissals: readonly AttentionDismissalRecord[],
   now: Date
 ): AttentionItem[] {
   if (!usageSummary) {
@@ -1043,20 +1153,41 @@ function pricingItems(
   const catalog = usageSummary.price_catalog;
   const fetchedAt = catalog?.fetched_at || null;
   const modelCount = catalog?.model_count ?? null;
-  const unpricedRequests = usageSummary.unpriced_requests || 0;
-  const unpricedModels = unpricedModelsOf(usageSummary, overrideKeys);
+  const allUnpricedRequests = usageSummary.unpriced_requests || 0;
+  const unpricedModels = unpricedModelsOf(
+    usageSummary,
+    overrideKeys,
+    dismissals,
+    now
+  );
+  // Only the models the item still lists, so the count and the list agree.
+  const unpricedRequests = Math.max(
+    0,
+    allUnpricedRequests -
+      markedUnpricedRequestsOf(usageSummary, overrideKeys, dismissals, now)
+  );
   const stale =
     Boolean(fetchedAt) &&
     now.getTime() - timestampOf(fetchedAt) > FOURTEEN_DAYS_MS;
   const catalogMissing = !catalog || modelCount === 0;
 
-  const fingerprint = `${unpricedModels
-    .map((model) => model.alias)
-    .sort()
-    .join(',')} catalog:${fetchedAt ?? 'none'}`;
+  const catalogFingerprint = (models: AttentionUnpricedModel[]): string =>
+    `${models
+      .map((model) => model.alias)
+      .sort()
+      .join(',')} catalog:${fetchedAt ?? 'none'}`;
+  const fingerprint = catalogFingerprint(unpricedModels);
 
   // Shape 1: nothing can be priced because no provider price list is loaded.
-  if (catalogMissing && unpricedRequests > 0) {
+  // Per-model markers say nothing about an account with no catalog at all, so
+  // this shape counts and lists every unpriced model as it always has.
+  if (catalogMissing && allUnpricedRequests > 0) {
+    const allUnpricedModels = unpricedModelsOf(
+      usageSummary,
+      overrideKeys,
+      [],
+      now
+    );
     return [
       ...zeroPriced,
       {
@@ -1064,18 +1195,18 @@ function pricingItems(
         kind: 'pricing',
         severity: 'warning',
         title: 'No price catalog loaded',
-        detail: `Estimated spend is missing for ${unpricedRequests} request${
-          unpricedRequests === 1 ? '' : 's'
+        detail: `Estimated spend is missing for ${allUnpricedRequests} request${
+          allUnpricedRequests === 1 ? '' : 's'
         } because no provider price list is loaded.`,
         href: PRICING_HREF,
         at: null,
         action: { label: 'Update prices', href: PRICING_HREF },
-        fingerprint,
+        fingerprint: catalogFingerprint(allUnpricedModels),
         dismissable: true,
         evidence: {
           catalogMissing: true,
-          unpricedRequests,
-          unpricedModels,
+          unpricedRequests: allUnpricedRequests,
+          unpricedModels: allUnpricedModels,
         },
       },
     ];
@@ -1099,6 +1230,9 @@ function pricingItems(
           stale && fetchedAt
             ? `catalog last updated ${formatRelativeTime(fetchedAt, now)}`
             : '',
+          // What ends it for good, not just what is wrong. A model that is
+          // unpriced on purpose is marked expected from the Models page.
+          UNPRICED_MODEL_FIX_HINT,
         ]),
         href: PRICING_HREF,
         at: fetchedAt,
@@ -1206,17 +1340,23 @@ function dismissalHides(
 
 export function deriveAttentionItems(inputs: AttentionInputs): AttentionResult {
   const now = inputs.now || new Date();
+  const dismissals = inputs.dismissals || [];
   const derived: AttentionItem[] = [
     ...approvalItems(inputs.approvals || [], now),
     ...agentItems(inputs.agents || [], inputs.sessions || [], now),
     ...flowItems(inputs.executions || [], now),
     ...modelItems(inputs.gatewayFailures || [], now),
     ...budgetItems(inputs.budgetPolicies || []),
-    ...pricingItems(inputs.usageSummary, inputs.priceOverrides, now),
+    ...pricingItems(
+      inputs.usageSummary,
+      inputs.priceOverrides,
+      dismissals,
+      now
+    ),
   ];
 
   const byItemId = new Map<string, AttentionDismissalRecord>();
-  for (const dismissal of inputs.dismissals || []) {
+  for (const dismissal of dismissals) {
     byItemId.set(dismissal.item_id, dismissal);
   }
 

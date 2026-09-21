@@ -35,6 +35,12 @@ avatars.
   on a stronger model or a higher reasoning effort. Both keys are unset by
   default, so existing flows are unaffected, and a run with any workspace
   change is never nudged or stopped by the guard.
+- A model whose requests carry no price can be marked "unpriced is expected"
+  (or snoozed for seven days) from the Models list or the model detail page.
+  The marker is stored as `model-unpriced:<alias>` with a stable
+  `unpriced:<alias>` fingerprint, so a new unpriced request does not bring the
+  model back, and the Models count, the row badge and the inbox's
+  "N models unpriced" item all honour it. Restore undoes it.
 - Issue triage durably reuses executions for the same issue revision and project
   context across automatic events and manual single/batch runs. Verified issue
   assessments persist as bounded, versioned context for the existing readiness

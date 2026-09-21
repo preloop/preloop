@@ -28,6 +28,7 @@ import {
   deleteAIModel,
   dismissAttentionItem,
   getAttentionDismissals,
+  restoreAttentionItem,
   DISMISSALS_UNSUPPORTED,
   type AttentionDismissal,
   extractErrorMessage,
@@ -60,8 +61,12 @@ import consoleStyles from '../../../styles/console-styles.css?inline';
 import {
   markerSinceLabel,
   modelAttentionState,
+  unpricedAttentionState,
   type ModelAttentionState,
+  type UnpricedAttentionState,
+  type UnpricedDismissReason,
 } from '../../../utils/model-attention';
+import { UNPRICED_MODEL_FIX_HINT } from '../../../utils/attention';
 import {
   formatTimeRangeWindow,
   resolveTimeRange,
@@ -851,6 +856,53 @@ export class AIModelDetailView extends LitElement {
       },
       this.dismissals
     );
+  }
+
+  /**
+   * Where this model stands on price, by the rule the Models page and the
+   * inbox use, and keyed by the alias the gateway records on every request so
+   * a marker made here is the marker they read.
+   *
+   * The model-scoped summary carries no unpriced count and this page will not
+   * pull the account-wide overview for one model (that is the request that
+   * emptied the connection pool on 2026-09-03), so "unpriced" is read from the
+   * data the page already has: either no price is in force, or a non-zero
+   * price is in force and the window still recorded no cost, which is the
+   * model priced after the fact with "Apply to past usage" not yet run. A
+   * price of zero is the zero-priced question, not this one, and is left out.
+   */
+  private get unpricedState(): UnpricedAttentionState {
+    const gatewayAlias = this.getGatewayConfig()?.model_alias;
+    return unpricedAttentionState(
+      {
+        modelAlias:
+          (typeof gatewayAlias === 'string' && gatewayAlias.trim()) ||
+          this.model?.alias,
+        providerName: this.summary?.provider_name || this.model?.provider_name,
+        unpricedRequests: this.unpricedRequestsInWindow(),
+      },
+      this.dismissals
+    );
+  }
+
+  /** Requests in the window that carry no cost, by the rule above. */
+  private unpricedRequestsInWindow(): number {
+    const requests = this.summary?.total_requests || 0;
+    if (requests <= 0) return 0;
+    // Before the price loads (or when that request failed) the page says
+    // nothing rather than guessing.
+    if (!this.pricing) return 0;
+    if (this.pricing.source === 'none') return requests;
+    const price = this.pricing.price || {};
+    const priced = [
+      price.input_per_1m,
+      price.output_per_1m,
+      price.cached_input_per_1m,
+      price.blended_per_1m,
+      price.request_price,
+    ].some((value) => typeof value === 'number' && value > 0);
+    if (!priced) return 0;
+    return this.summary?.estimated_cost ? 0 : requests;
   }
 
   /**
@@ -1790,19 +1842,29 @@ export class AIModelDetailView extends LitElement {
    */
   private renderAttentionLine() {
     const state = this.attentionState;
-    if (state.status === 'quiet') {
+    const unpriced = this.unpricedState;
+    if (state.status === 'quiet' && unpriced.status === 'quiet') {
       return null;
     }
-    const marked = state.status === 'marked';
+    // One badge for both facts: the page reads Healthy only when every open
+    // claim about this model has been answered.
+    const flagged =
+      state.status === 'failing' || unpriced.status === 'unpriced';
+    const markerLabels = [
+      state.status === 'marked' ? state.markerLabel : '',
+      unpriced.status === 'marked' ? unpriced.markerLabel : '',
+    ]
+      .filter(Boolean)
+      .join(' · ');
     return html`
       <div class="badge-row" data-testid="model-attention">
         <sl-badge
           class="status-chip"
           pill
-          variant=${marked ? 'success' : 'warning'}
-          title=${marked && state.markerLabel ? state.markerLabel : ''}
+          variant=${flagged ? 'warning' : 'success'}
+          title=${flagged ? '' : markerLabels}
         >
-          ${marked ? 'Healthy' : 'Attention'}
+          ${flagged ? 'Attention' : 'Healthy'}
         </sl-badge>
         ${
           state.failuresSinceMarker !== null
@@ -1812,8 +1874,9 @@ export class AIModelDetailView extends LitElement {
               </span>`
             : null
         }
-        ${this.renderDismiss(state)}
+        ${this.renderDismiss(state, unpriced)}
       </div>
+      ${this.renderUnpricedLine(unpriced)}
       ${
         state.reasonText
           ? html`<div class="meta-line" data-testid="credentials-error-message">
@@ -1838,8 +1901,60 @@ export class AIModelDetailView extends LitElement {
     `;
   }
 
-  private renderDismiss(state: ModelAttentionState) {
-    if (!this.dismissalsSupported || !state.dismissable) {
+  /**
+   * What this model's requests cost nobody knows, and what ends the question
+   * for good: a price, then "Apply to past usage" to reprice the window.
+   */
+  private renderUnpricedLine(unpriced: UnpricedAttentionState) {
+    if (unpriced.status === 'quiet') {
+      return null;
+    }
+    if (unpriced.status === 'marked') {
+      return html`
+        <div class="meta-line" data-testid="unpriced-marker">
+          ${unpriced.markerLabel} · ${UNPRICED_MODEL_FIX_HINT}
+          ${this.renderRestoreUnpriced(unpriced)}
+        </div>
+      `;
+    }
+    return html`
+      <div class="meta-line" data-testid="unpriced-attention">
+        No price is in force for this model, so
+        ${this.formatNumber(unpriced.unpricedRequests)} requests in this window
+        carry no cost. ${UNPRICED_MODEL_FIX_HINT}
+      </div>
+    `;
+  }
+
+  private renderRestoreUnpriced(unpriced: UnpricedAttentionState) {
+    if (!this.dismissalsSupported || !unpriced.restorable) {
+      return null;
+    }
+    return html`
+      <sl-button
+        size="small"
+        variant="text"
+        data-testid="restore-unpriced"
+        ?loading=${this.dismissBusy}
+        @click=${() => void this.restoreUnpriced(unpriced)}
+        >Restore</sl-button
+      >
+    `;
+  }
+
+  /**
+   * The same answers as the Models page, written under the same ids: a
+   * failure and a missing price are separate claims, so a page that is both
+   * failing and unpriced offers both and needs both to read Healthy.
+   */
+  private renderDismiss(
+    state: ModelAttentionState,
+    unpriced: UnpricedAttentionState
+  ) {
+    if (
+      !this.dismissalsSupported ||
+      (!state.dismissable && !unpriced.dismissable)
+    ) {
       return null;
     }
     return html`
@@ -1854,19 +1969,50 @@ export class AIModelDetailView extends LitElement {
         >
         <sl-menu
           @sl-select=${(event: CustomEvent<{ item: { value: string } }>) =>
-            void this.dismissModel(
-              state,
-              event.detail.item.value as 'expected' | 'snoozed' | 'fixed'
-            )}
+            void this.onDismissSelect(state, unpriced, event.detail.item.value)}
         >
-          <sl-menu-item value="expected"
-            >Expected, keep quiet until it changes</sl-menu-item
-          >
-          <sl-menu-item value="snoozed">Snooze 7 days</sl-menu-item>
-          <sl-menu-item value="fixed">Fixed</sl-menu-item>
+          ${
+            state.dismissable
+              ? html`
+                  <sl-menu-item value="expected"
+                    >Expected, keep quiet until it changes</sl-menu-item
+                  >
+                  <sl-menu-item value="snoozed">Snooze 7 days</sl-menu-item>
+                  <sl-menu-item value="fixed">Fixed</sl-menu-item>
+                `
+              : null
+          }
+          ${
+            unpriced.dismissable
+              ? html`
+                  <sl-menu-item value="unpriced-expected"
+                    >Unpriced is expected for this model</sl-menu-item
+                  >
+                  <sl-menu-item value="unpriced-snoozed"
+                    >Snooze unpriced 7 days</sl-menu-item
+                  >
+                `
+              : null
+          }
         </sl-menu>
       </sl-dropdown>
     `;
+  }
+
+  /** One menu, two markers: the value says which claim is being made. */
+  private async onDismissSelect(
+    state: ModelAttentionState,
+    unpriced: UnpricedAttentionState,
+    value: string
+  ): Promise<void> {
+    if (value.startsWith('unpriced-')) {
+      await this.dismissUnpriced(
+        unpriced,
+        value.slice('unpriced-'.length) as UnpricedDismissReason
+      );
+      return;
+    }
+    await this.dismissModel(state, value as 'expected' | 'snoozed' | 'fixed');
   }
 
   private async dismissModel(
@@ -1884,6 +2030,47 @@ export class AIModelDetailView extends LitElement {
       await this.loadData({ preserveLoadingState: true });
     } catch {
       this.dismissError = 'Could not dismiss this model. Try again.';
+    } finally {
+      this.dismissBusy = false;
+    }
+  }
+
+  /**
+   * "This model has no price on purpose." The fingerprint carries no
+   * timestamp, so another unpriced request does not undo the statement.
+   */
+  private async dismissUnpriced(
+    unpriced: UnpricedAttentionState,
+    reason: UnpricedDismissReason
+  ): Promise<void> {
+    this.dismissBusy = true;
+    this.dismissError = null;
+    try {
+      await dismissAttentionItem(unpriced.itemId, {
+        fingerprint: unpriced.fingerprint,
+        reason,
+        snooze_days: reason === 'snoozed' ? 7 : undefined,
+      });
+      await this.loadData({ preserveLoadingState: true });
+    } catch {
+      this.dismissError =
+        'Could not mark those unpriced requests expected. Try again.';
+    } finally {
+      this.dismissBusy = false;
+    }
+  }
+
+  /** Undo the statement: the model is counted and flagged again. */
+  private async restoreUnpriced(
+    unpriced: UnpricedAttentionState
+  ): Promise<void> {
+    this.dismissBusy = true;
+    this.dismissError = null;
+    try {
+      await restoreAttentionItem(unpriced.itemId);
+      await this.loadData({ preserveLoadingState: true });
+    } catch {
+      this.dismissError = 'Could not restore this model. Try again.';
     } finally {
       this.dismissBusy = false;
     }
