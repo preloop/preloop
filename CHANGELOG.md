@@ -35,6 +35,14 @@ avatars.
   on a stronger model or a higher reasoning effort. Both keys are unset by
   default, so existing flows are unaffected, and a run with any workspace
   change is never nudged or stopped by the guard.
+- Issue triage durably reuses executions for the same issue revision and project
+  context across automatic events and manual single/batch runs. Verified issue
+  assessments persist as bounded, versioned context for the existing readiness
+  lifecycle; they do not authorize implementation. Triage execution keys receive
+  HTTP 403 on mutating REST routes; scoped MCP assessments on their bound issue
+  remain supported. Persistent agent execution,
+  matrix runs and delegated triage runs are rejected because those paths cannot
+  preserve the required execution scope and shared revision ownership.
 
 - Persistent flow execution: a flow with
   `agent_config.execution_path = "persistent"` delivers the rendered prompt

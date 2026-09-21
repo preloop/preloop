@@ -10,10 +10,10 @@ from typing import Any, Dict, List, Optional
 
 import bcrypt
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jwt import PyJWTError
-from sqlalchemy.exc import TimeoutError as SQLAlchemyPoolTimeout
+from sqlalchemy.exc import SQLAlchemyError, TimeoutError as SQLAlchemyPoolTimeout
 from sqlalchemy.orm import Session
 
 # Configuration
@@ -484,6 +484,42 @@ def decode_token(token: str) -> TokenData:
         )
 
 
+def _enforce_triage_rest_scope(
+    db: Session, user: User, request: Request | None
+) -> None:
+    """Keep triage runtime credentials on the authenticated scoped tool path.
+
+    Ordinary REST writes inherit the owner's permissions and can otherwise
+    replace human issue content, approve readiness, launch another flow, or
+    remove this restriction by changing flow configuration. MCP authenticates
+    separately and enforces its execution-bound apply contract. Read-only REST
+    and runtime protocols with their own authentication remain available.
+    """
+    if request is None or request.method in {"GET", "HEAD", "OPTIONS"}:
+        return
+    api_key = getattr(user, "_auth_api_key", None)
+    context = getattr(api_key, "context_data", None)
+    if not isinstance(context, dict) or not context.get("flow_execution_id"):
+        return
+    from preloop.services.issue_triage_controller import is_triage_execution
+
+    try:
+        triage = is_triage_execution(
+            db,
+            execution_id=context["flow_execution_id"],
+            account_id=user.account_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(403, "Invalid flow execution credential") from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(503, "Unable to verify flow execution scope") from exc
+    if triage:
+        raise HTTPException(
+            403,
+            "Triage execution credentials may write only through scoped issue assessment tools",
+        )
+
+
 SESSION_REVOKED_DETAIL = "Session revoked, please sign in again"
 
 
@@ -530,12 +566,16 @@ def reject_stale_token_generation(user: User, token_data: TokenData) -> None:
 def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db_session),
+    # FastAPI requires the concrete Request type for injection; direct Python
+    # authentication callers omit it. Optional[Request] is rejected as a field.
+    request: Request = None,  # type: ignore[assignment]
 ) -> User:
     """Get the current user from a JWT token or API key.
 
     Args:
         token: JWT token or API key.
         db: Database session.
+        request: Injected HTTP request, absent for direct authentication callers.
 
     Returns:
         The current User object.
@@ -563,6 +603,7 @@ def get_current_user(
                 )
 
                 user = _authenticate_with_api_key(db, api_key)
+                _enforce_triage_rest_scope(db, user, request)
 
                 logger.info(
                     f"API key authentication successful for user: {user.username}"
@@ -674,6 +715,7 @@ def get_current_user(
                 )
 
                 user = _authenticate_with_api_key(db, api_key)
+                _enforce_triage_rest_scope(db, user, request)
 
                 logger.info(
                     f"API key authentication successful for user: {user.username}"

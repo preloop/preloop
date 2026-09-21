@@ -921,6 +921,10 @@ class FlowTriggerService:
         )
         from preloop.services.flow_execution_runner import run_existing_execution
         from preloop.services.flow_orchestrator import _make_json_serializable
+        from preloop.services.issue_triage_controller import (
+            is_triage_flow,
+            reserve_triage_execution,
+        )
 
         if self._flows_halted(flow.account_id):
             if precreated_execution is None:
@@ -937,6 +941,38 @@ class FlowTriggerService:
                 precreated_execution.id,
             )
             return precreated_execution
+
+        if precreated_execution is None:
+            event_data = dict(event_data or {})
+            for key in ("lifecycle_pickup", "triage_context", "triage_packet"):
+                event_data.pop(key, None)
+            if is_triage_flow(self.db, flow):
+                event_data = prepare_execution_routing(
+                    self.db,
+                    flow,
+                    _make_json_serializable(event_data),
+                    source_execution=source_execution,
+                    pin_kind="continuation" if source_execution is not None else None,
+                )
+                if test_mode:
+                    event_data["test_mode"] = True
+                from preloop.services.flow_feedback import feedback_policy
+
+                event_data.pop("_session_thread_id", None)
+                event_data.pop("_thread_id", None)
+                if feedback_policy(flow):
+                    event_data["_session_thread_id"] = str(uuid.uuid4())
+                attach_trigger_subject(event_data)
+                attach_workspace_file_paths(event_data)
+                precreated_execution, _ = await reserve_triage_execution(
+                    self.db,
+                    flow=flow,
+                    event=event_data,
+                    retry_of_execution_id=retry_of_execution_id,
+                )
+                event_data = precreated_execution.trigger_event_details
+                if precreated_execution.status != "PENDING":
+                    return precreated_execution
 
         if precreated_execution is None:
             from preloop.services.issue_lifecycle_runtime import lifecycle_flow_entry
@@ -1027,8 +1063,20 @@ class FlowTriggerService:
             logger.info("Created flow execution: %s", execution_id)
 
         async def _local_run() -> None:
+            from preloop.models.crud import crud_issue_lifecycle
+            from preloop.services.flow_execution_runner import claim_and_run_execution
+
             orchestrator_db = self._create_orchestrator_session()
             try:
+                if crud_issue_lifecycle.has_triage_execution(
+                    orchestrator_db, execution_id=execution_id
+                ):
+                    # A repeated PENDING delivery may queue this callback again.
+                    # Use the worker's exclusive durable claim before starting
+                    # any local triage orchestration, just as broker delivery does.
+                    orchestrator_db.close()
+                    await claim_and_run_execution(str(execution_id))
+                    return
                 exec_row = crud_flow_execution.get(orchestrator_db, id=execution_id)
                 if not exec_row:
                     raise ValueError(f"Failed to load execution {execution_id}")
@@ -1640,7 +1688,13 @@ class FlowTriggerService:
                     # number of runs a single issue could start. Comment and
                     # CI deliveries are exempt: they are how a live run is
                     # fed more input, and they bind to it below.
-                    if account_id and event_type not in COALESCE_EXEMPT_EVENT_TYPES:
+                    from preloop.services.issue_triage_controller import is_triage_flow
+
+                    if (
+                        account_id
+                        and event_type not in COALESCE_EXEMPT_EVENT_TYPES
+                        and not is_triage_flow(self.db, flow)
+                    ):
                         object_key = self._extract_tracker_object_key(event_data)
                         if object_key:
                             active = self._find_active_execution_for_tracker_object(
@@ -1985,6 +2039,8 @@ class FlowTriggerService:
         trigger_details = {}
         if trigger_event_data:
             trigger_details.update(trigger_event_data)
+        for key in ("lifecycle_pickup", "triage_context", "triage_packet"):
+            trigger_details.pop(key, None)
         trigger_details["test_mode"] = test_mode
         if triggered_by:
             # Set after the copy so a retry is attributed to whoever retried,
@@ -2039,14 +2095,51 @@ class FlowTriggerService:
             batch_id=batch_id,
         )
 
-        execution = crud_flow_execution.create(self.db, obj_in=execution_data)
-        self.db.commit()
-        self.db.refresh(execution)
+        from preloop.services.issue_triage_controller import (
+            is_triage_flow,
+            reserve_triage_execution,
+        )
+
+        coalesced = False
+        triage_flow = is_triage_flow(self.db, flow)
+        if triage_flow:
+            if (
+                parent_execution_id is not None
+                or root_execution_id is not None
+                or delegation_depth != 0
+                or batch_id is not None
+            ):
+                from preloop.services.issue_triage_controller import (
+                    TriageControllerError,
+                )
+
+                raise TriageControllerError(
+                    "Triage revision claims cannot be reparented; use issue single or batch runs"
+                )
+            execution, coalesced = await reserve_triage_execution(
+                self.db,
+                flow=flow,
+                event=trigger_details,
+                retry_of_execution_id=retry_of_execution_id,
+            )
+            trigger_details = execution.trigger_event_details
+        else:
+            execution = crud_flow_execution.create(self.db, obj_in=execution_data)
+            self.db.commit()
+            self.db.refresh(execution)
 
         execution_id = execution.id
         execution_status = execution.status
 
         logger.info(f"Created flow execution: {execution_id}")
+
+        if coalesced and execution_status != "PENDING":
+            return {
+                "id": str(execution_id),
+                "status": execution_status,
+                "flow_id": flow_id_str,
+                "coalesced": True,
+            }
 
         # The execution row is durably committed at this point. Any failure
         # below (NATS acquisition, worker hand-off) must not be reported as
@@ -2068,6 +2161,7 @@ class FlowTriggerService:
             "id": str(execution_id),
             "status": execution_status,
             "flow_id": flow_id_str,
+            **({"coalesced": coalesced} if triage_flow else {}),
         }
 
     async def trigger_flow_matrix(
@@ -2113,6 +2207,16 @@ class FlowTriggerService:
         if not flow:
             raise ValueError(f"Flow {flow_id} not found")
 
+        from preloop.services.issue_triage_controller import (
+            TriageControllerError,
+            is_triage_flow,
+        )
+
+        if is_triage_flow(self.db, flow):
+            raise TriageControllerError(
+                "Triage uses one revision claim per issue; use issue batches"
+            )
+
         if flows_halted(self.db, flow.account_id):
             raise FlowHaltActiveError(
                 f"Flow '{flow.name}' ({flow.id}) not started: the account "
@@ -2136,6 +2240,8 @@ class FlowTriggerService:
             trigger_details: Dict[str, Any] = {}
             if trigger_event_data:
                 trigger_details.update(trigger_event_data)
+            for key in ("lifecycle_pickup", "triage_context", "triage_packet"):
+                trigger_details.pop(key, None)
             trigger_details["test_mode"] = test_mode
             if triggered_by:
                 trigger_details["triggered_by"] = triggered_by

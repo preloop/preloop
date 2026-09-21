@@ -174,6 +174,16 @@ execution-environment capabilities rather than implementing test setup. See
 [Issue readiness and completion audits](docs/guide/flows/issue-lifecycle.md) for
 policy, API and recovery configuration.
 
+`services/issue_triage_controller.py` reuses this ledger for durable issue-revision
+claims across manual and automatic triage. Dedicated advisory-lock connections
+serialize local applies while provider-write intents commit durably. Execution
+credentials bind managed writes to their issue/revision; successful bounded
+assessment packets retain input/output revision and policy/context identity.
+Readiness consumes only applicable server-loaded packets as evidence, preserving
+its separate implementation authorization. Provider writes remain optimistic;
+local serialization cannot make external APIs support compare-and-swap. See
+[Issue triage](docs/guide/flows/issue-triage.md) for recovery and tool boundaries.
+
 ### Security maintenance controller
 
 `services/security_maintenance.py` coordinates opt-in supported-release

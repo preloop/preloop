@@ -699,6 +699,44 @@ async def _read_triage_context(
         ) from exc
 
 
+def _triage_execution_id(db: Session, current_user: Any) -> str | None:
+    """Resolve triage authority from the authenticated credential, never args."""
+    from preloop.services.dynamic_fastmcp_http import get_current_user_context
+    from preloop.services.issue_triage_controller import is_triage_execution
+
+    context = get_current_user_context()
+    key = getattr(current_user, "_auth_api_key", None)
+    credential = getattr(key, "context_data", None)
+    execution_id = (
+        credential.get("flow_execution_id") if isinstance(credential, dict) else None
+    )
+    context_execution = getattr(context, "flow_execution_id", None)
+    if (
+        context_execution
+        and execution_id
+        and str(context_execution) != str(execution_id)
+    ):
+        raise HTTPException(
+            status_code=403, detail="Triage credential execution mismatch"
+        )
+    execution_id = execution_id or context_execution
+    if not execution_id:
+        return None
+    if context is not None and str(context.account_id) != str(current_user.account_id):
+        raise HTTPException(
+            status_code=403, detail="Triage credential account mismatch"
+        )
+    try:
+        controlled = is_triage_execution(
+            db, execution_id=execution_id, account_id=current_user.account_id
+        )
+    except (ValueError, SQLAlchemyError) as exc:
+        raise HTTPException(
+            status_code=403, detail="Execution authority unavailable"
+        ) from exc
+    return str(execution_id) if controlled else None
+
+
 @require_permission("edit_issues")
 async def _apply_authorized_issue_triage(
     *,
@@ -711,8 +749,9 @@ async def _apply_authorized_issue_triage(
     title: str | None = None,
 ) -> "IssueTriageResult":
     from preloop.schemas.issue_triage import IssueTriageApply
-    from preloop.services.issue_triage import apply_triage
+    from preloop.services.issue_triage_controller import apply_controlled_triage
 
+    execution_id = _triage_execution_id(db, current_user)
     issue_obj, provider = await _triage_provider(db, current_user, issue)
     try:
         request = IssueTriageApply(
@@ -725,48 +764,25 @@ async def _apply_authorized_issue_triage(
         raise HTTPException(
             status_code=422, detail="Invalid triage assessment or revision"
         ) from exc
-
-    def record_intent(receipt: dict[str, Any]) -> None:
-        crud_issue.set_triage_receipt(db, db_obj=issue_obj, receipt=receipt)
-
     try:
         async with asyncio.timeout(120):
-            result = await apply_triage(provider, request, record_intent)
+            return await apply_controlled_triage(
+                db,
+                issue=issue_obj,
+                provider=provider,
+                account_id=current_user.account_id,
+                request=request,
+                execution_id=execution_id,
+                current_user=current_user,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except TimeoutError:
         return IssueTriageResult(
             status="partial",
             reason="provider_timeout_outcome_unknown",
             next_action="Fetch fresh context and inspect the issue before retrying.",
         )
-    if result.issue is not None:
-        try:
-            metadata = dict(issue_obj.meta_data or {})
-            metadata["labels"] = result.issue.labels
-            values = {
-                "title": result.issue.title,
-                "description": result.issue.body,
-                "status": result.issue.state,
-                "meta_data": metadata,
-            }
-            if result.issue.updated_at:
-                from datetime import datetime
-
-                try:
-                    values["last_updated_external"] = datetime.fromisoformat(
-                        result.issue.updated_at.replace("Z", "+00:00")
-                    )
-                except ValueError:
-                    # Skip last_updated_external when the provider timestamp
-                    # is not ISO-8601; the rest of the cache update still applies.
-                    pass
-            crud_issue.update(db, db_obj=issue_obj, obj_in=values)
-            result.cache_updated = True
-        except SQLAlchemyError:
-            logger.exception("Issue triage provider result could not be cached")
-            result.status = "partial"
-            result.reason = result.reason or "provider_result_cache_failed"
-            result.next_action = "The receipt reflects provider state. Refresh synchronization; do not repeat completed writes."
-    return result
 
 
 TRIAGE_INCLUDES = tuple(GET_ISSUE_SCHEMA["properties"]["include"]["items"]["enum"])
@@ -973,6 +989,11 @@ async def update_issue(
     triage_requested = any(
         value is not None for value in (expected_revision, assessment, complexity_label)
     )
+    if _triage_execution_id(db, current_user) is not None and not triage_requested:
+        raise HTTPException(
+            status_code=403,
+            detail="Triage executions may only apply a revision-bound managed assessment",
+        )
     if triage_requested:
         if expected_revision is None or assessment is None:
             raise HTTPException(

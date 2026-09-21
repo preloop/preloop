@@ -1249,8 +1249,8 @@ class RunPresetItemResult(BaseModel):
     execution_status: Optional[str] = None
     execution_url: Optional[str] = None
     error: Optional[str] = None
-    # True when this target already had an active run on the same flow and
-    # this request reused it instead of starting a second one.
+    # True when this request reused an existing execution. Triage includes
+    # completed runs of the same revision; other presets reuse active runs.
     coalesced: bool = False
 
 

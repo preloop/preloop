@@ -3,6 +3,8 @@
 import logging
 from typing import Any, Dict, Optional
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from preloop.agents.errors import AgentStartError
 
 from .base import AgentExecutor
@@ -119,6 +121,36 @@ def create_executor_for_execution(
         )
         if account_id is None and execution is not None:
             account_id = getattr(execution, "account_id", None)
+        # Managed agents retain their existing credential. They cannot receive
+        # the execution-bound triage tool policy required by this controller.
+        # Recheck durable provenance because a saved flow can change after
+        # reservation, including losing its triage name or preset identity.
+        from preloop.services.issue_triage_controller import (
+            is_triage_execution,
+            is_triage_flow,
+        )
+
+        execution_id = getattr(execution, "id", None) or (execution_context or {}).get(
+            "execution_id"
+        )
+        try:
+            triage = is_triage_flow(db, flow) or (
+                execution_id is not None
+                and is_triage_execution(
+                    db, execution_id=execution_id, account_id=account_id
+                )
+            )
+        except (ValueError, SQLAlchemyError) as exc:
+            raise AgentStartError(
+                "persistent execution triage provenance could not be verified",
+                category="runner_error",
+            ) from exc
+        if triage:
+            raise AgentStartError(
+                "triage_persistent_executor_unsupported: use an ephemeral flow "
+                "with an execution-bound credential",
+                category="runner_error",
+            )
         return AgentControlExecutor(
             agent_type,
             persistent,

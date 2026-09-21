@@ -4091,7 +4091,7 @@ export interface RunPresetItemResult {
   execution_status?: string | null;
   execution_url?: string | null;
   error?: string | null;
-  // The target already had an active run on this flow; the request reused it.
+  // The request reused an existing run, which may already be complete.
   coalesced?: boolean | null;
 }
 
