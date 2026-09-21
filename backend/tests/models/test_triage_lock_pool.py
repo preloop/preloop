@@ -1,6 +1,7 @@
 """Real PostgreSQL coverage for bounded, isolated triage lock connections."""
 
 from uuid import uuid4
+from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import create_engine, event, text
@@ -42,9 +43,11 @@ def test_lock_capacity_isolated_from_saturated_data_pool(db_engine: Engine) -> N
                     assert second.scalar(text("SELECT 1")) == 1
             # Checkout events were retained on the recreated pool as well.
             assert len(checkouts) == 4
-        with pytest.raises(RuntimeError):
+        operation = Mock(side_effect=RuntimeError("release capacity on failure"))
+        with pytest.raises(RuntimeError, match="release capacity on failure"):
             with triage_lock_connection(source):
-                raise RuntimeError("release capacity on failure")
+                operation()
+        operation.assert_called_once_with()
         with triage_lock_connection(source) as recovered:
             assert recovered.scalar(text("SELECT 1")) == 1
         state = _lock_pool(source)
