@@ -1,6 +1,6 @@
 {
   "name": "@preloop-ai/openclaw-plugin",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Approve or deny your OpenClaw agent's dangerous tool calls from your phone, watch, Slack or the web, and talk to a running session from anywhere.",
   "license": "Apache-2.0",
   "type": "module",

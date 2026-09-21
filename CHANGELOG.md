@@ -1308,6 +1308,9 @@ avatars.
 
 ### Fixed
 
+- **`@preloop-ai/openclaw-plugin` 0.3.1**: `config.enabled=false` now
+  registers nothing (no Agent Control channel, no tool-call hook), matching
+  the manifest. Previously the flag was advertised and ignored (#857).
 - Refresh the vendored model price catalog so Gemini 3.8 Flash is priced from
   the catalog, cache-read rate included, for both the `google` and `gemini`
   provider spellings (#850).
