@@ -17,6 +17,9 @@ from preloop.agents.container import (
     COMMIT_PR_TITLE_FILE,
     FLOW_PR_BODY_FILE,
     FLOW_PR_TITLE_FILE,
+    WORKSPACE_PROBE_MARKER,
+    WORKSPACE_PROBE_REPO_LIST,
+    WORKSPACE_PROGRESS_PROBE_SCRIPT,
     WRITE_PR_PAYLOAD_PY,
     ContainerAgentExecutor,
     _validated_git_ref,
@@ -1470,6 +1473,23 @@ class TestGitApiTokensNotInScript:
         assert commands == ""
         assert "origin/preloop/fix" not in commands
 
+    def test_empty_branch_prints_the_no_commits_marker(self, container_executor):
+        """The evidence the no-progress classification rests on (#851).
+
+        The block already says "No commits ..." in prose; the marker is its
+        machine-readable twin, so the orchestrator never has to match a
+        sentence that somebody will reword.
+        """
+        from preloop.services.no_progress_guard import NO_COMMITS_MARKER
+
+        context = self._context()
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert f"{NO_COMMITS_MARKER} preloop/fix" in commands
+        # Printed on the branch-was-empty side only: a run that pushed work
+        # must never be read as a run that produced none.
+        no_commits_at = commands.index(NO_COMMITS_MARKER)
+        assert commands.index("git push origin") < no_commits_at
+
 
 class TestPushCredentialsWithoutRepositoryTracker:
     """Reproduces the post-execution push that had no credentials.
@@ -2177,3 +2197,212 @@ def test_source_words_do_not_end_codex_command_transcript(
 def test_unconfirmed_command_header_does_not_suppress_failure(container_executor):
     logs = 'exec\n/bin/bash -lc "true"\nAgent execution failed: cannot start CLI\ncodex\nStopped'
     assert container_executor._detect_error_in_logs(logs) is True
+
+
+def _git(repo: pathlib.Path, *args: str) -> None:
+    """Run one git command in ``repo`` with an identity of its own."""
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=agent@example.com",
+            "-c",
+            "user.name=Probe Agent",
+            "-c",
+            "commit.gpgsign=false",
+            "-C",
+            str(repo),
+            *args,
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _make_repo(path: pathlib.Path, *, with_remote: bool = True) -> pathlib.Path:
+    """A checkout with one commit already shared with its remote."""
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "-c", "init.defaultBranch=main", "init", str(path)],
+        check=True,
+        capture_output=True,
+    )
+    (path / "README.md").write_text("start\n")
+    _git(path, "add", "README.md")
+    _git(path, "commit", "-m", "start")
+    if with_remote:
+        bare = path.parent / f"{path.name}-remote.git"
+        subprocess.run(
+            ["git", "init", "--bare", str(bare)], check=True, capture_output=True
+        )
+        _git(path, "remote", "add", "origin", str(bare))
+        _git(path, "push", "origin", "HEAD")
+        _git(path, "fetch", "origin")
+    return path
+
+
+def _probe(*roots: str) -> str:
+    """Run the real probe script over ``roots`` and return its verdict."""
+    result = subprocess.run(
+        ["sh", "-c", WORKSPACE_PROGRESS_PROBE_SCRIPT, "sh", *roots],
+        capture_output=True,
+        text=True,
+    )
+    verdict = ""
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(WORKSPACE_PROBE_MARKER):
+            verdict = stripped[len(WORKSPACE_PROBE_MARKER) :].strip()
+    return verdict
+
+
+class TestWorkspaceProgressProbeScript:
+    """The probe runs for real here, against real git repositories (#851).
+
+    A stop rests on this script's answer, so "clean" has to mean the agent
+    genuinely produced nothing, and everything the script cannot see has to
+    come back as "unknown".
+    """
+
+    def test_an_untouched_checkout_is_clean(self, tmp_path):
+        _make_repo(tmp_path / "workspace" / "repo")
+        assert _probe(str(tmp_path / "workspace")) == "clean"
+
+    def test_an_edited_file_is_progress(self, tmp_path):
+        repo = _make_repo(tmp_path / "workspace" / "repo")
+        (repo / "README.md").write_text("edited\n")
+        assert _probe(str(tmp_path / "workspace")) == "dirty"
+
+    def test_a_new_untracked_file_is_progress(self, tmp_path):
+        repo = _make_repo(tmp_path / "workspace" / "repo")
+        (repo / "new_module.py").write_text("x = 1\n")
+        assert _probe(str(tmp_path / "workspace")) == "dirty"
+
+    def test_a_commit_that_is_not_pushed_is_progress(self, tmp_path):
+        """A committed run has a clean tree and has still done the work."""
+        repo = _make_repo(tmp_path / "workspace" / "repo")
+        (repo / "feature.py").write_text("def f():\n    return 1\n")
+        _git(repo, "add", "feature.py")
+        _git(repo, "commit", "-m", "add the feature")
+        assert _probe(str(tmp_path / "workspace")) == "dirty"
+
+    def test_a_checkout_with_no_remote_is_unknown(self, tmp_path):
+        """ "Not pushed yet" has no meaning without a remote to push to.
+
+        ``rev-list --not --remotes`` filters nothing in such a repository and
+        would count every commit that was ever made, which used to read as
+        progress forever and quietly retired the guard.
+        """
+        _make_repo(tmp_path / "workspace" / "repo", with_remote=False)
+        assert _probe(str(tmp_path / "workspace")) == "unknown"
+
+    def test_a_checkout_with_no_remote_still_shows_its_edits(self, tmp_path):
+        repo = _make_repo(tmp_path / "workspace" / "repo", with_remote=False)
+        (repo / "README.md").write_text("edited\n")
+        assert _probe(str(tmp_path / "workspace")) == "dirty"
+
+    def test_a_path_with_a_space_is_probed_not_split(self, tmp_path):
+        repo = _make_repo(tmp_path / "workspace" / "my app")
+        (repo / "README.md").write_text("edited\n")
+        assert _probe(str(tmp_path / "workspace")) == "dirty"
+
+    def test_a_root_that_does_not_exist_is_unknown(self, tmp_path):
+        _make_repo(tmp_path / "workspace" / "repo")
+        assert _probe(str(tmp_path / "workspace"), str(tmp_path / "gone")) == "unknown"
+
+    def test_a_root_with_no_repository_is_unknown(self, tmp_path):
+        (tmp_path / "workspace").mkdir()
+        assert _probe(str(tmp_path / "workspace")) == "unknown"
+
+    def test_work_outside_the_workspace_root_is_found(self, tmp_path):
+        """An absolute clone_path puts the checkout outside /workspace."""
+        (tmp_path / "workspace").mkdir()
+        elsewhere = _make_repo(tmp_path / "srv" / "checkout")
+        (elsewhere / "README.md").write_text("edited\n")
+        assert _probe(str(tmp_path / "workspace")) == "unknown"
+        assert _probe(str(tmp_path / "workspace"), str(elsewhere)) == "dirty"
+
+    def test_the_same_repository_twice_is_probed_once(self, tmp_path):
+        repo = _make_repo(tmp_path / "workspace" / "repo")
+        assert _probe(str(tmp_path / "workspace"), str(repo)) == "clean"
+
+    def test_evidence_of_work_outranks_an_unreadable_sibling(self, tmp_path):
+        """One repository nobody can answer for must not mask a busy one."""
+        repo = _make_repo(tmp_path / "workspace" / "repo")
+        (repo / "README.md").write_text("edited\n")
+        _make_repo(tmp_path / "workspace" / "other", with_remote=False)
+        assert _probe(str(tmp_path / "workspace")) == "dirty"
+
+    def test_the_probe_cleans_up_after_itself(self, tmp_path):
+        _make_repo(tmp_path / "workspace" / "repo")
+        _probe(str(tmp_path / "workspace"))
+        leftovers = list(
+            pathlib.Path(WORKSPACE_PROBE_REPO_LIST).parent.glob(
+                f"{pathlib.Path(WORKSPACE_PROBE_REPO_LIST).name}.*"
+            )
+        )
+        assert leftovers == []
+
+
+class TestWorkspaceProbeRoots:
+    """Which directories the probe is pointed at (#851)."""
+
+    def _container(self, working_dir, *, fails=False):
+        container = MagicMock()
+        if fails:
+            container.show = AsyncMock(side_effect=RuntimeError("no such container"))
+        else:
+            container.show = AsyncMock(
+                return_value={"Config": {"WorkingDir": working_dir}}
+            )
+        return container
+
+    async def test_an_absolute_clone_path_is_added(self, container_executor):
+        roots = await container_executor._workspace_probe_roots(
+            self._container("/srv/checkout")
+        )
+        assert roots == ["/workspace", "/srv/checkout"]
+
+    @pytest.mark.parametrize(
+        "working_dir",
+        ["/workspace", "/workspace/repo", "", "   ", "relative/path", "/"],
+    )
+    async def test_the_workspace_is_enough_on_its_own(
+        self, container_executor, working_dir
+    ):
+        roots = await container_executor._workspace_probe_roots(
+            self._container(working_dir)
+        )
+        assert roots == ["/workspace"]
+
+    async def test_an_unreadable_container_still_probes_the_workspace(
+        self, container_executor
+    ):
+        roots = await container_executor._workspace_probe_roots(
+            self._container("/srv/checkout", fails=True)
+        )
+        assert roots == ["/workspace"]
+
+    async def test_the_roots_travel_as_arguments_not_as_script_text(
+        self, container_executor
+    ):
+        """The paths are argv, so a space in one can never split a word."""
+        container = self._container("/srv/my checkout")
+        exec_handle = MagicMock()
+        stream = MagicMock()
+        stream.__aenter__ = AsyncMock(return_value=stream)
+        stream.__aexit__ = AsyncMock(return_value=False)
+        message = MagicMock()
+        message.data = f"{WORKSPACE_PROBE_MARKER} clean\n".encode()
+        stream.read_out = AsyncMock(side_effect=[message, None])
+        exec_handle.start = MagicMock(return_value=stream)
+        container.exec = AsyncMock(return_value=exec_handle)
+        docker = MagicMock()
+        docker.containers.get = AsyncMock(return_value=container)
+        container_executor._get_docker_client = AsyncMock(return_value=docker)
+
+        assert await container_executor.probe_workspace_changed("abc123") is False
+        cmd = container.exec.await_args.kwargs["cmd"]
+        assert cmd[:2] == ["sh", "-c"]
+        assert cmd[3:] == ["sh", "/workspace", "/srv/my checkout"]
+        assert "/srv/my checkout" not in cmd[2]

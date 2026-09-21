@@ -1350,7 +1350,13 @@ describe('CostView', () => {
 
       const inactive = tableRows[1];
       expect(inactive.classList.contains('override-inactive')).to.equal(true);
-      expect(inactive.textContent!.replace(/\s+/g, ' ')).to.contain('Inactive');
+      // Switched off, run out and not started yet are three answers, and
+      // this row was switched off.
+      expect(
+        inactive
+          .querySelector('[data-testid="override-standing"]')!
+          .textContent!.trim()
+      ).to.equal('Disabled');
       // No ai_model_id: the alias is text, not a link.
       expect(inactive.querySelector('a')).to.not.exist;
       expect(inactive.textContent!.replace(/\s+/g, ' ')).to.contain(
@@ -1364,6 +1370,80 @@ describe('CostView', () => {
         .textContent!.replace(/\s+/g, ' ');
       expect(summaryRow).to.contain('Active overrides');
       expect(summaryRow).to.contain('1');
+    });
+
+    it('tells a future-dated override apart from a switched-off one', async () => {
+      const startsOn = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      overridePayload = [
+        {
+          ...activeOverride,
+          id: 'override-pending-1',
+          effective_from: startsOn.toISOString(),
+        },
+      ] as Record<string, unknown>[];
+      const element = await loadView();
+
+      const row = rows(element)[0];
+      expect(row.classList.contains('override-inactive')).to.equal(true);
+      expect(
+        row
+          .querySelector('[data-testid="override-standing"]')!
+          .textContent!.trim()
+      ).to.equal(`Starts ${formatDay(startsOn.toISOString())}`);
+      // It is not pricing anything yet, so it is not in the count.
+      expect(
+        element
+          .shadowRoot!.querySelector('#panel-pricing .policy-summary-row')!
+          .textContent!.replace(/\s+/g, ' ')
+      ).to.contain('0');
+    });
+
+    it('re-reads the edited row when the dialog opens', async () => {
+      const element = await loadView();
+      const listReads = () =>
+        fetchStub
+          .getCalls()
+          .filter((call) =>
+            String(call.args[0]).includes(
+              '/api/v1/billing/cost/pricing-overrides'
+            )
+          ).length;
+      const before = listReads();
+      // Somebody else changed a field this dialog does not show.
+      overridePayload = [
+        { ...inactiveOverride },
+        { ...activeOverride, notes: 'Renegotiated by another operator.' },
+      ] as Record<string, unknown>[];
+
+      rowButton(rows(element)[0], 'edit-override').click();
+      await waitUntil(
+        () => listReads() > before,
+        'the editor never re-read the row'
+      );
+      await waitUntil(
+        () =>
+          (
+            element as unknown as {
+              priceEditOverride: { notes: string } | null;
+            }
+          ).priceEditOverride?.notes === 'Renegotiated by another operator.',
+        'the re-read row never reached the dialog'
+      );
+      await element.updateComplete;
+      (
+        element.shadowRoot!.querySelector(
+          '[data-testid="save-override"]'
+        ) as HTMLElement
+      ).click();
+      await waitUntil(
+        () => writesOfKind('PUT').length > 0,
+        'no update was sent'
+      );
+
+      // The save carries the current note, not the one from page load.
+      expect(
+        (writesOfKind('PUT')[0].body as Record<string, unknown>).notes
+      ).to.equal('Renegotiated by another operator.');
     });
 
     it('edits a row through the dialog, pre-filled, and saves with PUT', async () => {

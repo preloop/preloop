@@ -1333,6 +1333,7 @@ export class CostView extends AuthedElement {
   private openPriceOverrideEditor(override: ModelPriceOverride | null) {
     this.overrideActionError = null;
     this.priceFormError = null;
+    this.overrideRemoved = null;
     this.priceEditOverride = override;
     const text = (value: number | null | undefined): string =>
       typeof value === 'number' ? String(value) : '';
@@ -1349,6 +1350,32 @@ export class CostView extends AuthedElement {
     this.priceFxRate = text(override?.fx_rate_to_usd);
     this.priceMode = this.priceModeFor(override);
     this.priceDialogOpen = true;
+    if (override) void this.refreshEditedOverride(override.id);
+  }
+
+  /**
+   * Re-read the row being edited, without touching what the reader typed.
+   *
+   * The update is a whole row, including the fields this dialog does not show,
+   * and overrides are also managed by API. Re-reading when the dialog opens
+   * narrows the window in which a save reverts somebody else's change from
+   * "since this page loaded" to "since this dialog opened". A failure here
+   * changes nothing: the row captured at load time is still what gets sent.
+   */
+  private async refreshEditedOverride(id: string): Promise<void> {
+    try {
+      const overrides = await getModelPriceOverrides({
+        activeOnly: false,
+        passive: true,
+      });
+      this.pricingOverrides = overrides;
+      const fresh = overrides.find((row) => row.id === id);
+      if (fresh && this.priceEditOverride?.id === id) {
+        this.priceEditOverride = fresh;
+      }
+    } catch {
+      // Keeping the row we have is better than refusing to edit.
+    }
   }
 
   private priceModeFor(
@@ -1380,6 +1407,7 @@ export class CostView extends AuthedElement {
     if (!target || this.overrideRemoving) return;
     this.overrideRemoving = true;
     this.overrideActionError = null;
+    this.overrideRemoved = null;
     try {
       await deleteModelPriceOverride(target.id);
       this.overrideRemoveTarget = null;
@@ -2778,22 +2806,46 @@ export class CostView extends AuthedElement {
    * its window is still worth showing, greyed, because it explains what the
    * account used to pay.
    */
-  private isOverrideInForce(override: ModelPriceOverride): boolean {
-    if (!override.is_active) return false;
+  private overrideStandingOf(
+    override: ModelPriceOverride
+  ): 'in-force' | 'disabled' | 'expired' | 'pending' {
+    if (!override.is_active) return 'disabled';
     const now = Date.now();
-    if (
-      override.effective_from &&
-      new Date(override.effective_from).getTime() > now
-    ) {
-      return false;
-    }
     if (
       override.effective_until &&
       new Date(override.effective_until).getTime() <= now
     ) {
-      return false;
+      return 'expired';
     }
-    return true;
+    if (
+      override.effective_from &&
+      new Date(override.effective_from).getTime() > now
+    ) {
+      return 'pending';
+    }
+    return 'in-force';
+  }
+
+  private isOverrideInForce(override: ModelPriceOverride): boolean {
+    return this.overrideStandingOf(override) === 'in-force';
+  }
+
+  /**
+   * Why a row is not pricing anything. Switched off, run out, and not started
+   * yet are three different answers, and a future-dated override that reads
+   * "Inactive" invites somebody to recreate a price that is already coming.
+   */
+  private overrideStandingLabel(override: ModelPriceOverride): string {
+    switch (this.overrideStandingOf(override)) {
+      case 'disabled':
+        return 'Disabled';
+      case 'expired':
+        return 'Expired';
+      case 'pending':
+        return `Starts ${this.formatOverrideDate(override.effective_from)}`;
+      default:
+        return '';
+    }
   }
 
   /** Active rows first, newest first inside each group. */
@@ -2871,8 +2923,12 @@ export class CostView extends AuthedElement {
             ${
               inForce
                 ? nothing
-                : html`<sl-badge class="chip" pill variant="neutral"
-                    >Inactive</sl-badge
+                : html`<sl-badge
+                    class="chip"
+                    pill
+                    variant="neutral"
+                    data-testid="override-standing"
+                    >${this.overrideStandingLabel(override)}</sl-badge
                   >`
             }
           </div>

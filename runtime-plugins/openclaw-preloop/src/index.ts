@@ -737,6 +737,13 @@ export function register(api: {
     ): void;
   };
 }): void {
+  if (api.pluginConfig?.enabled === false) {
+    const log = api.logger?.info ?? api.logger?.warn;
+    log?.(
+      "Preloop plugin is installed but disabled (config.enabled=false): no Agent Control channel, no tool-call hook",
+    );
+    return;
+  }
   const instance = new PreloopOpenClawPlugin();
   if (api.logger?.warn || api.logger?.error) {
     instance.setLogger((message) =>

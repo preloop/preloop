@@ -47,6 +47,28 @@ def test_vendored_catalog_prices_embedding_models() -> None:
         assert isinstance(value.get("input_cost_per_token"), (int, float))
 
 
+def test_vendored_catalog_prices_gemini_38_flash_with_cache_rate() -> None:
+    """Gemini 3.8 Flash ships priced, cache-read rate included.
+
+    The snapshot went 71 days without a refresh and stopped at Gemini 3.5,
+    so 3.8 Flash rows were priced only by interim account overrides that had
+    no cache-read rate: cache hits were billed at the full input rate
+    (issue #850). Upstream litellm publishes the rate, so the vendored
+    snapshot has to carry it, for the Gemini API key and the Vertex key
+    alike.
+    """
+    raw = json.loads(CATALOG_PATH.read_text())
+    for key in ("gemini/gemini-3.8-flash", "vertex_ai/gemini-3.8-flash"):
+        entry = raw.get(key)
+        assert entry is not None, f"{key} is missing from the vendored snapshot"
+        assert entry["mode"] == "chat"
+        assert entry["input_cost_per_token"] == 7.5e-07
+        assert entry["output_cost_per_token"] == 3.75e-06
+        # A cached input token costs a tenth of an uncached one; without this
+        # field the estimator falls back to the full input price.
+        assert entry["cache_read_input_token_cost"] == 7.5e-08
+
+
 def test_load_catalog_registers_prices_with_litellm(tmp_path) -> None:
     """register_model merges catalog entries into litellm.model_cost."""
     snapshot = {

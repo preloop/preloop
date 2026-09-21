@@ -90,6 +90,43 @@ If it did not run to completion: write {RESULT_ARTIFACT_PATH} as {{"status": "fa
 Then stop."""
 
 
+# The live no-progress reminder (#851). Unlike the completion nudge above it
+# is delivered while the harness session is still open, by the orchestrator's
+# guard, so its instruction is the opposite one: start changing files, or say
+# why you cannot. It never asks for a push or a comment; the container's
+# post-execution block owns those, exactly as before.
+NO_PROGRESS_NUDGE_PROMPT_TEMPLATE = """You have made no changes after {minutes} minutes.
+
+Nothing in the checkout has been edited: no tracked change, no new file. Reading and planning are finished as far as this run is concerned.
+
+Start implementing now. Make the smallest real edit that moves the task forward and commit it; further commits are fine, the reviewer sees the result, not the history.
+
+If you cannot implement anything, stop and write {result_path} as {{"status": "failure", "reason": "<one short sentence naming the blocker>"}}.
+
+Do not start a new investigation and do not summarise what you have read."""
+
+
+def build_no_progress_nudge_prompt(
+    elapsed_seconds: int, result_path: str = RESULT_ARTIFACT_PATH
+) -> str:
+    """Render the live no-progress reminder.
+
+    Args:
+        elapsed_seconds: Seconds the run has gone without a workspace change.
+        result_path: Structured result report the agent should write when it
+            is blocked.
+
+    Returns:
+        The prompt text, with the elapsed time rounded to whole minutes
+        because "after 15 minutes" is the fact, and seconds of precision on it
+        would only invite the agent to argue with the number.
+    """
+    minutes = max(1, int(round(max(0, int(elapsed_seconds)) / 60)))
+    return NO_PROGRESS_NUDGE_PROMPT_TEMPLATE.format(
+        minutes=minutes, result_path=result_path
+    )
+
+
 def completion_nudge_enabled(execution_context: Dict[str, Any]) -> bool:
     """Whether this session should carry the in-place nudge block.
 
