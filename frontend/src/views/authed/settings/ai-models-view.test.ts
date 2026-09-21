@@ -602,6 +602,10 @@ describe('AIModelsView attention dismissals', () => {
   let overviewRequests: string[];
   let lastFailureAt: string;
   let failedRequestsSince: number;
+  /** #848: what the window says this model served with no price at all. */
+  let unpricedRequestCount: number;
+  /** Off for the rows that are only unpriced, not failing. */
+  let failuresEnabled: boolean;
   let extraAliasFailures: {
     alias: string;
     last_failure_at: string;
@@ -623,30 +627,34 @@ describe('AIModelsView attention dismissals', () => {
     model_alias: 'example/reviewer',
     is_default: false,
     total_requests: 40,
-    successful_requests: 31,
-    failed_requests: 9,
+    successful_requests: failuresEnabled ? 31 : 40,
+    failed_requests: failuresEnabled ? 9 : 0,
     token_usage: {
       prompt_tokens: 100,
       completion_tokens: 100,
       total_tokens: 200,
     },
     estimated_cost: 1.5,
-    unpriced_request_count: 0,
+    unpriced_request_count: unpricedRequestCount,
     active_session_count: 0,
     last_request_at: '2026-09-14T10:00:00Z',
-    last_failure_at: lastFailureAt,
-    last_failure_alias: 'example/reviewer',
+    last_failure_at: failuresEnabled ? lastFailureAt : null,
+    last_failure_alias: failuresEnabled ? 'example/reviewer' : null,
     failed_requests_since: failedSinceAsked ? failedRequestsSince : null,
-    alias_failures: [
-      {
-        alias: 'example/reviewer',
-        last_failure_at: lastFailureAt,
-        failed_requests: 9,
-        failed_requests_since: failedSinceAsked ? failedRequestsSince : null,
-      },
-      ...extraAliasFailures,
-    ],
-    pricing_source: 'catalog',
+    alias_failures: failuresEnabled
+      ? [
+          {
+            alias: 'example/reviewer',
+            last_failure_at: lastFailureAt,
+            failed_requests: 9,
+            failed_requests_since: failedSinceAsked
+              ? failedRequestsSince
+              : null,
+          },
+          ...extraAliasFailures,
+        ]
+      : [],
+    pricing_source: failuresEnabled ? 'catalog' : 'none',
   });
 
   beforeEach(() => {
@@ -658,6 +666,8 @@ describe('AIModelsView attention dismissals', () => {
     overviewRequests = [];
     lastFailureAt = '2026-09-14T09:00:00Z';
     failedRequestsSince = 2;
+    unpricedRequestCount = 0;
+    failuresEnabled = true;
     extraAliasFailures = [];
 
     fetchStub = sinon
@@ -673,6 +683,14 @@ describe('AIModelsView attention dismissals', () => {
           if (method === 'GET') {
             return json({ items: dismissalsResponse });
           }
+          if (method === 'DELETE') {
+            const itemId = decodeURIComponent(url.split('/').pop()!);
+            dismissalWrites.push({ url, method, body: null });
+            dismissalsResponse = dismissalsResponse.filter(
+              (record) => record.item_id !== itemId
+            );
+            return new Response(null, { status: 204 });
+          }
           const body = JSON.parse(String(init!.body));
           dismissalWrites.push({ url, method, body });
           const record = {
@@ -685,7 +703,14 @@ describe('AIModelsView attention dismissals', () => {
             dismissed_by_username: 'Jane Doe',
             created_at: '2026-09-14T09:30:00Z',
           };
-          dismissalsResponse = [record];
+          // Upsert, as the API does: a failure marker and an unpriced marker
+          // for the same model are two rows, not one.
+          dismissalsResponse = [
+            ...dismissalsResponse.filter(
+              (existing) => existing.item_id !== record.item_id
+            ),
+            record,
+          ];
           return json(record);
         }
 
@@ -927,5 +952,224 @@ describe('AIModelsView attention dismissals', () => {
     expect(
       element.shadowRoot!.querySelector('[data-testid="dismiss-model-1"]')
     ).to.equal(null);
+  });
+
+  /**
+   * #848. A model can be unpriced on purpose: a local model, a flat-rate
+   * subscription, a bill settled outside Preloop. Until now the only way to
+   * quiet one was to price it at $0, which records a false cost.
+   */
+  describe('unpriced requests marked expected', () => {
+    const unpricedMarker = (overrides: Record<string, unknown> = {}) => ({
+      id: 'dismissal-unpriced',
+      item_id: 'model-unpriced:example/reviewer',
+      fingerprint: 'unpriced:example/reviewer',
+      reason: 'expected',
+      snooze_until: null,
+      dismissed_by_user_id: 'user-1',
+      dismissed_by_username: 'Jane Doe',
+      created_at: '2026-09-14T09:30:00Z',
+      ...overrides,
+    });
+
+    const failureMarker = () => ({
+      id: 'dismissal-1',
+      item_id: 'model:example/reviewer',
+      fingerprint: `last:${lastFailureAt}`,
+      reason: 'fixed',
+      snooze_until: null,
+      dismissed_by_user_id: 'user-1',
+      dismissed_by_username: 'Jane Doe',
+      created_at: '2026-09-14T09:30:00Z',
+    });
+
+    const selectMenuItem = async (element: AIModelsView, value: string) => {
+      const menu = element.shadowRoot!.querySelector(
+        'tr[data-model-id="model-1"] .dismiss-dropdown sl-menu'
+      )!;
+      menu.dispatchEvent(
+        new CustomEvent('sl-select', { detail: { item: { value } } })
+      );
+      await waitUntil(
+        () => dismissalWrites.length > 0,
+        'the dismissal was never written'
+      );
+      await element.updateComplete;
+    };
+
+    beforeEach(() => {
+      failuresEnabled = false;
+      unpricedRequestCount = 12;
+    });
+
+    it('counts and badges a model nobody has marked', async () => {
+      const element = await mount();
+
+      expect((element as any).modelsNeedingAttentionCount).to.equal(1);
+      expect(healthBadge(element).textContent!.trim()).to.equal('Attention');
+      // The row says what ends it, not only that something is wrong.
+      const line = element.shadowRoot!.querySelector(
+        '[data-testid="unpriced-model-1"]'
+      )!;
+      expect(line.textContent!.replace(/\s+/g, ' ')).to.contain(
+        '12 requests unpriced'
+      );
+      expect(line.getAttribute('title')).to.contain('Apply to past usage');
+    });
+
+    it('writes the item id and fingerprint the inbox reads', async () => {
+      const element = await mount();
+
+      await selectMenuItem(element, 'unpriced-expected');
+
+      expect(dismissalWrites[0].method).to.equal('PUT');
+      expect(decodeURIComponent(dismissalWrites[0].url)).to.contain(
+        'model-unpriced:example/reviewer'
+      );
+      expect(dismissalWrites[0].body).to.deep.equal({
+        fingerprint: 'unpriced:example/reviewer',
+        reason: 'expected',
+      });
+    });
+
+    it('snoozes the price question for seven days', async () => {
+      const element = await mount();
+
+      await selectMenuItem(element, 'unpriced-snoozed');
+
+      expect(dismissalWrites[0].body).to.deep.equal({
+        fingerprint: 'unpriced:example/reviewer',
+        reason: 'snoozed',
+        snooze_days: 7,
+      });
+    });
+
+    it('drops the model out of the count and badges it Healthy', async () => {
+      dismissalsResponse = [unpricedMarker()];
+
+      const element = await mount();
+
+      expect((element as any).modelsNeedingAttentionCount).to.equal(0);
+      const badge = healthBadge(element);
+      expect(badge.textContent!.trim()).to.equal('Healthy');
+      // The claim stays checkable: the badge says when it was made.
+      expect(badge.getAttribute('title')).to.contain('marked expected');
+      // Nothing left to acknowledge, so no menu.
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="dismiss-model-1"]')
+      ).to.equal(null);
+    });
+
+    // The opposite of a failure marker: the fingerprint has no timestamp in
+    // it, so more unpriced traffic is not news.
+    it('stays quiet when newer unpriced requests arrive', async () => {
+      dismissalsResponse = [unpricedMarker()];
+      unpricedRequestCount = 9000;
+
+      const element = await mount();
+
+      expect((element as any).modelsNeedingAttentionCount).to.equal(0);
+      expect(healthBadge(element).textContent!.trim()).to.equal('Healthy');
+    });
+
+    it('flags the model again once the snooze has run out', async () => {
+      dismissalsResponse = [
+        unpricedMarker({
+          reason: 'snoozed',
+          snooze_until: '2020-01-01T00:00:00Z',
+        }),
+      ];
+
+      const element = await mount();
+
+      expect((element as any).modelsNeedingAttentionCount).to.equal(1);
+      expect(healthBadge(element).textContent!.trim()).to.equal('Attention');
+    });
+
+    it('restores a marked model from its row', async () => {
+      dismissalsResponse = [unpricedMarker()];
+
+      const element = await mount();
+      const restore = element.shadowRoot!.querySelector(
+        '[data-testid="restore-unpriced-model-1"]'
+      ) as HTMLElement;
+      expect(restore).to.exist;
+      restore.click();
+      await waitUntil(
+        () => dismissalWrites.length > 0,
+        'the restore was never written'
+      );
+
+      expect(dismissalWrites[0].method).to.equal('DELETE');
+      expect(decodeURIComponent(dismissalWrites[0].url)).to.contain(
+        'model-unpriced:example/reviewer'
+      );
+      await waitUntil(
+        () => healthBadge(element).textContent!.trim() === 'Attention',
+        'the row stayed healthy after being restored'
+      );
+      expect((element as any).modelsNeedingAttentionCount).to.equal(1);
+    });
+
+    // Two independent facts, two independent markers.
+    it('keeps a failing and unpriced row flagged until both are marked', async () => {
+      failuresEnabled = true;
+      dismissalsResponse = [failureMarker()];
+
+      const element = await mount();
+
+      expect((element as any).modelsNeedingAttentionCount).to.equal(1);
+      expect(healthBadge(element).textContent!.trim()).to.equal('Attention');
+      // The menu offers only the claim that is still open.
+      const values = [
+        ...element.shadowRoot!.querySelectorAll(
+          'tr[data-model-id="model-1"] .dismiss-dropdown sl-menu sl-menu-item'
+        ),
+      ].map((item) => item.getAttribute('value'));
+      expect(values).to.eql(['unpriced-expected', 'unpriced-snoozed']);
+
+      await selectMenuItem(element, 'unpriced-expected');
+      await waitUntil(
+        () => healthBadge(element).textContent!.trim() === 'Healthy',
+        'the row stayed flagged after both markers were taken'
+      );
+      expect((element as any).modelsNeedingAttentionCount).to.equal(0);
+      expect(healthBadge(element).getAttribute('title')).to.contain(
+        'Marked fixed'
+      );
+      expect(healthBadge(element).getAttribute('title')).to.contain(
+        'marked expected'
+      );
+    });
+
+    it('offers both sets of answers on a row that is failing and unpriced', async () => {
+      failuresEnabled = true;
+
+      const element = await mount();
+
+      const values = [
+        ...element.shadowRoot!.querySelectorAll(
+          'tr[data-model-id="model-1"] .dismiss-dropdown sl-menu sl-menu-item'
+        ),
+      ].map((item) => item.getAttribute('value'));
+      expect(values).to.eql([
+        'expected',
+        'snoozed',
+        'fixed',
+        'unpriced-expected',
+        'unpriced-snoozed',
+      ]);
+    });
+
+    it('offers no unpriced control against a server without the endpoint', async () => {
+      dismissalsSupported = false;
+
+      const element = await mount();
+
+      expect(healthBadge(element).textContent!.trim()).to.equal('Attention');
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="dismiss-model-1"]')
+      ).to.equal(null);
+    });
   });
 });

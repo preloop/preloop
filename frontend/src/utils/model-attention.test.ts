@@ -4,8 +4,13 @@ import {
   markerFailureTimestamp,
   markerSinceLabel,
   modelAttentionState,
+  unpricedAttentionState,
 } from './model-attention';
-import { deriveAttentionItems, modelAttentionItemId } from './attention';
+import {
+  deriveAttentionItems,
+  modelAttentionItemId,
+  unpricedModelAttentionItemId,
+} from './attention';
 import type { AttentionDismissal } from '../api';
 
 /**
@@ -265,5 +270,152 @@ describe('modelAttentionState', () => {
     expect(state.status).to.equal('quiet');
     expect(state.reasonText).to.be.null;
     expect(state.remediationText).to.be.null;
+  });
+});
+
+/**
+ * The unpriced half of the same rule (#848). A model that is unpriced on
+ * purpose (a local model, a flat rate, a bill settled outside Preloop) is
+ * marked once and stays quiet, which is why its fingerprint carries no
+ * timestamp: one more unpriced request is not news.
+ */
+describe('unpricedAttentionState', () => {
+  const NOW = new Date('2026-09-21T12:00:00Z');
+
+  const unpricedDismissal = (
+    overrides: Partial<AttentionDismissal> = {}
+  ): AttentionDismissal => ({
+    id: 'dismissal-2',
+    item_id: 'model-unpriced:local/qwen-3-coder',
+    fingerprint: 'unpriced:local/qwen-3-coder',
+    reason: 'expected',
+    snooze_until: null,
+    dismissed_by_user_id: 'user-1',
+    dismissed_by_username: 'Jane Doe',
+    created_at: '2026-09-20T09:30:00Z',
+    ...overrides,
+  });
+
+  const unpricedSummary = (overrides: Record<string, unknown> = {}) => ({
+    modelAlias: 'local/qwen-3-coder',
+    providerName: 'ollama',
+    unpricedRequests: 12,
+    ...overrides,
+  });
+
+  it('names the item and fingerprint the way every surface does', () => {
+    const state = unpricedAttentionState(unpricedSummary(), [], NOW);
+
+    expect(state.itemId).to.equal(
+      unpricedModelAttentionItemId('local/qwen-3-coder', 'ollama')
+    );
+    expect(state.itemId).to.equal('model-unpriced:local/qwen-3-coder');
+    expect(state.fingerprint).to.equal('unpriced:local/qwen-3-coder');
+    expect(state.status).to.equal('unpriced');
+    expect(state.dismissable).to.equal(true);
+    expect(state.restorable).to.equal(false);
+  });
+
+  it('derives the alias the way the failure item does', () => {
+    const failureItemId = modelAttentionItemId('local/qwen-3-coder', 'ollama');
+
+    expect(unpricedAttentionState(unpricedSummary(), [], NOW).itemId).to.equal(
+      failureItemId.replace('model:', 'model-unpriced:')
+    );
+  });
+
+  it('falls back to the provider when no alias was recorded', () => {
+    const state = unpricedAttentionState(
+      unpricedSummary({ modelAlias: null }),
+      [],
+      NOW
+    );
+
+    expect(state.itemId).to.equal('model-unpriced:ollama');
+    expect(state.fingerprint).to.equal('unpriced:ollama');
+  });
+
+  it('holds a model quiet while an active marker covers it', () => {
+    const state = unpricedAttentionState(
+      unpricedSummary(),
+      [unpricedDismissal()],
+      NOW
+    );
+
+    expect(state.status).to.equal('marked');
+    expect(state.marked).to.equal(true);
+    expect(state.dismissable).to.equal(false);
+    expect(state.restorable).to.equal(true);
+    expect(state.markerLabel).to.contain('marked expected');
+  });
+
+  // The point of a stable fingerprint: "unpriced by design" does not stop
+  // being true because the model served one more unpriced request.
+  it('stays marked however many more unpriced requests arrive', () => {
+    const state = unpricedAttentionState(
+      unpricedSummary({ unpricedRequests: 4000 }),
+      [unpricedDismissal()],
+      NOW
+    );
+
+    expect(state.status).to.equal('marked');
+  });
+
+  it('ignores a marker taken against another model', () => {
+    const state = unpricedAttentionState(
+      unpricedSummary(),
+      [unpricedDismissal({ item_id: 'model-unpriced:openrouter/x/y' })],
+      NOW
+    );
+
+    expect(state.status).to.equal('unpriced');
+    expect(state.dismissal).to.equal(null);
+  });
+
+  // A failure marker on the same model is a claim about a different fact.
+  it('ignores this model failure marker', () => {
+    const state = unpricedAttentionState(
+      unpricedSummary(),
+      [
+        unpricedDismissal({
+          item_id: 'model:local/qwen-3-coder',
+          fingerprint: 'last:2026-09-20T08:00:00Z',
+          reason: 'fixed',
+        }),
+      ],
+      NOW
+    );
+
+    expect(state.status).to.equal('unpriced');
+  });
+
+  it('flags the model again once a snooze has run out', () => {
+    const snoozed = unpricedDismissal({
+      reason: 'snoozed',
+      snooze_until: '2026-09-21T11:00:00Z',
+    });
+
+    expect(
+      unpricedAttentionState(unpricedSummary(), [snoozed], NOW).status
+    ).to.equal('unpriced');
+    expect(
+      unpricedAttentionState(
+        unpricedSummary(),
+        [snoozed],
+        new Date('2026-09-21T10:00:00Z')
+      ).status
+    ).to.equal('marked');
+  });
+
+  it('says nothing about a model whose requests are all priced', () => {
+    const state = unpricedAttentionState(
+      unpricedSummary({ unpricedRequests: 0 }),
+      [],
+      NOW
+    );
+
+    expect(state.status).to.equal('quiet');
+    expect(state.dismissable).to.equal(false);
+    expect(state.restorable).to.equal(false);
   });
 });
