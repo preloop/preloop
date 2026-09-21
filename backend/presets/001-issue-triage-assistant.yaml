@@ -28,6 +28,13 @@ prompt_template: |
   - State: {{trigger_event.payload.object_attributes.state}}
   - Labels: {{trigger_event.payload.object_attributes.labels}}
   - Updated: {{trigger_event.payload.object_attributes.updated_at}}
+  - Controller recovery request: {{trigger_event.triage_context.recovery_request}}
+
+  If the controller supplied a recovery request, it records a previous partial
+  write on this revision. Refresh the issue, then retry only that exact assessment,
+  complexity_label and optional title. Use its expected_revision or the freshly
+  observed revision. Do not generate replacement prose during recovery; the
+  controller verifies the recorded provider effects before completing the write.
 
   1. Refresh with `get_issue` on the URL above, passing
      include: ["label_catalog", "revision"]. Keep its exact expected_revision
@@ -101,7 +108,9 @@ prompt_template: |
      That call returns a triage receipt rather than the plain update response.
      Inspect the returned status, issue and operations. Only updated or unchanged
      with the selected complexity tag and cache_updated=true completes triage.
-     A conflict requires fresh context and re-evaluation before one bounded retry.
+     A conflict means this execution's revision is stale. Refresh to explain
+     the change and report the conflict; a new triage request assesses the new
+     revision. Do not retarget this execution to newer human requirements.
      A partial or failed result requires inspecting the observed issue and receipt;
      do not blindly repeat writes. With unknown complexity, the assessment can be
      saved, but report the missing tag as incomplete. Do not claim a provider or

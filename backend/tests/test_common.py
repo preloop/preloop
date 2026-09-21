@@ -150,6 +150,8 @@ async def test_get_tracker_client_success(
     )
 
     assert client is not None
+    # Provider-derived owner/repo/url must not mutate the stored context identity.
+    assert project.tracker_settings == {"github": {}}
     mock_crud_organization.get.assert_called_once_with(
         db_session, id=organization.id, account_id=test_user.account_id
     )
