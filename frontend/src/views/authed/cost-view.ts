@@ -1441,8 +1441,13 @@ export class CostView extends AuthedElement {
       const payload: ModelPriceOverrideCreate = {
         // Editing keeps the fields this dialog does not show: the cache rates,
         // the effective window and the notes an override was created with are
-        // not the operator's to lose by touching an input price.
-        ai_model_id: editing?.ai_model_id ?? null,
+        // not the operator's to lose by touching an input price. The model id
+        // is the exception: retyped to another alias, the row is about another
+        // model, and a stale id would link the table to the wrong page.
+        ai_model_id:
+          editing && editing.model_alias === this.priceModelAlias
+            ? editing.ai_model_id
+            : null,
         provider_name: this.priceProvider || null,
         model_alias: this.priceModelAlias,
         currency,

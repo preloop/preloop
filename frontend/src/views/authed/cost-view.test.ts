@@ -1494,6 +1494,31 @@ describe('CostView', () => {
       ).to.equal(null);
     });
 
+    it('drops the model id when the edit renames the alias', async () => {
+      const element = await loadView();
+
+      rowButton(rows(element)[0], 'edit-override').click();
+      await element.updateComplete;
+      (element as unknown as { priceModelAlias: string }).priceModelAlias =
+        'gpt-test-mini';
+      await element.updateComplete;
+      (
+        element.shadowRoot!.querySelector(
+          '[data-testid="save-override"]'
+        ) as HTMLElement
+      ).click();
+      await waitUntil(
+        () => writesOfKind('PUT').length > 0,
+        'no update was sent'
+      );
+
+      const body = writesOfKind('PUT')[0].body as Record<string, unknown>;
+      expect(body.model_alias).to.equal('gpt-test-mini');
+      // Another alias is another model: keeping the old id would link the row
+      // to the wrong detail page.
+      expect(body.ai_model_id).to.equal(null);
+    });
+
     it('keeps the row and says why when the edit is refused', async () => {
       overrideWriteFailure = {
         status: 422,
