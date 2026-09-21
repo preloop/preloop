@@ -333,6 +333,31 @@ describe('absolute og:image and twitter:image URLs', () => {
       'https://acme.example/assets/mcp-firewall.svg'
     );
   });
+
+  it('leaves a protocol-relative og_image unchanged', () => {
+    const config: BrandConfig = {
+      ...test_config,
+      landing: {
+        ...test_config.landing,
+        meta: {
+          ...test_config.landing.meta,
+          og_image: '//cdn.example.com/hero.jpg',
+        },
+      },
+    };
+
+    expect(absolute_url('//cdn.example.com/hero.jpg', config)).to.equal(
+      '//cdn.example.com/hero.jpg'
+    );
+    expect(get_meta_for_route('/', config).og_image).to.equal(
+      '//cdn.example.com/hero.jpg'
+    );
+    expect(
+      get_meta_for_route('/blog/preloop-0-16-0', config, [
+        { ...release_post, og_image: '//cdn.example.com/post.jpg' },
+      ]).og_image
+    ).to.equal('//cdn.example.com/post.jpg');
+  });
 });
 
 describe('brand-seo builders', () => {

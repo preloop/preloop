@@ -486,13 +486,13 @@ function get_origin(config: BrandConfig): string {
 
 /**
  * Resolve a site-relative path against the brand's public origin.
- * Already-absolute http(s) URLs are returned unchanged.
+ * Already-absolute http(s) and protocol-relative URLs are returned unchanged.
  */
 export function absolute_url(path: string, config: BrandConfig): string {
   if (!path) {
     return '';
   }
-  if (/^https?:\/\//i.test(path)) {
+  if (/^(?:https?:)?\/\//i.test(path)) {
     return path;
   }
   const origin = get_origin(config);
