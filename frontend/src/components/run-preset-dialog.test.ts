@@ -297,7 +297,15 @@ describe('RunPresetDialog', () => {
       if (anyCreated) expect(alert?.textContent).to.contain('View run');
     });
   }
-  for (const status of ['RUNNING', 'SUCCEEDED', 'FAILED']) {
+  for (const [status, needsAttention] of [
+    ['RUNNING', false],
+    ['SUCCEEDED', false],
+    ['FAILED', true],
+    ['CANCELLED', true],
+    ['STOPPED', true],
+    ['TIMED_OUT', true],
+    ['ABORTED', true],
+  ] as const) {
     it(`names each issue and reports the reused ${status.toLowerCase()} run`, async () => {
       const results = [
         {
@@ -348,11 +356,16 @@ describe('RunPresetDialog', () => {
       const alert = document.body.querySelector('sl-alert');
       expect(alert).to.exist;
       expect(alert?.getAttribute('variant')).to.equal(
-        status === 'FAILED' ? 'warning' : 'success'
+        needsAttention ? 'warning' : 'success'
       );
       const text = alert?.textContent || '';
       expect(text).to.contain('1 run created.');
       expect(text).to.contain('1 existing run reused.');
+      if (needsAttention) {
+        expect(text).to.contain('1 target needs attention.');
+      } else {
+        expect(text).to.not.contain('needs attention');
+      }
       expect(text).to.not.contain('already running');
       expect(text).to.contain(
         `example/repo#42: Existing run reused (${status.toLowerCase()}).`

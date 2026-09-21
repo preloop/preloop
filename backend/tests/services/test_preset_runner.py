@@ -806,7 +806,11 @@ async def test_reviewer_slug_still_rejected_on_issue_target() -> None:
 
 
 @pytest.mark.asyncio
-async def test_implementer_batch_targets_rejected() -> None:
+@pytest.mark.parametrize("preset_slug", [IMPLEMENTER_SLUG, REVIEWER_SLUG])
+@pytest.mark.parametrize("confirm_create", [False, True])
+async def test_nontriage_batch_targets_rejected(
+    preset_slug: str, confirm_create: bool
+) -> None:
     user = _user(uuid.uuid4())
     targets = [
         _Simple(kind="issue", issue_id=uuid.uuid4()),
@@ -816,9 +820,9 @@ async def test_implementer_batch_targets_rejected() -> None:
         await run_preset_on_target(
             MagicMock(),
             current_user=user,
-            preset_slug=IMPLEMENTER_SLUG,
+            preset_slug=preset_slug,
             targets=targets,
-            confirm_create=False,
+            confirm_create=confirm_create,
             triggered_by="Jane Doe",
         )
     assert exc.value.status_code == 400

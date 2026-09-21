@@ -68,6 +68,17 @@ response or process failure cannot erase the suppression receipt. External human
 edits between the provider read and write remain a documented limitation; the
 controller does not claim atomic provider compare-and-swap.
 
+Lock connections use a separate pool that preserves the data engine's connection
+settings. Each process admits at most two concurrent lock holders or waiters
+(one when the data pool size is one). Excess callers receive retryable
+`triage_operation_in_progress` immediately, before checking out a lock connection;
+manual HTTP requests report this as a conflict. Admitted callers retain the bounded
+ten-second advisory-lock wait and same-revision coalescing. Retry a busy request
+after the active operation finishes. Size PostgreSQL's connection budget for up
+to two additional connections per process, including every API and worker process.
+The default synchronous, asynchronous, health and lock pools total at most 63
+connections per process. Disposing the data engine also disposes its lock pool.
+
 Automatic triage suppresses matching self-generated updates using server-written
 receipts, expected edit fields and provider snapshots. Final receipts also match
 the observed provider update time; pending write expectations expire. Suppression

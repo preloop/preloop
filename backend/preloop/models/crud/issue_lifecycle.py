@@ -12,6 +12,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
 from preloop.models import models
+from preloop.models.db.triage_lock import triage_lock_connection
 
 
 class CRUDIssueLifecycle:
@@ -78,37 +79,35 @@ class CRUDIssueLifecycle:
             sha256(f"{account_id}:{issue_id}".encode()).digest()[:8], "big", signed=True
         )
         bind = db.get_bind()
-        connection = bind if isinstance(bind, Connection) else bind.connect()
-        owned = connection is not bind
-        acquired = False
+        engine = bind.engine if isinstance(bind, Connection) else bind
         try:
-            deadline = monotonic() + 10
-            while not connection.scalar(
-                text("SELECT pg_try_advisory_lock(:key)"), {"key": key}
-            ):
-                if monotonic() >= deadline:
-                    raise ValueError("triage_operation_in_progress")
-                await asyncio.sleep(0.05)
-            acquired = True
-            # Refresh ORM identity-map objects after another controller's commit.
-            db.expire_all()
-            yield
+            with triage_lock_connection(engine) as connection:
+                acquired = False
+                try:
+                    deadline = monotonic() + 10
+                    while not connection.scalar(
+                        text("SELECT pg_try_advisory_lock(:key)"), {"key": key}
+                    ):
+                        if monotonic() >= deadline:
+                            raise ValueError("triage_operation_in_progress")
+                        await asyncio.sleep(0.05)
+                    acquired = True
+                    # Refresh objects after another controller's commit.
+                    db.expire_all()
+                    yield
+                finally:
+                    try:
+                        if acquired:
+                            connection.execute(
+                                text("SELECT pg_advisory_unlock(:key)"), {"key": key}
+                            )
+                    except BaseException:
+                        # Never return a connection with an uncertain lock.
+                        connection.invalidate()
+                        raise
         except BaseException:
             db.rollback()
             raise
-        finally:
-            try:
-                if acquired:
-                    connection.execute(
-                        text("SELECT pg_advisory_unlock(:key)"), {"key": key}
-                    )
-            except BaseException:
-                # Never put a connection with an uncertain session lock back.
-                connection.invalidate()
-                raise
-            finally:
-                if owned:
-                    connection.close()
 
     def triage_for_execution(
         self,
@@ -151,7 +150,7 @@ class CRUDIssueLifecycle:
             )
         if not identifiers:
             return None
-        return db.scalars(
+        matches = db.scalars(
             select(models.Issue)
             .join(models.Tracker, models.Issue.tracker_id == models.Tracker.id)
             .where(
@@ -159,12 +158,20 @@ class CRUDIssueLifecycle:
                 models.Issue.project_id == project_id,
                 or_(*identifiers),
             )
-        ).one_or_none()
+            .limit(2)
+        ).all()
+        # Conflicting ids/numbers or repository-local number collisions cannot
+        # safely authorize a target. The controller returns its normal 409.
+        return matches[0] if len(matches) == 1 else None
 
     def triage_snapshot(
         self, db: Session, *, issue: models.Issue, values: dict[str, Any]
     ) -> None:
         """Flush an observed triage snapshot without releasing the issue lock."""
+        if "labels" in values:
+            # Sync/REST writers do not take the controller advisory lock.
+            # Merge only after reloading their latest committed metadata.
+            db.refresh(issue, attribute_names=["meta_data"], with_for_update=True)
         for field in ("title", "description", "status", "last_updated_external"):
             if field in values:
                 setattr(issue, field, values[field])
@@ -177,6 +184,7 @@ class CRUDIssueLifecycle:
         self, db: Session, *, issue: models.Issue, receipt: dict[str, Any]
     ) -> None:
         """Flush trusted suppression intent inside the controller transaction."""
+        db.refresh(issue, attribute_names=["meta_data"], with_for_update=True)
         issue.meta_data = {**(issue.meta_data or {}), "preloop_triage": dict(receipt)}
         db.add(issue)
         db.flush()

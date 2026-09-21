@@ -422,3 +422,101 @@ async def test_lock_contention_is_a_bounded_controller_error(
             db_session, flow=rig.flow, event=rig.event
         )
     controller.authorized_provider.assert_not_awaited()
+
+
+@pytest.mark.parametrize("operation", ["receipt", "snapshot"])
+def test_triage_metadata_merge_preserves_independent_writer(
+    db_engine: Any, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    """A stale identity map must not discard a committed sync/REST update."""
+    with _committed_rig(db_engine, monkeypatch) as rig, Session(db_engine) as writer:
+        issue_id = rig.issue.id
+        original = dict(rig.issue.meta_data or {})
+        concurrent = {
+            **original,
+            "synced_custom_field": "keep this value",
+            "labels": ["new-human-label"],
+            "preloop_triage": {"expected_revisions": ["concurrent-receipt"]},
+        }
+        other = crud_issue_lifecycle.get_issue(
+            writer, account_id=rig.account_id, issue_id=issue_id
+        )
+        CRUDBase(models.Issue).update(
+            writer, db_obj=other, obj_in={"meta_data": concurrent}
+        )
+        assert rig.issue.meta_data == original
+
+        if operation == "receipt":
+            receipt = {"expected_revisions": ["new-intent"]}
+            crud_issue_lifecycle.triage_receipt(
+                rig.db, issue=rig.issue, receipt=receipt
+            )
+            expected = {**concurrent, "preloop_triage": receipt}
+        else:
+            crud_issue_lifecycle.triage_snapshot(
+                rig.db,
+                issue=rig.issue,
+                values={"title": "Verified title", "labels": ["verified-label"]},
+            )
+            expected = {**concurrent, "labels": ["verified-label"]}
+        crud_issue_lifecycle.commit(rig.db)
+        stored = crud_issue_lifecycle.get_issue(
+            writer, account_id=rig.account_id, issue_id=issue_id
+        )
+        assert stored.meta_data == expected
+        if operation == "snapshot":
+            assert stored.title == "Verified title"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conflict", ["repository_number", "id_and_number"])
+async def test_ambiguous_triage_delivery_fails_closed_before_claim(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch, conflict: str
+) -> None:
+    rig = _rig(db_session, monkeypatch)
+    other = CRUDBase(models.Issue).create(
+        db_session,
+        obj_in={
+            "title": "Another repository issue",
+            "external_id": "other-provider-id",
+            "key": "example/other#1"
+            if conflict == "repository_number"
+            else "example/other#2",
+            "project_id": rig.project.id,
+            "tracker_id": rig.issue.tracker_id,
+        },
+    )
+    subject: dict[str, Any] = {"number": 1}
+    if conflict == "id_and_number":
+        subject["id"] = other.external_id
+    with pytest.raises(
+        controller.TriageControllerError, match="triage_issue_not_synced"
+    ):
+        await controller.reserve_triage_execution(
+            db_session,
+            flow=rig.flow,
+            event={**rig.event, "payload": {"issue": subject}},
+        )
+    assert (
+        crud_issue_lifecycle.list_for_issue(
+            db_session, account_id=rig.account_id, issue_id=rig.issue.id
+        )
+        == []
+    )
+    controller.authorized_provider.assert_not_awaited()
+
+
+@pytest.mark.parametrize("scope", ["account", "project"])
+def test_triage_target_resolution_keeps_authenticated_scope(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch, scope: str
+) -> None:
+    rig = _rig(db_session, monkeypatch)
+    arguments: dict[str, Any] = {
+        "account_id": rig.account_id,
+        "project_id": rig.project.id,
+        "external_id": rig.issue.external_id,
+        "number": "1",
+    }
+    assert crud_issue_lifecycle.issue_target(db_session, **arguments).id == rig.issue.id
+    arguments[f"{scope}_id"] = uuid4()
+    assert crud_issue_lifecycle.issue_target(db_session, **arguments) is None

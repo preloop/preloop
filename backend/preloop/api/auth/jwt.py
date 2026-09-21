@@ -505,13 +505,16 @@ def _enforce_triage_rest_scope(
 def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db_session),
-    request: Request = None,
+    # FastAPI requires the concrete Request type for injection; direct Python
+    # authentication callers omit it. Optional[Request] is rejected as a field.
+    request: Request = None,  # type: ignore[assignment]
 ) -> User:
     """Get the current user from a JWT token or API key.
 
     Args:
         token: JWT token or API key.
         db: Database session.
+        request: Injected HTTP request, absent for direct authentication callers.
 
     Returns:
         The current User object.

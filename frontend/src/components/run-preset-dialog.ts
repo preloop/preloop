@@ -213,7 +213,9 @@ export class RunPresetDialog extends LitElement {
         (item) =>
           item.error ||
           (item.coalesced &&
-            ['FAILED', 'CANCELLED'].includes(item.execution_status || ''))
+            ['FAILED', 'CANCELLED', 'STOPPED', 'TIMED_OUT', 'ABORTED'].includes(
+              item.execution_status || ''
+            ))
       ).length || 0;
     const reused = items?.filter((item) => item.coalesced).length || 0;
     const created =

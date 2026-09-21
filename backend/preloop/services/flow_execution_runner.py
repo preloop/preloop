@@ -6,7 +6,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Optional, Set
+from typing import Any, Awaitable, Callable, Optional, Set, TypedDict
 
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_issue_lifecycle
 from preloop.models.db.session import get_db_session
@@ -31,6 +31,12 @@ NakCallback = Callable[[float], Awaitable[None]]
 
 # Executions this process currently holds a claim for (deploy drain).
 _active_claimed_execution_ids: Set[str] = set()
+
+
+class _ClaimOptions(TypedDict, total=False):
+    """Optional claim overrides without widening the CRUD keyword types."""
+
+    allow_same_worker: bool
 
 
 def get_active_claimed_execution_ids() -> Set[str]:
@@ -258,7 +264,7 @@ async def claim_and_run_execution(
     session_reference: Optional[str] = None
     execution_id_str = str(execution_id)
     try:
-        claim_options = {}
+        claim_options: _ClaimOptions = {}
         if crud_issue_lifecycle.has_triage_execution(db, execution_id=execution_id):
             claim_options["allow_same_worker"] = False
         execution = crud_flow_execution.claim_execution(
