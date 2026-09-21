@@ -14,7 +14,7 @@ import re
 import shlex
 import tarfile
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import aiodocker
 from aiodocker.exceptions import DockerError
@@ -151,20 +151,50 @@ LIVE_NUDGE_LOG_PATH = "/tmp/preloop-no-progress-nudge.log"
 # ``clean`` or ``unknown``.
 WORKSPACE_PROBE_MARKER = "PRELOOP_WORKSPACE_PROBE"
 
-# Asks every repository under /workspace whether the agent has produced
-# anything yet: an uncommitted change (tracked or untracked), or a commit
-# that is not on any remote. ``safe.directory`` is set on the command line
-# because the probe runs as the exec user, which need not be the uid that
-# owns the checkout, and a dubious-ownership refusal must read as "no
-# answer" rather than as "nothing happened". Any repository that cannot be
-# read, or a workspace with no repository at all, yields ``unknown``: the
-# guard stops runs, and a stop is never made on a failed probe.
+# Where the probe collects the repositories it found, one path per line. A
+# file rather than a pipe because a ``while read`` fed by a pipe runs in a
+# subshell in POSIX sh and its counters would be lost on the way out.
+WORKSPACE_PROBE_REPO_LIST = "/tmp/preloop-workspace-probe-repos"
+
+# Asks every repository under the roots it is given whether the agent has
+# produced anything yet: an uncommitted change (tracked or untracked), or a
+# commit that is not on any remote. The roots arrive as arguments (``"$@"``),
+# never interpolated into the script, so a checkout path containing a space
+# is probed rather than word-split into nonsense.
+#
+# ``safe.directory`` is set on the command line because the probe runs as the
+# exec user, which need not be the uid that owns the checkout, and a
+# dubious-ownership refusal must read as "no answer" rather than as "nothing
+# happened". A repository that cannot be read, a root that does not exist, a
+# checkout with no remote at all (where "not pushed yet" has no meaning), or
+# a set of roots with no repository in them yields ``unknown``: the guard
+# stops runs, and a stop is never made on a failed probe.
+#
+# Evidence of work is checked before the unknowns, so one unreadable
+# repository can never mask a sibling that is plainly being worked on.
 WORKSPACE_PROGRESS_PROBE_SCRIPT = f"""
 dirty=0
 seen=0
 bad=0
-for g in $(find /workspace -maxdepth 4 -type d -name .git 2>/dev/null); do
+probed=""
+list={WORKSPACE_PROBE_REPO_LIST}.$$
+if ! : > "$list" 2>/dev/null; then
+    echo "{WORKSPACE_PROBE_MARKER} unknown"
+    exit 0
+fi
+for root in "$@"; do
+    if [ ! -d "$root" ]; then
+        bad=$((bad+1))
+        continue
+    fi
+    find "$root" -maxdepth 4 -type d -name .git >> "$list" 2>/dev/null
+done
+while IFS= read -r g; do
     repo=$(dirname "$g")
+    case ":$probed:" in
+        *":$repo:"*) continue ;;
+    esac
+    probed="$probed:$repo"
     seen=$((seen+1))
     if ! status=$(git -c safe.directory='*' -C "$repo" status --porcelain 2>/dev/null); then
         bad=$((bad+1))
@@ -172,16 +202,22 @@ for g in $(find /workspace -maxdepth 4 -type d -name .git 2>/dev/null); do
     fi
     if [ -n "$status" ]; then
         dirty=1
+        continue
+    fi
+    if [ -z "$(git -c safe.directory='*' -C "$repo" remote 2>/dev/null)" ]; then
+        bad=$((bad+1))
+        continue
     fi
     local_commits=$(git -c safe.directory='*' -C "$repo" rev-list --count HEAD --not --remotes 2>/dev/null || echo 0)
     if [ "$local_commits" -gt 0 ] 2>/dev/null; then
         dirty=1
     fi
-done
-if [ "$seen" -eq 0 ] || [ "$bad" -gt 0 ]; then
-    echo "{WORKSPACE_PROBE_MARKER} unknown"
-elif [ "$dirty" -eq 1 ]; then
+done < "$list"
+rm -f "$list" 2>/dev/null
+if [ "$dirty" -eq 1 ]; then
     echo "{WORKSPACE_PROBE_MARKER} dirty"
+elif [ "$seen" -eq 0 ] || [ "$bad" -gt 0 ]; then
+    echo "{WORKSPACE_PROBE_MARKER} unknown"
 else
     echo "{WORKSPACE_PROBE_MARKER} clean"
 fi
@@ -2646,13 +2682,55 @@ class ContainerAgentExecutor(AgentExecutor):
             return None
         return data
 
+    async def _workspace_probe_roots(self, container: Any) -> List[str]:
+        """Directories the progress probe should look in (#851).
+
+        ``/workspace`` is always one of them. The container's configured
+        working directory is added when it is an absolute path somewhere else,
+        which is the case whenever a repository was cloned to an absolute
+        ``clone_path``: the agent's real checkout is then outside the
+        workspace volume and a probe that only looked at ``/workspace`` would
+        report a clean tree for a run that is busy editing.
+
+        Args:
+            container: The running container object.
+
+        Returns:
+            The roots, ``/workspace`` first, without duplicates.
+        """
+        roots = ["/workspace"]
+        try:
+            details = await container.show()
+            working_dir = ((details or {}).get("Config") or {}).get("WorkingDir") or ""
+        except Exception as e:
+            self.logger.debug(
+                "Could not read the working directory for the progress probe: %s",
+                _exception_message(e),
+            )
+            return roots
+        working_dir = working_dir.strip()
+        if (
+            working_dir.startswith("/")
+            and working_dir != "/"
+            and working_dir != "/workspace"
+            and not working_dir.startswith("/workspace/")
+        ):
+            roots.append(working_dir)
+        return roots
+
     async def probe_workspace_changed(self, session_reference: str) -> Optional[bool]:
         """Whether the live checkout holds any work yet (#851).
 
         "Work" is a tracked or untracked change reported by ``git status
-        --porcelain`` in any repository under ``/workspace``, or a commit that
-        is not on any remote yet: a run that has already committed has made
-        progress even though its tree is clean again.
+        --porcelain`` in any probed repository, or a commit that is not on any
+        remote yet: a run that has already committed has made progress even
+        though its tree is clean again.
+
+        The probed roots are ``/workspace`` and the container's own working
+        directory, because a repository's ``clone_path`` may be absolute and
+        then the checkout the agent edits lives outside ``/workspace``
+        entirely. A root that cannot be read answers ``unknown``, so a run
+        that works somewhere this probe cannot see is never stopped for it.
 
         Docker only. A Kubernetes Job's pod is reachable only through the
         websocket exec API, which this executor does not open, so the probe
@@ -2673,8 +2751,9 @@ class ContainerAgentExecutor(AgentExecutor):
         try:
             docker = await self._get_docker_client()
             container = await docker.containers.get(session_reference)
+            roots = await self._workspace_probe_roots(container)
             exec_handle = await container.exec(
-                cmd=["sh", "-c", WORKSPACE_PROGRESS_PROBE_SCRIPT],
+                cmd=["sh", "-c", WORKSPACE_PROGRESS_PROBE_SCRIPT, "sh", *roots],
                 stdout=True,
                 stderr=False,
             )

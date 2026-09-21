@@ -12,7 +12,7 @@ import logging
 import re
 from copy import deepcopy
 from uuid import UUID
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
