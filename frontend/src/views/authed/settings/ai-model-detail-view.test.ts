@@ -1341,6 +1341,14 @@ describe('AIModelDetailView attention dismissals', () => {
   let dismissalWrites: { url: string; method: string; body: any }[];
   let summaryRequests: string[];
   let lastFailureAt: string;
+  /** #848: what the price in force says, which is how this page reads unpriced. */
+  let pricingSource: string;
+  /** #848: cost recorded in the window, which is 0 until usage is repriced. */
+  let summaryCost: number;
+  /** #848: a price in force that is zero, which is the other pricing question. */
+  let pricedAtZero: boolean;
+  /** Off for the pages that are only unpriced, not failing. */
+  let failuresEnabled: boolean;
   let extraAliasFailures: {
     alias: string;
     last_failure_at: string;
@@ -1360,6 +1368,10 @@ describe('AIModelDetailView attention dismissals', () => {
     dismissalWrites = [];
     summaryRequests = [];
     lastFailureAt = '2026-09-14T09:00:00Z';
+    pricingSource = 'catalog';
+    summaryCost = 1.5;
+    pricedAtZero = false;
+    failuresEnabled = true;
     extraAliasFailures = [];
 
     fetchStub = sinon
@@ -1371,6 +1383,14 @@ describe('AIModelDetailView attention dismissals', () => {
           const method = (init?.method || 'GET').toUpperCase();
           if (method === 'GET') {
             return json({ items: dismissalsResponse });
+          }
+          if (method === 'DELETE') {
+            const itemId = decodeURIComponent(url.split('/').pop()!);
+            dismissalWrites.push({ url, method, body: null });
+            dismissalsResponse = dismissalsResponse.filter(
+              (existing) => existing.item_id !== itemId
+            );
+            return new Response(null, { status: 204 });
           }
           const body = JSON.parse(String(init!.body));
           dismissalWrites.push({ url, method, body });
@@ -1384,7 +1404,14 @@ describe('AIModelDetailView attention dismissals', () => {
             dismissed_by_username: 'Jane Doe',
             created_at: '2026-09-14T09:30:00Z',
           };
-          dismissalsResponse = [record];
+          // Upsert, as the API does: the failure marker and the unpriced
+          // marker for one model are two rows.
+          dismissalsResponse = [
+            ...dismissalsResponse.filter(
+              (existing) => existing.item_id !== record.item_id
+            ),
+            record,
+          ];
           return json(record);
         }
 
@@ -1398,26 +1425,30 @@ describe('AIModelDetailView attention dismissals', () => {
             period_start: '2026-08-15T00:00:00Z',
             period_end: '2026-09-14T23:59:59Z',
             total_requests: 20,
-            successful_requests: 11,
-            failed_requests: 9,
-            last_failure_at: lastFailureAt,
-            last_failure_alias: 'example/reviewer',
+            successful_requests: failuresEnabled ? 11 : 20,
+            failed_requests: failuresEnabled ? 9 : 0,
+            last_failure_at: failuresEnabled ? lastFailureAt : null,
+            last_failure_alias: failuresEnabled ? 'example/reviewer' : null,
             failed_requests_since: url.includes('failed_since') ? 2 : null,
-            alias_failures: [
-              {
-                alias: 'example/reviewer',
-                last_failure_at: lastFailureAt,
-                failed_requests: 9,
-                failed_requests_since: url.includes('failed_since') ? 2 : null,
-              },
-              ...extraAliasFailures,
-            ],
+            alias_failures: failuresEnabled
+              ? [
+                  {
+                    alias: 'example/reviewer',
+                    last_failure_at: lastFailureAt,
+                    failed_requests: 9,
+                    failed_requests_since: url.includes('failed_since')
+                      ? 2
+                      : null,
+                  },
+                  ...extraAliasFailures,
+                ]
+              : [],
             token_usage: {
               prompt_tokens: 100,
               completion_tokens: 100,
               total_tokens: 200,
             },
-            estimated_cost: 1.5,
+            estimated_cost: summaryCost,
             requests_by_day: [],
             usage_by_session: [],
           });
@@ -1436,10 +1467,10 @@ describe('AIModelDetailView attention dismissals', () => {
             ai_model_id: 'model-1',
             model_alias: 'example/reviewer',
             provider_name: 'example-provider',
-            source: 'catalog',
+            source: pricingSource,
             price: {
-              input_per_1m: 3,
-              output_per_1m: 15,
+              input_per_1m: pricedAtZero ? 0 : 3,
+              output_per_1m: pricedAtZero ? 0 : 15,
               cached_input_per_1m: null,
               blended_per_1m: null,
               request_price: null,
@@ -1624,5 +1655,224 @@ describe('AIModelDetailView attention dismissals', () => {
     expect(decodeURIComponent(splitRequest)).to.contain(
       'failed_since=2026-09-13T08:00:00Z'
     );
+  });
+
+  /**
+   * #848: the same marker, offered where the price itself is edited, so an
+   * operator who decides a model is unpriced on purpose can say so without
+   * inventing a price of $0.
+   */
+  describe('unpriced requests marked expected', () => {
+    const unpricedMarker = (overrides: Record<string, unknown> = {}) => ({
+      id: 'dismissal-unpriced',
+      item_id: 'model-unpriced:example/reviewer',
+      fingerprint: 'unpriced:example/reviewer',
+      reason: 'expected',
+      snooze_until: null,
+      dismissed_by_user_id: 'user-1',
+      dismissed_by_username: 'Jane Doe',
+      created_at: '2026-09-14T09:30:00Z',
+      ...overrides,
+    });
+
+    const menuValues = (element: AIModelDetailView) =>
+      [
+        ...element.shadowRoot!.querySelectorAll(
+          '[data-testid="model-attention"] sl-menu sl-menu-item'
+        ),
+      ].map((item) => item.getAttribute('value'));
+
+    beforeEach(() => {
+      pricingSource = 'none';
+      failuresEnabled = false;
+    });
+
+    it('flags an unpriced model and says what clears it', async () => {
+      const element = await mount();
+
+      expect(attentionBadge(element).textContent!.trim()).to.equal('Attention');
+      const line = element.shadowRoot!.querySelector(
+        '[data-testid="unpriced-attention"]'
+      )!;
+      const text = line.textContent!.replace(/\s+/g, ' ');
+      expect(text).to.contain('No price is in force');
+      expect(text).to.contain('Set a price on the model');
+      expect(text).to.contain('Apply to past usage');
+      expect(menuValues(element)).to.eql([
+        'unpriced-expected',
+        'unpriced-snoozed',
+      ]);
+    });
+
+    it('writes the item id and fingerprint the Models page and inbox read', async () => {
+      const element = await mount();
+
+      element
+        .shadowRoot!.querySelector('[data-testid="model-attention"] sl-menu')!
+        .dispatchEvent(
+          new CustomEvent('sl-select', {
+            detail: { item: { value: 'unpriced-expected' } },
+          })
+        );
+      await waitUntil(
+        () => dismissalWrites.length > 0,
+        'the dismissal was never written'
+      );
+
+      expect(dismissalWrites[0].method).to.equal('PUT');
+      expect(decodeURIComponent(dismissalWrites[0].url)).to.contain(
+        'model-unpriced:example/reviewer'
+      );
+      expect(dismissalWrites[0].body).to.deep.equal({
+        fingerprint: 'unpriced:example/reviewer',
+        reason: 'expected',
+      });
+
+      await waitUntil(
+        () => attentionBadge(element).textContent!.trim() === 'Healthy',
+        'the page stayed flagged after the price question was answered'
+      );
+      expect(attentionBadge(element).getAttribute('title')).to.contain(
+        'marked expected'
+      );
+    });
+
+    // A price set today does not reprice yesterday's requests until somebody
+    // runs "Apply to past usage", and until then the Models list and the inbox
+    // keep counting them. This page says the same thing rather than falling
+    // quiet on them.
+    it('still flags a priced model whose window recorded no cost', async () => {
+      pricingSource = 'override';
+      summaryCost = 0;
+
+      const element = await mount();
+
+      expect(attentionBadge(element).textContent!.trim()).to.equal('Attention');
+      expect(
+        element
+          .shadowRoot!.querySelector('[data-testid="unpriced-attention"]')!
+          .textContent!.replace(/\s+/g, ' ')
+      ).to.contain('20 requests');
+    });
+
+    // A price of zero is an answer, and the inbox asks about it separately.
+    it('asks nothing when the price in force is zero', async () => {
+      pricingSource = 'override';
+      pricedAtZero = true;
+      summaryCost = 0;
+
+      const element = await mount();
+
+      // Nothing to say at all: no failures either, so the line is absent.
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="model-attention"]')
+      ).to.equal(null);
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="unpriced-attention"]')
+      ).to.equal(null);
+    });
+
+    it('snoozes the price question for seven days', async () => {
+      const element = await mount();
+
+      element
+        .shadowRoot!.querySelector('[data-testid="model-attention"] sl-menu')!
+        .dispatchEvent(
+          new CustomEvent('sl-select', {
+            detail: { item: { value: 'unpriced-snoozed' } },
+          })
+        );
+      await waitUntil(
+        () => dismissalWrites.length > 0,
+        'the dismissal was never written'
+      );
+
+      expect(dismissalWrites[0].body).to.deep.equal({
+        fingerprint: 'unpriced:example/reviewer',
+        reason: 'snoozed',
+        snooze_days: 7,
+      });
+    });
+
+    it('reads Healthy under an active marker and offers Restore', async () => {
+      dismissalsResponse = [unpricedMarker()];
+
+      const element = await mount();
+
+      expect(attentionBadge(element).textContent!.trim()).to.equal('Healthy');
+      const marker = element.shadowRoot!.querySelector(
+        '[data-testid="unpriced-marker"]'
+      )!;
+      expect(marker.textContent!.replace(/\s+/g, ' ')).to.contain(
+        'Apply to past usage'
+      );
+      const restore = element.shadowRoot!.querySelector(
+        '[data-testid="restore-unpriced"]'
+      ) as HTMLElement;
+      expect(restore).to.exist;
+
+      restore.click();
+      await waitUntil(
+        () => dismissalWrites.length > 0,
+        'the restore was never written'
+      );
+      expect(dismissalWrites[0].method).to.equal('DELETE');
+      expect(decodeURIComponent(dismissalWrites[0].url)).to.contain(
+        'model-unpriced:example/reviewer'
+      );
+      await waitUntil(
+        () => attentionBadge(element).textContent!.trim() === 'Attention',
+        'the page stayed healthy after the marker was restored'
+      );
+    });
+
+    // The stable fingerprint again: the page is not asked twice.
+    it('stays quiet while the model keeps serving unpriced requests', async () => {
+      dismissalsResponse = [unpricedMarker()];
+
+      const element = await mount();
+
+      expect(attentionBadge(element).textContent!.trim()).to.equal('Healthy');
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="dismiss-model"]')
+      ).to.equal(null);
+    });
+
+    it('needs both markers on a page that is failing and unpriced', async () => {
+      failuresEnabled = true;
+      dismissalsResponse = [unpricedMarker()];
+
+      const element = await mount();
+
+      expect(attentionBadge(element).textContent!.trim()).to.equal('Attention');
+      // Only the open claim is offered.
+      expect(menuValues(element)).to.eql(['expected', 'snoozed', 'fixed']);
+
+      element
+        .shadowRoot!.querySelector('[data-testid="model-attention"] sl-menu')!
+        .dispatchEvent(
+          new CustomEvent('sl-select', { detail: { item: { value: 'fixed' } } })
+        );
+      await waitUntil(
+        () => attentionBadge(element).textContent!.trim() === 'Healthy',
+        'the page stayed flagged after both markers were taken'
+      );
+      const title = attentionBadge(element).getAttribute('title')!;
+      expect(title).to.contain('Marked fixed');
+      expect(title).to.contain('marked expected');
+    });
+
+    it('says nothing about price when the model has one', async () => {
+      pricingSource = 'catalog';
+
+      const element = await mount();
+
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="unpriced-attention"]')
+      ).to.equal(null);
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="model-attention"]')
+      ).to.equal(null);
+    });
   });
 });

@@ -20,6 +20,11 @@ The [account kill switch](docs/guide/account-kill-switch.md) serializes halt tra
 Database worker ownership, row-lock compatibility, and cancellation rules are
 documented in [Transactions and asynchronous request handling](docs/architecture/data-model.md#transactions-and-asynchronous-request-handling).
 
+Agent harnesses are told the [context window and output ceiling](docs/guide/model-context-limits.md)
+of the model they run on, taken per field from `model_parameters` on the model
+row and then from the vendored catalog. An unknown limit is omitted rather
+than guessed, so the harness keeps its own default.
+
 [Reviewed price feeds](docs/guide/model-price-refresh.md) update the generic model
 map and Alibaba's dedicated regional tariff store in each API, gateway, and
 worker process. Alibaba estimates retain input tiers and distinct implicit,
@@ -173,6 +178,16 @@ manual completion alone does not start an audit. Readiness consumes approved
 execution-environment capabilities rather than implementing test setup. See
 [Issue readiness and completion audits](docs/guide/flows/issue-lifecycle.md) for
 policy, API and recovery configuration.
+
+`services/issue_triage_controller.py` reuses this ledger for durable issue-revision
+claims across manual and automatic triage. Dedicated advisory-lock connections
+serialize local applies while provider-write intents commit durably. Execution
+credentials bind managed writes to their issue/revision; successful bounded
+assessment packets retain input/output revision and policy/context identity.
+Readiness consumes only applicable server-loaded packets as evidence, preserving
+its separate implementation authorization. Provider writes remain optimistic;
+local serialization cannot make external APIs support compare-and-swap. See
+[Issue triage](docs/guide/flows/issue-triage.md) for recovery and tool boundaries.
 
 ### Security maintenance controller
 

@@ -179,6 +179,21 @@ class TestModelRowWins:
         assert limits.max_output_tokens == 64000
         assert limits.context_window_source == "catalog"
 
+    @pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+    def test_an_infinity_in_the_row_does_not_poison_the_other_field(self, value):
+        """``json.loads`` accepts the ``Infinity`` literal, so a model row can
+        hold one. ``int(inf)`` raises OverflowError rather than ValueError,
+        which once aborted the whole resolution and took the sibling field's
+        good number with it."""
+        limits = resolve_model_context_limits(
+            model_identifier="acme-large",
+            model_parameters={"context_window": value, "max_output_tokens": 8192},
+        )
+        assert limits.context_window == 900000
+        assert limits.context_window_source == "catalog"
+        assert limits.max_output_tokens == 8192
+        assert limits.max_output_tokens_source == "model_row"
+
     def test_a_row_that_is_not_a_mapping_is_ignored(self):
         limits = resolve_model_context_limits(
             model_identifier="acme-large", model_parameters=["context_window", 1]

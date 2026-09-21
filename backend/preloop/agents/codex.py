@@ -791,10 +791,11 @@ exit $CODEX_EXIT_CODE
         Returns:
             Zero, one or two TOML lines, newline-terminated when non-empty.
         """
+        limits = limits or ModelContextLimits()
         lines = []
-        if limits is not None and limits.context_window is not None:
+        if limits.context_window is not None:
             lines.append(f"model_context_window = {limits.context_window}")
-        if limits is not None and limits.max_output_tokens is not None:
+        if limits.max_output_tokens is not None:
             lines.append(f"model_max_output_tokens = {limits.max_output_tokens}")
         if not lines:
             logger.info(

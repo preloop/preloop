@@ -7,6 +7,7 @@ import {
   getAIModelsOverview,
   getAttentionDismissals,
   dismissAttentionItem,
+  restoreAttentionItem,
   updateAIModel,
   deleteAIModel,
   DISMISSALS_UNSUPPORTED,
@@ -42,8 +43,12 @@ import { formatRelativeTime } from '../../../utils/date';
 import {
   markerSinceLabel,
   modelAttentionState,
+  unpricedAttentionState,
   type ModelAttentionState,
+  type UnpricedAttentionState,
+  type UnpricedDismissReason,
 } from '../../../utils/model-attention';
+import { UNPRICED_MODEL_FIX_HINT } from '../../../utils/attention';
 import {
   effectiveViewMode,
   loadViewMode,
@@ -613,6 +618,35 @@ export class AIModelsView extends LitElement {
     return this.attentionStateFor(this.getModelOverview(modelId), model);
   }
 
+  /**
+   * Where one model stands on price. Separate from the failure state because
+   * the two are independent facts with independent markers: a row that is
+   * both failing and unpriced needs both before it reads Healthy.
+   */
+  private unpricedStateFor(
+    item: AIModelOverviewItem | undefined,
+    model?: AIModel | undefined
+  ): UnpricedAttentionState {
+    const resolvedModel =
+      model ||
+      (item ? this.models.find((m) => m.id === item.ai_model_id) : undefined);
+    return unpricedAttentionState(
+      {
+        // The alias the requests carried, which is how the inbox keys the
+        // same model; a key of our own would not match its dismissal.
+        modelAlias: item?.model_alias || resolvedModel?.alias,
+        providerName: resolvedModel?.provider_name || item?.provider_name,
+        unpricedRequests: item?.unpriced_request_count || 0,
+      },
+      this.dismissals
+    );
+  }
+
+  private unpricedStateForModel(modelId: string): UnpricedAttentionState {
+    const model = this.models.find((m) => m.id === modelId);
+    return this.unpricedStateFor(this.getModelOverview(modelId), model);
+  }
+
   private async loadPriorFleetSpend(): Promise<void> {
     const params = this.getOverviewParams(1);
     const window = params.startDate.slice(0, 10);
@@ -674,7 +708,8 @@ export class AIModelsView extends LitElement {
    * Failures somebody already marked fixed, expected or snoozed do not count
    * until something fails again: that is what dismissing one means on the
    * Overview, and a count that disagreed with the Overview's was the bug.
-   * Unpriced requests are not dismissable and are counted as before.
+   * Unpriced requests somebody marked expected are out for the same reason
+   * (#848): a model that is unpriced on purpose is not a task.
    */
   private get modelsNeedingAttentionCount(): number {
     if (this.models.length > 0) {
@@ -682,14 +717,14 @@ export class AIModelsView extends LitElement {
         const overview = this.getModelOverview(model.id);
         return (
           this.attentionStateFor(overview, model).status === 'failing' ||
-          (overview && overview.unpriced_request_count > 0)
+          this.unpricedStateFor(overview, model).status === 'unpriced'
         );
       }).length;
     }
     return [...this.modelOverview.values()].filter(
       (item) =>
         this.attentionStateFor(item).status === 'failing' ||
-        item.unpriced_request_count > 0
+        this.unpricedStateFor(item).status === 'unpriced'
     ).length;
   }
 
@@ -749,9 +784,16 @@ export class AIModelsView extends LitElement {
     return this.modelOverview.get(modelId);
   }
 
+  /** Failing or unpriced, either unacknowledged, is one badge: Attention. */
+  private needsAttention(modelId: string): boolean {
+    return (
+      this.attentionStateForModel(modelId).status === 'failing' ||
+      this.unpricedStateForModel(modelId).status === 'unpriced'
+    );
+  }
+
   private getHealthVariant(modelId: string): 'success' | 'warning' | 'neutral' {
-    const state = this.attentionStateForModel(modelId);
-    if (state.status === 'failing') {
+    if (this.needsAttention(modelId)) {
       return 'warning';
     }
     const overview = this.getModelOverview(modelId);
@@ -762,13 +804,12 @@ export class AIModelsView extends LitElement {
   }
 
   /**
-   * "Healthy" covers an acknowledged failure too: the operator said this one
-   * is handled, and the marker's date is on the badge's tooltip so the claim
-   * stays checkable.
+   * "Healthy" covers an acknowledged failure or an expected missing price
+   * too: the operator said this one is handled, and the marker's date is on
+   * the badge's tooltip so the claim stays checkable.
    */
   private getHealthLabel(modelId: string): string {
-    const state = this.attentionStateForModel(modelId);
-    if (state.status === 'failing') {
+    if (this.needsAttention(modelId)) {
       return 'Attention';
     }
     const overview = this.getModelOverview(modelId);
@@ -778,15 +819,19 @@ export class AIModelsView extends LitElement {
     return 'Healthy';
   }
 
-  /** The tooltip that says why a model with failures reads as healthy. */
+  /** The tooltip that says why a flagged-looking model reads as healthy. */
   private getHealthTitle(modelId: string): string {
     const state = this.attentionStateForModel(modelId);
     if (state.status === 'failing' && state.reasonText) {
       return state.reasonText;
     }
-    return state.status === 'marked' && state.markerLabel
-      ? state.markerLabel
-      : '';
+    const unpriced = this.unpricedStateForModel(modelId);
+    return [
+      state.status === 'marked' ? state.markerLabel : '',
+      unpriced.status === 'marked' ? unpriced.markerLabel : '',
+    ]
+      .filter(Boolean)
+      .join(' · ');
   }
 
   private getPricingSourceLabel(modelId: string): string {
@@ -1355,8 +1400,62 @@ export class AIModelsView extends LitElement {
           · ${this.formatCompactNumber(overview?.failed_requests)} failed
         </div>
         ${this.renderSinceMarker(model.id, state)}
-        ${this.renderDismiss(model.id, state)}
+        ${this.renderUnpricedLine(model.id)}
+        ${this.renderDismiss(model.id, state, this.unpricedStateFor(overview, model))}
       </div>
+    `;
+  }
+
+  /**
+   * What an unpriced row costs nobody knows, and what ends the question.
+   * Once marked, the same line records who said so and offers Restore, so a
+   * hidden fact is never hidden without a way back.
+   */
+  private renderUnpricedLine(modelId: string) {
+    const unpriced = this.unpricedStateForModel(modelId);
+    if (unpriced.status === 'quiet') {
+      return null;
+    }
+    if (unpriced.status === 'marked') {
+      return html`
+        <div
+          class="cell-secondary"
+          data-testid=${`unpriced-marker-${modelId}`}
+          title=${UNPRICED_MODEL_FIX_HINT}
+        >
+          ${unpriced.markerLabel} ${this.renderRestoreUnpriced(modelId)}
+        </div>
+      `;
+    }
+    return html`
+      <div
+        class="cell-secondary"
+        data-testid=${`unpriced-${modelId}`}
+        title=${UNPRICED_MODEL_FIX_HINT}
+      >
+        ${this.formatCompactNumber(unpriced.unpricedRequests)} requests unpriced
+        · set a price, then "Apply to past usage" on the model page
+      </div>
+    `;
+  }
+
+  private renderRestoreUnpriced(modelId: string) {
+    const unpriced = this.unpricedStateForModel(modelId);
+    if (!this.dismissalsSupported || !unpriced.restorable) {
+      return null;
+    }
+    return html`
+      <sl-button
+        size="small"
+        variant="text"
+        data-testid=${`restore-unpriced-${modelId}`}
+        ?loading=${this.dismissBusyModelId === modelId}
+        @click=${(event: Event) => {
+          event.stopPropagation();
+          void this.restoreUnpriced(modelId, unpriced);
+        }}
+        >Restore</sl-button
+      >
     `;
   }
 
@@ -1379,11 +1478,22 @@ export class AIModelsView extends LitElement {
   }
 
   /**
-   * The same three answers, the same call and the same fingerprint as the
-   * inbox, so a model dismissed here is quiet there and the other way round.
+   * The same answers, the same call and the same fingerprints as the inbox,
+   * so a model dismissed here is quiet there and the other way round.
+   *
+   * Failures and a missing price are separate claims with separate markers,
+   * so a row that is both failing and unpriced offers both sets of entries
+   * and needs both before it reads Healthy.
    */
-  private renderDismiss(modelId: string, state: ModelAttentionState) {
-    if (!this.dismissalsSupported || !state.dismissable) {
+  private renderDismiss(
+    modelId: string,
+    state: ModelAttentionState,
+    unpriced: UnpricedAttentionState
+  ) {
+    if (
+      !this.dismissalsSupported ||
+      (!state.dismissable && !unpriced.dismissable)
+    ) {
       return null;
     }
     return html`
@@ -1402,21 +1512,62 @@ export class AIModelsView extends LitElement {
           >
           <sl-menu
             @sl-select=${(event: CustomEvent<{ item: { value: string } }>) =>
-              void this.dismissModel(
+              void this.onDismissSelect(
                 modelId,
                 state,
-                event.detail.item.value as 'expected' | 'snoozed' | 'fixed'
+                unpriced,
+                event.detail.item.value
               )}
           >
-            <sl-menu-item value="expected"
-              >Expected, keep quiet until it changes</sl-menu-item
-            >
-            <sl-menu-item value="snoozed">Snooze 7 days</sl-menu-item>
-            <sl-menu-item value="fixed">Fixed</sl-menu-item>
+            ${
+              state.dismissable
+                ? html`
+                    <sl-menu-item value="expected"
+                      >Expected, keep quiet until it changes</sl-menu-item
+                    >
+                    <sl-menu-item value="snoozed">Snooze 7 days</sl-menu-item>
+                    <sl-menu-item value="fixed">Fixed</sl-menu-item>
+                  `
+                : null
+            }
+            ${
+              unpriced.dismissable
+                ? html`
+                    <sl-menu-item value="unpriced-expected"
+                      >Unpriced is expected for this model</sl-menu-item
+                    >
+                    <sl-menu-item value="unpriced-snoozed"
+                      >Snooze unpriced 7 days</sl-menu-item
+                    >
+                  `
+                : null
+            }
           </sl-menu>
         </sl-dropdown>
       </div>
     `;
+  }
+
+  /** One menu, two markers: the value says which claim is being made. */
+  private async onDismissSelect(
+    modelId: string,
+    state: ModelAttentionState,
+    unpriced: UnpricedAttentionState,
+    value: string
+  ): Promise<void> {
+    if (value.startsWith('unpriced-')) {
+      await this.dismissUnpriced(
+        modelId,
+        unpriced,
+        value.slice('unpriced-'.length) as UnpricedDismissReason
+      );
+      return;
+    }
+    await this.dismissModel(
+      modelId,
+      state,
+      value as 'expected' | 'snoozed' | 'fixed'
+    );
   }
 
   private async dismissModel(
@@ -1435,6 +1586,49 @@ export class AIModelsView extends LitElement {
       await this.fetchModels({ preserveLoadingState: true });
     } catch {
       this.dismissError = 'Could not dismiss that model. Try again.';
+    } finally {
+      this.dismissBusyModelId = null;
+    }
+  }
+
+  /**
+   * "This model has no price on purpose." The fingerprint carries no
+   * timestamp, so another unpriced request does not undo the statement.
+   */
+  private async dismissUnpriced(
+    modelId: string,
+    unpriced: UnpricedAttentionState,
+    reason: UnpricedDismissReason
+  ): Promise<void> {
+    this.dismissBusyModelId = modelId;
+    this.dismissError = null;
+    try {
+      await dismissAttentionItem(unpriced.itemId, {
+        fingerprint: unpriced.fingerprint,
+        reason,
+        snooze_days: reason === 'snoozed' ? 7 : undefined,
+      });
+      await this.fetchModels({ preserveLoadingState: true });
+    } catch {
+      this.dismissError =
+        'Could not mark those unpriced requests expected. Try again.';
+    } finally {
+      this.dismissBusyModelId = null;
+    }
+  }
+
+  /** Undo the statement: the model is counted and flagged again. */
+  private async restoreUnpriced(
+    modelId: string,
+    unpriced: UnpricedAttentionState
+  ): Promise<void> {
+    this.dismissBusyModelId = modelId;
+    this.dismissError = null;
+    try {
+      await restoreAttentionItem(unpriced.itemId);
+      await this.fetchModels({ preserveLoadingState: true });
+    } catch {
+      this.dismissError = 'Could not restore that model. Try again.';
     } finally {
       this.dismissBusyModelId = null;
     }
@@ -1558,10 +1752,12 @@ export class AIModelsView extends LitElement {
             model.id,
             this.attentionStateForModel(model.id)
           )}
+          ${this.renderUnpricedLine(model.id)}
           <div class="model-card-actions">
             ${this.renderDismiss(
               model.id,
-              this.attentionStateForModel(model.id)
+              this.attentionStateForModel(model.id),
+              this.unpricedStateForModel(model.id)
             )}
             ${this.renderModelActions(model)}
           </div>

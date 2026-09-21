@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 from preloop.agents.factory import create_agent_executor, SUPPORTED_AGENT_TYPES
 from preloop.agents.openhands import OpenHandsAgent
@@ -180,6 +181,74 @@ class TestAgentFactory:
 
 class TestPersistentFactorySelection:
     """Persistent config must select AgentControlExecutor before runner pools."""
+
+    @pytest.mark.parametrize(
+        "source",
+        ["direct", "nested", "mixed", "double", "flow", "context", "context_nested"],
+    )
+    def test_triage_rejects_every_persistent_config_source(
+        self, source: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from preloop.agents import agent_control
+        from preloop.agents.errors import AgentStartError
+        from preloop.agents.factory import create_executor_for_execution
+        from preloop.services.issue_triage_controller import TRIAGE_NAME
+
+        persistent = {
+            "execution_path": "persistent",
+            "target_agent_id": str(uuid4()),
+        }
+        config = {}
+        context = {}
+        flow = SimpleNamespace(name=TRIAGE_NAME, account_id=uuid4(), agent_config={})
+        if source == "direct":
+            config = persistent
+        elif source == "nested":
+            config = {"agent_config": persistent}
+        elif source == "mixed":
+            config = {"model": "test", "agent_config": persistent}
+        elif source == "double":
+            config = {"agent_config": {"agent_config": persistent}}
+        elif source == "flow":
+            flow.agent_config = persistent
+        elif source == "context":
+            context = {"agent_config": persistent}
+        else:
+            context = {"agent_config": {"agent_config": persistent}}
+        constructor = MagicMock()
+        monkeypatch.setattr(agent_control, "AgentControlExecutor", constructor)
+
+        with pytest.raises(AgentStartError, match="triage_persistent_executor"):
+            create_executor_for_execution(
+                "codex", config, flow=flow, db=MagicMock(), execution_context=context
+            )
+        constructor.assert_not_called()
+
+    @pytest.mark.parametrize("failure", [ValueError("invalid"), SQLAlchemyError("db")])
+    def test_persistent_provenance_lookup_failure_fails_closed(
+        self, failure: Exception, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from preloop.agents import agent_control
+        from preloop.agents.errors import AgentStartError
+        from preloop.agents.factory import create_executor_for_execution
+        from preloop.services import issue_triage_controller
+
+        monkeypatch.setattr(
+            issue_triage_controller,
+            "is_triage_execution",
+            MagicMock(side_effect=failure),
+        )
+        constructor = MagicMock()
+        monkeypatch.setattr(agent_control, "AgentControlExecutor", constructor)
+        with pytest.raises(AgentStartError, match="provenance could not be verified"):
+            create_executor_for_execution(
+                "codex",
+                {"execution_path": "persistent", "target_agent_id": str(uuid4())},
+                flow=SimpleNamespace(account_id=uuid4()),
+                execution=SimpleNamespace(id=uuid4()),
+                db=MagicMock(),
+            )
+        constructor.assert_not_called()
 
     def test_persistent_config_selects_agent_control_executor(self) -> None:
         from preloop.agents.agent_control import AgentControlExecutor
