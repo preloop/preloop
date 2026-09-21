@@ -40,7 +40,11 @@ from .stream_recovery import (
     build_stream_recovery_baseline_block,
     build_stream_recovery_block,
 )
-from .container import ContainerAgentExecutor
+from .container import (
+    LIVE_NUDGE_LOG_PATH,
+    LIVE_NUDGE_PROMPT_PATH,
+    ContainerAgentExecutor,
+)
 from .images import default_agent_image
 from .kubernetes import detect_kubernetes_environment
 
@@ -64,6 +68,26 @@ class CodexAgent(ContainerAgentExecutor):
     # recorded, so the completion reminder happens in the same container and
     # workspace instead of starting a second session.
     supports_inplace_completion_nudge = True
+
+    # How the no-progress guard reminds a run that is STILL going (#851).
+    # The same resume entry point, started detached from the control plane
+    # while the first `codex exec` is still working. It reads the rollout the
+    # running session has recorded so far, so the reminder starts from that
+    # context rather than from nothing; whether the CLI continues that
+    # session or forks a second one from its recorded state is the CLI's
+    # business and this code does not depend on the answer. The model and
+    # provider come from ~/.codex/config.toml, which this container already
+    # wrote, so the command carries no configuration of its own. The
+    # reminder is only ever sent to a run that has changed nothing, its
+    # output goes to a log of its own so it cannot write the completion
+    # sentinel into the transcript the original session is judged on, and
+    # the guard stops the run anyway if nothing changes, so the worst case
+    # of two codex processes in one workspace is bounded by the grace
+    # period.
+    live_nudge_command = (
+        f"codex exec resume --last --skip-git-repo-check --yolo "
+        f'"$(cat {LIVE_NUDGE_PROMPT_PATH})" >> {LIVE_NUDGE_LOG_PATH} 2>&1'
+    )
 
     def __init__(self, config: Dict[str, Any]):
         """

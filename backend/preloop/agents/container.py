@@ -14,7 +14,7 @@ import re
 import shlex
 import tarfile
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import aiodocker
 from aiodocker.exceptions import DockerError
@@ -76,6 +76,7 @@ from preloop.utils.workspace_snapshot import (
     build_setup_commands_shell,
     build_workspace_snapshot_shell,
 )
+from preloop.services.no_progress_guard import NO_COMMITS_MARKER
 from preloop.services.verification import resolve_verification_policy
 
 logger = logging.getLogger(__name__)
@@ -134,6 +135,93 @@ RESULT_ARTIFACT_PATH = "/workspace/result.json"
 # Guardrail: refuse to persist oversized artifacts (the preset asks agents to
 # keep result.json small and reference workspace files for bulky output).
 MAX_RESULT_ARTIFACT_BYTES = 256 * 1024
+
+
+# Where the live no-progress reminder's prompt is written in the container,
+# so the harness reads it from a file and no prompt text is ever interpreted
+# by a shell (the same rule the completion nudge follows).
+LIVE_NUDGE_PROMPT_PATH = "/tmp/preloop-no-progress-nudge-prompt.txt"
+
+# Where the reminder's own output goes. Deliberately NOT the agent output log
+# the completion contract reads: a reminder session must not be able to write
+# the success sentinel into the transcript the original session is judged on.
+LIVE_NUDGE_LOG_PATH = "/tmp/preloop-no-progress-nudge.log"
+
+# The one line the workspace progress probe prints, followed by ``dirty``,
+# ``clean`` or ``unknown``.
+WORKSPACE_PROBE_MARKER = "PRELOOP_WORKSPACE_PROBE"
+
+# Where the probe collects the repositories it found, one path per line. A
+# file rather than a pipe because a ``while read`` fed by a pipe runs in a
+# subshell in POSIX sh and its counters would be lost on the way out.
+WORKSPACE_PROBE_REPO_LIST = "/tmp/preloop-workspace-probe-repos"
+
+# Asks every repository under the roots it is given whether the agent has
+# produced anything yet: an uncommitted change (tracked or untracked), or a
+# commit that is not on any remote. The roots arrive as arguments (``"$@"``),
+# never interpolated into the script, so a checkout path containing a space
+# is probed rather than word-split into nonsense.
+#
+# ``safe.directory`` is set on the command line because the probe runs as the
+# exec user, which need not be the uid that owns the checkout, and a
+# dubious-ownership refusal must read as "no answer" rather than as "nothing
+# happened". A repository that cannot be read, a root that does not exist, a
+# checkout with no remote at all (where "not pushed yet" has no meaning), or
+# a set of roots with no repository in them yields ``unknown``: the guard
+# stops runs, and a stop is never made on a failed probe.
+#
+# Evidence of work is checked before the unknowns, so one unreadable
+# repository can never mask a sibling that is plainly being worked on.
+WORKSPACE_PROGRESS_PROBE_SCRIPT = f"""
+dirty=0
+seen=0
+bad=0
+probed=""
+list={WORKSPACE_PROBE_REPO_LIST}.$$
+if ! : > "$list" 2>/dev/null; then
+    echo "{WORKSPACE_PROBE_MARKER} unknown"
+    exit 0
+fi
+for root in "$@"; do
+    if [ ! -d "$root" ]; then
+        bad=$((bad+1))
+        continue
+    fi
+    find "$root" -maxdepth 4 -type d -name .git >> "$list" 2>/dev/null
+done
+while IFS= read -r g; do
+    repo=$(dirname "$g")
+    case ":$probed:" in
+        *":$repo:"*) continue ;;
+    esac
+    probed="$probed:$repo"
+    seen=$((seen+1))
+    if ! status=$(git -c safe.directory='*' -C "$repo" status --porcelain 2>/dev/null); then
+        bad=$((bad+1))
+        continue
+    fi
+    if [ -n "$status" ]; then
+        dirty=1
+        continue
+    fi
+    if [ -z "$(git -c safe.directory='*' -C "$repo" remote 2>/dev/null)" ]; then
+        bad=$((bad+1))
+        continue
+    fi
+    local_commits=$(git -c safe.directory='*' -C "$repo" rev-list --count HEAD --not --remotes 2>/dev/null || echo 0)
+    if [ "$local_commits" -gt 0 ] 2>/dev/null; then
+        dirty=1
+    fi
+done < "$list"
+rm -f "$list" 2>/dev/null
+if [ "$dirty" -eq 1 ]; then
+    echo "{WORKSPACE_PROBE_MARKER} dirty"
+elif [ "$seen" -eq 0 ] || [ "$bad" -gt 0 ]; then
+    echo "{WORKSPACE_PROBE_MARKER} unknown"
+else
+    echo "{WORKSPACE_PROBE_MARKER} clean"
+fi
+"""
 
 
 # Directory inside the agent container where audit-style presets write their
@@ -2593,6 +2681,158 @@ class ContainerAgentExecutor(AgentExecutor):
             )
             return None
         return data
+
+    async def _workspace_probe_roots(self, container: Any) -> List[str]:
+        """Directories the progress probe should look in (#851).
+
+        ``/workspace`` is always one of them. The container's configured
+        working directory is added when it is an absolute path somewhere else,
+        which is the case whenever a repository was cloned to an absolute
+        ``clone_path``: the agent's real checkout is then outside the
+        workspace volume and a probe that only looked at ``/workspace`` would
+        report a clean tree for a run that is busy editing.
+
+        Args:
+            container: The running container object.
+
+        Returns:
+            The roots, ``/workspace`` first, without duplicates.
+        """
+        roots = ["/workspace"]
+        try:
+            details = await container.show()
+            working_dir = ((details or {}).get("Config") or {}).get("WorkingDir") or ""
+        except Exception as e:
+            self.logger.debug(
+                "Could not read the working directory for the progress probe: %s",
+                _exception_message(e),
+            )
+            return roots
+        working_dir = working_dir.strip()
+        if (
+            working_dir.startswith("/")
+            and working_dir != "/"
+            and working_dir != "/workspace"
+            and not working_dir.startswith("/workspace/")
+        ):
+            roots.append(working_dir)
+        return roots
+
+    async def probe_workspace_changed(self, session_reference: str) -> Optional[bool]:
+        """Whether the live checkout holds any work yet (#851).
+
+        "Work" is a tracked or untracked change reported by ``git status
+        --porcelain`` in any probed repository, or a commit that is not on any
+        remote yet: a run that has already committed has made progress even
+        though its tree is clean again.
+
+        The probed roots are ``/workspace`` and the container's own working
+        directory, because a repository's ``clone_path`` may be absolute and
+        then the checkout the agent edits lives outside ``/workspace``
+        entirely. A root that cannot be read answers ``unknown``, so a run
+        that works somewhere this probe cannot see is never stopped for it.
+
+        Docker only. A Kubernetes Job's pod is reachable only through the
+        websocket exec API, which this executor does not open, so the probe
+        returns None there and the guard stays inert rather than stopping
+        runs it cannot see (see the PR for #851).
+
+        Args:
+            session_reference: The running container id.
+
+        Returns:
+            True when the workspace holds work, False when it provably holds
+            none, None when the question could not be answered: no
+            repository, a git invocation that failed, an exec that failed, or
+            a runtime without a live exec channel.
+        """
+        if self.use_kubernetes:
+            return None
+        try:
+            docker = await self._get_docker_client()
+            container = await docker.containers.get(session_reference)
+            roots = await self._workspace_probe_roots(container)
+            exec_handle = await container.exec(
+                cmd=["sh", "-c", WORKSPACE_PROGRESS_PROBE_SCRIPT, "sh", *roots],
+                stdout=True,
+                stderr=False,
+            )
+            output = ""
+            async with exec_handle.start(detach=False) as stream:
+                while True:
+                    message = await stream.read_out()
+                    if message is None:
+                        break
+                    output += message.data.decode("utf-8", "replace")
+                    if len(output) > 4096:
+                        break
+        except Exception as e:
+            self.logger.warning(
+                "Workspace progress probe failed in container %s: %s",
+                session_reference[:12],
+                _exception_message(e),
+            )
+            return None
+
+        verdict = ""
+        for line in output.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(WORKSPACE_PROBE_MARKER):
+                verdict = stripped[len(WORKSPACE_PROBE_MARKER) :].strip()
+        if verdict == "dirty":
+            return True
+        if verdict == "clean":
+            return False
+        return None
+
+    async def deliver_live_nudge(self, session_reference: str, prompt: str) -> bool:
+        """Hand one reminder to the harness session that is still running.
+
+        The prompt is written into the container base64-encoded (no shell
+        ever sees its text) and the harness's own resume command is started
+        detached, so the orchestrator's poll loop is not blocked for the
+        length of a model round trip. The exit code is not collected: this is
+        a reminder, and a reminder that fails leaves the run exactly where it
+        was, which the guard's grace period then ends.
+
+        Only runtimes whose agent script advertises an in-place resume
+        (``supports_inplace_completion_nudge``) define
+        :data:`live_nudge_command`; the others return False here and the
+        guard gives them the stop without the reminder.
+
+        Args:
+            session_reference: The running container id.
+            prompt: The reminder text.
+
+        Returns:
+            True when the command was started in the container.
+        """
+        command = getattr(self, "live_nudge_command", None)
+        if self.use_kubernetes or not command:
+            return False
+        encoded = base64.b64encode(prompt.encode("utf-8")).decode("ascii")
+        script = (
+            f"printf %s '{encoded}' | base64 -d > {LIVE_NUDGE_PROMPT_PATH} && {command}"
+        )
+        try:
+            docker = await self._get_docker_client()
+            container = await docker.containers.get(session_reference)
+            exec_handle = await container.exec(
+                cmd=["sh", "-c", script], stdout=True, stderr=True
+            )
+            await exec_handle.start(detach=True)
+        except Exception as e:
+            self.logger.warning(
+                "Live nudge delivery failed in container %s: %s",
+                session_reference[:12],
+                _exception_message(e),
+            )
+            return False
+        self.logger.info(
+            "Delivered a live no-progress nudge to container %s",
+            session_reference[:12],
+        )
+        return True
 
     async def get_workspace_snapshot(self, session_reference: str) -> Optional[bytes]:
         """Capture ``/workspace`` as a size-capped tar.gz for later restore.
@@ -5254,6 +5494,11 @@ true
                     [
                         "else",
                         f'  echo "No commits on {target_branch}, skipping push"',
+                        # Machine-readable twin of the sentence above: the
+                        # orchestrator classifies a failed run that produced
+                        # no commit as agent_no_progress (#851), and matching
+                        # prose would break the first time the wording moves.
+                        f'  echo "{NO_COMMITS_MARKER} {target_branch}"',
                         "fi",
                         "cd /workspace",
                     ]
