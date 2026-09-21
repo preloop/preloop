@@ -37,6 +37,9 @@ avatars.
   on a stronger model or a higher reasoning effort. Both keys are unset by
   default, so existing flows are unaffected, and a run with any workspace
   change is never nudged or stopped by the guard.
+- Price overrides can be read, edited and removed in the console: the Cost page
+  lists every override with its rates, effective dates and notes, and a model's
+  detail page can drop its override and fall back to the catalog price.
 - A model whose requests carry no price can be marked "unpriced is expected"
   (or snoozed for seven days) from the Models list or the model detail page.
   The marker is stored as `model-unpriced:<alias>` with a stable
