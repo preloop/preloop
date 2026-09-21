@@ -1,11 +1,13 @@
 """Tests for Codex agent implementation."""
 
+import logging
 import os
 from unittest.mock import patch, AsyncMock
 
 import pytest
 
 from preloop.agents.codex import CodexAgent
+from preloop.services.model_context_limits import limits_for_execution
 from preloop.utils.execve_limits import PROMPT_FILE_PATH
 
 
@@ -591,3 +593,164 @@ class TestCodexCliSession:
         assert "base64 -d | tar xzf -" in script
         encoded = script.split("echo '")[1].split("'")[0]
         assert base64.b64decode(encoded) == b"tar-gz-bytes"
+
+
+class TestCodexContextLimits:
+    """config.toml tells Codex the window it is actually working in (#851).
+
+    Without these keys Codex assumes a conservative window, compacts long
+    before it has to, and then re-reads what it just dropped. Preloop knows
+    the real numbers from the model row or the vendored price catalog.
+    """
+
+    def test_config_carries_both_limits_from_the_catalog(self):
+        agent = CodexAgent({})
+        auth_block = agent._build_codex_auth_config(
+            "gpt-5.4",
+            "openai",
+            "",
+            limits_for_execution({"model_identifier": "gpt-5.4"}),
+        )
+        assert "model_context_window = 1050000" in auth_block
+        assert "model_max_output_tokens = 128000" in auth_block
+
+    def test_the_model_row_overrides_the_catalog(self):
+        """An operator's provisioned deployment can be smaller than the
+        public model."""
+        agent = CodexAgent({})
+        auth_block = agent._build_codex_auth_config(
+            "gpt-5.4",
+            "preloop",
+            "https://gw.example.com/openai/v1",
+            limits_for_execution(
+                {
+                    "model_identifier": "gpt-5.4",
+                    "model_parameters": {"context_window": 262144},
+                }
+            ),
+        )
+        assert "model_context_window = 262144" in auth_block
+        # The ceiling the row said nothing about still comes from the catalog.
+        assert "model_max_output_tokens = 128000" in auth_block
+
+    def test_an_unknown_model_gets_no_limits_and_one_info_line(self, caplog):
+        """Nothing is guessed: Codex keeps its own defaults."""
+        agent = CodexAgent({})
+        with caplog.at_level(logging.INFO, logger="preloop.agents.codex"):
+            auth_block = agent._build_codex_auth_config(
+                "nobody-has-heard-of-this",
+                "example",
+                "https://api.example.com/v1",
+                limits_for_execution({"model_identifier": "nobody-has-heard-of-this"}),
+            )
+        assert "model_context_window" not in auth_block
+        assert "model_max_output_tokens" not in auth_block
+        unknown = [
+            record
+            for record in caplog.records
+            if "No context window or output ceiling known" in record.getMessage()
+        ]
+        assert len(unknown) == 1
+
+    def test_a_caller_that_passes_no_limits_changes_nothing(self):
+        """Existing callers keep the config they had."""
+        agent = CodexAgent({})
+        auth_block = agent._build_codex_auth_config("gpt-5.4", "openai", "")
+        assert "model_context_window" not in auth_block
+        assert 'model = "gpt-5.4"' in auth_block
+
+    def test_the_generated_script_carries_the_limits(self):
+        """End to end: the window reaches the config.toml heredoc."""
+        script = CodexAgent({})._build_codex_script(
+            {
+                "prompt": "test",
+                "execution_id": "exec-1",
+                "flow_name": "test-flow",
+                "model_identifier": "gpt-5.4",
+                "model_provider": "openai",
+            }
+        )
+        assert "model_context_window = 1050000" in script
+        assert "model_max_output_tokens = 128000" in script
+
+    def test_limits_sit_under_the_model_line_and_above_rmcp_client(self):
+        """A key in the wrong table is a key Codex reads as someone else's."""
+        agent = CodexAgent({})
+        auth_block = agent._build_codex_auth_config(
+            "gpt-5.4",
+            "preloop",
+            "https://gw.example.com/openai/v1",
+            limits_for_execution({"model_identifier": "gpt-5.4"}),
+        )
+        assert auth_block.index('model = "gpt-5.4"') < auth_block.index(
+            "model_context_window"
+        )
+        assert auth_block.index("model_context_window") < auth_block.index(
+            "rmcp_client = true"
+        )
+        assert auth_block.index("model_max_output_tokens") < auth_block.index(
+            "[model_providers.preloop]"
+        )
+
+
+class TestCodexReasoningEffort:
+    """A routed effort reaches Codex through config.toml (#851).
+
+    Codex takes its effort from its config file, not from the request, so a
+    flow-level "think harder on this label" has to be written here.
+    """
+
+    def test_a_routed_effort_is_written(self):
+        agent = CodexAgent({})
+        auth_block = agent._build_codex_auth_config(
+            "gpt-5.4", "openai", "", None, "high"
+        )
+        assert 'model_reasoning_effort = "high"' in auth_block
+
+    def test_no_routed_effort_leaves_the_model_default(self):
+        agent = CodexAgent({})
+        auth_block = agent._build_codex_auth_config("gpt-5.4", "openai", "")
+        assert "model_reasoning_effort" not in auth_block
+
+    def test_an_effort_codex_does_not_accept_is_dropped(self, caplog):
+        """A config file Codex refuses to parse would fail the whole run."""
+        agent = CodexAgent({})
+        with caplog.at_level(logging.INFO, logger="preloop.agents.codex"):
+            auth_block = agent._build_codex_auth_config(
+                "gpt-5.4", "openai", "", None, "maximum"
+            )
+        assert "model_reasoning_effort" not in auth_block
+        assert any(
+            "Ignoring reasoning effort" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_the_effort_travels_on_the_model_parameters(self):
+        """End to end: what the orchestrator wrote reaches the config."""
+        script = CodexAgent({})._build_codex_script(
+            {
+                "prompt": "test",
+                "execution_id": "exec-1",
+                "flow_name": "test-flow",
+                "model_identifier": "gpt-5.4",
+                "model_provider": "openai",
+                "model_parameters": {"reasoning_effort": "high"},
+            }
+        )
+        assert 'model_reasoning_effort = "high"' in script
+
+    def test_the_effort_sits_beside_the_context_limits(self):
+        agent = CodexAgent({})
+        auth_block = agent._build_codex_auth_config(
+            "gpt-5.4",
+            "preloop",
+            "https://gw.example.com/openai/v1",
+            limits_for_execution({"model_identifier": "gpt-5.4"}),
+            "medium",
+        )
+        assert auth_block.index("model_context_window") < auth_block.index(
+            "model_reasoning_effort"
+        )
+        assert auth_block.index("model_reasoning_effort") < auth_block.index(
+            "rmcp_client = true"
+        )

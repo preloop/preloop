@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import shlex
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from aiodocker.exceptions import DockerError
 
@@ -14,6 +14,10 @@ from preloop.utils.execve_limits import (
     prompt_transport_env,
 )
 from preloop.services.mcp_config_service import MCPConfigService
+from preloop.services.model_context_limits import (
+    ModelContextLimits,
+    limits_for_execution,
+)
 from preloop.services.model_runtime_resolver import gateway_url_for_api
 
 from .cli_session import (
@@ -36,11 +40,20 @@ from .stream_recovery import (
     build_stream_recovery_baseline_block,
     build_stream_recovery_block,
 )
-from .container import ContainerAgentExecutor
+from .container import (
+    LIVE_NUDGE_LOG_PATH,
+    LIVE_NUDGE_PROMPT_PATH,
+    ContainerAgentExecutor,
+)
 from .images import default_agent_image
 from .kubernetes import detect_kubernetes_environment
 
 logger = logging.getLogger(__name__)
+
+#: Efforts the Codex CLI accepts in ``model_reasoning_effort``. Anything else
+#: is dropped rather than written, so a routing preference can never make
+#: config.toml unparseable.
+CODEX_REASONING_EFFORTS = ("minimal", "low", "medium", "high")
 
 
 class CodexAgent(ContainerAgentExecutor):
@@ -60,6 +73,26 @@ class CodexAgent(ContainerAgentExecutor):
     # recorded, so the completion reminder happens in the same container and
     # workspace instead of starting a second session.
     supports_inplace_completion_nudge = True
+
+    # How the no-progress guard reminds a run that is STILL going (#851).
+    # The same resume entry point, started detached from the control plane
+    # while the first `codex exec` is still working. It reads the rollout the
+    # running session has recorded so far, so the reminder starts from that
+    # context rather than from nothing; whether the CLI continues that
+    # session or forks a second one from its recorded state is the CLI's
+    # business and this code does not depend on the answer. The model and
+    # provider come from ~/.codex/config.toml, which this container already
+    # wrote, so the command carries no configuration of its own. The
+    # reminder is only ever sent to a run that has changed nothing, its
+    # output goes to a log of its own so it cannot write the completion
+    # sentinel into the transcript the original session is judged on, and
+    # the guard stops the run anyway if nothing changes, so the worst case
+    # of two codex processes in one workspace is bounded by the grace
+    # period.
+    live_nudge_command = (
+        f"codex exec resume --last --skip-git-repo-check --yolo "
+        f'"$(cat {LIVE_NUDGE_PROMPT_PATH})" >> {LIVE_NUDGE_LOG_PATH} 2>&1'
+    )
 
     def __init__(self, config: Dict[str, Any]):
         """
@@ -518,7 +551,11 @@ fi
         flow_name = execution_context.get("flow_name", "unknown")
 
         auth_block = self._build_codex_auth_config(
-            model, model_provider, model_endpoint
+            model,
+            model_provider,
+            model_endpoint,
+            limits_for_execution(execution_context),
+            (execution_context.get("model_parameters") or {}).get("reasoning_effort"),
         )
 
         # Native CLI session persistence blocks (mostly empty on cold start).
@@ -725,8 +762,90 @@ exit $CODEX_EXIT_CODE
         # Call parent implementation which will use the args and env
         return await super()._start_kubernetes_pod(execution_context)
 
+    def _build_codex_effort_line(
+        self, model: str, reasoning_effort: Optional[str]
+    ) -> str:
+        """The ``model_reasoning_effort`` line, when routing asked for one.
+
+        A label rule can say "this issue is the hard kind, think harder"
+        without changing the model (#851). Codex reads the effort from
+        ``config.toml``, so this is the only place a flow-level choice can
+        reach it. An effort Codex does not accept is dropped rather than
+        written: a config file Codex refuses to parse would fail the whole
+        run over a routing preference.
+
+        Args:
+            model: The model identifier, for the log line.
+            reasoning_effort: Requested effort, or None.
+
+        Returns:
+            One newline-terminated TOML line, or an empty string.
+        """
+        if not isinstance(reasoning_effort, str):
+            return ""
+        effort = reasoning_effort.strip().lower()
+        if effort not in CODEX_REASONING_EFFORTS:
+            if effort:
+                logger.info(
+                    "Ignoring reasoning effort %r for model %s: codex accepts %s",
+                    reasoning_effort,
+                    model,
+                    ", ".join(CODEX_REASONING_EFFORTS),
+                )
+            return ""
+        logger.info("Codex reasoning effort for %s: %s", model, effort)
+        return f'model_reasoning_effort = "{effort}"\n'
+
+    def _build_codex_limit_lines(
+        self, model: str, limits: Optional[ModelContextLimits]
+    ) -> str:
+        """The ``model_context_window`` / ``model_max_output_tokens`` lines.
+
+        Codex falls back to a conservative window when ``config.toml`` says
+        nothing, so a model with a large window compacts far too early and
+        re-reads what it just dropped (#851). Preloop knows the real numbers
+        from the model row or the vendored price catalog, and passes on only
+        what it actually knows: an unknown limit is omitted so the harness
+        keeps its own default rather than trusting a number Preloop guessed.
+
+        Args:
+            model: The model identifier, for the log line.
+            limits: Resolved limits, or None when nothing was resolved.
+
+        Returns:
+            Zero, one or two TOML lines, newline-terminated when non-empty.
+        """
+        limits = limits or ModelContextLimits()
+        lines = []
+        if limits.context_window is not None:
+            lines.append(f"model_context_window = {limits.context_window}")
+        if limits.max_output_tokens is not None:
+            lines.append(f"model_max_output_tokens = {limits.max_output_tokens}")
+        if not lines:
+            logger.info(
+                "No context window or output ceiling known for model %s "
+                "(neither the model row nor the vendored price catalog has "
+                "one); codex keeps its own defaults",
+                model,
+            )
+            return ""
+        logger.info(
+            "Codex context limits for %s: window=%s (%s) output=%s (%s)",
+            model,
+            limits.context_window,
+            limits.context_window_source or "unknown",
+            limits.max_output_tokens,
+            limits.max_output_tokens_source or "unknown",
+        )
+        return "\n".join(lines) + "\n"
+
     def _build_codex_auth_config(
-        self, model: str, model_provider: str, model_endpoint: str
+        self,
+        model: str,
+        model_provider: str,
+        model_endpoint: str,
+        limits: Optional[ModelContextLimits] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> str:
         """
         Build the auth.json and config.toml shell script block for Codex CLI.
@@ -740,11 +859,18 @@ exit $CODEX_EXIT_CODE
             model: Model identifier (e.g., "gpt-5.4", "claude-sonnet-4-20250514")
             model_provider: Provider name (e.g., "openai", "anthropic")
             model_endpoint: API base URL for custom providers
+            limits: Context window and output ceiling for this model, when
+                Preloop knows them. Omitted lines leave codex on its defaults.
+            reasoning_effort: Effort this run should think at, when routing
+                asked for one. Omitted leaves the model's own default.
 
         Returns:
             Shell script block to write auth.json and config.toml
         """
         is_custom = model_provider and model_provider != "openai"
+        limit_lines = self._build_codex_limit_lines(
+            model, limits
+        ) + self._build_codex_effort_line(model, reasoning_effort)
 
         if is_custom:
             # Custom provider: generate provider-specific config
@@ -776,7 +902,7 @@ EOF
 cat > ~/.codex/config.toml << EOF
 model_provider = "{provider_key}"
 model = "{model}"
-
+{limit_lines}
 rmcp_client = true
 
 [model_providers.{provider_key}]
@@ -807,7 +933,7 @@ EOF
 # Create config.toml with model and MCP server configuration
 cat > ~/.codex/config.toml << EOF
 model = "{model}"
-
+{limit_lines}
 rmcp_client = true
 
 [mcp_servers.preloop]

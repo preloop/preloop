@@ -45,6 +45,7 @@ from preloop.agents.completion_nudge import (
     COMPLETION_NUDGE_MARKER,
     COMPLETION_NUDGE_RESULT_MARKER,
     COMPLETION_NUDGE_UNSUPPORTED_MARKER,
+    build_no_progress_nudge_prompt,
 )
 from preloop.agents.failure_analysis import analyze_agent_failure
 from preloop.agents.verification import (
@@ -52,8 +53,15 @@ from preloop.agents.verification import (
     VERIFICATION_MARKER,
 )
 from preloop.services.flow_failure_category import (
+    FAILURE_CATEGORY_AGENT_NO_PROGRESS,
     FAILURE_CATEGORY_UNKNOWN,
     derive_failure_category,
+)
+from preloop.services.no_progress_guard import (
+    NO_COMMITS_MARKER,
+    NoProgressGuardConfig,
+    parse_guard_config,
+    parse_retry_config,
 )
 from preloop.services.flow_execution_notifications import (
     needs_tracker_comment,
@@ -385,6 +393,12 @@ CONFIRMATION_NUDGE_TOKEN_CHAR_RATIO = 4
 # nudge prompt (before the character budget is applied).
 CONFIRMATION_NUDGE_LOG_TAIL_LINES = 200
 
+# The agent status loop polls every 5 seconds; the no-progress probe is an
+# exec in the live container and does not need that resolution. One probe a
+# minute resolves a 15 minute deadline to within 2% and costs one `git status`
+# per minute on the runs whose flow enabled the guard.
+NO_PROGRESS_PROBE_INTERVAL_SECONDS = 60
+
 
 def _armed_log_lines(lines: List[str]) -> List[str]:
     """Return stripped log lines armed at the agent-exec-start marker.
@@ -581,6 +595,14 @@ class FlowExecutionOrchestrator:
         self._inplace_nudge_seen = False
         self._inplace_nudge_logged = False
         self._inplace_nudge_unsupported = False
+        # No-progress guard (#851). ``_post_exec_no_commits`` is set from the
+        # container's own PRELOOP_NO_COMMITS line, so a failed run that never
+        # produced a commit can be named instead of filed as ``unknown``.
+        # The other three are the live guard's memory across poll iterations.
+        self._post_exec_no_commits = False
+        self._workspace_change_seen = False
+        self._no_progress_nudged_at: Optional[int] = None
+        self._no_progress_last_probe_at: Optional[int] = None
         # Execution context of the current attempt, kept so the confirmation
         # nudge can re-invoke the agent with prior context.
         self._execution_context: Optional[Dict[str, Any]] = None
@@ -1211,12 +1233,14 @@ class FlowExecutionOrchestrator:
         routing_record = (self.trigger_event_data or {}).get(ROUTING_RECORD_KEY) or {}
         if routing_record:
             logger.info(
-                "Model routing for execution: source=%s rule_id=%s "
-                "agent_type=%s ai_model_id=%s",
+                "Model routing for execution: source=%s rule_id=%s label=%s "
+                "agent_type=%s ai_model_id=%s reasoning_effort=%s",
                 routing_record.get("source"),
                 routing_record.get("rule_id"),
+                routing_record.get("matched_label"),
                 routing_record.get("agent_type"),
                 routing_record.get("ai_model_id"),
+                routing_record.get("reasoning_effort"),
             )
 
         logger.info(f"Found flow: {self.flow.name} (agent_type: {self.agent_type})")
@@ -1266,6 +1290,55 @@ class FlowExecutionOrchestrator:
             return None
 
         return resolve_ai_model_runtime(self.ai_model, allow_gateway=True)
+
+    def _apply_routed_reasoning_effort(
+        self, execution_context: Dict[str, Any]
+    ) -> Optional[str]:
+        """Carry the routed label choice into the run (#851).
+
+        A label rule may ask for more thinking rather than a different model,
+        so the effort is layered over the model row's own parameters for this
+        run only. The effort comes from the controller-written routing
+        record, never from the event body. The milestone says which label
+        decided, so the execution page can show why this run is on this model
+        while the flow default says something else.
+
+        Args:
+            execution_context: Context being assembled for the agent.
+
+        Returns:
+            The effort applied, or None when the record asked for none.
+        """
+        record = (self.trigger_event_data or {}).get(ROUTING_RECORD_KEY) or {}
+        raw_effort = record.get("reasoning_effort")
+        effort = (
+            raw_effort.strip().lower()
+            if isinstance(raw_effort, str) and raw_effort.strip()
+            else None
+        )
+        if effort:
+            parameters = dict(execution_context.get("model_parameters") or {})
+            parameters["reasoning_effort"] = effort
+            execution_context["model_parameters"] = parameters
+        if record.get("source") == "label":
+            self.execution_logger.log_milestone(
+                "model_by_label",
+                {
+                    "label": record.get("matched_label"),
+                    "rule_id": record.get("rule_id"),
+                    "ai_model_id": record.get("ai_model_id"),
+                    "agent_type": record.get("agent_type"),
+                    "reasoning_effort": effort,
+                },
+            )
+        if effort:
+            logger.info(
+                "Reasoning effort %s applied by routing (%s, label %s)",
+                effort,
+                record.get("source"),
+                record.get("matched_label") or "none",
+            )
+        return effort
 
     async def _resolve_prompt(self) -> str:
         """
@@ -2441,6 +2514,7 @@ class FlowExecutionOrchestrator:
                     else None
                 )
             )
+            self._apply_routed_reasoning_effort(execution_context)
 
             # Populate the authorized gateway model list so agent config
             # generators (e.g. OpenCode) can include every model the
@@ -2634,6 +2708,13 @@ class FlowExecutionOrchestrator:
         # in is not a platform receipt.
         if stripped_line.startswith(REPORT_PUBLICATION_MARKER + " "):
             self._note_report_publication(stripped_line)
+
+        # The post-execution git block found nothing to push. Recorded (not
+        # judged) here: a failed run that also produced no commit is
+        # ``agent_no_progress``, and a run that never reached this block
+        # keeps whatever category its own failure implies.
+        if stripped_line.startswith(NO_COMMITS_MARKER):
+            self._note_no_commits(stripped_line)
 
         # In-place completion nudge markers printed by the agent
         # script. Order matters: the result marker shares the start
@@ -4277,6 +4358,214 @@ class FlowExecutionOrchestrator:
         )
         logger.info("In-place completion nudge observed (source=%s)", source)
 
+    def _note_no_commits(self, line: str) -> None:
+        """Record the container's report that the branch carried no commit.
+
+        One line per run, printed by the post-execution git block right where
+        it would otherwise push. Kept as a fact about the run, not a verdict:
+        a successful review flow legitimately commits nothing, and only the
+        terminal classification combines this with an explicit agent failure.
+
+        Args:
+            line: The ``PRELOOP_NO_COMMITS <branch>`` line as printed.
+        """
+        if self._post_exec_no_commits:
+            return
+        self._post_exec_no_commits = True
+        logger.info("Post-execution git block found no commit on the working branch")
+
+    def _no_progress_guard_config(self) -> Optional[NoProgressGuardConfig]:
+        """The live guard's deadlines for this flow, or None when it is off."""
+        return parse_guard_config(getattr(self.flow, "agent_config", None))
+
+    async def _probe_workspace_changed(
+        self, agent_executor: Any, session_reference: str
+    ) -> Optional[bool]:
+        """Ask the runtime whether anything in the checkout has changed yet.
+
+        Args:
+            agent_executor: The executor owning the live session.
+            session_reference: The live session.
+
+        Returns:
+            True when the workspace holds a tracked or untracked change,
+            False when it is provably clean, and None when the runtime cannot
+            answer (no probe support, an exec failure, no repository). None is
+            not "clean": the guard stops runs, and a stop must never rest on a
+            probe that did not run.
+        """
+        probe = getattr(agent_executor, "probe_workspace_changed", None)
+        if not callable(probe):
+            return None
+        try:
+            answer = await probe(session_reference)
+        except Exception as probe_error:
+            logger.warning(
+                "Workspace progress probe failed for %s: %s",
+                session_reference,
+                _exception_message(probe_error),
+            )
+            return None
+        return answer if isinstance(answer, bool) else None
+
+    async def _check_no_progress(
+        self, agent_executor: Any, session_reference: str, elapsed: int
+    ) -> bool:
+        """Nudge, then stop, a live run that has changed nothing at all.
+
+        Called once per poll iteration. The probe itself runs at most every
+        :data:`NO_PROGRESS_PROBE_INTERVAL_SECONDS` seconds and only after the
+        configured deadline is in reach, so an enabled guard costs one cheap
+        exec a minute for the runs it is watching and nothing for the rest.
+
+        The sequence is: one nudge at ``no_progress_after_seconds``, then a
+        stop at ``no_progress_grace_seconds`` after it. The first observed
+        change ends the guard for the rest of the run, because a run that has
+        started editing is exactly the run this must never interrupt.
+
+        Args:
+            agent_executor: The executor owning the live session.
+            session_reference: The live session.
+            elapsed: Seconds this attempt has been monitored.
+
+        Returns:
+            True when the caller must stop the run as ``agent_no_progress``.
+        """
+        config = self._no_progress_guard_config()
+        if config is None or self._workspace_change_seen:
+            return False
+        if elapsed < config.after_seconds:
+            return False
+        if (
+            self._no_progress_last_probe_at is not None
+            and elapsed - self._no_progress_last_probe_at
+            < NO_PROGRESS_PROBE_INTERVAL_SECONDS
+        ):
+            return False
+
+        self._no_progress_last_probe_at = elapsed
+        changed = await self._probe_workspace_changed(agent_executor, session_reference)
+        if changed is None:
+            return False
+        if changed:
+            # Never nudged, never stopped: this run is working.
+            self._workspace_change_seen = True
+            logger.info(
+                "Workspace change observed at %ss; no-progress guard stands down",
+                elapsed,
+            )
+            return False
+
+        if self._no_progress_nudged_at is None:
+            await self._nudge_no_progress(
+                agent_executor, session_reference, elapsed, config
+            )
+            return False
+
+        if elapsed - self._no_progress_nudged_at < config.grace_seconds:
+            return False
+
+        self.execution_logger.log_milestone(
+            "no_progress_stop",
+            {
+                "elapsed": elapsed,
+                "after_seconds": config.after_seconds,
+                "grace_seconds": config.grace_seconds,
+                "agent_type": self.agent_type,
+            },
+        )
+        logger.warning(
+            "Stopping execution %s after %ss with no change in the workspace",
+            self.execution_log.id if self.execution_log else "unknown",
+            elapsed,
+        )
+        return True
+
+    async def _nudge_no_progress(
+        self,
+        agent_executor: Any,
+        session_reference: str,
+        elapsed: int,
+        config: NoProgressGuardConfig,
+    ) -> None:
+        """Deliver the one live reminder, or record that it was not possible.
+
+        The reminder is the same in-place mechanism the completion contract
+        uses (same container, same workspace, same harness session) with the
+        opposite instruction: start implementing, or write ``result.json``
+        with the blocker. A runtime that cannot be resumed in place gets no
+        reminder, only the stop that follows the grace period, and the
+        timeline says so.
+
+        Args:
+            agent_executor: The executor owning the live session.
+            session_reference: The live session.
+            elapsed: Seconds without a workspace change.
+            config: The guard's deadlines, for the timeline event.
+        """
+        # The clock starts whether or not the reminder could be delivered:
+        # the grace period is what the run is given after the deadline, and
+        # a runtime nobody can talk to does not earn an unbounded one.
+        self._no_progress_nudged_at = elapsed
+        supported = (
+            getattr(agent_executor, "supports_inplace_completion_nudge", False) is True
+        )
+        deliver = getattr(agent_executor, "deliver_live_nudge", None)
+        delivered = False
+        detail: Optional[str] = None
+        if supported and callable(deliver):
+            try:
+                delivered = bool(
+                    await deliver(
+                        session_reference,
+                        build_no_progress_nudge_prompt(elapsed),
+                    )
+                )
+            except Exception as nudge_error:
+                detail = _exception_message(nudge_error)
+                logger.warning(
+                    "Live no-progress nudge failed for %s: %s",
+                    session_reference,
+                    detail,
+                )
+        elif not supported:
+            detail = "runtime cannot resume its session in place"
+        else:
+            detail = "runtime has no live nudge channel"
+
+        self.execution_logger.log_milestone(
+            "no_progress_nudge",
+            {
+                "elapsed": elapsed,
+                "after_seconds": config.after_seconds,
+                "grace_seconds": config.grace_seconds,
+                "delivered": delivered,
+                "agent_type": self.agent_type,
+                "detail": detail,
+            },
+        )
+        await self._publish_update(
+            "no_progress_nudge",
+            {
+                "elapsed": elapsed,
+                "delivered": delivered,
+                "grace_seconds": config.grace_seconds,
+            },
+        )
+        await self._emit_execution_warning(
+            (
+                f"No change in the workspace after {elapsed // 60} minutes. "
+                "The agent was reminded to start implementing."
+                if delivered
+                else (
+                    f"No change in the workspace after {elapsed // 60} minutes. "
+                    "This runtime cannot be reminded in place, so the run will "
+                    "be stopped if nothing changes."
+                )
+            ),
+            details={"elapsed": elapsed, "delivered": delivered},
+        )
+
     def _note_inplace_nudge_result(self, line: str) -> None:
         """Record the exit code of the in-place reminder round."""
         self._inplace_nudge_seen = True
@@ -5125,6 +5414,32 @@ class FlowExecutionOrchestrator:
                 except Exception as publish_error:
                     logger.warning(f"Failed to publish status update: {publish_error}")
 
+                # A run that has changed nothing at all after the configured
+                # deadline is reminded once and, if still unchanged after the
+                # grace period, stopped here rather than at the end of a
+                # budget it was never going to use (#851).
+                if status == AgentStatus.RUNNING and await self._check_no_progress(
+                    agent_executor, session_reference, elapsed
+                ):
+                    await agent_executor.stop(session_reference)
+                    return {
+                        "status": "FAILED",
+                        "error_message": (
+                            f"Execution stopped after {elapsed} seconds with no "
+                            "change in the workspace: the agent read and planned "
+                            "but never edited a file."
+                        ),
+                        "failure_category": FAILURE_CATEGORY_AGENT_NO_PROGRESS,
+                        "actions_taken": self.execution_logger.get_actions_taken(),
+                        "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                        # The agent may have written a blocker into result.json
+                        # when the nudge asked it to; that report is the most
+                        # useful thing this run produced.
+                        "result": await self._capture_result_artifact(
+                            agent_executor, session_reference
+                        ),
+                    }
+
                 loop_detection = await self._sync_runtime_tool_activity_metrics()
                 if loop_detection:
                     repeated_tools = ", ".join(
@@ -5787,6 +6102,128 @@ class FlowExecutionOrchestrator:
                 getattr(self.execution_log, "id", "unknown"),
                 exc_info=True,
             )
+
+    def _terminal_failure_category(
+        self, final_status: str, agent_result: Dict[str, Any]
+    ) -> Optional[str]:
+        """Classify the terminal outcome, naming no-progress runs (#851).
+
+        The general derivation is unchanged: an explicit category from the
+        code that raised wins, then message shapes, then the executor's
+        full-log analysis. What is added here is the one verdict neither can
+        reach, because it is made of two facts from different places: the
+        agent said it failed (``result.json``), and the container's
+        post-execution git block found nothing to push. Together they mean
+        the run produced no work, which is a different problem from anything
+        the provider or the runtime did, and a different fix.
+
+        A run that committed and then failed keeps its own category: the
+        no-commits marker is only printed when the branch was empty. A run
+        that never reached the git block prints no marker and is likewise
+        untouched, so a harness crash stays a harness crash.
+
+        Args:
+            final_status: Terminal status about to be written.
+            agent_result: The monitored attempt's result.
+
+        Returns:
+            The category to store, or None for a non-failure.
+        """
+        explicit = agent_result.get("failure_category")
+        if (
+            explicit is None
+            and final_status == "FAILED"
+            and self._post_exec_no_commits
+            and _result_artifact_confirmation(agent_result.get("result")) == "failure"
+        ):
+            explicit = FAILURE_CATEGORY_AGENT_NO_PROGRESS
+        return derive_failure_category(
+            status=final_status,
+            error_message=agent_result.get("error_message"),
+            explicit_category=explicit,
+            failure_analysis=agent_result.get("failure_analysis"),
+        )
+
+    async def _retry_after_no_progress(self, failure_category: Optional[str]) -> None:
+        """Start one escalated retry of a run that never changed anything.
+
+        Opt-in per flow (``agent_config.retry_on_no_progress``), at most one,
+        and never for a run that is itself a retry: an escalation that can
+        escalate again is a budget with no end. The retry is created through
+        the same path the manual retry endpoint uses, so it inherits the
+        trigger snapshot, the lineage link and every check that path makes.
+
+        Never raises. The original execution is already terminal and
+        correctly recorded at this point; a retry that cannot be created is
+        logged and shown on the timeline, it does not rewrite that outcome.
+
+        Args:
+            failure_category: The category just written on this execution.
+        """
+        if failure_category != FAILURE_CATEGORY_AGENT_NO_PROGRESS:
+            return
+        config = parse_retry_config(getattr(self.flow, "agent_config", None))
+        if not config.enabled or self.execution_log is None:
+            return
+        if getattr(self.execution_log, "retry_of_execution_id", None) is not None:
+            logger.info(
+                "Execution %s made no progress but is already a retry; not "
+                "retrying again",
+                self.execution_log.id,
+            )
+            self.execution_logger.log_milestone(
+                "no_progress_retry_skipped",
+                {"reason": "execution is already a retry"},
+            )
+            return
+
+        from preloop.models.models.flow_execution import ROUTING_RECORD_KEY
+        from preloop.services.flow_trigger_service import FlowTriggerService
+
+        trigger_data = dict(
+            getattr(self.execution_log, "trigger_event_details", None) or {}
+        )
+        trigger_data.pop(ROUTING_RECORD_KEY, None)
+        original_id = self.execution_log.id
+        try:
+            result = await FlowTriggerService(self.db).trigger_flow(
+                flow_id=self.flow_id,
+                test_mode=False,
+                trigger_event_data=trigger_data,
+                retry_of_execution_id=original_id,
+                triggered_by="Preloop no-progress guard",
+                no_progress_escalation={
+                    "ai_model_id": config.ai_model_id,
+                    "reasoning_effort": config.reasoning_effort,
+                },
+            )
+        except Exception as retry_error:
+            logger.warning(
+                "Could not start a no-progress retry of execution %s: %s",
+                original_id,
+                _exception_message(retry_error),
+            )
+            self.execution_logger.log_milestone(
+                "no_progress_retry_failed",
+                {"reason": _exception_message(retry_error)[:500]},
+            )
+            return
+
+        self.execution_logger.log_milestone(
+            "no_progress_retry_started",
+            {
+                "retry_execution_id": result.get("id"),
+                "ai_model_id": config.ai_model_id,
+                "reasoning_effort": config.reasoning_effort,
+            },
+        )
+        logger.info(
+            "Started no-progress retry %s of execution %s (model=%s, effort=%s)",
+            result.get("id"),
+            original_id,
+            config.ai_model_id or "flow default",
+            config.reasoning_effort or "unchanged",
+        )
 
     def _retry_decision(self, agent_result: Dict[str, Any]) -> Optional[str]:
         """Decide whether a failed attempt may be retried.
@@ -6774,6 +7211,10 @@ class FlowExecutionOrchestrator:
             if final_status == "SUCCEEDED":
                 await self._file_approved_follow_ups(merged_result)
 
+            terminal_failure_category = self._terminal_failure_category(
+                final_status, agent_result
+            )
+
             await self._update_execution_log(
                 status=final_status,
                 model_output_summary=output_summary,
@@ -6783,11 +7224,7 @@ class FlowExecutionOrchestrator:
                 # evidence than the truncated error message, so pass it in
                 # rather than letting _update_execution_log re-derive from
                 # prose.
-                failure_category=derive_failure_category(
-                    status=final_status,
-                    error_message=agent_result.get("error_message"),
-                    failure_analysis=agent_result.get("failure_analysis"),
-                ),
+                failure_category=terminal_failure_category,
                 actions_taken_summary=agent_result.get("actions_taken"),
                 mcp_usage_logs=agent_result.get("mcp_usage_logs"),
                 result=merged_result,
@@ -6823,6 +7260,11 @@ class FlowExecutionOrchestrator:
             # Comments that arrived while this run was going were queued as a
             # single follow-up; start it now that the run is terminal.
             await self._start_queued_followup()
+
+            # A run that produced nothing is the one failure a plain repeat
+            # cannot fix, so the retry only happens when the flow asked for
+            # it and it changes something about the attempt (#851).
+            await self._retry_after_no_progress(terminal_failure_category)
 
         except asyncio.CancelledError:
             # Deploy drain: the worker cancels in-flight handlers, releases the

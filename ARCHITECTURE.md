@@ -20,6 +20,11 @@ The [account kill switch](docs/guide/account-kill-switch.md) serializes halt tra
 Database worker ownership, row-lock compatibility, and cancellation rules are
 documented in [Transactions and asynchronous request handling](docs/architecture/data-model.md#transactions-and-asynchronous-request-handling).
 
+Agent harnesses are told the [context window and output ceiling](docs/guide/model-context-limits.md)
+of the model they run on, taken per field from `model_parameters` on the model
+row and then from the vendored catalog. An unknown limit is omitted rather
+than guessed, so the harness keeps its own default.
+
 [Reviewed price feeds](docs/guide/model-price-refresh.md) update the generic model
 map and Alibaba's dedicated regional tariff store in each API, gateway, and
 worker process. Alibaba estimates retain input tiers and distinct implicit,

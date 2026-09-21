@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Preloop API
   description: REST API for Preloop issue tracking management
-  version: 0.15.0
+  version: 0.16.0
 paths:
   /api/v1/auth/register:
     post:
@@ -18793,9 +18793,9 @@ components:
           description: 'Coarse machine-readable reason a terminal execution did not
             succeed: one of runner_conflict, runner_error, model_transient, model_auth,
             provider_billing, model_quota (legacy, superseded by provider_billing),
-            model_config, no_confirmation, setup_failed, tool_error, agent_error,
-            timeout, cancelled, unknown. Null for successful or still-running executions,
-            and for executions that predate this field.'
+            model_config, no_confirmation, agent_no_progress, setup_failed, tool_error,
+            agent_error, timeout, cancelled, unknown. Null for successful or still-running
+            executions, and for executions that predate this field.'
         queued_reason:
           anyOf:
           - type: string

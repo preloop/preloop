@@ -17,6 +17,7 @@ from preloop.utils.execve_limits import (
     prompt_transport_env,
 )
 from preloop.services.mcp_config_service import MCPConfigService
+from preloop.services.model_context_limits import limits_for_execution
 from preloop.services.model_runtime_resolver import gateway_url_for_api
 
 from .completion_nudge import (
@@ -889,6 +890,27 @@ exit $OPENCODE_EXIT_CODE
 
         if execution_context.get("model_api_protocol") == "responses":
             models[primary_local_id]["provider"] = {"npm": "@ai-sdk/openai"}
+
+        # A model registered by hand is a model OpenCode's own registry knows
+        # nothing about, so it has no context window for it either and falls
+        # back to a conservative default (#851). Preloop knows the real one
+        # from the model row or the vendored price catalog; anything it does
+        # not know is left out rather than guessed.
+        limits = limits_for_execution(execution_context)
+        limit: Dict[str, int] = {}
+        if limits.context_window is not None:
+            limit["context"] = limits.context_window
+        if limits.max_output_tokens is not None:
+            limit["output"] = limits.max_output_tokens
+        if limit:
+            models[primary_local_id]["limit"] = limit
+        else:
+            logger.info(
+                "No context window or output ceiling known for model %s "
+                "(neither the model row nor the vendored price catalog has "
+                "one); opencode keeps its own defaults",
+                primary_model,
+            )
 
         authorized: list[dict] = execution_context.get("authorized_gateway_models", [])
         for entry in authorized:
