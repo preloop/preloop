@@ -1211,12 +1211,14 @@ class FlowExecutionOrchestrator:
         routing_record = (self.trigger_event_data or {}).get(ROUTING_RECORD_KEY) or {}
         if routing_record:
             logger.info(
-                "Model routing for execution: source=%s rule_id=%s "
-                "agent_type=%s ai_model_id=%s",
+                "Model routing for execution: source=%s rule_id=%s label=%s "
+                "agent_type=%s ai_model_id=%s reasoning_effort=%s",
                 routing_record.get("source"),
                 routing_record.get("rule_id"),
+                routing_record.get("matched_label"),
                 routing_record.get("agent_type"),
                 routing_record.get("ai_model_id"),
+                routing_record.get("reasoning_effort"),
             )
 
         logger.info(f"Found flow: {self.flow.name} (agent_type: {self.agent_type})")
@@ -1266,6 +1268,55 @@ class FlowExecutionOrchestrator:
             return None
 
         return resolve_ai_model_runtime(self.ai_model, allow_gateway=True)
+
+    def _apply_routed_reasoning_effort(
+        self, execution_context: Dict[str, Any]
+    ) -> Optional[str]:
+        """Carry the routed label choice into the run (#851).
+
+        A label rule may ask for more thinking rather than a different model,
+        so the effort is layered over the model row's own parameters for this
+        run only. The effort comes from the controller-written routing
+        record, never from the event body. The milestone says which label
+        decided, so the execution page can show why this run is on this model
+        while the flow default says something else.
+
+        Args:
+            execution_context: Context being assembled for the agent.
+
+        Returns:
+            The effort applied, or None when the record asked for none.
+        """
+        record = (self.trigger_event_data or {}).get(ROUTING_RECORD_KEY) or {}
+        raw_effort = record.get("reasoning_effort")
+        effort = (
+            raw_effort.strip().lower()
+            if isinstance(raw_effort, str) and raw_effort.strip()
+            else None
+        )
+        if effort:
+            parameters = dict(execution_context.get("model_parameters") or {})
+            parameters["reasoning_effort"] = effort
+            execution_context["model_parameters"] = parameters
+        if record.get("source") == "label":
+            self.execution_logger.log_milestone(
+                "model_by_label",
+                {
+                    "label": record.get("matched_label"),
+                    "rule_id": record.get("rule_id"),
+                    "ai_model_id": record.get("ai_model_id"),
+                    "agent_type": record.get("agent_type"),
+                    "reasoning_effort": effort,
+                },
+            )
+        if effort:
+            logger.info(
+                "Reasoning effort %s applied by routing (%s, label %s)",
+                effort,
+                record.get("source"),
+                record.get("matched_label") or "none",
+            )
+        return effort
 
     async def _resolve_prompt(self) -> str:
         """
@@ -2441,6 +2492,7 @@ class FlowExecutionOrchestrator:
                     else None
                 )
             )
+            self._apply_routed_reasoning_effort(execution_context)
 
             # Populate the authorized gateway model list so agent config
             # generators (e.g. OpenCode) can include every model the

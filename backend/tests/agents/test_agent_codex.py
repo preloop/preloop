@@ -691,3 +691,66 @@ class TestCodexContextLimits:
         assert auth_block.index("model_max_output_tokens") < auth_block.index(
             "[model_providers.preloop]"
         )
+
+
+class TestCodexReasoningEffort:
+    """A routed effort reaches Codex through config.toml (#851).
+
+    Codex takes its effort from its config file, not from the request, so a
+    flow-level "think harder on this label" has to be written here.
+    """
+
+    def test_a_routed_effort_is_written(self):
+        agent = CodexAgent({})
+        auth_block = agent._build_codex_auth_config(
+            "gpt-5.4", "openai", "", None, "high"
+        )
+        assert 'model_reasoning_effort = "high"' in auth_block
+
+    def test_no_routed_effort_leaves_the_model_default(self):
+        agent = CodexAgent({})
+        auth_block = agent._build_codex_auth_config("gpt-5.4", "openai", "")
+        assert "model_reasoning_effort" not in auth_block
+
+    def test_an_effort_codex_does_not_accept_is_dropped(self, caplog):
+        """A config file Codex refuses to parse would fail the whole run."""
+        agent = CodexAgent({})
+        with caplog.at_level(logging.INFO, logger="preloop.agents.codex"):
+            auth_block = agent._build_codex_auth_config(
+                "gpt-5.4", "openai", "", None, "maximum"
+            )
+        assert "model_reasoning_effort" not in auth_block
+        assert any(
+            "Ignoring reasoning effort" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_the_effort_travels_on_the_model_parameters(self):
+        """End to end: what the orchestrator wrote reaches the config."""
+        script = CodexAgent({})._build_codex_script(
+            {
+                "prompt": "test",
+                "execution_id": "exec-1",
+                "flow_name": "test-flow",
+                "model_identifier": "gpt-5.4",
+                "model_provider": "openai",
+                "model_parameters": {"reasoning_effort": "high"},
+            }
+        )
+        assert 'model_reasoning_effort = "high"' in script
+
+    def test_the_effort_sits_beside_the_context_limits(self):
+        agent = CodexAgent({})
+        auth_block = agent._build_codex_auth_config(
+            "gpt-5.4",
+            "preloop",
+            "https://gw.example.com/openai/v1",
+            limits_for_execution({"model_identifier": "gpt-5.4"}),
+            "medium",
+        )
+        assert auth_block.index("model_context_window") < auth_block.index(
+            "model_reasoning_effort"
+        )
+        assert auth_block.index("model_reasoning_effort") < auth_block.index(
+            "rmcp_client = true"
+        )

@@ -23,7 +23,12 @@ from preloop.models.models.flow_execution import (
     MATRIX_OVERRIDES_KEY,
     ROUTING_RECORD_KEY,
 )
-from preloop.models.schemas.flow import ModelRoutingConfig, ModelRoutingRule
+from preloop.models.schemas.flow import (
+    ModelByLabelConfig,
+    ModelByLabelRule,
+    ModelRoutingConfig,
+    ModelRoutingRule,
+)
 from preloop.services.runner_service import (
     _account_default_runner_pool,
     _explicit_pool,
@@ -33,6 +38,14 @@ from preloop.services.runner_service import (
 logger = logging.getLogger(__name__)
 
 AGENT_CONFIG_ROUTING_KEY = "model_routing"
+
+#: The short label-to-model shape (#851). Evaluated after ``model_routing``
+#: by the same engine, so an operator who writes both gets one answer.
+AGENT_CONFIG_BY_LABEL_KEY = "model_by_label"
+
+#: Prefix for the rule id a desugared label rule reports on the execution.
+#: It is not a stored id: ``model_by_label`` entries are keyed by their label.
+BY_LABEL_RULE_PREFIX = "by-label:"
 
 # Keys that must never be treated as authorized model/harness overrides when
 # they arrive on an untrusted event body (webhook, tracker, or an
@@ -102,6 +115,76 @@ def parse_model_routing(agent_config: Any) -> Optional[ModelRoutingConfig]:
             f"agent_config.model_routing is invalid: {exc}"
         ) from exc
     return config
+
+
+def parse_model_by_label(agent_config: Any) -> Optional[ModelByLabelConfig]:
+    """Parse ``agent_config.model_by_label`` or return None when absent.
+
+    Raises:
+        ModelRoutingError: If the stored document is present but invalid.
+    """
+    if not isinstance(agent_config, dict):
+        return None
+    raw = agent_config.get(AGENT_CONFIG_BY_LABEL_KEY)
+    if raw is None:
+        return None
+    try:
+        return ModelByLabelConfig.model_validate(raw)
+    except ValidationError as exc:
+        raise ModelRoutingError(
+            f"agent_config.model_by_label is invalid: {exc}"
+        ) from exc
+
+
+def by_label_rules(
+    config: Optional[ModelByLabelConfig], flow: models.Flow
+) -> List[tuple[ModelRoutingRule, ModelByLabelRule]]:
+    """Desugar ``model_by_label`` entries into ordinary routing rules (#851).
+
+    The short shape says "this label, that model, that effort". It is the
+    same decision the ``model_routing`` engine already makes, so it is turned
+    into rules and handed to that engine rather than being matched by a
+    second implementation that could disagree with it. An entry that omits
+    the model or the harness inherits the flow's selection, which is what
+    "run the flow's model but think harder" has to mean.
+
+    Args:
+        config: Parsed ``model_by_label`` list, or None.
+        flow: Flow whose selection fills in what an entry leaves out.
+
+    Returns:
+        Pairs of (desugared rule, original entry), in stored order.
+
+    Raises:
+        ModelRoutingError: An entry has nothing to run on, because it names
+            neither a model nor a harness and the flow selected none either.
+    """
+    if config is None:
+        return []
+    default_model_id = flow.ai_model_id
+    default_type = (getattr(flow, "agent_type", "") or "").strip().lower() or None
+    desugared: List[tuple[ModelRoutingRule, ModelByLabelRule]] = []
+    for index, entry in enumerate(config.root, start=1):
+        model_id = entry.ai_model_id or default_model_id
+        agent_type = entry.agent_type or default_type
+        if not model_id or not agent_type:
+            raise ModelRoutingError(
+                f"model_by_label rule '{entry.label}' cannot run: it names "
+                "no model or harness and the flow has no selected model and "
+                "harness to fall back on"
+            )
+        desugared.append(
+            (
+                ModelRoutingRule(
+                    id=f"by-label-{index}",
+                    labels={"any": [entry.label]},
+                    ai_model_id=model_id,
+                    agent_type=agent_type,
+                ),
+                entry,
+            )
+        )
+    return desugared
 
 
 def rule_matches_labels(rule: ModelRoutingRule, current_labels: Sequence[str]) -> bool:
@@ -314,6 +397,30 @@ def validate_stored_model_routing(
     Raises:
         ModelRoutingError: Invalid document or unusable rule target.
     """
+    by_label = parse_model_by_label(agent_config)
+    if by_label is not None:
+        # Validated without the flow's defaults, which a create request has
+        # not stored yet: only the targets an entry names itself can be
+        # checked here, and resolve time checks the rest.
+        for entry in by_label.root:
+            if entry.agent_type:
+                _require_environment_profile_harness(agent_config, entry.agent_type)
+            if entry.ai_model_id is None:
+                continue
+            if entry.agent_type:
+                load_usable_model(
+                    db,
+                    ai_model_id=entry.ai_model_id,
+                    agent_type=entry.agent_type,
+                    account_id=account_id,
+                )
+                continue
+            # No harness named, so harness fit is the flow's business at
+            # resolve time. Ownership is still checked here: a model id from
+            # another account must never be storable.
+            model = crud_ai_model.get(db, id=_model_uuid(entry.ai_model_id))
+            if not _account_can_use_model(model, account_id):
+                raise ModelRoutingError(f"ai_model_id '{entry.ai_model_id}' not found")
     config = parse_model_routing(agent_config)
     if config is None:
         return None
@@ -337,6 +444,8 @@ def _record(
     label_snapshot: Iterable[str],
     rule_id: Optional[str] = None,
     handoff: Optional[str] = None,
+    matched_label: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {
         "schema_version": 1,
@@ -350,6 +459,10 @@ def _record(
         record["rule_id"] = rule_id
     if handoff:
         record["handoff"] = handoff
+    if matched_label:
+        record["matched_label"] = matched_label
+    if reasoning_effort:
+        record["reasoning_effort"] = reasoning_effort
     return record
 
 
@@ -505,9 +618,18 @@ def resolve_routing_record(
     prove their identity. Routing never silently substitutes another model.
     """
     labels = extract_trusted_labels(event_data)
-    config = parse_model_routing(getattr(flow, "agent_config", None))
+    agent_config = getattr(flow, "agent_config", None)
+    config = parse_model_routing(agent_config)
     account_id = getattr(flow, "account_id", None)
-    matched = first_matching_rule(config.rules, labels) if config else None
+    # One ordered list, one first-match decision. The explicit rules come
+    # first because they are the richer shape an operator reached for on
+    # purpose; the short label rules follow in stored order (#851).
+    label_pairs = by_label_rules(parse_model_by_label(agent_config), flow)
+    label_entries = {rule.id: entry for rule, entry in label_pairs}
+    ordered_rules = list(config.rules if config else []) + [
+        rule for rule, _ in label_pairs
+    ]
+    matched = first_matching_rule(ordered_rules, labels)
     if matched is not None:
         load_usable_model(
             db,
@@ -515,27 +637,38 @@ def resolve_routing_record(
             agent_type=matched.agent_type,
             account_id=account_id,
         )
-        _require_environment_profile_harness(
-            getattr(flow, "agent_config", None), matched.agent_type
-        )
+        _require_environment_profile_harness(agent_config, matched.agent_type)
+        entry = label_entries.get(matched.id)
+        if entry is None:
+            return _record(
+                ai_model_id=matched.ai_model_id,
+                agent_type=matched.agent_type.strip().lower(),
+                source="rule",
+                reason=f"Matched routing rule '{matched.id}'.",
+                label_snapshot=labels,
+                rule_id=matched.id,
+            )
+        reason = f"Matched label rule for '{entry.label}'."
+        if entry.reasoning_effort:
+            reason += f" Reasoning effort {entry.reasoning_effort}."
         return _record(
             ai_model_id=matched.ai_model_id,
             agent_type=matched.agent_type.strip().lower(),
-            source="rule",
-            reason=f"Matched routing rule '{matched.id}'.",
+            source="label",
+            reason=reason,
             label_snapshot=labels,
             rule_id=matched.id,
+            matched_label=entry.label,
+            reasoning_effort=entry.reasoning_effort,
         )
 
     default_type = (flow.agent_type or "").strip().lower() or None
     default_model_id = flow.ai_model_id
-    if default_type == "cursor" or (
-        config and config.rules and default_model_id is not None
-    ):
+    if default_type == "cursor" or (ordered_rules and default_model_id is not None):
         validate_default_selection(
             db, flow, ai_model_id=default_model_id, agent_type=default_type or "codex"
         )
-    elif config and config.rules and default_type:
+    elif ordered_rules and default_type:
         from preloop.agents.factory import SUPPORTED_AGENT_TYPES
 
         if default_type not in SUPPORTED_AGENT_TYPES:

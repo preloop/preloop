@@ -46,6 +46,11 @@ from .kubernetes import detect_kubernetes_environment
 
 logger = logging.getLogger(__name__)
 
+#: Efforts the Codex CLI accepts in ``model_reasoning_effort``. Anything else
+#: is dropped rather than written, so a routing preference can never make
+#: config.toml unparseable.
+CODEX_REASONING_EFFORTS = ("minimal", "low", "medium", "high")
+
 
 class CodexAgent(ContainerAgentExecutor):
     """
@@ -526,6 +531,7 @@ fi
             model_provider,
             model_endpoint,
             limits_for_execution(execution_context),
+            (execution_context.get("model_parameters") or {}).get("reasoning_effort"),
         )
 
         # Native CLI session persistence blocks (mostly empty on cold start).
@@ -732,6 +738,40 @@ exit $CODEX_EXIT_CODE
         # Call parent implementation which will use the args and env
         return await super()._start_kubernetes_pod(execution_context)
 
+    def _build_codex_effort_line(
+        self, model: str, reasoning_effort: Optional[str]
+    ) -> str:
+        """The ``model_reasoning_effort`` line, when routing asked for one.
+
+        A label rule can say "this issue is the hard kind, think harder"
+        without changing the model (#851). Codex reads the effort from
+        ``config.toml``, so this is the only place a flow-level choice can
+        reach it. An effort Codex does not accept is dropped rather than
+        written: a config file Codex refuses to parse would fail the whole
+        run over a routing preference.
+
+        Args:
+            model: The model identifier, for the log line.
+            reasoning_effort: Requested effort, or None.
+
+        Returns:
+            One newline-terminated TOML line, or an empty string.
+        """
+        if not isinstance(reasoning_effort, str):
+            return ""
+        effort = reasoning_effort.strip().lower()
+        if effort not in CODEX_REASONING_EFFORTS:
+            if effort:
+                logger.info(
+                    "Ignoring reasoning effort %r for model %s: codex accepts %s",
+                    reasoning_effort,
+                    model,
+                    ", ".join(CODEX_REASONING_EFFORTS),
+                )
+            return ""
+        logger.info("Codex reasoning effort for %s: %s", model, effort)
+        return f'model_reasoning_effort = "{effort}"\n'
+
     def _build_codex_limit_lines(
         self, model: str, limits: Optional[ModelContextLimits]
     ) -> str:
@@ -780,6 +820,7 @@ exit $CODEX_EXIT_CODE
         model_provider: str,
         model_endpoint: str,
         limits: Optional[ModelContextLimits] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> str:
         """
         Build the auth.json and config.toml shell script block for Codex CLI.
@@ -795,12 +836,16 @@ exit $CODEX_EXIT_CODE
             model_endpoint: API base URL for custom providers
             limits: Context window and output ceiling for this model, when
                 Preloop knows them. Omitted lines leave codex on its defaults.
+            reasoning_effort: Effort this run should think at, when routing
+                asked for one. Omitted leaves the model's own default.
 
         Returns:
             Shell script block to write auth.json and config.toml
         """
         is_custom = model_provider and model_provider != "openai"
-        limit_lines = self._build_codex_limit_lines(model, limits)
+        limit_lines = self._build_codex_limit_lines(
+            model, limits
+        ) + self._build_codex_effort_line(model, reasoning_effort)
 
         if is_custom:
             # Custom provider: generate provider-specific config
