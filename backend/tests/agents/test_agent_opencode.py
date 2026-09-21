@@ -1,6 +1,7 @@
 """Tests for OpenCode agent implementation."""
 
 import base64
+import logging
 import os
 import shutil
 from unittest.mock import patch, AsyncMock
@@ -721,6 +722,78 @@ class TestOpenCodeMultiModelConfig:
         config = agent._build_opencode_config("model-a", "custom", context, 600000)
         models = config["provider"]["custom"]["models"]
         assert models == {"model-a": {"name": "model-a"}}
+
+
+class TestOpenCodeContextLimits:
+    """opencode.json carries the window Preloop knows about (#851).
+
+    A hand-registered model is one OpenCode's own registry knows nothing
+    about, so it has no window for it and falls back to a small default.
+    OpenCode reads ``provider.<id>.models.<id>.limit.context`` and
+    ``.limit.output``, so the numbers Preloop already holds can be handed
+    straight over.
+    """
+
+    def test_a_known_model_gets_its_limits_from_the_catalog(self):
+        agent = OpenCodeAgent({})
+        context = {
+            "model_endpoint": "https://gw.example.com/v1",
+            "model_identifier": "gpt-5.4",
+            "model_provider": "openai",
+        }
+        config = agent._build_opencode_config("gpt-5.4", "openai", context, 600000)
+        models = config["provider"]["openai"]["models"]
+        assert models["gpt-5.4"]["limit"] == {
+            "context": 1050000,
+            "output": 128000,
+        }
+
+    def test_the_model_row_overrides_the_catalog(self):
+        agent = OpenCodeAgent({})
+        context = {
+            "model_endpoint": "https://gw.example.com/v1",
+            "model_identifier": "gpt-5.4",
+            "model_provider": "openai",
+            "model_parameters": {"context_window": 262144},
+        }
+        config = agent._build_opencode_config("gpt-5.4", "openai", context, 600000)
+        limit = config["provider"]["openai"]["models"]["gpt-5.4"]["limit"]
+        assert limit["context"] == 262144
+        assert limit["output"] == 128000
+
+    def test_an_unknown_model_carries_no_limit_key(self, caplog):
+        """Nothing is guessed: OpenCode keeps its own default."""
+        agent = OpenCodeAgent({})
+        context = {
+            "model_endpoint": "https://gw.example.com/v1",
+            "model_identifier": "nobody-has-heard-of-this",
+        }
+        with caplog.at_level(logging.INFO, logger="preloop.agents.opencode"):
+            config = agent._build_opencode_config(
+                "nobody-has-heard-of-this", "example", context, 600000
+            )
+        models = config["provider"]["example"]["models"]
+        assert "limit" not in models["nobody-has-heard-of-this"]
+        unknown = [
+            record
+            for record in caplog.records
+            if "No context window or output ceiling known" in record.getMessage()
+        ]
+        assert len(unknown) == 1
+
+    def test_the_responses_sdk_override_still_stands(self):
+        """The limit is added beside the existing per-model overrides, not
+        instead of them."""
+        agent = OpenCodeAgent({})
+        context = {
+            "model_endpoint": "https://gw.example.com/v1",
+            "model_identifier": "gpt-5.4",
+            "model_api_protocol": "responses",
+        }
+        config = agent._build_opencode_config("gpt-5.4", "openai", context, 600000)
+        entry = config["provider"]["openai"]["models"]["gpt-5.4"]
+        assert entry["provider"] == {"npm": "@ai-sdk/openai"}
+        assert entry["limit"]["context"] == 1050000
 
 
 class TestOpenCodeCliSession:

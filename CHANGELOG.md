@@ -24,6 +24,17 @@ avatars.
 
 ### Added
 
+- Agent harnesses are told the context window and output ceiling of the
+  model they run on. Codex gets `model_context_window` and
+  `model_max_output_tokens` in `config.toml`, OpenCode gets
+  `limit.context` and `limit.output` in its provider model entry. Each
+  number comes from `ai_model.model_parameters` when an operator set one
+  and from the vendored price catalog otherwise; when neither source knows,
+  the setting is left out and one INFO line says so, so the harness keeps
+  its own default rather than trusting a guess. Harnesses that assumed a
+  small window were compacting early and re-reading context they already
+  had.
+
 - Persistent flow execution: a flow with
   `agent_config.execution_path = "persistent"` delivers the rendered prompt
   to `target_agent_id` as one audited Agent Control `send_message`. The
