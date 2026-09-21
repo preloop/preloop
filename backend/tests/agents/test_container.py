@@ -1470,6 +1470,23 @@ class TestGitApiTokensNotInScript:
         assert commands == ""
         assert "origin/preloop/fix" not in commands
 
+    def test_empty_branch_prints_the_no_commits_marker(self, container_executor):
+        """The evidence the no-progress classification rests on (#851).
+
+        The block already says "No commits ..." in prose; the marker is its
+        machine-readable twin, so the orchestrator never has to match a
+        sentence that somebody will reword.
+        """
+        from preloop.services.no_progress_guard import NO_COMMITS_MARKER
+
+        context = self._context()
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert f"{NO_COMMITS_MARKER} preloop/fix" in commands
+        # Printed on the branch-was-empty side only: a run that pushed work
+        # must never be read as a run that produced none.
+        no_commits_at = commands.index(NO_COMMITS_MARKER)
+        assert commands.index("git push origin") < no_commits_at
+
 
 class TestPushCredentialsWithoutRepositoryTracker:
     """Reproduces the post-execution push that had no credentials.

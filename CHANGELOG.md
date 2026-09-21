@@ -24,6 +24,18 @@ avatars.
 
 ### Added
 
+- No-progress guard for runs that never edit anything. A live run whose
+  checkout is still provably clean after `agent_config.no_progress_after_seconds`
+  gets one reminder delivered into the session that is still running, and is
+  stopped after a further `no_progress_grace_seconds` (default 600) if nothing
+  has changed. Terminally, an agent that reports failure while the container's
+  post-execution git block found no commit is now classified
+  `agent_no_progress` instead of `unknown`, and
+  `agent_config.retry_on_no_progress` can create exactly one retry, optionally
+  on a stronger model or a higher reasoning effort. Both keys are unset by
+  default, so existing flows are unaffected, and a run with any workspace
+  change is never nudged or stopped by the guard.
+
 - Persistent flow execution: a flow with
   `agent_config.execution_path = "persistent"` delivers the rendered prompt
   to `target_agent_id` as one audited Agent Control `send_message`. The

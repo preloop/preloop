@@ -14,6 +14,7 @@ from preloop.models.models import Flow
 from preloop.models.models.flow_execution import FlowExecution
 from preloop.services.model_routing import (
     ModelRoutingError,
+    apply_no_progress_escalation,
     load_source_execution_for_flow,
     prepare_execution_routing,
 )
@@ -1920,6 +1921,7 @@ class FlowTriggerService:
         root_execution_id: Optional[uuid.UUID] = None,
         delegation_depth: int = 0,
         batch_id: Optional[uuid.UUID] = None,
+        no_progress_escalation: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Manually trigger a flow execution for testing purposes or as a retry.
@@ -1941,6 +1943,11 @@ class FlowTriggerService:
                 a root run. Controller owned, as above.
             delegation_depth: Distance from the root of the tree, 0 for a run
                 nobody delegated. Controller owned, as above.
+            no_progress_escalation: ``{"ai_model_id", "reasoning_effort"}``
+                for the one retry the no-progress guard creates (#851).
+                Controller owned: the orchestrator reads it from the flow's
+                own ``agent_config``, never from a payload. Only meaningful
+                together with ``retry_of_execution_id``.
             batch_id: Group this execution belongs to, shared by the children
                 of one delegated fan out (#631) exactly as a matrix trigger
                 shares one across its cells, so the batch rollup endpoint
@@ -2010,6 +2017,14 @@ class FlowTriggerService:
             source_execution=source_execution,
             pin_kind=pin_kind,
         )
+        if no_progress_escalation and retry_of_execution_id is not None:
+            trigger_details = apply_no_progress_escalation(
+                self.db,
+                flow,
+                trigger_details,
+                escalation=no_progress_escalation,
+                retry_of_execution_id=retry_of_execution_id,
+            )
         attach_trigger_subject(trigger_details)
         attach_workspace_file_paths(trigger_details)
 

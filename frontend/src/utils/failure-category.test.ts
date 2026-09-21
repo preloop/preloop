@@ -23,6 +23,7 @@ describe('failure-category', () => {
       'model_quota',
       'model_config',
       'no_confirmation',
+      'agent_no_progress',
       'tool_error',
       'agent_error',
       'timeout',
@@ -92,6 +93,17 @@ describe('failure-category', () => {
   it('breaks ties by the vocabulary order, not by insertion', () => {
     expect(failureCategoryBreakdown(['timeout', 'runner_conflict'])).to.equal(
       '1 runner conflict, 1 timeout'
+    );
+  });
+
+  it('names a run that never edited anything', () => {
+    // The distinction #851 exists for: "tried and could not" is not the
+    // same failure as "never started", and the console must say which.
+    expect(failureCategoryChipLabel('agent_no_progress')).to.equal(
+      'Agent no progress'
+    );
+    expect(failureCategoryTooltip('agent_no_progress')).to.contain(
+      'never changed a file'
     );
   });
 

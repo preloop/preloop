@@ -770,3 +770,93 @@ def validate_native_resume_identity(
         flow,
         {"agent_type": current_selection[0], "ai_model_id": current_selection[1]},
     )
+
+
+def apply_no_progress_escalation(
+    db: Session,
+    flow: models.Flow,
+    details: Dict[str, Any],
+    *,
+    escalation: Mapping[str, Any],
+    retry_of_execution_id: Any,
+) -> Dict[str, Any]:
+    """Point one no-progress retry at a different model or effort (#851).
+
+    Called after :func:`prepare_execution_routing` has already frozen a
+    selection for the retry, so this only rewrites what the flow asked to
+    escalate and leaves the rest of the pin intact. Both fields are optional:
+    a policy that escalates only the reasoning effort keeps the model the
+    original run used, which is the cheapest escalation there is.
+
+    The recorded reason names the execution being retried, so the console can
+    say "retry of <id> on <model>" without inferring it.
+
+    Args:
+        db: Database session.
+        flow: Flow the retry belongs to.
+        details: The trigger snapshot prepared for the retry. Mutated.
+        escalation: ``{"ai_model_id", "reasoning_effort"}``, either may be
+            None.
+        retry_of_execution_id: The execution that made no progress.
+
+    Returns:
+        ``details``, with the escalated selection recorded.
+
+    Raises:
+        ModelRoutingError: The escalation names a model this account cannot
+            use, or one the harness cannot reach. Fail closed: a retry on a
+            model that will 400 is worse than no retry, and the original
+            failure is already recorded.
+    """
+    ai_model_id = escalation.get("ai_model_id")
+    reasoning_effort = escalation.get("reasoning_effort")
+    if not ai_model_id and not reasoning_effort:
+        return details
+
+    record = dict(details.get(ROUTING_RECORD_KEY) or {})
+    matrix = details.get(MATRIX_OVERRIDES_KEY)
+    matrix = dict(matrix) if isinstance(matrix, dict) else None
+    agent_type = (
+        record.get("agent_type")
+        or (matrix or {}).get("agent_type")
+        or flow.agent_type
+        or "codex"
+    )
+
+    reason = f"Retry of execution {retry_of_execution_id}, which changed nothing."
+    if ai_model_id:
+        load_usable_model(
+            db,
+            ai_model_id=ai_model_id,
+            agent_type=agent_type,
+            account_id=getattr(flow, "account_id", None),
+        )
+        record["ai_model_id"] = _model_uuid(ai_model_id)
+        reason += " Escalated onto another model."
+        if matrix is not None:
+            # An eval cell outranks the routing record everywhere the
+            # selection is read, so the escalation has to be written on both
+            # or it would silently not happen.
+            matrix["ai_model_id"] = record["ai_model_id"]
+            matrix.pop("derived", None)
+            details[MATRIX_OVERRIDES_KEY] = validate_authorized_matrix(db, flow, matrix)
+    if reasoning_effort:
+        record["reasoning_effort"] = str(reasoning_effort)
+        reason += f" Reasoning effort raised to {reasoning_effort}."
+
+    record.setdefault("schema_version", 1)
+    record.setdefault("label_snapshot", extract_trusted_labels(details))
+    record["agent_type"] = agent_type
+    record.setdefault(
+        "ai_model_id", str(flow.ai_model_id) if flow.ai_model_id else None
+    )
+    record["source"] = "no_progress_escalation"
+    record["reason"] = reason
+    details[ROUTING_RECORD_KEY] = record
+    logger.info(
+        "No-progress retry of %s escalated: model=%s effort=%s",
+        retry_of_execution_id,
+        record.get("ai_model_id"),
+        reasoning_effort or "unchanged",
+    )
+    return details
