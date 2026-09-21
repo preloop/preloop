@@ -1020,6 +1020,22 @@ class TestGitShellQuoting:
             f"{shlex.quote(repo_url)} {shlex.quote(full_path)}"
         ) in shell
 
+    def test_git_pre_clone_replaces_unwritable_target(
+        self, container_executor, tmp_path
+    ):
+        """CRI workingDir is created as root; UID 10000 cannot mkdir .git inside it."""
+        import shlex
+
+        target = tmp_path / "workspace"
+        target.mkdir()
+        # Empty, like CRI workingDir. 0555 so the current user cannot mkdir .git.
+        target.chmod(0o555)
+        shell = container_executor._build_git_pre_clone_shell(str(target))
+        quoted = shlex.quote(str(target))
+        assert f"[ ! -w {quoted} ]" in shell
+        subprocess.run(["bash", "-c", shell], check=True)
+        assert not target.exists()
+
     def test_git_branch_setup_shell_quotes_trigger_derived_values(
         self, container_executor
     ):

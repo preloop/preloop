@@ -140,6 +140,15 @@ async def test_kubernetes_harness_runs_directly_as_unprivileged_user(
         "prompt": "Write a result",
         "model_identifier": "test-model",
         "model_api_key": "test-key",
+        "git_clone_config": {
+            "enabled": True,
+            "repositories": [
+                {
+                    "repository_url": "https://github.com/example/repo.git",
+                    "clone_path": "workspace",
+                }
+            ],
+        },
     }
     assert await agent.start(context) == "job-id"
     job = agent._create_kubernetes_job.call_args.args[0]
@@ -151,6 +160,9 @@ async def test_kubernetes_harness_runs_directly_as_unprivileged_user(
     assert not container.security_context.capabilities.add
     assert pod.security_context.run_as_group == 10000
     assert pod.security_context.fs_group == 10000
+    # CRI creates workingDir as root after fsGroup chown. A clone
+    # subdirectory that does not exist yet would be unwritable to UID 10000.
+    assert container.working_dir == "/workspace"
     env = {item.name: item.value for item in container.env}
     assert env["HOME"] == "/tmp/preloop-home"
     assert sum(item.name == "HOME" for item in container.env) == 1
