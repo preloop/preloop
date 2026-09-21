@@ -4,6 +4,8 @@ import {
   AuthedElement,
   createModelPriceOverride,
   createProviderBillingConnection,
+  deleteModelPriceOverride,
+  updateModelPriceOverride,
   getAccountAgents,
   getAIModels,
   getBudgetPolicies,
@@ -181,6 +183,15 @@ export class CostView extends AuthedElement {
   @state() private prepaidCredit = '';
   @state() private priceCurrency = 'USD';
   @state() private priceFxRate = '';
+  // The override being edited, or null when the dialog is creating one. The
+  // row itself is kept so a save preserves the fields the dialog does not
+  // show (cache rates, effective dates, notes) instead of nulling them.
+  @state() private priceEditOverride: ModelPriceOverride | null = null;
+  // The override a confirm dialog is asking about, and what came of it.
+  @state() private overrideRemoveTarget: ModelPriceOverride | null = null;
+  @state() private overrideRemoving = false;
+  @state() private overrideActionError: string | null = null;
+  @state() private overrideRemoved: ModelPriceOverride | null = null;
   // Reprice action (billing flag): re-derives cost for unpriced rows in the
   // selected window from stored tokens and current prices.
   @state() private repricing = false;
@@ -452,6 +463,54 @@ export class CostView extends AuthedElement {
       .policy-summary-value {
         color: var(--sl-color-neutral-900);
         font-weight: 600;
+      }
+
+      /* An override that is off or out of its window still belongs in the
+         table: it explains a past cost. It is dimmed, not hidden. */
+      tr.override-inactive td {
+        opacity: 0.6;
+      }
+
+      .override-model-meta {
+        color: var(--sl-color-neutral-500);
+        font-size: var(--sl-font-size-x-small);
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-2x-small);
+      }
+
+      .override-model-link {
+        color: var(--sl-color-primary-600);
+        text-decoration: none;
+      }
+
+      .override-model-link:hover {
+        text-decoration: underline;
+      }
+
+      .override-notes {
+        max-width: 18ch;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .override-actions {
+        white-space: nowrap;
+        display: flex;
+        gap: var(--sl-spacing-2x-small);
+      }
+
+      .override-empty {
+        color: var(--sl-color-neutral-500);
+      }
+
+      .override-error {
+        color: var(--sl-color-danger-700);
+      }
+
+      .override-removed-notice {
+        color: var(--sl-color-neutral-700);
       }
 
       .loading-state {
@@ -788,8 +847,11 @@ export class CostView extends AuthedElement {
         request: getFeatures().then(async (features) => {
           if (generation !== this.loadGeneration) return;
           this.featureFlags = features.features || {};
+          // The whole list, not only the active rows: an expired or disabled
+          // override is exactly what somebody reading this table came to
+          // find, and the summary count still counts the active ones.
           const overrides = this.modelPriceOverridesEnabled
-            ? await getModelPriceOverrides({ activeOnly: true, passive: true })
+            ? await getModelPriceOverrides({ activeOnly: false, passive: true })
             : [];
           if (generation !== this.loadGeneration) return;
           this.pricingOverrides = overrides;
@@ -1062,11 +1124,11 @@ export class CostView extends AuthedElement {
   // coalesces rows with no model alias to "unknown"; pre-filling that
   // placeholder would invite a no-op override, so the field stays empty.
   private openPriceOverrideForUnpriced() {
+    this.openPriceOverrideEditor(null);
     const top = this.summary?.unpriced_models?.[0];
     if (top && top.model !== 'unknown') {
       this.priceModelAlias = top.model;
     }
-    this.priceDialogOpen = true;
   }
 
   private formatCurrency(value?: number | null): string {
@@ -1259,6 +1321,77 @@ export class CostView extends AuthedElement {
     `;
   }
 
+  /**
+   * Open the override dialog, either empty or filled from an existing row.
+   * Editing reuses the create form so there is one place that knows how an
+   * override is spelled; the row is remembered so a save updates it in place.
+   */
+  private openPriceOverrideEditor(override: ModelPriceOverride | null) {
+    this.overrideActionError = null;
+    this.priceEditOverride = override;
+    const text = (value: number | null | undefined): string =>
+      typeof value === 'number' ? String(value) : '';
+    this.priceModelAlias = override?.model_alias ?? '';
+    this.priceProvider = override?.provider_name ?? '';
+    this.priceInput = text(override?.input_price_per_1k);
+    this.priceOutput = text(override?.output_price_per_1k);
+    this.pricePer1k = text(override?.price_per_1k);
+    this.requestPrice = text(override?.request_price);
+    this.discountPercent = text(override?.discount_percent);
+    this.prepaidTokens = text(override?.prepaid_token_balance);
+    this.prepaidCredit = text(override?.prepaid_credit_balance_usd);
+    this.priceCurrency = override?.currency ?? 'USD';
+    this.priceFxRate = text(override?.fx_rate_to_usd);
+    this.priceMode = this.priceModeFor(override);
+    this.priceDialogOpen = true;
+  }
+
+  private priceModeFor(
+    override: ModelPriceOverride | null
+  ): CostView['priceMode'] {
+    if (!override) return 'custom_token_price';
+    if (typeof override.discount_percent === 'number') return 'discount';
+    if (typeof override.prepaid_token_balance === 'number')
+      return 'prepaid_tokens';
+    if (typeof override.prepaid_credit_balance_usd === 'number')
+      return 'prepaid_credit';
+    const hasTokenPrice =
+      typeof override.input_price_per_1k === 'number' ||
+      typeof override.output_price_per_1k === 'number' ||
+      typeof override.price_per_1k === 'number';
+    if (!hasTokenPrice && typeof override.request_price === 'number') {
+      return 'fixed_request_price';
+    }
+    return 'custom_token_price';
+  }
+
+  /**
+   * Delete one override after the reader confirmed it. The list and the
+   * pricing context are re-read afterwards, so what is on screen is what the
+   * account now has rather than what this view guessed.
+   */
+  private async removeOverride() {
+    const target = this.overrideRemoveTarget;
+    if (!target || this.overrideRemoving) return;
+    this.overrideRemoving = true;
+    this.overrideActionError = null;
+    try {
+      await deleteModelPriceOverride(target.id);
+      this.overrideRemoveTarget = null;
+      this.overrideRemoved = target;
+      await this.loadContext();
+    } catch (error) {
+      // The row stays on screen: nothing was removed, and saying so where the
+      // reader clicked beats a page-level banner.
+      this.overrideActionError =
+        error instanceof Error
+          ? error.message
+          : 'Failed to remove price override';
+    } finally {
+      this.overrideRemoving = false;
+    }
+  }
+
   private async savePriceOverride() {
     if (!this.priceModelAlias) {
       this.error = 'Enter a model alias for the price override.';
@@ -1296,28 +1429,39 @@ export class CostView extends AuthedElement {
     }
     this.saving = true;
     this.error = null;
+    const editing = this.priceEditOverride;
     try {
       const payload: ModelPriceOverrideCreate = {
-        ai_model_id: null,
+        // Editing keeps the fields this dialog does not show: the cache rates,
+        // the effective window and the notes an override was created with are
+        // not the operator's to lose by touching an input price.
+        ai_model_id: editing?.ai_model_id ?? null,
         provider_name: this.priceProvider || null,
         model_alias: this.priceModelAlias,
         currency,
         fx_rate_to_usd: currency !== 'USD' ? fxRate : null,
         input_price_per_1k: input,
         output_price_per_1k: output,
-        cache_read_input_price_per_1k: null,
-        cache_creation_input_price_per_1k: null,
+        cache_read_input_price_per_1k:
+          editing?.cache_read_input_price_per_1k ?? null,
+        cache_creation_input_price_per_1k:
+          editing?.cache_creation_input_price_per_1k ?? null,
         price_per_1k: pricePer1k,
         request_price: requestPrice,
         discount_percent: discountPercent,
         prepaid_token_balance: prepaidTokens,
         prepaid_credit_balance_usd: prepaidCredit,
-        effective_from: null,
-        effective_until: null,
-        is_active: true,
-        notes: null,
+        effective_from: editing?.effective_from ?? null,
+        effective_until: editing?.effective_until ?? null,
+        is_active: editing ? editing.is_active : true,
+        notes: editing?.notes ?? null,
       };
-      await createModelPriceOverride(payload);
+      if (editing) {
+        await updateModelPriceOverride(editing.id, payload);
+      } else {
+        await createModelPriceOverride(payload);
+      }
+      this.priceEditOverride = null;
       this.priceModelAlias = '';
       this.priceProvider = '';
       this.priceInput = '';
@@ -1507,7 +1651,7 @@ export class CostView extends AuthedElement {
                 type="button"
                 class="catalog-action"
                 @click=${() => {
-                  this.priceDialogOpen = true;
+                  this.openPriceOverrideEditor(null);
                 }}
               >
                 Override a price
@@ -2614,8 +2758,225 @@ export class CostView extends AuthedElement {
     `;
   }
 
+  /**
+   * Is this override pricing requests right now? `is_active` is the operator's
+   * switch; the effective window is the calendar. A row that is off or out of
+   * its window is still worth showing, greyed, because it explains what the
+   * account used to pay.
+   */
+  private isOverrideInForce(override: ModelPriceOverride): boolean {
+    if (!override.is_active) return false;
+    const now = Date.now();
+    if (
+      override.effective_from &&
+      new Date(override.effective_from).getTime() > now
+    ) {
+      return false;
+    }
+    if (
+      override.effective_until &&
+      new Date(override.effective_until).getTime() <= now
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  /** Active rows first, newest first inside each group. */
+  private sortedOverrides(): ModelPriceOverride[] {
+    return [...this.pricingOverrides].sort((left, right) => {
+      const leftActive = this.isOverrideInForce(left) ? 0 : 1;
+      const rightActive = this.isOverrideInForce(right) ? 0 : 1;
+      if (leftActive !== rightActive) return leftActive - rightActive;
+      return (right.created_at || '').localeCompare(left.created_at || '');
+    });
+  }
+
+  /** Stored rates are per 1,000 tokens; every price on this page is per 1M. */
+  private formatPer1m(value: number | null | undefined) {
+    if (typeof value !== 'number') return nothing;
+    return html`${this.formatCurrency(value * 1000)}`;
+  }
+
+  private formatOverrideDate(value: string | null | undefined): string {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  }
+
+  /** A one-line summary of what an override charges, for confirm dialogs. */
+  private describeOverrideRates(override: ModelPriceOverride): string {
+    const parts: string[] = [];
+    const per1m = (value: number | null) =>
+      typeof value === 'number' ? this.formatCurrency(value * 1000) : null;
+    const input = per1m(override.input_price_per_1k);
+    const output = per1m(override.output_price_per_1k);
+    const cached = per1m(override.cache_read_input_price_per_1k);
+    const creation = per1m(override.cache_creation_input_price_per_1k);
+    const blended = per1m(override.price_per_1k);
+    if (input) parts.push(`input ${input} per 1M`);
+    if (output) parts.push(`output ${output} per 1M`);
+    if (cached) parts.push(`cached input ${cached} per 1M`);
+    if (creation) parts.push(`cache creation ${creation} per 1M`);
+    if (blended) parts.push(`blended ${blended} per 1M`);
+    if (typeof override.request_price === 'number') {
+      parts.push(`${this.formatCurrency(override.request_price)} per request`);
+    }
+    if (typeof override.discount_percent === 'number') {
+      parts.push(`${override.discount_percent}% off list`);
+    }
+    return parts.length ? parts.join(', ') : 'no rates set';
+  }
+
+  private renderOverrideRow(override: ModelPriceOverride) {
+    const inForce = this.isOverrideInForce(override);
+    const notes = override.notes || '';
+    return html`
+      <tr
+        class=${inForce ? '' : 'override-inactive'}
+        data-override-id=${override.id}
+        data-testid="override-row"
+      >
+        <td>
+          ${
+            override.ai_model_id
+              ? html`<a
+                  class="override-model-link"
+                  href=${`/console/ai-models/${override.ai_model_id}`}
+                  >${override.model_alias}</a
+                >`
+              : html`${override.model_alias}`
+          }
+          <div class="override-model-meta">
+            ${override.provider_name || ''}
+            ${
+              inForce
+                ? nothing
+                : html`<sl-badge class="chip" pill variant="neutral"
+                    >Inactive</sl-badge
+                  >`
+            }
+          </div>
+        </td>
+        <td>${this.formatPer1m(override.input_price_per_1k)}</td>
+        <td>${this.formatPer1m(override.output_price_per_1k)}</td>
+        <td>${this.formatPer1m(override.cache_read_input_price_per_1k)}</td>
+        <td>${this.formatPer1m(override.cache_creation_input_price_per_1k)}</td>
+        <td>
+          ${
+            typeof override.request_price === 'number'
+              ? this.formatCurrency(override.request_price)
+              : nothing
+          }
+        </td>
+        <td>${this.formatOverrideDate(override.effective_from)}</td>
+        <td>${this.formatOverrideDate(override.effective_until)}</td>
+        <td>${this.formatOverrideDate(override.created_at)}</td>
+        <td class="override-notes" title=${notes}>
+          ${notes.length > 40 ? `${notes.slice(0, 40)}...` : notes}
+        </td>
+        <td class="override-actions">
+          <sl-button
+            size="small"
+            data-testid="edit-override"
+            @click=${() => this.openPriceOverrideEditor(override)}
+            >Edit</sl-button
+          >
+          <sl-button
+            size="small"
+            data-testid="remove-override"
+            @click=${() => {
+              this.overrideActionError = null;
+              this.overrideRemoveTarget = override;
+            }}
+            >Remove</sl-button
+          >
+        </td>
+      </tr>
+    `;
+  }
+
+  private renderOverridesTable() {
+    const overrides = this.sortedOverrides();
+    if (!overrides.length) {
+      return html`<div class="override-empty">
+        No price overrides yet. Every model is costed from the provider catalog.
+      </div>`;
+    }
+    return html`
+      <div class="analytics-table-wrap">
+        <table class="styled-table" aria-label="Price overrides">
+          <thead>
+            <tr>
+              <th scope="col">Model</th>
+              <th scope="col">Input / 1M</th>
+              <th scope="col">Output / 1M</th>
+              <th scope="col">Cached input / 1M</th>
+              <th scope="col">Cache creation / 1M</th>
+              <th scope="col">Per request</th>
+              <th scope="col">Effective from</th>
+              <th scope="col">Effective until</th>
+              <th scope="col">Created</th>
+              <th scope="col">Notes</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${overrides.map((override) => this.renderOverrideRow(override))}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  /**
+   * What is left to do after an override is gone: usage already recorded under
+   * it keeps the cost it was given. The reprice control itself lives on the
+   * model detail page, so this points there rather than duplicating it.
+   */
+  private renderOverrideRemovedNotice() {
+    const removed = this.overrideRemoved;
+    if (!removed) return nothing;
+    const usage = (this.summary?.usage_by_model ?? []).find(
+      (row) => row.model_alias === removed.model_alias
+    );
+    return html`
+      <div
+        class="override-removed-notice"
+        role="status"
+        data-testid="override-removed-notice"
+      >
+        Override removed for ${removed.model_alias}. New requests are costed
+        from the catalog.
+        ${
+          usage && usage.request_count > 0
+            ? html`<span data-testid="override-reprice-pointer">
+                Rows recorded under the override keep the old cost until they
+                are repriced.
+                ${
+                  removed.ai_model_id
+                    ? html`<a
+                        href=${`/console/ai-models/${removed.ai_model_id}`}
+                        >Reprice on the model page</a
+                      >`
+                    : nothing
+                }
+              </span>`
+            : nothing
+        }
+      </div>
+    `;
+  }
+
   private renderPricing() {
-    const overrides = this.pricingOverrides;
+    const activeCount = this.pricingOverrides.filter((override) =>
+      this.isOverrideInForce(override)
+    ).length;
     return html`
       <sl-card id="panel-pricing">
         ${this.renderSectionHeader('tags', 'Pricing overrides')}
@@ -2627,12 +2988,24 @@ export class CostView extends AuthedElement {
           <div class="policy-summary-row">
             <span class="policy-summary-label">Active overrides</span>
             <span class="policy-summary-value"
-              >${this.formatNumber(overrides.length)}</span
+              >${this.formatNumber(activeCount)}</span
             >
           </div>
+          ${
+            this.overrideActionError && !this.overrideRemoveTarget
+              ? html`<div
+                  class="override-error"
+                  role="alert"
+                  data-testid="override-action-error"
+                >
+                  ${this.overrideActionError}
+                </div>`
+              : nothing
+          }
+          ${this.renderOverrideRemovedNotice()} ${this.renderOverridesTable()}
           <sl-button
             variant="primary"
-            @click=${() => (this.priceDialogOpen = true)}
+            @click=${() => this.openPriceOverrideEditor(null)}
           >
             <sl-icon slot="prefix" name="plus"></sl-icon>
             Add price override
@@ -2681,14 +3054,83 @@ export class CostView extends AuthedElement {
     `;
   }
 
-  private renderPriceOverrideDialog() {
+  private renderRemoveOverrideDialog() {
+    const target = this.overrideRemoveTarget;
     return html`
       <sl-dialog
-        label="Add price override"
+        label="Remove price override"
+        data-testid="remove-override-dialog"
+        ?open=${target !== null}
+        @sl-after-hide=${(event: Event) => {
+          if (event.target === event.currentTarget) {
+            this.overrideRemoveTarget = null;
+          }
+        }}
+      >
+        ${
+          target
+            ? html`
+                <p class="dialog-description">
+                  Remove the override for
+                  ${target.model_alias}${
+                    target.provider_name ? ` (${target.provider_name})` : ''
+                  }?
+                  It charges
+                  ${this.describeOverrideRates(target)}${
+                    target.effective_from
+                      ? `, effective from ${this.formatOverrideDate(
+                          target.effective_from
+                        )}`
+                      : ''
+                  }.
+                  New requests fall back to the provider catalog, and usage
+                  already recorded keeps the cost it was given until it is
+                  repriced.
+                </p>
+                ${
+                  this.overrideActionError
+                    ? html`<div
+                        class="override-error"
+                        role="alert"
+                        data-testid="override-action-error"
+                      >
+                        ${this.overrideActionError}
+                      </div>`
+                    : nothing
+                }
+              `
+            : nothing
+        }
+        <div slot="footer">
+          <sl-button
+            data-testid="cancel-remove-override"
+            @click=${() => (this.overrideRemoveTarget = null)}
+          >
+            Cancel
+          </sl-button>
+          <sl-button
+            variant="danger"
+            data-testid="confirm-remove-override"
+            .loading=${this.overrideRemoving}
+            @click=${() => void this.removeOverride()}
+          >
+            Remove override
+          </sl-button>
+        </div>
+      </sl-dialog>
+    `;
+  }
+
+  private renderPriceOverrideDialog() {
+    const editing = this.priceEditOverride !== null;
+    return html`
+      <sl-dialog
+        label=${editing ? 'Edit price override' : 'Add price override'}
         ?open=${this.priceDialogOpen}
         @sl-after-hide=${(event: Event) => {
           if (event.target === event.currentTarget) {
             this.priceDialogOpen = false;
+            this.priceEditOverride = null;
           }
         }}
       >
@@ -2883,11 +3325,17 @@ export class CostView extends AuthedElement {
           }
         </div>
         <div slot="footer">
-          <sl-button @click=${() => (this.priceDialogOpen = false)}>
+          <sl-button
+            @click=${() => {
+              this.priceDialogOpen = false;
+              this.priceEditOverride = null;
+            }}
+          >
             Cancel
           </sl-button>
           <sl-button
             variant="primary"
+            data-testid="save-override"
             .loading=${this.saving}
             @click=${async () => {
               await this.savePriceOverride();
@@ -2934,7 +3382,8 @@ export class CostView extends AuthedElement {
       `}
       ${
         this.modelPriceOverridesEnabled
-          ? this.renderPriceOverrideDialog()
+          ? html`${this.renderPriceOverrideDialog()}
+            ${this.renderRemoveOverrideDialog()}`
           : null
       }
     `;

@@ -20,6 +20,62 @@ describe('CostView', () => {
   let onReprice: (() => void) | null;
   // Per-test plan gate: 402 is what an account without the capability gets.
   let overridesGated = false;
+  // The override list the endpoint answers with, the writes it received, and
+  // an optional refusal for the write tests.
+  let overridePayload: Record<string, unknown>[];
+  let overrideWrites: { url: string; method: string; body: unknown }[];
+  let overrideWriteFailure: { status: number; detail: string } | null;
+
+  // One override per shape worth reading: a live negotiated rate on a model
+  // the console knows, and a switched-off interim $0 row on one it does not.
+  const activeOverride = {
+    id: 'override-active-1',
+    account_id: 'account-1',
+    ai_model_id: 'model-1',
+    provider_name: 'openai',
+    model_alias: 'gpt-test',
+    currency: 'USD',
+    fx_rate_to_usd: null,
+    input_price_per_1k: 0.002,
+    output_price_per_1k: 0.008,
+    cache_read_input_price_per_1k: 0.0002,
+    cache_creation_input_price_per_1k: 0.00025,
+    price_per_1k: null,
+    request_price: 0.01,
+    discount_percent: null,
+    prepaid_token_balance: null,
+    prepaid_credit_balance_usd: null,
+    effective_from: '2026-03-01T00:00:00Z',
+    effective_until: null,
+    is_active: true,
+    notes: 'Negotiated with vendor.example.com until the contract is renewed.',
+    created_at: '2026-02-20T09:00:00Z',
+    updated_at: '2026-02-20T09:00:00Z',
+  };
+  const inactiveOverride = {
+    ...activeOverride,
+    id: 'override-inactive-1',
+    ai_model_id: null,
+    provider_name: 'example-provider',
+    model_alias: 'example-provider/muse-spark',
+    input_price_per_1k: 0,
+    output_price_per_1k: 0,
+    cache_read_input_price_per_1k: null,
+    cache_creation_input_price_per_1k: null,
+    request_price: null,
+    effective_from: '2026-01-05T00:00:00Z',
+    effective_until: '2026-02-01T00:00:00Z',
+    is_active: false,
+    notes: null,
+    created_at: '2026-01-05T09:00:00Z',
+  };
+
+  const formatDay = (value: string) =>
+    new Intl.DateTimeFormat(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    }).format(new Date(value));
 
   const summary = {
     period_start: '2026-03-01T00:00:00Z',
@@ -88,6 +144,9 @@ describe('CostView', () => {
     summaryPayload = { ...summary };
     featuresPayload = { billing: true };
     overridesGated = false;
+    overridePayload = [];
+    overrideWrites = [];
+    overrideWriteFailure = null;
     onReprice = null;
     jobStatus = {
       id: 'job-1',
@@ -106,67 +165,101 @@ describe('CostView', () => {
       dry_run: false,
     };
     fetchStub = sinon.stub(window, 'fetch');
-    fetchStub.callsFake(async (input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : input.toString();
+    fetchStub.callsFake(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
 
-      if (url.includes('/api/v1/billing/cost/reprice/')) {
-        return new Response(JSON.stringify(jobStatus));
-      }
-      if (url.includes('/api/v1/billing/cost/reprice')) {
-        onReprice?.();
-        return new Response(JSON.stringify(repriceResult), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (url.includes('/api/v1/billing/cost/pricing-overrides')) {
-        return new Response(
-          JSON.stringify(
-            overridesGated
-              ? {
-                  detail: {
-                    code: 'upgrade_required',
-                    feature: 'price_overrides',
-                  },
-                }
-              : []
-          ),
-          {
-            status: overridesGated ? 402 : 200,
+        if (url.includes('/api/v1/billing/cost/reprice/')) {
+          return new Response(JSON.stringify(jobStatus));
+        }
+        if (url.includes('/api/v1/billing/cost/reprice')) {
+          onReprice?.();
+          return new Response(JSON.stringify(repriceResult), {
+            status: 200,
             headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/api/v1/billing/cost/pricing-overrides')) {
+          const method = (init?.method || 'GET').toUpperCase();
+          if (method !== 'GET') {
+            overrideWrites.push({
+              url,
+              method,
+              body: init?.body ? JSON.parse(String(init.body)) : null,
+            });
+            if (overrideWriteFailure) {
+              return new Response(
+                JSON.stringify({ detail: overrideWriteFailure.detail }),
+                {
+                  status: overrideWriteFailure.status,
+                  headers: { 'Content-Type': 'application/json' },
+                }
+              );
+            }
+            if (method === 'DELETE') {
+              // The account really loses the row, so the reload that follows
+              // shows what a reader would see after a successful removal.
+              const id = url.split('/').pop();
+              overridePayload = overridePayload.filter(
+                (row) => row.id !== decodeURIComponent(String(id))
+              );
+            }
+            if (method === 'DELETE') {
+              return new Response(null, { status: 204 });
+            }
+            return new Response(JSON.stringify(overridePayload[0] ?? {}), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
           }
-        );
+          return new Response(
+            JSON.stringify(
+              overridesGated
+                ? {
+                    detail: {
+                      code: 'upgrade_required',
+                      feature: 'price_overrides',
+                    },
+                  }
+                : overridePayload
+            ),
+            {
+              status: overridesGated ? 402 : 200,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          );
+        }
+        if (url.includes('/api/v1/cost/summary')) {
+          return new Response(JSON.stringify(summaryPayload), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/api/v1/agents'))
+          return new Response(JSON.stringify({ items: [] }));
+        if (url.includes('/api/v1/users'))
+          return new Response(JSON.stringify({ users: [] }));
+        if (url.includes('/api/v1/ai-models')) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/api/v1/features')) {
+          return new Response(JSON.stringify({ features: featuresPayload }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/api/v1/budget/policies')) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('{}', { status: 200 });
       }
-      if (url.includes('/api/v1/cost/summary')) {
-        return new Response(JSON.stringify(summaryPayload), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (url.includes('/api/v1/agents'))
-        return new Response(JSON.stringify({ items: [] }));
-      if (url.includes('/api/v1/users'))
-        return new Response(JSON.stringify({ users: [] }));
-      if (url.includes('/api/v1/ai-models')) {
-        return new Response(JSON.stringify([]), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (url.includes('/api/v1/features')) {
-        return new Response(JSON.stringify({ features: featuresPayload }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (url.includes('/api/v1/budget/policies')) {
-        return new Response(JSON.stringify([]), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      return new Response('{}', { status: 200 });
-    });
+    );
   });
 
   afterEach(() => {
@@ -1178,6 +1271,263 @@ describe('CostView', () => {
       // "unknown" is the backend placeholder for rows with no model alias;
       // pre-filling it would create a no-op override, so the field is empty.
       expect(state.priceModelAlias).to.equal('');
+    });
+  });
+
+  describe('pricing overrides table', () => {
+    beforeEach(() => {
+      featuresPayload = { billing: true, model_price_overrides: true };
+      overridePayload = [
+        { ...inactiveOverride },
+        { ...activeOverride },
+      ] as Record<string, unknown>[];
+    });
+
+    async function loadView(): Promise<CostView> {
+      const element = (await fixture(
+        html`<cost-view></cost-view>`
+      )) as CostView;
+      await waitUntil(
+        () => (element as unknown as { loading: boolean }).loading === false
+      );
+      await waitUntil(
+        () =>
+          (element as unknown as { pricingContextReady: boolean })
+            .pricingContextReady === true,
+        'the pricing context never arrived'
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    const table = (element: CostView) =>
+      element.shadowRoot?.querySelector(
+        'table[aria-label="Price overrides"]'
+      ) as HTMLTableElement | null;
+
+    const rows = (element: CostView) => [
+      ...(table(element)?.querySelectorAll('tbody tr') ?? []),
+    ];
+
+    const rowButton = (row: Element, testid: string) =>
+      row.querySelector(`[data-testid="${testid}"]`) as HTMLElement;
+
+    const writesOfKind = (method: string) =>
+      overrideWrites.filter((write) => write.method === method);
+
+    it('renders one row per override with rates, dates and notes', async () => {
+      const element = await loadView();
+
+      const tableRows = rows(element);
+      expect(tableRows).to.have.length(2);
+      // Active first: the row that is pricing requests right now leads.
+      expect(tableRows[0].getAttribute('data-override-id')).to.equal(
+        'override-active-1'
+      );
+      const active = tableRows[0].textContent!.replace(/\s+/g, ' ');
+      expect(active).to.contain('gpt-test');
+      expect(active).to.contain('openai');
+      // Stored per 1K, read per 1M, as everywhere else on this page.
+      expect(active).to.contain('$2.00');
+      expect(active).to.contain('$8.00');
+      expect(active).to.contain('$0.20');
+      expect(active).to.contain('$0.25');
+      expect(active).to.contain('$0.01');
+      expect(active).to.contain(formatDay('2026-03-01T00:00:00Z'));
+      expect(active).to.contain(formatDay('2026-02-20T09:00:00Z'));
+      // The note is truncated in the cell and kept whole in the tooltip.
+      const notes = tableRows[0].querySelector(
+        '.override-notes'
+      ) as HTMLElement;
+      expect(notes.getAttribute('title')).to.equal(activeOverride.notes);
+      expect(notes.textContent!.trim()).to.contain('Negotiated with');
+      // A model the console knows links to its detail page.
+      expect(
+        (tableRows[0].querySelector('a') as HTMLAnchorElement).getAttribute(
+          'href'
+        )
+      ).to.equal('/console/ai-models/model-1');
+
+      const inactive = tableRows[1];
+      expect(inactive.classList.contains('override-inactive')).to.equal(true);
+      expect(inactive.textContent!.replace(/\s+/g, ' ')).to.contain('Inactive');
+      // No ai_model_id: the alias is text, not a link.
+      expect(inactive.querySelector('a')).to.not.exist;
+      expect(inactive.textContent!.replace(/\s+/g, ' ')).to.contain(
+        formatDay('2026-02-01T00:00:00Z')
+      );
+
+      // The count stays the section summary, and counts only what is in force.
+      const card = element.shadowRoot!.querySelector('#panel-pricing')!;
+      const summaryRow = card
+        .querySelector('.policy-summary-row')!
+        .textContent!.replace(/\s+/g, ' ');
+      expect(summaryRow).to.contain('Active overrides');
+      expect(summaryRow).to.contain('1');
+    });
+
+    it('edits a row through the dialog, pre-filled, and saves with PUT', async () => {
+      const element = await loadView();
+
+      rowButton(rows(element)[0], 'edit-override').click();
+      await element.updateComplete;
+
+      const state = element as unknown as {
+        priceDialogOpen: boolean;
+        priceModelAlias: string;
+        priceProvider: string;
+        priceInput: string;
+        priceOutput: string;
+        requestPrice: string;
+      };
+      expect(state.priceDialogOpen).to.equal(true);
+      expect(state.priceModelAlias).to.equal('gpt-test');
+      expect(state.priceProvider).to.equal('openai');
+      expect(state.priceInput).to.equal('0.002');
+      expect(state.priceOutput).to.equal('0.008');
+      expect(state.requestPrice).to.equal('0.01');
+      const dialog = element.shadowRoot!.querySelector(
+        'sl-dialog[label="Edit price override"]'
+      );
+      expect(dialog, 'the dialog says it is editing').to.exist;
+
+      (element as unknown as { priceInput: string }).priceInput = '0.003';
+      await element.updateComplete;
+      (
+        dialog!.querySelector('[data-testid="save-override"]') as HTMLElement
+      ).click();
+      await waitUntil(
+        () => writesOfKind('PUT').length > 0,
+        'no update was sent'
+      );
+
+      expect(writesOfKind('PUT')).to.have.length(1);
+      expect(writesOfKind('POST')).to.have.length(0);
+      const write = writesOfKind('PUT')[0];
+      expect(write.url).to.contain(
+        '/api/v1/billing/cost/pricing-overrides/override-active-1'
+      );
+      const body = write.body as Record<string, unknown>;
+      expect(body.input_price_per_1k).to.equal(0.003);
+      // Fields the dialog does not show survive the edit.
+      expect(body.cache_read_input_price_per_1k).to.equal(0.0002);
+      expect(body.effective_from).to.equal('2026-03-01T00:00:00Z');
+      expect(body.notes).to.equal(activeOverride.notes);
+      expect(body.ai_model_id).to.equal('model-1');
+    });
+
+    it('removes a row after confirmation and reloads the list', async () => {
+      const element = await loadView();
+
+      rowButton(rows(element)[0], 'remove-override').click();
+      await element.updateComplete;
+
+      const dialog = element.shadowRoot!.querySelector(
+        '[data-testid="remove-override-dialog"]'
+      )!;
+      const prompt = dialog.textContent!.replace(/\s+/g, ' ');
+      expect(prompt, 'the confirm names the model').to.contain('gpt-test');
+      expect(prompt, 'the confirm names the rates').to.contain(
+        'input $2.00 per 1M'
+      );
+      expect(prompt).to.contain('output $8.00 per 1M');
+      expect(
+        overrideWrites,
+        'nothing is sent by opening the confirm'
+      ).to.have.length(0);
+
+      (
+        dialog.querySelector(
+          '[data-testid="confirm-remove-override"]'
+        ) as HTMLElement
+      ).click();
+      await waitUntil(
+        () => writesOfKind('DELETE').length > 0,
+        'no delete was sent'
+      );
+      await waitUntil(
+        () => rows(element).length === 1,
+        'the removed row is still on screen'
+      );
+
+      expect(writesOfKind('DELETE')).to.have.length(1);
+      expect(writesOfKind('DELETE')[0].url).to.contain(
+        '/api/v1/billing/cost/pricing-overrides/override-active-1'
+      );
+      expect(rows(element)[0].getAttribute('data-override-id')).to.equal(
+        'override-inactive-1'
+      );
+      // The removed model has usage in the window, so the page says what is
+      // left to do and points at the page that can do it.
+      const notice = element.shadowRoot!.querySelector(
+        '[data-testid="override-removed-notice"]'
+      )!;
+      expect(notice.textContent!.replace(/\s+/g, ' ')).to.contain(
+        'keep the old cost until they are repriced'
+      );
+      expect(
+        (
+          notice.querySelector(
+            '[data-testid="override-reprice-pointer"] a'
+          ) as HTMLAnchorElement
+        ).getAttribute('href')
+      ).to.equal('/console/ai-models/model-1');
+    });
+
+    it('sends nothing when the remove confirm is cancelled', async () => {
+      const element = await loadView();
+
+      rowButton(rows(element)[0], 'remove-override').click();
+      await element.updateComplete;
+      (
+        element.shadowRoot!.querySelector(
+          '[data-testid="cancel-remove-override"]'
+        ) as HTMLElement
+      ).click();
+      await element.updateComplete;
+
+      expect(overrideWrites).to.have.length(0);
+      expect(rows(element)).to.have.length(2);
+      expect(
+        (element as unknown as { overrideRemoveTarget: unknown })
+          .overrideRemoveTarget
+      ).to.equal(null);
+    });
+
+    it('keeps the row and says why when the delete is refused', async () => {
+      overrideWriteFailure = {
+        status: 403,
+        detail: 'Only an account owner can remove a price override.',
+      };
+      const element = await loadView();
+
+      rowButton(rows(element)[0], 'remove-override').click();
+      await element.updateComplete;
+      (
+        element.shadowRoot!.querySelector(
+          '[data-testid="confirm-remove-override"]'
+        ) as HTMLElement
+      ).click();
+      await waitUntil(
+        () =>
+          Boolean(
+            (element as unknown as { overrideActionError: string | null })
+              .overrideActionError
+          ),
+        'the refusal was swallowed'
+      );
+      await element.updateComplete;
+
+      expect(
+        element
+          .shadowRoot!.querySelector('[data-testid="override-action-error"]')!
+          .textContent!.replace(/\s+/g, ' ')
+      ).to.contain('Only an account owner can remove a price override.');
+      // Nothing was removed, so the override is still on the page.
+      expect(rows(element)).to.have.length(2);
+      expect(rows(element)[0].getAttribute('data-override-id')).to.equal(
+        'override-active-1'
+      );
     });
   });
 });

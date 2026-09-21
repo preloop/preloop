@@ -1418,7 +1418,13 @@ export async function deleteModelPriceOverride(id: string): Promise<void> {
     }
   );
   if (!response.ok) {
-    throw new Error('Failed to delete model price override');
+    // A refused removal (403 on a read-only member, 404 on an override some
+    // other tab already deleted) says why in the FastAPI `detail`; the reader
+    // is standing in front of a confirm dialog and deserves that reason.
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to delete model price override')
+    );
   }
 }
 
