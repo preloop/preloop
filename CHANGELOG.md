@@ -1280,6 +1280,10 @@ avatars.
 
 ### Fixed
 
+- Refresh the vendored model price catalog so Gemini 3.8 Flash is priced from
+  the catalog, cache-read rate included, for both the `google` and `gemini`
+  provider spellings (#850).
+
 - Apply response content policies to returned reasoning and thinking text as
   well as final answers, including buffered streams and reasoning summaries.
 
