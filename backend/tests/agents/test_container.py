@@ -1027,6 +1027,7 @@ class TestGitShellQuoting:
         import os
         import shlex
         import shutil
+        import tempfile
 
         target = tmp_path / "workspace"
         target.mkdir()
@@ -1036,25 +1037,51 @@ class TestGitShellQuoting:
         assert f"rm -rf {quoted}" in shell
         # Empty, like CRI workingDir. 0555 so a non-root user cannot mkdir .git.
         # Root always passes bash -w (CI job containers), so drop privileges.
-        target.chmod(0o555)
-        run: list[str]
         if os.geteuid() == 0:
             setpriv = shutil.which("setpriv")
-            if not setpriv:
-                pytest.skip("root always passes [ -w ]; setpriv not available")
-            tmp_path.chmod(0o777)
-            run = [
-                setpriv,
-                "--reuid=65534",
-                "--regid=65534",
-                "--clear-groups",
-                "bash",
-                "-c",
-                shell,
-            ]
-        else:
-            run = ["bash", "-c", shell]
-        subprocess.run(run, check=True)
+            probe = (
+                subprocess.run(
+                    [
+                        setpriv,
+                        "--reuid=65534",
+                        "--regid=65534",
+                        "--clear-groups",
+                        "true",
+                    ]
+                )
+                if setpriv
+                else None
+            )
+            if probe is None or probe.returncode != 0:
+                pytest.skip("root always passes [ -w ]; cannot drop privileges")
+            # /tmp is 1777: world-traversable, unlike pytest's 0700 basetemp.
+            workdir = pathlib.Path(
+                tempfile.mkdtemp(prefix="preloop-preclone-", dir="/tmp")
+            )
+            workdir.chmod(0o777)
+            try:
+                target = workdir / "workspace"
+                target.mkdir()
+                target.chmod(0o555)
+                subprocess.run(
+                    [
+                        setpriv,
+                        "--reuid=65534",
+                        "--regid=65534",
+                        "--clear-groups",
+                        "bash",
+                        "-c",
+                        container_executor._build_git_pre_clone_shell(str(target)),
+                    ],
+                    check=True,
+                )
+                assert not target.exists()
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
+            return
+
+        target.chmod(0o555)
+        subprocess.run(["bash", "-c", shell], check=True)
         assert not target.exists()
 
     def test_git_branch_setup_shell_quotes_trigger_derived_values(
