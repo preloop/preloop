@@ -3,6 +3,9 @@ import {
   dismissalHidesFingerprint,
   modelAttentionFingerprint,
   modelAttentionItemId,
+  unpricedModelAttentionFingerprint,
+  unpricedModelAttentionItemId,
+  unpricedModelIsMarked,
 } from './attention';
 import { formatRelativeTime, parseUTCDate } from './date';
 
@@ -310,4 +313,92 @@ export function modelAttentionState(
     return marked.reduce(newestAliasState);
   }
   return states[0];
+}
+
+/**
+ * The two answers offered for a model that has no price. "Fixed" is missing on
+ * purpose: the fix for an unpriced model is a price, and a priced model does
+ * not derive the item at all, so "fixed" would be a claim nobody can check.
+ */
+export type UnpricedDismissReason = 'expected' | 'snoozed';
+
+/** What a page knows about one model's unpriced requests. */
+export interface UnpricedModelSummary {
+  /** Gateway alias the requests carried; the provider name is the fallback. */
+  modelAlias?: string | null;
+  providerName?: string | null;
+  /** Requests in the window that carry no price at all. */
+  unpricedRequests: number;
+}
+
+/**
+ * `quiet`: every request this model served is priced.
+ * `marked`: somebody said unpriced is expected here, and that still holds.
+ * `unpriced`: unpriced requests nobody has acknowledged.
+ */
+export type UnpricedAttentionStatus = 'quiet' | 'marked' | 'unpriced';
+
+export interface UnpricedAttentionState {
+  /** `model-unpriced:<alias>`, the id a dismissal is stored under. */
+  itemId: string;
+  /** `unpriced:<alias>`: stable, so one more unpriced request changes nothing. */
+  fingerprint: string;
+  status: UnpricedAttentionStatus;
+  /** The stored dismissal for this model's unpriced requests, active or not. */
+  dismissal: AttentionDismissal | null;
+  /** True while an active marker covers this model. */
+  marked: boolean;
+  /** "Unpriced requests marked expected 21 Sep 2026", for a tooltip. */
+  markerLabel: string | null;
+  /** Is there an unacknowledged unpriced model to offer a Dismiss control for? */
+  dismissable: boolean;
+  /** Is there an active marker to offer a Restore control for? */
+  restorable: boolean;
+  unpricedRequests: number;
+}
+
+/**
+ * Where one model stands on price, by the rule the inbox uses.
+ *
+ * Deliberately separate from `modelAttentionState`: failures and missing
+ * prices are independent facts with independent markers, so a row that is
+ * both failing and unpriced needs both before it reads Healthy.
+ *
+ * @param summary What the page knows about this model's unpriced requests.
+ * @param dismissals The account's active dismissals, as the API returns them.
+ * @param now Instant to judge a snooze against.
+ * @returns The model's unpriced state.
+ */
+export function unpricedAttentionState(
+  summary: UnpricedModelSummary,
+  dismissals: AttentionDismissal[],
+  now: Date = new Date()
+): UnpricedAttentionState {
+  const alias = summary.modelAlias;
+  const provider = summary.providerName;
+  const itemId = unpricedModelAttentionItemId(alias, provider);
+  const fingerprint = unpricedModelAttentionFingerprint(alias, provider);
+  const dismissal =
+    dismissals.find((candidate) => candidate.item_id === itemId) || null;
+  const marked = unpricedModelIsMarked(dismissals, alias, provider, now);
+  const unpricedRequests = summary.unpricedRequests || 0;
+  const unpriced = unpricedRequests > 0;
+  return {
+    itemId,
+    fingerprint,
+    status: !unpriced ? 'quiet' : marked ? 'marked' : 'unpriced',
+    dismissal,
+    marked,
+    markerLabel:
+      marked && dismissal
+        ? `Unpriced requests ${(
+            REASON_VERB[dismissal.reason] || 'dismissed'
+          ).toLowerCase()} ${formatMarkerDate(dismissal.created_at)}`.trim()
+        : null,
+    dismissable: unpriced && !marked,
+    // Restore is offered wherever the marker is doing work, which is the only
+    // place an operator can see that something is being hidden from them.
+    restorable: marked,
+    unpricedRequests,
+  };
 }

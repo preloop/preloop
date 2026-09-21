@@ -1009,6 +1009,244 @@ describe('deriveAttentionItems', () => {
 
       expect(items).to.have.length(0);
     });
+
+    /**
+     * #848: a model can be unpriced on purpose (a local model, a flat-rate
+     * subscription, a bill settled outside Preloop). Marking it expected on
+     * the Models page has to quiet it here too, and stay quiet.
+     */
+    describe('models marked unpriced-by-design', () => {
+      const twoUnpricedModels = (requests = 30) =>
+        summary({
+          price_catalog: { fetched_at: daysAgo(1), model_count: 120 },
+          unpriced_requests: requests + 12,
+          usage_by_model: [
+            {
+              ai_model_id: 'model-1',
+              model_alias: 'openrouter/stealth/ox-alpha',
+              provider_name: 'openrouter',
+              request_count: requests,
+              token_usage: {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 900,
+              },
+              estimated_cost: 0,
+              unpriced_request_count: requests,
+              zero_priced_request_count: 0,
+              last_request_at: minutesAgo(10),
+            },
+            {
+              ai_model_id: 'model-2',
+              model_alias: 'local/qwen-3-coder',
+              provider_name: 'ollama',
+              request_count: 12,
+              token_usage: {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 40,
+              },
+              estimated_cost: 0,
+              unpriced_request_count: 12,
+              zero_priced_request_count: 0,
+              last_request_at: minutesAgo(20),
+            },
+          ],
+        });
+
+      const unpricedMarker = (
+        alias: string,
+        overrides: Record<string, unknown> = {}
+      ): any => ({
+        id: `dismissal-${alias}`,
+        item_id: `model-unpriced:${alias}`,
+        fingerprint: `unpriced:${alias}`,
+        reason: 'expected',
+        snooze_until: null,
+        dismissed_by_user_id: 'user-1',
+        dismissed_by_username: 'Jane Doe',
+        created_at: daysAgo(1),
+        ...overrides,
+      });
+
+      it('counts and lists only the models nobody has marked', () => {
+        const items = derive({
+          usageSummary: twoUnpricedModels(),
+          dismissals: [unpricedMarker('local/qwen-3-coder')],
+        });
+
+        const catalog = items.find((item) => item.id === 'pricing:catalog')!;
+        expect(catalog.title).to.equal('1 model without a price');
+        expect(
+          (catalog.evidence?.unpricedModels || []).map((model) => model.alias)
+        ).to.eql(['openrouter/stealth/ox-alpha']);
+        // The count follows the list: the marked model's requests are not
+        // somebody's problem any more.
+        expect(catalog.detail).to.contain('30 requests unpriced');
+        expect(catalog.evidence?.unpricedRequests).to.equal(30);
+      });
+
+      it('says what clears an unpriced model for good', () => {
+        const items = derive({ usageSummary: twoUnpricedModels() });
+
+        const catalog = items.find((item) => item.id === 'pricing:catalog')!;
+        expect(catalog.detail).to.contain('Set a price on the model');
+        expect(catalog.detail).to.contain('Apply to past usage');
+      });
+
+      it('emits no item at all once every unpriced model is marked', () => {
+        const items = derive({
+          usageSummary: twoUnpricedModels(),
+          dismissals: [
+            unpricedMarker('local/qwen-3-coder'),
+            unpricedMarker('openrouter/stealth/ox-alpha'),
+          ],
+        });
+
+        expect(items.find((item) => item.id === 'pricing:catalog')).to.equal(
+          undefined
+        );
+      });
+
+      // The opposite of a failure marker: the fingerprint carries no
+      // timestamp, so more unpriced traffic never resurfaces the model.
+      it('keeps a marked model out however many new requests arrive', () => {
+        const items = derive({
+          usageSummary: twoUnpricedModels(9000),
+          dismissals: [
+            unpricedMarker('local/qwen-3-coder'),
+            unpricedMarker('openrouter/stealth/ox-alpha', {
+              item_id: 'model-unpriced:openrouter/stealth/ox-alpha',
+              fingerprint: 'unpriced:openrouter/stealth/ox-alpha',
+            }),
+          ],
+        });
+
+        expect(items.find((item) => item.id === 'pricing:catalog')).to.equal(
+          undefined
+        );
+      });
+
+      it('brings the model back when its snooze has run out', () => {
+        const items = derive({
+          usageSummary: twoUnpricedModels(),
+          dismissals: [
+            unpricedMarker('local/qwen-3-coder', {
+              reason: 'snoozed',
+              snooze_until: daysAgo(1),
+            }),
+            unpricedMarker('openrouter/stealth/ox-alpha'),
+          ],
+        });
+
+        const catalog = items.find((item) => item.id === 'pricing:catalog')!;
+        expect(catalog.title).to.equal('1 model without a price');
+        expect(
+          (catalog.evidence?.unpricedModels || []).map((model) => model.alias)
+        ).to.eql(['local/qwen-3-coder']);
+      });
+
+      // A failure marker is a claim about failures, not about prices.
+      it('ignores the model failure marker for the same alias', () => {
+        const items = derive({
+          usageSummary: twoUnpricedModels(),
+          dismissals: [
+            unpricedMarker('local/qwen-3-coder', {
+              item_id: 'model:local/qwen-3-coder',
+              fingerprint: `last:${minutesAgo(20)}`,
+              reason: 'fixed',
+            }),
+          ],
+        });
+
+        expect(
+          items.find((item) => item.id === 'pricing:catalog')?.title
+        ).to.equal('2 models without a price');
+      });
+
+      // Non-goal: the account-level "no catalog at all" item is not something
+      // one model's marker can answer.
+      it('leaves the missing-catalog item counting every model', () => {
+        const items = derive({
+          usageSummary: summary({
+            price_catalog: { fetched_at: null, model_count: 0 },
+            unpriced_requests: 4,
+            usage_by_model: [
+              {
+                ai_model_id: 'model-2',
+                model_alias: 'local/qwen-3-coder',
+                provider_name: 'ollama',
+                request_count: 4,
+                token_usage: {
+                  prompt_tokens: 1,
+                  completion_tokens: 1,
+                  total_tokens: 40,
+                },
+                estimated_cost: 0,
+                unpriced_request_count: 4,
+                zero_priced_request_count: 0,
+                last_request_at: minutesAgo(20),
+              },
+            ],
+          }),
+          dismissals: [unpricedMarker('local/qwen-3-coder')],
+        });
+
+        const catalog = items.find((item) => item.id === 'pricing:catalog')!;
+        expect(catalog.title).to.equal('No price catalog loaded');
+        expect(catalog.detail).to.equal(
+          'Estimated spend is missing for 4 requests because no provider price list is loaded.'
+        );
+        expect(
+          (catalog.evidence?.unpricedModels || []).map((model) => model.alias)
+        ).to.eql(['local/qwen-3-coder']);
+      });
+
+      // Two adjacent items, two different questions.
+      it('leaves the zero-priced item alone', () => {
+        const items = derive({
+          usageSummary: summary({
+            price_catalog: { fetched_at: daysAgo(1), model_count: 120 },
+            unpriced_requests: 12,
+            usage_by_model: [
+              {
+                ai_model_id: 'model-2',
+                model_alias: 'local/qwen-3-coder',
+                provider_name: 'ollama',
+                request_count: 12,
+                token_usage: {
+                  prompt_tokens: 1,
+                  completion_tokens: 1,
+                  total_tokens: 40,
+                },
+                estimated_cost: 0,
+                unpriced_request_count: 12,
+                zero_priced_request_count: 0,
+                last_request_at: minutesAgo(20),
+              },
+              {
+                ai_model_id: 'model-3',
+                model_alias: 'promo/free-tier',
+                provider_name: 'promo',
+                request_count: 6,
+                token_usage: {
+                  prompt_tokens: 1,
+                  completion_tokens: 1,
+                  total_tokens: 20,
+                },
+                estimated_cost: 0,
+                unpriced_request_count: 0,
+                zero_priced_request_count: 6,
+                last_request_at: minutesAgo(30),
+              },
+            ],
+          }),
+          dismissals: [unpricedMarker('local/qwen-3-coder')],
+        });
+
+        expect(items.map((item) => item.id)).to.eql(['pricing:zero-priced']);
+      });
+    });
   });
 
   describe('evidence', () => {
