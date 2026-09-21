@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-21
+
 Highlights: **Alibaba Cloud Model Studio (Qwen)** and **AWS Bedrock** join the
 model providers with live discovery and honest cost estimates, **operator
 notes** steer a running agent at its next turn boundary from the console, the
