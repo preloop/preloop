@@ -857,14 +857,21 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.session_source_type,
                 self.model.session_source_id,
                 self.model.session_reference,
-                parent_session_id_column,
+                # PostgreSQL rejects a bound NULL constant in GROUP BY.
+                *([parent_session_id_column] if parent_session_id_available else []),
                 self.model.runtime_principal_type,
                 self.model.runtime_principal_id,
                 self.model.runtime_principal_name,
-                summary_column,
-                summary_updated_at_column,
-                title_column,
-                title_request_count_column,
+                *(
+                    [
+                        summary_column,
+                        summary_updated_at_column,
+                        title_column,
+                        title_request_count_column,
+                    ]
+                    if summary_columns_available
+                    else []
+                ),
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
@@ -1152,14 +1159,21 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.session_source_type,
                 self.model.session_source_id,
                 self.model.session_reference,
-                parent_session_id_column,
+                # PostgreSQL rejects a bound NULL constant in GROUP BY.
+                *([parent_session_id_column] if parent_session_id_available else []),
                 self.model.runtime_principal_type,
                 self.model.runtime_principal_id,
                 self.model.runtime_principal_name,
-                summary_column,
-                summary_updated_at_column,
-                title_column,
-                title_request_count_column,
+                *(
+                    [
+                        summary_column,
+                        summary_updated_at_column,
+                        title_column,
+                        title_request_count_column,
+                    ]
+                    if summary_columns_available
+                    else []
+                ),
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
