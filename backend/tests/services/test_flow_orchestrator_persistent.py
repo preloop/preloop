@@ -17,6 +17,11 @@ from preloop.services.flow_orchestrator import (
 
 
 def _patch_monitor_side_channels(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These unit fixtures model ordinary persistent runs without real DB rows.
+    monkeypatch.setattr(
+        "preloop.services.issue_triage_controller.is_triage_execution",
+        lambda *args, **kwargs: False,
+    )
     monkeypatch.setattr(
         "preloop.services.flow_orchestrator.crud_flow_execution.get_stop_request",
         lambda *args, **kwargs: None,

@@ -100,13 +100,16 @@ def _catalog() -> dict[str, Any]:
 def _positive_int(value: Any, minimum: int) -> Optional[int]:
     """One usable token count, or None for anything else.
 
-    Booleans are rejected: ``True`` is not a context window.
+    Booleans are rejected: ``True`` is not a context window. Infinities are
+    rejected too: ``json.loads`` accepts the ``Infinity`` literal, and
+    ``int(float("inf"))`` raises ``OverflowError`` rather than the
+    ``ValueError`` that ``nan`` raises.
     """
     if isinstance(value, bool) or value is None:
         return None
     try:
         number = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return number if number >= minimum else None
 

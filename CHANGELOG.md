@@ -24,6 +24,21 @@ avatars.
 
 ### Added
 
+- A model whose requests carry no price can be marked "unpriced is expected"
+  (or snoozed for seven days) from the Models list or the model detail page.
+  The marker is stored as `model-unpriced:<alias>` with a stable
+  `unpriced:<alias>` fingerprint, so a new unpriced request does not bring the
+  model back, and the Models count, the row badge and the inbox's
+  "N models unpriced" item all honour it. Restore undoes it.
+- Issue triage durably reuses executions for the same issue revision and project
+  context across automatic events and manual single/batch runs. Verified issue
+  assessments persist as bounded, versioned context for the existing readiness
+  lifecycle; they do not authorize implementation. Triage execution keys receive
+  HTTP 403 on mutating REST routes; scoped MCP assessments on their bound issue
+  remain supported. Persistent agent execution,
+  matrix runs and delegated triage runs are rejected because those paths cannot
+  preserve the required execution scope and shared revision ownership.
+
 - Agent harnesses are told the context window and output ceiling of the
   model they run on. Codex gets `model_context_window` and
   `model_max_output_tokens` in `config.toml`, OpenCode gets

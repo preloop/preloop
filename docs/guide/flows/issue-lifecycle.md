@@ -59,6 +59,31 @@ The normal label webhook triggers implementation. A durable pickup record binds
 that transition to one execution; repeated delivery reuses the same execution.
 Follow-up issues never inherit the readiness label or bypass this gate.
 
+When creating a fresh authorized pickup, the controller can attach a stored triage
+assessment as `lifecycle_pickup.triage_context`. It loads the packet through
+account-scoped records and checks its issue revision, current project policy and
+source flow configuration. An applicable packet has status `available`; otherwise
+the context is explicitly `unknown` with no packet. Incoming event fields cannot
+supply this assessment. A reused execution retains its original context, even if
+a newer assessment is later stored. Dispatch retries recheck pickup readiness;
+they do not refresh the execution's frozen assessment or claim that its source
+flow and catalogue were revalidated. The implementation preset treats the packet
+as evidence to recheck against the current issue and checkout, never permission
+to dispatch or change scope. The readiness policy and explicit approval above
+remain required.
+
+Pickup also checks the issue's current complexity labels against the packet's
+recorded family. A changed, removed or conflicting classification makes the
+packet inapplicable; unrelated human labels do not invalidate it. This check uses
+the fresh issue snapshot without scanning the project's label catalogue.
+Catalogue completeness in the packet describes the assessment-time catalogue;
+pickup does not claim to have revalidated subsequent repository label definitions.
+
+Triage records both the revision it assessed and the verified revision after its
+managed issue update. Pickup uses that resulting full title/body revision. This
+mapping permits reuse after a managed assessment or factual title improvement
+without excluding human requirements from the readiness fingerprint.
+
 The scope fingerprint covers title and description, excluding automation's
 comments and labels. GitHub does not offer a conditional label-write API. The
 provider rereads scope immediately before labeling, then the controller checks

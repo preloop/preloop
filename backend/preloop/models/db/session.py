@@ -49,8 +49,9 @@ def _database_pool_kwargs() -> dict:
     return {
         # Defaults sized for one process against a stock Postgres
         # (max_connections=100): each process builds a sync engine, an async
-        # engine and a one-connection health engine, so the ceiling is
-        # (pool_size + max_overflow) * 2 + 1 = 61. The previous 20 + 40
+        # engine, a one-connection health engine, and up to two dedicated
+        # triage lock connections, so the ceiling is
+        # (pool_size + max_overflow) * 2 + 1 + 2 = 63. The previous 20 + 40
         # defaults asked for 121 from a database that allows 100, and did not
         # match the deployed helm values either (see helm/preloop/values.yaml
         # database.pool).

@@ -590,10 +590,6 @@ async def test_triage_tracker_scope_denial_propagates(
 async def test_authorized_triage_preserves_provider_outcome_on_cache_failure(
     monkeypatch: pytest.MonkeyPatch, cache_failure: bool
 ) -> None:
-    from datetime import datetime, timezone
-
-    from sqlalchemy.exc import SQLAlchemyError
-
     from preloop.schemas.issue_triage import IssueTriageResult, TriageIssue
 
     db = MagicMock()
@@ -609,43 +605,30 @@ async def test_authorized_triage_preserves_provider_outcome_on_cache_failure(
         updated_at="2026-09-13T12:00:00Z",
     )
     operations = [{"operation": "update_content", "state": "confirmed"}]
-    receipt = {"provider_revision": observed.revision}
-    setter = MagicMock()
-    cache = MagicMock(
-        side_effect=SQLAlchemyError("Cache unavailable") if cache_failure else None
+    expected = IssueTriageResult(
+        status="partial" if cache_failure else "updated",
+        issue=observed,
+        operations=operations,
+        cache_updated=not cache_failure,
+        reason="provider_result_cache_failed" if cache_failure else None,
     )
     monkeypatch.setattr(
         mcp_router, "_triage_provider", AsyncMock(return_value=(stored, provider))
     )
-    monkeypatch.setattr(mcp_router.crud_issue, "set_triage_receipt", setter)
-    monkeypatch.setattr(mcp_router.crud_issue, "update", cache)
-
-    async def apply(actual: Any, request: Any, record: Any) -> IssueTriageResult:
-        assert actual is provider
-        record(receipt)
-        return IssueTriageResult(
-            status="updated", issue=observed, operations=operations
-        )
-
-    monkeypatch.setattr("preloop.services.issue_triage.apply_triage", apply)
-
+    controlled = AsyncMock(return_value=expected)
+    monkeypatch.setattr(
+        "preloop.services.issue_triage_controller.apply_controlled_triage", controlled
+    )
     result = await mcp_router._apply_authorized_issue_triage(
         db=db, current_user=user, **TRIAGE_WRITE
     )
-
-    setter.assert_called_once_with(db, db_obj=stored, receipt=receipt)
-    values = cache.call_args.kwargs["obj_in"]
-    assert values == {
-        "title": observed.title,
-        "description": observed.body,
-        "status": observed.state,
-        "meta_data": {"other": "preserved", "labels": observed.labels},
-        "last_updated_external": datetime(2026, 9, 13, 12, tzinfo=timezone.utc),
-    }
-    assert result.issue == observed
-    assert result.operations == operations
-    assert result.cache_updated is not cache_failure
-    assert result.status == ("partial" if cache_failure else "updated")
-    if cache_failure:
-        assert result.reason == "provider_result_cache_failed"
-        assert "do not repeat completed writes" in result.next_action
+    assert result is expected
+    arguments = controlled.call_args.kwargs
+    assert arguments["issue"] is stored
+    assert arguments["provider"] is provider
+    assert arguments["account_id"] == user.account_id
+    assert arguments["current_user"] is user
+    assert arguments["execution_id"] is None
+    assert arguments["request"].expected_revision == TRIAGE_WRITE["expected_revision"]
+    # Actual durable receipt/cache failure and no-packet recovery are exercised
+    # with PostgreSQL in test_issue_triage_controller.py.

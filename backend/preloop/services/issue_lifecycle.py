@@ -246,6 +246,7 @@ class IssueLifecycleService:
     ) -> models.FlowExecution | None:
         """Atomically bind the authorized pickup to one execution."""
         from preloop.services.flow_trigger_service import FlowDispatchError
+        from preloop.services.issue_triage_controller import applicable_triage_packet
 
         async with crud_issue_lifecycle.locked(self.db, self.account_id, self.issue.id):
             row = self._get("pickup", "once")
@@ -269,10 +270,41 @@ class IssueLifecycleService:
                 ReadinessContract.model_validate(row.data["contract"])
             ):
                 return None
-            event = {
-                **event,
-                "lifecycle_pickup": {"issue_id": str(self.issue.id), **row.data},
-            }
+            if row.execution_id is None:
+                # This optional context is evidence, never pickup authority.
+                # Load it from the tenant-scoped durable operation rather than
+                # accepting an assessment supplied in a webhook or manual run.
+                packet = applicable_triage_packet(
+                    self.db,
+                    account_id=self.account_id,
+                    issue_id=self.issue.id,
+                    lifecycle_revision=current.revision,
+                )
+                if packet is not None:
+                    family = packet.get("complexity_family")
+                    label = packet.get("complexity_label")
+                    if (
+                        not isinstance(family, list)
+                        or not family
+                        or not all(isinstance(name, str) for name in family)
+                        or not isinstance(label, str)
+                        or label not in family
+                        or set(current.labels) & set(family) != {label}
+                    ):
+                        # The readiness fingerprint excludes labels, but a
+                        # human's newer classification invalidates this packet.
+                        packet = None
+                event = {
+                    **event,
+                    "lifecycle_pickup": {
+                        "issue_id": str(self.issue.id),
+                        **row.data,
+                        "triage_context": {
+                            "status": "available" if packet is not None else "unknown",
+                            "packet": packet,
+                        },
+                    },
+                }
             execution = crud_issue_lifecycle.create_execution(
                 self.db, row=row, flow_id=flow.id, event=event
             )
