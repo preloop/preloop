@@ -89,10 +89,10 @@ class CodexAgent(ContainerAgentExecutor):
     # the guard stops the run anyway if nothing changes, so the worst case
     # of two codex processes in one workspace is bounded by the grace
     # period.
-    live_nudge_command = (
-        f"codex exec resume --last --skip-git-repo-check --yolo "
-        f'"$(cat {LIVE_NUDGE_PROMPT_PATH})" >> {LIVE_NUDGE_LOG_PATH} 2>&1'
-    )
+    # Set in ``_build_codex_script`` for the execution that is about to
+    # start. No class-level command: a nudge delivered before that
+    # assignment must not resume a locked run under ``--yolo``.
+    live_nudge_command: Optional[str] = None
 
     def __init__(self, config: Dict[str, Any]):
         """
@@ -440,6 +440,16 @@ fi
 
         if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", cli_version):
             raise ValueError("codex_cli_version must be an exact release version")
+        shell_locked = self._shell_locked(execution_context)
+        sandbox_flags = self._codex_sandbox_flags(shell_locked)
+        attach_mcp = self._attach_preloop_mcp(execution_context)
+        # The live reminder is delivered later on this same executor. A
+        # read-only run must not resume under --yolo.
+        self.live_nudge_command = (
+            "codex exec resume --last --skip-git-repo-check "
+            f"{sandbox_flags} "
+            f'"$(cat {LIVE_NUDGE_PROMPT_PATH})" >> {LIVE_NUDGE_LOG_PATH} 2>&1'
+        )
         prompt = execution_context["prompt"]
         native_resume_guard = (
             '"0"'
@@ -529,7 +539,7 @@ fi
                 resume_command=(
                     '$PRELOOP_NUDGE_TIMEOUT codex exec resume "$_pl_codex_sid" '
                     "--skip-git-repo-check "
-                    f'--model "{model}" --yolo '
+                    f'--model "{model}" {sandbox_flags} '
                     f'"$(cat {NUDGE_PROMPT_PATH})" 2>&1 '
                     f'| tee -a "{AGENT_OUTPUT_LOG_PATH}"'
                 ),
@@ -556,7 +566,13 @@ fi
             model_endpoint,
             limits_for_execution(execution_context),
             (execution_context.get("model_parameters") or {}).get("reasoning_effort"),
+            attach_mcp=attach_mcp,
+            shell_locked=shell_locked,
         )
+        if attach_mcp:
+            mcp_status_line = 'echo "MCP Server: $PRELOOP_MCP_URL"'
+        else:
+            mcp_status_line = 'echo "MCP Server: not attached"'
 
         # Native CLI session persistence blocks (mostly empty on cold start).
         session_blocks = self._build_cli_session_blocks(execution_context)
@@ -569,7 +585,7 @@ fi
             resume_probe="codex exec --help 2>&1 | grep -qw resume",
             resume_command=(
                 '$PRELOOP_RECOVERY_TIMEOUT codex exec resume "$_pl_recovery_sid" '
-                f'--skip-git-repo-check --model "{model}" --yolo '
+                f'--skip-git-repo-check --model "{model}" {sandbox_flags} '
                 f'"$(cat {RECOVERY_PROMPT_PATH})" 2>&1 '
                 f'| tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"\n'
                 '    _pl_recovery_codes=("${PIPESTATUS[@]}")\n'
@@ -651,7 +667,7 @@ mkdir -p ~/.codex
 echo "=== Codex Configuration ==="
 echo "Model: {model}"
 echo "Provider: {model_provider}"
-echo "MCP Server: $PRELOOP_MCP_URL"
+{mcp_status_line}
 echo "=========================="
 
 # Resume the prior CLI session when a correlated restart restored one;
@@ -670,7 +686,7 @@ echo "PRELOOP_AGENT_EXEC_START"
 set +e
 : > "{AGENT_OUTPUT_LOG_PATH}"
 : > "{ATTEMPT_LOG_PATH}"
-cat "{PROMPT_FILE_PATH}" | codex exec $CODEX_RESUME_ARGS --skip-git-repo-check --model "{model}" --yolo 2>&1 | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
+cat "{PROMPT_FILE_PATH}" | codex exec $CODEX_RESUME_ARGS --skip-git-repo-check --model "{model}" {sandbox_flags} 2>&1 | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
 CODEX_PIPE_CODES=("${{PIPESTATUS[@]}}")
 CODEX_EXIT_CODE=${{CODEX_PIPE_CODES[1]:-0}}
 set -e
@@ -839,6 +855,63 @@ exit $CODEX_EXIT_CODE
         )
         return "\n".join(lines) + "\n"
 
+    def _attach_preloop_mcp(self, execution_context: Dict[str, Any]) -> bool:
+        """Return whether this run should open a Preloop MCP session.
+
+        An empty allowlist used to still attach the client. The server then
+        advertised no tools, and a failing HTTP transport retried until the
+        flow's wall clock expired. No tools means no session.
+
+        Args:
+            execution_context: Execution context.
+
+        Returns:
+            True when the flow named at least one server or tool.
+        """
+        servers = execution_context.get("allowed_mcp_servers") or []
+        tools = execution_context.get("allowed_mcp_tools") or []
+        return bool(servers or tools)
+
+    def _shell_locked(self, execution_context: Dict[str, Any]) -> bool:
+        """Return whether this run must not receive a shell.
+
+        ``agent_config.sandbox_type`` of ``read-only`` is the only lock.
+        A missing key, a non-dict config, and the preset default ``exec``
+        stay unlocked so existing flows that run commands are unchanged.
+
+        Args:
+            execution_context: Execution context.
+
+        Returns:
+            True when the flow asked for the read-only sandbox.
+        """
+        config = execution_context.get("agent_config") or {}
+        if not isinstance(config, dict):
+            return False
+        return config.get("sandbox_type") == "read-only"
+
+    def _codex_sandbox_flags(self, shell_locked: bool) -> str:
+        """Return the Codex exec sandbox flags for this run.
+
+        The locked path is ``--sandbox read-only --disable shell_tool``
+        and no ``--yolo``. Codex 0.153.4 (the pinned CLI) documents
+        ``read-only`` as a sandbox value and ``shell_tool`` as a stable
+        feature. ``codex exec`` already sets ``AskForApproval::Never``, so
+        omitting ``--yolo`` does not wait for a person. ``--yolo`` is the
+        alias that also selects ``danger-full-access``. The locked path
+        still writes ``approval_policy = "never"`` into config.toml so a
+        resume cannot fall back to prompting.
+
+        Args:
+            shell_locked: Result of ``_shell_locked`` for this execution.
+
+        Returns:
+            Flags inserted into each ``codex exec`` invocation.
+        """
+        if shell_locked:
+            return "--sandbox read-only --disable shell_tool"
+        return "--yolo"
+
     def _build_codex_auth_config(
         self,
         model: str,
@@ -846,6 +919,8 @@ exit $CODEX_EXIT_CODE
         model_endpoint: str,
         limits: Optional[ModelContextLimits] = None,
         reasoning_effort: Optional[str] = None,
+        attach_mcp: bool = True,
+        shell_locked: bool = False,
     ) -> str:
         """
         Build the auth.json and config.toml shell script block for Codex CLI.
@@ -853,7 +928,8 @@ exit $CODEX_EXIT_CODE
         For OpenAI models, generates a standard config.
         For custom models, generates a custom_provider section with base_url,
         env_key, and wire_api so Codex knows how to reach the provider.
-        Preloop MCP is always attached; tool enablement is the allowlist.
+        Preloop MCP is attached only when ``attach_mcp`` is true. An empty
+        flow allowlist passes false so Codex does not open an HTTP session.
 
         Args:
             model: Model identifier (e.g., "gpt-5.4", "claude-sonnet-4-20250514")
@@ -863,6 +939,13 @@ exit $CODEX_EXIT_CODE
                 Preloop knows them. Omitted lines leave codex on its defaults.
             reasoning_effort: Effort this run should think at, when routing
                 asked for one. Omitted leaves the model's own default.
+            attach_mcp: When false, omit ``rmcp_client`` and
+                ``[mcp_servers.preloop]``.
+            shell_locked: When true, pin ``approval_policy = "never"`` and
+                ``sandbox_mode = "read-only"``. Headless exec already
+                defaults to never asking; the lines keep a resume from
+                prompting. Not set on the ``--yolo`` path, because
+                ``never`` plus ``danger-full-access`` is rejected.
 
         Returns:
             Shell script block to write auth.json and config.toml
@@ -871,6 +954,20 @@ exit $CODEX_EXIT_CODE
         limit_lines = self._build_codex_limit_lines(
             model, limits
         ) + self._build_codex_effort_line(model, reasoning_effort)
+        rmcp_line = "rmcp_client = true\n\n" if attach_mcp else ""
+        lock_lines = (
+            'approval_policy = "never"\nsandbox_mode = "read-only"\n'
+            if shell_locked
+            else ""
+        )
+        mcp_server = (
+            "[mcp_servers.preloop]\n"
+            'url = "$PRELOOP_MCP_URL"\n'
+            'bearer_token_env_var = "PRELOOP_API_TOKEN"\n'
+            "tool_timeout_sec = $MCP_TOOL_TIMEOUT_SEC\n"
+            if attach_mcp
+            else ""
+        )
 
         if is_custom:
             # Custom provider: generate provider-specific config
@@ -902,10 +999,7 @@ EOF
 cat > ~/.codex/config.toml << EOF
 model_provider = "{provider_key}"
 model = "{model}"
-{limit_lines}
-rmcp_client = true
-
-[model_providers.{provider_key}]
+{lock_lines}{limit_lines}{rmcp_line}[model_providers.{provider_key}]
 name = "{model_provider.title()}"
 {base_url_line}
 env_key = "{env_key}"
@@ -913,12 +1007,7 @@ wire_api = "{wire_api}"
 request_max_retries = 4
 stream_max_retries = 5
 stream_idle_timeout_ms = 600000
-
-[mcp_servers.preloop]
-url = "$PRELOOP_MCP_URL"
-bearer_token_env_var = "PRELOOP_API_TOKEN"
-tool_timeout_sec = $MCP_TOOL_TIMEOUT_SEC
-EOF"""
+{mcp_server}EOF"""
         else:
             # Built-in OpenAI already retries 4/5. Do not emit
             # [model_providers.openai]: merge is insert-only for that id
@@ -933,14 +1022,7 @@ EOF
 # Create config.toml with model and MCP server configuration
 cat > ~/.codex/config.toml << EOF
 model = "{model}"
-{limit_lines}
-rmcp_client = true
-
-[mcp_servers.preloop]
-url = "$PRELOOP_MCP_URL"
-bearer_token_env_var = "PRELOOP_API_TOKEN"
-tool_timeout_sec = $MCP_TOOL_TIMEOUT_SEC
-EOF"""
+{lock_lines}{limit_lines}{rmcp_line}{mcp_server}EOF"""
 
         return auth_block
 

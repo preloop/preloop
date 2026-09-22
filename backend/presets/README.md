@@ -36,9 +36,16 @@ allowed_mcp_servers: []
 allowed_mcp_tools:
   - name: "search_issues"
   - name: "get_issue"
-# Codex/Gemini/OpenCode always attach Preloop MCP. Tool enablement is
-# the allowlist. Name-only entries are the legacy shape and mean
-# Preloop builtins on preloop-mcp.
+# Codex attaches Preloop MCP only when allowed_mcp_servers or
+# allowed_mcp_tools is non-empty. An empty allowlist does not open an
+# MCP session. Gemini and OpenCode still add the Preloop MCP server.
+# Tool enablement is the allowlist. Name-only entries are the legacy
+# shape and mean Preloop builtins on preloop-mcp.
+# sandbox_type: exec (the preset default) launches Codex with --yolo.
+# sandbox_type: read-only launches with --sandbox read-only, disables
+# the shell_tool feature, and does not pass --yolo. config.toml pins
+# approval_policy = "never", which is already the codex exec default,
+# so the run does not wait for a person. That is the platform shell lock.
 git_clone_config: null
 timeout_seconds: 1800          # Optional per-flow wall-clock budget
 is_preset: true
