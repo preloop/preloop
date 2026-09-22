@@ -251,6 +251,7 @@ class TestCodexBuildScript:
     def test_read_only_sandbox_does_not_pass_yolo(self):
         """sandbox_type read-only is the platform shell lock."""
         agent = CodexAgent({})
+        assert agent.live_nudge_command is None
         script = agent._build_codex_script(
             {
                 "prompt": "test",
@@ -394,6 +395,22 @@ class TestCodexAuthConfig:
         assert "[mcp_servers.preloop]" not in auth_block
         assert 'model = "deepseek-v4-flash"' in auth_block
         assert "request_max_retries = 4" in auth_block
+
+    def test_shell_lock_on_custom_provider_precedes_the_provider_block(self):
+        """Read-only config pins approval and sandbox before the provider."""
+        agent = CodexAgent({})
+        auth_block = agent._build_codex_auth_config(
+            "deepseek-v4-flash",
+            "openrouter",
+            "https://openrouter.ai/api/v1",
+            shell_locked=True,
+        )
+        assert auth_block.index('approval_policy = "never"') < auth_block.index(
+            "[model_providers.openrouter]"
+        )
+        assert auth_block.index('sandbox_mode = "read-only"') < auth_block.index(
+            "[model_providers.openrouter]"
+        )
 
     def test_custom_provider_no_endpoint(self):
         """Custom provider without endpoint omits base_url."""

@@ -89,10 +89,10 @@ class CodexAgent(ContainerAgentExecutor):
     # the guard stops the run anyway if nothing changes, so the worst case
     # of two codex processes in one workspace is bounded by the grace
     # period.
-    live_nudge_command = (
-        f"codex exec resume --last --skip-git-repo-check --yolo "
-        f'"$(cat {LIVE_NUDGE_PROMPT_PATH})" >> {LIVE_NUDGE_LOG_PATH} 2>&1'
-    )
+    # Set in ``_build_codex_script`` for the execution that is about to
+    # start. No class-level command: a nudge delivered before that
+    # assignment must not resume a locked run under ``--yolo``.
+    live_nudge_command: Optional[str] = None
 
     def __init__(self, config: Dict[str, Any]):
         """
@@ -440,7 +440,8 @@ fi
 
         if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", cli_version):
             raise ValueError("codex_cli_version must be an exact release version")
-        sandbox_flags = self._codex_sandbox_flags(execution_context)
+        shell_locked = self._shell_locked(execution_context)
+        sandbox_flags = self._codex_sandbox_flags(shell_locked)
         attach_mcp = self._attach_preloop_mcp(execution_context)
         # The live reminder is delivered later on this same executor. A
         # read-only run must not resume under --yolo.
@@ -566,7 +567,7 @@ fi
             limits_for_execution(execution_context),
             (execution_context.get("model_parameters") or {}).get("reasoning_effort"),
             attach_mcp=attach_mcp,
-            shell_locked=sandbox_flags != "--yolo",
+            shell_locked=shell_locked,
         )
         if attach_mcp:
             mcp_status_line = 'echo "MCP Server: $PRELOOP_MCP_URL"'
@@ -871,31 +872,43 @@ exit $CODEX_EXIT_CODE
         tools = execution_context.get("allowed_mcp_tools") or []
         return bool(servers or tools)
 
-    def _codex_sandbox_flags(self, execution_context: Dict[str, Any]) -> str:
-        """Return the Codex exec sandbox flags for this run.
+    def _shell_locked(self, execution_context: Dict[str, Any]) -> bool:
+        """Return whether this run must not receive a shell.
 
-        ``agent_config.sandbox_type`` of ``read-only`` is the platform shell
-        lock: ``--sandbox read-only --disable shell_tool`` and no ``--yolo``.
-        Codex 0.153.4 (the pinned CLI) documents ``read-only`` as a sandbox
-        value and ``shell_tool`` as a stable feature. ``codex exec`` already
-        sets ``AskForApproval::Never``, so omitting ``--yolo`` does not wait
-        for a person. ``--yolo`` is the alias that also selects
-        ``danger-full-access``. The read-only path still writes
-        ``approval_policy = "never"`` into config.toml so a resume cannot
-        fall back to prompting. Every other value, including the preset
-        default ``exec`` and a missing key, keeps ``--yolo`` so existing
-        flows that run commands are unchanged.
+        ``agent_config.sandbox_type`` of ``read-only`` is the only lock.
+        A missing key, a non-dict config, and the preset default ``exec``
+        stay unlocked so existing flows that run commands are unchanged.
 
         Args:
             execution_context: Execution context.
 
         Returns:
-            Flags inserted into each ``codex exec`` invocation.
+            True when the flow asked for the read-only sandbox.
         """
         config = execution_context.get("agent_config") or {}
         if not isinstance(config, dict):
-            return "--yolo"
-        if config.get("sandbox_type") == "read-only":
+            return False
+        return config.get("sandbox_type") == "read-only"
+
+    def _codex_sandbox_flags(self, shell_locked: bool) -> str:
+        """Return the Codex exec sandbox flags for this run.
+
+        The locked path is ``--sandbox read-only --disable shell_tool``
+        and no ``--yolo``. Codex 0.153.4 (the pinned CLI) documents
+        ``read-only`` as a sandbox value and ``shell_tool`` as a stable
+        feature. ``codex exec`` already sets ``AskForApproval::Never``, so
+        omitting ``--yolo`` does not wait for a person. ``--yolo`` is the
+        alias that also selects ``danger-full-access``. The locked path
+        still writes ``approval_policy = "never"`` into config.toml so a
+        resume cannot fall back to prompting.
+
+        Args:
+            shell_locked: Result of ``_shell_locked`` for this execution.
+
+        Returns:
+            Flags inserted into each ``codex exec`` invocation.
+        """
+        if shell_locked:
             return "--sandbox read-only --disable shell_tool"
         return "--yolo"
 
