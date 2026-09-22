@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex no longer opens a Preloop MCP session when both MCP allowlists are
+  empty, so a failing HTTP transport cannot reconnect until the flow
+  timeout. `agent_config.sandbox_type: read-only` launches Codex with
+  `--sandbox read-only`, disables the `shell_tool` feature, and does not
+  pass `--yolo`. `codex exec` already defaults to never asking for
+  approval; the read-only config also sets `approval_policy = "never"`
+  so a resume cannot wait on a person. Any other value, including the
+  preset default `exec`, is unchanged.
+
 ## [0.16.0] - 2026-09-21
 
 Highlights: **Alibaba Cloud Model Studio (Qwen)** and **AWS Bedrock** join the

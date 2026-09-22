@@ -217,8 +217,8 @@ class TestCodexBuildScript:
         assert "_post_exec_sleep()" in script
         assert "trap _post_exec_sleep EXIT" in script
 
-    def test_script_always_attaches_preloop_mcp(self):
-        """Empty allowlist still attaches Preloop MCP. Overhead is tools."""
+    def test_script_omits_preloop_mcp_when_allowlists_are_empty(self):
+        """Empty allowlists must not open an MCP session."""
         agent = CodexAgent({})
         bare = agent._build_codex_script(
             {
@@ -227,9 +227,62 @@ class TestCodexBuildScript:
                 "flow_name": "test-flow",
             }
         )
-        assert "[mcp_servers.preloop]" in bare
+        assert "[mcp_servers.preloop]" not in bare
+        assert "rmcp_client = true" not in bare
+        assert 'echo "MCP Server: not attached"' in bare
         assert "preloop.security.mcp_server" not in bare
         assert "repo-audit" not in bare
+
+    def test_script_attaches_preloop_mcp_when_a_tool_is_allowed(self):
+        """A non-empty allowlist still configures the Preloop MCP server."""
+        agent = CodexAgent({})
+        script = agent._build_codex_script(
+            {
+                "prompt": "test",
+                "execution_id": "exec-1",
+                "flow_name": "test-flow",
+                "allowed_mcp_tools": [{"name": "get_pull_request"}],
+            }
+        )
+        assert "rmcp_client = true" in script
+        assert "[mcp_servers.preloop]" in script
+        assert 'echo "MCP Server: $PRELOOP_MCP_URL"' in script
+
+    def test_read_only_sandbox_does_not_pass_yolo(self):
+        """sandbox_type read-only is the platform shell lock."""
+        agent = CodexAgent({})
+        script = agent._build_codex_script(
+            {
+                "prompt": "test",
+                "execution_id": "exec-1",
+                "flow_name": "test-flow",
+                "agent_config": {"sandbox_type": "read-only"},
+                "completion_nudge_enabled": True,
+            }
+        )
+        assert script.count("--sandbox read-only") >= 3
+        assert script.count("--disable shell_tool") >= 3
+        assert 'approval_policy = "never"' in script
+        assert 'sandbox_mode = "read-only"' in script
+        assert "--yolo" not in script
+        assert "--sandbox read-only" in agent.live_nudge_command
+        assert "--disable shell_tool" in agent.live_nudge_command
+        assert "--yolo" not in agent.live_nudge_command
+
+    def test_exec_sandbox_keeps_yolo(self):
+        """The preset default sandbox_type exec still bypasses the sandbox."""
+        agent = CodexAgent({})
+        script = agent._build_codex_script(
+            {
+                "prompt": "test",
+                "execution_id": "exec-1",
+                "flow_name": "test-flow",
+                "agent_config": {"sandbox_type": "exec"},
+            }
+        )
+        assert "--yolo" in script
+        assert "--sandbox read-only" not in script
+        assert "approval_policy" not in script
 
     def test_script_contains_codex_exec_command(self):
         """Script runs codex exec with correct flags."""
@@ -327,6 +380,20 @@ class TestCodexAuthConfig:
         assert "request_max_retries" not in auth_block
         assert "stream_max_retries" not in auth_block
         assert "stream_idle_timeout_ms" not in auth_block
+
+    def test_attach_mcp_false_omits_the_server(self):
+        """An empty allowlist must not write an MCP client into config.toml."""
+        agent = CodexAgent({})
+        auth_block = agent._build_codex_auth_config(
+            "deepseek-v4-flash",
+            "openrouter",
+            "https://openrouter.ai/api/v1",
+            attach_mcp=False,
+        )
+        assert "rmcp_client" not in auth_block
+        assert "[mcp_servers.preloop]" not in auth_block
+        assert 'model = "deepseek-v4-flash"' in auth_block
+        assert "request_max_retries = 4" in auth_block
 
     def test_custom_provider_no_endpoint(self):
         """Custom provider without endpoint omits base_url."""
