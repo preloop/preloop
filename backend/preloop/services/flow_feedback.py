@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_flow_feedback
+from preloop.models.crud.flow_feedback import SESSIONLESS_RETRY_STATUSES
 from preloop.services.flow_feedback_provider import (
     FeedbackProvider,
     FeedbackState,
@@ -150,8 +151,9 @@ def register_thread(
 
 
 # A launch that dies before the agent runs. STOPPED, CANCELLED, and ABORTED
-# stop the thread on purpose and are not retried here.
-_SESSIONLESS_RETRY_STATUSES = frozenset({"FAILED", "TIMED_OUT"})
+# stop the thread on purpose and are not retried here. The revival scan uses
+# the same ``SESSIONLESS_RETRY_STATUSES`` constant.
+_SESSIONLESS_RETRY_STATUSES = SESSIONLESS_RETRY_STATUSES
 
 
 def native_session(execution: models.FlowExecution) -> dict[str, Any]:
@@ -411,6 +413,8 @@ async def run_feedback_tick(db: Session, *, now: datetime | None = None) -> int:
                 "Feedback registration failed for execution %s",
                 getattr(publication, "id", None),
             )
+    for thread in crud_flow_feedback.stopped_for_no_progress(db):
+        crud_flow_feedback.revive(db, thread.id, now=now)
     claims = crud_flow_feedback.claim_due(db, now=now)
     for thread_id, token in claims:
         try:
@@ -494,9 +498,12 @@ async def _reconcile(
         crud_flow_feedback.update(db, thread_id, token, changes={}, now=now)
         return
     if completed_repair:
-        thread.no_progress = (
-            thread.no_progress + 1 if thread.head_sha == state.head_sha else 0
-        )
+        finished = crud_flow_execution.get(db, id=thread.latest_execution_id)
+        # The agent never ran, so an unchanged head is not a failed repair.
+        if finished is None or not sessionless_retry(finished):
+            thread.no_progress = (
+                thread.no_progress + 1 if thread.head_sha == state.head_sha else 0
+            )
     # A launch that died before the agent ran already consumed its reviews.
     # Ingest will not reopen a receipt, so put those reviews back. The next
     # reservation continues from the published branch.
