@@ -958,6 +958,114 @@ def test_first_repair_without_a_session_uses_the_published_branch(
                 execution_id=repair.id,
                 resume=resume,
             )
+        failed = models.FlowExecution(
+            id=uuid.uuid4(),
+            flow_id=thread.flow_id,
+            status="FAILED",
+            trigger_event_details={},
+            cli_session=None,
+        )
+        db.add(failed)
+        thread.latest_execution_id = failed.id
+        db.commit()
+        failed_resume = {**resume, "execution_id": str(failed.id)}
+        assert resolve_native_checkpoint(
+            db,
+            account_id=thread.account_id,
+            flow_id=thread.flow_id,
+            execution_id=repair.id,
+            resume=failed_resume,
+        ) == {"cold_handoff_authorized": True}
+        failed.cli_session = {
+            "agent_type": "codex",
+            "session_id": str(uuid.uuid4()),
+        }
+        db.commit()
+        with pytest.raises(ValueError, match="checkpoint uploads disabled"):
+            resolve_native_checkpoint(
+                db,
+                account_id=thread.account_id,
+                flow_id=thread.flow_id,
+                execution_id=repair.id,
+                resume=failed_resume,
+            )
+
+
+@pytest.mark.asyncio
+async def test_failed_launch_without_a_session_retries_the_published_branch(
+    database: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A private-runner launch that dies before a session still owes its review.
+
+    The failed execution already consumed the review and incremented the turn.
+    The next reconciliation puts the review back and continues on the published
+    branch instead of demanding a checkpoint that was never stored.
+    """
+    from preloop.config import settings
+    from preloop.services.flow_feedback import resolve_native_checkpoint
+
+    monkeypatch.setattr(settings, "flow_artifact_direct_upload", False)
+    with Session(database) as db:
+        thread = create_thread(db)
+        publisher = db.get(models.FlowExecution, thread.latest_execution_id)
+        assert publisher is not None
+        routing = publisher.trigger_event_details["_model_routing"]
+        crud_flow_feedback.ingest(
+            db, thread_id=thread.id, events=[event("review")], now=NOW
+        )
+        receipts = crud_flow_feedback.pending(db, thread.id)
+        failed = crud_flow_feedback.reserve(
+            db,
+            *crud_flow_feedback.claim_due(db, now=NOW)[0],
+            event_data={
+                "_model_routing": routing,
+                "_thread_id": str(thread.id),
+            },
+            receipt_ids=[item.id for item in receipts],
+            head_sha="head",
+            now=NOW,
+        )
+        assert failed is not None
+        failed.status = "FAILED"
+        failed.cli_session = None
+        db.commit()
+        provider = SimpleNamespace(
+            read=AsyncMock(
+                return_value=FeedbackState("head", feedback=[event("review")])
+            )
+        )
+        with (
+            patch(
+                "preloop.services.flow_feedback.FeedbackProvider.for_thread",
+                AsyncMock(return_value=provider),
+            ),
+            patch(
+                "preloop.services.flow_execution_dispatcher.flow_execution_worker_enabled",
+                return_value=True,
+            ),
+            patch(
+                "preloop.services.flow_execution_dispatcher.dispatch_execute",
+                AsyncMock(return_value=False),
+            ),
+        ):
+            await _reconcile(
+                db,
+                *crud_flow_feedback.claim_due(db, now=NOW + timedelta(seconds=31))[0],
+                now=NOW + timedelta(seconds=31),
+            )
+        db.refresh(thread)
+        assert thread.turns == 2
+        assert thread.active_execution_id != failed.id
+        repair = db.get(models.FlowExecution, thread.active_execution_id)
+        assert repair is not None
+        assert resolve_native_checkpoint(
+            db,
+            account_id=thread.account_id,
+            flow_id=thread.flow_id,
+            execution_id=repair.id,
+            resume=repair.trigger_event_details["_resume"],
+        ) == {"cold_handoff_authorized": True}
+        assert crud_flow_feedback.pending(db, thread.id) == []
 
 
 @pytest.mark.parametrize(
