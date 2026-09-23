@@ -18,6 +18,11 @@ RuntimeSessionActivity = models.RuntimeSessionActivity
 
 MAX_AGENT_CONTROL_MESSAGE_SUMMARY_LEN = 2000
 
+# One governed tool call now records ``succeeded``/``refused``/``failed``.
+# ``success`` is kept in the success set so rows written before the outcome
+# split still aggregate as successes.
+TOOL_CALL_SUCCESS_STATUSES = ("success", "succeeded")
+
 
 class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
     """CRUD helpers for normalized runtime-session activity."""
@@ -550,10 +555,22 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
                 self.model.server_name,
                 func.count(self.model.id).label("call_count"),
                 func.coalesce(
-                    func.sum(case((self.model.status == "success", 1), else_=0)), 0
+                    func.sum(
+                        case(
+                            (self.model.status.in_(TOOL_CALL_SUCCESS_STATUSES), 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
                 ).label("success_count"),
                 func.coalesce(
-                    func.sum(case((self.model.status != "success", 1), else_=0)), 0
+                    func.sum(
+                        case(
+                            (self.model.status.in_(TOOL_CALL_SUCCESS_STATUSES), 0),
+                            else_=1,
+                        )
+                    ),
+                    0,
                 ).label("failure_count"),
                 func.max(self.model.timestamp).label("last_activity_at"),
             )
@@ -598,10 +615,22 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
                 self.model.tool_name,
                 func.count(self.model.id).label("call_count"),
                 func.coalesce(
-                    func.sum(case((self.model.status == "success", 1), else_=0)), 0
+                    func.sum(
+                        case(
+                            (self.model.status.in_(TOOL_CALL_SUCCESS_STATUSES), 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
                 ).label("success_count"),
                 func.coalesce(
-                    func.sum(case((self.model.status != "success", 1), else_=0)), 0
+                    func.sum(
+                        case(
+                            (self.model.status.in_(TOOL_CALL_SUCCESS_STATUSES), 0),
+                            else_=1,
+                        )
+                    ),
+                    0,
                 ).label("failure_count"),
                 func.max(self.model.timestamp).label("last_activity_at"),
             )
@@ -646,10 +675,22 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             self.model.tool_name,
             func.count(self.model.id).label("call_count"),
             func.coalesce(
-                func.sum(case((self.model.status == "success", 1), else_=0)), 0
+                func.sum(
+                    case(
+                        (self.model.status.in_(TOOL_CALL_SUCCESS_STATUSES), 1),
+                        else_=0,
+                    )
+                ),
+                0,
             ).label("success_count"),
             func.coalesce(
-                func.sum(case((self.model.status != "success", 1), else_=0)), 0
+                func.sum(
+                    case(
+                        (self.model.status.in_(TOOL_CALL_SUCCESS_STATUSES), 0),
+                        else_=1,
+                    )
+                ),
+                0,
             ).label("failure_count"),
             func.max(self.model.timestamp).label("last_activity_at"),
         ).filter(
@@ -802,7 +843,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             .filter(
                 self.model.flow_execution_id == flow_execution_id,
                 self.model.activity_type == "tool_call",
-                self.model.status == "success",
+                self.model.status.in_(TOOL_CALL_SUCCESS_STATUSES),
             )
             .order_by(self.model.timestamp.desc())
             .limit(limit)

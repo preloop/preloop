@@ -43,6 +43,52 @@ def _tool_error_result(text: str) -> ToolResult:
     )
 
 
+# A usage row is a timeline entry, not an audit log of contents: keep the
+# per-key argument sizes bounded and never store the values themselves.
+MAX_ARGUMENT_SUMMARY_KEYS = 50
+MAX_ARGUMENT_KEY_LENGTH = 120
+MAX_TOOL_CALL_SUMMARY_LENGTH = 500
+
+# Outcome vocabulary for one governed tool call. ``succeeded`` is the current
+# spelling; ``success`` is kept as a success for rows written before the
+# outcome was split into succeeded/refused/failed.
+TOOL_CALL_STATUS_SUCCEEDED = "succeeded"
+TOOL_CALL_STATUS_REFUSED = "refused"
+TOOL_CALL_STATUS_FAILED = "failed"
+
+
+def _summarize_arguments(arguments: Optional[dict[str, Any]]) -> dict[str, int]:
+    """Return a bounded ``{top-level key: byte size}`` map.
+
+    The usage row must let an operator see that a call was oversized or
+    malformed without retaining the payload, so only the names of the
+    top-level keys and the serialized size of each value are recorded. The
+    number of keys and the key length are capped; any overflow is folded into
+    an ``"..."`` entry carrying the count of keys that were omitted.
+    """
+    if not arguments:
+        return {}
+    summary: dict[str, int] = {}
+    items = list(arguments.items())
+    for key, value in items[:MAX_ARGUMENT_SUMMARY_KEYS]:
+        try:
+            size = len(json.dumps(value, default=str))
+        except (TypeError, ValueError):
+            size = len(str(value))
+        summary[str(key)[:MAX_ARGUMENT_KEY_LENGTH]] = size
+    overflow = len(items) - MAX_ARGUMENT_SUMMARY_KEYS
+    if overflow > 0:
+        summary["..."] = overflow
+    return summary
+
+
+def _bounded_summary(text: Optional[str]) -> Optional[str]:
+    """Keep a usage row's error/result string small enough for a timeline."""
+    if not text:
+        return None
+    return str(text)[:MAX_TOOL_CALL_SUMMARY_LENGTH]
+
+
 def _configs_visible_to_caller(
     configs: Iterable[Any], caller_managed_agent_id: Optional[str]
 ) -> List[Any]:
@@ -1295,6 +1341,33 @@ async def {internal_name}({params_str}) -> str:
         # Get current user context
         user_context = self._get_current_user_context()
 
+        # Generate the correlation id before any check that can refuse the
+        # call. Every outcome of this invocation — including a refusal that
+        # never reaches the tool — must share one id so the usage row and the
+        # audit trail can be joined.
+        correlation_id = str(uuid.uuid4())
+        _correlation_id_var.set(correlation_id)
+
+        async def _refuse(text: str) -> ToolResult:
+            """Record a refused call as a usage row, then return its error."""
+            if user_context is not None:
+                try:
+                    self._persist_tool_call_activity(
+                        user_context,
+                        tool_name=name,
+                        client_tool_name=name,
+                        status=TOOL_CALL_STATUS_REFUSED,
+                        summary=text,
+                        arguments=arguments,
+                        correlation_id=correlation_id,
+                    )
+                except Exception as exc:  # pragma: no cover - best effort only
+                    logger.debug(
+                        "Failed to persist refused tool call '%s': %s", name, exc
+                    )
+            _correlation_id_var.set(None)
+            return _tool_error_result(text)
+
         # ── Account kill switch (#157) ───────────────────────────────────
         # One account-scoped control that halts ALL tool calls. Runs before
         # every other per-call check (justification, enablement, policy) so
@@ -1326,7 +1399,7 @@ async def {internal_name}({params_str}) -> str:
                     f"Kill-switch check failed for tool '{name}': {e}. "
                     f"Blocking tool call (fail closed)."
                 )
-                return _tool_error_result(
+                return await _refuse(
                     "Error: Unable to verify account halt state "
                     f"for tool '{name}'. Please try again."
                 )
@@ -1347,7 +1420,7 @@ async def {internal_name}({params_str}) -> str:
                             "message": kill_switch_service.TOOL_DENIAL_MESSAGE,
                         }
                     )
-                return _tool_error_result(denied_text)
+                return await _refuse(denied_text)
 
         # ── Server-side justification enforcement ─────────────────────────
         # Schema injection alone isn't sufficient — clients can skip
@@ -1435,9 +1508,9 @@ async def {internal_name}({params_str}) -> str:
                                     ),
                                 }
                             )
-                        return _tool_error_result(denied_text)
+                        return await _refuse(denied_text)
                 if requires_justification and not justification:
-                    return _tool_error_result(
+                    return await _refuse(
                         f"Justification required: Tool '{name}' requires a "
                         f"'justification' parameter explaining why this tool "
                         f"is being called."
@@ -1450,7 +1523,7 @@ async def {internal_name}({params_str}) -> str:
                     f"Justification enforcement check failed for '{name}': {e}. "
                     f"Blocking tool call (fail closed)."
                 )
-                return _tool_error_result(
+                return await _refuse(
                     f"Error: Unable to verify justification requirements "
                     f"for tool '{name}'. Please try again."
                 )
@@ -1466,11 +1539,7 @@ async def {internal_name}({params_str}) -> str:
                 f"User {user_context.username} attempted to call "
                 f"unauthorized tool: {name}"
             )
-            return _tool_error_result(f"Access denied: Tool '{name}' is not available")
-
-        # ── Generate correlation_id for audit grouping ──────────────────
-        correlation_id = str(uuid.uuid4())
-        _correlation_id_var.set(correlation_id)
+            return await _refuse(f"Access denied: Tool '{name}' is not available")
 
         # ── Evaluate access rules (ToolAccessRule) ──────────────────────
         # This is the central enforcement point for all tool calls.
@@ -1519,7 +1588,7 @@ async def {internal_name}({params_str}) -> str:
 
             if action == "deny":
                 denial_msg = reason or "Tool call denied by access rule"
-                return _tool_error_result(f"Access denied: {denial_msg}")
+                return await _refuse(f"Access denied: {denial_msg}")
 
             if action == "require_approval":
                 # Carry the matched rule through to require_approval() so it
@@ -1546,7 +1615,7 @@ async def {internal_name}({params_str}) -> str:
                         "approval workflow is configured (rule, tool config, "
                         "and account default are all unset). Blocking the call."
                     )
-                    return _tool_error_result(
+                    return await _refuse(
                         f"Tool '{name}' requires approval but no "
                         "approval workflow is configured for this "
                         "account. Configure an approval workflow "
@@ -1569,7 +1638,7 @@ async def {internal_name}({params_str}) -> str:
             # error to the agent.
             _rule_workflow_id_var.set(None)
             _rule_context_var.set(None)
-            return _tool_error_result(
+            return await _refuse(
                 f"Access denied: policy evaluation for '{name}' "
                 "failed and the request was blocked as a safety "
                 "measure. Please retry; if this persists, contact "
@@ -1652,161 +1721,29 @@ async def {internal_name}({params_str}) -> str:
                 logger.debug(f"Failed to audit tool execution: {audit_err}")
 
             # ── Runtime session activity persistence ──────────────────────
-            try:
-                if user_context.runtime_session_id:
-                    from preloop.models.crud import crud_runtime_session_activity
-                    from preloop.services.account_realtime import (
-                        ACCOUNT_TOPIC_AUDIT,
-                        ACCOUNT_TOPIC_GATEWAY_ACTIVITY,
-                        ACCOUNT_TOPIC_MANAGED_AGENTS,
-                        ACCOUNT_TOPIC_RUNTIME_SESSIONS,
-                        build_account_event,
-                        emit_account_event,
-                    )
-                    from preloop.utils.redaction import redact_dict
-
-                    activity_status = "failed" if exec_status == "failed" else "success"
-                    server_name = self._proxied_tool_server_names.get(
-                        client_tool_name, "preloop-mcp"
-                    )
-                    db = next(get_db())
-                    try:
-                        activity = crud_runtime_session_activity.log_tool_call(
-                            db,
-                            account_id=user_context.account_id,
-                            runtime_session_id=user_context.runtime_session_id,
-                            flow_execution_id=user_context.flow_execution_id,
-                            api_key_id=user_context.api_key_id,
-                            server_name=server_name,
-                            tool_name=name,
-                            status=activity_status,
-                            summary=exec_error,
-                            metadata={
-                                "correlation_id": correlation_id,
-                                "arguments": redact_dict(arguments),
-                            },
-                        )
-                        activity_timestamp = (
-                            activity.timestamp.isoformat()
-                            if activity.timestamp
-                            else None
-                        )
-                        managed_agent = None
-                        if (
-                            user_context.runtime_principal_type
-                            and user_context.runtime_principal_id
-                        ):
-                            from preloop.models.crud import crud_managed_agent
-
-                            managed_agent = crud_managed_agent.get_by_source(
-                                db,
-                                account_id=user_context.account_id,
-                                session_source_type=user_context.runtime_principal_type,
-                                session_source_id=user_context.runtime_principal_id,
-                            )
-                        emit_account_event(
-                            build_account_event(
-                                account_id=user_context.account_id,
-                                topic=ACCOUNT_TOPIC_RUNTIME_SESSIONS,
-                                event_type="runtime_session_updated",
-                                payload={
-                                    "runtime_session_id": str(
-                                        user_context.runtime_session_id
-                                    ),
-                                    "session_source_type": user_context.runtime_principal_type,
-                                    "session_source_id": user_context.runtime_principal_id,
-                                    "session_reference": user_context.runtime_principal_name,
-                                    "runtime_principal_type": user_context.runtime_principal_type,
-                                    "runtime_principal_id": user_context.runtime_principal_id,
-                                    "runtime_principal_name": user_context.runtime_principal_name,
-                                    "last_activity_at": activity_timestamp,
-                                    "tool_name": name,
-                                    "server_name": server_name,
-                                    "status": activity_status,
-                                },
-                                runtime_session_id=user_context.runtime_session_id,
-                                execution_id=user_context.flow_execution_id,
-                            )
-                        )
-                        emit_account_event(
-                            build_account_event(
-                                account_id=user_context.account_id,
-                                topic=ACCOUNT_TOPIC_GATEWAY_ACTIVITY,
-                                event_type="mcp_call",
-                                payload={
-                                    "runtime_session_id": str(
-                                        user_context.runtime_session_id
-                                    ),
-                                    "runtime_principal_type": user_context.runtime_principal_type,
-                                    "runtime_principal_id": user_context.runtime_principal_id,
-                                    "runtime_principal_name": user_context.runtime_principal_name,
-                                    "managed_agent_id": str(managed_agent.id)
-                                    if managed_agent is not None
-                                    else user_context.managed_agent_id,
-                                    "api_key_id": user_context.api_key_id,
-                                    "api_key_name": user_context.api_key_name,
-                                    "server_name": server_name,
-                                    "tool_name": name,
-                                    "status": activity_status,
-                                    "summary": exec_error,
-                                    "correlation_id": correlation_id,
-                                    "timestamp": activity_timestamp,
-                                },
-                                runtime_session_id=user_context.runtime_session_id,
-                                execution_id=user_context.flow_execution_id,
-                            )
-                        )
-                        emit_account_event(
-                            build_account_event(
-                                account_id=user_context.account_id,
-                                topic=ACCOUNT_TOPIC_AUDIT,
-                                event_type="audit_event",
-                                payload={
-                                    "action": "tool_call",
-                                    "runtime_session_id": str(
-                                        user_context.runtime_session_id
-                                    ),
-                                    "runtime_principal_type": user_context.runtime_principal_type,
-                                    "runtime_principal_id": user_context.runtime_principal_id,
-                                    "runtime_principal_name": user_context.runtime_principal_name,
-                                    "tool_name": name,
-                                    "server_name": server_name,
-                                    "status": activity_status,
-                                    "correlation_id": correlation_id,
-                                },
-                                runtime_session_id=user_context.runtime_session_id,
-                                execution_id=user_context.flow_execution_id,
-                            )
-                        )
-                        if managed_agent is not None:
-                            emit_account_event(
-                                build_account_event(
-                                    account_id=user_context.account_id,
-                                    topic=ACCOUNT_TOPIC_MANAGED_AGENTS,
-                                    event_type="managed_agent_updated",
-                                    payload={
-                                        "agent_id": str(managed_agent.id),
-                                        "runtime_session_id": str(
-                                            user_context.runtime_session_id
-                                        ),
-                                        "display_name": user_context.runtime_principal_name,
-                                        "session_source_type": user_context.runtime_principal_type,
-                                        "session_source_id": user_context.runtime_principal_id,
-                                        "last_seen_at": activity_timestamp,
-                                        "tool_name": name,
-                                        "server_name": server_name,
-                                        "status": activity_status,
-                                    },
-                                    runtime_session_id=user_context.runtime_session_id,
-                                    execution_id=user_context.flow_execution_id,
-                                )
-                            )
-                    finally:
-                        db.close()
-            except Exception as activity_err:
-                logger.debug(
-                    f"Failed to persist runtime session activity: {activity_err}"
+            # One usage row per governed call, carrying the outcome
+            # (succeeded/refused/failed) and a bounded argument summary, so the
+            # execution timeline can tell a refusal from a success.
+            if user_context is not None:
+                activity_status = (
+                    TOOL_CALL_STATUS_FAILED
+                    if exec_status == "failed"
+                    else TOOL_CALL_STATUS_SUCCEEDED
                 )
+                try:
+                    self._persist_tool_call_activity(
+                        user_context,
+                        tool_name=name,
+                        client_tool_name=client_tool_name,
+                        status=activity_status,
+                        summary=exec_error,
+                        arguments=arguments,
+                        correlation_id=correlation_id,
+                    )
+                except Exception as activity_err:
+                    logger.debug(
+                        f"Failed to persist runtime session activity: {activity_err}"
+                    )
 
             try:
                 from preloop.services.otel_export import emit_tool_call
@@ -1825,6 +1762,170 @@ async def {internal_name}({params_str}) -> str:
                 logger.debug("OTLP tool export failed", exc_info=True)
 
         return result
+
+    def _persist_tool_call_activity(
+        self,
+        user_context: UserContext,
+        *,
+        tool_name: str,
+        client_tool_name: str,
+        status: str,
+        summary: Optional[str],
+        arguments: Optional[dict[str, Any]],
+        correlation_id: Optional[str],
+    ) -> None:
+        """Write one governed tool-call outcome and fan it out to live streams.
+
+        This is the single place a usage row is created for a governed call,
+        whether it succeeded, was refused before execution, or failed in
+        transport. The ``arguments`` payload is reduced to a bounded summary
+        (key names and sizes) so the row can flag an oversized or malformed
+        call without retaining customer data.
+        """
+        if not getattr(user_context, "runtime_session_id", None):
+            return
+
+        from preloop.models.crud import crud_runtime_session_activity
+        from preloop.services.account_realtime import (
+            ACCOUNT_TOPIC_AUDIT,
+            ACCOUNT_TOPIC_GATEWAY_ACTIVITY,
+            ACCOUNT_TOPIC_MANAGED_AGENTS,
+            ACCOUNT_TOPIC_RUNTIME_SESSIONS,
+            build_account_event,
+            emit_account_event,
+        )
+
+        server_name = self._proxied_tool_server_names.get(
+            client_tool_name, "preloop-mcp"
+        )
+        bounded_summary = _bounded_summary(summary)
+        arguments_summary = _summarize_arguments(arguments)
+        db = next(get_db())
+        try:
+            activity = crud_runtime_session_activity.log_tool_call(
+                db,
+                account_id=user_context.account_id,
+                runtime_session_id=user_context.runtime_session_id,
+                flow_execution_id=user_context.flow_execution_id,
+                api_key_id=user_context.api_key_id,
+                server_name=server_name,
+                tool_name=tool_name,
+                status=status,
+                summary=bounded_summary,
+                metadata={
+                    "correlation_id": correlation_id,
+                    # Key names and sizes only: the usage timeline must never
+                    # carry the argument payload.
+                    "arguments_summary": arguments_summary,
+                },
+            )
+            activity_timestamp = (
+                activity.timestamp.isoformat() if activity.timestamp else None
+            )
+            managed_agent = None
+            if (
+                user_context.runtime_principal_type
+                and user_context.runtime_principal_id
+            ):
+                from preloop.models.crud import crud_managed_agent
+
+                managed_agent = crud_managed_agent.get_by_source(
+                    db,
+                    account_id=user_context.account_id,
+                    session_source_type=user_context.runtime_principal_type,
+                    session_source_id=user_context.runtime_principal_id,
+                )
+            emit_account_event(
+                build_account_event(
+                    account_id=user_context.account_id,
+                    topic=ACCOUNT_TOPIC_RUNTIME_SESSIONS,
+                    event_type="runtime_session_updated",
+                    payload={
+                        "runtime_session_id": str(user_context.runtime_session_id),
+                        "session_source_type": user_context.runtime_principal_type,
+                        "session_source_id": user_context.runtime_principal_id,
+                        "session_reference": user_context.runtime_principal_name,
+                        "runtime_principal_type": user_context.runtime_principal_type,
+                        "runtime_principal_id": user_context.runtime_principal_id,
+                        "runtime_principal_name": user_context.runtime_principal_name,
+                        "last_activity_at": activity_timestamp,
+                        "tool_name": tool_name,
+                        "server_name": server_name,
+                        "status": status,
+                    },
+                    runtime_session_id=user_context.runtime_session_id,
+                    execution_id=user_context.flow_execution_id,
+                )
+            )
+            emit_account_event(
+                build_account_event(
+                    account_id=user_context.account_id,
+                    topic=ACCOUNT_TOPIC_GATEWAY_ACTIVITY,
+                    event_type="mcp_call",
+                    payload={
+                        "runtime_session_id": str(user_context.runtime_session_id),
+                        "runtime_principal_type": user_context.runtime_principal_type,
+                        "runtime_principal_id": user_context.runtime_principal_id,
+                        "runtime_principal_name": user_context.runtime_principal_name,
+                        "managed_agent_id": str(managed_agent.id)
+                        if managed_agent is not None
+                        else user_context.managed_agent_id,
+                        "api_key_id": user_context.api_key_id,
+                        "api_key_name": user_context.api_key_name,
+                        "server_name": server_name,
+                        "tool_name": tool_name,
+                        "status": status,
+                        "summary": bounded_summary,
+                        "correlation_id": correlation_id,
+                        "timestamp": activity_timestamp,
+                    },
+                    runtime_session_id=user_context.runtime_session_id,
+                    execution_id=user_context.flow_execution_id,
+                )
+            )
+            emit_account_event(
+                build_account_event(
+                    account_id=user_context.account_id,
+                    topic=ACCOUNT_TOPIC_AUDIT,
+                    event_type="audit_event",
+                    payload={
+                        "action": "tool_call",
+                        "runtime_session_id": str(user_context.runtime_session_id),
+                        "runtime_principal_type": user_context.runtime_principal_type,
+                        "runtime_principal_id": user_context.runtime_principal_id,
+                        "runtime_principal_name": user_context.runtime_principal_name,
+                        "tool_name": tool_name,
+                        "server_name": server_name,
+                        "status": status,
+                        "correlation_id": correlation_id,
+                    },
+                    runtime_session_id=user_context.runtime_session_id,
+                    execution_id=user_context.flow_execution_id,
+                )
+            )
+            if managed_agent is not None:
+                emit_account_event(
+                    build_account_event(
+                        account_id=user_context.account_id,
+                        topic=ACCOUNT_TOPIC_MANAGED_AGENTS,
+                        event_type="managed_agent_updated",
+                        payload={
+                            "agent_id": str(managed_agent.id),
+                            "runtime_session_id": str(user_context.runtime_session_id),
+                            "display_name": user_context.runtime_principal_name,
+                            "session_source_type": user_context.runtime_principal_type,
+                            "session_source_id": user_context.runtime_principal_id,
+                            "last_seen_at": activity_timestamp,
+                            "tool_name": tool_name,
+                            "server_name": server_name,
+                            "status": status,
+                        },
+                        runtime_session_id=user_context.runtime_session_id,
+                        execution_id=user_context.flow_execution_id,
+                    )
+                )
+        finally:
+            db.close()
 
     async def _halt_dispatch_denial(self, account_id: str) -> Optional[str]:
         """Check fresh halt state after waits and fail closed before dispatch."""

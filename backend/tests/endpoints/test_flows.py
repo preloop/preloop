@@ -954,6 +954,11 @@ async def test_read_flow_execution(mock_account: Account, mocker: MockerFixture)
         "preloop.api.endpoints.flows.crud_flow_execution",
         new_callable=MagicMock,
     )
+    mock_crud_activity = mocker.patch(
+        "preloop.api.endpoints.flows.crud_runtime_session_activity",
+        new_callable=MagicMock,
+    )
+    mock_crud_activity.list_tool_calls_for_flow_execution.return_value = []
 
     execution = MagicMock()
     execution.id = execution_id
@@ -1018,6 +1023,119 @@ async def test_read_flow_execution_hydrates_mcp_usage_logs_from_activity(
     assert execution.mcp_usage_logs is not None
     assert len(execution.mcp_usage_logs) == 1
     assert execution.mcp_usage_logs[0]["tool_name"] == "t"
+
+
+@pytest.mark.asyncio
+async def test_read_flow_execution_surfaces_recorded_outcome_over_detected(
+    mock_account: Account, mocker: MockerFixture
+):
+    """A refused call keeps its refusal string, not a bare "detected" (#793).
+
+    Both the parsed marker and the gateway's recorded refusal exist for the
+    same call; the API must show the outcome and never the argument payload.
+    """
+    execution_id = uuid.uuid4()
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    mock_crud_activity = mocker.patch(
+        "preloop.api.endpoints.flows.crud_runtime_session_activity",
+        new_callable=MagicMock,
+    )
+
+    refusal = "Unsupported item key 'severity'; allowed keys are id, label."
+    execution = MagicMock()
+    execution.id = execution_id
+    execution.mcp_usage_logs = [
+        {
+            "timestamp": "2026-09-18T10:18:00+00:00",
+            "tool_name": "ask_user",
+            "server_name": "preloop",
+            "status": "detected",
+            "arguments": {},
+            "error": None,
+            "result_summary": None,
+        }
+    ]
+    mock_crud_flow_execution.get.return_value = execution
+
+    row = MagicMock()
+    row.timestamp = datetime(2026, 9, 18, 10, 18, tzinfo=ZoneInfo("UTC"))
+    row.tool_name = "ask_user"
+    row.server_name = "preloop-mcp"
+    row.status = "refused"
+    row.summary = refusal
+    row.metadata_ = {
+        "correlation_id": "corr-793",
+        "arguments_summary": {"items": 42},
+    }
+    mock_crud_activity.list_tool_calls_for_flow_execution.return_value = [row]
+
+    result = await maybe_await(
+        flows.read_flow_execution(
+            db=MagicMock(), execution_id=execution_id, current_user=mock_account
+        )
+    )
+
+    assert result.mcp_usage_logs == [
+        {
+            "timestamp": "2026-09-18T10:18:00+00:00",
+            "tool_name": "ask_user",
+            "server_name": "preloop-mcp",
+            "status": "refused",
+            "summary": refusal,
+            "result_summary": None,
+            "error": refusal,
+            "correlation_id": "corr-793",
+            "arguments_summary": {"items": 42},
+        }
+    ]
+    # The raw payload key never reaches the usage row.
+    assert "arguments" not in result.mcp_usage_logs[0]
+
+
+@pytest.mark.asyncio
+async def test_read_flow_execution_marks_a_successful_outcome(
+    mock_account: Account, mocker: MockerFixture
+):
+    """A successful call is one row whose summary is a result, not an error."""
+    execution_id = uuid.uuid4()
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    mock_crud_activity = mocker.patch(
+        "preloop.api.endpoints.flows.crud_runtime_session_activity",
+        new_callable=MagicMock,
+    )
+
+    execution = MagicMock()
+    execution.id = execution_id
+    execution.mcp_usage_logs = None
+    mock_crud_flow_execution.get.return_value = execution
+
+    row = MagicMock()
+    row.timestamp = datetime(2026, 9, 18, 10, 19, tzinfo=ZoneInfo("UTC"))
+    row.tool_name = "get_issue"
+    row.server_name = "preloop-mcp"
+    row.status = "succeeded"
+    row.summary = None
+    row.metadata_ = {"arguments_summary": {"issue": 7}}
+    mock_crud_activity.list_tool_calls_for_flow_execution.return_value = [row]
+
+    result = await maybe_await(
+        flows.read_flow_execution(
+            db=MagicMock(), execution_id=execution_id, current_user=mock_account
+        )
+    )
+
+    assert len(result.mcp_usage_logs) == 1
+    entry = result.mcp_usage_logs[0]
+    assert entry["status"] == "succeeded"
+    assert entry["error"] is None
+    assert entry["result_summary"] is None
+    assert entry["arguments_summary"] == {"issue": 7}
 
 
 @pytest.mark.asyncio

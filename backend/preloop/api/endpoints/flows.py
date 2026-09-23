@@ -896,24 +896,53 @@ def read_flow_execution(
     if not execution:
         raise HTTPException(status_code=404, detail="Flow execution not found")
 
-    if not execution.mcp_usage_logs:
-        rows = crud_runtime_session_activity.list_tool_calls_for_flow_execution(
-            db,
-            account_id=current_user.account_id,
-            flow_execution_id=execution.id,
+    # The gateway's recorded activity is authoritative for the outcome of a
+    # governed call (succeeded/refused/failed and the refusal string), so it is
+    # preferred over the parsed "detected" markers. Parsed rows whose tool was
+    # not recorded by the gateway (for example an ungoverned MCP server) are
+    # kept so the timeline does not lose calls.
+    activity_rows = crud_runtime_session_activity.list_tool_calls_for_flow_execution(
+        db,
+        account_id=current_user.account_id,
+        flow_execution_id=execution.id,
+    )
+    if activity_rows:
+
+        def _activity_log(row: Any) -> Dict[str, Any]:
+            # Present the outcome with the same keys the parsed rows use, so
+            # the console shows a refusal string where it already shows an
+            # error, and never leaks the raw argument payload.
+            succeeded = str(row.status or "").startswith("succ")
+            return {
+                "timestamp": row.timestamp.isoformat() if row.timestamp else None,
+                "tool_name": row.tool_name,
+                "server_name": row.server_name,
+                "status": row.status,
+                "summary": row.summary,
+                "result_summary": row.summary if succeeded else None,
+                "error": None if succeeded else row.summary,
+                "correlation_id": (row.metadata_ or {}).get("correlation_id"),
+                "arguments_summary": (row.metadata_ or {}).get("arguments_summary"),
+            }
+
+        activity_logs = [_activity_log(row) for row in activity_rows]
+        recorded_tools = {
+            log.get("tool_name") for log in activity_logs if log.get("tool_name")
+        }
+        existing_logs: List[Dict[str, Any]] = (
+            execution.mcp_usage_logs
+            if isinstance(execution.mcp_usage_logs, list)
+            else []
         )
-        if rows:
-            execution.mcp_usage_logs = [
-                {
-                    "timestamp": row.timestamp.isoformat() if row.timestamp else None,
-                    "tool_name": row.tool_name,
-                    "server_name": row.server_name,
-                    "status": row.status,
-                    "summary": row.summary,
-                    **(row.metadata_ or {}),
-                }
-                for row in rows
-            ]
+        parsed_logs = [
+            log
+            for log in existing_logs
+            if not (isinstance(log, dict) and log.get("tool_name") in recorded_tools)
+        ]
+        execution.mcp_usage_logs = sorted(
+            activity_logs + parsed_logs,
+            key=lambda log: log.get("timestamp") or "",
+        )
 
     # The model that ran this execution, from the same gateway usage the list
     # projects, so the detail page and the table never disagree.

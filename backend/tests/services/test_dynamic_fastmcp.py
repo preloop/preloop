@@ -2099,3 +2099,179 @@ class TestSendNoteToolExposure:
         assert isinstance(result, ToolResult)
         assert result.is_error
         assert "disabled" in result.content[0].text.lower()
+
+
+class TestToolCallUsageOutcome:
+    """A governed call records its outcome, not a bare ``detected`` (#793).
+
+    ``GET /flows/executions/{id}`` must let an operator tell a refused call
+    from a successful one, and the usage row must never retain the argument
+    payload.
+    """
+
+    def _context(self) -> UserContext:
+        return UserContext(
+            user_id=str(uuid4()),
+            account_id=str(uuid4()),
+            username="testuser",
+            has_tracker=True,
+            enabled_default_tools=[],
+            enabled_proxied_tools=[],
+            runtime_session_id=str(uuid4()),
+            flow_execution_id=str(uuid4()),
+        )
+
+    def test_argument_summary_records_names_and_sizes_only(self):
+        from preloop.services.dynamic_fastmcp import _summarize_arguments
+
+        summary = _summarize_arguments(
+            {"title": "a customer value", "api_key": "sk-live-secret"}
+        )
+
+        assert set(summary) == {"title", "api_key"}
+        assert summary["title"] == len('"a customer value"')
+        assert "a customer value" not in str(summary)
+        assert "sk-live-secret" not in str(summary)
+
+    def test_argument_summary_is_bounded(self):
+        from preloop.services.dynamic_fastmcp import (
+            MAX_ARGUMENT_SUMMARY_KEYS,
+            _summarize_arguments,
+        )
+
+        summary = _summarize_arguments(
+            {f"key{index}": index for index in range(MAX_ARGUMENT_SUMMARY_KEYS + 3)}
+        )
+
+        assert summary["..."] == 3
+        assert (
+            len([key for key in summary if key != "..."]) == MAX_ARGUMENT_SUMMARY_KEYS
+        )
+
+    def _persist(
+        self, status: str, summary: str | None, arguments: dict | None
+    ) -> dict:
+        from preloop.models.crud import crud_runtime_session_activity
+        from preloop.services.dynamic_fastmcp import DynamicFastMCP
+
+        mcp = DynamicFastMCP("test-mcp")
+        activity = MagicMock()
+        activity.timestamp = None
+        with (
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch.object(
+                crud_runtime_session_activity, "log_tool_call", return_value=activity
+            ) as log_call,
+            patch("preloop.services.account_realtime.emit_account_event"),
+        ):
+            mock_get_db.side_effect = lambda: iter([MagicMock()])
+            mcp._persist_tool_call_activity(
+                self._context(),
+                tool_name="ask_user",
+                client_tool_name="ask_user",
+                status=status,
+                summary=summary,
+                arguments=arguments,
+                correlation_id="corr-793",
+            )
+        return log_call.call_args.kwargs
+
+    def test_succeeded_call_records_one_row_without_argument_values(self):
+        kwargs = self._persist(
+            "succeeded",
+            None,
+            {"question": "which project should I review?", "items": []},
+        )
+
+        assert kwargs["status"] == "succeeded"
+        assert kwargs["tool_name"] == "ask_user"
+        metadata = kwargs["metadata"]
+        assert metadata["correlation_id"] == "corr-793"
+        assert set(metadata["arguments_summary"]) == {"question", "items"}
+        assert "arguments" not in metadata
+        assert "which project should I review?" not in str(metadata)
+
+    def test_refused_call_records_the_refusal_string(self):
+        refusal = "Unsupported item key 'severity'; allowed keys are id, label."
+        kwargs = self._persist("refused", refusal, {"items": [{"severity": "high"}]})
+
+        assert kwargs["status"] == "refused"
+        assert kwargs["summary"] == refusal
+        assert "items" in kwargs["metadata"]["arguments_summary"]
+
+    def test_transport_failure_records_the_error(self):
+        kwargs = self._persist("failed", "connection closed", {"title": "x"})
+
+        assert kwargs["status"] == "failed"
+        assert kwargs["summary"] == "connection closed"
+
+    async def test_call_tool_refusal_is_recorded_as_refused(
+        self, dynamic_mcp, user_context
+    ):
+        """A disabled builtin call is a refusal, not an invisible no-op."""
+        dynamic_mcp._user_context_provider = lambda: user_context
+        disabled_config = MagicMock()
+        disabled_config.tool_name = "get_issue"
+        disabled_config.tool_source = "builtin"
+        disabled_config.is_enabled = False
+        disabled_config.justification_mode = None
+        disabled_config.managed_agent_id = None
+
+        with (
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch(
+                "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                return_value=[disabled_config],
+            ),
+            patch.object(dynamic_mcp, "_persist_tool_call_activity") as persist,
+        ):
+            mock_get_db.side_effect = lambda: iter([MagicMock()])
+            result = await dynamic_mcp.call_tool("get_issue", {"issue": "ABC-1"})
+
+        assert result.is_error
+        persist.assert_called_once()
+        kwargs = persist.call_args.kwargs
+        assert kwargs["status"] == "refused"
+        assert "disabled" in kwargs["summary"].lower()
+
+    async def test_call_tool_transport_failure_is_recorded_as_failed(
+        self, dynamic_mcp, user_context
+    ):
+        """A call that dies with the transport leaves a failed row."""
+        dynamic_mcp._user_context_provider = lambda: user_context
+        available_tools = [Tool(name="get_issue", description="x", parameters={})]
+        async_db = MagicMock()
+        async_db.__aenter__ = AsyncMock(return_value=MagicMock())
+        async_db.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch.object(dynamic_mcp, "list_tools", return_value=available_tools),
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch(
+                "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                return_value=[],
+            ),
+            patch(
+                "preloop.models.db.session.get_async_db_session",
+                new=MagicMock(return_value=async_db),
+            ),
+            patch(
+                "preloop.services.policy_evaluator.evaluate_policy_async",
+                new=AsyncMock(return_value=("allow", None, None)),
+            ),
+            patch.object(dynamic_mcp, "_persist_tool_call_activity") as persist,
+            patch.object(
+                dynamic_mcp.__class__.__bases__[0],
+                "call_tool",
+                new=AsyncMock(side_effect=RuntimeError("connection closed")),
+                create=True,
+            ),
+        ):
+            mock_get_db.side_effect = lambda: iter([MagicMock()])
+            with pytest.raises(RuntimeError, match="connection closed"):
+                await dynamic_mcp.call_tool("get_issue", {"issue": "ABC-1"})
+
+        persist.assert_called_once()
+        kwargs = persist.call_args.kwargs
+        assert kwargs["status"] == "failed"
+        assert kwargs["summary"] == "connection closed"

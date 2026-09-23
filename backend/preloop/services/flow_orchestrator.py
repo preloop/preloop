@@ -2882,7 +2882,9 @@ class FlowExecutionOrchestrator:
                     {
                         "server_name": activity.server_name,
                         "tool_name": activity.tool_name,
-                        "arguments": metadata.get("arguments"),
+                        # Key names and sizes only; the payload is never
+                        # persisted on the activity row (issue #793).
+                        "arguments_summary": metadata.get("arguments_summary"),
                     },
                     sort_keys=True,
                     default=str,
