@@ -78,6 +78,19 @@ describe('PreloopFlowForm PR feedback controls', () => {
     });
   });
 
+  it('leaves a saved empty reviewer list empty when follow-up is re-enabled', async () => {
+    const element = await mount({
+      feedback: { enabled: false, trusted_reviewer_ids: [] },
+    });
+    await toggle(element, true);
+    expect(control(element, 'trusted_reviewer_ids').value).to.equal('');
+    const event = await submit(element);
+    expect(
+      event.firstCall.args[0].detail.flow.agent_config.feedback
+        .trusted_reviewer_ids
+    ).to.deep.equal([]);
+  });
+
   it('prefills the Preloop app slug when follow-up is enabled', async () => {
     const element = await mount();
     await toggle(element, true);

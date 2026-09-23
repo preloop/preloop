@@ -196,7 +196,10 @@ def resolve_native_checkpoint(
     # before the published branch could be used. A later repair still requires
     # its own checkpoint.
     session = prior.cli_session if isinstance(prior.cli_session, dict) else {}
-    has_session = bool(session.get("session_id"))
+    # An artifact without a session id is a broken identity, not an absent
+    # session. Only a publisher that stored neither may use the published
+    # branch on its first repair.
+    has_session = bool(session.get("session_id") or session.get("artifact_reference"))
     if source_cold_handoff(thread, prior.id) or (
         not has_session and int(thread.turns) <= 1
     ):

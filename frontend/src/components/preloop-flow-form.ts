@@ -1508,12 +1508,11 @@ export class PreloopFlowForm extends LitElement {
       for (const [key, limit] of Object.entries(FEEDBACK_LIMITS)) {
         if (!(key in feedback)) feedback[key] = limit.default;
       }
-      const reviewers = feedback.trusted_reviewer_ids;
-      const reviewersEmpty =
-        reviewers == null ||
-        reviewers === '' ||
-        (Array.isArray(reviewers) && reviewers.length === 0);
-      if (reviewersEmpty) feedback.trusted_reviewer_ids = ['preloop'];
+      // A missing list is a new opt-in. A saved empty list means every bot
+      // stays ignored, including after the toggle is switched off and on.
+      if (!('trusted_reviewer_ids' in feedback)) {
+        feedback.trusted_reviewer_ids = ['preloop'];
+      }
     }
     this.flow = {
       ...this.flow,
