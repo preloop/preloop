@@ -976,6 +976,15 @@ def test_first_repair_without_a_session_uses_the_published_branch(
             execution_id=repair.id,
             resume=failed_resume,
         ) == {"cold_handoff_authorized": True}
+        failed.status = "TIMED_OUT"
+        db.commit()
+        assert resolve_native_checkpoint(
+            db,
+            account_id=thread.account_id,
+            flow_id=thread.flow_id,
+            execution_id=repair.id,
+            resume=failed_resume,
+        ) == {"cold_handoff_authorized": True}
         failed.cli_session = {
             "agent_type": "codex",
             "session_id": str(uuid.uuid4()),
@@ -992,8 +1001,9 @@ def test_first_repair_without_a_session_uses_the_published_branch(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["FAILED", "TIMED_OUT"])
 async def test_failed_launch_without_a_session_retries_the_published_branch(
-    database: Engine, monkeypatch: pytest.MonkeyPatch
+    database: Engine, monkeypatch: pytest.MonkeyPatch, status: str
 ) -> None:
     """A private-runner launch that dies before a session still owes its review.
 
@@ -1026,7 +1036,7 @@ async def test_failed_launch_without_a_session_retries_the_published_branch(
             now=NOW,
         )
         assert failed is not None
-        failed.status = "FAILED"
+        failed.status = status
         failed.cli_session = None
         db.commit()
         provider = SimpleNamespace(
