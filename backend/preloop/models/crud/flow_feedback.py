@@ -14,6 +14,11 @@ from preloop.models import models
 
 TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "ABORTED", "STOPPED"}
 
+# Statuses a launch may have when it died before storing a session.
+# ``sessionless_retry`` in the feedback service uses the same set: a status
+# added on only one side would revive a thread the scheduler stopped on purpose.
+SESSIONLESS_RETRY_STATUSES = frozenset({"FAILED", "TIMED_OUT"})
+
 
 class CRUDFlowFeedback:
     """Transaction boundaries for subscriptions, inbox receipts and dispatch."""
@@ -164,7 +169,7 @@ class CRUDFlowFeedback:
                 .where(
                     models.FlowThread.state == "stopped",
                     models.FlowThread.stop_reason == "no_progress",
-                    execution.status.in_(("FAILED", "TIMED_OUT")),
+                    execution.status.in_(tuple(SESSIONLESS_RETRY_STATUSES)),
                     no_session,
                 )
                 .order_by(models.FlowThread.due_at)

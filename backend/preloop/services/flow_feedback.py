@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_flow_feedback
+from preloop.models.crud.flow_feedback import SESSIONLESS_RETRY_STATUSES
 from preloop.services.flow_feedback_provider import (
     FeedbackProvider,
     FeedbackState,
@@ -150,8 +151,9 @@ def register_thread(
 
 
 # A launch that dies before the agent runs. STOPPED, CANCELLED, and ABORTED
-# stop the thread on purpose and are not retried here.
-_SESSIONLESS_RETRY_STATUSES = frozenset({"FAILED", "TIMED_OUT"})
+# stop the thread on purpose and are not retried here. The revival scan uses
+# the same ``SESSIONLESS_RETRY_STATUSES`` constant.
+_SESSIONLESS_RETRY_STATUSES = SESSIONLESS_RETRY_STATUSES
 
 
 def native_session(execution: models.FlowExecution) -> dict[str, Any]:
