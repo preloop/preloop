@@ -33,6 +33,16 @@ async def test_native_context_lease_and_replay_never_prepare_cloud_secrets(monke
     monkeypatch.setattr(orchestrator, "_create_temporary_api_token", mint)
     context = await orchestrator._prepare_execution_context(resolved_prompt="--force")
     assert context["model_identifier"] == "team-fast"
+    orchestrator.flow.agent_config = {
+        "host_exec_profile": "cursor-ask",
+        "cursor_model": "grok-4.7-high",
+    }
+    pinned = await orchestrator._prepare_execution_context(resolved_prompt="--force")
+    assert pinned["model_identifier"] == "grok-4.7-high"
+    orchestrator.flow.agent_config = {"host_exec_profile": "cursor-ask"}
+    orchestrator.ai_model = None
+    automatic = await orchestrator._prepare_execution_context(resolved_prompt="--force")
+    assert automatic["model_identifier"] is None
     assert context["agent_config"] == {"host_exec_profile": "cursor-ask"}
     executor = RemoteRunnerExecutor(
         "cursor",

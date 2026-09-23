@@ -1003,8 +1003,60 @@ class TestGitShellQuoting:
         commands = container_executor._build_git_global_setup_commands(
             malicious_name, 'also"; evil #@example.com'
         )
-        assert "git config --global user.name 'evil\"; rm -rf / #'" in commands
-        assert "git config --global user.email 'also\"; evil #@example.com'" in commands
+        assert (
+            "git -c safe.directory='*' config --global user.name 'evil\"; rm -rf / #'"
+        ) in commands
+        assert (
+            "git -c safe.directory='*' config --global user.email "
+            "'also\"; evil #@example.com'"
+        ) in commands
+        assert "git -c safe.directory='*' config --global --add safe.directory '*'" in (
+            commands
+        )
+
+    def test_clone_trusts_root_owned_workspace_before_checkout(
+        self, container_executor
+    ):
+        """A root-owned fsGroup mount must be trusted before commit checkout.
+
+        ``git clone`` into that directory succeeds. The next git command
+        fails with dubious ownership unless ``safe.directory`` was written
+        first. Non-root harnesses (DeepSeek, Pi) hit this on Kubernetes.
+        """
+        context = {
+            "flow_id": "flow-1",
+            "execution_id": "exec-12345678",
+            "flow_name": "Pull Request Reviewer",
+            "trigger_event_data": {
+                "payload": {
+                    "pull_request": {
+                        "head": {
+                            "ref": "feature/foo",
+                            "sha": "3a22977b0a7dea6f672720ddb56a6331e10a53f8",
+                        },
+                        "base": {"ref": "main"},
+                    },
+                    "repository": {
+                        "clone_url": "https://github.com/example/repo.git",
+                    },
+                }
+            },
+            "git_clone_config": {
+                "enabled": True,
+                "repositories": [
+                    {
+                        "repository_url": "https://github.com/example/repo.git",
+                        "clone_path": "/workspace",
+                    }
+                ],
+            },
+        }
+
+        command = container_executor._prepare_git_clone_command(context)
+        trust = "git -c safe.directory='*' config --global --add safe.directory '*'"
+        clone_at = command.index("git clone")
+        checkout_at = command.index("Checking out specific commit")
+        assert command.index(trust) < clone_at < checkout_at
 
     def test_git_clone_shell_quotes_repo_url_and_branch(self, container_executor):
         import shlex

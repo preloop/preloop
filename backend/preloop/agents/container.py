@@ -129,6 +129,26 @@ def _validated_git_ref(name: Optional[str]) -> Optional[str]:
     return name
 
 
+def _git_identity_commands(git_user_name: str, git_user_email: str) -> list[str]:
+    """Identity plus a workspace trust exception, safe to run inside the repo.
+
+    Kubernetes ``fsGroup`` leaves an emptyDir owned by root and writable by
+    the runtime group. A non-root harness (DeepSeek and Pi run as uid 10000)
+    can clone into that directory, and Git then refuses every later command
+    with ``dubious ownership`` because the worktree uid is not the process
+    uid. ``safe.directory`` has to be recorded before the first command that
+    enters the new repository. ``-c`` lets these config writes succeed when
+    the current directory is already such a checkout.
+    """
+
+    trust = "git -c safe.directory='*' config --global"
+    return [
+        f"{trust} user.name {shlex.quote(git_user_name)}",
+        f"{trust} user.email {shlex.quote(git_user_email)}",
+        f"{trust} --add safe.directory '*'",
+    ]
+
+
 # Path inside the agent container where eval/observe flows write their
 # structured result report (see backend/presets/003-observe-eval.yaml).
 RESULT_ARTIFACT_PATH = "/workspace/result.json"
@@ -3887,9 +3907,7 @@ class ContainerAgentExecutor(AgentExecutor):
 
         restore_steps = [
             f'echo "Restored workspace found at {repo_path}, skipping git clone"',
-            f"git config --global user.name {shlex.quote(git_user_name)}",
-            f"git config --global user.email {shlex.quote(git_user_email)}",
-            "git config --global --add safe.directory '*'",
+            *_git_identity_commands(git_user_name, git_user_email),
             build_credential_setup_shell(),
             f"cd {shlex.quote(repo_path)}",
         ]
@@ -4083,8 +4101,7 @@ fi
 
         return [
             "mkdir -p /workspace",
-            f"git config --global user.name {shlex.quote(git_user_name)}",
-            f"git config --global user.email {shlex.quote(git_user_email)}",
+            *_git_identity_commands(git_user_name, git_user_email),
         ]
 
     def _resolve_repository_clone_url(

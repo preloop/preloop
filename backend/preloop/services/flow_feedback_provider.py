@@ -8,7 +8,7 @@ import json
 import re
 from contextlib import closing
 from dataclasses import dataclass, field
-from typing import Any, NamedTuple
+from typing import Any, Mapping, NamedTuple
 from types import SimpleNamespace
 from copy import deepcopy
 from urllib.parse import quote
@@ -36,6 +36,45 @@ PROVIDER_PAGE_SIZE = 100
 # A diagnostic read of a resource that is absent or not visible to this
 # installation is no evidence; every other status stays an error.
 MISSING_OR_DENIED = frozenset({403, 404})
+_BOT_LOGIN_SUFFIX = "[bot]"
+
+
+def _login_matches(token: str, login: str) -> bool:
+    """Match an app slug to its ``[bot]`` login without prefix matching.
+
+    ``preloop`` matches ``preloop`` and ``preloop[bot]``. It does not match
+    ``preloop-staging[bot]`` or a user named ``preloop-fan``.
+    """
+    if not token or not login:
+        return False
+    if token == login:
+        return True
+    if login.endswith(_BOT_LOGIN_SUFFIX) and token == login[: -len(_BOT_LOGIN_SUFFIX)]:
+        return True
+    if token.endswith(_BOT_LOGIN_SUFFIX) and login == token[: -len(_BOT_LOGIN_SUFFIX)]:
+        return True
+    return False
+
+
+def reviewer_is_trusted(policy: Mapping[str, Any], actor: Mapping[str, Any]) -> bool:
+    """Return whether a bot actor is an explicitly trusted reviewer.
+
+    Entries may be numeric provider actor ids or user/app names. Humans are
+    not decided here; callers still accept a non-bot author with an empty list.
+    """
+    actor_id = str(actor.get("id") or "")
+    login = str(actor.get("login") or actor.get("username") or "").strip().lower()
+    for raw in policy.get("trusted_reviewer_ids") or []:
+        token = str(raw).strip()
+        if not token:
+            continue
+        if token.isdigit():
+            if token == actor_id:
+                return True
+            continue
+        if _login_matches(token.lower(), login):
+            return True
+    return False
 
 
 @dataclass
@@ -461,7 +500,6 @@ class FeedbackProvider:
     def _comments(
         self, items: list[dict[str, Any]], kind: str, sha: str
     ) -> list[dict[str, Any]]:
-        trusted = set(map(str, self.thread.policy.get("trusted_reviewer_ids", [])))
         self_ids = set(map(str, self.thread.policy.get("implementer_actor_ids", [])))
         results = []
         for item in items:
@@ -475,7 +513,7 @@ class FeedbackProvider:
                 continue
             if (
                 actor.get("type") == "Bot" or actor.get("bot")
-            ) and actor_id not in trusted:
+            ) and not reviewer_is_trusted(self.thread.policy, actor):
                 continue
             # No marker can authorize a bot. Trusted sender identity is required.
             results.append(receipt(kind, item, head_sha=sha))
@@ -571,7 +609,7 @@ class FeedbackProvider:
         )
         statuses = await request("GET", f"{repo}/commits/{sha}/status?per_page=100")
         reviews = await request("GET", f"{base}/reviews?per_page=100")
-        query = """query($id:ID!){node(id:$id){... on PullRequest{reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved isOutdated comments(first:100){pageInfo{hasNextPage} nodes{databaseId body url createdAt updatedAt author{__typename ... on User{databaseId} ... on Bot{databaseId}}}}}}}}}"""
+        query = """query($id:ID!){node(id:$id){... on PullRequest{reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved isOutdated comments(first:100){pageInfo{hasNextPage} nodes{databaseId body url createdAt updatedAt author{__typename ... on User{databaseId login} ... on Bot{databaseId login}}}}}}}}}"""
         graph = await request(
             "POST", "/graphql", {"query": query, "variables": {"id": pr["node_id"]}}
         )
@@ -597,6 +635,7 @@ class FeedbackProvider:
                         "updated_at": comment["updatedAt"],
                         "user": {
                             "id": actor.get("databaseId"),
+                            "login": actor.get("login"),
                             "type": actor.get("__typename"),
                         },
                     }
