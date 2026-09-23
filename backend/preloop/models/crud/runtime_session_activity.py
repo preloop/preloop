@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import case, func, tuple_
+from sqlalchemy import and_, case, func, tuple_
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -22,6 +22,30 @@ MAX_AGENT_CONTROL_MESSAGE_SUMMARY_LEN = 2000
 # ``success`` is kept in the success set so rows written before the outcome
 # split still aggregate as successes.
 TOOL_CALL_SUCCESS_STATUSES = ("success", "succeeded")
+
+
+def _tool_call_failure_count_expr(status_column: Any) -> Any:
+    """Count non-success tool-call statuses, treating NULL like the legacy CASE.
+
+    ``status != 'success'`` is not true when status is NULL, so the old
+    aggregates left NULL out of both success and failure. Keep that behaviour
+    while accepting both ``success`` and ``succeeded``.
+    """
+    return func.coalesce(
+        func.sum(
+            case(
+                (
+                    and_(
+                        status_column.isnot(None),
+                        ~status_column.in_(TOOL_CALL_SUCCESS_STATUSES),
+                    ),
+                    1,
+                ),
+                else_=0,
+            )
+        ),
+        0,
+    )
 
 
 class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
@@ -563,15 +587,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
                     ),
                     0,
                 ).label("success_count"),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (self.model.status.in_(TOOL_CALL_SUCCESS_STATUSES), 0),
-                            else_=1,
-                        )
-                    ),
-                    0,
-                ).label("failure_count"),
+                _tool_call_failure_count_expr(self.model.status).label("failure_count"),
                 func.max(self.model.timestamp).label("last_activity_at"),
             )
             .join(RuntimeSession, self.model.runtime_session_id == RuntimeSession.id)
@@ -623,15 +639,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
                     ),
                     0,
                 ).label("success_count"),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (self.model.status.in_(TOOL_CALL_SUCCESS_STATUSES), 0),
-                            else_=1,
-                        )
-                    ),
-                    0,
-                ).label("failure_count"),
+                _tool_call_failure_count_expr(self.model.status).label("failure_count"),
                 func.max(self.model.timestamp).label("last_activity_at"),
             )
             .join(RuntimeSession, self.model.runtime_session_id == RuntimeSession.id)
@@ -683,15 +691,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
                 ),
                 0,
             ).label("success_count"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (self.model.status.in_(TOOL_CALL_SUCCESS_STATUSES), 0),
-                        else_=1,
-                    )
-                ),
-                0,
-            ).label("failure_count"),
+            _tool_call_failure_count_expr(self.model.status).label("failure_count"),
             func.max(self.model.timestamp).label("last_activity_at"),
         ).filter(
             self.model.account_id == account_id,

@@ -1139,6 +1139,75 @@ async def test_read_flow_execution_marks_a_successful_outcome(
 
 
 @pytest.mark.asyncio
+async def test_read_flow_execution_matches_one_recorded_to_one_parsed(
+    mock_account: Account, mocker: MockerFixture
+):
+    """One recorded call retires one parsed marker, not the tool's whole history."""
+    execution_id = uuid.uuid4()
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    mock_crud_activity = mocker.patch(
+        "preloop.api.endpoints.flows.crud_runtime_session_activity",
+        new_callable=MagicMock,
+    )
+
+    execution = MagicMock()
+    execution.id = execution_id
+    execution.mcp_usage_logs = [
+        {
+            "timestamp": "2026-09-18T10:18:00+00:00",
+            "tool_name": "get_pr",
+            "server_name": "github",
+            "status": "detected",
+            "correlation_id": "corr-a",
+        },
+        {
+            "timestamp": "2026-09-18T10:18:05+00:00",
+            "tool_name": "get_pr",
+            "server_name": "github",
+            "status": "detected",
+            "correlation_id": "corr-b",
+        },
+        {
+            "timestamp": "2026-09-18T10:19:00+00:00",
+            "tool_name": "ungoverned_tool",
+            "server_name": "other",
+            "status": "detected",
+        },
+    ]
+    mock_crud_flow_execution.get.return_value = execution
+
+    row = MagicMock()
+    row.timestamp = datetime(2026, 9, 18, 10, 18, tzinfo=ZoneInfo("UTC"))
+    row.tool_name = "get_pr"
+    row.server_name = "github"
+    row.status = "succeeded"
+    row.summary = None
+    row.metadata_ = {"correlation_id": "corr-a", "arguments_summary": {"pr": 3}}
+    mock_crud_activity.list_tool_calls_for_flow_execution.return_value = [row]
+
+    result = await maybe_await(
+        flows.read_flow_execution(
+            db=MagicMock(), execution_id=execution_id, current_user=mock_account
+        )
+    )
+
+    tool_names = [log["tool_name"] for log in result.mcp_usage_logs]
+    assert tool_names.count("get_pr") == 2  # one recorded + one unmatched parsed
+    assert "ungoverned_tool" in tool_names
+    recorded = next(
+        log for log in result.mcp_usage_logs if log["status"] == "succeeded"
+    )
+    assert recorded["correlation_id"] == "corr-a"
+    leftover = next(
+        log for log in result.mcp_usage_logs if log.get("correlation_id") == "corr-b"
+    )
+    assert leftover["status"] == "detected"
+
+
+@pytest.mark.asyncio
 async def test_read_flow_execution_not_found(
     mock_account: Account, mocker: MockerFixture
 ):

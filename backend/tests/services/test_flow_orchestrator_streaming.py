@@ -212,6 +212,95 @@ class TestLogStreaming:
         assert detection["repetitions"] == 4
         assert detection["pattern"][0]["tool_name"] == "get_pull_request"
 
+    def test_same_shape_different_hash_signatures_are_not_a_loop(self):
+        """Four get_pr calls with different values must not trip loop detection.
+
+        arguments_summary alone collapses those calls onto one signature;
+        arguments_hash keeps them distinct.
+        """
+        base = {
+            "server_name": "preloop-mcp",
+            "tool_name": "get_pull_request",
+            "arguments_summary": {"pull_request": 3},
+        }
+        signatures = [
+            json.dumps({**base, "arguments_hash": f"hash-{index}"}, sort_keys=True)
+            for index in range(4)
+        ]
+
+        assert FlowExecutionOrchestrator._detect_repeated_tool_cycle(signatures) is None
+
+    def test_identical_hash_signatures_still_trigger_loop_detection(self):
+        """Repeating the same tool with the same arguments_hash is a loop."""
+        signature = json.dumps(
+            {
+                "server_name": "preloop-mcp",
+                "tool_name": "get_pull_request",
+                "arguments_summary": {"pull_request": 3},
+                "arguments_hash": "abc123def4567890",
+            },
+            sort_keys=True,
+        )
+
+        detection = FlowExecutionOrchestrator._detect_repeated_tool_cycle(
+            [signature] * 4
+        )
+
+        assert detection is not None
+        assert detection["pattern_length"] == 1
+        assert detection["repetitions"] == 4
+
+    def test_get_recent_signatures_prefer_hash_over_summary_alone(self, orchestrator):
+        """Persisted rows with different hashes yield distinct signatures."""
+        activities = []
+        for index in range(4):
+            activity = MagicMock()
+            activity.server_name = "preloop-mcp"
+            activity.tool_name = "get_pull_request"
+            activity.timestamp = MagicMock()
+            activity.metadata_ = {
+                "arguments_summary": {"pull_request": 3},
+                "arguments_hash": f"hash-{index}",
+            }
+            activities.append(activity)
+
+        with patch(
+            "preloop.models.crud.crud_runtime_session_activity"
+            ".get_recent_successful_tool_calls_by_flow_execution",
+            return_value=list(reversed(activities)),
+        ):
+            orchestrator.execution_log = MagicMock(id="exec-1")
+            signatures = orchestrator._get_recent_runtime_tool_activity_signatures()
+
+        assert len(signatures) == 4
+        assert len(set(signatures)) == 4
+        assert FlowExecutionOrchestrator._detect_repeated_tool_cycle(signatures) is None
+
+    def test_get_recent_signatures_fall_back_to_legacy_arguments(self, orchestrator):
+        """Legacy rows without a hash use metadata arguments for the signature."""
+        activities = []
+        for pr_id in (123, 124, 125, 126):
+            activity = MagicMock()
+            activity.server_name = "preloop-mcp"
+            activity.tool_name = "get_pull_request"
+            activity.timestamp = MagicMock()
+            activity.metadata_ = {
+                "arguments_summary": {"pull_request": 3},
+                "arguments": {"pull_request": pr_id},
+            }
+            activities.append(activity)
+
+        with patch(
+            "preloop.models.crud.crud_runtime_session_activity"
+            ".get_recent_successful_tool_calls_by_flow_execution",
+            return_value=list(reversed(activities)),
+        ):
+            orchestrator.execution_log = MagicMock(id="exec-1")
+            signatures = orchestrator._get_recent_runtime_tool_activity_signatures()
+
+        assert len(set(signatures)) == 4
+        assert FlowExecutionOrchestrator._detect_repeated_tool_cycle(signatures) is None
+
     @pytest.mark.asyncio
     async def test_sync_runtime_tool_activity_metrics_updates_count_and_detects_loop(
         self, orchestrator

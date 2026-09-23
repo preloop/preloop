@@ -900,7 +900,9 @@ def read_flow_execution(
     # governed call (succeeded/refused/failed and the refusal string), so it is
     # preferred over the parsed "detected" markers. Parsed rows whose tool was
     # not recorded by the gateway (for example an ungoverned MCP server) are
-    # kept so the timeline does not lose calls.
+    # kept so the timeline does not lose calls. Matching is one recorded row
+    # to one parsed marker (correlation_id, else timestamp proximity) so a
+    # single recorded call does not drop the tool's whole parse history.
     activity_rows = crud_runtime_session_activity.list_tool_calls_for_flow_execution(
         db,
         account_id=current_user.account_id,
@@ -926,22 +928,26 @@ def read_flow_execution(
             }
 
         activity_logs = [_activity_log(row) for row in activity_rows]
-        recorded_tools = {
-            log.get("tool_name") for log in activity_logs if log.get("tool_name")
-        }
-        existing_logs: List[Dict[str, Any]] = (
+        existing_logs: List[Any] = (
             execution.mcp_usage_logs
             if isinstance(execution.mcp_usage_logs, list)
             else []
         )
-        parsed_logs = [
-            log
-            for log in existing_logs
-            if not (isinstance(log, dict) and log.get("tool_name") in recorded_tools)
+        parsed_logs = [log for log in existing_logs if isinstance(log, dict)]
+        used_parsed: set[int] = set()
+        for activity in activity_logs:
+            match_index = _match_parsed_mcp_marker(activity, parsed_logs, used_parsed)
+            if match_index is not None:
+                used_parsed.add(match_index)
+        leftover_parsed = [
+            log for index, log in enumerate(parsed_logs) if index not in used_parsed
         ]
+        leftover_other = [log for log in existing_logs if not isinstance(log, dict)]
         execution.mcp_usage_logs = sorted(
-            activity_logs + parsed_logs,
-            key=lambda log: log.get("timestamp") or "",
+            activity_logs + leftover_parsed + leftover_other,
+            key=lambda log: (
+                (log.get("timestamp") if isinstance(log, dict) else "") or ""
+            ),
         )
 
     # The model that ran this execution, from the same gateway usage the list
@@ -954,6 +960,79 @@ def read_flow_execution(
     _project_execution_park(db, execution)
 
     return execution
+
+
+def _parse_mcp_log_timestamp(value: Any) -> Optional[datetime]:
+    """Parse a timeline timestamp from an ISO string or datetime."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+# One recorded activity retires one parsed marker. Markers and rows for the
+# same call can be a few seconds apart when the agent log is scraped after
+# the gateway write.
+_MCP_USAGE_MATCH_WINDOW_SECONDS = 5.0
+
+
+def _match_parsed_mcp_marker(
+    activity: Dict[str, Any],
+    parsed_logs: List[Dict[str, Any]],
+    used: set[int],
+) -> Optional[int]:
+    """Return the index of one parsed marker matching a recorded activity.
+
+    Prefers correlation_id when both sides carry it; otherwise matches the
+    same client-visible tool_name by nearest timestamp within a short window.
+
+    Args:
+        activity: Recorded gateway usage row projected for the timeline.
+        parsed_logs: Parsed "detected" markers from the agent log.
+        used: Indices already matched to another recorded row.
+
+    Returns:
+        Index into ``parsed_logs`` to retire, or None if no marker matches.
+    """
+    corr = activity.get("correlation_id")
+    if corr:
+        for index, parsed in enumerate(parsed_logs):
+            if index in used:
+                continue
+            if parsed.get("correlation_id") == corr:
+                return index
+
+    act_tool = activity.get("tool_name")
+    if not act_tool:
+        return None
+    act_ts = _parse_mcp_log_timestamp(activity.get("timestamp"))
+    best_index: Optional[int] = None
+    best_delta: Optional[float] = None
+    for index, parsed in enumerate(parsed_logs):
+        if index in used:
+            continue
+        if parsed.get("tool_name") != act_tool:
+            continue
+        parsed_ts = _parse_mcp_log_timestamp(parsed.get("timestamp"))
+        if act_ts is None or parsed_ts is None:
+            # Same tool name without usable timestamps: retire the first
+            # unmatched marker so one recorded call still maps to one parse.
+            if best_index is None:
+                return index
+            continue
+        delta = abs((act_ts - parsed_ts).total_seconds())
+        if delta <= _MCP_USAGE_MATCH_WINDOW_SECONDS and (
+            best_delta is None or delta < best_delta
+        ):
+            best_index = index
+            best_delta = delta
+    return best_index
 
 
 def _project_execution_park(db: Session, execution: Any) -> None:

@@ -2884,15 +2884,25 @@ class FlowExecutionOrchestrator:
         timestamps: list[datetime] = []
         for activity in reversed(activities):
             metadata = activity.metadata_ or {}
+            signature_payload: Dict[str, Any] = {
+                "server_name": activity.server_name,
+                "tool_name": activity.tool_name,
+                # Key names and sizes only; the payload is never
+                # persisted on the activity row (issue #793).
+                "arguments_summary": metadata.get("arguments_summary"),
+            }
+            # Prefer arguments_hash so same-shape/different-value calls
+            # (get_pr(123) vs get_pr(124)) do not share a signature.
+            # Legacy rows without a hash fall back to the redacted arguments
+            # value so they do not all collapse onto one summary-only key.
+            arguments_hash = metadata.get("arguments_hash")
+            if arguments_hash is not None:
+                signature_payload["arguments_hash"] = arguments_hash
+            elif "arguments" in metadata:
+                signature_payload["arguments"] = metadata.get("arguments")
             signatures.append(
                 json.dumps(
-                    {
-                        "server_name": activity.server_name,
-                        "tool_name": activity.tool_name,
-                        # Key names and sizes only; the payload is never
-                        # persisted on the activity row (issue #793).
-                        "arguments_summary": metadata.get("arguments_summary"),
-                    },
+                    signature_payload,
                     sort_keys=True,
                     default=str,
                 )
