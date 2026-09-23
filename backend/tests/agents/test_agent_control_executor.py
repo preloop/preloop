@@ -640,7 +640,9 @@ def test_sanitize_agent_control_result_payload_preserves_large_outputs() -> None
     }
     # Console payload must be truncated to 4096 and omit structured result
     console_copy = _sanitize_agent_control_payload(payload)
-    assert len(console_copy["reply_text"]) == _MAX_AGENT_CONTROL_PAYLOAD_CHARS + len("...[truncated]")
+    assert len(console_copy["reply_text"]) == _MAX_AGENT_CONTROL_PAYLOAD_CHARS + len(
+        "...[truncated]"
+    )
     assert console_copy["result"] == {"_omitted": "structured_result", "type": "dict"}
     assert console_copy["api_key"] != "sk-secret-key-12345"
 
@@ -651,7 +653,24 @@ def test_sanitize_agent_control_result_payload_preserves_large_outputs() -> None
     assert result_copy["result"] == {"structured": "data", "count": 42}
     assert result_copy["api_key"] != "sk-secret-key-12345"
 
-    # Beyond 1 MiB, it bounds
+    # Beyond 1 MiB, string fields are truncated.
     huge_payload = {"reply_text": "Y" * (_MAX_AGENT_CONTROL_RESULT_CHARS + 500)}
     huge_copy = _sanitize_agent_control_result_payload(huge_payload)
-    assert len(huge_copy["reply_text"]) == _MAX_AGENT_CONTROL_RESULT_CHARS + len("...[truncated]")
+    assert len(huge_copy["reply_text"]) == _MAX_AGENT_CONTROL_RESULT_CHARS + len(
+        "...[truncated]"
+    )
+    assert "result" not in huge_copy
+
+    # A structured result past the budget is omitted; other keys stay bounded.
+    oversized = {
+        "reply_text": "kept",
+        "log": "L" * (_MAX_AGENT_CONTROL_RESULT_CHARS + 100),
+        "result": {"blob": "Z" * (_MAX_AGENT_CONTROL_RESULT_CHARS + 100)},
+    }
+    bounded = _sanitize_agent_control_result_payload(oversized)
+    assert bounded["reply_text"] == "kept"
+    assert bounded["result"] == {"_omitted": "result_too_large"}
+    assert bounded["log"].endswith("...[truncated]")
+    assert len(bounded["log"]) == _MAX_AGENT_CONTROL_RESULT_CHARS + len(
+        "...[truncated]"
+    )

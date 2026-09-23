@@ -779,8 +779,80 @@ _MAX_AGENT_CONTROL_PAYLOAD_CHARS = 4096
 _MAX_AGENT_CONTROL_RESULT_CHARS = 1_048_576
 
 
-def _sanitize_agent_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Redact secrets and truncate bulky agent output before emit/persist."""
+def _truncate_agent_control_text(value: str, max_chars: int) -> str:
+    """Cap one string field, keeping a marker when the tail is dropped."""
+    if len(value) > max_chars:
+        return value[:max_chars] + "...[truncated]"
+    return value
+
+
+def _payload_within_budget(payload: dict[str, Any], max_chars: int) -> bool:
+    """True when the JSON form of ``payload`` fits in ``max_chars``."""
+    try:
+        return len(json.dumps(payload, default=str)) <= max_chars
+    except (TypeError, ValueError):
+        return False
+
+
+def _cap_persisted_result_payload(
+    sanitized: dict[str, Any], max_chars: int
+) -> dict[str, Any]:
+    """Drop structured values once the persisted envelope exceeds its budget.
+
+    Per-field truncation already caps each string. A structured ``result``
+    (or any other non-scalar) can still exceed the command-row budget on its
+    own, so those values become an omission marker. A single truncated string
+    that is itself the budget is left as-is.
+    """
+    if _payload_within_budget(sanitized, max_chars):
+        return sanitized
+    capped = dict(sanitized)
+    if "result" in capped:
+        result = capped["result"]
+        already_omitted = (
+            isinstance(result, dict) and result.get("_omitted") == "result_too_large"
+        )
+        if not already_omitted:
+            capped["result"] = {"_omitted": "result_too_large"}
+            if _payload_within_budget(capped, max_chars):
+                return capped
+    bounded: dict[str, Any] = {}
+    for key, value in capped.items():
+        if isinstance(value, (str, int, float, bool, type(None))):
+            bounded[key] = value
+        elif isinstance(value, dict) and value.get("_omitted"):
+            bounded[key] = value
+        else:
+            bounded[key] = {
+                "_omitted": "result_too_large",
+                "type": type(value).__name__,
+            }
+    if _payload_within_budget(bounded, max_chars):
+        return bounded
+    return bounded
+
+
+def _sanitize_agent_control_payload(
+    payload: dict[str, Any],
+    *,
+    max_chars: int = _MAX_AGENT_CONTROL_PAYLOAD_CHARS,
+    drop_structured_result: bool = True,
+) -> dict[str, Any]:
+    """Redact secrets and bound bulky agent output before emit or persist.
+
+    Args:
+        payload: Inbound agent-control envelope fields.
+        max_chars: Character budget for each string and, when structured
+            results are kept, for the serialized payload.
+        drop_structured_result: When True, replace a non-scalar ``result``
+            with a type marker. Live console and audit logs use this.
+            Persistent command rows pass False so a later step can read a
+            structured result that still fits in ``max_chars``.
+
+    Returns:
+        A JSON-safe dict. Secrets are redacted. Oversized values are
+        truncated or replaced with an omission marker.
+    """
     from preloop.utils.redaction import redact_dict
 
     safe = redact_dict(payload)
@@ -788,45 +860,33 @@ def _sanitize_agent_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
         return {}
     sanitized: dict[str, Any] = {}
     for key, value in safe.items():
-        if key in _AGENT_CONTROL_TRUNCATE_KEYS and isinstance(value, str):
-            if len(value) > _MAX_AGENT_CONTROL_PAYLOAD_CHARS:
-                sanitized[key] = (
-                    value[:_MAX_AGENT_CONTROL_PAYLOAD_CHARS] + "...[truncated]"
-                )
-            else:
-                sanitized[key] = value
-        elif key == "result" and not isinstance(
-            value, (str, int, float, bool, type(None))
+        if (
+            drop_structured_result
+            and key == "result"
+            and not isinstance(value, (str, int, float, bool, type(None)))
         ):
-            # Drop bulky structured results from realtime/audit surfaces.
             sanitized[key] = {
                 "_omitted": "structured_result",
                 "type": type(value).__name__,
             }
+        elif isinstance(value, str) and (
+            key in _AGENT_CONTROL_TRUNCATE_KEYS or not drop_structured_result
+        ):
+            sanitized[key] = _truncate_agent_control_text(value, max_chars)
         else:
             sanitized[key] = value
-    return sanitized
+    if drop_structured_result:
+        return sanitized
+    return _cap_persisted_result_payload(sanitized, max_chars)
 
 
 def _sanitize_agent_control_result_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Redact secrets and bound bulky execution output before persisting on the command row."""
-    from preloop.utils.redaction import redact_dict
-
-    safe = redact_dict(payload)
-    if not isinstance(safe, dict):
-        return {}
-    sanitized: dict[str, Any] = {}
-    for key, value in safe.items():
-        if key in _AGENT_CONTROL_TRUNCATE_KEYS and isinstance(value, str):
-            if len(value) > _MAX_AGENT_CONTROL_RESULT_CHARS:
-                sanitized[key] = (
-                    value[:_MAX_AGENT_CONTROL_RESULT_CHARS] + "...[truncated]"
-                )
-            else:
-                sanitized[key] = value
-        else:
-            sanitized[key] = value
-    return sanitized
+    """Redact secrets and bound execution output persisted on the command row."""
+    return _sanitize_agent_control_payload(
+        payload,
+        max_chars=_MAX_AGENT_CONTROL_RESULT_CHARS,
+        drop_structured_result=False,
+    )
 
 
 def _persist_agent_control_result(
