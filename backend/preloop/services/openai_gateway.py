@@ -9793,6 +9793,59 @@ class OpenAIGatewayService:
         )
         raise error
 
+    def _check_per_execution_limits(
+        self,
+        ai_model: GatewayModel,
+        payload: Dict[str, Any],
+        *,
+        gateway_provider: GatewayProvider = "openai",
+    ) -> None:
+        """Refuse a request from a run that is already over its own ceiling.
+
+        The execution id rides on the runtime API key's context
+        (``flow_execution_id``), minted for one flow run. When that run has
+        ``agent_config.limits`` and its attributed usage has reached a
+        ceiling, the request is refused with the shared
+        ``execution_budget_exceeded`` code and the execution is marked FAILED
+        with the ``budget_exceeded`` category naming the ceiling. The crossing
+        request itself was allowed, so the agent can finish its last response
+        and emit a verdict; this method only refuses the request *after* the
+        ceiling is known to be spent.
+
+        Flows without limits, credentials with no execution context, and every run
+        that has not reached a ceiling are all no-ops, so the gateway hot path
+        is unchanged for them.
+        """
+        if not self.auth_context.api_key:
+            return
+        context_data = self.auth_context.api_key.context_data or {}
+        execution_id = context_data.get("flow_execution_id")
+        if not execution_id:
+            return
+
+        from preloop.services.flow_execution_limits import (
+            ExecutionBudgetExceeded,
+            enforce_execution_limits_for_id,
+        )
+
+        try:
+            enforce_execution_limits_for_id(self.db, execution_id=execution_id)
+        except ExecutionBudgetExceeded as exc:
+            logger.warning(
+                "Gateway request refused by per-execution ceiling: "
+                "execution=%s kind=%s limit=%s observed=%s",
+                execution_id,
+                exc.violation.kind,
+                exc.violation.limit,
+                exc.violation.observed,
+            )
+            raise ModelGatewayAPIError(
+                provider=gateway_provider,
+                status_code=403,
+                message=exc.message,
+                code="execution_budget_exceeded",
+            ) from exc
+
     def _check_budget(
         self,
         ai_model: GatewayModel,
@@ -9801,6 +9854,13 @@ class OpenAIGatewayService:
         gateway_provider: GatewayProvider = "openai",
     ) -> Optional[BudgetCheckResult]:
         """Check configured gateway budgets before the upstream call."""
+        # The run's own per-execution ceiling is independent of the account
+        # budget policies below: it applies even when no BudgetPolicy exists,
+        # and it is refused before an extension enforcer can short-circuit.
+        self._check_per_execution_limits(
+            ai_model, payload, gateway_provider=gateway_provider
+        )
+
         # Execute plugin budget enforcement (HTTP 403 on limit exceeded)
         if hasattr(self.budget_enforcer, "enforce_or_raise"):
             try:
