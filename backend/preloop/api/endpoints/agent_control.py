@@ -776,6 +776,7 @@ _AGENT_CONTROL_TRUNCATE_KEYS = frozenset(
     {"result", "reply_text", "error", "message", "text", "output"}
 )
 _MAX_AGENT_CONTROL_PAYLOAD_CHARS = 4096
+_MAX_AGENT_CONTROL_RESULT_CHARS = 1_048_576
 
 
 def _sanitize_agent_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -802,6 +803,27 @@ def _sanitize_agent_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "_omitted": "structured_result",
                 "type": type(value).__name__,
             }
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
+def _sanitize_agent_control_result_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Redact secrets and bound bulky execution output before persisting on the command row."""
+    from preloop.utils.redaction import redact_dict
+
+    safe = redact_dict(payload)
+    if not isinstance(safe, dict):
+        return {}
+    sanitized: dict[str, Any] = {}
+    for key, value in safe.items():
+        if key in _AGENT_CONTROL_TRUNCATE_KEYS and isinstance(value, str):
+            if len(value) > _MAX_AGENT_CONTROL_RESULT_CHARS:
+                sanitized[key] = (
+                    value[:_MAX_AGENT_CONTROL_RESULT_CHARS] + "...[truncated]"
+                )
+            else:
+                sanitized[key] = value
         else:
             sanitized[key] = value
     return sanitized
@@ -863,12 +885,13 @@ def _persist_agent_control_result(
         "error",
     }
     error_text = inbound.payload.get("error")
+    full_result_payload = _sanitize_agent_control_result_payload(inbound.payload)
     crud_agent_control_command.mark_terminal_result(
         db,
         account_id=context.account_id,
         managed_agent_id=context.managed_agent_id,
         command_id=command_id.strip(),
-        result_payload=sanitized,
+        result_payload=full_result_payload,
         failed=failed,
         error=error_text if isinstance(error_text, str) else None,
         commit=commit,

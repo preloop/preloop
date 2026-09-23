@@ -599,3 +599,59 @@ async def test_get_logs_include_lifecycle_and_activity(
     assert any("wrote review comment" in line for line in lines)
     assert not any("unrelated operator note" in line for line in lines)
     assert all(line.startswith("[agent_control]") for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_get_result_preserves_full_reply_text_beyond_console_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Persistent execution results should not be truncated to the 4096-char console limit."""
+    long_reply = "A" * 20_000
+    record = _command_record(
+        status="acked",
+        delivered_at=datetime.now(UTC),
+        acked_at=datetime.now(UTC),
+        envelope={
+            COMMAND_RESULT_ENVELOPE_KEY: {
+                "status": "completed",
+                "reply_text": long_reply,
+            }
+        },
+    )
+    executor, reference = _status_executor(monkeypatch, record)
+    result = await executor.get_result(reference)
+    assert result.status == AgentStatus.SUCCEEDED
+    assert result.output_summary == long_reply
+    assert len(result.output_summary) == 20_000
+
+
+def test_sanitize_agent_control_result_payload_preserves_large_outputs() -> None:
+    from preloop.api.endpoints.agent_control import (
+        _MAX_AGENT_CONTROL_PAYLOAD_CHARS,
+        _MAX_AGENT_CONTROL_RESULT_CHARS,
+        _sanitize_agent_control_payload,
+        _sanitize_agent_control_result_payload,
+    )
+
+    payload = {
+        "reply_text": "X" * 20_000,
+        "result": {"structured": "data", "count": 42},
+        "api_key": "sk-secret-key-12345",
+    }
+    # Console payload must be truncated to 4096 and omit structured result
+    console_copy = _sanitize_agent_control_payload(payload)
+    assert len(console_copy["reply_text"]) == _MAX_AGENT_CONTROL_PAYLOAD_CHARS + len("...[truncated]")
+    assert console_copy["result"] == {"_omitted": "structured_result", "type": "dict"}
+    assert console_copy["api_key"] != "sk-secret-key-12345"
+
+    # Command result payload preserves full 20k characters and structured data
+    result_copy = _sanitize_agent_control_result_payload(payload)
+    assert len(result_copy["reply_text"]) == 20_000
+    assert result_copy["reply_text"] == "X" * 20_000
+    assert result_copy["result"] == {"structured": "data", "count": 42}
+    assert result_copy["api_key"] != "sk-secret-key-12345"
+
+    # Beyond 1 MiB, it bounds
+    huge_payload = {"reply_text": "Y" * (_MAX_AGENT_CONTROL_RESULT_CHARS + 500)}
+    huge_copy = _sanitize_agent_control_result_payload(huge_payload)
+    assert len(huge_copy["reply_text"]) == _MAX_AGENT_CONTROL_RESULT_CHARS + len("...[truncated]")
