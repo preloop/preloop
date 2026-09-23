@@ -1165,6 +1165,64 @@ async def test_stopped_sessionless_thread_is_picked_up_again(
         assert thread.turns == 4
 
 
+def test_permanent_stops_do_not_crowd_out_a_sessionless_thread(
+    database: Engine,
+) -> None:
+    """A full window of genuine stops must not hide one revivable thread."""
+    with Session(database) as db:
+        thread = create_thread(db)
+        failed = models.FlowExecution(
+            id=uuid.uuid4(),
+            flow_id=thread.flow_id,
+            status="FAILED",
+            cli_session=None,
+        )
+        db.add(failed)
+        thread.latest_execution_id = failed.id
+        thread.state = "stopped"
+        thread.stop_reason = "no_progress"
+        thread.due_at = NOW + timedelta(days=1)
+        for index in range(21):
+            finished = models.FlowExecution(
+                id=uuid.uuid4(),
+                flow_id=thread.flow_id,
+                status="SUCCEEDED",
+                cli_session={"agent_type": "codex", "session_id": f"sess-{index}"},
+            )
+            db.add(finished)
+            db.flush()
+            db.add(
+                models.FlowThread(
+                    id=uuid.uuid4(),
+                    account_id=thread.account_id,
+                    flow_id=thread.flow_id,
+                    tracker_id=thread.tracker_id,
+                    repository_id=thread.repository_id,
+                    pr_number=str(100 + index),
+                    pr_url=f"https://github.com/example/repo/pull/{100 + index}",
+                    provider="github",
+                    branch=f"branch-{index}",
+                    context={},
+                    policy={},
+                    cursor={},
+                    state="stopped",
+                    stop_reason="no_progress",
+                    latest_execution_id=finished.id,
+                    due_at=NOW + timedelta(seconds=index),
+                    expires_at=NOW + timedelta(days=7),
+                )
+            )
+        db.commit()
+        found = crud_flow_feedback.stopped_for_no_progress(db)
+        assert [row.id for row in found] == [thread.id]
+        assert crud_flow_feedback.revive(db, thread.id, now=NOW) is True
+        assert crud_flow_feedback.revive(db, thread.id, now=NOW) is False
+        db.refresh(thread)
+        assert thread.state == "waiting"
+        assert thread.stop_reason is None
+        assert thread.no_progress == 0
+
+
 @pytest.mark.parametrize(
     "existing_mode", ["new", "unadopted", "native_resume", "other_source"]
 )

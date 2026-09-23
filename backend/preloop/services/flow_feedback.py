@@ -412,9 +412,7 @@ async def run_feedback_tick(db: Session, *, now: datetime | None = None) -> int:
                 getattr(publication, "id", None),
             )
     for thread in crud_flow_feedback.stopped_for_no_progress(db):
-        latest = crud_flow_execution.get(db, id=thread.latest_execution_id)
-        if latest is not None and sessionless_retry(latest):
-            crud_flow_feedback.revive(db, thread.id, now=now)
+        crud_flow_feedback.revive(db, thread.id, now=now)
     claims = crud_flow_feedback.claim_due(db, now=now)
     for thread_id, token in claims:
         try:
