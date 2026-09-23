@@ -1508,6 +1508,12 @@ export class PreloopFlowForm extends LitElement {
       for (const [key, limit] of Object.entries(FEEDBACK_LIMITS)) {
         if (!(key in feedback)) feedback[key] = limit.default;
       }
+      const reviewers = feedback.trusted_reviewer_ids;
+      const reviewersEmpty =
+        reviewers == null ||
+        reviewers === '' ||
+        (Array.isArray(reviewers) && reviewers.length === 0);
+      if (reviewersEmpty) feedback.trusted_reviewer_ids = ['preloop'];
     }
     this.flow = {
       ...this.flow,
@@ -1547,18 +1553,23 @@ export class PreloopFlowForm extends LitElement {
               .map((id) => id.trim())
               .filter(Boolean)
           : raw;
-      if (
-        !Array.isArray(ids) ||
-        ids.some(
-          (id) =>
-            !(
-              (typeof id === 'string' && /^[1-9][0-9]*$/.test(id)) ||
-              (typeof id === 'number' && Number.isSafeInteger(id) && id > 0)
-            )
-        )
-      ) {
+      const numeric = (id: unknown) =>
+        (typeof id === 'string' && /^[1-9][0-9]*$/.test(id)) ||
+        (typeof id === 'number' && Number.isSafeInteger(id) && id > 0);
+      const login = (id: unknown) =>
+        typeof id === 'string' &&
+        /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,37}[A-Za-z0-9])?(?:\[bot\])?$/.test(
+          id
+        );
+      const valid =
+        key === 'trusted_reviewer_ids'
+          ? (id: unknown) => numeric(id) || login(id)
+          : numeric;
+      if (!Array.isArray(ids) || ids.some((id) => !valid(id))) {
         throw new Error(
-          'Follow-up: enter comma-separated numeric provider actor IDs, not usernames.'
+          key === 'trusted_reviewer_ids'
+            ? 'Follow-up: enter reviewer usernames or app slugs such as preloop, or numeric actor IDs.'
+            : 'Follow-up: enter comma-separated numeric provider actor IDs, not usernames.'
         );
       }
       feedback[key] = ids;
@@ -1604,8 +1615,8 @@ export class PreloopFlowForm extends LitElement {
                   ${[
                     [
                       'trusted_reviewer_ids',
-                      'Trusted reviewer actor IDs',
-                      'Comma-separated GitHub or GitLab numeric user IDs from the reviewer account or integration. Unlisted bots are ignored; comment markers do not grant trust.',
+                      'Trusted reviewers',
+                      'Usernames or app slugs, for example preloop. preloop matches reviews posted by the preloop[bot] GitHub App. A staging app is preloop-staging. Numeric actor IDs still work. Unlisted bots are ignored.',
                     ],
                     [
                       'implementer_actor_ids',
@@ -1880,8 +1891,24 @@ export class PreloopFlowForm extends LitElement {
       } else {
         delete base.host_exec_profile;
       }
+      const cursorModel =
+        typeof base.cursor_model === 'string' ? base.cursor_model.trim() : '';
+      if (
+        cursorModel &&
+        !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(cursorModel)
+      ) {
+        throw new Error(
+          'Cursor model must be a Cursor model id such as grok-4.7-high, or blank for Auto.'
+        );
+      }
+      if (cursorModel) {
+        base.cursor_model = cursorModel;
+      } else {
+        delete base.cursor_model;
+      }
     } else {
       delete base.host_exec_profile;
+      delete base.cursor_model;
     }
     this.applyCustomImageOverride(base);
     return base;
@@ -1904,6 +1931,22 @@ export class PreloopFlowForm extends LitElement {
       }
     }
     return [...names].sort();
+  }
+
+  private handleCursorModelInput(event: Event) {
+    const value = (event.target as HTMLInputElement).value;
+    this.flow = {
+      ...this.flow,
+      agent_config: {
+        ...(this.flow.agent_config || {}),
+        cursor_model: value,
+      },
+    };
+  }
+
+  private cursorModelValue(): string {
+    const raw = this.parseAgentConfig(this.flow.agent_config).cursor_model;
+    return typeof raw === 'string' ? raw : '';
   }
 
   private handleHostExecProfileInput(event: Event) {
@@ -3314,37 +3357,71 @@ export class PreloopFlowForm extends LitElement {
                   </sl-select>
                 `
           }
-
-          <div
-            style="display: flex; flex-direction: column; gap: var(--sl-spacing-2x-small); margin-bottom: var(--sl-spacing-medium);"
-          >
-            <sl-select
-              label=${this.flow.agent_type === 'cursor' ? 'Requested AI Model' : 'AI model'}
-              help-text=${this.flow.agent_type === 'cursor' ? 'The local profile must map this model. The observed Cursor model is recorded only when reported.' : ''}
-              placeholder="Select an AI model"
-              .value=${this.flow.ai_model_id || ''}
-              @sl-change=${(e: any) => {
-                this.flow.ai_model_id = e.target.value;
-              }}
-              style="margin-bottom: 0;"
-            >
-              ${this.flow.agent_type === 'cursor' ? html`<sl-option value="">Profile default</sl-option>` : nothing}
-              ${selectableModels.map(
-                (m) => html`<sl-option .value=${m.id}>${m.name}</sl-option>`
-              )}
-            </sl-select>
-            <sl-button
-              size="small"
-              variant="text"
-              @click=${this.openAddAIModelDialog}
-              style="align-self: flex-start; margin-top: -0.25rem; height: auto; padding: 0;"
-            >
-              <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add AI model
-            </sl-button>
-          </div>
-
-          ${this.renderModelRoutingEditor(selectableModels)}
-          ${this.renderModelByLabelEditor(selectableModels)}
+          ${
+            this.flow.agent_type === 'cursor'
+              ? html`
+                  <p class="notifications-help">
+                    Cursor runs as cursor-agent on the private runner, using
+                    that machine's Cursor login. Preloop's model catalog is not
+                    Cursor's catalog, so it is hidden here. Leave Cursor model
+                    blank and cursor-agent uses Auto, Cursor's own selector.
+                    Auto is not Grok 4.7. To pin Grok 4.7, enter grok-4.7-high
+                    and map that same id in the runner profile model_map.
+                  </p>
+                  <sl-input
+                    label="Cursor model"
+                    data-cursor-model
+                    placeholder="Auto"
+                    help-text="Optional Cursor model id. The runner passes it as --model only when the profile model_map lists it. Blank uses Auto."
+                    .value=${this.cursorModelValue()}
+                    @sl-input=${this.handleCursorModelInput}
+                  ></sl-input>
+                  ${
+                    this.flow.git_clone_config?.enabled
+                      ? html`<sl-alert variant="warning" open>
+                          <sl-icon
+                            slot="icon"
+                            name="exclamation-triangle"
+                          ></sl-icon>
+                          Host execution cannot clone a repository or open a
+                          pull request. This flow clones a repository, so a
+                          Cursor runner will refuse the run.
+                        </sl-alert>`
+                      : nothing
+                  }
+                `
+              : html`
+                  <div
+                    style="display: flex; flex-direction: column; gap: var(--sl-spacing-2x-small); margin-bottom: var(--sl-spacing-medium);"
+                  >
+                    <sl-select
+                      label="AI model"
+                      placeholder="Select an AI model"
+                      .value=${this.flow.ai_model_id || ''}
+                      @sl-change=${(e: any) => {
+                        this.flow.ai_model_id = e.target.value;
+                      }}
+                      style="margin-bottom: 0;"
+                    >
+                      ${selectableModels.map(
+                        (m) =>
+                          html`<sl-option .value=${m.id}>${m.name}</sl-option>`
+                      )}
+                    </sl-select>
+                    <sl-button
+                      size="small"
+                      variant="text"
+                      @click=${this.openAddAIModelDialog}
+                      style="align-self: flex-start; margin-top: -0.25rem; height: auto; padding: 0;"
+                    >
+                      <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add AI
+                      model
+                    </sl-button>
+                  </div>
+                  ${this.renderModelRoutingEditor(selectableModels)}
+                  ${this.renderModelByLabelEditor(selectableModels)}
+                `
+          }
           ${this.renderRunnerPoolField()} ${this.renderHostExecProfileField()}
           ${this.renderCustomImageField()}
 

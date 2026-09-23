@@ -78,6 +78,17 @@ describe('PreloopFlowForm PR feedback controls', () => {
     });
   });
 
+  it('prefills the Preloop app slug when follow-up is enabled', async () => {
+    const element = await mount();
+    await toggle(element, true);
+    expect(control(element, 'trusted_reviewer_ids').value).to.equal('preloop');
+    const event = await submit(element);
+    expect(
+      event.firstCall.args[0].detail.flow.agent_config.feedback
+        .trusted_reviewer_ids
+    ).to.deep.equal(['preloop']);
+  });
+
   it('opts in through rendered controls and serializes bounded numeric policy and exact IDs', async () => {
     const element = await mount();
     await toggle(element, true);
@@ -193,7 +204,7 @@ describe('PreloopFlowForm PR feedback controls', () => {
     ['max_cost', ''],
     ['max_age_hours', '8761'],
     ['debounce_seconds', '-1'],
-    ['trusted_reviewer_ids', 'review-bot'],
+    ['trusted_reviewer_ids', 'not a name'],
     ['implementer_actor_ids', '1.5'],
   ]) {
     it(`rejects invalid ${field} ${JSON.stringify(value)} before submit`, async () => {

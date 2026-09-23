@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from preloop.services.flow_feedback_provider import FeedbackProvider, bounded_text
+from preloop.services.flow_feedback_provider import (
+    FeedbackProvider,
+    bounded_text,
+    reviewer_is_trusted,
+)
 from preloop.sync.exceptions import TrackerResponseError
 
 
@@ -1135,3 +1139,25 @@ async def test_github_unprotected_branch_is_known_absence_only(
         "review",
         "ci",
     }
+
+
+def test_reviewer_slug_matches_app_bot_and_not_a_sibling() -> None:
+    policy = {"trusted_reviewer_ids": ["preloop"]}
+    assert reviewer_is_trusted(
+        policy, {"id": 1, "login": "preloop[bot]", "type": "Bot"}
+    )
+    assert reviewer_is_trusted(policy, {"id": 2, "username": "Preloop"})
+    assert not reviewer_is_trusted(
+        policy, {"id": 3, "login": "preloop-staging[bot]", "type": "Bot"}
+    )
+    assert not reviewer_is_trusted(
+        policy, {"id": 4, "login": "preloop-fan", "type": "Bot"}
+    )
+    assert not reviewer_is_trusted(
+        {"trusted_reviewer_ids": []},
+        {"id": 1, "login": "preloop[bot]"},
+    )
+    assert reviewer_is_trusted(
+        {"trusted_reviewer_ids": ["256972239"]},
+        {"id": 256972239, "login": "preloop-staging[bot]", "type": "Bot"},
+    )
