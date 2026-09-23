@@ -808,29 +808,72 @@ def _payload_within_budget(payload: dict[str, Any], max_chars: int) -> bool:
 def _single_truncated_field_fits(payload: dict[str, Any], max_chars: int) -> bool:
     """Allow one truncated string to carry its marker past the serialized budget.
 
-    A reply that is itself the per-field cap is the contract of issue 836.
-    Any second bulky field has to be omitted so the envelope stays bounded.
+    The slack is the marker only, measured on ``json.dumps`` so key names
+    and punctuation count. A second bulky field, or a key long enough to
+    blow the envelope, does not qualify.
     """
     texts = [value for value in payload.values() if isinstance(value, str)]
     if len(texts) != 1 or not texts[0].endswith(_AGENT_CONTROL_TRUNCATION_MARKER):
         return False
-    if len(texts[0]) > max_chars + len(_AGENT_CONTROL_TRUNCATION_MARKER):
-        return False
-    return all(
+    if not all(
         isinstance(value, (str, int, float, bool, type(None)))
         or _is_omission_marker(value)
         for value in payload.values()
-    )
+    ):
+        return False
+    try:
+        serialized = len(json.dumps(payload, default=str))
+    except (TypeError, ValueError):
+        return False
+    return serialized - len(_AGENT_CONTROL_TRUNCATION_MARKER) <= max_chars
+
+
+def _refit_string_field(payload: dict[str, Any], key: str, max_chars: int) -> bool:
+    """Shorten ``payload[key]`` until the envelope fits, keeping a prefix.
+
+    Returns:
+        True when the shortened field meets the hard budget or the
+        single-truncated-field slack. False when even a marker-only value
+        cannot fit; the caller should omit the field.
+    """
+    text = payload.get(key)
+    if not isinstance(text, str):
+        return False
+    original = text
+    lo = 0
+    hi = len(text)
+    best: str | None = None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if mid >= len(text):
+            candidate = text
+        else:
+            candidate = text[:mid] + _AGENT_CONTROL_TRUNCATION_MARKER
+        payload[key] = candidate
+        if _payload_within_budget(payload, max_chars) or _single_truncated_field_fits(
+            payload, max_chars
+        ):
+            best = candidate
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    if best is None:
+        payload[key] = original
+        return False
+    payload[key] = best
+    return True
 
 
 def _cap_persisted_result_payload(
     sanitized: dict[str, Any], max_chars: int
 ) -> dict[str, Any]:
-    """Drop values until the persisted envelope fits its budget.
+    """Drop or shorten values until the persisted envelope fits its budget.
 
-    Each string is already truncated. Structured values, and extra strings
-    that still push the serialized payload over ``max_chars``, become an
-    omission marker. One truncated string on its own is kept.
+    Each string is already truncated to ``max_chars``. Structured values
+    become an omission marker. A string that still blows the serialized
+    envelope is shortened so the JSON fits, marker included, before it is
+    omitted. One truncated string may exceed the budget by the marker only.
+    Key names count toward the serialized size.
     """
     if _payload_within_budget(sanitized, max_chars) or _single_truncated_field_fits(
         sanitized, max_chars
@@ -861,6 +904,8 @@ def _cap_persisted_result_payload(
         if not strings:
             return {"_omitted": "result_too_large"}
         longest = max(strings, key=lambda item: len(item[1]))[0]
+        if _refit_string_field(bounded, longest, max_chars):
+            continue
         bounded[longest] = {"_omitted": "result_too_large"}
     return bounded
 
