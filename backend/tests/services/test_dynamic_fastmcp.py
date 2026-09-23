@@ -1657,7 +1657,8 @@ class TestCreateProxiedToolWrapper:
             safe_param="ok",
             ctx=object(),
         )
-        assert isinstance(result, str)
+        assert result.is_error
+        assert "Denied by test" in result.content[0].text
         assert captured["tool_name"] == "safe_tool"
         assert captured["arguments"]["type"] == "issue"
         assert captured["arguments"]["next"] == "cursor"

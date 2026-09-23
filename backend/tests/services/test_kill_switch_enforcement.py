@@ -295,7 +295,8 @@ async def test_halt_during_approval_blocks_proxied_dispatch(db_session, test_use
             {"type": "object"},
         )
         result = await wrapper()
-    assert "kill switch" in result
+    assert result.is_error
+    assert "kill switch" in result.content[0].text
     client.call_tool.assert_not_awaited()
 
 
