@@ -130,6 +130,42 @@ class CRUDFlowFeedback:
         # Preserve the existing due time; repeated delivery cannot starve dispatch.
         db.commit()
 
+    def stopped_for_no_progress(
+        self, db: Session, *, limit: int = 20
+    ) -> list[models.FlowThread]:
+        """Threads a launch failure stopped before the agent ran."""
+        return list(
+            db.execute(
+                select(models.FlowThread)
+                .where(
+                    models.FlowThread.state == "stopped",
+                    models.FlowThread.stop_reason == "no_progress",
+                )
+                .order_by(models.FlowThread.due_at)
+                .limit(limit)
+            ).scalars()
+        )
+
+    def revive(self, db: Session, thread_id: uuid.UUID, *, now: datetime) -> bool:
+        """Return one no-progress stop to the scheduler.
+
+        The caller has already checked that the latest execution stored no
+        session. Does not commit the caller's other changes.
+        """
+        thread = db.get(models.FlowThread, thread_id)
+        if (
+            thread is None
+            or thread.state != "stopped"
+            or thread.stop_reason != "no_progress"
+        ):
+            return False
+        thread.state = "waiting"
+        thread.stop_reason = None
+        thread.no_progress = 0
+        thread.due_at = now
+        db.commit()
+        return True
+
     def claim_due(
         self, db: Session, *, now: datetime, limit: int = 20
     ) -> list[tuple[uuid.UUID, uuid.UUID]]:

@@ -1078,6 +1078,93 @@ async def test_failed_launch_without_a_session_retries_the_published_branch(
         assert crud_flow_feedback.pending(db, thread.id) == []
 
 
+@pytest.mark.asyncio
+async def test_stopped_sessionless_thread_is_picked_up_again(
+    database: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two launches that never ran must not retire the review.
+
+    The second one previously counted as no progress and the scheduler
+    stopped claiming the thread. A stopped thread in that state is returned
+    to the queue, and the next session-less failure does not stop it again.
+    """
+    from preloop.config import settings
+    from preloop.services.flow_feedback import (
+        resolve_native_checkpoint,
+        run_feedback_tick,
+    )
+
+    monkeypatch.setattr(settings, "flow_artifact_direct_upload", False)
+    with Session(database) as db:
+        thread = create_thread(db)
+        publisher = db.get(models.FlowExecution, thread.latest_execution_id)
+        assert publisher is not None
+        failed = models.FlowExecution(
+            id=uuid.uuid4(),
+            flow_id=thread.flow_id,
+            status="FAILED",
+            trigger_event_details={
+                "_model_routing": publisher.trigger_event_details["_model_routing"]
+            },
+            cli_session=None,
+            error_message="resume_failed: checkpoint uploads disabled",
+        )
+        db.add(failed)
+        thread.latest_execution_id = failed.id
+        thread.active_execution_id = None
+        thread.turns = 2
+        thread.no_progress = 2
+        thread.state = "stopped"
+        thread.stop_reason = "no_progress"
+        thread.due_at = NOW
+        db.commit()
+        crud_flow_feedback.ingest(
+            db, thread_id=thread.id, events=[event("review")], now=NOW
+        )
+        provider = SimpleNamespace(
+            read=AsyncMock(
+                return_value=FeedbackState("head", feedback=[event("review")])
+            )
+        )
+        with (
+            patch(
+                "preloop.services.flow_feedback.FeedbackProvider.for_thread",
+                AsyncMock(return_value=provider),
+            ),
+            patch(
+                "preloop.services.flow_execution_dispatcher.flow_execution_worker_enabled",
+                return_value=True,
+            ),
+            patch(
+                "preloop.services.flow_execution_dispatcher.dispatch_execute",
+                AsyncMock(return_value=False),
+            ),
+        ):
+            await run_feedback_tick(db, now=NOW)
+            db.refresh(thread)
+            assert thread.state != "stopped"
+            assert thread.no_progress == 0
+            assert thread.turns == 3
+            repair = db.get(models.FlowExecution, thread.active_execution_id)
+            assert repair is not None
+            assert resolve_native_checkpoint(
+                db,
+                account_id=thread.account_id,
+                flow_id=thread.flow_id,
+                execution_id=repair.id,
+                resume=repair.trigger_event_details["_resume"],
+            ) == {"cold_handoff_authorized": True}
+            repair.status = "FAILED"
+            repair.cli_session = None
+            thread.due_at = NOW
+            db.commit()
+            await run_feedback_tick(db, now=NOW + timedelta(seconds=31))
+        db.refresh(thread)
+        assert thread.no_progress == 0
+        assert thread.state != "stopped"
+        assert thread.turns == 4
+
+
 @pytest.mark.parametrize(
     "existing_mode", ["new", "unadopted", "native_resume", "other_source"]
 )
