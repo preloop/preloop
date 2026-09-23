@@ -149,6 +149,34 @@ def register_thread(
     )
 
 
+# A launch that dies before the agent runs. STOPPED, CANCELLED, and ABORTED
+# stop the thread on purpose and are not retried here.
+_SESSIONLESS_RETRY_STATUSES = frozenset({"FAILED", "TIMED_OUT"})
+
+
+def native_session(execution: models.FlowExecution) -> dict[str, Any]:
+    """Return the stored session dict, or an empty dict when none was stored."""
+    session = execution.cli_session
+    return session if isinstance(session, dict) else {}
+
+
+def execution_has_native_session(execution: models.FlowExecution) -> bool:
+    """True when the execution stored a session id or a checkpoint artifact.
+
+    An artifact without a session id still counts. That is a broken identity,
+    not permission to start a fresh conversation.
+    """
+    session = native_session(execution)
+    return bool(session.get("session_id") or session.get("artifact_reference"))
+
+
+def sessionless_retry(execution: models.FlowExecution) -> bool:
+    """True when this execution died before it stored a conversation to resume."""
+    return execution.status in _SESSIONLESS_RETRY_STATUSES and (
+        not execution_has_native_session(execution)
+    )
+
+
 def resolve_native_checkpoint(
     db: Session,
     *,
@@ -190,18 +218,18 @@ def resolve_native_checkpoint(
             raise ValueError("resume_failed: published branch binding mismatch")
         return {"cold_handoff_authorized": True}
 
-    # Explicit adoption, and the first repair of a publisher that never stored
-    # a session. reserve() has already incremented turns, so the first repair
-    # is turns <= 1. Checkpoint uploads being off used to fail that repair
-    # before the published branch could be used. A later repair still requires
-    # its own checkpoint.
-    session = prior.cli_session if isinstance(prior.cli_session, dict) else {}
-    # An artifact without a session id is a broken identity, not an absent
-    # session. Only a publisher that stored neither may use the published
-    # branch on its first repair.
-    has_session = bool(session.get("session_id") or session.get("artifact_reference"))
-    if source_cold_handoff(thread, prior.id) or (
-        not has_session and int(thread.turns) <= 1
+    # Explicit adoption, and a publisher that never stored a session.
+    # reserve() has already incremented turns, so the first repair is
+    # turns <= 1. A repair that failed or timed out before storing a session
+    # is the same situation on a later turn: there is no conversation to
+    # resume. A repair that finished successfully still requires its own
+    # checkpoint.
+    session = native_session(prior)
+    has_session = execution_has_native_session(prior)
+    if (
+        source_cold_handoff(thread, prior.id)
+        or (not has_session and int(thread.turns) <= 1)
+        or sessionless_retry(prior)
     ):
         return published_branch()
     if not settings.flow_artifact_direct_upload:
@@ -469,6 +497,13 @@ async def _reconcile(
         thread.no_progress = (
             thread.no_progress + 1 if thread.head_sha == state.head_sha else 0
         )
+    # A launch that died before the agent ran already consumed its reviews.
+    # Ingest will not reopen a receipt, so put those reviews back. The next
+    # reservation continues from the published branch.
+    if thread.active_execution_id is None:
+        failed = crud_flow_execution.get(db, id=thread.latest_execution_id)
+        if failed is not None and sessionless_retry(failed):
+            crud_flow_feedback.release_consumed(db, thread.id, failed.id)
     if completed_execution:
         prior_execution = crud_flow_execution.get(db, id=thread.latest_execution_id)
         # Explicit adoption authorizes continuing this historical publication,

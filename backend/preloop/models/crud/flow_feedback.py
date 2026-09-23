@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -162,6 +162,23 @@ class CRUDFlowFeedback:
         if lock:
             query = query.with_for_update()
         return db.execute(query).scalar_one_or_none()
+
+    def release_consumed(
+        self, db: Session, thread_id: uuid.UUID, execution_id: uuid.UUID
+    ) -> None:
+        """Return reviews consumed by one execution to the pending inbox.
+
+        Does not commit. The caller commits with the rest of the reconciliation.
+        """
+        db.execute(
+            update(models.FlowFeedback)
+            .where(
+                models.FlowFeedback.thread_id == thread_id,
+                models.FlowFeedback.consumed_by == execution_id,
+            )
+            .values(consumed_by=None)
+        )
+        db.flush()
 
     def pending(self, db: Session, thread_id: uuid.UUID) -> list[models.FlowFeedback]:
         return list(
