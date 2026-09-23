@@ -894,6 +894,72 @@ async def test_explicit_cold_source_reserves_once_then_requires_own_checkpoint(
                 )
 
 
+def test_first_repair_without_a_session_uses_the_published_branch(
+    database: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Uploads being off must not fail the first repair of a session-less publisher.
+
+    reserve() increments turns before the worker resolves, so that repair sees
+    turns == 1. A later turn still fails closed.
+    """
+    from preloop.config import settings
+    from preloop.services.flow_feedback import resolve_native_checkpoint
+
+    monkeypatch.setattr(settings, "flow_artifact_direct_upload", False)
+    with Session(database) as db:
+        thread = create_thread(db)
+        prior = db.get(models.FlowExecution, thread.latest_execution_id)
+        assert prior is not None
+        prior.cli_session = None
+        repair = models.FlowExecution(
+            id=uuid.uuid4(),
+            flow_id=thread.flow_id,
+            status="PENDING",
+            trigger_event_details={},
+        )
+        db.add(repair)
+        thread.active_execution_id = repair.id
+        thread.turns = 1
+        db.commit()
+        resume = {
+            "thread_id": str(thread.id),
+            "execution_id": str(prior.id),
+            "pr_url": thread.pr_url,
+            "source_branch": thread.branch,
+        }
+        assert resolve_native_checkpoint(
+            db,
+            account_id=thread.account_id,
+            flow_id=thread.flow_id,
+            execution_id=repair.id,
+            resume=resume,
+        ) == {"cold_handoff_authorized": True}
+        prior.cli_session = {
+            "agent_type": "codex",
+            "session_id": str(uuid.uuid4()),
+        }
+        db.commit()
+        with pytest.raises(ValueError, match="checkpoint uploads disabled"):
+            resolve_native_checkpoint(
+                db,
+                account_id=thread.account_id,
+                flow_id=thread.flow_id,
+                execution_id=repair.id,
+                resume=resume,
+            )
+        prior.cli_session = None
+        thread.turns = 2
+        db.commit()
+        with pytest.raises(ValueError, match="checkpoint uploads disabled"):
+            resolve_native_checkpoint(
+                db,
+                account_id=thread.account_id,
+                flow_id=thread.flow_id,
+                execution_id=repair.id,
+                resume=resume,
+            )
+
+
 @pytest.mark.parametrize(
     "existing_mode", ["new", "unadopted", "native_resume", "other_source"]
 )

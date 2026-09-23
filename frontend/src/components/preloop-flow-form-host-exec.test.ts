@@ -140,10 +140,22 @@ describe('PreloopFlowForm host execution submit', () => {
       'These flow tool settings do not apply.'
     );
     expect(
-      element.shadowRoot
-        ?.querySelector('sl-select[label="Requested AI Model"]')
-        ?.getAttribute('help-text')
-    ).to.include('local profile');
+      element.shadowRoot?.querySelector('sl-select[label="AI model"]')
+    ).to.equal(null);
+    expect(element.shadowRoot?.textContent).to.include('not Grok 4.7');
+    const model = element.shadowRoot?.querySelector(
+      '[data-cursor-model]'
+    ) as HTMLInputElement;
+    expect(model).to.exist;
+    model.value = 'grok-4.7-high';
+    model.dispatchEvent(new CustomEvent('sl-input'));
+    await element.updateComplete;
+    const pinned = oneEvent(element, 'flow-submit');
+    void (element as any).handleFormSubmit(new Event('submit'));
+    const pinnedEvent = await pinned;
+    expect(pinnedEvent.detail.flow.agent_config.cursor_model).to.equal(
+      'grok-4.7-high'
+    );
   });
 
   it('omits host_exec_profile when saving a Docker harness', async () => {

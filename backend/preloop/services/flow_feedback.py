@@ -181,17 +181,32 @@ def resolve_native_checkpoint(
     )
     if prior is None or prior.flow_id != flow_id:
         raise ValueError("resume_failed: checkpoint execution mismatch")
-    if not settings.flow_artifact_direct_upload:
-        raise ValueError("resume_failed: checkpoint uploads disabled")
-    if source_cold_handoff(thread, prior.id):
+
+    def published_branch() -> dict[str, Any]:
         if (
             resume.get("pr_url") != thread.pr_url
             or resume.get("source_branch") != thread.branch
         ):
             raise ValueError("resume_failed: published branch binding mismatch")
         return {"cold_handoff_authorized": True}
-    session = prior.cli_session
-    if not isinstance(session, dict):
+
+    # Explicit adoption, and the first repair of a publisher that never stored
+    # a session. reserve() has already incremented turns, so the first repair
+    # is turns <= 1. Checkpoint uploads being off used to fail that repair
+    # before the published branch could be used. A later repair still requires
+    # its own checkpoint.
+    session = prior.cli_session if isinstance(prior.cli_session, dict) else {}
+    # An artifact without a session id is a broken identity, not an absent
+    # session. Only a publisher that stored neither may use the published
+    # branch on its first repair.
+    has_session = bool(session.get("session_id") or session.get("artifact_reference"))
+    if source_cold_handoff(thread, prior.id) or (
+        not has_session and int(thread.turns) <= 1
+    ):
+        return published_branch()
+    if not settings.flow_artifact_direct_upload:
+        raise ValueError("resume_failed: checkpoint uploads disabled")
+    if not has_session:
         raise ValueError("resume_failed: native checkpoint missing")
     from preloop.agents.cli_session import valid_session_id
 

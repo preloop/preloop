@@ -73,8 +73,11 @@ Current normalized label arrays take precedence, including an empty array. Provi
 
 
 Private Cursor defaults require a valid named `host_exec_profile` and an explicit
-private runner pool. Selected models must be account-visible LLM rows; the local
-profile supplies credentials and the model mapping. This does not enable Cursor
+private runner pool. The console does not use the Preloop model catalog for
+Cursor. Leave Cursor model blank for Cursor Auto, or set
+`agent_config.cursor_model` to a Cursor model id that the runner profile
+maps. A saved catalog model still supplies the requested identifier when
+`cursor_model` is empty. This does not enable Cursor
 rule targets, eval matrix entries, hosted execution, or native session resume.
 The runner must independently support the native profile. Empty routing rule
 sets behave like absent routing configuration.

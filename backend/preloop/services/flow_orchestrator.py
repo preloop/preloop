@@ -2319,6 +2319,13 @@ class FlowExecutionOrchestrator:
                 raise ValueError(
                     "Host profiles do not support remote workspace seeds or native resume"
                 )
+            config = (
+                self.flow.agent_config
+                if isinstance(self.flow.agent_config, dict)
+                else {}
+            )
+            requested = config.get("cursor_model")
+            cursor_model = requested.strip() if isinstance(requested, str) else ""
             return {
                 "flow_id": str(self.flow_id),
                 "flow_name": self.flow.name,
@@ -2327,11 +2334,11 @@ class FlowExecutionOrchestrator:
                 "agent_type": "cursor",
                 "agent_config": {"host_exec_profile": profile},
                 "account_id": self.flow.account_id,
-                # A request for the local profile's explicit model map. This is
-                # never a claim about the model Cursor actually reported.
-                "model_identifier": self.ai_model.model_identifier
-                if self.ai_model
-                else None,
+                # cursor_model is a Cursor model id. A catalog model remains the
+                # fallback for a saved flow. Neither value is the model Cursor
+                # reports, and an empty value leaves --model unset (Cursor Auto).
+                "model_identifier": cursor_model
+                or (self.ai_model.model_identifier if self.ai_model else None),
             }
 
         # Create short-lived API token for this flow execution

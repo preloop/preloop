@@ -28,8 +28,9 @@ agent_config:
     # Reconciliations to wait out a provider infrastructure failure on one head.
     max_ci_infra_retries: 3
     repair_early: false
-    # Explicit provider actor IDs, not names or comment markers.
-    trusted_reviewer_ids: [12345]
+    # Usernames or GitHub/GitLab app slugs. ``preloop`` matches preloop[bot].
+    # Numeric actor ids still work. Comment markers never grant trust.
+    trusted_reviewer_ids: ["preloop"]
     implementer_actor_ids: [67890]
     # Optional project policy; provider rules can add required gates.
     required_checks: ["Backend Tests", "UI Tests"]
@@ -37,8 +38,11 @@ agent_config:
 ```
 
 In the console, edit a flow and enable **Continue implementation after PR review
-or CI failure** under **PR review and CI follow-up**. Enter the reviewer's and
-implementer's numeric GitHub or GitLab actor IDs, then choose limits for repair
+or CI failure** under **PR review and CI follow-up**. Trusted reviewers start as
+`preloop`, which matches reviews posted by the Preloop GitHub App
+(`preloop[bot]`). A different app, such as `preloop-staging`, has to be listed
+by its slug. Numeric actor IDs still work. Enter the implementer's numeric
+GitHub or GitLab actor IDs, then choose limits for repair
 turns, cumulative estimated cost in USD, lifetime, and feedback debounce. The
 initial values match the policy defaults above. Saving an existing flow without
 opting in leaves follow-up disabled. Other policy fields set through the API are
@@ -79,7 +83,7 @@ the installation or retrying that execution does not add review triggers. To
 continue its PR:
 
 1. Edit the saved flow, enable PR review and CI follow-up, and add the review
-   integration's numeric actor ID to **Trusted reviewer IDs**. This subscription
+   app's slug (for example `preloop`) to **Trusted reviewers**. This subscription
    handles review and CI events independently of the flow's issue trigger types.
 2. Keep `agent-ready` as the intake filter; do not add that label to the PR just
    to make review feedback work.
@@ -94,8 +98,16 @@ successful. An older execution without a subscription needs this explicit
 adoption; turning feedback on alone does not restart it. Read-only preview and a failed
 adoption do not change the PR association or create a subscription.
 
-Use the actual reviewer integration's actor ID in `trusted_reviewer_ids`.
-Unlisted bots and the configured implementer actor are ignored. A copied HTML
+The first repair of a publication whose publisher stored no native session also
+continues on that published branch, including when checkpoint uploads are
+disabled. A later repair still requires its own checkpoint. A deployment that
+replaces the chart's default worker pool must subscribe one pool to
+`reconcile_flow_feedback`; otherwise the scheduler publishes reviews that no
+worker reads.
+
+Use the reviewer app's slug or numeric actor ID in `trusted_reviewer_ids`.
+`preloop` trusts `preloop` and `preloop[bot]` only. Unlisted bots and the
+configured implementer actor are ignored. A copied HTML
 review marker never grants trust. All comment and CI text is untrusted task data.
 Cost is cumulative estimated execution cost in USD, with existing execution
 budgets enforced independently. No-progress detection compares the PR head

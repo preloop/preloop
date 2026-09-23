@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- PR follow-up trusts a reviewer by username or GitHub App slug. Enabling
+  follow-up starts with `preloop`, which matches reviews from `preloop[bot]`.
+  An empty list still ignores every bot. Cursor flows no longer ask for a
+  Preloop catalog model. Leave Cursor model blank to use Cursor Auto, or set
+  a Cursor model id such as `grok-4.7-high` and map it on the runner profile.
+  The first repair of a publication that stored no native session continues
+  on the published branch when checkpoint uploads are disabled. A later
+  repair still requires its own checkpoint.
 - Pi and DeepSeek can check out a pull request on Kubernetes. The workspace
   volume stays owned by root, so Git accepted the clone and then refused
   the commit checkout as dubious ownership. Both harnesses run as that
