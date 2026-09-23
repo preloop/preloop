@@ -626,6 +626,8 @@ async def test_get_result_preserves_full_reply_text_beyond_console_cap(
 
 
 def test_sanitize_agent_control_result_payload_preserves_large_outputs() -> None:
+    import json
+
     from preloop.api.endpoints.agent_control import (
         _MAX_AGENT_CONTROL_PAYLOAD_CHARS,
         _MAX_AGENT_CONTROL_RESULT_CHARS,
@@ -670,7 +672,16 @@ def test_sanitize_agent_control_result_payload_preserves_large_outputs() -> None
     bounded = _sanitize_agent_control_result_payload(oversized)
     assert bounded["reply_text"] == "kept"
     assert bounded["result"] == {"_omitted": "result_too_large"}
-    assert bounded["log"].endswith("...[truncated]")
-    assert len(bounded["log"]) == _MAX_AGENT_CONTROL_RESULT_CHARS + len(
-        "...[truncated]"
-    )
+    assert bounded["log"] == {"_omitted": "result_too_large"}
+    assert len(json.dumps(bounded)) <= _MAX_AGENT_CONTROL_RESULT_CHARS
+
+    supplied = {
+        "reply_text": "ok",
+        "payload": {
+            "_omitted": "result_too_large",
+            "blob": "Q" * (_MAX_AGENT_CONTROL_RESULT_CHARS + 100),
+        },
+    }
+    guarded = _sanitize_agent_control_result_payload(supplied)
+    assert guarded["reply_text"] == "ok"
+    assert guarded["payload"] == {"_omitted": "result_too_large", "type": "dict"}

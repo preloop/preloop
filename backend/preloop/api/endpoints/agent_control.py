@@ -777,13 +777,24 @@ _AGENT_CONTROL_TRUNCATE_KEYS = frozenset(
 )
 _MAX_AGENT_CONTROL_PAYLOAD_CHARS = 4096
 _MAX_AGENT_CONTROL_RESULT_CHARS = 1_048_576
+_AGENT_CONTROL_TRUNCATION_MARKER = "...[truncated]"
+_AGENT_CONTROL_OMISSION_MARKERS = frozenset({"result_too_large", "structured_result"})
 
 
 def _truncate_agent_control_text(value: str, max_chars: int) -> str:
     """Cap one string field, keeping a marker when the tail is dropped."""
     if len(value) > max_chars:
-        return value[:max_chars] + "...[truncated]"
+        return value[:max_chars] + _AGENT_CONTROL_TRUNCATION_MARKER
     return value
+
+
+def _is_omission_marker(value: Any) -> bool:
+    """True for a marker this sanitizer wrote, not an agent-supplied dict."""
+    return (
+        isinstance(value, dict)
+        and set(value) <= {"_omitted", "type"}
+        and value.get("_omitted") in _AGENT_CONTROL_OMISSION_MARKERS
+    )
 
 
 def _payload_within_budget(payload: dict[str, Any], max_chars: int) -> bool:
@@ -794,41 +805,63 @@ def _payload_within_budget(payload: dict[str, Any], max_chars: int) -> bool:
         return False
 
 
+def _single_truncated_field_fits(payload: dict[str, Any], max_chars: int) -> bool:
+    """Allow one truncated string to carry its marker past the serialized budget.
+
+    A reply that is itself the per-field cap is the contract of issue 836.
+    Any second bulky field has to be omitted so the envelope stays bounded.
+    """
+    texts = [value for value in payload.values() if isinstance(value, str)]
+    if len(texts) != 1 or not texts[0].endswith(_AGENT_CONTROL_TRUNCATION_MARKER):
+        return False
+    if len(texts[0]) > max_chars + len(_AGENT_CONTROL_TRUNCATION_MARKER):
+        return False
+    return all(
+        isinstance(value, (str, int, float, bool, type(None)))
+        or _is_omission_marker(value)
+        for value in payload.values()
+    )
+
+
 def _cap_persisted_result_payload(
     sanitized: dict[str, Any], max_chars: int
 ) -> dict[str, Any]:
-    """Drop structured values once the persisted envelope exceeds its budget.
+    """Drop values until the persisted envelope fits its budget.
 
-    Per-field truncation already caps each string. A structured ``result``
-    (or any other non-scalar) can still exceed the command-row budget on its
-    own, so those values become an omission marker. A single truncated string
-    that is itself the budget is left as-is.
+    Each string is already truncated. Structured values, and extra strings
+    that still push the serialized payload over ``max_chars``, become an
+    omission marker. One truncated string on its own is kept.
     """
-    if _payload_within_budget(sanitized, max_chars):
+    if _payload_within_budget(sanitized, max_chars) or _single_truncated_field_fits(
+        sanitized, max_chars
+    ):
         return sanitized
     capped = dict(sanitized)
-    if "result" in capped:
-        result = capped["result"]
-        already_omitted = (
-            isinstance(result, dict) and result.get("_omitted") == "result_too_large"
-        )
-        if not already_omitted:
-            capped["result"] = {"_omitted": "result_too_large"}
-            if _payload_within_budget(capped, max_chars):
-                return capped
+    if "result" in capped and not _is_omission_marker(capped["result"]):
+        capped["result"] = {"_omitted": "result_too_large"}
+        if _payload_within_budget(capped, max_chars):
+            return capped
     bounded: dict[str, Any] = {}
     for key, value in capped.items():
         if isinstance(value, (str, int, float, bool, type(None))):
             bounded[key] = value
-        elif isinstance(value, dict) and value.get("_omitted"):
+        elif _is_omission_marker(value):
             bounded[key] = value
         else:
             bounded[key] = {
                 "_omitted": "result_too_large",
                 "type": type(value).__name__,
             }
-    if _payload_within_budget(bounded, max_chars):
-        return bounded
+    while not _payload_within_budget(
+        bounded, max_chars
+    ) and not _single_truncated_field_fits(bounded, max_chars):
+        strings = [
+            (key, value) for key, value in bounded.items() if isinstance(value, str)
+        ]
+        if not strings:
+            return {"_omitted": "result_too_large"}
+        longest = max(strings, key=lambda item: len(item[1]))[0]
+        bounded[longest] = {"_omitted": "result_too_large"}
     return bounded
 
 
