@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Pi and DeepSeek can check out a pull request on Kubernetes. The workspace
+  volume stays owned by root, so Git accepted the clone and then refused
+  the commit checkout as dubious ownership. Both harnesses run as that
+  non-root user.
+
 - Codex no longer opens a Preloop MCP session when both MCP allowlists are
   empty, so a failing HTTP transport cannot reconnect until the flow
   timeout. `agent_config.sandbox_type: read-only` launches Codex with
