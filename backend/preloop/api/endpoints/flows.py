@@ -1472,6 +1472,9 @@ def get_flow_execution_metrics(
         - cost_is_partial: Whether estimated_cost excludes unpriced requests
         - unpriced_requests: Requests that could not be priced
         - unpriced_tokens: Token volume behind the unpriced requests
+        - limits: Configured per-execution ceilings (only keys that are set)
+        - limit_status: Current usage against those ceilings
+          (``total_tokens``, ``estimated_cost_usd``, ``turns``)
     """
     from preloop.services.execution_metrics import ExecutionMetricsService
 

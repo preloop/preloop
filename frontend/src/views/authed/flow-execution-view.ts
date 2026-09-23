@@ -2950,14 +2950,14 @@ ${execution.resolved_input_prompt}</pre>
     const usdLimit = limits?.max_usd;
     const tokenCeiling =
       tokenLimit !== undefined
-        ? html`<span class="strip-note"
-            > / ${formatTokenCount(tokenLimit)}</span
+        ? html`<span class="strip-note">
+            / ${formatTokenCount(tokenLimit)}</span
           >`
         : '';
     const costCeiling =
       usdLimit !== undefined
-        ? html`<span class="strip-note"
-            > / ${formatEstimatedCost(usdLimit)}</span
+        ? html`<span class="strip-note">
+            / ${formatEstimatedCost(usdLimit)}</span
           >`
         : '';
 

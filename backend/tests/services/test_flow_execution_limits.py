@@ -22,7 +22,7 @@ from preloop.models.crud import (
 from preloop.models.schemas.flow import FlowCreate
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from preloop.services.flow_execution_limits import (
-    ExecutionBudgetExceeded,
+    ExecutionBudgetExceededError,
     ExecutionLimits,
     ExecutionUsage,
     enforce_execution_limits_for_id,
@@ -102,9 +102,7 @@ def test_parse_limits_reads_positive_values_and_ignores_junk():
     limits = parse_execution_limits(
         {"limits": {"max_total_tokens": "1000", "max_usd": 2, "max_turns": 5}}
     )
-    assert limits == ExecutionLimits(
-        max_total_tokens=1000, max_usd=2.0, max_turns=5
-    )
+    assert limits == ExecutionLimits(max_total_tokens=1000, max_usd=2.0, max_turns=5)
     assert parse_execution_limits(None).is_empty
     assert parse_execution_limits({}).is_empty
     assert parse_execution_limits({"limits": "nope"}).is_empty
@@ -151,7 +149,7 @@ def test_token_ceiling_refuses_and_marks_execution_failed(
     _log_usage(db_session, test_user, flow, execution, total_tokens=150)
     db_session.commit()
 
-    with pytest.raises(ExecutionBudgetExceeded) as raised:
+    with pytest.raises(ExecutionBudgetExceededError) as raised:
         enforce_execution_limits_for_id(db_session, execution_id=execution.id)
 
     assert "Execution budget exceeded" in raised.value.message
@@ -202,7 +200,7 @@ def test_usd_ceiling_uses_priced_usage(db_session: Session, test_user):
     )
     db_session.commit()
 
-    with pytest.raises(ExecutionBudgetExceeded) as raised:
+    with pytest.raises(ExecutionBudgetExceededError) as raised:
         enforce_execution_limits_for_id(db_session, execution_id=execution.id)
     assert "USD ceiling" in raised.value.message
     db_session.refresh(execution)
@@ -237,7 +235,7 @@ def test_turn_ceiling_counts_one_turn_per_gateway_request(
     _log_usage(db_session, test_user, flow, execution, total_tokens=10)
     db_session.commit()
 
-    with pytest.raises(ExecutionBudgetExceeded) as raised:
+    with pytest.raises(ExecutionBudgetExceededError) as raised:
         enforce_execution_limits_for_id(db_session, execution_id=execution.id)
     assert "turn ceiling" in raised.value.message
 
@@ -276,7 +274,7 @@ def test_terminal_execution_is_never_rewritten(db_session: Session, test_user):
 
     # A late request is still refused (the ceiling is spent), but a recorded
     # success keeps its own outcome rather than being rewritten to a failure.
-    with pytest.raises(ExecutionBudgetExceeded):
+    with pytest.raises(ExecutionBudgetExceededError):
         enforce_execution_limits_for_id(db_session, execution_id=execution.id)
     db_session.refresh(execution)
     assert execution.status == "SUCCEEDED"

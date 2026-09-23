@@ -9812,9 +9812,10 @@ class OpenAIGatewayService:
         and emit a verdict; this method only refuses the request *after* the
         ceiling is known to be spent.
 
-        Flows without limits, credentials with no execution context, and every run
-        that has not reached a ceiling are all no-ops, so the gateway hot path
-        is unchanged for them.
+        Credentials with no execution context return immediately. When an
+        execution id is present, the execution and its flow are loaded so a
+        ceiling set mid-run is visible; the usage aggregate is skipped only
+        when that flow has no ceilings configured.
         """
         if not self.auth_context.api_key:
             return
@@ -9824,13 +9825,13 @@ class OpenAIGatewayService:
             return
 
         from preloop.services.flow_execution_limits import (
-            ExecutionBudgetExceeded,
+            ExecutionBudgetExceededError,
             enforce_execution_limits_for_id,
         )
 
         try:
             enforce_execution_limits_for_id(self.db, execution_id=execution_id)
-        except ExecutionBudgetExceeded as exc:
+        except ExecutionBudgetExceededError as exc:
             logger.warning(
                 "Gateway request refused by per-execution ceiling: "
                 "execution=%s kind=%s limit=%s observed=%s",
@@ -9839,6 +9840,14 @@ class OpenAIGatewayService:
                 exc.violation.limit,
                 exc.violation.observed,
             )
+            # enforce_* already marked the execution FAILED on this session.
+            # Commit that mark before raising: with owns_db_session the
+            # gateway_database_scope finally closes without commit and would
+            # otherwise roll the failure back, leaving the run RUNNING.
+            # Do not _record_gateway_request here — a usage row would count as
+            # another turn toward max_turns (turns == api_requests).
+            if self._owns_db_session:
+                self.release_db_for_wait()
             raise ModelGatewayAPIError(
                 provider=gateway_provider,
                 status_code=403,

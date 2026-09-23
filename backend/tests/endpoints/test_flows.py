@@ -1045,6 +1045,61 @@ async def test_read_flow_execution_not_found(
     assert "not found" in str(exc_info.value.detail).lower()
 
 
+def test_get_flow_execution_metrics_includes_limits_and_limit_status(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Pins limits and limit_status on the execution metrics response."""
+    execution_id = uuid.uuid4()
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    execution = MagicMock()
+    execution.id = execution_id
+    mock_crud_flow_execution.get.return_value = execution
+
+    mock_metrics_service = mocker.patch(
+        "preloop.services.execution_metrics.ExecutionMetricsService"
+    )
+    mock_metrics_service.return_value.get_execution_metrics.return_value = {
+        "tool_calls": 0,
+        "api_requests": 1,
+        "token_usage": {"total_tokens": 250, "input_tokens": 200, "output_tokens": 50},
+        "estimated_cost": 1.5,
+        "has_pricing": True,
+        "cost_is_partial": False,
+        "unpriced_requests": 0,
+        "unpriced_tokens": 0,
+    }
+
+    from preloop.services.flow_execution_limits import ExecutionLimits, ExecutionUsage
+
+    mocker.patch(
+        "preloop.services.flow_execution_limits.describe_execution_limits",
+        return_value=(
+            ExecutionLimits(max_total_tokens=1000, max_usd=5.0, max_turns=10),
+            ExecutionUsage(total_tokens=250, cost_usd=1.5, turns=3),
+        ),
+    )
+
+    result = flows.get_flow_execution_metrics(
+        db=MagicMock(), execution_id=execution_id, current_user=mock_account
+    )
+
+    assert "limits" in result
+    assert "limit_status" in result
+    assert result["limits"] == {
+        "max_total_tokens": 1000,
+        "max_usd": 5.0,
+        "max_turns": 10,
+    }
+    assert result["limit_status"] == {
+        "total_tokens": 250,
+        "estimated_cost_usd": 1.5,
+        "turns": 3,
+    }
+
+
 @pytest.mark.asyncio
 async def test_get_flow_execution_result(mock_account: Account, mocker: MockerFixture):
     """Tests that the structured result artifact is returned when present."""

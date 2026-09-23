@@ -45,6 +45,7 @@ empty :class:`ExecutionLimits` and callers do no accounting.
 
 from __future__ import annotations
 
+import math
 import logging
 import uuid
 from dataclasses import dataclass
@@ -85,7 +86,7 @@ TERMINAL_STATUSES = frozenset(
 _EPSILON = 1e-9
 
 
-class ExecutionBudgetExceeded(Exception):
+class ExecutionBudgetExceededError(Exception):
     """A run has reached one of its own per-execution ceilings.
 
     Carries the structured :class:`LimitViolation` that produced it so the
@@ -176,13 +177,13 @@ def _positive_float(value: Any) -> Optional[float]:
         parsed = float(value)
     except (TypeError, ValueError):
         return None
-    if parsed <= 0 or parsed != parsed or parsed in (float("inf"), float("-inf")):
+    if parsed <= 0 or math.isnan(parsed) or parsed in (float("inf"), float("-inf")):
         return None
     return parsed
 
 
 def parse_execution_limits(
-    agent_config: Optional[Mapping[str, Any]]
+    agent_config: Optional[Mapping[str, Any]],
 ) -> ExecutionLimits:
     """Extract the ceilings from an ``agent_config`` mapping, tolerantly.
 
@@ -340,9 +341,7 @@ def limit_violation_message(violation: LimitViolation) -> str:
     return f"Execution budget exceeded: {violation.message}"
 
 
-def mark_execution_budget_exceeded(
-    db: Session, execution: Any, message: str
-) -> None:
+def mark_execution_budget_exceeded(db: Session, execution: Any, message: str) -> None:
     """Record a run refused for crossing its own ceiling as FAILED.
 
     The gateway sees the ceiling before the orchestrator does; writing the
@@ -400,7 +399,7 @@ def enforce_execution_limits_for_id(db: Session, *, execution_id: Any) -> None:
         execution_id: The execution id from the credential context.
 
     Raises:
-        ExecutionBudgetExceeded: The run has reached one of its ceilings. The
+        ExecutionBudgetExceededError: The run has reached one of its ceilings. The
             execution row has been marked FAILED first when it was still
             running.
     """
@@ -451,7 +450,7 @@ def enforce_execution_limits_for_id(db: Session, *, execution_id: Any) -> None:
     # because the row is no longer RUNNING. mark_* is a no-op for terminal
     # rows, so a success is still never rewritten.
     mark_execution_budget_exceeded(db, execution, message)
-    raise ExecutionBudgetExceeded(message, violation=violation)
+    raise ExecutionBudgetExceededError(message, violation=violation)
 
 
 def describe_execution_limits(
