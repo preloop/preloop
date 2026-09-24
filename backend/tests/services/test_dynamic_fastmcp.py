@@ -2359,3 +2359,106 @@ class TestApprovalDenialUsageOutcome:
         assert all(
             call.kwargs.get("status") != "succeeded" for call in persist.call_args_list
         )
+
+
+class TestProxiedTransportFailureUsageOutcome:
+    """A raising upstream client must not be recorded as succeeded."""
+
+    async def test_client_call_tool_raise_records_failed(
+        self, dynamic_mcp, user_context, monkeypatch
+    ):
+        """The wrapper's except path stamps failed, not a success string."""
+        from fastmcp.tools.tool import ToolResult
+
+        user_context.runtime_session_id = str(uuid4())
+        dynamic_mcp.set_user_context_provider(lambda: user_context)
+        persist = MagicMock()
+        client = MagicMock()
+        client.call_tool = AsyncMock(side_effect=RuntimeError("connection closed"))
+
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.get_db",
+            lambda: iter([MagicMock()]),
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.kill_switch_service.tools_halted",
+            lambda db, account_id: False,
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+            lambda *args, **kwargs: [],
+        )
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            "preloop.models.db.session.get_async_db_session",
+            lambda: mock_session,
+        )
+        monkeypatch.setattr(
+            "preloop.services.policy_evaluator.evaluate_policy_async",
+            AsyncMock(return_value=("allow", None, None)),
+        )
+        monkeypatch.setattr(
+            dynamic_mcp,
+            "list_tools",
+            AsyncMock(
+                return_value=[Tool(name="safe_tool", description="Safe", parameters={})]
+            ),
+        )
+        monkeypatch.setattr(
+            "preloop.services.approval_helper.require_approval",
+            AsyncMock(return_value=(True, None)),
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.crud_mcp_server.get",
+            MagicMock(
+                return_value=MagicMock(
+                    name="upstream",
+                    url="http://example.test",
+                    auth_type="none",
+                    auth_config={},
+                    transport="http",
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.get_mcp_client_pool",
+            lambda: MagicMock(get_client=AsyncMock(return_value=client)),
+        )
+        monkeypatch.setattr(
+            dynamic_mcp,
+            "_halt_dispatch_denial",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(dynamic_mcp, "_persist_tool_call_activity", persist)
+
+        wrapper = dynamic_mcp._create_proxied_tool_wrapper(
+            tool_name="safe_tool",
+            server_id="server-123",
+            account_id=user_context.account_id,
+            description="Safe tool",
+            input_schema={"properties": {"ok": {"type": "string"}}},
+        )
+        safe_account_id = user_context.account_id.replace("-", "_")
+        internal_name = f"account_{safe_account_id}_safe_tool"
+        dynamic_mcp.tool()(wrapper)
+        dynamic_mcp._registered_proxied_tools.add(internal_name)
+        dynamic_mcp._proxied_tool_servers["safe_tool"] = "server-123"
+
+        result = await dynamic_mcp.call_tool("safe_tool", {"ok": "yes"})
+
+        assert isinstance(result, ToolResult)
+        assert result.is_error
+        assert "connection closed" in result.content[0].text
+        failed_calls = [
+            call
+            for call in persist.call_args_list
+            if call.kwargs.get("status") == "failed"
+        ]
+        assert len(failed_calls) == 1
+        assert failed_calls[0].kwargs["client_tool_name"] == "safe_tool"
+        assert "connection closed" in (failed_calls[0].kwargs.get("summary") or "")
+        assert all(
+            call.kwargs.get("status") != "succeeded" for call in persist.call_args_list
+        )

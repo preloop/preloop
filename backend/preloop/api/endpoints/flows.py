@@ -1,7 +1,7 @@
 import asyncio
-import uuid
 import secrets
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
 from typing import Annotated, Any, Dict, List, NoReturn, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -924,6 +924,7 @@ def read_flow_execution(
                 "result_summary": row.summary if succeeded else None,
                 "error": None if succeeded else row.summary,
                 "correlation_id": (row.metadata_ or {}).get("correlation_id"),
+                "started_at": (row.metadata_ or {}).get("started_at"),
                 "arguments_summary": (row.metadata_ or {}).get("arguments_summary"),
             }
 
@@ -976,9 +977,9 @@ def _parse_mcp_log_timestamp(value: Any) -> Optional[datetime]:
     return None
 
 
-# One recorded activity retires one parsed marker. Markers and rows for the
-# same call can be a few seconds apart when the agent log is scraped after
-# the gateway write.
+# Slack around a call's [started_at, timestamp] interval. Parsed markers
+# are stamped at call start and gateway rows at call end, so a fixed window
+# around the row timestamp misses any call longer than the window.
 _MCP_USAGE_MATCH_WINDOW_SECONDS = 5.0
 
 
@@ -990,7 +991,9 @@ def _match_parsed_mcp_marker(
     """Return the index of one parsed marker matching a recorded activity.
 
     Prefers correlation_id when both sides carry it; otherwise matches the
-    same client-visible tool_name by nearest timestamp within a short window.
+    same client-visible tool_name when the marker falls inside
+    ``[started_at - slack, timestamp + slack]``. Rows without ``started_at``
+    use the row timestamp for both ends. Nearest marker wins, one to one.
 
     Args:
         activity: Recorded gateway usage row projected for the timeline.
@@ -1011,7 +1014,10 @@ def _match_parsed_mcp_marker(
     act_tool = activity.get("tool_name")
     if not act_tool:
         return None
-    act_ts = _parse_mcp_log_timestamp(activity.get("timestamp"))
+    act_end = _parse_mcp_log_timestamp(activity.get("timestamp"))
+    act_start = _parse_mcp_log_timestamp(activity.get("started_at")) or act_end
+    if act_end is None:
+        act_end = act_start
     best_index: Optional[int] = None
     best_delta: Optional[float] = None
     for index, parsed in enumerate(parsed_logs):
@@ -1020,16 +1026,25 @@ def _match_parsed_mcp_marker(
         if parsed.get("tool_name") != act_tool:
             continue
         parsed_ts = _parse_mcp_log_timestamp(parsed.get("timestamp"))
-        if act_ts is None or parsed_ts is None:
+        if act_end is None or parsed_ts is None:
             # Same tool name without usable timestamps: retire the first
             # unmatched marker so one recorded call still maps to one parse.
             if best_index is None:
                 return index
             continue
-        delta = abs((act_ts - parsed_ts).total_seconds())
-        if delta <= _MCP_USAGE_MATCH_WINDOW_SECONDS and (
-            best_delta is None or delta < best_delta
-        ):
+        if act_start is not None and act_end is not None and act_start > act_end:
+            act_start, act_end = act_end, act_start
+        window_start = act_start - timedelta(seconds=_MCP_USAGE_MATCH_WINDOW_SECONDS)
+        window_end = act_end + timedelta(seconds=_MCP_USAGE_MATCH_WINDOW_SECONDS)
+        if parsed_ts < window_start or parsed_ts > window_end:
+            continue
+        if parsed_ts < act_start:
+            delta = (act_start - parsed_ts).total_seconds()
+        elif parsed_ts > act_end:
+            delta = (parsed_ts - act_end).total_seconds()
+        else:
+            delta = 0.0
+        if best_delta is None or delta < best_delta:
             best_index = index
             best_delta = delta
     return best_index

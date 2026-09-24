@@ -129,3 +129,7 @@ connection on these paths.
 3.  **MCP Client:** Receives the HTTP response containing the tool's output.
 
 The `preloop tools list|describe|exec` CLI commands reuse this same `/mcp/v1` surface, so the backend remains the single source of truth for tool visibility and policy enforcement.
+
+## Governed usage rows
+
+Each governed tool call writes one `runtime_session_activity` row. `status` is `succeeded`, `refused` (a policy or approval denial), or `failed` (the handler or the upstream server errored). Older rows may still say `success`; readers treat any status that starts with `succ` as success. The row does not store the argument payload. `metadata.arguments_summary` is key names and sizes, and `metadata.arguments_hash` distinguishes same-shape calls for loop detection. `metadata.started_at` is the call start, so a timeline can match a parsed "detected" marker (stamped at start) to the row (stamped at end) for calls longer than a few seconds. The execution detail's `mcp_usage_logs` entries expose `status`, `summary`, `error`, and `arguments_summary` rather than the raw metadata object.

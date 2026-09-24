@@ -1228,12 +1228,16 @@ async def {internal_name}({params_str}):
             exc_info=True,
         )
         if is_mcp_unavailable_error(cause):
-            return (
+            return _wrapper_tool_error(
                 f"The '{{server_label}}' MCP server is temporarily unavailable, so the "
                 f"'{{tool_name}}' tool could not run. Please retry in a moment; if it "
-                f"keeps happening the server may be down."
+                f"keeps happening the server may be down.",
+                status="failed",
             )
-        return f"Error executing tool '{{tool_name}}': {{cause}}"
+        return _wrapper_tool_error(
+            f"Error executing tool '{{tool_name}}': {{cause}}",
+            status="failed",
+        )
 """
 
         # Create local namespace with required variables. Keys must match
@@ -1770,8 +1774,10 @@ async def {internal_name}({params_str}):
             # One usage row per governed call, carrying the outcome
             # (succeeded/refused/failed) and a bounded argument summary, so the
             # execution timeline can tell a refusal from a success. A wrapper
-            # denial returns ToolResult(is_error=True); treat that as
-            # refused/failed rather than succeeded.
+            # denial returns ToolResult(is_error=True) with a stamped outcome.
+            # An un-stamped error result means the handler ran and failed
+            # (FastMCP turning a raise into is_error); that is failed, not
+            # refused. Refused is only the stamped and _refuse paths.
             if user_context is not None:
                 result_error_text = _tool_result_error_text(result)
                 if exec_status == "failed":
@@ -1784,7 +1790,7 @@ async def {internal_name}({params_str}):
                     activity_status = wrapper_outcome
                     activity_summary = result_error_text or exec_error
                 elif result_error_text is not None:
-                    activity_status = TOOL_CALL_STATUS_REFUSED
+                    activity_status = TOOL_CALL_STATUS_FAILED
                     activity_summary = result_error_text
                 else:
                     activity_status = TOOL_CALL_STATUS_SUCCEEDED
@@ -1798,6 +1804,7 @@ async def {internal_name}({params_str}):
                         summary=activity_summary,
                         arguments=arguments,
                         correlation_id=correlation_id,
+                        elapsed_ms=elapsed_ms,
                     )
                 except Exception as activity_err:
                     logger.debug(
@@ -1832,6 +1839,7 @@ async def {internal_name}({params_str}):
         summary: Optional[str],
         arguments: Optional[dict[str, Any]],
         correlation_id: Optional[str],
+        elapsed_ms: Optional[int] = None,
     ) -> None:
         """Write one governed tool-call outcome and fan it out to live streams.
 
@@ -1860,6 +1868,23 @@ async def {internal_name}({params_str}):
         bounded_summary = _bounded_summary(summary)
         arguments_summary = _summarize_arguments(arguments)
         arguments_hash = _hash_arguments(arguments)
+        from datetime import datetime, timedelta, timezone
+
+        ended_at = datetime.now(timezone.utc)
+        metadata: dict[str, Any] = {
+            "correlation_id": correlation_id,
+            # Key names and sizes only: the usage timeline must never
+            # carry the argument payload. arguments_hash lets loop
+            # detection tell same-shape calls apart.
+            "arguments_summary": arguments_summary,
+            "arguments_hash": arguments_hash,
+        }
+        if elapsed_ms is not None:
+            # Parsed "detected" markers are stamped at call start; this row
+            # is stamped at call end. started_at lets the timeline match
+            # them across the whole call, not a fixed 5s window.
+            started_at = ended_at - timedelta(milliseconds=max(int(elapsed_ms), 0))
+            metadata["started_at"] = started_at.isoformat()
         # Persist the client-visible name so the execution timeline can match
         # recorded rows to parsed markers (proxied tools use an internal
         # account_<id>_<tool> name only for FastMCP dispatch).
@@ -1876,14 +1901,8 @@ async def {internal_name}({params_str}):
                 tool_name=persisted_tool_name,
                 status=status,
                 summary=bounded_summary,
-                metadata={
-                    "correlation_id": correlation_id,
-                    # Key names and sizes only: the usage timeline must never
-                    # carry the argument payload. arguments_hash lets loop
-                    # detection tell same-shape calls apart.
-                    "arguments_summary": arguments_summary,
-                    "arguments_hash": arguments_hash,
-                },
+                metadata=metadata,
+                timestamp=ended_at,
             )
             activity_timestamp = (
                 activity.timestamp.isoformat() if activity.timestamp else None

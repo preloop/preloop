@@ -1208,6 +1208,53 @@ async def test_read_flow_execution_matches_one_recorded_to_one_parsed(
 
 
 @pytest.mark.asyncio
+async def test_read_flow_execution_matches_marker_across_a_long_call(
+    mock_account: Account, mocker: MockerFixture
+):
+    """A marker at call start still matches a row written at call end."""
+    execution_id = uuid.uuid4()
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    mock_crud_activity = mocker.patch(
+        "preloop.api.endpoints.flows.crud_runtime_session_activity",
+        new_callable=MagicMock,
+    )
+
+    execution = MagicMock()
+    execution.id = execution_id
+    execution.mcp_usage_logs = [
+        {
+            "timestamp": "2026-09-18T10:18:20+00:00",
+            "tool_name": "get_pr",
+            "server_name": "github",
+            "status": "detected",
+        }
+    ]
+    mock_crud_flow_execution.get.return_value = execution
+
+    row = MagicMock()
+    row.timestamp = datetime(2026, 9, 18, 10, 19, tzinfo=ZoneInfo("UTC"))
+    row.tool_name = "get_pr"
+    row.server_name = "github"
+    row.status = "refused"
+    row.summary = "Denied by human approver"
+    row.metadata_ = {"started_at": "2026-09-18T10:18:20+00:00"}
+    mock_crud_activity.list_tool_calls_for_flow_execution.return_value = [row]
+
+    result = await maybe_await(
+        flows.read_flow_execution(
+            db=MagicMock(), execution_id=execution_id, current_user=mock_account
+        )
+    )
+
+    assert len(result.mcp_usage_logs) == 1
+    assert result.mcp_usage_logs[0]["status"] == "refused"
+    assert result.mcp_usage_logs[0]["error"] == "Denied by human approver"
+
+
+@pytest.mark.asyncio
 async def test_read_flow_execution_not_found(
     mock_account: Account, mocker: MockerFixture
 ):
