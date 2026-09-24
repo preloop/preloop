@@ -913,14 +913,17 @@ The persist boundary now rewrites the label and records what it did:
 
 Two limits make this safe to rely on:
 
-- **Only the label moves.** `valid`, `minimum_elements`, `coverage`,
-  `license_flags`, the findings and the gate are exactly as the agent
-  wrote them. The platform re-derives a word, never a measurement.
-- **Only upwards.** A correction may make the verdict more severe and
-  never less. `pass` to `pass_with_findings` and anything to `fail` are
-  applied; `fail` to `pass` is refused and the result still fails
-  closed, because that direction is the platform clearing a release it
-  was handed as denied.
+- **The verdict label only moves toward more severe.** `coverage`,
+  `license_flags`, the findings and the gate stay as the agent wrote
+  them. `minimum_elements` is replaced only when the platform measured
+  the delivered bytes and the agent's `passed: true` contradicts that
+  measurement (see below). `counts_by_severity` is replaced only when
+  it disagrees with the findings list.
+- **Never less severe.** `pass` to `pass_with_findings` and anything to
+  `fail` are applied; `fail` to `pass` is refused and the result still
+  fails closed, because that direction is the platform clearing a
+  release it was handed as denied. An agent who already failed minimum
+  elements keeps that claim.
 
 The corrected result is then re-validated in full. If anything else in
 the contract is also wrong, the run fails closed exactly as before, with
@@ -928,6 +931,42 @@ the raw document under `result.raw`. Presets are not told about this:
 the contract still requires the agent to write the correct verdict, and
 the repair exists so one enum does not cost a complete, digest-verified
 audit.
+
+## What the platform measures itself
+
+`minimum_elements` on an SBOM audit used to be the agent's own claim. The
+platform now measures the delivered SBOM bytes (CycloneDX 1.4 to 1.6 and
+SPDX 2.2 and 2.3, including gzip) and stores that object on the result as
+`minimum_elements_measured` (on the nested `sbom_audit` for a release
+audit). The denominator is every component except the document's root
+product. A supplier is `supplier.name` (SPDX: `supplier` other than
+`NOASSERTION`). Author, authors, publisher and manufacturer are counted
+separately and do not satisfy supplier. A unique identifier is a purl or
+a CPE.
+
+If the agent reports `passed: true` and the measurement finds missing
+elements, the platform replaces `minimum_elements` with the measured
+object, keeps the agent's claim on `verdict_corrected`, and lets the
+existing verdict floor move the label to `fail`. That replacement is the
+measurement of the delivered bytes becoming the authority. The agent's
+field was a claim, not a measurement the platform is rewriting. If the
+agent is already stricter than the measurement, the agent's value stays.
+If no SBOM seeds are reachable, the platform does not guess: the same key
+records why measurement was skipped, and the rest of the contract behaves
+as before.
+
+`counts_by_severity` is arithmetic over the findings list the agent
+submitted. When that aggregate is the only contract failure, the platform
+recomputes it, records each key as reported versus derived on
+`verdict_corrected`, and re-validates in full. Findings are not edited.
+A count mismatch together with any other failure still fails closed, and
+the other failure is what is reported. An agent's evidence-pack prose that
+repeats the wrong number is left as the agent wrote it.
+
+A run is never made less severe by the platform. Corrections move a
+verdict toward `fail`, replace a passing minimum-elements claim that the
+bytes contradict, or replace an aggregate that does not match the
+findings. They do not clear a release the agent denied.
 
 ## CI runbook
 

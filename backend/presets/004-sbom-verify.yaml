@@ -67,8 +67,12 @@ prompt_template: |
      resolve, no duplicate identifiers).
   2. MINIMUM ELEMENTS (NTIA / CRA Annex I Part II) — per component:
      supplier, name, version, unique identifier, relationships;
-     document-level: author/creator and timestamp. List what is missing
-     and for how many components.
+     document-level: author/creator and timestamp. Run
+     `python -m preloop.cra measure` on each delivered SBOM and copy its
+     passed and missing into minimum_elements verbatim. supplier is
+     CycloneDX supplier.name, or an SPDX supplier other than NOASSERTION.
+     author, authors, publisher and manufacturer are not a supplier, and
+     neither is the document author or the root product component.
   3. COVERAGE QUALITY — percentage of components with a version, with a
      concluded license (count NOASSERTION/missing separately), and with a
      machine-matchable identifier (purl or CPE). Missing purl/CPE silently
@@ -216,10 +220,10 @@ prompt_template: |
   - verdict: "pass" = valid, minimum elements present, no findings;
     "pass_with_findings" = valid but findings exist (coverage gaps,
     license flags, skipped cross-checks, provenance contradictions);
-    "fail" = invalid SBOM, minimum elements absent, or a declared SBOM
-    digest that does not match the file you parsed. Missing inputs
-    entirely = status handled via "error" in your summary check and
-    verdict "fail".
+    "fail" = invalid SBOM, minimum elements absent (the measure
+    command's passed flag is false), or a declared SBOM digest that
+    does not match the file you parsed. Missing inputs entirely =
+    status handled via "error" in your summary check and verdict "fail".
   - "reporting" is written on every run with exactly the values above.
     From 11 September 2026 a manufacturer must report an actively
     exploited vulnerability in its product within 24 hours, 72 hours
