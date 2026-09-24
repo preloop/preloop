@@ -665,6 +665,28 @@ class TestSendApprovalRequestEmail:
 
     @pytest.mark.asyncio
     @patch("preloop.utils.email.send_email")
+    async def test_hides_preloop_markers_from_the_arguments_block(
+        self, mock_send_email
+    ):
+        """Trusted markers stay on the stored approval and leave the email."""
+        await send_approval_request_email(
+            user_email="approver@example.com",
+            tool_name="Bash",
+            tool_args={
+                "command": "git status",
+                "_preloop_source": "cursor",
+                "_preloop_repository": {"remote": "github.com/example/repo"},
+            },
+            approval_url="https://app.test.com/console/approval/1",
+        )
+
+        _to, _subject, body_text, body_html = mock_send_email.call_args[0]
+        assert "git status" in body_text
+        assert "_preloop_" not in body_text
+        assert "_preloop_" not in body_html
+
+    @pytest.mark.asyncio
+    @patch("preloop.utils.email.send_email")
     async def test_keeps_the_generic_line_when_no_agent_is_known(self, mock_send_email):
         """An unattributed request reads exactly as it did before."""
         await send_approval_request_email(
