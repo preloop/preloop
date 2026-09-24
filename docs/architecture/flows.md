@@ -336,6 +336,20 @@ and existing authorization-protected console routes; tokens and transcripts
 are never provenance inputs. Legacy publication adds the current execution
 block on creation; continuation provenance updates require the isolated path.
 
+Publication acceptance matrix (issue #431). Each cell is delivered (test
+name), a gap this work closes, or unsupported by design.
+
+| Mode | Provider | Create | Continuation push to an existing PR | Metadata-only retry | Failure disclosure | Human edits preserved | Provider failure surfaced |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| legacy | github | delivered (`TestWritePrPayloadPy.test_commit_fallback_single_commit_includes_execution_link`; create script calls `upsert_provenance` once) | gap (lookup refreshes only the #599 failure disclosure) | gap (same lookup path; no provenance append) | delivered (`test_already_pushed_commits_refresh_existing_failure_notice`, `test_existing_body_preserved_and_notice_idempotent`) | gap on continuation (failure disclosure keeps prose; provenance is not rewritten) | gap (update 4xx/5xx still emits `PRELOOP_PR_OPENED`; a create miss is `test_no_url_anywhere_emits_no_marker`) |
+| legacy | gitlab | delivered (same create script, `kind == "gitlab"`) | gap | gap | delivered (same failure-disclosure tests, GitLab payload) | gap on continuation | gap (same success marker after a failed update) |
+| isolated | github | delivered (`test_provider_create_retry_metadata_update_preserves_human_edits`) | delivered (same test, repair upsert) | delivered (same test: one POST, later upserts only) | out of scope (issue #599; the isolated publisher upserts provenance only) | delivered (same test) | delivered (`test_provider_failure_is_observable`) |
+| isolated | gitlab | unsupported by design (flows.md: "Stored PATs and GitLab publication are rejected in this mode until a broker can enforce their scope and lifetime") | unsupported by design (same) | unsupported by design (same) | unsupported by design (same) | unsupported by design (same) | unsupported by design (same) |
+
+The standalone metadata client still accepts a GitLab payload shape. Isolated
+mode does not: `validate_publication_tracker` rejects PAT and GitLab
+credentials before a lease is minted.
+
 Preset synchronization updates uncustomized fields and marks customized saved
 flows as having an available update. Inspect the effective saved prompt and
 configuration before expecting template behavior. The publication-mode switch
