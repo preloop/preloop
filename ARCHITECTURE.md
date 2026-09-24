@@ -113,6 +113,8 @@ graph LR
 
 Execution environment profiles and hosted checkpoint recovery are documented in
 [Environments and recovery](docs/guide/flows/environments-and-recovery.md).
+The sandboxed-browser allowlist sidecar lives in
+[`environments/egress-proxy`](environments/egress-proxy/README.md).
 
 ### Flow delegation and execution trees
 
