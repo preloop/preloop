@@ -347,6 +347,7 @@ async def test_remote_version_is_reduced_to_runtime_and_semver():
         )
     assert result.runtime_version == "hermes v2026.9.14"
     assert result.agent_id == agent_id
+    assert result.desktop == "skipped"
 
 
 @pytest.mark.asyncio
@@ -493,6 +494,7 @@ def test_generated_script_verifies_download_and_onboarding_without_child_stdin(
         assert evidence["agent_id"] == agent_id
         assert evidence["model_alias"] == alias
         assert evidence["runtime_version"] == "Hermes 0.21.3"
+        assert evidence["desktop"] == "skipped"
     else:
         assert result.returncode != 0
         marker = {
@@ -501,3 +503,125 @@ def test_generated_script_verifies_download_and_onboarding_without_child_stdin(
             "wrong-model": "PRELOOP_DEPLOY_ONBOARDING_INCOMPLETE",
         }[scenario]
         assert marker in result.stdout
+
+
+def test_deployment_request_accepts_desktop_flag():
+    base = dict(
+        idempotency_key=uuid4(), model_id=uuid4(), target="gcp", runtime="hermes"
+    )
+    assert AgentDeploymentRequest(**base).desktop is False
+    assert AgentDeploymentRequest(**(base | {"desktop": True})).desktop is True
+
+
+def test_desktop_stage_follows_validation_and_does_not_change_firewall():
+    kwargs = dict(
+        runtime="hermes",
+        alias="selected/model",
+        url="https://test.example",
+        token="private-token",
+        request_id=uuid4(),
+    )
+    disabled = service.installation_script(**kwargs)
+    enabled = service.installation_script(**kwargs, desktop=True)
+    assert "--desktop" not in disabled
+    assert "PRELOOP_DEPLOY_DESKTOP_FAILED" not in disabled
+    for script in (disabled, enabled):
+        assert "gcloud compute firewall-rules" not in script
+    command = 'preloop agents install-runtime "$deploy_runtime" --install-only --skip-install --desktop -y'
+    assert command in enabled
+    assert enabled.index("PRELOOP_DEPLOY_VALIDATION_FAILED") < enabled.index(
+        "PRELOOP_DEPLOY_DESKTOP_FAILED"
+    )
+    assert enabled.index("--desktop") < enabled.index('"$deploy_runtime" --version')
+    assert "echo PRELOOP_DEPLOY_DESKTOP_FAILED" in enabled
+
+
+@pytest.mark.parametrize("desktop_exit,expected", [(0, "installed"), (1, "failed")])
+def test_desktop_failure_does_not_fail_validated_deployment(
+    tmp_path, monkeypatch, desktop_exit, expected
+):
+    """A desktop-stage failure is reported and does not flip deployment success."""
+    import hashlib
+    import os
+    import shutil
+    import subprocess
+
+    if not shutil.which("bash") or not shutil.which("sha256sum"):
+        pytest.skip("Bash and sha256sum are required for the Linux bootstrap test")
+    agent_id = str(uuid4())
+    alias = "selected/model"
+    status = {
+        "remote_state": {
+            "agent": {"id": agent_id, "model_gateway_configured": True},
+            "enrollments": [
+                {
+                    "validation_result": {
+                        "validation_passed": True,
+                        "live_validation_status": "passed",
+                        "live_validation_model_alias": alias,
+                        "control_plugin_verified": True,
+                        "control_channel_configured": True,
+                    }
+                }
+            ],
+        }
+    }
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(status))
+    cli = tmp_path / "publisher-cli"
+    cli.write_text(
+        "#!/bin/sh\n"
+        'case " $* " in\n'
+        '  *" --desktop "*) exit "$DESKTOP_EXIT" ;;\n'
+        "esac\n"
+        'if [ "$1 $2" = "agents status" ]; then\n'
+        'cat "$TEST_STATUS_FILE"\nelse\ncat >/dev/null\nfi\n'
+    )
+    cli.chmod(0o700)
+    monkeypatch.setenv("PRELOOP_DEPLOY_CLI_URL", "https://publisher.example/cli")
+    monkeypatch.setenv(
+        "PRELOOP_DEPLOY_CLI_SHA256", hashlib.sha256(cli.read_bytes()).hexdigest()
+    )
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    for name, content in {
+        "curl": '#!/bin/sh\nwhile [ "$1" != "-o" ]; do shift; done\ncp "$TEST_CLI_FILE" "$2"\n',
+        "flock": "#!/bin/sh\nexit 0\n",
+        "hermes": "#!/bin/sh\necho 'Hermes 0.21.3'\n",
+    }.items():
+        path = bindir / name
+        path.write_text(content)
+        path.chmod(0o700)
+    environment = dict(
+        os.environ,
+        HOME=str(tmp_path / "home"),
+        PATH=str(bindir) + os.pathsep + os.environ["PATH"],
+        TEST_CLI_FILE=str(cli),
+        TEST_STATUS_FILE=str(status_path),
+        DESKTOP_EXIT=str(desktop_exit),
+    )
+    script = service.installation_script(
+        "hermes",
+        alias,
+        "https://test.example",
+        "private-token",
+        uuid4(),
+        desktop=True,
+    )
+    result = subprocess.run(
+        ["bash", "-s"],
+        input=script,
+        text=True,
+        capture_output=True,
+        env=environment,
+        timeout=10,
+    )
+    assert "private-token" not in result.stdout + result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
+    evidence = json.loads(result.stdout.strip().splitlines()[-1])
+    assert evidence["desktop"] == expected
+    assert evidence["agent_id"] == agent_id
+    if expected == "failed":
+        assert "PRELOOP_DEPLOY_DESKTOP_FAILED" in result.stdout
+    else:
+        assert "PRELOOP_DEPLOY_DESKTOP_FAILED" not in result.stdout

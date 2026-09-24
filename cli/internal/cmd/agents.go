@@ -1633,11 +1633,16 @@ func runAgentsStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	if asJSON {
+		desktop, err := loadDesktopStatus()
+		if err != nil {
+			return err
+		}
 		payload := map[string]interface{}{
 			"agent":        agent,
 			"local_state":  localState,
 			"remote_state": detail,
 			"models":       agentModels,
+			"desktop":      desktop,
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")

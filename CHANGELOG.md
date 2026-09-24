@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `preloop agents install-runtime --desktop` installs a loopback-only headless
+  desktop (Xvfb on `:99`, x11vnc on `127.0.0.1:5900`, Chromium) and exports
+  `DISPLAY=:99`. `POST /api/v1/agent-deployments` accepts `desktop` and reports
+  `installed`, `failed`, or `skipped` without failing a runtime that already
+  validated. Non-root users install packages with `sudo -n`. The VNC password
+  is passed only to `x11vnc -storepasswd` (briefly visible to other local
+  users; VNC DES keeps the first 8 characters) and is not written elsewhere.
+
 ### Fixed
 
 - PR follow-up trusts a reviewer by username or GitHub App slug. Enabling

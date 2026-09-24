@@ -72,7 +72,8 @@ must match the host architecture; production should use the published installer.
 
 The deployment API is synchronous: `POST /api/v1/agent-deployments` accepts
 `idempotency_key`, `runtime` (`hermes` or `openclaw`), `model_id`, `target`
-(`ssh` or `gcp`), optional `compute_size`, and SSH connection fields for SSH.
+(`ssh` or `gcp`), optional `compute_size`, optional `desktop` (default
+`false`), and SSH connection fields for SSH.
 `GET /api/v1/agent-deployments/capabilities` reports configured methods.
 SSH secrets are used only in request memory. Enrollment uses a hashed temporary
 API key with the initiating owner's permissions, a twenty-minute expiry, and
@@ -94,3 +95,45 @@ For disposable environments, set `PRELOOP_DEPLOY_GCP_MAX_RUN_SECONDS=14400`.
 GCE will delete successful as well as failed test VMs after four hours. The
 optional value must be between 60 seconds and seven days; unset means that a
 successful VM has no automatic lifetime limit.
+
+## Desktop (optional)
+
+Set `desktop: true` to install a headless desktop on the target after live
+validation. The deployment runs `preloop agents install-runtime <runtime>
+--install-only --skip-install --desktop`, so the upstream runtime installer
+is not executed again after live validation. On Debian and Ubuntu that
+installs Xvfb on display `:99`, a Chromium browser, and x11vnc. The VNC
+server listens on
+`127.0.0.1:5900` only (`-localhost`, no `-listen 0.0.0.0`). A random password
+is stored with `x11vnc -storepasswd` in `~/.preloop/desktop/vncpasswd` (mode
+`0600`) and is not written anywhere else. The password is a command argument
+for that short-lived `x11vnc` process, so a desktop install assumes a
+single-tenant host. VNC DES uses the first 8 characters of the password.
+Package installation runs `apt-get` as root, or `sudo -n apt-get` when the
+SSH user is not root. The GCP Ubuntu image grants the metadata SSH user
+passwordless sudo; a target without that privilege reports `desktop: failed`
+and does not change the validated runtime. The CLI records
+`~/.preloop/desktop.json` and exports `DISPLAY=:99` for the runtime. A systemd
+user unit `preloop-desktop.service` keeps the session up; if a systemd user
+session is unavailable the CLI starts `~/.preloop/desktop/start.sh` with
+`nohup` and says so.
+
+The listener is loopback-only. Deployment does not change GCP firewall rules
+and does not open port 5900 on any non-loopback interface. Other Linux
+distros are refused with `desktop_unsupported_distro` and do not change the
+runtime install. A desktop failure does not change the deployment result
+after runtime validation has already passed. The result's `desktop` field is
+`installed`, `failed`, or `skipped`.
+
+Verify on the host:
+
+```sh
+ss -ltnp | grep 5900
+```
+
+The socket must be `127.0.0.1:5900`. `DISPLAY=:99 chromium --headless=new
+--screenshot` should write a screenshot, and `preloop agents status <runtime>
+--json` reports `desktop.installed` when `~/.preloop/desktop.json` exists.
+
+Access brokering is not available yet. Reaching this display from outside the
+host is a later change.
