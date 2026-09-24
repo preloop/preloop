@@ -66,6 +66,7 @@ from preloop.models.models.audit_log import AuditLog
 from preloop.models.models.flow_artifact import FlowArtifact
 from preloop.models.models.flow_execution import FlowExecution
 from preloop.models.models.runtime_session import RuntimeSession
+from preloop.models.models.runtime_session_artifact import RuntimeSessionArtifact
 from preloop.services.analytics_history import storage_history_days
 from preloop.services.retention_policy import (
     CLASS_APPROVALS,
@@ -108,6 +109,10 @@ class ClassResult:
     #: is the count of records of the class itself, so a retention report says
     #: how many sessions went without inflating it by their chunk count.
     derived_deleted: int = 0
+    #: Dependent rows the database removes with this class (FK cascade), keyed
+    #: by table name so the purge record names them. ``runtime_session_artifact``
+    #: is the count of artifact rows a runtime-session batch will take with it.
+    cascade_counts: dict[str, int] = field(default_factory=dict)
     #: True when the class still had matching rows when the pass stopped.
     more_remaining: bool = False
     applied_cutoffs: list[dict[str, Any]] = field(default_factory=list)
@@ -123,6 +128,7 @@ class ClassResult:
             "derived_deleted": self.derived_deleted,
             "batches": self.batches,
             "more_remaining": self.more_remaining,
+            **self.cascade_counts,
         }
 
 
@@ -260,11 +266,18 @@ HOLD_EXEMPT_CLASSES: dict[str, str] = {
     ),
 }
 
-#: Models the purge writes that are not :data:`RECORD_CLASSES`. The execution
-#: row itself is never deleted; only leftover ``evidence_archive`` bytes are
-#: cleared. They still go through :func:`_hold_filters_for_model` so a hold
-#: cannot be skipped the way runtime sessions were (issue #650).
-HOLD_SIDE_MODELS: tuple[Any, ...] = (FlowExecution,)
+#: Models the purge writes that are not :data:`RECORD_CLASSES`, plus rows a
+#: cascade removes with a class the purge does delete. They still go through
+#: :func:`_hold_filters_for_model` so a hold cannot be skipped the way runtime
+#: sessions were (issue #650).
+#:
+#: ``FlowExecution`` itself is never deleted; only leftover ``evidence_archive``
+#: bytes are cleared.
+#:
+#: ``RuntimeSessionArtifact`` is deleted by the ``runtime_session`` foreign-key
+#: cascade and kept by the session's hold flag. Listing it here makes a model
+#: that carries ``legal_hold`` visible to the invariant test.
+HOLD_SIDE_MODELS: tuple[Any, ...] = (FlowExecution, RuntimeSessionArtifact)
 
 
 def _hold_filters_for_model(model: Any) -> list[Any]:
@@ -486,6 +499,14 @@ def purge_class(
                 )
             db.commit()
             break
+        if record_class == CLASS_RUNTIME_SESSIONS:
+            # Count before the DELETE. The artifact rows leave with the session
+            # through ON DELETE CASCADE, so the purge record has to name them
+            # here or the audit row only says how many sessions went.
+            prior = result.cascade_counts.get("runtime_session_artifact", 0)
+            result.cascade_counts["runtime_session_artifact"] = (
+                prior + _count_cascading_session_artifacts(db, ids)
+            )
         if record_class == CLASS_EVIDENCE:
             _expire_receipts_for_artifacts(db, account_id=account_id, artifact_ids=ids)
         if record_class == CLASS_AUDIT:
@@ -536,6 +557,27 @@ def purge_class(
     if pruned_seq:
         _raise_chain_floor(db, account_id=account_id, up_to_seq=pruned_seq, now=now)
     return result
+
+
+def _count_cascading_session_artifacts(db: Session, session_ids: Sequence[Any]) -> int:
+    """Artifact rows the ``runtime_session`` delete will cascade.
+
+    Args:
+        db: Database session.
+        session_ids: Runtime session ids in the current purge batch.
+
+    Returns:
+        Matching ``runtime_session_artifact`` rows.
+    """
+    if not session_ids:
+        return 0
+    return int(
+        db.execute(
+            select(func.count())
+            .select_from(RuntimeSessionArtifact)
+            .where(RuntimeSessionArtifact.runtime_session_id.in_(list(session_ids)))
+        ).scalar_one()
+    )
 
 
 def _max_chain_seq(db: Session, ids: Sequence[Any]) -> int:

@@ -9,9 +9,12 @@ from sqlalchemy import select
 
 from preloop.config import settings
 from preloop.models import models
+from preloop.models.crud import runtime_session_artifact as crud_session_artifact
 from preloop.models.models.audit_log import AuditLog
+from preloop.models.models.base import Base
 from preloop.services import audit_chain
 from preloop.services import retention_purge as purge
+from preloop.services import session_search_retention
 from preloop.services.legal_hold import place_hold
 from preloop.services.retention_policy import (
     CLASS_AUDIT,
@@ -340,6 +343,108 @@ def test_a_held_runtime_session_and_its_activity_survive_the_purge(
     assert _activity_count(db_session, unheld) == 0
 
 
+def _session_artifact(
+    db_session,
+    test_user,
+    session,
+    *,
+    source_ref: str,
+    expires_at: datetime | None = None,
+):
+    """One screenshot on ``session``. ``session`` may be a row or an id."""
+    session_id = session.id if hasattr(session, "id") else session
+    return crud_session_artifact.store(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session_id,
+        kind="screenshot",
+        source="browser_use",
+        source_ref=source_ref,
+        content_type="image/png",
+        plaintext=b"unpublished-screenshot-bytes",
+        manifest={"step_index": 1},
+        expires_at=expires_at,
+        commit=False,
+    )
+
+
+def _artifact_rows(db_session, session_id) -> list:
+    return list(
+        db_session.execute(
+            select(models.RuntimeSessionArtifact).where(
+                models.RuntimeSessionArtifact.runtime_session_id == session_id
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+def test_an_unheld_session_purge_names_and_removes_its_artifacts(
+    db_session, test_user, account
+):
+    """Cascade takes the artifacts, and the class result says how many."""
+    session = _runtime_session(db_session, test_user, age_days=500, activities=1)
+    session_id = session.id
+    _session_artifact(db_session, test_user, session, source_ref="step-1")
+    _session_artifact(db_session, test_user, session, source_ref="step-2")
+    db_session.commit()
+
+    result = purge.purge_class(
+        db_session,
+        account=account,
+        record_class=CLASS_RUNTIME_SESSIONS,
+        now=datetime.now(UTC),
+        batch_size=100,
+        max_batches=5,
+        dry_run=False,
+    )
+
+    assert result.deleted == 1
+    assert result.as_details()["runtime_session_artifact"] == 2
+    assert _exists(db_session, models.RuntimeSession, session_id) is False
+    assert _artifact_rows(db_session, session_id) == []
+    assert session_search_retention.orphan_session_artifact_count(db_session) == 0
+    session_search_retention.assert_no_orphan_chunks(
+        db_session, context="a session purge that cascades artifacts"
+    )
+
+
+def test_a_held_session_keeps_artifact_bytes_past_expiry(
+    db_session, test_user, account
+):
+    """A hold blocks the purge and the janitor, including past expires_at."""
+    session = _runtime_session(db_session, test_user, age_days=500, activities=1)
+    past = datetime.now(UTC) - timedelta(hours=2)
+    artifact = _session_artifact(
+        db_session,
+        test_user,
+        session,
+        source_ref="step-held",
+        expires_at=past,
+    )
+    db_session.commit()
+    place_hold(
+        db_session,
+        account_id=account.id,
+        resource_type="runtime_session",
+        resource_id=str(session.id),
+        reason="litigation hold, matter 2026-07",
+        user_id=test_user.id,
+    )
+
+    purge.run_retention_purge(db_session, account_ids=[account.id], ignore_window=True)
+    crud_session_artifact.cleanup(db_session, now=datetime.now(UTC))
+    db_session.expire_all()
+
+    assert _exists(db_session, models.RuntimeSession, session.id) is True
+    row = db_session.get(models.RuntimeSessionArtifact, artifact.id)
+    assert row is not None
+    assert row.legal_hold is True
+    assert row.ciphertext is not None
+    assert row.availability == "available"
+
+
 def test_releasing_a_session_hold_makes_it_purgeable_again(
     db_session, test_user, account
 ):
@@ -433,6 +538,16 @@ def test_every_purgeable_class_carries_a_hold_predicate():
         assert any(
             f"{model.__tablename__}.legal_hold is false" in text for text in rendered
         ), f"{model.__name__} is written by the purge without a legal hold predicate"
+    covered = set(purge._CLASS_MODELS.values()) | set(purge.HOLD_SIDE_MODELS)
+    for model in Base.registry.mappers:
+        cls = model.class_
+        if "legal_hold" not in cls.__table__.columns:
+            continue
+        assert cls in covered, (
+            f"{cls.__name__} has a legal_hold column and is not a purge class "
+            "or a hold side model"
+        )
+    assert models.RuntimeSessionArtifact in purge.HOLD_SIDE_MODELS
 
 
 def test_legacy_evidence_drop_routes_through_the_hold_helper():

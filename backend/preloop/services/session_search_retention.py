@@ -31,10 +31,13 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_session_search_document
 from preloop.models.models.api_usage import ApiUsage
+from preloop.models.models.runtime_session import RuntimeSession
+from preloop.models.models.runtime_session_artifact import RuntimeSessionArtifact
 from preloop.models.models.session_search_document import (
     SOURCE_KIND_GATEWAY_INTERACTION,
 )
@@ -176,17 +179,55 @@ def orphan_chunk_report(db: Session) -> OrphanChunkReport:
     )
 
 
+def orphan_session_artifact_count(db: Session) -> int:
+    """Artifacts whose ``runtime_session_id`` has no ``runtime_session`` row.
+
+    The foreign key is ``ON DELETE CASCADE``, so this is zero unless a session
+    was removed without its artifacts. An artifact row that outlives its
+    session is the failure the cascade exists to prevent.
+
+    Args:
+        db: Database session.
+
+    Returns:
+        Orphan ``runtime_session_artifact`` rows, deployment-wide.
+    """
+    return int(
+        db.execute(
+            select(func.count())
+            .select_from(RuntimeSessionArtifact)
+            .where(
+                ~select(RuntimeSession.id)
+                .where(RuntimeSession.id == RuntimeSessionArtifact.runtime_session_id)
+                .exists()
+            )
+        ).scalar_one()
+    )
+
+
 def assert_no_orphan_chunks(db: Session, *, context: Optional[str] = None) -> None:
     """Raise if the corpus quotes anything deleted. For tests and operators.
 
-    Kept next to the purge rather than in a test helper so an operator can run
-    it against a real database after a pass, which is when the answer matters.
+    Also raises when an artifact row has no session. Kept next to the purge
+    rather than in a test helper so an operator can run it against a real
+    database after a pass, which is when the answer matters.
     """
     report = orphan_chunk_report(db)
+    artifact_orphans = orphan_session_artifact_count(db)
+    if report.clean and artifact_orphans == 0:
+        return
+    where = f" after {context}" if context else ""
+    parts: list[str] = []
     if not report.clean:
-        where = f" after {context}" if context else ""
-        raise AssertionError(
+        parts.append(
             f"Session search corpus has {report.total} orphan chunks{where}: "
             f"{report.as_dict()}. A chunk outliving its source means a purge "
             "deleted a record the search index can still quote."
         )
+    if artifact_orphans:
+        parts.append(
+            f"runtime_session_artifact has {artifact_orphans} orphan rows{where}. "
+            "An artifact row outliving its session means a purge deleted the "
+            "session and left the artifact behind."
+        )
+    raise AssertionError(" ".join(parts))
