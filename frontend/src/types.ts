@@ -1260,6 +1260,17 @@ export interface RuntimeSessionOptimizationActionListResponse {
   items: RuntimeSessionOptimizationAppliedAction[];
 }
 
+/** Session screenshot and recording bytes against the account storage budget. */
+export interface SessionArtifactUsage {
+  used_bytes: number;
+  budget_bytes: number;
+  by_kind: {
+    screenshot: number;
+    recording: number;
+  };
+  evicted_count_30d: number;
+}
+
 export interface AccountGatewayUsageSummaryResponse {
   period_start: string;
   period_end: string;
