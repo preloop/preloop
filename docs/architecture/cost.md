@@ -30,6 +30,20 @@ This changes request scheduling and selected query execution only. Account
 isolation, history policies, ledger accounting, attribution, reporting limits,
 and full-query ordering remain unchanged. It adds no rollups or response cache.
 
+## Query shape
+
+Session breakdowns aggregate raw `api_usage` rows by session and model first.
+Session name, agent, flow, and principal labels are joined onto that aggregate.
+The response limit applies after the full aggregation, so a capped session list
+still carries complete totals for each returned group. Daily series aggregate
+in a materialized day bucket, then sort those buckets. Per-user windows filter
+`runtime_principal_id` through `ix_api_usage_account_principal_id_ts`
+(`account_id`, `runtime_principal_id`, `timestamp` for `model_gateway` rows).
+`ix_api_usage_account_principal_ts` still leads with principal type. Accounting
+rules are unchanged: replay-validation rows stay excluded, retries stay included
+unless the caller sets `exclude_retries`, and there is no daily rollup or
+response cache.
+
 ## Cost Analytics and Budgeting
 *   **Purpose:** Turn model usage telemetry into explainable spend, enforceable budgets, and optimization guidance.
 *   **Canonical Ledger:** `ApiUsage` remains the source of truth for model call tokens, estimated cost, provider, model, runtime principal, API key, flow, managed agent, and runtime-session attribution.
