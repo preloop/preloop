@@ -707,11 +707,12 @@ K8S_TERMINAL_LOG_TAIL_LINES = _WORST_CASE_EMISSION_LINES + 2000
 # emission wrapper prints starts with this prefix, so operator-facing log
 # consumers can filter the (potentially large, base64) blocks statelessly.
 # Grammar:
-#   PRELOOP_ARTIFACT_BEGIN <channel> <status> [<size_bytes>]
+#   PRELOOP_ARTIFACT_BEGIN <channel> <status> [<size_bytes_or_reason>]
 #   PRELOOP_ARTIFACT_B64 <base64-chunk>          (0..n lines)
 #   PRELOOP_ARTIFACT_END <channel>
-# where <channel> is "result" or "evidence" and <status> is one of
-# present | absent | too_large | error | uploaded.
+# where <channel> is "result", "evidence", or "workspace" and <status> is
+# one of present | absent | too_large | error | uploaded | unavailable |
+# skipped. A non-numeric fourth token is a reason (plaintext_disabled).
 ARTIFACT_STREAM_LINE_PREFIX = "PRELOOP_ARTIFACT_"
 
 # Environment variable carrying the original (unwrapped) agent script when the
@@ -809,7 +810,9 @@ async def _sleep_before_job_create_retry(seconds: float) -> None:
 #
 # Direct upload (PRELOOP_EVIDENCE_PUT_TOKEN): the wrapper never prints
 # evidence or result.json bytes. Markers report uploaded/absent/error only.
-# The Kubernetes log channel remains the legacy path when the token is unset.
+# The Kubernetes log channel remains the legacy path when the token is unset
+# and PRELOOP_EVIDENCE_LOG_PLAINTEXT is not 0. When plaintext is 0 and the
+# token is absent, the wrapper prints unavailable/skipped markers and no bytes.
 K8S_ARTIFACT_WRAPPER_SCRIPT = f"""
 _preloop_emit_artifacts() {{
     if [ -n "${{PRELOOP_EVIDENCE_PUT_TOKEN:-}}" ]; then
@@ -843,6 +846,15 @@ _preloop_emit_artifacts() {{
             echo "PRELOOP_ARTIFACT_BEGIN result absent"
             echo "PRELOOP_ARTIFACT_END result"
         fi
+        return
+    fi
+    if [ "${{PRELOOP_EVIDENCE_LOG_PLAINTEXT:-1}}" = "0" ]; then
+        echo "PRELOOP_ARTIFACT_BEGIN result unavailable plaintext_disabled"
+        echo "PRELOOP_ARTIFACT_END result"
+        echo "PRELOOP_ARTIFACT_BEGIN evidence unavailable plaintext_disabled"
+        echo "PRELOOP_ARTIFACT_END evidence"
+        echo "PRELOOP_ARTIFACT_BEGIN workspace skipped plaintext_disabled"
+        echo "PRELOOP_ARTIFACT_END workspace"
         return
     fi
     if [ -f {RESULT_ARTIFACT_PATH} ]; then
@@ -1144,6 +1156,9 @@ class ContainerAgentExecutor(AgentExecutor):
                 "PRELOOP_EVIDENCE_PUT_TOKEN"
             )
         )
+        # PRELOOP_EVIDENCE_LOG_PLAINTEXT is applied with the token in
+        # _apply_git_credential_env (1 when the log channel is allowed, 0
+        # when it is refused).
         if self.environment_profile and not self.use_kubernetes:
             await self._prepare_environment_services(execution_context)
 
@@ -2453,7 +2468,9 @@ class ContainerAgentExecutor(AgentExecutor):
         Returns ``None`` when no BEGIN marker for ``channel`` exists (wrapper
         not applied, or logs rotated away), otherwise a dict with:
         ``status``: present | absent | too_large | error | truncated | corrupt
+            | unavailable | skipped | uploaded
         ``size``: declared byte size when the marker carried one
+        ``reason``: non-numeric fourth token (for example plaintext_disabled)
         ``data``: decoded payload bytes when status == "present"
         """
         begin_prefix = f"{ARTIFACT_STREAM_LINE_PREFIX}BEGIN {channel}"
@@ -2469,14 +2486,15 @@ class ContainerAgentExecutor(AgentExecutor):
             return None
 
         marker_parts = lines[begin_idx].strip().split()
-        # ["PRELOOP_ARTIFACT_BEGIN", channel, status, size?]
+        # ["PRELOOP_ARTIFACT_BEGIN", channel, status, size_or_reason?]
         status = marker_parts[2] if len(marker_parts) > 2 else "error"
         size: Optional[int] = None
+        reason: Optional[str] = None
         if len(marker_parts) > 3:
             try:
                 size = int(marker_parts[3])
             except ValueError:
-                size = None
+                reason = marker_parts[3]
 
         chunks: list[str] = []
         terminated = False
@@ -2488,14 +2506,40 @@ class ContainerAgentExecutor(AgentExecutor):
             if stripped.startswith(b64_prefix):
                 chunks.append(stripped[len(b64_prefix) :])
         if not terminated:
-            return {"status": "truncated", "size": size, "data": None}
+            return {
+                "status": "truncated",
+                "size": size,
+                "reason": reason,
+                "data": None,
+            }
         if status != "present":
-            return {"status": status, "size": size, "data": None}
+            return {"status": status, "size": size, "reason": reason, "data": None}
         try:
             data = base64.b64decode("".join(chunks), validate=True)
         except (binascii.Error, ValueError):
-            return {"status": "corrupt", "size": size, "data": None}
-        return {"status": "present", "size": size, "data": data}
+            return {"status": "corrupt", "size": size, "reason": reason, "data": None}
+        return {"status": "present", "size": size, "reason": reason, "data": data}
+
+    def _evidence_log_plaintext_enabled(self) -> bool:
+        """Whether this process may decode artifact bytes from pod logs.
+
+        Direct upload never consults this. The default keeps the legacy
+        channel. ``False`` refuses it even when a log line claims ``present``.
+        """
+        return bool(getattr(settings, "flow_evidence_log_plaintext", True))
+
+    def _plaintext_log_refused(self) -> bool:
+        """True when artifact bytes must not be taken from the pod log."""
+        if self._direct_evidence:
+            return False
+        return not self._evidence_log_plaintext_enabled()
+
+    @staticmethod
+    def _marker_plaintext_disabled(stream: Optional[Dict[str, Any]]) -> bool:
+        """True when a channel marker names the plaintext_disabled reason."""
+        if not stream:
+            return False
+        return stream.get("reason") == "plaintext_disabled"
 
     async def _get_kubernetes_terminal_logs(self, job_name: str) -> list[str]:
         """Read the tail of a finished Job's pod log once and cache it.
@@ -2551,6 +2595,9 @@ class ContainerAgentExecutor(AgentExecutor):
                 f"No result artifact emission found in logs of Job {job_name}"
             )
             return None
+        if self._marker_plaintext_disabled(stream) or self._plaintext_log_refused():
+            # Same outcome as a missing result.json: no success, no payload.
+            return None
         status = stream["status"]
         if status == "absent":
             return None
@@ -2601,12 +2648,16 @@ class ContainerAgentExecutor(AgentExecutor):
         """Capture the evidence pack (``/workspace/evidence``) as tar.gz bytes.
 
         Docker legacy: fetches the directory through the archive API and
-        re-packs it as tar.gz. Docker direct upload: the EXIT trap already
-        PUT the pack; logs carry ``PRELOOP_EVIDENCE committed|failed|absent``
-        and this getter returns no bytes so the orchestrator does not store
-        a second copy. Kubernetes: decodes the base64 emission from the pod
-        log stream (see ``K8S_ARTIFACT_WRAPPER_SCRIPT``) unless direct upload
-        is configured, in which case logs carry no evidence payload.
+        re-packs it as tar.gz. That copy does not read the log channel, so
+        ``FLOW_EVIDENCE_LOG_PLAINTEXT`` does not change it. Docker direct
+        upload: the EXIT trap already PUT the pack; logs carry
+        ``PRELOOP_EVIDENCE committed|failed|absent`` and this getter returns
+        no bytes so the orchestrator does not store a second copy. Kubernetes:
+        decodes the base64 emission from the pod log stream (see
+        ``K8S_ARTIFACT_WRAPPER_SCRIPT``) unless direct upload is configured
+        or plaintext logging is off. In those cases logs carry no evidence
+        payload. Plaintext off without a token sets
+        ``evidence_transport_error`` to ``plaintext_disabled``.
         """
         if self.use_kubernetes:
             return await self._get_kubernetes_evidence_archive(session_reference)
@@ -2622,6 +2673,9 @@ class ContainerAgentExecutor(AgentExecutor):
             )
             return None
         stream = self._extract_artifact_stream(lines, "evidence")
+        if self._marker_plaintext_disabled(stream) or self._plaintext_log_refused():
+            self.evidence_transport_error = "plaintext_disabled"
+            return None
         if stream is None or stream["status"] == "absent":
             return None
         if stream["status"] == "error":
@@ -2893,6 +2947,15 @@ class ContainerAgentExecutor(AgentExecutor):
             )
             return None
         stream = self._extract_artifact_stream(lines, "workspace")
+        if stream is not None and (
+            self._marker_plaintext_disabled(stream)
+            or not self._evidence_log_plaintext_enabled()
+        ):
+            self.logger.info(
+                f"Workspace snapshot from Job {job_name} skipped "
+                "(plaintext log channel disabled)"
+            )
+            return None
         if stream is None or stream["status"] == "absent":
             self.logger.info(
                 f"No workspace snapshot emitted by Job {job_name} "
@@ -3597,6 +3660,10 @@ class ContainerAgentExecutor(AgentExecutor):
                 raise ValueError("Write API tokens cannot enter an isolated agent")
         env.update(execution_context.get("checkpoint_env") or {})
         env.update(execution_context.get("evidence_env") or {})
+        if self.use_kubernetes:
+            env["PRELOOP_EVIDENCE_LOG_PLAINTEXT"] = (
+                "1" if self._evidence_log_plaintext_enabled() else "0"
+            )
         # Workspace seeds travel in the environment, not in the launch
         # command: the command is one execve string capped at MAX_ARG_STRLEN
         # (128 KiB) and shared with the rendered prompt. See

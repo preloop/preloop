@@ -159,18 +159,32 @@ The controller writes the chosen rule or default onto the execution under reserv
 Failed executions always appear as console attention items of kind `flow`, and there is no failure comment: `on_failure.comment_on_trigger_issue` (removed 2026-09) and `on_failure.attention_item` are parsed and ignored so flows stored before the removal still load. `notifications` is a JSONB column, so nothing is migrated; a save from the console writes the blob back without the `on_failure` block.
 
 **Evidence packs.** Audit-style flows (`backend/presets/004`–`007`) write a
-human-readable evidence pack under `/workspace/evidence/`. With
-`FLOW_ARTIFACT_DIRECT_UPLOAD` unset, the runner captures a size-capped tar.gz
-(Docker archive API, or the Kubernetes log-channel emission capped at
-`MAX_EVIDENCE_ARCHIVE_BYTES`) and stores it on `flow_execution.evidence_archive`.
-With the flag set, hosted containers and private Docker runners upload through
-the shared encrypted artifact API (`kind=evidence`); Kubernetes logs carry
-status markers only. `GET .../result` and `GET .../evidence-status` report the
-persisted receipt (`kind=evidence`) without decrypt; download verifies digest
-and tenancy and reports `available` / `missing` / `expired` / `failed`
-distinctly. Packs are signed at capture with the account Ed25519 key; the
-signature lives beside the archive so the content-addressed digest does not
-change. See
+human-readable evidence pack under `/workspace/evidence/`. Two transports
+move that pack to the control plane. Direct upload
+(`FLOW_ARTIFACT_DIRECT_UPLOAD`) gives hosted containers and private Docker
+runners an execution-scoped PUT to the encrypted artifact store
+(`kind=evidence`). Kubernetes logs then carry status markers only, including
+when the upload fails: there is no plaintext fallback. The legacy transport
+is the default. Docker copies the directory through the engine archive API
+and does not use the log channel, so `FLOW_EVIDENCE_LOG_PLAINTEXT` does not
+change Docker capture. Kubernetes, with the plaintext switch left at its
+default `true`, emits a size-capped base64 block (`MAX_EVIDENCE_ARCHIVE_BYTES`,
+2 MiB) of `result.json`, the evidence pack, and the workspace snapshot into
+the pod log. That default is an exposure window: base64 is not encryption,
+and anyone who can read retained pod logs can read the artifacts. Set
+`FLOW_EVIDENCE_LOG_PLAINTEXT=false` to refuse that channel. Without an
+upload token the wrapper fails closed (markers `unavailable` /
+`skipped` with reason `plaintext_disabled`, no artifact bytes). The receipt
+is `failed` with error `plaintext_disabled`, which means unavailable by
+policy, and result capture reports a missing result rather than a decoded
+payload. The switch does not cover pod-spec access or ordinary agent
+stdout. Encrypted log transport with per-execution keys is a separate
+decision tracked in issue #268. `GET .../result` and `GET .../evidence-status`
+report the persisted receipt (`kind=evidence`) without decrypt; download
+verifies digest and tenancy and reports `available` / `missing` / `expired`
+/ `failed` distinctly. Packs are signed at capture with the account Ed25519
+key; the signature lives beside the archive so the content-addressed digest
+does not change. See
 [evidence-storage.md](../guide/flows/evidence-storage.md). This is operational
 retention, not object-lock.
 
