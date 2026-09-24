@@ -40,6 +40,7 @@ func TestNormalizeGitRemote(t *testing.T) {
 		{"bare word", "not-a-remote", ""},
 		{"local path", "/srv/git/repo.git", ""},
 		{"windows path", `C:\srv\git\repo`, ""},
+		{"windows drive forward slash", "C:/repos/foo.git", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -114,8 +115,8 @@ func TestResolveRepositoryIdentityFromWorkTree(t *testing.T) {
 	if got.Source != repositoryIdentitySource {
 		t.Errorf("source = %q, want %q", got.Source, repositoryIdentitySource)
 	}
-	if got.Toplevel != filepath.Clean(repo) {
-		t.Errorf("toplevel = %q, want %q", got.Toplevel, filepath.Clean(repo))
+	if got.Toplevel != canonicalRepositoryPath(repo) {
+		t.Errorf("toplevel = %q, want %q", got.Toplevel, canonicalRepositoryPath(repo))
 	}
 	if got.Remote != "github.com/example/repo" {
 		t.Errorf("remote = %q, want github.com/example/repo", got.Remote)
@@ -180,8 +181,8 @@ func TestResolveRepositoryIdentityLinkedWorktree(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected a repository identity in a linked worktree")
 	}
-	if got.Toplevel != filepath.Clean(worktree) {
-		t.Errorf("toplevel = %q, want %q", got.Toplevel, filepath.Clean(worktree))
+	if got.Toplevel != canonicalRepositoryPath(worktree) {
+		t.Errorf("toplevel = %q, want %q", got.Toplevel, canonicalRepositoryPath(worktree))
 	}
 	if got.Remote != "github.com/example/repo" {
 		t.Errorf("remote = %q, want github.com/example/repo", got.Remote)

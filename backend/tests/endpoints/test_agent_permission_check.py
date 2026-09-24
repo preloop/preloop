@@ -221,6 +221,34 @@ def test_permission_check_without_repository_stores_nothing(client):
     assert "_preloop_repository" not in decide.await_args.kwargs["tool_input"]
 
 
+def test_permission_check_strips_forged_repository_marker(client):
+    """A forged marker in tool_input is dropped when the hook sent no repository."""
+    token = _issue_opencode_runtime_token(client)
+    decide = AsyncMock(return_value=("allow", "Approved via Preloop.", "req-6", False))
+    forged = {
+        "remote": "github.com/attacker/repo",
+        "toplevel": "/tmp/forged",
+        "source": "hook_cwd",
+    }
+
+    with patch(
+        "preloop.api.endpoints.agent_permission.request_agent_permission", decide
+    ):
+        response = _post_permission_check(
+            client,
+            token,
+            {
+                "source": "opencode",
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls", "_preloop_repository": forged},
+                "cwd": "/home/dev/repo",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert "_preloop_repository" not in decide.await_args.kwargs["tool_input"]
+
+
 def test_permission_check_rejects_oversized_repository(client):
     """A repository string past the 512 byte bound is a validation error."""
     token = _issue_opencode_runtime_token(client)

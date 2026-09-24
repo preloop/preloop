@@ -62,7 +62,8 @@ func resolveRepositoryIdentity(cwd string) *repositoryIdentity {
 		// there is nothing trustworthy to record.
 		return nil
 	}
-	toplevel = filepath.Clean(toplevel)
+	toplevel = canonicalRepositoryPath(toplevel)
+	cwd = canonicalRepositoryPath(cwd)
 
 	identity := &repositoryIdentity{
 		Toplevel: boundRepositoryString(toplevel),
@@ -165,6 +166,10 @@ func normalizeGitRemote(remote string) string {
 	}
 
 	host = strings.ToLower(strings.TrimSpace(host))
+	// A one-character host is a Windows drive letter (C:/repos/foo), not DNS.
+	if len(host) == 1 {
+		return ""
+	}
 	path = strings.Trim(strings.TrimSpace(path), "/")
 	path = strings.TrimSuffix(path, ".git")
 	path = strings.Trim(path, "/")
@@ -172,6 +177,17 @@ func normalizeGitRemote(remote string) string {
 		return ""
 	}
 	return host + "/" + path
+}
+
+// canonicalRepositoryPath cleans a path and resolves symlinks, including the
+// Windows 8.3 short names git and t.TempDir disagree on.
+func canonicalRepositoryPath(path string) string {
+	cleaned := filepath.Clean(path)
+	resolved, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		return cleaned
+	}
+	return filepath.Clean(resolved)
 }
 
 // boundRepositoryString truncates a value to the shared byte budget without
