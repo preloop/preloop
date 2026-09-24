@@ -201,6 +201,16 @@ def test_permission_check_rejects_invalid_repository(client):
     )
     assert oversized.status_code == 422, oversized.text
 
+    multibyte = _post_permission_check(
+        client,
+        token,
+        {
+            "tool_name": "Bash",
+            "repository": {**_REPOSITORY, "toplevel": "é" * 300},
+        },
+    )
+    assert multibyte.status_code == 422, multibyte.text
+
     extra = _post_permission_check(
         client,
         token,

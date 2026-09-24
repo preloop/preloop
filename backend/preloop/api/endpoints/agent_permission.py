@@ -13,7 +13,7 @@ from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from preloop.api.auth.jwt import (
     _authenticate_with_api_key,
@@ -163,8 +163,18 @@ class RepositoryContext(BaseModel):
     )
     no_remote: bool = Field(
         False,
-        description="True when the work tree has no origin remote.",
+        description=(
+            "True when the work tree has no origin remote, or the origin "
+            "is not a host/owner/repo identity."
+        ),
     )
+
+    @field_validator("remote", "toplevel", "relative_path")
+    @classmethod
+    def _at_most_512_bytes(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 512:
+            raise ValueError("must be at most 512 bytes")
+        return value
 
 
 class AgentPermissionCheckRequest(BaseModel):
@@ -270,6 +280,7 @@ async def agent_permission_check(
     # The approval model intentionally has no adapter column. Preserve the
     # non-sensitive origin alongside the native tool input so approver
     # surfaces can distinguish the adapter without a schema migration.
+    tool_input.pop("_preloop_source", None)
     if payload.source and payload.source.strip():
         tool_input["_preloop_source"] = payload.source.strip()
     # Drop a caller-supplied marker. Only the hook's repository field is
