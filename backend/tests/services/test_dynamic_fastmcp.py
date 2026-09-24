@@ -1657,7 +1657,8 @@ class TestCreateProxiedToolWrapper:
             safe_param="ok",
             ctx=object(),
         )
-        assert isinstance(result, str)
+        assert result.is_error
+        assert "Denied by test" in result.content[0].text
         assert captured["tool_name"] == "safe_tool"
         assert captured["arguments"]["type"] == "issue"
         assert captured["arguments"]["next"] == "cursor"
@@ -2099,3 +2100,428 @@ class TestSendNoteToolExposure:
         assert isinstance(result, ToolResult)
         assert result.is_error
         assert "disabled" in result.content[0].text.lower()
+
+
+class TestToolCallUsageOutcome:
+    """A governed call records its outcome, not a bare ``detected`` (#793).
+
+    ``GET /flows/executions/{id}`` must let an operator tell a refused call
+    from a successful one, and the usage row must never retain the argument
+    payload.
+    """
+
+    def _context(self) -> UserContext:
+        return UserContext(
+            user_id=str(uuid4()),
+            account_id=str(uuid4()),
+            username="testuser",
+            has_tracker=True,
+            enabled_default_tools=[],
+            enabled_proxied_tools=[],
+            runtime_session_id=str(uuid4()),
+            flow_execution_id=str(uuid4()),
+        )
+
+    def test_argument_summary_records_names_and_sizes_only(self):
+        from preloop.services.dynamic_fastmcp import _summarize_arguments
+
+        summary = _summarize_arguments(
+            {"title": "a customer value", "api_key": "sk-live-secret"}
+        )
+
+        assert set(summary) == {"title", "api_key"}
+        assert summary["title"] == len('"a customer value"')
+        assert "a customer value" not in str(summary)
+        assert "sk-live-secret" not in str(summary)
+
+    def test_argument_summary_is_bounded(self):
+        from preloop.services.dynamic_fastmcp import (
+            MAX_ARGUMENT_SUMMARY_KEYS,
+            _summarize_arguments,
+        )
+
+        summary = _summarize_arguments(
+            {f"key{index}": index for index in range(MAX_ARGUMENT_SUMMARY_KEYS + 3)}
+        )
+
+        assert summary["..."] == 3
+        assert (
+            len([key for key in summary if key != "..."]) == MAX_ARGUMENT_SUMMARY_KEYS
+        )
+
+    def _persist(
+        self, status: str, summary: str | None, arguments: dict | None
+    ) -> dict:
+        from preloop.models.crud import crud_runtime_session_activity
+        from preloop.services.dynamic_fastmcp import DynamicFastMCP
+
+        mcp = DynamicFastMCP("test-mcp")
+        activity = MagicMock()
+        activity.timestamp = None
+        with (
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch.object(
+                crud_runtime_session_activity, "log_tool_call", return_value=activity
+            ) as log_call,
+            patch("preloop.services.account_realtime.emit_account_event"),
+        ):
+            mock_get_db.side_effect = lambda: iter([MagicMock()])
+            mcp._persist_tool_call_activity(
+                self._context(),
+                tool_name="ask_user",
+                client_tool_name="ask_user",
+                status=status,
+                summary=summary,
+                arguments=arguments,
+                correlation_id="corr-793",
+            )
+        return log_call.call_args.kwargs
+
+    def test_succeeded_call_records_one_row_without_argument_values(self):
+        kwargs = self._persist(
+            "succeeded",
+            None,
+            {"question": "which project should I review?", "items": []},
+        )
+
+        assert kwargs["status"] == "succeeded"
+        assert kwargs["tool_name"] == "ask_user"
+        metadata = kwargs["metadata"]
+        assert metadata["correlation_id"] == "corr-793"
+        assert set(metadata["arguments_summary"]) == {"question", "items"}
+        assert "arguments_hash" in metadata
+        assert len(metadata["arguments_hash"]) == 16
+        assert "arguments" not in metadata
+        assert "which project should I review?" not in str(metadata)
+
+    def test_refused_call_records_the_refusal_string(self):
+        refusal = "Unsupported item key 'severity'; allowed keys are id, label."
+        kwargs = self._persist("refused", refusal, {"items": [{"severity": "high"}]})
+
+        assert kwargs["status"] == "refused"
+        assert kwargs["summary"] == refusal
+        assert "items" in kwargs["metadata"]["arguments_summary"]
+
+    def test_transport_failure_records_the_error(self):
+        kwargs = self._persist("failed", "connection closed", {"title": "x"})
+
+        assert kwargs["status"] == "failed"
+        assert kwargs["summary"] == "connection closed"
+
+    async def test_call_tool_refusal_is_recorded_as_refused(
+        self, dynamic_mcp, user_context
+    ):
+        """A disabled builtin call is a refusal, not an invisible no-op."""
+        dynamic_mcp._user_context_provider = lambda: user_context
+        disabled_config = MagicMock()
+        disabled_config.tool_name = "get_issue"
+        disabled_config.tool_source = "builtin"
+        disabled_config.is_enabled = False
+        disabled_config.justification_mode = None
+        disabled_config.managed_agent_id = None
+
+        with (
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch(
+                "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                return_value=[disabled_config],
+            ),
+            patch.object(dynamic_mcp, "_persist_tool_call_activity") as persist,
+        ):
+            mock_get_db.side_effect = lambda: iter([MagicMock()])
+            result = await dynamic_mcp.call_tool("get_issue", {"issue": "ABC-1"})
+
+        assert result.is_error
+        persist.assert_called_once()
+        kwargs = persist.call_args.kwargs
+        assert kwargs["status"] == "refused"
+        assert "disabled" in kwargs["summary"].lower()
+
+    async def test_call_tool_transport_failure_is_recorded_as_failed(
+        self, dynamic_mcp, user_context
+    ):
+        """A call that dies with the transport leaves a failed row."""
+        dynamic_mcp._user_context_provider = lambda: user_context
+        available_tools = [Tool(name="get_issue", description="x", parameters={})]
+        async_db = MagicMock()
+        async_db.__aenter__ = AsyncMock(return_value=MagicMock())
+        async_db.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch.object(dynamic_mcp, "list_tools", return_value=available_tools),
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch(
+                "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                return_value=[],
+            ),
+            patch(
+                "preloop.models.db.session.get_async_db_session",
+                new=MagicMock(return_value=async_db),
+            ),
+            patch(
+                "preloop.services.policy_evaluator.evaluate_policy_async",
+                new=AsyncMock(return_value=("allow", None, None)),
+            ),
+            patch.object(dynamic_mcp, "_persist_tool_call_activity") as persist,
+            patch.object(
+                dynamic_mcp.__class__.__bases__[0],
+                "call_tool",
+                new=AsyncMock(side_effect=RuntimeError("connection closed")),
+                create=True,
+            ),
+        ):
+            mock_get_db.side_effect = lambda: iter([MagicMock()])
+            with pytest.raises(RuntimeError, match="connection closed"):
+                await dynamic_mcp.call_tool("get_issue", {"issue": "ABC-1"})
+
+        persist.assert_called_once()
+        kwargs = persist.call_args.kwargs
+        assert kwargs["status"] == "failed"
+        assert kwargs["summary"] == "connection closed"
+
+
+class TestApprovalDenialUsageOutcome:
+    """Human denial inside a proxied wrapper must not record succeeded."""
+
+    async def test_approval_denial_records_refused_usage_row(
+        self, dynamic_mcp, user_context, monkeypatch
+    ):
+        """require_approval returning False persists refused, not succeeded."""
+        from fastmcp.tools.tool import ToolResult
+
+        user_context.runtime_session_id = str(uuid4())
+        dynamic_mcp.set_user_context_provider(lambda: user_context)
+        persist = MagicMock()
+
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.get_db",
+            lambda: iter([MagicMock()]),
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.kill_switch_service.tools_halted",
+            lambda db, account_id: False,
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+            lambda *args, **kwargs: [],
+        )
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            "preloop.models.db.session.get_async_db_session",
+            lambda: mock_session,
+        )
+        monkeypatch.setattr(
+            "preloop.services.policy_evaluator.evaluate_policy_async",
+            AsyncMock(return_value=("allow", None, None)),
+        )
+        monkeypatch.setattr(
+            dynamic_mcp,
+            "list_tools",
+            AsyncMock(
+                return_value=[Tool(name="safe_tool", description="Safe", parameters={})]
+            ),
+        )
+        monkeypatch.setattr(
+            "preloop.services.approval_helper.require_approval",
+            AsyncMock(return_value=(False, "Denied by human approver")),
+        )
+        monkeypatch.setattr(dynamic_mcp, "_persist_tool_call_activity", persist)
+
+        wrapper = dynamic_mcp._create_proxied_tool_wrapper(
+            tool_name="safe_tool",
+            server_id="server-123",
+            account_id=user_context.account_id,
+            description="Safe tool",
+            input_schema={"properties": {"ok": {"type": "string"}}},
+        )
+        safe_account_id = user_context.account_id.replace("-", "_")
+        internal_name = f"account_{safe_account_id}_safe_tool"
+        dynamic_mcp.tool()(wrapper)
+        dynamic_mcp._registered_proxied_tools.add(internal_name)
+        dynamic_mcp._proxied_tool_servers["safe_tool"] = "server-123"
+
+        result = await dynamic_mcp.call_tool("safe_tool", {"ok": "yes"})
+
+        assert isinstance(result, ToolResult)
+        assert result.is_error
+        assert "Denied by human approver" in result.content[0].text
+        # Gate-level _refuse is not used; the wrapper denial hits the finally
+        # block once with refused.
+        refused_calls = [
+            call
+            for call in persist.call_args_list
+            if call.kwargs.get("status") == "refused"
+        ]
+        assert len(refused_calls) == 1
+        assert refused_calls[0].kwargs["client_tool_name"] == "safe_tool"
+        assert all(
+            call.kwargs.get("status") != "succeeded" for call in persist.call_args_list
+        )
+
+
+class TestProxiedTransportFailureUsageOutcome:
+    """A raising upstream client must not be recorded as succeeded."""
+
+    async def test_client_call_tool_raise_records_failed(
+        self, dynamic_mcp, user_context, monkeypatch
+    ):
+        """The wrapper's except path stamps failed, not a success string."""
+        from fastmcp.tools.tool import ToolResult
+
+        user_context.runtime_session_id = str(uuid4())
+        dynamic_mcp.set_user_context_provider(lambda: user_context)
+        persist = MagicMock()
+        client = MagicMock()
+        client.call_tool = AsyncMock(side_effect=RuntimeError("connection closed"))
+
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.get_db",
+            lambda: iter([MagicMock()]),
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.kill_switch_service.tools_halted",
+            lambda db, account_id: False,
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+            lambda *args, **kwargs: [],
+        )
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            "preloop.models.db.session.get_async_db_session",
+            lambda: mock_session,
+        )
+        monkeypatch.setattr(
+            "preloop.services.policy_evaluator.evaluate_policy_async",
+            AsyncMock(return_value=("allow", None, None)),
+        )
+        monkeypatch.setattr(
+            dynamic_mcp,
+            "list_tools",
+            AsyncMock(
+                return_value=[Tool(name="safe_tool", description="Safe", parameters={})]
+            ),
+        )
+        monkeypatch.setattr(
+            "preloop.services.approval_helper.require_approval",
+            AsyncMock(return_value=(True, None)),
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.crud_mcp_server.get",
+            MagicMock(
+                return_value=MagicMock(
+                    name="upstream",
+                    url="http://example.test",
+                    auth_type="none",
+                    auth_config={},
+                    transport="http",
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.get_mcp_client_pool",
+            lambda: MagicMock(get_client=AsyncMock(return_value=client)),
+        )
+        monkeypatch.setattr(
+            dynamic_mcp,
+            "_halt_dispatch_denial",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(dynamic_mcp, "_persist_tool_call_activity", persist)
+
+        wrapper = dynamic_mcp._create_proxied_tool_wrapper(
+            tool_name="safe_tool",
+            server_id="server-123",
+            account_id=user_context.account_id,
+            description="Safe tool",
+            input_schema={"properties": {"ok": {"type": "string"}}},
+        )
+        safe_account_id = user_context.account_id.replace("-", "_")
+        internal_name = f"account_{safe_account_id}_safe_tool"
+        dynamic_mcp.tool()(wrapper)
+        dynamic_mcp._registered_proxied_tools.add(internal_name)
+        dynamic_mcp._proxied_tool_servers["safe_tool"] = "server-123"
+
+        result = await dynamic_mcp.call_tool("safe_tool", {"ok": "yes"})
+
+        assert isinstance(result, ToolResult)
+        assert result.is_error
+        assert "connection closed" in result.content[0].text
+        failed_calls = [
+            call
+            for call in persist.call_args_list
+            if call.kwargs.get("status") == "failed"
+        ]
+        assert len(failed_calls) == 1
+        assert failed_calls[0].kwargs["client_tool_name"] == "safe_tool"
+        assert "connection closed" in (failed_calls[0].kwargs.get("summary") or "")
+        assert all(
+            call.kwargs.get("status") != "succeeded" for call in persist.call_args_list
+        )
+
+
+class TestAttributedRefusalUsageOutcome:
+    """Denials that return early still leave a refused row when a session exists."""
+
+    async def test_replay_halt_records_refused_under_the_client_name(
+        self, dynamic_mcp, user_context
+    ):
+        user_context.runtime_session_id = str(uuid4())
+        dynamic_mcp.set_user_context_provider(lambda: user_context)
+        persist = MagicMock()
+        dynamic_mcp._persist_tool_call_activity = persist
+        dynamic_mcp._halt_dispatch_denial = AsyncMock(return_value="kill switch")
+        safe_account_id = user_context.account_id.replace("-", "_")
+        internal_name = f"account_{safe_account_id}_external_write"
+
+        result = await dynamic_mcp.call_registered_tool_without_policy(
+            internal_name,
+            {"path": "/tmp"},
+            account_id=user_context.account_id,
+        )
+
+        assert result.is_error
+        assert "kill switch" in result.content[0].text
+        persist.assert_called_once()
+        kwargs = persist.call_args.kwargs
+        assert kwargs["status"] == "refused"
+        assert kwargs["client_tool_name"] == "external_write"
+        assert kwargs["summary"] == "kill switch"
+
+    async def test_replay_halt_without_context_writes_no_row(self, dynamic_mcp):
+        dynamic_mcp._user_context_provider = lambda: None
+        persist = MagicMock()
+        dynamic_mcp._persist_tool_call_activity = persist
+        dynamic_mcp._halt_dispatch_denial = AsyncMock(return_value="owner halted")
+
+        result = await dynamic_mcp.call_registered_tool_without_policy(
+            "write", {}, account_id="approval-owner"
+        )
+
+        assert result.is_error
+        assert result.content[0].text == "owner halted"
+        persist.assert_not_called()
+
+    async def test_direct_internal_name_records_refused(
+        self, dynamic_mcp, user_context
+    ):
+        user_context.runtime_session_id = str(uuid4())
+        dynamic_mcp.set_user_context_provider(lambda: user_context)
+        persist = MagicMock()
+        dynamic_mcp._persist_tool_call_activity = persist
+        safe_account_id = user_context.account_id.replace("-", "_")
+        internal_name = f"account_{safe_account_id}_safe_tool"
+        dynamic_mcp._registered_proxied_tools.add(internal_name)
+
+        result = await dynamic_mcp.call_tool(internal_name, {"ok": "1"})
+
+        assert result.is_error
+        assert "internal tool name" in result.content[0].text
+        persist.assert_called_once()
+        kwargs = persist.call_args.kwargs
+        assert kwargs["status"] == "refused"
+        assert kwargs["client_tool_name"] == "safe_tool"

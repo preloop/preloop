@@ -2525,7 +2525,10 @@ export class FlowExecutionView extends LitElement {
 
     if (item.kind === 'tool' && item.tool) {
       const tool = item.tool;
-      const failed = tool.status === 'error' || tool.status === 'failed';
+      const failed =
+        tool.status === 'error' ||
+        tool.status === 'failed' ||
+        tool.status === 'refused';
       return html`
         <div class="timeline-row timeline-tool">
           ${this.renderTimelineTime(row.timestamp)}
@@ -2934,7 +2937,10 @@ ${execution.resolved_input_prompt}</pre>
   private renderSummaryStrip(execution: FlowExecution) {
     const toolEntries = this.getToolActivityEntries();
     const failedTools = toolEntries.filter(
-      (entry) => entry.status === 'error' || entry.status === 'failed'
+      (entry) =>
+        entry.status === 'error' ||
+        entry.status === 'failed' ||
+        entry.status === 'refused'
     ).length;
     const toolCount = this.getTotalToolCallCount();
     const sessionReference = execution.agent_session_reference;
