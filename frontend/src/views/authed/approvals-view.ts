@@ -16,10 +16,8 @@ import {
   formatRelativeTime,
   parseUTCDate,
 } from '../../utils/date';
-import {
-  approvalRequesterName,
-  repositoryObservationChip,
-} from '../../utils/approval-identity';
+import { approvalRequesterName } from '../../utils/approval-identity';
+import '../../components/repository-chip';
 import {
   APPROVAL_REQUESTS_PAGE_LIMIT,
   approvalStatusLabel,
@@ -1523,7 +1521,6 @@ export class ApprovalsView extends AuthedElement {
     const selectable = waiting && offersAction(actions, 'approve');
     const selected = this.selection.isSelected(request.id);
     const isNew = waiting && this.newIds.includes(request.id);
-    const repository = repositoryObservationChip(request.tool_args);
     return html`
       <div
         class="approval-item ${request.status} ${
@@ -1597,16 +1594,7 @@ export class ApprovalsView extends AuthedElement {
                 <sl-icon name="cpu"></sl-icon>
                 ${approvalRequesterName(request)}
               </sl-badge>
-              ${
-                repository
-                  ? html`<sl-badge
-                      pill
-                      class="chip repo-chip"
-                      title=${repository.title}
-                      >${repository.label}</sl-badge
-                    >`
-                  : ''
-              }
+              <repository-chip .toolArgs=${request.tool_args}></repository-chip>
               ${
                 request.auto_approved_reason
                   ? html`<sl-tooltip

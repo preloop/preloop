@@ -96,9 +96,25 @@ describe('session-chat-view', () => {
         ]}
       ></session-chat-view>
     `);
-    const chip = withMarker.shadowRoot?.querySelector('.repo-chip');
-    expect(chip?.textContent?.trim()).to.equal('example/repo · sub/dir');
-    expect(chip?.getAttribute('title')).to.contain('github.com/example/repo');
+    const host = withMarker.shadowRoot?.querySelector('repository-chip') as
+      | (HTMLElement & {
+          updateComplete: Promise<boolean>;
+          renderRoot: ShadowRoot;
+        })
+      | null;
+    expect(host).to.not.equal(null);
+    await host!.updateComplete;
+    const chip = host!.renderRoot.querySelector(
+      '[data-testid="repository-chip"]'
+    );
+    expect(chip?.querySelector('.remote')?.textContent?.trim()).to.equal(
+      'example/repo'
+    );
+    expect(
+      chip
+        ?.querySelector('[data-testid="repository-relative"]')
+        ?.textContent?.trim()
+    ).to.equal('sub/dir');
     expect(chip?.getAttribute('title')).to.contain('/tmp/example');
 
     const withoutMarker = await fixture<SessionChatView>(html`
@@ -114,7 +130,7 @@ describe('session-chat-view', () => {
         ]}
       ></session-chat-view>
     `);
-    expect(withoutMarker.shadowRoot?.querySelector('.repo-chip')).to.equal(
+    expect(withoutMarker.shadowRoot?.querySelector('repository-chip')).to.equal(
       null
     );
   });

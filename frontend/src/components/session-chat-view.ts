@@ -28,6 +28,8 @@ import type {
   TranscriptStepGroupItem,
 } from '../utils/transcript';
 import { buildConversation } from '../utils/transcript';
+import { getApprovalRepository } from '../utils/approval-identity';
+import './repository-chip';
 import { SESSION_EVENTS_PAGE_REQUESTED_EVENT } from '../utils/session-observer';
 
 const MESSAGE_PREVIEW_CHARS = 2000;
@@ -371,14 +373,6 @@ export class SessionChatView extends LitElement {
 
     .step-label {
       font-weight: var(--sl-font-weight-semibold);
-    }
-
-    .repo-chip {
-      background: var(--sl-color-neutral-100);
-      border-radius: 999px;
-      color: var(--sl-color-neutral-700);
-      font-size: var(--sl-font-size-x-small);
-      padding: 1px 6px;
     }
 
     .step-kind-tool_call .step-label,
@@ -802,10 +796,10 @@ export class SessionChatView extends LitElement {
         <div class="step-header">
           <span class="step-label">${step.label}</span>
           ${
-            step.repositoryLabel
-              ? html`<span class="repo-chip" title=${step.repositoryTitle || ''}
-                  >${step.repositoryLabel}</span
-                >`
+            getApprovalRepository(step.repositoryArgs)
+              ? html`<repository-chip
+                  .toolArgs=${step.repositoryArgs}
+                ></repository-chip>`
               : nothing
           }
           ${step.serverName ? html`<span>${step.serverName}</span>` : nothing}

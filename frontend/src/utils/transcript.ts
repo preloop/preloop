@@ -28,7 +28,6 @@ import type {
   FlowGatewayEvent,
   RuntimeSessionActivityItem,
 } from '../types';
-import { repositoryObservationChip } from './approval-identity';
 
 export type TranscriptStepKind =
   'tool_call' | 'tool_result' | 'system' | 'injected' | 'intermediate';
@@ -46,9 +45,8 @@ export interface TranscriptStep {
   toolName?: string | null;
   serverName?: string | null;
   status?: string | null;
-  /** Hook repository chip for a native tool row. Absent when unknown. */
-  repositoryLabel?: string | null;
-  repositoryTitle?: string | null;
+  /** Tool-call metadata, when it may carry `_preloop_repository`. */
+  repositoryArgs?: Record<string, unknown> | null;
   /** True when the classification came from exact structure, not a heuristic. */
   detectionExact: boolean;
 }
@@ -511,7 +509,6 @@ export function buildConversation(
     const key = `activity:${index}:${item.timestamp || ''}`;
     if (activityType === 'tool_call') {
       stats.toolCallCount += 1;
-      const repository = repositoryObservationChip(item.metadata);
       atoms.push({
         type: 'step',
         order: order++,
@@ -524,8 +521,7 @@ export function buildConversation(
           toolName: item.tool_name,
           serverName: item.server_name,
           status: item.status,
-          repositoryLabel: repository?.label ?? null,
-          repositoryTitle: repository?.title ?? null,
+          repositoryArgs: item.metadata ?? null,
           detectionExact: true,
         },
       });

@@ -586,14 +586,30 @@ describe('ApprovalView', () => {
     await waitUntil(() => !(element as any).loading, 'still loading');
     await element.updateComplete;
 
-    const chip = element.shadowRoot?.querySelector('.repo-chip');
-    expect(chip?.textContent?.trim()).to.equal('example/repo · sub/dir');
+    const host = element.shadowRoot?.querySelector('repository-chip') as
+      | (HTMLElement & {
+          updateComplete: Promise<boolean>;
+          renderRoot: ShadowRoot;
+        })
+      | null;
+    expect(host).to.not.equal(null);
+    await host!.updateComplete;
+    const chip = host!.renderRoot.querySelector(
+      '[data-testid="repository-chip"]'
+    );
+    expect(chip?.querySelector('.remote')?.textContent?.trim()).to.equal(
+      'example/repo'
+    );
+    expect(
+      chip
+        ?.querySelector('[data-testid="repository-relative"]')
+        ?.textContent?.trim()
+    ).to.equal('sub/dir');
     expect(chip?.getAttribute('title')).to.contain('/tmp/example');
     expect(element.shadowRoot?.textContent).to.contain('git status');
     expect(element.shadowRoot?.textContent).to.not.contain(
       '_preloop_repository'
     );
-    expect(element.shadowRoot?.querySelector('.repo-chip')).to.not.equal(null);
   });
 
   it('renders the resolved state for an approved request', async () => {

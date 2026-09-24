@@ -92,6 +92,32 @@ class TestRedactDict:
         assert redact_dict(None) is None
 
 
+class TestOmitPreloopMarkers:
+    """Trusted markers stay on the stored approval and leave the display copy."""
+
+    def test_drops_top_level_markers_only(self) -> None:
+        from preloop.utils.redaction import omit_preloop_markers
+
+        data = {
+            "command": "git status",
+            "_preloop_source": "cursor",
+            "_preloop_repository": {"remote": "github.com/example/repo"},
+            "nested": {"_preloop_source": "kept"},
+        }
+        result = omit_preloop_markers(data)
+        assert result == {
+            "command": "git status",
+            "nested": {"_preloop_source": "kept"},
+        }
+        assert "_preloop_source" in data
+
+    def test_non_dict_passthrough(self) -> None:
+        from preloop.utils.redaction import omit_preloop_markers
+
+        assert omit_preloop_markers("git status") == "git status"
+        assert omit_preloop_markers(None) is None
+
+
 class TestRedactForLog:
     """Tests for redact_for_log function."""
 

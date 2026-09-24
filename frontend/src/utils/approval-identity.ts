@@ -91,24 +91,6 @@ export function formatApprovalRepository(
   return remote.slice(slash + 1).replace(/^\/+|\/+$/g, '') || remote;
 }
 
-/** Label and tooltip for a repository chip, including a relative path. */
-export function repositoryObservationChip(
-  toolArgs: Record<string, unknown> | null | undefined
-): { label: string; title: string } | null {
-  const repository = getApprovalRepository(toolArgs);
-  if (!repository) return null;
-  const name = formatApprovalRepository(repository);
-  const relative = (repository.relative_path || '').replace(/^\/+|\/+$/g, '');
-  let label = name;
-  if (label && relative) label = `${label} · ${relative}`;
-  if (!label && repository.no_remote) label = 'no remote';
-  if (!label) return null;
-  const title =
-    [repository.remote, repository.toplevel].filter(Boolean).join('\n') ||
-    label;
-  return { label, title };
-}
-
 export function formatApprovalRequester(
   managedAgentName: string | null | undefined,
   toolArgs: Record<string, unknown> | null | undefined,
