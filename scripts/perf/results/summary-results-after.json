@@ -1,0 +1,440 @@
+{
+  "phase": "after",
+  "revision": "aeae896baaa9009b8e5ff27362ddf74452180be1",
+  "database": "p2_368",
+  "fixture": {
+    "account_id": "33c7fb8f-650c-4e1b-9682-e283d44bac09",
+    "user_id": "dd72c5f3-6b9c-472c-b004-74bc8298177f",
+    "principal_id": "synthetic-agent-0",
+    "now": "2026-09-24T01:50:58.177685",
+    "rows": 200000,
+    "days": 400,
+    "users": 10,
+    "model_aliases": 16,
+    "sessions": 400,
+    "agents": 10
+  },
+  "method": "In-process TestClient, real handlers/CRUD/PostgreSQL; fixture auth, no network transit",
+  "samples": [
+    {
+      "range": "7d",
+      "case": "summary_light",
+      "per_user": false,
+      "runtime_principal_id": null,
+      "first_ms": 267.45370899152476,
+      "warm_median_ms": 5.887958002858795,
+      "warm_min_ms": 5.377666995627806,
+      "warm_max_ms": 8.403542000451125,
+      "all_ms": [
+        267.45370899152476,
+        6.946916997549124,
+        5.566416992223822,
+        8.403542000451125,
+        5.887958002858795,
+        5.377666995627806
+      ],
+      "sql_counts": [
+        3,
+        3,
+        3,
+        3,
+        3,
+        3
+      ],
+      "total_requests": 3500,
+      "estimated_cost": 35.000000000001606
+    },
+    {
+      "range": "7d",
+      "case": "summary_full",
+      "per_user": false,
+      "runtime_principal_id": null,
+      "first_ms": 57.52829099947121,
+      "warm_median_ms": 47.80479100008961,
+      "warm_min_ms": 43.38662499503698,
+      "warm_max_ms": 50.109499992686324,
+      "all_ms": [
+        57.52829099947121,
+        44.11112499656156,
+        50.109499992686324,
+        43.38662499503698,
+        49.79404099867679,
+        47.80479100008961
+      ],
+      "sql_counts": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11
+      ],
+      "total_requests": 3500,
+      "estimated_cost": 35.000000000001606
+    },
+    {
+      "range": "7d",
+      "case": "cost_summary",
+      "per_user": false,
+      "runtime_principal_id": null,
+      "first_ms": 52.2273749957094,
+      "warm_median_ms": 47.22691599454265,
+      "warm_min_ms": 45.903207996161655,
+      "warm_max_ms": 47.672790999058634,
+      "all_ms": [
+        52.2273749957094,
+        47.479917004238814,
+        45.903207996161655,
+        47.22691599454265,
+        46.097833997919224,
+        47.672790999058634
+      ],
+      "sql_counts": [
+        13,
+        13,
+        13,
+        13,
+        13,
+        13
+      ],
+      "total_requests": 3500,
+      "estimated_cost": 35.000000000001606
+    },
+    {
+      "range": "7d",
+      "case": "summary_light",
+      "per_user": true,
+      "runtime_principal_id": "synthetic-agent-0",
+      "first_ms": 6.8644999992102385,
+      "warm_median_ms": 5.130667006596923,
+      "warm_min_ms": 4.8875409993343055,
+      "warm_max_ms": 5.902167002204806,
+      "all_ms": [
+        6.8644999992102385,
+        5.902167002204806,
+        5.579666991252452,
+        5.130667006596923,
+        4.941749997669831,
+        4.8875409993343055
+      ],
+      "sql_counts": [
+        3,
+        3,
+        3,
+        3,
+        3,
+        3
+      ],
+      "total_requests": 350,
+      "estimated_cost": 3.4999999999999694
+    },
+    {
+      "range": "7d",
+      "case": "summary_full",
+      "per_user": true,
+      "runtime_principal_id": "synthetic-agent-0",
+      "first_ms": 41.901791002601385,
+      "warm_median_ms": 39.64499999710824,
+      "warm_min_ms": 36.54312499566004,
+      "warm_max_ms": 138.01341599901207,
+      "all_ms": [
+        41.901791002601385,
+        36.54312499566004,
+        41.877499999827705,
+        39.64499999710824,
+        38.495166998472996,
+        138.01341599901207
+      ],
+      "sql_counts": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11
+      ],
+      "total_requests": 350,
+      "estimated_cost": 3.4999999999999694
+    },
+    {
+      "range": "30d",
+      "case": "summary_light",
+      "per_user": false,
+      "runtime_principal_id": null,
+      "first_ms": 15.369208995252848,
+      "warm_median_ms": 8.650959003716707,
+      "warm_min_ms": 8.635750011308119,
+      "warm_max_ms": 9.04058400192298,
+      "all_ms": [
+        15.369208995252848,
+        9.04058400192298,
+        8.645374997286126,
+        8.650959003716707,
+        8.635750011308119,
+        8.803415999864228
+      ],
+      "sql_counts": [
+        3,
+        3,
+        3,
+        3,
+        3,
+        3
+      ],
+      "total_requests": 15000,
+      "estimated_cost": 150.00000000000855
+    },
+    {
+      "range": "30d",
+      "case": "summary_full",
+      "per_user": false,
+      "runtime_principal_id": null,
+      "first_ms": 80.76895799604245,
+      "warm_median_ms": 80.64554200973362,
+      "warm_min_ms": 80.33779100514948,
+      "warm_max_ms": 85.17575000587385,
+      "all_ms": [
+        80.76895799604245,
+        80.64554200973362,
+        80.45712500461377,
+        80.33779100514948,
+        85.17575000587385,
+        82.0036670047557
+      ],
+      "sql_counts": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11
+      ],
+      "total_requests": 15000,
+      "estimated_cost": 150.00000000000855
+    },
+    {
+      "range": "30d",
+      "case": "cost_summary",
+      "per_user": false,
+      "runtime_principal_id": null,
+      "first_ms": 87.53145900845993,
+      "warm_median_ms": 91.29420800309163,
+      "warm_min_ms": 85.19804100797046,
+      "warm_max_ms": 188.4319999953732,
+      "all_ms": [
+        87.53145900845993,
+        188.4319999953732,
+        91.37675000238232,
+        85.19804100797046,
+        91.29420800309163,
+        86.40262500557583
+      ],
+      "sql_counts": [
+        13,
+        13,
+        13,
+        13,
+        13,
+        13
+      ],
+      "total_requests": 15000,
+      "estimated_cost": 150.00000000000855
+    },
+    {
+      "range": "30d",
+      "case": "summary_light",
+      "per_user": true,
+      "runtime_principal_id": "synthetic-agent-0",
+      "first_ms": 8.391916999244131,
+      "warm_median_ms": 7.903291989350691,
+      "warm_min_ms": 7.372791995294392,
+      "warm_max_ms": 8.161333986208774,
+      "all_ms": [
+        8.391916999244131,
+        7.372791995294392,
+        8.161333986208774,
+        8.10841700877063,
+        7.38949999504257,
+        7.903291989350691
+      ],
+      "sql_counts": [
+        3,
+        3,
+        3,
+        3,
+        3,
+        3
+      ],
+      "total_requests": 1500,
+      "estimated_cost": 14.999999999999725
+    },
+    {
+      "range": "30d",
+      "case": "summary_full",
+      "per_user": true,
+      "runtime_principal_id": "synthetic-agent-0",
+      "first_ms": 63.09299998974893,
+      "warm_median_ms": 61.862207992817275,
+      "warm_min_ms": 60.940166004002094,
+      "warm_max_ms": 164.16304199083243,
+      "all_ms": [
+        63.09299998974893,
+        61.51125000906177,
+        60.940166004002094,
+        164.16304199083243,
+        63.92041601066012,
+        61.862207992817275
+      ],
+      "sql_counts": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11
+      ],
+      "total_requests": 1500,
+      "estimated_cost": 14.999999999999725
+    },
+    {
+      "range": "1y",
+      "case": "summary_light",
+      "per_user": false,
+      "runtime_principal_id": null,
+      "first_ms": 26.279541998519562,
+      "warm_median_ms": 24.750750002567656,
+      "warm_min_ms": 24.23475000250619,
+      "warm_max_ms": 25.473667003097944,
+      "all_ms": [
+        26.279541998519562,
+        24.23475000250619,
+        25.473667003097944,
+        24.259832993266173,
+        24.750750002567656,
+        25.23795800516382
+      ],
+      "sql_counts": [
+        3,
+        3,
+        3,
+        3,
+        3,
+        3
+      ],
+      "total_requests": 182500,
+      "estimated_cost": 1824.9999999987754
+    },
+    {
+      "range": "1y",
+      "case": "summary_full",
+      "per_user": false,
+      "runtime_principal_id": null,
+      "first_ms": 292.4735410051653,
+      "warm_median_ms": 266.8911249929806,
+      "warm_min_ms": 252.8172500024084,
+      "warm_max_ms": 376.3862919877283,
+      "all_ms": [
+        292.4735410051653,
+        303.85866700089537,
+        266.8911249929806,
+        262.73087499430403,
+        252.8172500024084,
+        376.3862919877283
+      ],
+      "sql_counts": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11
+      ],
+      "total_requests": 182500,
+      "estimated_cost": 1824.9999999987754
+    },
+    {
+      "range": "1y",
+      "case": "cost_summary",
+      "per_user": false,
+      "runtime_principal_id": null,
+      "first_ms": 279.317541004275,
+      "warm_median_ms": 288.9973330020439,
+      "warm_min_ms": 275.3165410103975,
+      "warm_max_ms": 296.567249999498,
+      "all_ms": [
+        279.317541004275,
+        290.32958300376777,
+        275.3165410103975,
+        288.9973330020439,
+        296.567249999498,
+        281.073040998308
+      ],
+      "sql_counts": [
+        13,
+        13,
+        13,
+        13,
+        13,
+        13
+      ],
+      "total_requests": 182500,
+      "estimated_cost": 1824.9999999987754
+    },
+    {
+      "range": "1y",
+      "case": "summary_light",
+      "per_user": true,
+      "runtime_principal_id": "synthetic-agent-0",
+      "first_ms": 15.476625005248934,
+      "warm_median_ms": 14.416291989618912,
+      "warm_min_ms": 13.668416009750217,
+      "warm_max_ms": 15.779624998685904,
+      "all_ms": [
+        15.476625005248934,
+        13.668416009750217,
+        14.416291989618912,
+        14.710292001836933,
+        15.779624998685904,
+        14.197374999639578
+      ],
+      "sql_counts": [
+        3,
+        3,
+        3,
+        3,
+        3,
+        3
+      ],
+      "total_requests": 18250,
+      "estimated_cost": 182.499999999979
+    },
+    {
+      "range": "1y",
+      "case": "summary_full",
+      "per_user": true,
+      "runtime_principal_id": "synthetic-agent-0",
+      "first_ms": 104.62433299107943,
+      "warm_median_ms": 111.51683400385082,
+      "warm_min_ms": 99.98991699831095,
+      "warm_max_ms": 213.31150000332855,
+      "all_ms": [
+        104.62433299107943,
+        213.31150000332855,
+        111.51683400385082,
+        99.98991699831095,
+        111.94612500548828,
+        105.42150000401307
+      ],
+      "sql_counts": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11
+      ],
+      "total_requests": 18250,
+      "estimated_cost": 182.499999999979
+    }
+  ]
+}

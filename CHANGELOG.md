@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is passed only to `x11vnc -storepasswd` (briefly visible to other local
   users; VNC DES keeps the first 8 characters) and is not written elsewhere.
 
+### Changed
+
+- One-year usage summaries aggregate session and model totals before joining
+  session, agent, flow, and principal labels, and hash the daily series by
+  materialized day bucket. Per-user windows use
+  `ix_api_usage_account_principal_id_ts`. Replay exclusion, retry handling, and
+  the breakdown limit are unchanged. Refs #914.
+
 ### Fixed
 
 - Legacy publication now appends the current execution and head SHA to an
