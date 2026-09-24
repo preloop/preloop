@@ -317,6 +317,16 @@ class TestCodexBuildScript:
         script = agent._build_codex_script(context)
         assert "git" in script.lower()
 
+    def test_browser_mcp_fragment_is_appended_after_config_write(self):
+        """Codex replaces config.toml; the browser fragment is attached after."""
+        agent = CodexAgent({})
+        script = agent._build_codex_script(
+            {"prompt": "test", "execution_id": "exec-1", "flow_name": "test-flow"}
+        )
+        assert script.index("cat > ~/.codex/config.toml") < script.index(
+            "preloop-browser-mcp.toml"
+        )
+
 
 class TestCodexAuthConfig:
     """Test _build_codex_auth_config method."""
