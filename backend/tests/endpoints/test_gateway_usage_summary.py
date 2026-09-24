@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 
 from preloop.models.crud import (
+    crud_account,
     crud_ai_model,
     crud_api_usage,
     crud_flow,
@@ -1373,3 +1374,233 @@ def test_runtime_session_api_exposes_parent_session_id(client, db_session, test_
     assert child_detail.status_code == 200
     assert parent_detail.json()["session"]["parent_session_id"] is None
     assert child_detail.json()["session"]["parent_session_id"] == str(parent.id)
+
+
+def test_gateway_usage_summary_query_shape_matches_raw_rows(
+    client, db_session, test_user
+):
+    """Summary breakdowns follow raw-row accounting across the query-shape cases."""
+    start = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 2, 12, 0, tzinfo=UTC)
+    other = crud_account.create(
+        db_session,
+        obj_in={"organization_name": "Other Example Org", "is_active": True},
+    )
+    flow = crud_flow.create(
+        db=db_session,
+        flow_in=FlowCreate(
+            name="Endpoint Legacy Flow",
+            prompt_template="Test",
+            trigger_event_source="github",
+            trigger_event_types=["test"],
+            agent_type="codex",
+            agent_config={},
+            allowed_mcp_servers=[],
+            allowed_mcp_tools=[],
+            account_id=test_user.account_id,
+        ),
+        account_id=test_user.account_id,
+    )
+    execution = crud_flow_execution.create(
+        db_session,
+        FlowExecutionCreate(
+            flow_id=flow.id,
+            status="SUCCEEDED",
+            agent_session_reference="endpoint-legacy",
+        ),
+    )
+    newer = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="custom",
+        session_source_id="endpoint-newer",
+        runtime_principal_type="custom",
+        runtime_principal_id="endpoint-user",
+        runtime_principal_name="Endpoint User",
+        started_at=start,
+        last_activity_at=start,
+    )
+    older = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="custom",
+        session_source_id="endpoint-older",
+        runtime_principal_type="custom",
+        runtime_principal_id="endpoint-other",
+        runtime_principal_name="Endpoint Other",
+        started_at=start,
+        last_activity_at=start,
+    )
+
+    def add(**kwargs):
+        when = kwargs.pop("when")
+        usage = crud_api_usage.log_gateway_request(
+            db_session,
+            endpoint="/v1/chat/completions",
+            method="POST",
+            duration=0.1,
+            user_id=str(test_user.id),
+            account_id=str(test_user.account_id),
+            provider_name="openai",
+            **kwargs,
+        )
+        usage.timestamp = when
+        db_session.flush()
+
+    add(
+        when=start,
+        runtime_session_id=str(older.id),
+        runtime_principal_id="endpoint-other",
+        model_alias="example-older",
+        status_code=200,
+        prompt_tokens=1,
+        completion_tokens=1,
+        total_tokens=2,
+        estimated_cost=0.02,
+    )
+    add(
+        when=datetime(2026, 4, 1, 23, 59, tzinfo=UTC),
+        runtime_session_id=str(newer.id),
+        runtime_principal_id="row-principal",
+        model_alias="example-newer",
+        status_code=500,
+        prompt_tokens=4,
+        completion_tokens=0,
+        total_tokens=4,
+        estimated_cost=0.04,
+    )
+    add(
+        when=datetime(2026, 4, 2, 0, 1, tzinfo=UTC),
+        runtime_session_id=str(newer.id),
+        runtime_principal_id="row-principal",
+        model_alias="example-newer",
+        status_code=200,
+        prompt_tokens=3,
+        completion_tokens=0,
+        total_tokens=3,
+        estimated_cost=None,
+    )
+    add(
+        when=datetime(2026, 4, 2, 1, 0, tzinfo=UTC),
+        runtime_session_id=str(newer.id),
+        runtime_principal_id="endpoint-user",
+        model_alias="example-newer",
+        status_code=200,
+        prompt_tokens=1,
+        completion_tokens=0,
+        total_tokens=1,
+        estimated_cost=0.01,
+        is_retry=True,
+    )
+    add(
+        when=datetime(2026, 4, 2, 2, 0, tzinfo=UTC),
+        runtime_session_id=str(newer.id),
+        runtime_principal_id="endpoint-user",
+        model_alias="example-newer",
+        status_code=200,
+        prompt_tokens=9,
+        completion_tokens=0,
+        total_tokens=9,
+        estimated_cost=0.09,
+        meta_data={"purpose": "replay_validation"},
+    )
+    add(
+        when=datetime(2026, 4, 2, 3, 0, tzinfo=UTC),
+        flow_id=str(flow.id),
+        flow_execution_id=str(execution.id),
+        runtime_principal_id="endpoint-user",
+        model_alias="example-legacy",
+        status_code=200,
+        prompt_tokens=5,
+        completion_tokens=0,
+        total_tokens=5,
+        estimated_cost=0.05,
+    )
+    add(
+        when=start - timedelta(minutes=1),
+        runtime_session_id=str(newer.id),
+        runtime_principal_id="endpoint-user",
+        model_alias="example-newer",
+        status_code=200,
+        prompt_tokens=8,
+        completion_tokens=0,
+        total_tokens=8,
+        estimated_cost=0.08,
+    )
+    foreign_session = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=other.id,
+        session_source_type="custom",
+        session_source_id="foreign-endpoint",
+        runtime_principal_type="custom",
+        runtime_principal_id="endpoint-user",
+        started_at=start,
+        last_activity_at=start,
+    )
+    foreign = crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/v1/chat/completions",
+        method="POST",
+        duration=0.1,
+        account_id=str(other.id),
+        runtime_session_id=str(foreign_session.id),
+        runtime_principal_id="endpoint-user",
+        model_alias="example-foreign",
+        provider_name="openai",
+        status_code=200,
+        prompt_tokens=100,
+        completion_tokens=0,
+        total_tokens=100,
+        estimated_cost=1.0,
+    )
+    foreign.timestamp = datetime(2026, 4, 2, 4, 0, tzinfo=UTC)
+    db_session.commit()
+
+    params = {"start_date": start.isoformat(), "end_date": end.isoformat()}
+    response = client.get("/api/v1/account/gateway-usage/summary", params=params)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # Window rows: older, newer error, newer unpriced, retry, legacy.
+    # Replay, the pre-window row, and the other tenant are absent.
+    assert body["total_requests"] == 5
+    assert body["failed_requests"] == 1
+    assert body["unpriced_requests"] == 1
+    assert body["token_usage"]["total_tokens"] == 2 + 4 + 3 + 1 + 5
+    by_day = {row["date"]: row["request_count"] for row in body["requests_by_day"]}
+    assert by_day == {"2026-04-01": 2, "2026-04-02": 3}
+    session_rows = body["usage_by_session"]
+    assert session_rows[0]["model_alias"] == "example-legacy"
+    newer_row = next(
+        row for row in session_rows if row["runtime_session_id"] == str(newer.id)
+    )
+    assert newer_row["request_count"] == 3
+    assert newer_row["token_usage"]["total_tokens"] == 8
+    assert newer_row["runtime_principal_id"] == "endpoint-user"
+    assert newer_row["estimated_cost"] == 0.05
+    legacy_row = next(
+        row for row in session_rows if row["flow_name"] == "Endpoint Legacy Flow"
+    )
+    assert legacy_row["session_source_type"] == "flow_execution"
+    assert legacy_row["runtime_session_id"] is None
+
+    filtered = client.get(
+        "/api/v1/account/gateway-usage/summary",
+        params={**params, "runtime_principal_id": "endpoint-other"},
+    )
+    assert filtered.status_code == 200
+    filtered_body = filtered.json()
+    assert filtered_body["total_requests"] == 1
+    assert filtered_body["usage_by_session"][0]["runtime_session_id"] == str(older.id)
+    assert len(filtered_body["requests_by_day"]) == 1
+
+    empty = client.get(
+        "/api/v1/account/gateway-usage/summary",
+        params={
+            "start_date": end.isoformat(),
+            "end_date": (end + timedelta(days=1)).isoformat(),
+        },
+    )
+    assert empty.status_code == 200
+    assert empty.json()["total_requests"] == 0
+    assert empty.json()["usage_by_session"] == []
+    assert empty.json()["requests_by_day"] == []

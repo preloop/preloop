@@ -132,6 +132,12 @@ var agentRuntimeProbes = map[string]agentRuntimeProbeSpec{
 		commands:   []string{"devin"},
 		appBundles: []string{"Devin.app"},
 	},
+	// GitHub Copilot CLI: `copilot` on PATH (or known install locations).
+	"copilot cli": {
+		commands:            []string{"copilot"},
+		conclusiveOnDarwin:  true,
+		conclusiveElsewhere: true,
+	},
 }
 
 // runtimeExecutableProbe resolves a runtime command. Overridable in tests.

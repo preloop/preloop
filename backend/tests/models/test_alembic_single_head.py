@@ -240,4 +240,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert session_artifact.down_revision == "20260921_auth_generation"
     browser_step_idx = script.get_revision("20260924_browser_step_idx")
     assert browser_step_idx.down_revision == "20260924_session_artifact"
-    assert script.get_heads() == ["20260924_browser_step_idx"]
+    usage_principal_ts = script.get_revision("20260924_usage_principal_ts")
+    assert usage_principal_ts.down_revision == "20260924_browser_step_idx"
+    assert script.get_heads() == ["20260924_usage_principal_ts"]

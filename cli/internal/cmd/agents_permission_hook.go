@@ -61,6 +61,7 @@ type permissionCheckRequest struct {
 	ToolInput       map[string]interface{} `json:"tool_input,omitempty"`
 	SessionID       string                 `json:"session_id,omitempty"`
 	Cwd             string                 `json:"cwd,omitempty"`
+	Repository      *repositoryIdentity    `json:"repository,omitempty"`
 	AgentReasoning  string                 `json:"agent_reasoning,omitempty"`
 	ClientDecision  string                 `json:"client_decision,omitempty"`
 	EvaluationPhase string                 `json:"evaluation_phase,omitempty"`
@@ -540,6 +541,9 @@ func buildPermissionRequest(
 	req := permissionCheckRequest{Source: source}
 	req.SessionID = firstStringField(event, "session_id", "conversation_id", "turn_id")
 	req.Cwd = firstStringField(event, "cwd")
+	// Repository identity is a trusted observation of the hook's own cwd, never
+	// of the caller-supplied tool arguments: MCP paths are untrusted.
+	req.Repository = resolveRepositoryIdentity(req.Cwd)
 
 	switch source {
 	case permissionSourceClaudeCode:

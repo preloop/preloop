@@ -922,6 +922,22 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/account/session-artifacts/usage:
+    get:
+      tags:
+      - Account
+      summary: Get Session Artifact Usage
+      description: Return session-artifact bytes used, the budget, and recent evictions.
+      operationId: get_session_artifact_usage_api_v1_account_session_artifacts_usage_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionArtifactUsageResponse'
+      security:
+      - bearerAuth: []
   /api/v1/account/gateway-usage/summary:
     get:
       tags:
@@ -14239,6 +14255,14 @@ components:
           - type: 'null'
           title: Cwd
           description: Working directory
+        repository:
+          anyOf:
+          - $ref: '#/components/schemas/AgentPermissionRepository'
+          - type: 'null'
+          description: Trusted repository identity the hook observed from its cwd.
+            Stored as the '_preloop_repository' marker inside tool_args, next to '_preloop_source',
+            so approvals and the session timeline can label which repository the call
+            ran in.
         agent_reasoning:
           anyOf:
           - type: string
@@ -14305,6 +14329,56 @@ components:
       - decision
       title: AgentPermissionCheckResponse
       description: Allow/deny decision for the agent's native tool call.
+    AgentPermissionRepository:
+      properties:
+        remote:
+          type: string
+          maxLength: 512
+          title: Remote
+          description: Normalized 'host/owner/repo' with credentials stripped; empty
+            when the work tree has no origin remote.
+          default: ''
+        toplevel:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Toplevel
+          description: Absolute work-tree root.
+        relative_path:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Relative Path
+          description: cwd relative to the work-tree root.
+        source:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Source
+          description: How the identity was observed, e.g. 'hook_cwd'.
+        no_remote:
+          type: boolean
+          title: No Remote
+          description: True when the work tree has no 'origin' remote.
+          default: false
+      additionalProperties: false
+      type: object
+      title: AgentPermissionRepository
+      description: 'Trusted hook observation of the repository a native call ran in.
+
+
+        The hook resolves its own ``cwd`` against git and sends the result; the
+
+        caller-supplied tool arguments are never used, so an MCP tool cannot
+
+        spoof the repository. Extra keys are forbidden and every string is
+
+        bounded: the object travels into approval ``tool_args`` and onto the
+
+        session timeline, and this is untrusted network input.'
     ApiKeyCreate:
       properties:
         name:
@@ -22657,6 +22731,19 @@ components:
           type: boolean
           title: Supports Interrupt
           default: false
+        desktop:
+          type: string
+          enum:
+          - vnc
+          - rdp
+          - none
+          title: Desktop
+          default: none
+        desktop_display:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Desktop Display
         control_session_mode:
           type: string
           title: Control Session Mode
@@ -26259,6 +26346,11 @@ components:
           - type: string
           - type: 'null'
           title: Endpoint
+        auth_subject_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Auth Subject Type
         tools:
           items:
             $ref: '#/components/schemas/RuntimeSessionRequestTool'
@@ -26920,6 +27012,41 @@ components:
         \    threshold: Finite threshold in [0, 1] this deployment screens at.\n \
         \   primary_outcome: Optional lowercase label naming the dominant rule\n \
         \       category; omitted for benign content."
+    SessionArtifactUsageByKind:
+      properties:
+        screenshot:
+          type: integer
+          title: Screenshot
+        recording:
+          type: integer
+          title: Recording
+      type: object
+      required:
+      - screenshot
+      - recording
+      title: SessionArtifactUsageByKind
+      description: Available plaintext bytes by artifact kind.
+    SessionArtifactUsageResponse:
+      properties:
+        used_bytes:
+          type: integer
+          title: Used Bytes
+        budget_bytes:
+          type: integer
+          title: Budget Bytes
+        by_kind:
+          $ref: '#/components/schemas/SessionArtifactUsageByKind'
+        evicted_count_30d:
+          type: integer
+          title: Evicted Count 30D
+      type: object
+      required:
+      - used_bytes
+      - budget_bytes
+      - by_kind
+      - evicted_count_30d
+      title: SessionArtifactUsageResponse
+      description: Account session-artifact usage against the storage budget.
     SessionEmbeddingSettingResponse:
       properties:
         enabled:

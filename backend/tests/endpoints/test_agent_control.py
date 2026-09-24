@@ -23,15 +23,31 @@ from preloop.services.agent_control_presence import control_heartbeat_is_fresh
 
 
 def _issue_runtime_token(client, *, session_source_id: str = "openclaw-live"):
-    response = client.post(
-        "/api/v1/auth/runtime-sessions/token",
-        json={
-            "session_source_type": "openclaw",
-            "session_source_id": session_source_id,
-            "session_reference": "/tmp/openclaw.json",
-            "runtime_principal_name": "OpenClaw Live Agent",
-        },
+    return _issue_runtime_token_for(
+        client,
+        session_source_type="openclaw",
+        session_source_id=session_source_id,
+        runtime_principal_name="OpenClaw Live Agent",
     )
+
+
+def _issue_runtime_token_for(
+    client,
+    *,
+    session_source_type: str,
+    session_source_id: str,
+    runtime_principal_name: str,
+    agent_kind: str | None = None,
+):
+    body: dict[str, Any] = {
+        "session_source_type": session_source_type,
+        "session_source_id": session_source_id,
+        "session_reference": f"/tmp/{session_source_type}.json",
+        "runtime_principal_name": runtime_principal_name,
+    }
+    if agent_kind is not None:
+        body["agent_kind"] = agent_kind
+    response = client.post("/api/v1/auth/runtime-sessions/token", json=body)
     assert response.status_code == 201
     return response.json()
 
@@ -540,6 +556,79 @@ def test_capabilities_envelope_creates_plugin_control_enrollment_without_cli(
         )
         assert item["control_enabled"] is True
         assert item["control_online"] is True
+
+
+def test_capabilities_envelope_verifies_codex_agent(client, db_session, test_user):
+    """A Codex sidecar announcing runtime codex marks control verified."""
+    token_body = _issue_runtime_token_for(
+        client,
+        session_source_type="codex",
+        session_source_id="codex-runtime-ready",
+        agent_kind="codex",
+        runtime_principal_name="Codex CLI",
+    )
+    managed_agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="codex",
+        session_source_id="codex-runtime-ready",
+    )
+    assert managed_agent is not None
+    assert managed_agent.agent_kind == "codex"
+    _mark_agent_control_install_pending(db_session, test_user, managed_agent)
+
+    with client.websocket_connect(
+        f"/api/v1/agents/control/ws?token={token_body['token']}"
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "presence"
+        websocket.send_json(
+            {
+                "type": "presence",
+                "name": "capabilities",
+                "message_id": "caps-codex",
+                "payload": {
+                    "status": "online",
+                    "protocol": "preloop.agent_control.v1",
+                    "runtime": "codex",
+                    "capabilities": {
+                        "new_session": True,
+                        "existing_session": True,
+                        "text": True,
+                        "interrupt": True,
+                    },
+                },
+            }
+        )
+        websocket.send_json(
+            {"type": "heartbeat", "message_id": "hb-codex", "payload": {}}
+        )
+        assert websocket.receive_json()["name"] == "heartbeat"
+
+        db_session.expire_all()
+        enrollment = crud_managed_agent_enrollment.get_latest_for_agent_by_type(
+            db_session,
+            account_id=str(test_user.account_id),
+            agent_id=str(managed_agent.id),
+            enrollment_type="cli_managed_config",
+        )
+        assert enrollment is not None
+        assert enrollment.validation_result["control_plugin_verified"] is True
+        assert (
+            enrollment.validation_result["control_plugin_verification"]
+            == "verified_by_runtime_connection"
+        )
+
+        list_response = client.get("/api/v1/agents/control")
+        assert list_response.status_code == 200
+        item = next(
+            agent
+            for agent in list_response.json()["items"]
+            if agent["id"] == str(managed_agent.id)
+        )
+        assert item["control_enabled"] is True
+        assert item["control_online"] is True
+        assert item["control_state"] == "plugin_connected"
+        assert item["supports_new_session"] is True
 
 
 def test_agent_control_ws_command_result_is_persisted(
