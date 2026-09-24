@@ -106,3 +106,34 @@ async def test_native_unsupported_setup_fails_before_credentials(
     with pytest.raises(ValueError, match="does not support remote"):
         await orchestrator._prepare_execution_context(resolved_prompt="question")
     mint.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "snapshot",
+    [None, {"nonce": "n-1", "version": 1}],
+)
+async def test_prepare_rejects_isolated_publication_mode(snapshot, monkeypatch):
+    """Isolated publication fails before credentials, with or without a snapshot."""
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.agent_type = "cursor"
+    orchestrator.flow_id = uuid4()
+    orchestrator.flow = SimpleNamespace(
+        agent_type="cursor",
+        agent_config={"host_exec_profile": "cursor-ask"},
+        runner_pool="local",
+        git_clone_config={"publication_mode": "isolated"},
+        custom_commands=None,
+        account_id=uuid4(),
+        name="Local question",
+    )
+    result = None if snapshot is None else {"_private_publication": snapshot}
+    orchestrator.execution_log = SimpleNamespace(id=uuid4(), result=result)
+    orchestrator.trigger_event_data = {}
+    orchestrator.ai_model = None
+    orchestrator.db = MagicMock()
+    mint = MagicMock(side_effect=AssertionError("must not mint credentials"))
+    monkeypatch.setattr(orchestrator, "_create_temporary_api_token", mint)
+    with pytest.raises(ValueError, match="isolated publication|pull request"):
+        await orchestrator._prepare_execution_context(resolved_prompt="question")
+    mint.assert_not_called()
