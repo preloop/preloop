@@ -2,6 +2,8 @@
 
 This module uses only the standard library so the legacy container wrapper can
 carry the same validation implementation without installing the server package.
+Continuation append keeps the first execution record and the most recent 199
+repair records so a long-lived pull request can still record the current run.
 """
 
 from __future__ import annotations
@@ -18,10 +20,20 @@ from uuid import UUID
 MAX_TITLE_BYTES = 256
 MAX_BODY_BYTES = 60000
 MAX_ARTIFACT_BYTES = 256 * 1024
+PROVENANCE_MAX_RECORDS = 200
+# First record plus this many repairs fills PROVENANCE_MAX_RECORDS.
+PROVENANCE_RECENT_RECORDS = 199
 PROVENANCE_START = "<!-- preloop:executions:start -->"
 PROVENANCE_END = "<!-- preloop:executions:end -->"
 _PROVENANCE = re.compile(
     re.escape(PROVENANCE_START) + r".*?" + re.escape(PROVENANCE_END), re.DOTALL
+)
+_PROVENANCE_RECORD = re.compile(
+    r"^- \[(?:Initial execution|Repair execution)\]"
+    r"\(https?://[^)\s]+/console/flows/executions/"
+    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)"
+    r" \u2014 published `([0-9a-f]{40}|[0-9a-f]{64})`$"
 )
 
 
@@ -254,7 +266,7 @@ def provenance_block(records: Sequence[PublicationRecord], public_url: str) -> s
     if any(char in public_url for char in "\n\r<>()[] "):
         raise ValueError("Invalid public application URL")
     unique = list(dict.fromkeys(records))
-    if not unique or len(unique) > 200:
+    if not unique or len(unique) > PROVENANCE_MAX_RECORDS:
         raise ValueError("Publication requires between 1 and 200 execution records")
     lines = [PROVENANCE_START, "### Preloop executions", ""]
     for index, record in enumerate(unique):
@@ -288,6 +300,83 @@ def upsert_provenance(
     if len(result.encode("utf-8")) > 65536:
         raise ValueError("PR body plus provenance exceeds provider limit")
     return result
+
+
+def parse_provenance(body: str) -> list[PublicationRecord]:
+    """Return records from every well-formed owned provenance region.
+
+    Args:
+        body: Pull request or merge request description.
+
+    Returns:
+        Execution records in region order. An absent region is an empty list.
+
+    Raises:
+        ValueError: Delimiters are unbalanced or a region line is not a record.
+    """
+    matches = list(_PROVENANCE.finditer(body))
+    if body.count(PROVENANCE_START) != len(matches) or body.count(
+        PROVENANCE_END
+    ) != len(matches):
+        raise ValueError(
+            "Malformed publisher provenance region; repair delimiters first"
+        )
+    records: list[PublicationRecord] = []
+    for match in matches:
+        region = match.group(0)
+        inner = region[len(PROVENANCE_START) : len(region) - len(PROVENANCE_END)]
+        for line in inner.splitlines():
+            if not line.strip() or line.strip() == "### Preloop executions":
+                continue
+            found = _PROVENANCE_RECORD.match(line)
+            if found is None:
+                raise ValueError(
+                    "Malformed publisher provenance region; repair delimiters first"
+                )
+            records.append(PublicationRecord(found.group(1), found.group(2)))
+    return records
+
+
+def _prune_provenance_records(
+    records: list[PublicationRecord],
+) -> list[PublicationRecord]:
+    """Keep the first record and the most recent ``PROVENANCE_RECENT_RECORDS``.
+
+    The initial execution stays. Older repair records are dropped so the
+    current continuation still fits the 200-record block.
+    """
+    if len(records) <= PROVENANCE_MAX_RECORDS:
+        return records
+    first = records[0]
+    recent = [item for item in records[1:] if item != first][
+        -PROVENANCE_RECENT_RECORDS:
+    ]
+    return [first, *recent]
+
+
+def append_provenance(body: str, record: PublicationRecord, public_url: str) -> str:
+    """Append one execution record unless that id and SHA are already present.
+
+    When the owned region would exceed 200 records, older repair records are
+    dropped. The first record and the most recent 199
+    (``PROVENANCE_RECENT_RECORDS``) are kept, including this execution.
+
+    Args:
+        body: Existing description, including any human prose.
+        record: Current execution and published head.
+        public_url: Public application origin used for execution links.
+
+    Returns:
+        Description with a single owned provenance region.
+
+    Raises:
+        ValueError: The owned region is malformed or the result exceeds the
+            provider body limit. The caller must leave the remote body unchanged.
+    """
+    records = parse_provenance(body)
+    if record not in records:
+        records.append(record)
+    return upsert_provenance(body, _prune_provenance_records(records), public_url)
 
 
 def discover_template(

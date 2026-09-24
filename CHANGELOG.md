@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Legacy publication now appends the current execution and head SHA to an
+  existing pull request or merge request, keeping earlier records and human
+  prose. A malformed, oversized, or rejected provider update leaves the
+  description unchanged and is not reported as a successful publication.
+  Isolated GitLab publication is still unsupported.
 - Harness images pin Node and install Pi and DeepSeek from lockfiles, so
   Scorecard no longer reports floating image or npm dependencies. Empty
   `except` handlers that intentionally ignore an optional driver or an

@@ -370,14 +370,28 @@ Path(out_path).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf
 
 
 def _existing_pr_failure_update_shell(
-    *, kind: str, api_url: str, authorization: str, branch: str
+    *,
+    kind: str,
+    api_url: str,
+    authorization: str,
+    branch: str,
+    execution_link: str = "",
 ) -> str:
-    """Refresh only the failure disclosure when branch lookup finds an open PR."""
+    """Refresh failure disclosure and upsert provenance on an open PR.
+
+    A malformed or oversized body is not written. A non-2xx provider response,
+    more than one open pull request for the branch, or a failure notice that
+    cannot be merged sets ``PRELOOP_PROVENANCE_FAILED`` so the caller does not
+    claim success.
+    """
     script = (
         inspect.getsource(pr_metadata)
         + r"""
 import sys
-lookup_path, payload_path, update_path, kind, branch = sys.argv[1:]
+lookup_path, payload_path, update_path, kind, branch = sys.argv[1:6]
+execution_link = sys.argv[6] if len(sys.argv) > 6 else ""
+head_sha = sys.argv[7] if len(sys.argv) > 7 else ""
+update_required = False
 try:
     with open(lookup_path, "rb") as stream:
         raw = stream.read(MAX_ARTIFACT_BYTES + 1)
@@ -386,61 +400,120 @@ try:
     candidates = json.loads(raw)
     if not isinstance(candidates, list):
         raise ValueError("lookup response is not a list")
-    with open(payload_path, "rb") as stream:
-        payload_raw = stream.read(MAX_ARTIFACT_BYTES + 1)
-    if len(payload_raw) > MAX_ARTIFACT_BYTES:
-        raise ValueError("payload too large")
-    payload = json.loads(payload_raw)
     field = "description" if kind == "gitlab" else "body"
-    notices = re.findall(
-        r"<!-- preloop:failure:([0-9a-f-]{36}):start -->.*?<!-- preloop:failure:\1:end -->",
-        payload[field], re.DOTALL,
-    )
-    if not notices:
-        sys.exit(0)
+    payload = {}
+    try:
+        with open(payload_path, "rb") as stream:
+            payload_raw = stream.read(MAX_ARTIFACT_BYTES + 1)
+        if len(payload_raw) > MAX_ARTIFACT_BYTES:
+            raise ValueError("payload too large")
+        payload = json.loads(payload_raw)
+    except (OSError, ValueError, UnicodeDecodeError, RecursionError):
+        payload = {}
+    notices = []
+    if isinstance(payload, dict) and isinstance(payload.get(field), str):
+        notices = re.findall(
+            r"<!-- preloop:failure:([0-9a-f-]{36}):start -->.*?<!-- preloop:failure:\1:end -->",
+            payload[field], re.DOTALL,
+        )
     candidates = [item for item in candidates if isinstance(item, dict) and (
         item.get("source_branch") if kind == "gitlab" else (item.get("head") or {}).get("ref")
     ) == branch]
+    if execution_link and candidates:
+        update_required = True
     if len(candidates) != 1:
         raise ValueError("lookup did not identify one source branch")
     existing = candidates[0]
     number = existing.get("iid" if kind == "gitlab" else "number")
     if type(number) is not int or number <= 0:
         raise ValueError("invalid PR number")
-    body = existing.get(field) or ""
-    if not isinstance(body, str):
+    original = existing.get(field) or ""
+    if not isinstance(original, str):
         raise ValueError("invalid existing description")
+    body = original
     for execution_id in notices:
         start = f"<!-- preloop:failure:{execution_id}:start -->"
         end = f"<!-- preloop:failure:{execution_id}:end -->"
         notice = payload[field].split(start, 1)[1].split(end, 1)[0]
         body = merge_failure_notice(body, start + notice + end)
+    if execution_link and head_sha:
+        public_url, separator, current_id = execution_link.rpartition(
+            "/console/flows/executions/"
+        )
+        if not separator or not public_url:
+            raise ValueError("Execution link is not a console execution URL")
+        try:
+            body = append_provenance(
+                body, PublicationRecord(current_id, head_sha), public_url
+            )
+        except ValueError as exc:
+            print("PRELOOP_PR_METADATA_WARNING: " + str(exc), file=sys.stderr)
+            sys.exit(2)
+    if body == original:
+        sys.exit(0)
     Path(update_path).write_text(json.dumps({field: body}), encoding="utf-8")
     print(number)
+except SystemExit:
+    raise
 except (OSError, ValueError, KeyError, TypeError, RecursionError):
-    print("PRELOOP_PR_METADATA_WARNING: could not refresh existing failure disclosure", file=sys.stderr)
+    print("PRELOOP_PR_METADATA_WARNING: could not refresh existing pull request body", file=sys.stderr)
+    if update_required:
+        sys.exit(3)
 """
     )
     update_path = f"{EVIDENCE_DIR_PATH}/pr-failure-update.json"
     method = "PUT" if kind == "gitlab" else "PATCH"
+    provenance_args = ""
+    if execution_link:
+        provenance_args = f' {shlex.quote(execution_link)} "$(git rev-parse HEAD)"'
     return f"""
-      python3 - {PR_LOOKUP_FILE} {PR_PAYLOAD_FILE} {update_path} {kind} {shlex.quote(branch)} > {update_path}.number <<'PRELOOP_FAILURE_UPDATE'
+      PRELOOP_PROVENANCE_FAILED=
+      python3 - {PR_LOOKUP_FILE} {PR_PAYLOAD_FILE} {update_path} {kind} {shlex.quote(branch)}{provenance_args} > {update_path}.number <<'PRELOOP_FAILURE_UPDATE'
 {script}
 PRELOOP_FAILURE_UPDATE
-      PRELOOP_UPDATE_NUMBER=$(cat {update_path}.number)
-      if [ -n "$PRELOOP_UPDATE_NUMBER" ] && [ -s {update_path} ]; then
-        curl -fsS -o /dev/null -X {method} \
-          -H "{authorization}" \
-          -H 'Content-Type: application/json' \
-          --data-binary @{update_path} \
-          "{api_url}/$PRELOOP_UPDATE_NUMBER" \
-          || echo "PRELOOP_PR_METADATA_WARNING: failed to update existing failure disclosure"
+      if [ "$?" -ne 0 ]; then
+        PRELOOP_PROVENANCE_FAILED=1
+      fi
+      PRELOOP_UPDATE_NUMBER=$(cat {update_path}.number 2>/dev/null || true)
+      if [ -z "$PRELOOP_PROVENANCE_FAILED" ] && [ -n "$PRELOOP_UPDATE_NUMBER" ] && [ -s {update_path} ]; then
+        UPDATE_HTTP=$(curl -sS -o /dev/null -w "%{{http_code}}" -X {method} \\
+          -H "{authorization}" \\
+          -H 'Content-Type: application/json' \\
+          --data-binary @{update_path} \\
+          "{api_url}/$PRELOOP_UPDATE_NUMBER" || echo "000")
+        case "$UPDATE_HTTP" in
+          2??) ;;
+          *)
+            echo "PRELOOP_PR_METADATA_WARNING: failed to update existing pull request body" >&2
+            PRELOOP_PROVENANCE_FAILED=1
+            ;;
+        esac
       fi
 """
 
 
+def provenance_failure_exit_shell() -> str:
+    """Non-zero exit for the plain push path when a body update failed.
+
+    Capture shells only set ``PRELOOP_PROVENANCE_FAILED``. A bare ``exit``
+    inside them also kills the report-publication wrapper, which must stay
+    at status zero and print one marker. Call this after the capture shell
+    on the plain push path only.
+    """
+    return """
+if [ -n "${PRELOOP_PROVENANCE_FAILED:-}" ]; then
+  exit 1
+fi
+"""
+
+
 def build_github_pr_capture_shell(
-    *, token_ref: str, owner: str, repo: str, branch: str
+    *,
+    token_ref: str,
+    owner: str,
+    repo: str,
+    branch: str,
+    execution_link: str = "",
 ) -> str:
     """Shell that turns the create-PR response into one recognizable line.
 
@@ -461,9 +534,11 @@ def build_github_pr_capture_shell(
         "https://api.github.com/repos/{owner}/{repo}/pulls?state=open&head={owner}:{branch}" \\
         || echo "PR lookup by head branch failed"
       PR_URL=$({grep_pr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
-      {_existing_pr_failure_update_shell(kind="github", api_url=f"https://api.github.com/repos/{owner}/{repo}/pulls", authorization=f"Authorization: token {token_ref}", branch=branch)}
+      {_existing_pr_failure_update_shell(kind="github", api_url=f"https://api.github.com/repos/{owner}/{repo}/pulls", authorization=f"Authorization: token {token_ref}", branch=branch, execution_link=execution_link)}
     fi
-    if [ -n "$PR_URL" ]; then
+    if [ -n "$PRELOOP_PROVENANCE_FAILED" ]; then
+      echo "PRELOOP_PR_METADATA_WARNING: existing pull request body was left unchanged" >&2
+    elif [ -n "$PR_URL" ]; then
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$PR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"github\\"}}"
     else
       echo "No pull request URL could be resolved for branch {branch}"
@@ -472,7 +547,12 @@ def build_github_pr_capture_shell(
 
 
 def build_gitlab_mr_capture_shell(
-    *, token_ref: str, gitlab_host: str, encoded_path: str, branch: str
+    *,
+    token_ref: str,
+    gitlab_host: str,
+    encoded_path: str,
+    branch: str,
+    execution_link: str = "",
 ) -> str:
     """GitLab counterpart of :func:`build_github_pr_capture_shell`."""
 
@@ -490,9 +570,11 @@ def build_gitlab_mr_capture_shell(
         "https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests?state=opened&source_branch={branch}" \\
         || echo "MR lookup by source branch failed"
       MR_URL=$({grep_mr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
-      {_existing_pr_failure_update_shell(kind="gitlab", api_url=f"https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests", authorization=f"PRIVATE-TOKEN: {token_ref}", branch=branch)}
+      {_existing_pr_failure_update_shell(kind="gitlab", api_url=f"https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests", authorization=f"PRIVATE-TOKEN: {token_ref}", branch=branch, execution_link=execution_link)}
     fi
-    if [ -n "$MR_URL" ]; then
+    if [ -n "$PRELOOP_PROVENANCE_FAILED" ]; then
+      echo "PRELOOP_PR_METADATA_WARNING: existing pull request body was left unchanged" >&2
+    elif [ -n "$MR_URL" ]; then
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$MR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"gitlab\\"}}"
     else
       echo "No merge request URL could be resolved for branch {branch}"
@@ -4945,6 +5027,7 @@ true
                     owner=owner,
                     repo=repo,
                     branch=safe_target,
+                    execution_link=execution_link,
                 )
             )
 
@@ -4986,6 +5069,7 @@ true
                 gitlab_host=gitlab_host,
                 encoded_path=encoded_path,
                 branch=safe_target,
+                execution_link=execution_link,
             )
         )
 
@@ -5577,6 +5661,7 @@ true
                     )
                     if pr_create_cmd:
                         repo_post_commands.append(pr_create_cmd)
+                        repo_post_commands.append(provenance_failure_exit_shell())
 
                 repo_post_commands.extend(
                     [

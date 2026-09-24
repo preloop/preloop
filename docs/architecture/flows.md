@@ -348,7 +348,30 @@ initial/repair execution links and published SHAs while preserving human edits
 outside that region, including metadata-only repairs. Links use `PRELOOP_URL`
 and existing authorization-protected console routes; tokens and transcripts
 are never provenance inputs. Legacy publication adds the current execution
-block on creation; continuation provenance updates require the isolated path.
+block on creation. When an open pull request or merge request already exists
+for the branch, legacy mode fetches that description, appends the current
+execution id and head SHA to the owned block when that pair is not already
+present, and updates only the body. Human prose and the title stay as they
+were. A malformed or oversized body, or a provider update that is not 2xx,
+leaves the description unchanged and does not emit `PRELOOP_PR_OPENED`.
+Isolated GitLab publication stays unsupported until a broker can enforce
+credential scope and lifetime.
+
+Publication acceptance matrix (issue #431). Each cell is delivered (test
+name) or unsupported by design.
+
+| Mode | Provider | Create | Continuation push to an existing PR | Metadata-only retry | Failure disclosure | Human edits preserved | Provider failure surfaced |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| legacy | github | delivered (`TestWritePrPayloadPy.test_commit_fallback_single_commit_includes_execution_link`; create script calls `upsert_provenance` once) | delivered (`test_github_continuation_appends_record_and_keeps_prose`) | delivered (`test_repeated_continuation_is_idempotent_and_reuses_the_pr`, `test_missing_metadata_warns_and_keeps_existing_prose`) | delivered (`test_already_pushed_commits_refresh_existing_failure_notice`, `test_existing_body_preserved_and_notice_idempotent`) | delivered (`test_github_continuation_appends_record_and_keeps_prose`) | delivered (`test_provider_update_failure_is_not_success`; a create miss is `test_no_url_anywhere_emits_no_marker`) |
+| legacy | gitlab | delivered (same create script, `kind == "gitlab"`) | delivered (`test_gitlab_continuation_appends_record`) | delivered (`test_repeated_continuation_is_idempotent_and_reuses_the_pr`) | delivered (same failure-disclosure tests, GitLab payload) | delivered (`test_gitlab_continuation_appends_record`) | delivered (`test_provider_update_failure_is_not_success`) |
+| isolated | github | delivered (`test_provider_create_retry_metadata_update_preserves_human_edits`) | delivered (same test, repair upsert) | delivered (same test: one POST, later upserts only) | out of scope (issue #599; the isolated publisher upserts provenance only) | delivered (same test) | delivered (`test_provider_failure_is_observable`) |
+| isolated | gitlab | unsupported by design (flows.md: "Stored PATs and GitLab publication are rejected in this mode until a broker can enforce their scope and lifetime") | unsupported by design (same) | unsupported by design (same) | unsupported by design (same) | unsupported by design (same) | unsupported by design (same) |
+
+Continuation append keeps the first execution record and the most recent 199 repair records (`PROVENANCE_RECENT_RECORDS`). The 201st continuation still lands (`test_append_provenance_keeps_the_first_record_and_recent_199`).
+
+The standalone metadata client still accepts a GitLab payload shape. Isolated
+mode does not: `validate_publication_tracker` rejects PAT and GitLab
+credentials before a lease is minted.
 
 Preset synchronization updates uncustomized fields and marks customized saved
 flows as having an available update. Inspect the effective saved prompt and
