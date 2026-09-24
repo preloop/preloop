@@ -1,4 +1,4 @@
-"""Repair the one contract failure the platform can derive on its own.
+"""Repair contract failures the platform can derive on its own.
 
 An audit whose checks all ran, whose numbers are reproducible and whose
 evidence pack verifies used to be discarded because one enum was wrong: the
@@ -6,31 +6,39 @@ evidence pack verifies used to be discarded because one enum was wrong: the
 ``minimum_elements.passed: false`` required ``fail``. The validator was right
 and the outcome was still wrong, because the platform already knew the answer.
 
-So the platform writes it down instead of throwing the audit away. Two rules
-keep that from becoming a way to launder a release:
+Two further defects are the same shape. ``minimum_elements`` used to be the
+agent's claim about the SBOM, and a document author was enough for that claim
+to read ``passed: true``. The platform now measures the delivered bytes
+(:mod:`preloop.cra.sbom_measure`). Replacing the claim with that object is
+not rewriting a measurement: the agent's field was a claim, and the
+measurement of the bytes is the authority. ``counts_by_severity`` is
+arithmetic over the findings the agent already submitted, so a mismatched
+aggregate is rewritten from that list. Findings themselves are never edited.
 
-- only the verdict label is ever rewritten, never a measurement. The fields
-  the verdict is derived from (``valid``, ``minimum_elements``, ``coverage``,
-  ``license_flags``, the gate) are exactly as the agent submitted them;
-- a correction may only make the verdict more severe. Rewriting ``fail`` into
-  ``pass`` would be the platform clearing a release it was asked to deny, so
-  that direction stays a hard failure.
+Three rules keep this from laundering a release:
 
-Every correction is recorded on the result under ``verdict_corrected`` with
-both values and the reason, so a reader sees what the run said and what the
-contract required.
+- a correction may only make the result more severe. An agent who already
+  failed minimum elements, or who counted more harshly than the findings,
+  keeps that value. Rewriting ``fail`` into ``pass`` stays a hard failure;
+- verdict labels still move only toward a more severe label. Coverage,
+  license flags, the gate and the findings stay as submitted;
+- every correction is recorded on the result under ``verdict_corrected``,
+  with the submitted value and the reason. A minimum-elements correction
+  keeps the agent's claim on that record.
 """
 
 from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
+from preloop.cra.sbom_measure import MEASURED_FIELD
 from preloop.cra.schemas import (
     AUDIT_VERDICTS,
     SCHEMA_RELEASEAUDIT_V1,
     SCHEMA_SBOMAUDIT_V1,
+    SCHEMA_VULNSCAN_V1,
 )
 
 #: Least severe first. A correction may only move to the right.
@@ -49,21 +57,25 @@ CORRECTED_BY = "platform_contract_validator"
 
 @dataclass(frozen=True)
 class VerdictCorrection:
-    """One label the platform rewrote, with the value the agent submitted."""
+    """One field the platform rewrote, with the value the agent submitted."""
 
     path: str
     submitted: str
     corrected: str
     reason: str
+    agent_claim: Optional[dict[str, Any]] = None
 
-    def as_dict(self) -> dict[str, str]:
-        return {
+    def as_dict(self) -> dict[str, Any]:
+        record: dict[str, Any] = {
             "path": self.path,
             "submitted": self.submitted,
             "corrected": self.corrected,
             "reason": self.reason,
             "corrected_by": CORRECTED_BY,
         }
+        if self.agent_claim is not None:
+            record["agent_claim"] = self.agent_claim
+        return record
 
 
 def _is_number(value: Any) -> bool:
@@ -211,3 +223,165 @@ def corrections_summary(corrections: list[VerdictCorrection]) -> str:
         f"{item.path}: {item.submitted} -> {item.corrected} ({item.reason})"
         for item in corrections
     )
+
+
+SEVERITY_COUNT_KEYS: tuple[str, ...] = (
+    "critical",
+    "high",
+    "medium",
+    "low",
+    "unknown",
+)
+
+
+def failures_are_only_counts(failures: Sequence[str]) -> bool:
+    """True when every failure is a ``counts_by_severity`` disagreement.
+
+    A second, unrelated failure means the run still fails closed. Counts are
+    repaired only when they are the whole of the contract failure.
+    """
+    if not failures:
+        return False
+    return all("counts_by_severity" in item for item in failures)
+
+
+def _record(body: dict[str, Any], corrections: list[VerdictCorrection]) -> None:
+    if not corrections:
+        return
+    existing = body.get(VERDICT_CORRECTED_FIELD)
+    record = list(existing) if isinstance(existing, list) else []
+    record.extend(item.as_dict() for item in corrections)
+    body[VERDICT_CORRECTED_FIELD] = record
+
+
+def _sbom_body(
+    payload: Mapping[str, Any],
+) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]], str]:
+    """Return ``(copy, sbom body, minimum_elements path)`` for a CRA audit."""
+    schema = payload.get("schema")
+    if schema == SCHEMA_SBOMAUDIT_V1:
+        corrected = copy.deepcopy(dict(payload))
+        return corrected, corrected, "result.minimum_elements"
+    if schema == SCHEMA_RELEASEAUDIT_V1:
+        corrected = copy.deepcopy(dict(payload))
+        sbom = corrected.get("sbom_audit")
+        if not isinstance(sbom, dict):
+            return None, None, ""
+        return corrected, sbom, "result.sbom_audit.minimum_elements"
+    return None, None, ""
+
+
+def apply_measured_minimum_elements(
+    payload: Any,
+) -> tuple[Any, list[VerdictCorrection]]:
+    """Replace a too-lenient minimum-elements claim with the measurement.
+
+    The measurement must already be attached under
+    :data:`~preloop.cra.sbom_measure.MEASURED_FIELD`. When the agent said
+    ``passed: true`` and the measurement found missing elements, the claim
+    is replaced by the measured object and kept on the correction record.
+    An agent who is already stricter than the measurement is left alone.
+    A skipped measurement changes nothing.
+
+    Returns:
+        The payload (a copy only when a correction was applied) and the
+        corrections, which may be empty.
+    """
+    if not isinstance(payload, Mapping):
+        return payload, []
+    measured_holder: Any = payload
+    if payload.get("schema") == SCHEMA_RELEASEAUDIT_V1:
+        measured_holder = payload.get("sbom_audit")
+    if not isinstance(measured_holder, Mapping):
+        return payload, []
+    measured = measured_holder.get(MEASURED_FIELD)
+    if not isinstance(measured, Mapping) or measured.get("status") == "skipped":
+        return payload, []
+    if measured.get("passed") is not False:
+        return payload, []
+    claim = measured_holder.get("minimum_elements")
+    claim_passed = claim.get("passed") if isinstance(claim, Mapping) else None
+    if claim_passed is not True:
+        return payload, []
+
+    corrected, body, path = _sbom_body(payload)
+    if corrected is None or body is None:
+        return payload, []
+    agent_claim = copy.deepcopy(dict(claim)) if isinstance(claim, Mapping) else {}
+    body["minimum_elements"] = copy.deepcopy(dict(measured))
+    correction = VerdictCorrection(
+        path=path,
+        submitted="true",
+        corrected="false",
+        reason=(
+            "agent claimed minimum_elements.passed true; platform measurement "
+            "of the delivered SBOM bytes found missing elements"
+        ),
+        agent_claim=agent_claim,
+    )
+    _record(corrected, [correction])
+    return corrected, [correction]
+
+
+def _derive_counts(findings: Any) -> dict[str, int]:
+    counts = {key: 0 for key in SEVERITY_COUNT_KEYS}
+    if not isinstance(findings, list):
+        return counts
+    for item in findings:
+        if not isinstance(item, Mapping):
+            continue
+        severity = item.get("severity")
+        if isinstance(severity, str) and severity in counts:
+            counts[severity] += 1
+    return counts
+
+
+def apply_derived_severity_counts(
+    payload: Any,
+) -> tuple[Any, list[VerdictCorrection]]:
+    """Recompute ``counts_by_severity`` from the submitted findings.
+
+    Findings are not edited. Each key that disagrees is recorded with the
+    reported value and the derived value. When the submitted counts already
+    match, the payload is returned unchanged.
+    """
+    if not isinstance(payload, Mapping):
+        return payload, []
+    schema = payload.get("schema")
+    if schema not in (SCHEMA_VULNSCAN_V1, SCHEMA_RELEASEAUDIT_V1):
+        return payload, []
+    corrected = copy.deepcopy(dict(payload))
+    if schema == SCHEMA_VULNSCAN_V1:
+        parents = [("result", corrected)]
+    else:
+        vuln = corrected.get("vuln_scan")
+        if not isinstance(vuln, dict):
+            return payload, []
+        parents = [("result.vuln_scan", vuln)]
+
+    corrections: list[VerdictCorrection] = []
+    for path, parent in parents:
+        derived = _derive_counts(parent.get("findings"))
+        reported = parent.get("counts_by_severity")
+        reported_map = reported if isinstance(reported, Mapping) else {}
+        for key in SEVERITY_COUNT_KEYS:
+            current = reported_map.get(key)
+            if current == derived[key]:
+                continue
+            submitted = "absent" if key not in reported_map else str(current)
+            corrections.append(
+                VerdictCorrection(
+                    path=f"{path}.counts_by_severity.{key}",
+                    submitted=submitted,
+                    corrected=str(derived[key]),
+                    reason="derived from the findings list",
+                )
+            )
+        if any(
+            item.path.startswith(f"{path}.counts_by_severity") for item in corrections
+        ):
+            parent["counts_by_severity"] = derived
+    if not corrections:
+        return payload, []
+    _record(corrected, corrections)
+    return corrected, corrections

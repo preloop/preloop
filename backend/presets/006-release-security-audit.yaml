@@ -212,12 +212,16 @@ prompt_template: |
      internal referential integrity.
   2. Minimum elements (NTIA / CRA Annex I Part II): per-component
      supplier, name, version, unique identifier, relationships;
-     document-level author and timestamp. Assert relationships PER
-     FORMAT: SPDX relationships can be present while the CycloneDX
-     document has no "dependencies" section at all. If you audited both
-     formats, say which format carried relationships and which did not
-     — never write "relationships present" without that per-format
-     caveat.
+     document-level author and timestamp. Run
+     `python -m preloop.cra measure` on the delivered SBOM files and
+     copy its passed and missing into sbom_audit.minimum_elements
+     verbatim. supplier is CycloneDX supplier.name, or an SPDX supplier
+     other than NOASSERTION. author, authors, publisher and manufacturer
+     are not a supplier. Assert relationships PER FORMAT: SPDX
+     relationships can be present while the CycloneDX document has no
+     "dependencies" section at all. If you audited both formats, say
+     which format carried relationships and which did not. Never write
+     "relationships present" without that per-format caveat.
   3. Coverage quality: pct of components with version and with
      purl/CPE, plus SEPARATE license counts — SPDX licenseConcluded and
      SPDX licenseDeclared (CycloneDX: the "licenses" array, which is a
@@ -1164,6 +1168,9 @@ prompt_template: |
   }
 
   Rules:
+  - counts_by_severity is the count of the final vuln_scan.findings
+    list (critical, high, medium, low, unknown). Count that list. Do
+    not estimate an aggregate.
   - Overall verdict: "fail" if the SBOM audit failed OR the severity gate
     failed AFTER deterministic waiver application; "pass_with_findings"
     if everything gated passed but findings, waived failures, or skipped
