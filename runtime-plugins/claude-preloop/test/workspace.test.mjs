@@ -199,3 +199,28 @@ test("managed dirty checkout fails without reset or clean", async () => {
   );
   assert.equal(state.destructive.length, 0);
 });
+
+test("concurrent prepares on different repositories do not deadlock", async () => {
+  const root = await tempRoot();
+  const state = {
+    calls: [],
+    dirty: new Set(),
+    destructive: [],
+    maxInFlight: 0,
+    delayMs: 30,
+  };
+  const manager = new WorkspaceManager(
+    { workspace_root: root, workspace_repositories_max: 1 },
+    makeGit(state),
+  );
+  const done = await Promise.race([
+    Promise.all([
+      manager.prepare(spec("example/one")),
+      manager.prepare(spec("example/two")),
+    ]),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("deadlock")), 2000),
+    ),
+  ]);
+  assert.equal(done.length, 2);
+});

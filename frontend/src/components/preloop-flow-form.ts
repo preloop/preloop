@@ -425,6 +425,9 @@ export class PreloopFlowForm extends LitElement {
   private sourcePresetId: string | null = null;
 
   @state()
+  private pickerSelectedId = '';
+
+  @state()
   private persistentPresetNotice = '';
 
   @state()

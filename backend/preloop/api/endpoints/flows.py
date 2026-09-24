@@ -379,7 +379,11 @@ def read_presets(
     from preloop.flow_presets import PRESET_SLUGS_BY_NAME, supports_persistent_for_slug
 
     presets = crud_flow.get_presets_for_account(db, account_id=current_user.account_id)
-    by_id = {preset.id: preset for preset in presets}
+    by_id = {}
+    for preset in presets:
+        preset_id = getattr(preset, "id", None)
+        if preset_id is not None:
+            by_id[preset_id] = preset
     for preset in presets:
         # Account-specific rows are copies: their name is user-editable and
         # is not catalog identity, so they stay unslugged. Persistent support
@@ -2315,8 +2319,9 @@ def update_flow(
     # We forcibly preserve the existing source_preset_id to prevent any modification,
     # including unlinking by setting to None.
     flow_in.source_preset_id = flow.source_preset_id
-    if flow.source_preset_id:
-        source_preset = crud_flow.get(db=db, id=flow.source_preset_id)
+    source_id = getattr(flow, "source_preset_id", None)
+    if isinstance(source_id, uuid.UUID):
+        source_preset = crud_flow.get(db=db, id=source_id)
         agent_config = (
             flow_in.agent_config
             if flow_in.agent_config is not None

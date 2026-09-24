@@ -91,15 +91,13 @@ export async function defaultGitRunner(
 }
 
 function assertGitArgs(args: string[]): string[] {
-  for (const arg of args) {
-    if (arg === "--upload-pack" || arg.startsWith("--upload-pack=")) {
-      throw new WorkspaceError("refusing git upload-pack override");
+  return args.map((arg) => {
+    const matched = /^(?:--|-c|[A-Za-z0-9][A-Za-z0-9._:=/@+-]*)$/.exec(arg);
+    if (!matched || arg.includes("upload-pack") || arg.includes("\n") || arg.includes("\0")) {
+      throw new WorkspaceError("refusing unsafe git argument");
     }
-    if (arg.includes("\n") || arg.includes("\0")) {
-      throw new WorkspaceError("refusing git argument with a newline");
-    }
-  }
-  return args;
+    return matched[0];
+  });
 }
 
 function assertSafeSlug(slug: string): string {
@@ -141,6 +139,8 @@ export class WorkspaceManager {
   private readonly tails = new Map<string, Promise<void>>();
   /** Absolute checkout paths, oldest first. */
   private readonly lru: string[] = [];
+  /** Directories currently inside prepare. Eviction skips them without locking. */
+  private readonly preparing = new Set<string>();
   /** Directories whose turn is still running. Eviction skips them. */
   private readonly inUse = new Set<string>();
   /** Turn cwd to the repository directory eviction must also skip. */
@@ -172,9 +172,16 @@ export class WorkspaceManager {
         `repository_slug ${slug} escapes workspace_root`,
       );
     }
-    return this.exclusive(repoDir, () =>
-      this.prepareLocked(repoDir, spec, spawnWorktree),
-    );
+    this.preparing.add(repoDir);
+    try {
+      const cwd = await this.exclusive(repoDir, () =>
+        this.prepareLocked(repoDir, spec, spawnWorktree),
+      );
+      await this.evict(repoDir);
+      return cwd;
+    } finally {
+      this.preparing.delete(repoDir);
+    }
   }
 
   /** Keep a checkout out of LRU eviction until the turn finishes. */
@@ -229,7 +236,6 @@ export class WorkspaceManager {
     await this.checkout(repoDir, spec);
     await this.markManaged(repoDir);
     this.touch(repoDir);
-    await this.evict(repoDir);
     const cwd = spawnWorktree ? await this.worktree(repoDir) : repoDir;
     this.checkoutRoot.set(cwd, repoDir);
     return cwd;
@@ -375,20 +381,18 @@ export class WorkspaceManager {
       let removed = false;
       for (let index = 0; index < this.lru.length; index += 1) {
         const candidate = this.lru[index];
-        if (candidate === current || this.inUse.has(candidate)) {
+        if (
+          candidate === current ||
+          this.inUse.has(candidate) ||
+          this.preparing.has(candidate)
+        ) {
           continue;
         }
-        const deleted = await this.exclusive(candidate, async () => {
-          if (this.inUse.has(candidate) || (await this.isDirty(candidate))) {
-            return false;
-          }
-          await fs.rm(candidate, { recursive: true, force: true });
-          return true;
-        });
-        if (!deleted) {
+        if (await this.isDirty(candidate)) {
           continue;
         }
         this.lru.splice(index, 1);
+        await fs.rm(candidate, { recursive: true, force: true });
         removed = true;
         break;
       }
