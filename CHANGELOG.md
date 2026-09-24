@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A gated tool call whose approval window is longer than
+  `approval_park_after_seconds` parks the execution when the request is
+  created, instead of polling in process for that long first. The park is
+  stored before the tool result is returned, so a harness that drops the
+  call still leaves a run waiting for the human. A failed, cancelled, or
+  timed out execution cancels approval requests it still holds as pending.
 - Harness images pin Node and install Pi and DeepSeek from lockfiles, so
   Scorecard no longer reports floating image or npm dependencies. Empty
   `except` handlers that intentionally ignore an optional driver or an
