@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Harness images pin Node and install Pi and DeepSeek from lockfiles, so
+  Scorecard no longer reports floating image or npm dependencies. Empty
+  `except` handlers that intentionally ignore an optional driver or an
+  expected flush failure now say why.
 - PR follow-up trusts a reviewer by username or GitHub App slug. Enabling
   follow-up starts with `preloop`, which matches reviews from `preloop[bot]`.
   An empty list still ignores every bot. Cursor flows no longer ask for a

@@ -1,0 +1,8 @@
+{
+  "name": "preloop-harness-pi",
+  "private": true,
+  "description": "Pinned Pi coding agent for the harness image. Installed with npm ci.",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1"
+  }
+}

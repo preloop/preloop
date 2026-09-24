@@ -1,0 +1,8 @@
+{
+  "name": "preloop-harness-deepseek",
+  "private": true,
+  "description": "Pinned DeepSeek Harness CLI for the harness image. Installed with npm ci.",
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.1.5-rc.2"
+  }
+}
