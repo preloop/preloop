@@ -292,14 +292,17 @@ def _explain(session, sql: str) -> str:
 
 
 def _cleanup(session, account_id: Any) -> None:
-    """Delete the seeded account and its usage rows."""
+    """Delete the seeded account and its usage rows.
+
+    Bulk-deletes the large ``api_usage`` table first so the account purge does
+    not have to cascade through hundreds of thousands of rows, then purges the
+    account and its owner users through the CRUD layer.
+    """
     session.query(models.ApiUsage).filter(
         models.ApiUsage.account_id == account_id
     ).delete(synchronize_session=False)
-    account = crud_account.get(session, id=account_id)
-    if account is not None:
-        crud_account.remove(session, id=account_id)
-    session.commit()
+    session.flush()
+    crud_account.purge(session, account_id=str(account_id))
 
 
 def main(argv: list[str] | None = None) -> int:

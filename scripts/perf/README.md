@@ -48,5 +48,8 @@ never drops tables, and only deletes rows that belong to that account.
   from the real CRUD query builders so the plans cannot drift from shipped
   code.
 
-Results files are machine-local measurements; do not commit production rows
-or account identifiers. The `results/` directory is scratch space.
+Results files are machine-local measurements. The default
+`results/latest.json` and any ad-hoc runs are scratch: do not commit them,
+especially when they carry a real account id. The one versioned file is the
+recorded per-issue baseline (`results/issue-914.json`), kept so later changes
+can be compared against the same numbers.
