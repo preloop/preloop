@@ -2023,13 +2023,15 @@ func runAgentsInstallPlugin(cmd *cobra.Command, args []string) error {
 			err,
 		)
 	}
-	if runtimeSessionSourceTypeForAgent(agentName) == "claude_code" {
+	agentForInstall := AgentConfig{Name: agentName}
+	if agentControlPluginInstallerCommand(agentForInstall) == "npm" {
 		// npm install -g <source folder> links the folder as-is, so prepare an
-		// unbuilt Claude plugin checkout before installing it. This keeps the
+		// unbuilt sidecar checkout before installing it. This keeps the
 		// standalone command aligned with the onboarding installer.
-		if buildErr := buildClaudePluginSourceIfNeeded(
+		if buildErr := buildNpmSidecarSourceIfNeeded(
 			executable,
-			agentControlPluginInstallTarget(AgentConfig{Name: agentName}),
+			agentControlPluginInstallTarget(agentForInstall),
+			npmSidecarBuildLabel(agentForInstall),
 			cmd.ErrOrStderr(),
 		); buildErr != nil {
 			return fmt.Errorf("failed to prepare Preloop runtime plugin source: %w", buildErr)
@@ -2048,7 +2050,7 @@ func runAgentsInstallPlugin(cmd *cobra.Command, args []string) error {
 		}
 	}
 	var command *exec.Cmd
-	if runtimeSessionSourceTypeForAgent(agentName) == "claude_code" {
+	if agentControlPluginInstallerCommand(AgentConfig{Name: agentName}) == "npm" {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 		command = exec.CommandContext(ctx, executable, installArgs...)
@@ -6132,7 +6134,7 @@ func (a genericManagedMCPAdapter) ValidateManagedConfig(doc map[string]interface
 		"authorization_header_ok": false,
 	}
 	if !ok {
-		return result
+		return mergeNpmSidecarControlValidation(a.agent, doc, baseURL, result)
 	}
 
 	result["preloop_url_ok"] = preloop["url"] == expectedURL
@@ -6400,6 +6402,21 @@ func (a genericManagedMCPAdapter) ValidateManagedConfig(doc map[string]interface
 				result["model_provider_rewritten"] = true
 			}
 		}
+	}
+	return mergeNpmSidecarControlValidation(a.agent, doc, baseURL, result)
+}
+
+func mergeNpmSidecarControlValidation(
+	agent AgentConfig,
+	doc map[string]interface{},
+	baseURL string,
+	result map[string]interface{},
+) map[string]interface{} {
+	if !isCodexCLIAgent(agent) && !isClaudeCodeAgent(agent) {
+		return result
+	}
+	for key, value := range validateAgentControlConfig(agent, doc, baseURL) {
+		result[key] = value
 	}
 	return result
 }

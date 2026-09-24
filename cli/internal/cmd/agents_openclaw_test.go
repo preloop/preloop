@@ -993,7 +993,10 @@ func TestEnsureAgentControlRuntimePluginsInstallsSupportedDiscoveredAgents(t *te
 	); err != nil {
 		t.Fatalf("failed to write fake OpenClaw verifier: %v", err)
 	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// Codex is an npm sidecar. This fixture has no published package and no
+	// source directory, so ensure must report that without calling a real npm.
+	writeFakeNpm(t, binDir, "404 Not Found", 1)
+	t.Setenv("PATH", binDir)
 
 	var output bytes.Buffer
 	ensureAgentControlRuntimePlugins(
@@ -1015,8 +1018,11 @@ func TestEnsureAgentControlRuntimePluginsInstallsSupportedDiscoveredAgents(t *te
 	if log != want {
 		t.Fatalf("expected one OpenClaw plugin install %q, got %q", want, log)
 	}
-	if strings.Contains(output.String(), "Codex") {
-		t.Fatalf("did not expect unsupported Codex plugin ensure output: %s", output.String())
+	if !strings.Contains(output.String(), "Ensuring Agent Control runtime plugin for Codex CLI...") {
+		t.Fatalf("expected Codex plugin ensure, got %s", output.String())
+	}
+	if !strings.Contains(output.String(), "@preloop-ai/codex-plugin is not available") {
+		t.Fatalf("expected a missing Codex package reason, got %s", output.String())
 	}
 }
 
