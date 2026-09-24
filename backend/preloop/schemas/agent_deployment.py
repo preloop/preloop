@@ -35,6 +35,7 @@ class AgentDeploymentRequest(BaseModel):
     target: Literal["ssh", "gcp"]
     ssh: AgentDeploymentSSH | None = None
     compute_size: Literal["standard", "performance", "high-mem"] = "standard"
+    desktop: bool = False
 
     @model_validator(mode="after")
     def validate_target(self) -> "AgentDeploymentRequest":

@@ -208,6 +208,7 @@ async def deploy_agent(
         "model_id": str(payload.model_id),
         "target": payload.target,
         "request_id": str(payload.idempotency_key),
+        "desktop_requested": payload.desktop,
     }
     if payload.ssh is not None:
         details.update({"ssh_host": payload.ssh.host, "ssh_port": payload.ssh.port})
@@ -242,6 +243,7 @@ async def deploy_agent(
                             url=origin,
                             token=token,
                             request_id=payload.idempotency_key,
+                            desktop=payload.desktop,
                         )
                         summary = await deployment_db(
                             lambda db: verify_registered_agent(
@@ -262,6 +264,7 @@ async def deploy_agent(
                         url=origin,
                         token=token,
                         request_id=payload.idempotency_key,
+                        desktop=payload.desktop,
                     )
                     summary = await deployment_db(
                         lambda db: verify_registered_agent(
@@ -305,6 +308,7 @@ async def deploy_agent(
                     **details,
                     "runtime_version": evidence.runtime_version,
                     "vm_name": vm_name,
+                    "desktop": evidence.desktop,
                 },
             )
         )
@@ -316,6 +320,7 @@ async def deploy_agent(
             "runtime_version": evidence.runtime_version,
             "model_alias": alias,
             "vm_name": vm_name,
+            "desktop": evidence.desktop,
             "logs": [
                 "SSH host identity verified",
                 "Runtime installed and validated",
