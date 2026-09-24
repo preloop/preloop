@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 import pytest
 
 from preloop.utils.pr_metadata import (
@@ -55,6 +57,24 @@ def test_malformed_provenance_region_is_rejected() -> None:
     broken = broken.replace("published", "published extra", 1)
     with pytest.raises(ValueError, match="Malformed"):
         parse_provenance(broken)
+
+
+def test_append_provenance_keeps_the_first_record_and_recent_199() -> None:
+    """The 201st continuation still lands by dropping the oldest repair."""
+    records = [
+        PublicationRecord(str(UUID(int=index)), f"{index:040x}")
+        for index in range(1, 201)
+    ]
+    body = "Human prose\n" + provenance_block(records, PUBLIC_URL)
+    newest = PublicationRecord(str(UUID(int=201)), "ab" * 20)
+    updated = append_provenance(body, newest, PUBLIC_URL)
+    parsed = parse_provenance(updated)
+    assert len(parsed) == 200
+    assert parsed[0] == records[0]
+    assert parsed[-1] == newest
+    assert records[1] not in parsed
+    assert updated.startswith("Human prose\n")
+    assert updated.count(PROVENANCE_START) == 1
 
 
 def test_append_provenance_rejects_oversize_body() -> None:

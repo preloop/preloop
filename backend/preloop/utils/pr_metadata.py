@@ -2,6 +2,8 @@
 
 This module uses only the standard library so the legacy container wrapper can
 carry the same validation implementation without installing the server package.
+Continuation append keeps the first execution record and the most recent 199
+repair records so a long-lived pull request can still record the current run.
 """
 
 from __future__ import annotations
@@ -18,6 +20,9 @@ from uuid import UUID
 MAX_TITLE_BYTES = 256
 MAX_BODY_BYTES = 60000
 MAX_ARTIFACT_BYTES = 256 * 1024
+PROVENANCE_MAX_RECORDS = 200
+# First record plus this many repairs fills PROVENANCE_MAX_RECORDS.
+PROVENANCE_RECENT_RECORDS = 199
 PROVENANCE_START = "<!-- preloop:executions:start -->"
 PROVENANCE_END = "<!-- preloop:executions:end -->"
 _PROVENANCE = re.compile(
@@ -261,7 +266,7 @@ def provenance_block(records: Sequence[PublicationRecord], public_url: str) -> s
     if any(char in public_url for char in "\n\r<>()[] "):
         raise ValueError("Invalid public application URL")
     unique = list(dict.fromkeys(records))
-    if not unique or len(unique) > 200:
+    if not unique or len(unique) > PROVENANCE_MAX_RECORDS:
         raise ValueError("Publication requires between 1 and 200 execution records")
     lines = [PROVENANCE_START, "### Preloop executions", ""]
     for index, record in enumerate(unique):
@@ -332,8 +337,29 @@ def parse_provenance(body: str) -> list[PublicationRecord]:
     return records
 
 
+def _prune_provenance_records(
+    records: list[PublicationRecord],
+) -> list[PublicationRecord]:
+    """Keep the first record and the most recent ``PROVENANCE_RECENT_RECORDS``.
+
+    The initial execution stays. Older repair records are dropped so the
+    current continuation still fits the 200-record block.
+    """
+    if len(records) <= PROVENANCE_MAX_RECORDS:
+        return records
+    first = records[0]
+    recent = [item for item in records[1:] if item != first][
+        -PROVENANCE_RECENT_RECORDS:
+    ]
+    return [first, *recent]
+
+
 def append_provenance(body: str, record: PublicationRecord, public_url: str) -> str:
     """Append one execution record unless that id and SHA are already present.
+
+    When the owned region would exceed 200 records, older repair records are
+    dropped. The first record and the most recent 199
+    (``PROVENANCE_RECENT_RECORDS``) are kept, including this execution.
 
     Args:
         body: Existing description, including any human prose.
@@ -350,7 +376,7 @@ def append_provenance(body: str, record: PublicationRecord, public_url: str) -> 
     records = parse_provenance(body)
     if record not in records:
         records.append(record)
-    return upsert_provenance(body, records, public_url)
+    return upsert_provenance(body, _prune_provenance_records(records), public_url)
 
 
 def discover_template(

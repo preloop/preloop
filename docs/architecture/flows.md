@@ -353,6 +353,8 @@ name) or unsupported by design.
 | isolated | github | delivered (`test_provider_create_retry_metadata_update_preserves_human_edits`) | delivered (same test, repair upsert) | delivered (same test: one POST, later upserts only) | out of scope (issue #599; the isolated publisher upserts provenance only) | delivered (same test) | delivered (`test_provider_failure_is_observable`) |
 | isolated | gitlab | unsupported by design (flows.md: "Stored PATs and GitLab publication are rejected in this mode until a broker can enforce their scope and lifetime") | unsupported by design (same) | unsupported by design (same) | unsupported by design (same) | unsupported by design (same) | unsupported by design (same) |
 
+Continuation append keeps the first execution record and the most recent 199 repair records (`PROVENANCE_RECENT_RECORDS`). The 201st continuation still lands (`test_append_provenance_keeps_the_first_record_and_recent_199`).
+
 The standalone metadata client still accepts a GitLab payload shape. Isolated
 mode does not: `validate_publication_tracker` rejects PAT and GitLab
 credentials before a lease is minted.
