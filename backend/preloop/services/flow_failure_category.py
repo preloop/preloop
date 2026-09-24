@@ -74,6 +74,12 @@ it*, not about severity:
     A command or script the agent ran inside the workspace failed.
 ``agent_error``
     The agent process itself exited non-zero without a classifiable cause.
+``budget_exceeded``
+    The execution crossed a ceiling an operator set on the run itself
+    (``agent_config.limits``): total tokens, USD, or turns. The gateway
+    refuses further model requests once the ceiling is reached and the run
+    ends here. Unlike ``provider_billing`` (the upstream says "pay us"), this
+    is the account's own per-run cap doing its job.
 ``timeout``
     The execution exceeded its wall-clock budget.
 ``cancelled``
@@ -105,6 +111,7 @@ FAILURE_CATEGORY_MODEL_TRANSIENT = "model_transient"
 FAILURE_CATEGORY_MODEL_AUTH = "model_auth"
 FAILURE_CATEGORY_MODEL_QUOTA = "model_quota"
 FAILURE_CATEGORY_PROVIDER_BILLING = "provider_billing"
+FAILURE_CATEGORY_BUDGET_EXCEEDED = "budget_exceeded"
 FAILURE_CATEGORY_MODEL_CONFIG = "model_config"
 FAILURE_CATEGORY_NO_CONFIRMATION = "no_confirmation"
 FAILURE_CATEGORY_AGENT_NO_PROGRESS = "agent_no_progress"
@@ -123,6 +130,7 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_MODEL_TRANSIENT,
     FAILURE_CATEGORY_MODEL_AUTH,
     FAILURE_CATEGORY_PROVIDER_BILLING,
+    FAILURE_CATEGORY_BUDGET_EXCEEDED,
     FAILURE_CATEGORY_MODEL_QUOTA,
     FAILURE_CATEGORY_MODEL_CONFIG,
     FAILURE_CATEGORY_NO_CONFIRMATION,
@@ -235,6 +243,15 @@ _HOSTED_TARIFF_RE = re.compile(
     r"hosted_tariff_unconfigured|has no operator tariff",
     re.IGNORECASE,
 )
+# "Execution budget exceeded: execution token ceiling reached: 2100000 tokens
+# used of 2000000 allowed." Preloop's own refusal when a run crosses the
+# per-execution ceiling (agent_config.limits). Matched structurally, before
+# the provider rules: the agent may also log an upstream 429/5xx it produced
+# while retrying the same refused request, and the money rule is the cause.
+_EXECUTION_BUDGET_RE = re.compile(
+    r"execution budget exceeded|execution [_a-z]+ ceiling reached",
+    re.IGNORECASE,
+)
 # "zai does not support parameters: ['parallel_tool_calls']",
 # "Model 'openai/gpt-5.4' is bound to another agent's subscription credentials"
 _MODEL_CONFIG_RE = re.compile(
@@ -340,6 +357,7 @@ _AGENT_ERROR_RE = re.compile(
 _STRUCTURAL_MESSAGE_RULES = (
     (_AGENT_NO_PROGRESS_RE, FAILURE_CATEGORY_AGENT_NO_PROGRESS),
     (_HOSTED_TARIFF_RE, FAILURE_CATEGORY_MODEL_CONFIG),
+    (_EXECUTION_BUDGET_RE, FAILURE_CATEGORY_BUDGET_EXCEEDED),
     (_PROVIDER_BILLING_RE, FAILURE_CATEGORY_PROVIDER_BILLING),
     (_SETUP_FAILED_RE, FAILURE_CATEGORY_SETUP_FAILED),
     (_VERIFICATION_BLOCKED_RE, FAILURE_CATEGORY_VERIFICATION_BLOCKED),

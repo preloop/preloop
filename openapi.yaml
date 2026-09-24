@@ -10332,7 +10332,10 @@ paths:
         \ 0.0, which would misreport real\n      spend as free)\n    - has_pricing:\
         \ Whether any request could be priced\n    - cost_is_partial: Whether estimated_cost\
         \ excludes unpriced requests\n    - unpriced_requests: Requests that could\
-        \ not be priced\n    - unpriced_tokens: Token volume behind the unpriced requests"
+        \ not be priced\n    - unpriced_tokens: Token volume behind the unpriced requests\n\
+        \    - limits: Configured per-execution ceilings (only keys that are set)\n\
+        \    - limit_status: Current usage against those ceilings\n      (``total_tokens``,\
+        \ ``estimated_cost_usd``, ``turns``)"
       operationId: get_flow_execution_metrics_api_v1_flows_executions__execution_id__metrics_get
       security:
       - bearerAuth: []
@@ -18793,9 +18796,9 @@ components:
           description: 'Coarse machine-readable reason a terminal execution did not
             succeed: one of runner_conflict, runner_error, model_transient, model_auth,
             provider_billing, model_quota (legacy, superseded by provider_billing),
-            model_config, no_confirmation, agent_no_progress, setup_failed, tool_error,
-            agent_error, timeout, cancelled, unknown. Null for successful or still-running
-            executions, and for executions that predate this field.'
+            budget_exceeded, model_config, no_confirmation, agent_no_progress, setup_failed,
+            tool_error, agent_error, timeout, cancelled, unknown. Null for successful
+            or still-running executions, and for executions that predate this field.'
         queued_reason:
           anyOf:
           - type: string
