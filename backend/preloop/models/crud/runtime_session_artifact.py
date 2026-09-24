@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -140,6 +140,9 @@ def store(
         availability="available",
         expires_at=expires_at,
         legal_hold=False,
+        # Client clock, not transaction_timestamp(): two inserts in one
+        # transaction would otherwise share created_at and sort by uuid.
+        created_at=datetime.now(UTC),
     )
     try:
         with db.begin_nested():

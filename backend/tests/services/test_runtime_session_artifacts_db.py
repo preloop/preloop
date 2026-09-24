@@ -245,6 +245,11 @@ def test_list_for_session_orders_and_filters_kind(
         content_type="video/webm",
         source_ref="clip-1",
     )
+    # ``now()`` is the transaction start, so both rows would otherwise tie
+    # and the uuid tie-break would not follow insert order.
+    first.created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    second.created_at = datetime(2026, 1, 2, tzinfo=UTC)
+    db_session.commit()
     listed = crud.list_for_session(
         db_session,
         account_id=scope["account_id"],
