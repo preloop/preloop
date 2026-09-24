@@ -776,6 +776,22 @@ class Settings(BaseSettings):
             "This is operational retention, not legal hold or object-lock."
         ),
     )
+    runtime_session_screenshot_max_bytes: int = Field(
+        2 * 1024**2,
+        ge=1,
+        description=(
+            "Maximum plaintext size in bytes for a runtime-session screenshot. "
+            "Larger payloads are rejected before they are encrypted or stored."
+        ),
+    )
+    runtime_session_recording_max_bytes: int = Field(
+        512 * 1024**2,
+        ge=1,
+        description=(
+            "Maximum plaintext size in bytes for a runtime-session recording. "
+            "Larger payloads are rejected before they are encrypted or stored."
+        ),
+    )
     flow_environment_profiles_file: str = ""
 
     # Record retention, legal hold and the purge job
