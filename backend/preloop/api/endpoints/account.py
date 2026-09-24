@@ -727,6 +727,16 @@ def _managed_agent_control_fields(
         "supports_existing_session": control_enabled,
         "supports_voice": control_enabled and not active_session_only,
         "supports_interrupt": supports_interrupt,
+        "desktop": (
+            snapshot.get("desktop")
+            if snapshot.get("desktop") in ("vnc", "rdp")
+            else "none"
+        ),
+        "desktop_display": (
+            snapshot.get("desktop_display")
+            if isinstance(snapshot.get("desktop_display"), str)
+            else None
+        ),
         "control_session_mode": session_mode,
         "control_last_heartbeat_at": heartbeat_at,
         "supported_input_modes": (

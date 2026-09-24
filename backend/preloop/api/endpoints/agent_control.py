@@ -283,12 +283,15 @@ class AgentControlConnectionManager:
             queued_count = 0
         if queued_count > 0:
             session_mode = "queued"
+        raw_desktop = capabilities.get("desktop")
         return {
             "online": online,
             "supports_interrupt": bool(capabilities.get("interrupt")),
             "session_mode": session_mode,
             "capabilities": capabilities,
             "queued_count": queued_count,
+            "desktop": raw_desktop if raw_desktop in ("vnc", "rdp") else "none",
+            "desktop_display": capabilities.get("desktop_display"),
         }
 
     def record_presence(
