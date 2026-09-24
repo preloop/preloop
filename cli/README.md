@@ -180,6 +180,19 @@ usage to `/api/v1/usage/ingest`. Runs bill the user's own Cursor account;
 Preloop records estimates, not Cursor billing. See
 [docs/guide/cursor-cli.md](../docs/guide/cursor-cli.md).
 
+### Copilot CLI
+
+```bash
+preloop copilot --model openai/gpt-5
+preloop copilot --model anthropic/claude-sonnet-4-5 --provider anthropic
+```
+
+`preloop copilot` starts the GitHub Copilot CLI with BYOK environment
+variables pointed at the Preloop gateway. A missing binary, credential, or
+model alias exits without launching Copilot. `--token` and `PRELOOP_TOKEN`
+override the enrolled agent credential. See
+[docs/guide/copilot-cli.md](../docs/guide/copilot-cli.md).
+
 ### Usage
 
 ```bash
