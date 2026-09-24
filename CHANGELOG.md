@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `python -m preloop.cra measure` prints the platform's NTIA minimum-elements
+  measurement for one or more CycloneDX or SPDX JSON files. SBOM Verify and
+  Release Security Audit copy `passed` and `missing` from that object.
+  Persisted SBOM and release audits carry the same object as
+  `minimum_elements_measured` (on `sbom_audit` for a release audit).
+
 - `FLOW_EVIDENCE_LOG_PLAINTEXT` (default true) keeps today's Kubernetes
   behavior: without a direct-upload token, `result.json`, the evidence pack,
   and the workspace snapshot are still written to the pod log as base64.
@@ -27,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   users; VNC DES keeps the first 8 characters) and is not written elsewhere.
 
 ### Changed
+
+- At persist, a `minimum_elements.passed: true` claim is replaced when the
+  delivered SBOM bytes are missing elements, and the agent's claim is kept
+  on `verdict_corrected`. The verdict floor then moves the label to `fail`.
+  An agent who already failed minimum elements keeps that claim. When
+  `counts_by_severity` is the only contract failure, it is recomputed from
+  the findings list and recorded per key. A run is never made less severe.
 
 - One-year usage summaries aggregate session and model totals before joining
   session, agent, flow, and principal labels, and hash the daily series by

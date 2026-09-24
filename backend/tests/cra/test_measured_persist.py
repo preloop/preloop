@@ -125,6 +125,28 @@ class TestMeasuredMinimumElements:
         assert artifact[MEASURED_FIELD]["status"] == "skipped"
         assert "no SBOM seeds" in artifact[MEASURED_FIELD]["reason"]
 
+    def test_nested_release_claim_is_replaced(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        payload = clone(releaseaudit_result)
+        payload["sbom_audit"]["minimum_elements"] = {"passed": True, "missing": []}
+        decision = apply_cra_persist_boundary(
+            payload, trigger_payload=_seed(_cdx_missing_supplier())
+        )
+
+        assert not decision.invalid
+        artifact = decision.artifact
+        assert artifact is not None
+        assert artifact["sbom_audit"]["minimum_elements"]["passed"] is False
+        assert artifact["sbom_audit"][MEASURED_FIELD]["passed"] is False
+        assert artifact["verdict"] == "fail"
+        claim = next(
+            item["agent_claim"]
+            for item in artifact[VERDICT_CORRECTED_FIELD]
+            if "agent_claim" in item
+        )
+        assert claim["passed"] is True
+
 
 class TestDerivedSeverityCounts:
     def test_fabricated_medium_count_is_derived(

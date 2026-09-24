@@ -18,8 +18,10 @@ aggregate is rewritten from that list. Findings themselves are never edited.
 Three rules keep this from laundering a release:
 
 - a correction may only make the result more severe. An agent who already
-  failed minimum elements, or who counted more harshly than the findings,
-  keeps that value. Rewriting ``fail`` into ``pass`` stays a hard failure;
+  failed minimum elements keeps that claim. ``counts_by_severity`` is always
+  derived from the findings, in either direction, because the findings are
+  never edited and the gate reads the findings, not the aggregate. Rewriting
+  ``fail`` into ``pass`` stays a hard failure;
 - verdict labels still move only toward a more severe label. Coverage,
   license flags, the gate and the findings stay as submitted;
 - every correction is recorded on the result under ``verdict_corrected``,

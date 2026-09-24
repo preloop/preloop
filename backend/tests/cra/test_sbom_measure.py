@@ -221,6 +221,63 @@ class TestTriggerSeeds:
         assert measured["components"] == 1
         assert measured["author_only"] == 1
 
+    def test_a_non_sbom_neighbour_does_not_fail_a_complete_document(self) -> None:
+        complete = _cdx(
+            [
+                _component(
+                    "lib-a", supplier="Example Supplier", purl="pkg:generic/lib-a@1"
+                )
+            ],
+            dependencies=[{"ref": "lib-a", "dependsOn": []}],
+        )
+        measured = measure_inputs(
+            [
+                ("sbom/app.cdx.json", complete),
+                ("sbom/README.md", b"# SBOMs live here\n"),
+            ]
+        )
+        assert measured["passed"] is True
+        assert measured["missing"] == []
+        assert measured["components"] == 1
+
+    def test_a_promised_json_sbom_that_does_not_parse_fails(self) -> None:
+        complete = _cdx(
+            [
+                _component(
+                    "lib-a", supplier="Example Supplier", purl="pkg:generic/lib-a@1"
+                )
+            ],
+            dependencies=[{"ref": "lib-a", "dependsOn": []}],
+        )
+        measured = measure_inputs(
+            [
+                ("app.cdx.json", complete),
+                ("other.cdx.json", b"not json"),
+            ]
+        )
+        assert measured["passed"] is False
+
+    def test_tag_value_spdx_does_not_fail_the_aggregate(self) -> None:
+        complete = _cdx(
+            [
+                _component(
+                    "lib-a", supplier="Example Supplier", purl="pkg:generic/lib-a@1"
+                )
+            ],
+            dependencies=[{"ref": "lib-a", "dependsOn": []}],
+        )
+        tag_value = b"SPDXVersion: SPDX-2.3\nSPDXID: SPDXRef-DOCUMENT\n"
+        measured = measure_inputs(
+            [("app.cdx.json", complete), ("build.spdx", tag_value)]
+        )
+        assert measured["passed"] is True
+
+    def test_gzip_over_the_cap_is_skipped(self) -> None:
+        raw = gzip.compress(b"x" * (32 * 1024 * 1024 + 1))
+        measured = measure_document("example.cdx.json.gz", raw)
+        assert measured["status"] == "skipped"
+        assert "size cap" in measured["reason"]
+
     def test_aggregate_is_deterministic(self) -> None:
         first = _cdx([_component("lib-a")])
         second = _cdx([_component("lib-b"), _component("lib-c")])

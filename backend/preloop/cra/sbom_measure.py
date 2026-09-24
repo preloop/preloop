@@ -28,6 +28,7 @@ import argparse
 import base64
 import gzip
 import hashlib
+import io
 import json
 import sys
 from pathlib import Path
@@ -50,11 +51,13 @@ _CDX_VERSIONS = frozenset({"1.4", "1.5", "1.6"})
 _SPDX_VERSIONS = frozenset({"SPDX-2.2", "SPDX-2.3"})
 _MAX_SBOM_BYTES = 32 * 1024 * 1024
 _GZIP_MAGIC = b"\x1f\x8b"
-_SBOM_SUFFIXES = (
+# Suffixes that promise a JSON SBOM. A file with one of these that does not
+# parse still fails the aggregate. A path that merely contains "sbom", or a
+# tag-value ``.spdx`` file, does not.
+_PROMISED_JSON_SUFFIXES = (
     ".cdx.json",
     ".cyclonedx.json",
     ".spdx.json",
-    ".spdx",
     "bom.json",
 )
 
@@ -67,14 +70,53 @@ def _nonempty(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def _skipped(reason: str, *, path: str = "", sha256: str = "") -> dict[str, Any]:
-    """A measurement that was not made, with the reason recorded."""
-    body: dict[str, Any] = {"status": "skipped", "reason": reason}
+def _promised_json_sbom(path: str) -> bool:
+    """True when the path itself promises CycloneDX or SPDX JSON."""
+    return path.lower().endswith(_PROMISED_JSON_SUFFIXES)
+
+
+def _skipped(
+    reason: str,
+    *,
+    path: str = "",
+    sha256: str = "",
+    affects_passed: bool = False,
+) -> dict[str, Any]:
+    """A measurement that was not made, with the reason recorded.
+
+    ``affects_passed`` is set only when the path promised a JSON SBOM, or the
+    bytes parsed as one but the spec version is unsupported. A neighbour that
+    is not an SBOM is recorded and does not fail the aggregate.
+    """
+    body: dict[str, Any] = {
+        "status": "skipped",
+        "reason": reason,
+        "affects_passed": affects_passed,
+    }
     if path:
         body["path"] = path
     if sha256:
         body["sha256"] = sha256
     return body
+
+
+def _gunzip_bounded(raw: bytes) -> tuple[Optional[bytes], Optional[str]]:
+    """Decompress ``raw``, stopping once the output exceeds the size cap."""
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(raw)) as handle:
+            while True:
+                block = handle.read(65536)
+                if not block:
+                    break
+                total += len(block)
+                if total > _MAX_SBOM_BYTES:
+                    return None, "decompressed input exceeds the measurement size cap"
+                chunks.append(block)
+    except (OSError, EOFError, gzip.BadGzipFile):
+        return None, "gzip input could not be decompressed"
+    return b"".join(chunks), None
 
 
 def _decode_document(raw: bytes) -> tuple[Optional[Any], Optional[str]]:
@@ -83,12 +125,10 @@ def _decode_document(raw: bytes) -> tuple[Optional[Any], Optional[str]]:
         return None, "input exceeds the measurement size cap"
     payload = raw
     if raw.startswith(_GZIP_MAGIC):
-        try:
-            payload = gzip.decompress(raw)
-        except (OSError, EOFError, gzip.BadGzipFile):
-            return None, "gzip input could not be decompressed"
-        if len(payload) > _MAX_SBOM_BYTES:
-            return None, "decompressed input exceeds the measurement size cap"
+        payload_bytes, reason = _gunzip_bounded(raw)
+        if reason is not None or payload_bytes is None:
+            return None, reason or "gzip input could not be decompressed"
+        payload = payload_bytes
     try:
         text = payload.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -285,6 +325,7 @@ def _measure_cyclonedx(
             f"unsupported CycloneDX spec version {spec!r}",
             path=path,
             sha256=sha256,
+            affects_passed=True,
         )
     metadata = document.get("metadata")
     if not isinstance(metadata, Mapping):
@@ -368,6 +409,7 @@ def _measure_spdx(
             f"unsupported SPDX spec version {spec!r}",
             path=path,
             sha256=sha256,
+            affects_passed=True,
         )
     creation = document.get("creationInfo")
     if not isinstance(creation, Mapping):
@@ -457,16 +499,22 @@ def _classify(document: Mapping[str, Any]) -> Optional[str]:
 def measure_document(path: str, raw: bytes) -> dict[str, Any]:
     """Measure one SBOM. Unparseable input is skipped with a reason."""
     digest = _sha256(raw)
+    promised = _promised_json_sbom(path)
     parsed, reason = _decode_document(raw)
     if reason is not None or not isinstance(parsed, Mapping):
         why = reason or "input is not a JSON object"
-        return _skipped(why, path=path, sha256=digest)
+        return _skipped(why, path=path, sha256=digest, affects_passed=promised)
     kind = _classify(parsed)
     if kind == "cyclonedx":
         return _measure_cyclonedx(parsed, path=path, sha256=digest)
     if kind == "spdx":
         return _measure_spdx(parsed, path=path, sha256=digest)
-    return _skipped("input is not CycloneDX or SPDX JSON", path=path, sha256=digest)
+    return _skipped(
+        "input is not CycloneDX or SPDX JSON",
+        path=path,
+        sha256=digest,
+        affects_passed=promised,
+    )
 
 
 def _missing_names(counts: Mapping[str, int]) -> list[str]:
@@ -494,13 +542,22 @@ def measure_inputs(inputs: Sequence[tuple[str, bytes]]) -> dict[str, Any]:
             skipped.append(measured)
         else:
             documents.append(measured)
+    blocking = [item for item in skipped if item.get("affects_passed") is True]
     if not documents:
+        if not blocking:
+            body = _skipped("no parseable SBOM input")
+            body["documents"] = skipped
+            return body
         reason = (
-            skipped[0]["reason"] if len(skipped) == 1 else "no parseable SBOM input"
+            blocking[0]["reason"] if len(blocking) == 1 else "no parseable SBOM input"
         )
-        body = _skipped(reason)
-        body["documents"] = skipped
-        return body
+        # A path that promised JSON failed to parse. That is a measurement,
+        # and it does not pass, rather than a skip that would keep the claim.
+        failed = _aggregate([], blocking)
+        failed["documents"] = skipped
+        failed["passed"] = False
+        failed["reason"] = reason
+        return failed
     return _aggregate(documents, skipped)
 
 
@@ -522,7 +579,17 @@ def _aggregate(
         neither += int(document.get("missing_supplier_and_author") or 0)
     parsers = sorted({str(item.get("parser")) for item in documents})
     specs = sorted({str(item.get("spec_version")) for item in documents})
-    passed = not _missing_names(counts) and not skipped
+    blocking = [item for item in skipped if item.get("affects_passed") is True]
+    passed = not _missing_names(counts) and not blocking
+    if len(parsers) == 1:
+        parser: Optional[str] = parsers[0]
+        spec_version: Optional[str] = specs[0]
+    elif parsers:
+        parser = "mixed"
+        spec_version = "mixed"
+    else:
+        parser = None
+        spec_version = None
     return {
         "passed": passed,
         "missing": _missing_names(counts),
@@ -530,15 +597,20 @@ def _aggregate(
         "author_only": author_only,
         "missing_supplier_and_author": neither,
         "components": components,
-        "parser": parsers[0] if len(parsers) == 1 else "mixed",
-        "spec_version": specs[0] if len(specs) == 1 else "mixed",
+        "parser": parser,
+        "spec_version": spec_version,
         "documents": [*documents, *skipped],
     }
 
 
 def _looks_like_sbom(path: str, raw: bytes) -> bool:
-    lowered = path.lower()
-    if "sbom" in lowered or lowered.endswith(_SBOM_SUFFIXES):
+    """True for a promised JSON SBOM path, or bytes that classify as one.
+
+    A path that only contains the letters "sbom", and a tag-value ``.spdx``
+    file, are not SBOMs. They must not sit next to a complete document and
+    flip ``passed`` to false.
+    """
+    if _promised_json_sbom(path):
         return True
     parsed, reason = _decode_document(raw)
     if reason is not None or not isinstance(parsed, Mapping):
