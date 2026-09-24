@@ -922,6 +922,22 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/account/session-artifacts/usage:
+    get:
+      tags:
+      - Account
+      summary: Get Session Artifact Usage
+      description: Return session-artifact bytes used, the budget, and recent evictions.
+      operationId: get_session_artifact_usage_api_v1_account_session_artifacts_usage_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionArtifactUsageResponse'
+      security:
+      - bearerAuth: []
   /api/v1/account/gateway-usage/summary:
     get:
       tags:
@@ -26920,6 +26936,41 @@ components:
         \    threshold: Finite threshold in [0, 1] this deployment screens at.\n \
         \   primary_outcome: Optional lowercase label naming the dominant rule\n \
         \       category; omitted for benign content."
+    SessionArtifactUsageByKind:
+      properties:
+        screenshot:
+          type: integer
+          title: Screenshot
+        recording:
+          type: integer
+          title: Recording
+      type: object
+      required:
+      - screenshot
+      - recording
+      title: SessionArtifactUsageByKind
+      description: Available plaintext bytes by artifact kind.
+    SessionArtifactUsageResponse:
+      properties:
+        used_bytes:
+          type: integer
+          title: Used Bytes
+        budget_bytes:
+          type: integer
+          title: Budget Bytes
+        by_kind:
+          $ref: '#/components/schemas/SessionArtifactUsageByKind'
+        evicted_count_30d:
+          type: integer
+          title: Evicted Count 30D
+      type: object
+      required:
+      - used_bytes
+      - budget_bytes
+      - by_kind
+      - evicted_count_30d
+      title: SessionArtifactUsageResponse
+      description: Account session-artifact usage against the storage budget.
     SessionEmbeddingSettingResponse:
       properties:
         enabled:
