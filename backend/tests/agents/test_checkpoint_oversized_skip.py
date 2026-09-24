@@ -49,3 +49,22 @@ def test_checkpoint_workspace_busy_still_fails_the_run(
         "PRELOOP_CHECKPOINT failed ValueError checkpoint_workspace_busy"
         in capsys.readouterr().out
     )
+
+
+def test_unstructured_checkpoint_errors_omit_the_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(cc, "WORKSPACE_ROOT", workspace)
+    monkeypatch.setenv("PRELOOP_CHECKPOINT_MAX_BYTES", "67108864")
+
+    def noisy_capture(root: Path, *, max_bytes: int) -> bytes:
+        raise ValueError("HTTP Error 413: /tmp/preloop-secret")
+
+    monkeypatch.setattr(cc, "capture", noisy_capture)
+    monkeypatch.setattr(sys, "argv", ["checkpoint_client.py", "capture"])
+    with pytest.raises(SystemExit) as exc:
+        cc.main()
+    assert exc.value.code == 1
+    assert capsys.readouterr().out.strip() == "PRELOOP_CHECKPOINT failed ValueError"

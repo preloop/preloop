@@ -164,8 +164,11 @@ modification times and membership for changes during capture, declining a busy
 snapshot rather than committing inconsistent state. The last completed
 checkpoint survives process/pod loss; writes after that checkpoint can be lost.
 Controlled exits attempt a final checkpoint. Before legacy wrapper publication,
-a failed checkpoint blocks publication. A trusted external publisher must make
-this checkpoint barrier part of its handoff as well.
+a failed checkpoint blocks publication, except when the archive exceeds the
+storage cap: that case logs `PRELOOP_CHECKPOINT skipped checkpoint_oversized`,
+exits 0, and leaves the last completed checkpoint as the resume point. A
+trusted external publisher must make this checkpoint barrier part of its
+handoff as well.
 
 Restore occurs before setup or agent startup on Docker and Kubernetes. It logs
 the age of the checkpoint it recovered (`PRELOOP_CHECKPOINT restored
