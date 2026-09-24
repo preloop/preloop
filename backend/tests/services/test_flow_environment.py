@@ -404,7 +404,7 @@ def test_example_browser_profile_is_a_valid_environment_profile() -> None:
     assert service["port"] == 3128
     assert service["env"] == {
         "EGRESS_ALLOWED_ORIGINS": "http://fixture-site:8080",
-        "EGRESS_ALLOW_PRIVATE_CIDRS": "<execution network cidr placeholder>",
+        "EGRESS_ALLOW_PRIVATE_CIDRS": "172.20.0.0/16",
     }
     profile = _browser_profile()
     assert profile.image.endswith(DIGEST)
@@ -468,9 +468,11 @@ def test_rendered_harness_config_is_isolated_and_selfcheck_fails_closed(
     args = rendered["browser"]["launchOptions"]["args"]
     assert f"--proxy-server=http://127.0.0.1:{port}" in args
     assert "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1" in args
+    assert "--proxy-bypass-list=<-loopback>" in args
     harness = (tmp_path / "home" / ".codex" / "config.toml").read_text()
     assert "--isolated" in harness
     assert "@playwright/mcp@0.0.82" in harness
+    assert "/opt/preloop-env-tools/node_modules/.bin/playwright-mcp" in harness
     assert "[mcp_servers.browser]" in harness
     claude = _run_enable(
         tmp_path / "claude",
@@ -518,17 +520,24 @@ def test_removed_proxy_env_aborts_profile_setup(tmp_path: Path) -> None:
     assert "browser_egress_not_enforced" in log
 
 
+def _browser_node_path() -> Path:
+    """Playwright next to the pinned MCP package, not the frontend copy."""
+    return REPO / "environments" / "preloop" / "tools" / "node_modules"
+
+
 def _chromium_ready() -> bool:
-    node_path = REPO / "frontend" / "node_modules"
+    node_path = _browser_node_path()
     if not (node_path / "playwright").is_dir():
         return False
     probe = subprocess.run(
         [
             "node",
             "-e",
-            "const {chromium}=require('playwright');"
-            "const fs=require('fs');"
-            "process.exit(fs.existsSync(chromium.executablePath())?0:1)",
+            (
+                "const {chromium}=require('playwright');"
+                "const fs=require('fs');"
+                "process.exit(fs.existsSync(chromium.executablePath())?0:1)"
+            ),
         ],
         capture_output=True,
         env={**os.environ, "NODE_PATH": str(node_path)},
@@ -538,9 +547,8 @@ def _chromium_ready() -> bool:
 
 
 @pytest.mark.skipif(
-    not _chromium_ready()
-    or not (REPO / "environments" / "egress-proxy" / "go.mod").is_file(),
-    reason="needs the egress proxy module and a local Playwright Chromium",
+    os.environ.get("PRELOOP_BROWSER_CI") != "1" and not _chromium_ready(),
+    reason="needs Playwright from environments/preloop/tools and a Chromium build",
 )
 def test_enable_blocks_metadata_and_non_allowlisted_origin(tmp_path: Path) -> None:
     import socket
@@ -584,14 +592,16 @@ def test_enable_blocks_metadata_and_non_allowlisted_origin(tmp_path: Path) -> No
             [
                 "node",
                 "-e",
-                "const {chromium}=require('playwright');"
-                "console.log(chromium.executablePath())",
+                (
+                    "const {chromium}=require('playwright');"
+                    "console.log(chromium.executablePath())"
+                ),
             ],
             capture_output=True,
             text=True,
             env={
                 **os.environ,
-                "NODE_PATH": str(REPO / "frontend" / "node_modules"),
+                "NODE_PATH": str(_browser_node_path()),
             },
             timeout=30,
             check=True,
@@ -603,7 +613,7 @@ def test_enable_blocks_metadata_and_non_allowlisted_origin(tmp_path: Path) -> No
             tmp_path,
             {
                 "PRELOOP_BROWSER_PROXY": f"http://127.0.0.1:{port}",
-                "PRELOOP_PLAYWRIGHT_NODE_PATH": str(REPO / "frontend" / "node_modules"),
+                "PRELOOP_PLAYWRIGHT_NODE_PATH": str(_browser_node_path()),
                 "PLAYWRIGHT_BROWSERS_PATH": str(browsers),
             },
         )

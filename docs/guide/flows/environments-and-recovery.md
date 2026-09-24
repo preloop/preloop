@@ -92,10 +92,20 @@ The hosted Codex executor writes `[mcp_servers.preloop]` from
 leaves `~/.codex/preloop-browser-mcp.toml`, which the executor appends after
 its own write. There is no Claude Code writer in this repository; Claude Code
 reads `.mcp.json` in the checkout, and `enable.sh` merges the `browser` entry
-there. The pinned package is `@playwright/mcp@0.0.82`. The MCP command line is
-`npx -y @playwright/mcp@0.0.82 --config <rendered> --proxy-server
-$PRELOOP_BROWSER_PROXY --isolated --headless`. `--isolated` starts Chromium
-with an empty profile: no cookies and no operator storage state.
+there. The pinned package is `@playwright/mcp@0.0.82`, installed in the profile
+image next to Playwright `1.64.0-alpha-1789764292000` (the build that package
+bundles). The MCP command is the image binary
+`/opt/preloop-env-tools/node_modules/.bin/playwright-mcp` with `--config`,
+`--proxy-server`, `--isolated`, and `--headless`. Setup does not fetch the
+package from the npm registry. `--isolated` starts Chromium with an empty
+profile: no cookies and no operator storage state. The rendered launch args
+also include `--proxy-bypass-list=<-loopback>` so loopback is not a path
+around the proxy. The self-check probes the metadata address, a
+non-allowlisted origin, and a listener on `127.0.0.1`.
+
+The example profile does not list `test_commands`. A flow that gates
+verification on command IDs must add those IDs to the registered profile;
+otherwise readiness reports `environment_command_missing`.
 
 Chromium is started with the two flags the proxy README requires:
 `--proxy-server` and `--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE

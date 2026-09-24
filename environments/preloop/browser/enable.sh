@@ -62,6 +62,7 @@ args = parsed["browser"]["launchOptions"]["args"]
 expected = {
     f"--proxy-server={proxy}",
     f"--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE {host}",
+    "--proxy-bypass-list=<-loopback>",
 }
 if set(args) != expected or parsed["browser"].get("isolated") is not True:
     sys.exit("rendered config missing chromium flags")
@@ -82,9 +83,11 @@ harness = sys.argv[1]
 version = os.environ["PLAYWRIGHT_MCP_VERSION"]
 config = os.environ["PRELOOP_BROWSER_CONFIG"]
 proxy = os.environ["PRELOOP_BROWSER_PROXY"]
+binary = os.environ.get(
+    "PRELOOP_PLAYWRIGHT_MCP_BIN",
+    "/opt/preloop-env-tools/node_modules/.bin/playwright-mcp",
+)
 args = [
-    "-y",
-    f"@playwright/mcp@{version}",
     "--config",
     config,
     "--proxy-server",
@@ -101,8 +104,9 @@ if harness == "codex":
     codex = home / ".codex"
     codex.mkdir(parents=True, exist_ok=True)
     fragment = (
+        f"# @playwright/mcp@{version}\n"
         "[mcp_servers.browser]\n"
-        'command = "npx"\n'
+        f"command = {toml_string(binary)}\n"
         "args = [" + ", ".join(toml_string(item) for item in args) + "]\n"
     )
     (codex / "preloop-browser-mcp.toml").write_text(fragment, encoding="utf-8")
@@ -132,7 +136,7 @@ else:
     servers = data.get("mcpServers")
     if not isinstance(servers, dict):
         servers = {}
-    servers["browser"] = {"command": "npx", "args": args}
+    servers["browser"] = {"command": binary, "args": args}
     data["mcpServers"] = servers
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY

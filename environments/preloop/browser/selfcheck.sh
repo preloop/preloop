@@ -55,12 +55,10 @@ try {
 
 const PROXY_ERROR =
   /ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ERR_PROXY_CERTIFICATE_INVALID|ERR_PROXY_AUTH_UNSUPPORTED|ERR_PROXY_AUTH_REQUESTED|egress_denied/;
-// The required host-resolver-rules map every name, including the metadata
-// literal, to ~NOTFOUND before a dial. That failure is enforcement of the
-// resolver flag. A hostname probe must still be a proxy or tunnel error so a
-// broken resolver cannot impersonate an allowlist denial.
-const RESOLVER_BLOCK =
-  /ERR_NAME_NOT_RESOLVED|chrome-error:\/\/chromewebdata|interrupted by another navigation/;
+// host-resolver-rules map the metadata literal to ~NOTFOUND before a dial.
+// A committed response is never that case. Hostname and loopback probes must
+// be a proxy or tunnel error.
+const RESOLVER_BLOCK = /ERR_NAME_NOT_RESOLVED|chrome-error:\/\/chromewebdata/;
 
 async function main() {
   const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -69,13 +67,20 @@ async function main() {
   const resolverFlag = args.some((item) =>
     String(item).startsWith("--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE ")
   );
-  if (!proxyFlag || !resolverFlag) {
+  const bypassFlag = args.includes("--proxy-bypass-list=<-loopback>");
+  if (!proxyFlag || !resolverFlag || !bypassFlag) {
     process.exit(1);
   }
   const launchArgs = args.slice();
   if (typeof process.getuid === "function" && process.getuid() === 0) {
     launchArgs.push("--no-sandbox");
   }
+  const http = require("http");
+  const loopback = http.createServer((_req, res) => {
+    res.end("loopback-reached");
+  });
+  await new Promise((resolve) => loopback.listen(0, "127.0.0.1", resolve));
+  const loopbackUrl = "http://127.0.0.1:" + loopback.address().port + "/";
   const browser = await playwright.chromium.launch({
     headless: true,
     executablePath: playwright.chromium.executablePath(),
@@ -83,10 +88,11 @@ async function main() {
   });
   try {
     const context = await browser.newContext();
-    const page = await context.newPage();
-    const urls = ["http://169.254.169.254/", "https://example.org/"];
+    const urls = ["http://169.254.169.254/", "https://example.org/", loopbackUrl];
     for (const url of urls) {
+      const page = await context.newPage();
       const blocked = await probe(page, url);
+      await page.close();
       if (!blocked) {
         console.error("probe_not_blocked " + url);
         process.exit(1);
@@ -95,6 +101,7 @@ async function main() {
     }
   } finally {
     await browser.close();
+    loopback.close();
   }
 }
 
@@ -108,17 +115,31 @@ async function probe(page, url) {
     } catch (err) {
       body = String(err);
     }
-    return classify(url, status + "\n" + body);
+    const detail = status + "\n" + body;
+    const blocked = classify(url, detail, response !== null) && !body.includes("loopback-reached");
+    if (!blocked) {
+      console.error(detail.slice(0, 300));
+    }
+    return blocked;
   } catch (err) {
-    return classify(url, String(err));
+    const detail = String(err);
+    const blocked = classify(url, detail, false);
+    if (!blocked) {
+      console.error(detail.slice(0, 300));
+    }
+    return blocked;
   }
 }
 
-function classify(url, detail) {
+function classify(url, detail, committed) {
   if (PROXY_ERROR.test(detail)) {
     return true;
   }
-  return url.startsWith("http://169.254.169.254") && RESOLVER_BLOCK.test(detail);
+  return (
+    url.startsWith("http://169.254.169.254") &&
+    !committed &&
+    RESOLVER_BLOCK.test(detail)
+  );
 }
 
 main().catch((err) => {

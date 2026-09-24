@@ -131,6 +131,7 @@
     "version": 1,
     "image": "registry.example.com/preloop-environment@sha256:REPLACE_WITH_PUBLISHED_DIGEST",
     "harness": "codex",
+    "setup_timeout_seconds": 180,
     "services": [
       {
         "name": "egress-proxy",
@@ -138,7 +139,7 @@
         "port": 3128,
         "env": {
           "EGRESS_ALLOWED_ORIGINS": "http://fixture-site:8080",
-          "EGRESS_ALLOW_PRIVATE_CIDRS": "<execution network cidr placeholder>"
+          "EGRESS_ALLOW_PRIVATE_CIDRS": "172.20.0.0/16"
         }
       }
     ],
