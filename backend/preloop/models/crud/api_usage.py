@@ -1951,9 +1951,15 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         api_key_id: Optional[str] = None,
         runtime_principal_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Group gateway usage by day."""
+        """Group gateway usage by UTC day.
+
+        The day bucket is aggregated in a materialized CTE with no
+        ``ORDER BY``. Materializing stops the planner from pulling the
+        aggregate up under the outer sort, which otherwise sorts every usage
+        row. The outer query sorts only the day buckets.
+        """
         bucket = func.date_trunc("day", ApiUsage.timestamp)
-        query = db.query(
+        grouped = db.query(
             bucket.label("bucket"),
             func.count(ApiUsage.id).label("request_count"),
             func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
@@ -1973,15 +1979,21 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             ApiUsage.timestamp < end_date,
         )
         if flow_id:
-            query = query.filter(ApiUsage.flow_id == flow_id)
+            grouped = grouped.filter(ApiUsage.flow_id == flow_id)
         if ai_model_id:
-            query = query.filter(ApiUsage.ai_model_id == ai_model_id)
+            grouped = grouped.filter(ApiUsage.ai_model_id == ai_model_id)
         if api_key_id:
-            query = query.filter(ApiUsage.api_key_id == api_key_id)
+            grouped = grouped.filter(ApiUsage.api_key_id == api_key_id)
         if runtime_principal_id:
-            query = query.filter(ApiUsage.runtime_principal_id == runtime_principal_id)
-
-        rows = query.group_by(bucket).order_by(bucket.asc()).all()
+            grouped = grouped.filter(
+                ApiUsage.runtime_principal_id == runtime_principal_id
+            )
+        aggregated = (
+            grouped.group_by(bucket)
+            .cte("gateway_usage_by_day")
+            .prefix_with("MATERIALIZED")
+        )
+        rows = db.query(aggregated).order_by(aggregated.c.bucket.asc()).all()
         return [
             {
                 "date": row.bucket.date().isoformat(),

@@ -329,7 +329,8 @@ def main() -> None:
         context: Any,
         executemany: bool,
     ) -> None:
-        if statement.lstrip().upper().startswith("SELECT"):
+        head = statement.lstrip().upper()
+        if head.startswith("SELECT") or head.startswith("WITH"):
             statements.append(
                 {
                     "statement": statement,
