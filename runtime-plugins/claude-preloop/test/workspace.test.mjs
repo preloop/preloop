@@ -49,7 +49,7 @@ function makeGit(state) {
     inFlight -= 1;
     const command = gitSubcommand(args);
     if (command === "clone") {
-      const dest = args[args.length - 1];
+      const dest = path.resolve(options.cwd ?? "", args[args.length - 1]);
       await fs.mkdir(path.join(dest, ".git"), { recursive: true });
       return { stdout: "", stderr: "", code: 0 };
     }
@@ -200,12 +200,25 @@ test("managed dirty checkout fails without reset or clean", async () => {
   assert.equal(state.destructive.length, 0);
 });
 
-test("manager-built paths may contain spaces; remote tokens may not", () => {
-  assertGitArgs(["clone", "--", "https://github.com/example/repo.git", "/vol/my work/repo"]);
+test("git argv is an allowlist; a spaced path is not an argument", async () => {
+  assertGitArgs(["clone", "--", "https://github.com/example/repo.git"]);
+  assert.throws(
+    () => assertGitArgs(["clone", "--", "/vol/my work/repo"]),
+    /unsafe git argument/,
+  );
   assert.throws(
     () => assertGitArgs(["fetch", "origin", "--upload-pack=touch"]),
     /unsafe git argument/,
   );
+  const root = await tempRoot();
+  const spaced = path.join(root, "my work");
+  const state = { calls: [], dirty: new Set(), destructive: [], maxInFlight: 0 };
+  const manager = new WorkspaceManager({ workspace_root: spaced }, makeGit(state));
+  const checkedOut = await manager.prepare(spec("example/repo"));
+  assert.equal(checkedOut, path.join(spaced, "example", "repo"));
+  const clone = state.calls.find((call) => call.args.includes("clone"));
+  assert.equal(clone.args.at(-1), "repo");
+  assert.equal(clone.cwd, path.join(spaced, "example"));
 });
 
 test("a ref with a space is refused before git runs", async () => {

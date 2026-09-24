@@ -104,11 +104,17 @@ function refuseUnsafeGitText(arg: string): void {
  * `upload-pack` overrides are refused on every argument. The character
  * check for caller-supplied remotes and refs lives in `assertRemoteToken`.
  */
+const GIT_TOKEN = /^(?:--|-c|[A-Za-z0-9][A-Za-z0-9._:=/@+-]*)$/;
+
 export function assertGitArgs(args: string[]): string[] {
-  for (const arg of args) {
+  return args.map((arg) => {
     refuseUnsafeGitText(arg);
-  }
-  return args;
+    const matched = GIT_TOKEN.exec(arg);
+    if (!matched) {
+      throw new WorkspaceError("refusing unsafe git argument");
+    }
+    return matched[0];
+  });
 }
 
 const REMOTE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:@/+-]*$/;
@@ -286,7 +292,10 @@ export class WorkspaceManager {
       "protocol.file.allow=never",
       "clone",
     ];
-    args.push("--", url, repoDir);
+    // Destination is the slug's final segment. workspace_root may contain
+    // spaces, and those stay in cwd rather than argv so a path cannot be
+    // read as a git option.
+    args.push("--", url, path.basename(repoDir));
     const result = await this.git(args, {
       cwd: path.dirname(repoDir),
       timeoutMs: workspaceFetchTimeoutMs(this.config),
@@ -416,13 +425,15 @@ export class WorkspaceManager {
           continue;
         }
         const deleted = await this.exclusive(candidate, async () => {
-          const at = this.lru.indexOf(candidate);
           if (
-            at < 0 ||
             this.inUse.has(candidate) ||
             this.preparing.has(candidate) ||
             (await this.isDirty(candidate))
           ) {
+            return false;
+          }
+          const at = this.lru.indexOf(candidate);
+          if (at < 0) {
             return false;
           }
           this.lru.splice(at, 1);
