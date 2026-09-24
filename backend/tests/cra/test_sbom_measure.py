@@ -278,6 +278,55 @@ class TestTriggerSeeds:
         assert measured["status"] == "skipped"
         assert "size cap" in measured["reason"]
 
+    def test_xml_sbom_is_recorded_as_unmeasured(self) -> None:
+        xml = (
+            b'<?xml version="1.0"?>'
+            b'<bom xmlns="http://cyclonedx.org/schema/bom/1.6"></bom>'
+        )
+        trigger = {
+            "workspace_files": [
+                {
+                    "path": "sbom/bom.cdx.xml",
+                    "content_base64": base64.b64encode(xml).decode(),
+                }
+            ]
+        }
+        measured = measure_trigger(trigger)
+        assert measured["status"] == "skipped"
+        assert "does not measure" in measured["reason"]
+        assert "no SBOM seeds" not in measured["reason"]
+        assert measured["documents"][0]["path"] == "sbom/bom.cdx.xml"
+        assert measured["documents"][0].get("affects_passed") is not True
+
+    def test_tag_value_beside_json_does_not_fail(self) -> None:
+        complete = _cdx(
+            [
+                _component(
+                    "lib-a", supplier="Example Supplier", purl="pkg:generic/lib-a@1"
+                )
+            ],
+            dependencies=[{"ref": "lib-a", "dependsOn": []}],
+        )
+        trigger = {
+            "workspace_files": [
+                {
+                    "path": "sbom/app.cdx.json",
+                    "content_base64": base64.b64encode(complete).decode(),
+                },
+                {
+                    "path": "sbom/build.spdx",
+                    "content_base64": base64.b64encode(
+                        b"SPDXVersion: SPDX-2.3\n"
+                    ).decode(),
+                },
+            ]
+        }
+        measured = measure_trigger(trigger)
+        assert measured["passed"] is True
+        assert any(
+            item.get("path") == "sbom/build.spdx" for item in measured["documents"]
+        )
+
     def test_aggregate_is_deterministic(self) -> None:
         first = _cdx([_component("lib-a")])
         second = _cdx([_component("lib-b"), _component("lib-c")])

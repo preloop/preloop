@@ -601,6 +601,30 @@ def _aggregate(
     }
 
 
+_UNMEASURED_FORMAT_REASON = (
+    "SBOM seeds present in formats the platform does not measure "
+    "(CycloneDX XML, SPDX tag-value)"
+)
+
+
+def _unmeasurable_sbom(path: str, raw: bytes) -> bool:
+    """True for an SBOM shape this module does not parse.
+
+    JSON SBOMs are measured. XML CycloneDX and SPDX tag-value are recorded
+    so a delivery is not reported as "no seeds", and they do not fail
+    ``passed`` (that would deny a complete JSON SBOM sitting beside them).
+    """
+    if _promised_json_sbom(path):
+        return False
+    lowered = path.lower()
+    if lowered.endswith(".cdx.xml") or lowered.endswith(".spdx"):
+        return True
+    head = raw.lstrip()[:256]
+    if head.startswith(b"SPDXVersion:"):
+        return True
+    return head.startswith(b"<") and b"cyclonedx" in head.lower()
+
+
 def _looks_like_sbom(path: str, raw: bytes) -> bool:
     """True for a promised JSON SBOM path, or bytes that classify as one.
 
@@ -641,6 +665,7 @@ def measure_trigger(trigger_payload: Any) -> dict[str, Any]:
     except WorkspaceSeedError as exc:
         return _skipped(f"workspace seeds unreadable: {exc}")
     inputs: list[tuple[str, bytes]] = []
+    unmeasured: list[dict[str, Any]] = []
     for seed in seeds:
         try:
             raw = base64.b64decode(seed.content_base64, validate=True)
@@ -648,9 +673,27 @@ def measure_trigger(trigger_payload: Any) -> dict[str, Any]:
             continue
         if _looks_like_sbom(seed.path, raw):
             inputs.append((seed.path, raw))
-    if not inputs:
+        elif _unmeasurable_sbom(seed.path, raw):
+            unmeasured.append(
+                _skipped(
+                    _UNMEASURED_FORMAT_REASON,
+                    path=seed.path,
+                    sha256=_sha256(raw),
+                )
+            )
+    if not inputs and not unmeasured:
         return _skipped("no SBOM seeds reachable")
-    return measure_inputs(inputs)
+    if not inputs:
+        body = _skipped(_UNMEASURED_FORMAT_REASON)
+        body["documents"] = unmeasured
+        return body
+    measured = measure_inputs(inputs)
+    documents = measured.get("documents")
+    if isinstance(documents, list):
+        documents.extend(unmeasured)
+    elif unmeasured:
+        measured["documents"] = unmeasured
+    return measured
 
 
 def place_measurement(payload: dict[str, Any], measurement: Mapping[str, Any]) -> None:
