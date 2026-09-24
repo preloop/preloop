@@ -13,6 +13,7 @@ tokens stay on the control plane.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, Mapping, Optional
 from urllib.parse import urlparse
 
@@ -61,9 +62,17 @@ def _extractor() -> Any:
     return host
 
 
+_SLUG_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:=@+-]*$")
+
+
 def _safe_slug(value: str) -> Optional[str]:
     text = value.strip().strip("/")
-    if not text or "\\" in text or ".." in text.split("/"):
+    if not text or "\\" in text:
+        return None
+    parts = text.split("/")
+    if any(part in {"", ".."} for part in parts):
+        return None
+    if any(_SLUG_SEGMENT.fullmatch(part) is None for part in parts):
         return None
     return text
 

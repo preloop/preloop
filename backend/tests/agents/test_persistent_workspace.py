@@ -62,6 +62,21 @@ def test_workspace_matches_container_clone_identity() -> None:
     assert "@" not in (workspace["repository_url"] or "")
 
 
+def test_slug_outside_git_argv_charset_is_dropped() -> None:
+    trigger = {
+        "source": "github",
+        "payload": {
+            "repository": {
+                "full_name": "acme/my repo",
+                "clone_url": "https://github.com/acme/my%20repo.git",
+            }
+        },
+    }
+    identity = ephemeral_clone_identity(CLONE_CONFIG, trigger)
+    assert identity is not None
+    assert identity["repository_slug"] is None
+
+
 def test_clone_disabled_is_clone_less() -> None:
     workspace = workspace_metadata(
         git_clone_config={"enabled": False},

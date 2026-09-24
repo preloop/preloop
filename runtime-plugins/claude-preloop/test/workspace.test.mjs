@@ -42,6 +42,7 @@ function gitSubcommand(args) {
 function makeGit(state) {
   let inFlight = 0;
   return async (args, options) => {
+    assertGitArgs(args);
     inFlight += 1;
     state.maxInFlight = Math.max(state.maxInFlight, inFlight);
     state.calls.push({ args: [...args], cwd: options.cwd });
@@ -201,6 +202,26 @@ test("managed dirty checkout fails without reset or clean", async () => {
 });
 
 test("git argv is an allowlist; a spaced path is not an argument", async () => {
+  const sha = "a".repeat(40);
+  for (const argv of [
+    ["status", "--porcelain"],
+    ["checkout", "--detach", sha],
+    ["config", "--get", "preloop.managedcheckout"],
+    ["config", "preloop.managedcheckout", "1"],
+    [
+      "-c",
+      "protocol.ext.allow=never",
+      "-c",
+      "protocol.file.allow=never",
+      "clone",
+      "--",
+      "https://github.com/example/repo.git",
+      "repo",
+    ],
+    ["-c", "protocol.ext.allow=never", "fetch", "origin", "feature"],
+  ]) {
+    assert.deepEqual(assertGitArgs(argv), argv);
+  }
   assertGitArgs(["clone", "--", "https://github.com/example/repo.git"]);
   assert.throws(
     () => assertGitArgs(["clone", "--", "/vol/my work/repo"]),
@@ -219,6 +240,17 @@ test("git argv is an allowlist; a spaced path is not an argument", async () => {
   const clone = state.calls.find((call) => call.args.includes("clone"));
   assert.equal(clone.args.at(-1), "repo");
   assert.equal(clone.cwd, path.join(spaced, "example"));
+});
+
+test("a slug segment outside the git argv charset fails before git runs", async () => {
+  const root = await tempRoot();
+  const state = { calls: [], dirty: new Set(), destructive: [], maxInFlight: 0 };
+  const manager = new WorkspaceManager({ workspace_root: root }, makeGit(state));
+  await assert.rejects(
+    () => manager.prepare(spec("acme/my repo")),
+    /characters not allowed in a git argument/,
+  );
+  assert.equal(state.calls.length, 0);
 });
 
 test("a ref with a space is refused before git runs", async () => {

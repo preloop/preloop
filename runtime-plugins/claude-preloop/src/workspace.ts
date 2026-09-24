@@ -104,7 +104,9 @@ function refuseUnsafeGitText(arg: string): void {
  * `upload-pack` overrides are refused on every argument. The character
  * check for caller-supplied remotes and refs lives in `assertRemoteToken`.
  */
-const GIT_TOKEN = /^(?:--|-c|[A-Za-z0-9][A-Za-z0-9._:=/@+-]*)$/;
+const GIT_TOKEN =
+  /^(?:--|-c|-{1,2}[A-Za-z][A-Za-z0-9._:=/@+-]*|[A-Za-z0-9][A-Za-z0-9._:=/@+-]*)$/;
+const SLUG_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._:=@+-]*$/;
 
 export function assertGitArgs(args: string[]): string[] {
   return args.map((arg) => {
@@ -135,9 +137,15 @@ function assertSafeSlug(slug: string): string {
   while (text.endsWith("/")) {
     text = text.slice(0, -1);
   }
-  if (!text || text.split("/").some((part) => part === ".." || part === "")) {
+  const parts = text.split("/");
+  if (!text || parts.some((part) => part === ".." || part === "")) {
     throw new WorkspaceError(
       `repository_slug ${JSON.stringify(slug)} is not a safe checkout path`,
+    );
+  }
+  if (parts.some((part) => !SLUG_SEGMENT.test(part))) {
+    throw new WorkspaceError(
+      "repository_slug contains characters not allowed in a git argument",
     );
   }
   return text;
