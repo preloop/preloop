@@ -2249,6 +2249,30 @@ class TestPostExecutionPullRequest:
         assert "/tmp/preloop-commit-pr-list.txt" in commands
         assert 'git log --format="- %s"' in commands
 
+    def test_existing_pr_update_upserts_continuation_provenance(
+        self, container_executor, monkeypatch
+    ):
+        monkeypatch.setenv("PRELOOP_URL", "https://app.example.com")
+        context = self._context()
+        context["git_clone_config"]["publication_mode"] = "legacy"
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        # The existing-PR fallback parses the owned region and reuses the
+        # public application URL rather than fabricating links.
+        assert "append_provenance" in commands
+        assert "pr-failure-update.json" in commands
+        assert "PRELOOP_PR_METADATA_WARNING" in commands
+        assert "provenance_failed" in commands
+        from urllib.parse import urlsplit
+
+        hosts = [
+            urlsplit(token.strip("\"'")).hostname
+            for token in commands.replace("\\n", " ").split()
+            if "://" in token
+        ]
+        # Equality on the parsed host keeps this an exact test; a substring
+        # membership check trips CodeQL's URL-sanitization query.
+        assert any(host == "app.example.com" for host in hosts)
+
 
 class TestExtractMergeRequestRef:
     def test_github_pr_comment_issue_stub(self, container_executor):

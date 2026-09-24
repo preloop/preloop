@@ -6,6 +6,7 @@ exception, the self-loop and cap guards, and the mid-run queue-one
 coalescing.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -30,6 +31,12 @@ from preloop.services.flow_pr_binding import (
     take_pending_followup,
 )
 from preloop.services.flow_trigger_service import FlowTriggerService
+from preloop.utils.pr_metadata import (
+    PROVENANCE_START,
+    PublicationRecord,
+    parse_provenance,
+    provenance_block,
+)
 
 GITHUB_PR_RESPONSE = (
     '{"url":"https://api.github.com/repos/acme/app/pulls/7","id":1,'
@@ -768,3 +775,399 @@ class TestAgentCliSessionMarker:
             }
         }
         assert orchestrator._resolve_cli_session_restore_archive() is None
+
+
+PUBLIC_URL = "https://app.example.com"
+CONTINUATION_BRANCH = "preloop/fix-1"
+INITIAL_EXECUTION = "08095fd6-f861-4939-997d-2600d1ec5a80"
+REPAIR_EXECUTION = "11111111-1111-4111-8111-111111111111"
+INITIAL_HEAD = "a" * 40
+REPAIR_HEAD = "b" * 40
+
+
+def _run_legacy_continuation(
+    tmp_path,
+    script: str,
+    *,
+    lookup: str,
+    payload: dict,
+    fail_update: bool = False,
+):
+    """Run the wrapper capture shell against an existing-PR/MR lookup.
+
+    ``curl`` is stubbed so the branch lookup writes the candidates and a body
+    PATCH/PUT is copied to a known file, which lets a test assert exactly what
+    was sent. ``fail_update`` makes the body call exit non-zero so the
+    provider-failure warning becomes observable.
+    """
+    evidence = tmp_path / "workspace" / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    # A create response that carries no URL drives the "already exists" lookup.
+    (evidence / "pr.json").write_text('{"message": "A pull request already exists"}')
+    (evidence / "pr-payload.json").write_text(json.dumps(payload))
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    update_file = tmp_path / "sent-update.json"
+    fake_curl = bin_dir / "curl"
+    fake_curl.write_text(
+        "#!/bin/sh\n"
+        "out=''\n"
+        "data=''\n"
+        "while [ $# -gt 0 ]; do\n"
+        '  if [ "$1" = "-o" ]; then out="$2"; shift; fi\n'
+        '  case "$1" in --data-binary) data="$2"; shift;; esac\n'
+        "  shift\n"
+        "done\n"
+        'if [ -n "$data" ]; then\n'
+        '  cp "${data#@}" "$FAKE_UPDATE_FILE"\n'
+        '  if [ -n "$FAKE_FAIL_DATA" ]; then exit 22; fi\n'
+        "  printf '200'\n"
+        'elif [ -n "$out" ]; then cat "$FAKE_LOOKUP_FILE" > "$out"; fi\n'
+    )
+    fake_curl.chmod(0o755)
+    fake_git = bin_dir / "git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "rev-parse" ]; then printf "%s\\n" "$FAKE_GIT_HEAD"; exit 0; fi\n'
+        'exec /usr/bin/git "$@"\n'
+    )
+    fake_git.chmod(0o755)
+    lookup_file = tmp_path / "lookup.json"
+    lookup_file.write_text(lookup)
+
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["FAKE_LOOKUP_FILE"] = str(lookup_file)
+    env["FAKE_UPDATE_FILE"] = str(update_file)
+    env["FAKE_GIT_HEAD"] = REPAIR_HEAD
+    if fail_update:
+        env["FAKE_FAIL_DATA"] = "1"
+    script = script.replace("/workspace/evidence", str(evidence))
+    completed = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    sent = update_file.read_text() if update_file.exists() else ""
+    return completed, sent
+
+
+def _github_lookup(body: str) -> str:
+    return json.dumps(
+        [
+            {
+                "number": 7,
+                "head": {"ref": CONTINUATION_BRANCH},
+                "body": body,
+                "html_url": "https://github.com/acme/app/pull/7",
+            }
+        ]
+    )
+
+
+def _gitlab_lookup(body: str) -> str:
+    return json.dumps(
+        [
+            {
+                "iid": 5,
+                "source_branch": CONTINUATION_BRANCH,
+                "description": body,
+                "web_url": "https://gitlab.com/acme/app/-/merge_requests/5",
+            }
+        ]
+    )
+
+
+class TestLegacyContinuationProvenance:
+    """A continuation reuses the open PR/MR and appends its own record."""
+
+    def _payload_body(self, execution_id: str, head_sha: str) -> str:
+        return "## Summary\n\nAutomated changes.\n\n" + provenance_block(
+            [PublicationRecord(execution_id, head_sha)], PUBLIC_URL
+        )
+
+    def _existing_body(self) -> str:
+        return (
+            "Human intro\n\n"
+            + provenance_block(
+                [PublicationRecord(INITIAL_EXECUTION, INITIAL_HEAD)], PUBLIC_URL
+            )
+            + "\n\nHuman tail"
+        )
+
+    @bash_required
+    def test_github_continuation_appends_a_record_and_keeps_human_prose(self, tmp_path):
+        script = build_github_pr_capture_shell(
+            token_ref="${TOKEN}",
+            owner="acme",
+            repo="app",
+            branch=CONTINUATION_BRANCH,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
+        )
+        completed, sent = _run_legacy_continuation(
+            tmp_path,
+            script,
+            lookup=_github_lookup(self._existing_body()),
+            payload={
+                "title": "t",
+                "body": self._payload_body(REPAIR_EXECUTION, REPAIR_HEAD),
+                "head": CONTINUATION_BRANCH,
+                "base": "main",
+            },
+        )
+        assert any(
+            parse_pr_opened_marker(line) for line in completed.stdout.splitlines()
+        )
+        body = json.loads(sent)["body"]
+        assert body.startswith("Human intro\n\n")
+        assert body.endswith("\n\nHuman tail")
+        assert body.count(PROVENANCE_START) == 1
+        assert INITIAL_EXECUTION in body and INITIAL_HEAD in body
+        assert REPAIR_EXECUTION in body and REPAIR_HEAD in body
+        assert [record.execution_id for record in parse_provenance(body)] == [
+            INITIAL_EXECUTION,
+            REPAIR_EXECUTION,
+        ]
+
+    @bash_required
+    def test_gitlab_continuation_appends_a_record_and_keeps_human_prose(self, tmp_path):
+        script = build_gitlab_mr_capture_shell(
+            token_ref="${TOKEN}",
+            gitlab_host="gitlab.com",
+            encoded_path="acme%2Fapp",
+            branch=CONTINUATION_BRANCH,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
+        )
+        completed, sent = _run_legacy_continuation(
+            tmp_path,
+            script,
+            lookup=_gitlab_lookup(self._existing_body()),
+            payload={
+                "title": "t",
+                "description": self._payload_body(REPAIR_EXECUTION, REPAIR_HEAD),
+                "source_branch": CONTINUATION_BRANCH,
+                "target_branch": "main",
+            },
+        )
+        assert "merge_requests/5" in completed.stdout
+        body = json.loads(sent)["description"]
+        assert body.startswith("Human intro\n\n") and body.endswith("\n\nHuman tail")
+        assert body.count(PROVENANCE_START) == 1
+        assert REPAIR_EXECUTION in body and REPAIR_HEAD in body
+
+    @bash_required
+    def test_repeated_continuation_is_idempotent_and_reuses_the_pr(self, tmp_path):
+        script = build_github_pr_capture_shell(
+            token_ref="${TOKEN}",
+            owner="acme",
+            repo="app",
+            branch=CONTINUATION_BRANCH,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
+        )
+        # The existing body already owns this execution's exact record.
+        body = (
+            self._existing_body()
+            .replace(INITIAL_EXECUTION, REPAIR_EXECUTION)
+            .replace(INITIAL_HEAD, REPAIR_HEAD)
+        )
+        completed, sent = _run_legacy_continuation(
+            tmp_path,
+            script,
+            lookup=_github_lookup(body),
+            payload={
+                "title": "t",
+                "body": self._payload_body(REPAIR_EXECUTION, REPAIR_HEAD),
+                "head": CONTINUATION_BRANCH,
+                "base": "main",
+            },
+        )
+        # The same PR still binds, but no redundant body write is issued.
+        assert "pull/7" in completed.stdout
+        assert sent == ""
+
+    @bash_required
+    def test_metadata_only_retry_updates_the_same_pr_body(self, tmp_path):
+        script = build_github_pr_capture_shell(
+            token_ref="${TOKEN}",
+            owner="acme",
+            repo="app",
+            branch=CONTINUATION_BRANCH,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
+        )
+        completed, sent = _run_legacy_continuation(
+            tmp_path,
+            script,
+            lookup=_github_lookup(self._existing_body()),
+            payload={
+                "title": "t",
+                "body": self._payload_body(REPAIR_EXECUTION, REPAIR_HEAD),
+                "head": CONTINUATION_BRANCH,
+                "base": "main",
+            },
+        )
+        assert "pull/7" in completed.stdout
+        assert REPAIR_EXECUTION in json.loads(sent)["body"]
+
+    @bash_required
+    def test_malformed_existing_region_warns_and_leaves_the_body_alone(self, tmp_path):
+        script = build_github_pr_capture_shell(
+            token_ref="${TOKEN}",
+            owner="acme",
+            repo="app",
+            branch=CONTINUATION_BRANCH,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
+        )
+        completed, sent = _run_legacy_continuation(
+            tmp_path,
+            script,
+            lookup=_github_lookup("Human\n" + PROVENANCE_START),
+            payload={
+                "title": "t",
+                "body": self._payload_body(REPAIR_EXECUTION, REPAIR_HEAD),
+                "head": CONTINUATION_BRANCH,
+                "base": "main",
+            },
+        )
+        assert "PRELOOP_PR_METADATA_WARNING" in completed.stderr
+        assert sent == ""
+
+    @bash_required
+    def test_malformed_region_still_refreshes_failure_disclosure(self, tmp_path):
+        # A provenance bail-out must not suppress the independent #599
+        # disclosure: the owned region stays untouched, but the failure
+        # notice still reaches the provider.
+        script = build_github_pr_capture_shell(
+            token_ref="${TOKEN}",
+            owner="acme",
+            repo="app",
+            branch=CONTINUATION_BRANCH,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
+        )
+        notice = (
+            f"<!-- preloop:failure:{REPAIR_EXECUTION}:start -->\nfailed run\n"
+            f"<!-- preloop:failure:{REPAIR_EXECUTION}:end -->"
+        )
+        completed, sent = _run_legacy_continuation(
+            tmp_path,
+            script,
+            lookup=_github_lookup("Human\n" + PROVENANCE_START),
+            payload={
+                "title": "t",
+                "body": self._payload_body(REPAIR_EXECUTION, REPAIR_HEAD)
+                + "\n\n"
+                + notice,
+                "head": CONTINUATION_BRANCH,
+                "base": "main",
+            },
+        )
+        assert "PRELOOP_PR_METADATA_WARNING" in completed.stderr
+        body = json.loads(sent)["body"]
+        # Disclosure applied while the malformed owned region is left as-is.
+        assert f"<!-- preloop:failure:{REPAIR_EXECUTION}:start -->" in body
+        assert "failed run" in body
+        assert body.count(PROVENANCE_START) == 1
+        assert REPAIR_HEAD not in body
+        with pytest.raises(ValueError):
+            parse_provenance(body)
+
+    @bash_required
+    def test_oversized_existing_body_warns_and_leaves_the_body_alone(self, tmp_path):
+        script = build_github_pr_capture_shell(
+            token_ref="${TOKEN}",
+            owner="acme",
+            repo="app",
+            branch=CONTINUATION_BRANCH,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
+        )
+        completed, sent = _run_legacy_continuation(
+            tmp_path,
+            script,
+            lookup=_github_lookup("x" * 70000),
+            payload={
+                "title": "t",
+                "body": self._payload_body(REPAIR_EXECUTION, REPAIR_HEAD),
+                "head": CONTINUATION_BRANCH,
+                "base": "main",
+            },
+        )
+        assert "exceeds provider limit" in completed.stderr
+        assert sent == ""
+
+    @bash_required
+    def test_missing_payload_provenance_warns_visibly(self, tmp_path):
+        script = build_github_pr_capture_shell(
+            token_ref="${TOKEN}",
+            owner="acme",
+            repo="app",
+            branch=CONTINUATION_BRANCH,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
+        )
+        completed, sent = _run_legacy_continuation(
+            tmp_path,
+            script,
+            lookup=_github_lookup(self._existing_body()),
+            payload={
+                "title": "t",
+                "body": "## Summary\n\nNo provenance here.",
+                "head": CONTINUATION_BRANCH,
+                "base": "main",
+            },
+        )
+        body = json.loads(sent)["body"]
+        assert REPAIR_EXECUTION in body and REPAIR_HEAD in body
+
+    @bash_required
+    def test_provider_rejection_is_surfaced(self, tmp_path):
+        script = build_github_pr_capture_shell(
+            token_ref="${TOKEN}",
+            owner="acme",
+            repo="app",
+            branch=CONTINUATION_BRANCH,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
+        )
+        completed, sent = _run_legacy_continuation(
+            tmp_path,
+            script,
+            lookup=_github_lookup(self._existing_body()),
+            payload={
+                "title": "t",
+                "body": self._payload_body(REPAIR_EXECUTION, REPAIR_HEAD),
+                "head": CONTINUATION_BRANCH,
+                "base": "main",
+            },
+            fail_update=True,
+        )
+        assert "failed to update existing pull request body" in completed.stderr
+        assert REPAIR_EXECUTION in json.loads(sent)["body"]
+
+    @bash_required
+    def test_first_continuation_without_an_owned_region_appends_one(self, tmp_path):
+        script = build_github_pr_capture_shell(
+            token_ref="${TOKEN}",
+            owner="acme",
+            repo="app",
+            branch=CONTINUATION_BRANCH,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
+        )
+        completed, sent = _run_legacy_continuation(
+            tmp_path,
+            script,
+            lookup=_github_lookup("Human prose only\n\nNo owned region yet."),
+            payload={
+                "title": "t",
+                "body": self._payload_body(REPAIR_EXECUTION, REPAIR_HEAD),
+                "head": CONTINUATION_BRANCH,
+                "base": "main",
+            },
+        )
+        assert "pull/7" in completed.stdout
+        body = json.loads(sent)["body"]
+        assert body.startswith("Human prose only")
+        assert body.count(PROVENANCE_START) == 1
+        assert parse_provenance(body) == [
+            PublicationRecord(REPAIR_EXECUTION, REPAIR_HEAD)
+        ]
