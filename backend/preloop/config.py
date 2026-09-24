@@ -1082,9 +1082,9 @@ class Settings(BaseSettings):
     cost_digest_enabled: bool = Field(
         True,
         description=(
-            "Schedule the weekly cost optimization & savings digest email. "
-            "The task no-ops unless the Enterprise billing plugin is "
-            "installed."
+            "Schedule the cost digest for Monday 09:00 UTC. A scheduler "
+            "restart does not send one. The task no-ops unless the "
+            "Enterprise billing plugin is installed."
         ),
     )
     model_gateway_max_preview_chars: int = Field(
