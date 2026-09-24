@@ -40,9 +40,17 @@ class AgentControlCapabilities:
     supports_voice: bool = False
     supports_interrupt: bool = False
     supports_tool_approval: bool = False
+    # Loopback desktop advertised by the runtime. ``none`` when the host has
+    # no Preloop desktop manifest, or the manifest is not loopback VNC.
+    desktop: Literal["vnc", "none"] = "none"
+    desktop_display: str | None = None
 
-    def to_payload(self) -> dict[str, bool]:
-        """Return the wire payload for capability advertisement."""
+    def to_payload(self) -> dict[str, bool | str | None]:
+        """Return the wire payload for capability advertisement.
+
+        ``desktop`` and ``desktop_display`` are the only desktop keys. The
+        VNC password file and the rest of ``desktop.json`` stay on the host.
+        """
 
         return {
             "new_session": self.supports_new_session,
@@ -51,6 +59,8 @@ class AgentControlCapabilities:
             "voice": self.supports_voice,
             "interrupt": self.supports_interrupt,
             "tool_approval": self.supports_tool_approval,
+            "desktop": self.desktop,
+            "desktop_display": self.desktop_display,
         }
 
 
