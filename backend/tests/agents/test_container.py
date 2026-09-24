@@ -2241,7 +2241,15 @@ class TestPostExecutionPullRequest:
         assert "parse_provenance" in commands
         assert "pr-update.json" in commands
         assert "PRELOOP_PR_METADATA_WARNING" in commands
-        assert "https://app.example.com" in commands
+        assert "provenance_skipped" in commands
+        from urllib.parse import urlsplit
+
+        hosts = [
+            urlsplit(token.strip("\"'")).hostname
+            for token in commands.replace("\\n", " ").split()
+            if "://" in token
+        ]
+        assert "app.example.com" in hosts
 
 
 class TestExtractMergeRequestRef:

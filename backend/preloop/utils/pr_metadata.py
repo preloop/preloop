@@ -327,7 +327,9 @@ def parse_provenance(body: str) -> list[PublicationRecord]:
             )
             if not separator:
                 raise ValueError("Malformed publisher provenance link")
-            records.append(PublicationRecord(execution_id, parsed.group("sha")))
+            records.append(
+                PublicationRecord(str(UUID(execution_id)), parsed.group("sha"))
+            )
     if matches and not records:
         raise ValueError("Publisher provenance region has no records")
     return records

@@ -423,19 +423,22 @@ try:
         raise ValueError("invalid existing description")
     body = original
     # Continuation provenance: parse the owned region, append this execution.
+    # A provenance bail-out must not skip the failure-disclosure merge below.
+    provenance_skipped = False
     if public_url:
         try:
             current = parse_provenance(payload_body)
         except ValueError as error:
             print("PRELOOP_PR_METADATA_WARNING: " + str(error), file=sys.stderr)
-            sys.exit(0)
-        if not current:
+            provenance_skipped = True
+            current = []
+        if not provenance_skipped and not current:
             print(
                 "PRELOOP_PR_METADATA_WARNING: continuation exposes no execution provenance;"
                 " provenance left unchanged",
                 file=sys.stderr,
             )
-        else:
+        elif not provenance_skipped:
             try:
                 records = parse_provenance(body)
                 for record in current:
@@ -446,7 +449,6 @@ try:
                 # Malformed ownership or the provider size limit must not erase
                 # or silently rewrite text the publisher does not own.
                 print("PRELOOP_PR_METADATA_WARNING: " + str(error), file=sys.stderr)
-                sys.exit(0)
     # Failure disclosure: replace only this execution's owned region.
     notices = re.findall(
         r"<!-- preloop:failure:([0-9a-f-]{36}):start -->.*?<!-- preloop:failure:\1:end -->",

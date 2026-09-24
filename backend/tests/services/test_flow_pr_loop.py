@@ -877,9 +877,8 @@ class TestLegacyContinuationProvenance:
     """A continuation reuses the open PR/MR and appends its own record."""
 
     def _payload_body(self, execution_id: str, head_sha: str) -> str:
-        return (
-            "## Summary\n\nAutomated changes.\n\n"
-            + provenance_block([PublicationRecord(execution_id, head_sha)], PUBLIC_URL)
+        return "## Summary\n\nAutomated changes.\n\n" + provenance_block(
+            [PublicationRecord(execution_id, head_sha)], PUBLIC_URL
         )
 
     def _existing_body(self) -> str:
@@ -961,9 +960,11 @@ class TestLegacyContinuationProvenance:
             public_url=PUBLIC_URL,
         )
         # The existing body already owns this execution's exact record.
-        body = self._existing_body().replace(
-            INITIAL_EXECUTION, REPAIR_EXECUTION
-        ).replace(INITIAL_HEAD, REPAIR_HEAD)
+        body = (
+            self._existing_body()
+            .replace(INITIAL_EXECUTION, REPAIR_EXECUTION)
+            .replace(INITIAL_HEAD, REPAIR_HEAD)
+        )
         completed, sent = _run_legacy_continuation(
             tmp_path,
             script,

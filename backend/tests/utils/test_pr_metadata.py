@@ -20,6 +20,18 @@ REPAIR_HEAD = "b" * 40
 PUBLIC_URL = "https://app.example.com"
 
 
+def test_parse_provenance_canonicalizes_braced_execution_id() -> None:
+    braced = "{11111111-1111-4111-8111-111111111111}"
+    line = (
+        f"- [Initial execution]({PUBLIC_URL}/console/flows/executions/{braced})"
+        f" — published `{HEAD}`"
+    )
+    body = (
+        PROVENANCE_START + "\n### Preloop executions\n\n" + line + "\n" + PROVENANCE_END
+    )
+    assert parse_provenance(body) == [PublicationRecord(EXECUTION, HEAD)]
+
+
 def test_parse_provenance_round_trips_exact_records() -> None:
     records = [
         PublicationRecord(EXECUTION, HEAD),
