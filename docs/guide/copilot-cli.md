@@ -12,8 +12,8 @@ Copilot — launching without the BYOK variables would fall through to
 GitHub-hosted models.
 
 MCP onboarding for Copilot CLI (`~/.copilot/mcp-config.json`) is separate.
-See the clients guide. The cloud coding agent on GitHub.com is a different
-surface; see [Copilot cloud agent](copilot-cloud-agent.md).
+The cloud coding agent on GitHub.com is a different surface and is not
+started by this command.
 
 ## Install Copilot CLI
 
@@ -66,17 +66,14 @@ names alone.
 | `COPILOT_PROVIDER_API_KEY` | Preloop bearer credential | same |
 | `COPILOT_MODEL` | gateway alias | gateway alias |
 
-`COPILOT_PROVIDER_API_KEY` is the enrolled Copilot CLI managed-agent
-durable bearer when onboarding has written one (the same credential the
-permission hook uses). Otherwise it falls back to the current Preloop
-login token (flag / `PRELOOP_TOKEN` / `~/.preloop/config.yaml`), the same
-resolution path as `preloop cursor`. It is never a raw upstream provider
-key copied from the operator's shell.
+`COPILOT_PROVIDER_API_KEY` is a Preloop bearer, never a raw upstream
+provider key. An explicit `--token` or `PRELOOP_TOKEN` wins. Otherwise
+the launcher uses the enrolled Copilot CLI durable credential (the same
+key the permission hook uses), then the saved login token.
 
 Auth and API URL follow the rest of the CLI: `--token` / `PRELOOP_TOKEN`
 / config, and `--url` / `PRELOOP_URL` / config / `https://preloop.ai`.
 
 ## Related
 
-- [Copilot cloud agent](copilot-cloud-agent.md) — GitHub.com MCP path (no local gateway BYOK)
 - [`preloop cursor`](cursor-cli.md) — Cursor Agent launcher pattern

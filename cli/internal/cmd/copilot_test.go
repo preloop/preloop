@@ -260,6 +260,21 @@ func TestMergeCopilotEnvOverridesExisting(t *testing.T) {
 	}
 }
 
+func TestSelectCopilotAPIKeyPrefersExplicitToken(t *testing.T) {
+	got := selectCopilotAPIKey("flag-token", "hook-token", "login-token")
+	if got != "flag-token" {
+		t.Fatalf("explicit token = %q", got)
+	}
+	got = selectCopilotAPIKey("", "hook-token", "login-token")
+	if got != "hook-token" {
+		t.Fatalf("hook token = %q", got)
+	}
+	got = selectCopilotAPIKey("  ", "", "login-token")
+	if got != "login-token" {
+		t.Fatalf("login token = %q", got)
+	}
+}
+
 func TestIsCopilotCLIManagedAgent(t *testing.T) {
 	if !isCopilotCLIManagedAgent(managedAgentSummary{DisplayName: "Copilot CLI"}) {
 		t.Fatal("exact name should match")

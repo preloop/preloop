@@ -237,19 +237,49 @@ func resolveCopilotModelAlias(explicit string) (string, error) {
 }
 
 func defaultResolveCopilotCredential() (string, error) {
-	// Prefer the durable managed-agent token written at Copilot CLI onboard
-	// (permission_hook.json). Fall back to the operator login token the same
-	// way `preloop cursor` does when no enrollment credential exists yet.
+	hookToken := ""
 	if cred, err := resolvePermissionHookCredential(permissionSourceCopilotCLI); err == nil {
-		if token := strings.TrimSpace(cred.Token); token != "" {
-			return token, nil
-		}
+		hookToken = strings.TrimSpace(cred.Token)
 	}
+	loginToken := ""
 	cfg, err := config.Resolve(FlagToken, FlagURL)
-	if err != nil {
-		return "", fmt.Errorf("%w: %v", errCopilotCredentialMissing, err)
+	if err == nil {
+		loginToken = strings.TrimSpace(cfg.AccessToken)
 	}
-	return strings.TrimSpace(cfg.AccessToken), nil
+	chosen := selectCopilotAPIKey(explicitCopilotToken(), hookToken, loginToken)
+	if chosen == "" {
+		if err != nil {
+			return "", fmt.Errorf("%w: %v", errCopilotCredentialMissing, err)
+		}
+		return "", fmt.Errorf(
+			"%w: log in with `preloop login` or pass --token / PRELOOP_TOKEN",
+			errCopilotCredentialMissing,
+		)
+	}
+	return chosen, nil
+}
+
+// explicitCopilotToken is the operator's deliberate identity: the --token
+// flag, then PRELOOP_TOKEN. A saved login and the enrolled hook credential
+// are not explicit.
+func explicitCopilotToken() string {
+	if token := strings.TrimSpace(FlagToken); token != "" {
+		return token
+	}
+	return strings.TrimSpace(os.Getenv("PRELOOP_TOKEN"))
+}
+
+// selectCopilotAPIKey picks the bearer sent as COPILOT_PROVIDER_API_KEY.
+// An explicit flag or PRELOOP_TOKEN wins over the enrolled hook credential,
+// which wins over the saved login token.
+func selectCopilotAPIKey(explicit, hookToken, loginToken string) string {
+	if token := strings.TrimSpace(explicit); token != "" {
+		return token
+	}
+	if token := strings.TrimSpace(hookToken); token != "" {
+		return token
+	}
+	return strings.TrimSpace(loginToken)
 }
 
 func defaultResolveCopilotBaseURL() (string, error) {
