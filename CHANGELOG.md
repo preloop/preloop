@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Native host execution profiles reject `publication_mode: isolated` before
+  execution. A stored publication snapshot is no longer stripped from the
+  host lease, and a missing snapshot still fails with the existing policy
+  error. Container isolated publication is unchanged.
 - Harness images pin Node and install Pi and DeepSeek from lockfiles, so
   Scorecard no longer reports floating image or npm dependencies. Empty
   `except` handlers that intentionally ignore an optional driver or an

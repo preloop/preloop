@@ -353,6 +353,7 @@ plan; no unlimited usage or inferred billing is promised.
 Success requires exit zero and a successful Cursor stream-json result; exit
 zero alone fails. Remote repository clone/setup, custom commands, workspace
 seeds, native CLI session resume and isolated PR publication are rejected.
+Isolated publication mode is rejected before execution.
 The workspace starts empty. Use the Docker harness for repository
 implementation flows that need the managed checkout/test/publication pipeline.
 
