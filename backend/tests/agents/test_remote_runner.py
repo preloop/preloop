@@ -377,21 +377,18 @@ def test_lease_payload_host_exec_rejects_pull_request() -> None:
         )
 
 
-def test_lease_payload_host_exec_rejects_isolated_publication_with_snapshot(
+def test_lease_payload_host_exec_rejects_isolated_publication_without_lookup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A stored snapshot must not let a native host job drop the publication."""
+    """A native host job fails closed before any private-publication lookup."""
     execution_id = uuid4()
     executor = RemoteRunnerExecutor(
         "cursor", {}, db=MagicMock(), pool="local", account_id=uuid4()
     )
-    snapshot_execution = SimpleNamespace(
-        id=execution_id,
-        result={"_private_publication": {"nonce": "stored"}},
-    )
+    snapshot_get = MagicMock()
     monkeypatch.setattr(
         "preloop.agents.remote_runner.crud_flow_execution.get",
-        lambda *args, **kwargs: snapshot_execution,
+        snapshot_get,
     )
     with pytest.raises(ValueError, match="isolated publication"):
         executor._lease_payload(
@@ -404,6 +401,47 @@ def test_lease_payload_host_exec_rejects_isolated_publication_with_snapshot(
                 "git_clone_config": {"publication_mode": "isolated"},
             },
         )
+    # The primary guard rejects the profile before the stored snapshot is
+    # read, so the defense-in-depth raise never consults the database.
+    snapshot_get.assert_not_called()
+
+
+def test_lease_payload_host_exec_defense_in_depth_rejects_isolated_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even past the primary guard, a host lease refuses to drop the snapshot."""
+    execution_id = uuid4()
+    executor = RemoteRunnerExecutor(
+        "cursor", {}, db=MagicMock(), pool="local", account_id=uuid4()
+    )
+    snapshot_get = MagicMock(
+        return_value=SimpleNamespace(
+            id=execution_id,
+            result={"_private_publication": {"nonce": "stored"}},
+        )
+    )
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_execution.get",
+        snapshot_get,
+    )
+    # Simulate a future regression that lets the primary host-exec guard pass
+    # for an isolated profile, forcing the lease's own check at the payload.
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.host_exec_unavailable_reason",
+        lambda *args, **kwargs: None,
+    )
+    with pytest.raises(ValueError, match="isolated publication"):
+        executor._lease_payload(
+            execution_id=execution_id,
+            flow_id=uuid4(),
+            prompt="publish",
+            execution_context={
+                "agent_type": "cursor",
+                "agent_config": {"host_exec_profile": "cursor-ask"},
+                "git_clone_config": {"publication_mode": "isolated"},
+            },
+        )
+    snapshot_get.assert_not_called()
 
 
 def test_lease_payload_host_exec_rejects_resume() -> None:
