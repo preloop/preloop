@@ -1,8 +1,17 @@
 """Tests for the unified per-request runtime-session timeline endpoint."""
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
-from preloop.models.crud import crud_api_usage, crud_runtime_session
+from preloop.models.crud import (
+    crud_ai_model,
+    crud_api_key,
+    crud_api_usage,
+    crud_runtime_session,
+)
+from preloop.models.models.api_usage import ApiUsage
+from preloop.services.model_gateway_auth import ModelGatewayAuthContext
+from preloop.services.openai_gateway import OpenAIGatewayService
 
 
 def _make_session(db_session, account_id):
@@ -475,3 +484,78 @@ def test_runtime_session_cache_summary_exposes_per_model_groups(
     assert models["anthropic/claude-sonnet-4"]["write_reported"] is True
     assert models["gpt-4o"]["cache_read_tokens"] == 1_500
     assert models["gpt-4o"]["write_reported"] is False
+
+
+def test_plain_key_session_lists_requests_as_api_key(client, db_session, test_user):
+    """A plain-key opt-in session lists its gateway rows as api_key traffic."""
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Gateway Model",
+            "provider_name": "openai",
+            "model_identifier": "gpt-5",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openai/gpt-5",
+                    "provider_adapter": "preloop",
+                }
+            },
+            "is_default": True,
+        },
+        account_id=test_user.account_id,
+    )
+    api_key, _token = crud_api_key.create_runtime_key(
+        db_session,
+        name="Console key",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={},
+    )
+    service = OpenAIGatewayService(
+        db_session,
+        ModelGatewayAuthContext(token="t", user=test_user, api_key=api_key),
+        client_session_id="listed-conv",
+    )
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value={
+            "id": "chatcmpl_listed",
+            "created": 1710000000,
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+        },
+    ):
+        service.create_chat_completion(
+            {
+                "model": "openai/gpt-5",
+                "messages": [{"role": "user", "content": "Hello"}],
+            }
+        )
+    db_session.commit()
+
+    usage = db_session.query(ApiUsage).filter(ApiUsage.api_key_id == api_key.id).one()
+    assert usage.auth_subject_type == "api_key"
+    assert usage.runtime_session_id is not None
+
+    response = client.get(
+        f"/api/v1/runtime-sessions/{usage.runtime_session_id}/requests"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["id"] == str(usage.id)
+    assert body["items"][0]["total_tokens"] == 6
+
+    detail = client.get(f"/api/v1/runtime-sessions/{usage.runtime_session_id}")
+    assert detail.status_code == 200
+    session = detail.json()["session"]
+    assert session["runtime_principal_type"] == "api_key"
+    assert session["runtime_principal_id"] == str(api_key.id)
+    assert session["session_source_type"] == "api_key"

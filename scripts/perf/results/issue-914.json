@@ -1,0 +1,57 @@
+{
+  "issue": 914,
+  "generated_at": "2026-09-24T02:17:00Z",
+  "environment": {
+    "postgres": "16.2 (embedded, x86_64)",
+    "method": "FastAPI TestClient, same seeded account before and after the change",
+    "warm_iterations": 5,
+    "note": "Absolute times are from a single constrained development VM and are not comparable to the issue's Docker PostgreSQL 17 host. Compare the before/after deltas and the plan shapes."
+  },
+  "dataset": {
+    "rows": 200000,
+    "days": 400,
+    "users": 10,
+    "models": 16,
+    "sessions": 400,
+    "statistics": "ANALYZE run on api_usage, runtime_session, managed_agent, flow, flow_execution, ai_model after the bulk load"
+  },
+  "timings_ms": {
+    "before": {
+      "account_7d": {"first": 121.213, "warm_median": 54.482, "min": 45.768, "max": 331.121},
+      "account_30d": {"first": 134.625, "warm_median": 105.721, "min": 105.357, "max": 134.625},
+      "account_1y": {"first": 1559.879, "warm_median": 1545.694, "min": 1485.636, "max": 1829.146},
+      "account_1y_totals_only": {"first": 70.286, "warm_median": 106.404, "min": 38.295, "max": 169.625},
+      "per_user_1y": {"first": 482.418, "warm_median": 405.644, "min": 400.039, "max": 719.983}
+    },
+    "after": {
+      "account_7d": {"first": 129.401, "warm_median": 49.54, "min": 47.199, "max": 285.397},
+      "account_30d": {"first": 132.437, "warm_median": 120.267, "min": 95.683, "max": 146.575},
+      "account_1y": {"first": 887.565, "warm_median": 909.422, "min": 847.245, "max": 1080.787},
+      "account_1y_totals_only": {"first": 55.917, "warm_median": 104.569, "min": 55.917, "max": 112.497},
+      "per_user_1y": {"first": 485.364, "warm_median": 429.32, "min": 396.624, "max": 683.354}
+    },
+    "delta_warm_median": {
+      "account_7d": -4.942,
+      "account_30d": 14.546,
+      "account_1y": -636.272,
+      "account_1y_totals_only": -1.835,
+      "per_user_1y": 23.676
+    }
+  },
+  "plan_evidence": {
+    "session_breakdown": {
+      "before": "GroupAggregate over a parallel base sort; external merge Disk 17520 kB + workers 21112 kB + 14024 kB; sort key carried the descriptive title/summary/source/name columns.",
+      "after": "Hash joins over an Incremental Sort/GroupAggregate; base external merge Disk 9728 kB + 11592 kB + 6776 kB; sort key is only (ai_model_id, runtime_session_id), so descriptive columns no longer widen the sort."
+    },
+    "timeseries": {
+      "before": "GroupAggregate with Sort Method: external merge Disk: 10368 kB.",
+      "after": "HashAggregate with no Sort node; the ORDER BY date_trunc external merge sort is gone."
+    }
+  },
+  "conclusion": {
+    "one_year_warm_under_500ms": false,
+    "one_year_warm_median_ms": 909.422,
+    "one_year_cold_ms": 887.565,
+    "assessment": "The query-shape work cut the one-year full-summary warm median by about 41% on the comparison VM and removed the daily timeseries external sort, but the one-year summary is still above the 500 ms warm budget. The conditional daily rollups / response cache from #368 therefore remain justified; this slice does not implement them."
+  }
+}

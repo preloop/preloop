@@ -41,7 +41,7 @@ from urllib import request as urllib_request
 import httpx
 import litellm
 from sqlalchemy import inspect, text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
@@ -85,7 +85,10 @@ from preloop.services.account_realtime import (
     emit_account_event,
 )
 from preloop.services.account_governance_cache import get_cached_account_meta_data
-from preloop.services.agent_session_headers import normalize_session_id
+from preloop.services.agent_session_headers import (
+    normalize_session_id,
+    runtime_principal_type,
+)
 from preloop.services import alibaba_pricing
 from preloop.services import kill_switch as kill_switch_service
 from preloop.services.context_optimization import (
@@ -827,6 +830,7 @@ class OpenAIGatewayService:
         owns_db_session: bool = False,
         client_identity_headers: Optional[Mapping[str, str]] = None,
         client_parent_session_id: Optional[str] = None,
+        client_session_id_is_explicit: Optional[bool] = None,
     ) -> None:
         self._owns_db_session = owns_db_session
         # The request dependency supplies a binding only. Every owned Session
@@ -843,6 +847,21 @@ class OpenAIGatewayService:
         # an agent-native equivalent such as X-Claude-Code-Session-Id).
         # Validated/normalized once; invalid values fall back to source keying.
         self._client_session_id = _normalize_client_session_id(client_session_id)
+        # Whether the request opted in explicitly with X-Preloop-Session-Id. The
+        # HTTP ingress passes this flag separately, because the Anthropic
+        # ingress reads Claude Code's vendor header without a principal-type
+        # gate: only the operator header may opt a plain API key into a runtime
+        # session. Body-level ids (prompt_cache_key / metadata.user_id) are
+        # adopted later through _adopt_* and never touch this flag. Direct
+        # construction (tests, factories) that does not separate the two keeps
+        # the historical reading and treats a bound id as the explicit opt-in.
+        if client_session_id_is_explicit is None:
+            self._client_session_id_is_explicit = self._client_session_id is not None
+        else:
+            self._client_session_id_is_explicit = (
+                bool(client_session_id_is_explicit)
+                and self._client_session_id is not None
+            )
         # Session that spawned this one, when the harness said so (OpenCode's
         # X-Parent-Session-Id, Claude Code's agent id). Same validation as the
         # session id, so a hostile value simply leaves the lineage unknown. It
@@ -999,11 +1018,16 @@ class OpenAIGatewayService:
         An explicit ``X-Preloop-Session-Id`` always wins, and this is a no-op
         once the runtime session has been resolved for the request, so the
         session identity of an in-flight request can never change mid-call.
+        Body ids stay gated on a runtime principal. Model content policy reads
+        the same client session id, so a plain key's vendor id is not copied
+        into the policy context.
 
         Args:
             payload: The Anthropic Messages request payload.
         """
         if self._client_session_id or self._resolved_runtime_session_attempted:
+            return
+        if not self._credential_has_runtime_principal():
             return
         native_session_id = _session_id_from_anthropic_metadata(payload)
         if native_session_id:
@@ -1032,9 +1056,20 @@ class OpenAIGatewayService:
         """
         if self._client_session_id or self._resolved_runtime_session_attempted:
             return
+        if not self._credential_has_runtime_principal():
+            return
         native_session_id = _session_id_from_openai_payload(payload)
         if native_session_id:
             self._client_session_id = native_session_id
+
+    def _credential_has_runtime_principal(self) -> bool:
+        """Return whether this credential carries a runtime principal block.
+
+        Plain console keys have empty or missing ``context_data``. Body-level
+        session ids are only adopted for principal-bearing credentials, so
+        they cannot opt a plain key into a runtime session.
+        """
+        return runtime_principal_type(self.auth_context) is not None
 
     def _runtime_session_idle_cutoff(self) -> Optional[datetime]:
         """Return the timestamp before which an idle session is considered over.
@@ -1318,6 +1353,89 @@ class OpenAIGatewayService:
                         f"Failed to auto-upsert runtime session for gateway request: {e}",
                         exc_info=True,
                     )
+
+        if (
+            not runtime_session_id
+            and not runtime_principal
+            and self.auth_context.api_key is not None
+            and self._client_session_id_is_explicit
+            and self._client_session_id
+        ):
+            # A plain console-created key has no runtime principal, so without
+            # this branch its traffic records priced usage with
+            # ``runtime_session_id`` NULL and session drill-down, Optimize and
+            # replay have nothing to attach to. Opt in per request and only on
+            # an explicit X-Preloop-Session-Id (normalized into
+            # ``self._client_session_id`` at construction): the account and key
+            # id are part of the source key, so a caller-supplied id can never
+            # adopt another key's or account's session. Vendor session headers
+            # and body-level ids never set the explicit flag, and there is no
+            # idle bucketing here -- an explicit id is authoritative.
+            api_key_id = self.auth_context.api_key.id
+            session_source_id = f"{api_key_id}:{self._client_session_id}"
+            raw_name = getattr(self.auth_context.api_key, "name", None)
+            principal_name = (
+                raw_name if isinstance(raw_name, str) and raw_name.strip() else None
+            )
+            observed_at = datetime.now(timezone.utc)
+            try:
+                rs = crud_runtime_session.get_by_source(
+                    self.db,
+                    account_id=str(self.auth_context.user.account_id),
+                    session_source_type="api_key",
+                    session_source_id=session_source_id,
+                )
+                if rs is None or rs.ended_at is not None:
+                    rs = crud_runtime_session.upsert_by_source(
+                        self.db,
+                        account_id=str(self.auth_context.user.account_id),
+                        session_source_type="api_key",
+                        session_source_id=session_source_id,
+                        runtime_principal_type="api_key",
+                        runtime_principal_id=str(api_key_id),
+                        runtime_principal_name=principal_name,
+                        started_at=observed_at,
+                        last_activity_at=observed_at,
+                        reopen_if_ended=True,
+                    )
+                runtime_session_id = str(rs.id)
+            except IntegrityError:
+                # A losing racer still attaches to the winner. The re-read is
+                # its own try: an exception here is not caught by the sibling
+                # handlers below, and callers assume resolution degrades.
+                self.db.rollback()
+                try:
+                    rs = crud_runtime_session.get_by_source(
+                        self.db,
+                        account_id=str(self.auth_context.user.account_id),
+                        session_source_type="api_key",
+                        session_source_id=session_source_id,
+                    )
+                except SQLAlchemyError:
+                    self.db.rollback()
+                    logger.warning(
+                        "Failed to resolve runtime session for plain gateway key",
+                        exc_info=True,
+                    )
+                else:
+                    if rs is not None and rs.ended_at is None:
+                        runtime_session_id = str(rs.id)
+                    else:
+                        logger.warning(
+                            "Failed to resolve runtime session for plain gateway key",
+                            exc_info=True,
+                        )
+            except SQLAlchemyError:
+                self.db.rollback()
+                logger.warning(
+                    "Failed to resolve runtime session for plain gateway key",
+                    exc_info=True,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to auto-upsert runtime session for plain gateway key",
+                    exc_info=True,
+                )
 
         self._resolved_runtime_session_id = runtime_session_id
         return runtime_session_id

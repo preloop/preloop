@@ -10,11 +10,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from preloop.models.models.api_usage import ApiUsage
+from preloop.models.models.runtime_session import RuntimeSession
 from preloop.models.crud import (
+    crud_account,
     crud_ai_model,
     crud_runtime_session,
+    crud_user,
 )
 from preloop.models.crud import crud_api_key
+from preloop.services.agent_session_headers import native_session_id_from_headers
 from preloop.services.litellm_routing import preloop_user_agent
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
@@ -4274,3 +4278,384 @@ def test_create_response_turn1_with_namespace_tools_nonstreaming():
     assert len(calls) == 1
     assert calls[0]["namespace"] == "mcp__preloop"
     assert calls[0]["name"] == "ask_user"
+
+
+# --------------------------------------------------------------------------
+# Plain API keys opt into a runtime session only via X-Preloop-Session-Id.
+# Refs #912.
+# --------------------------------------------------------------------------
+
+_PLAIN_KEY_LITELLM = {
+    "id": "chatcmpl_plain",
+    "created": 1710000000,
+    "choices": [
+        {
+            "message": {"role": "assistant", "content": "ok"},
+            "finish_reason": "stop",
+        }
+    ],
+    "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+}
+
+
+def _plain_gateway_model(db_session, account_id):
+    return crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Gateway Model",
+            "provider_name": "openai",
+            "model_identifier": "gpt-5",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openai/gpt-5",
+                    "provider_adapter": "preloop",
+                }
+            },
+            "is_default": True,
+        },
+        account_id=account_id,
+    )
+
+
+def _plain_api_key(db_session, user, *, name="Console key", context_data=None):
+    """A console-style key: no runtime principal and no pinned session."""
+    api_key, _token = crud_api_key.create_runtime_key(
+        db_session,
+        name=name,
+        account_id=user.account_id,
+        user_id=user.id,
+        context_data=context_data,
+    )
+    return api_key
+
+
+def _other_account_user(db_session, *, email, username):
+    account = crud_account.create(
+        db_session,
+        obj_in={"organization_name": "Other Organization", "is_active": True},
+    )
+    return crud_user.create(
+        db_session,
+        obj_in={
+            "account_id": account.id,
+            "email": email,
+            "username": username,
+            "full_name": "Jane Doe",
+            "is_active": True,
+            "email_verified": True,
+            "hashed_password": "testpassword",
+            "user_source": "local",
+        },
+    )
+
+
+def _sessions_for(db_session, account_id):
+    return (
+        db_session.query(RuntimeSession)
+        .filter(RuntimeSession.account_id == account_id)
+        .all()
+    )
+
+
+def _chat_with_plain_key(
+    db_session, user, api_key, *, client_session_id=None, payload=None
+):
+    service = OpenAIGatewayService(
+        db_session,
+        ModelGatewayAuthContext(token="t", user=user, api_key=api_key),
+        client_session_id=client_session_id,
+    )
+    body = payload or {
+        "model": "openai/gpt-5",
+        "messages": [{"role": "user", "content": "Hello"}],
+    }
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=_PLAIN_KEY_LITELLM,
+    ):
+        service.create_chat_completion(body)
+    return service
+
+
+def test_plain_key_without_header_creates_no_runtime_session(db_session, test_user):
+    """No header, empty or missing context_data: no session row."""
+    _plain_gateway_model(db_session, test_user.account_id)
+    for context_data in (None, {}):
+        api_key = _plain_api_key(
+            db_session,
+            test_user,
+            name=f"Console key {context_data}",
+            context_data=context_data,
+        )
+        service = OpenAIGatewayService(
+            db_session,
+            ModelGatewayAuthContext(token="t", user=test_user, api_key=api_key),
+        )
+        assert service._resolve_runtime_session() is None
+        _chat_with_plain_key(db_session, test_user, api_key)
+    assert _sessions_for(db_session, test_user.account_id) == []
+    usage_rows = db_session.query(ApiUsage).all()
+    assert usage_rows
+    assert all(row.runtime_session_id is None for row in usage_rows)
+
+
+def test_plain_key_header_creates_session_and_attributes_usage(db_session, test_user):
+    """A valid X-Preloop-Session-Id opts the plain key into one session."""
+    _plain_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_api_key(db_session, test_user, name="Jane Doe key")
+    _chat_with_plain_key(db_session, test_user, api_key, client_session_id="conv-1")
+
+    sessions = _sessions_for(db_session, test_user.account_id)
+    assert len(sessions) == 1
+    session = sessions[0]
+    assert session.session_source_type == "api_key"
+    assert session.session_source_id == f"{api_key.id}:conv-1"
+    assert session.runtime_principal_type == "api_key"
+    assert session.runtime_principal_id == str(api_key.id)
+    assert session.runtime_principal_name == "Jane Doe key"
+    assert session.parent_session_id is None
+
+    usage = db_session.query(ApiUsage).filter(ApiUsage.api_key_id == api_key.id).one()
+    assert usage.runtime_session_id == session.id
+    assert usage.auth_subject_type == "api_key"
+
+
+def test_plain_key_repeat_request_reuses_session(db_session, test_user):
+    _plain_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_api_key(db_session, test_user)
+    _chat_with_plain_key(db_session, test_user, api_key, client_session_id="conv-1")
+    _chat_with_plain_key(db_session, test_user, api_key, client_session_id="conv-1")
+
+    sessions = _sessions_for(db_session, test_user.account_id)
+    assert len(sessions) == 1
+    usage_ids = {
+        row.runtime_session_id
+        for row in db_session.query(ApiUsage).filter(ApiUsage.api_key_id == api_key.id)
+    }
+    assert usage_ids == {sessions[0].id}
+
+
+def test_plain_keys_with_same_client_id_stay_isolated(db_session, test_user):
+    """Two keys, and two accounts sharing a key name, never share a session."""
+    _plain_gateway_model(db_session, test_user.account_id)
+    first = _plain_api_key(db_session, test_user, name="Fleet key")
+    second = _plain_api_key(db_session, test_user, name="Fleet key 2")
+    _chat_with_plain_key(db_session, test_user, first, client_session_id="shared")
+    _chat_with_plain_key(db_session, test_user, second, client_session_id="shared")
+
+    own = _sessions_for(db_session, test_user.account_id)
+    assert {row.session_source_id for row in own} == {
+        f"{first.id}:shared",
+        f"{second.id}:shared",
+    }
+
+    other = _other_account_user(db_session, email="jane@example.com", username="jane")
+    _plain_gateway_model(db_session, other.account_id)
+    other_key = _plain_api_key(db_session, other, name="Fleet key")
+    _chat_with_plain_key(db_session, other, other_key, client_session_id="shared")
+    other_sessions = _sessions_for(db_session, other.account_id)
+    assert len(other_sessions) == 1
+    assert other_sessions[0].id not in {row.id for row in own}
+    assert other_sessions[0].session_source_id == f"{other_key.id}:shared"
+    assert other_sessions[0].account_id == other.account_id
+
+
+@pytest.mark.parametrize("client_session_id", ["bad id!", "x" * 201, "", "   "])
+def test_plain_key_invalid_header_is_treated_as_absent(
+    db_session, test_user, client_session_id
+):
+    _plain_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_api_key(
+        db_session, test_user, name=f"key-{len(client_session_id)}"
+    )
+    _chat_with_plain_key(
+        db_session, test_user, api_key, client_session_id=client_session_id
+    )
+    assert _sessions_for(db_session, test_user.account_id) == []
+    usage = db_session.query(ApiUsage).filter(ApiUsage.api_key_id == api_key.id).one()
+    assert usage.runtime_session_id is None
+
+
+def test_plain_key_vendor_headers_and_body_ids_create_nothing(db_session, test_user):
+    """Session-Id, X-Session-Id, and prompt_cache_key do not opt a plain key in."""
+    _plain_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_api_key(db_session, test_user)
+    auth = ModelGatewayAuthContext(token="t", user=test_user, api_key=api_key)
+    for headers in (
+        {"session-id": "codex-conv"},
+        {"x-session-id": "opencode-conv"},
+        {"Session-Id": "codex-conv", "X-Session-Id": "opencode-conv"},
+    ):
+        assert native_session_id_from_headers(headers, auth_context=auth) is None
+
+    _chat_with_plain_key(
+        db_session,
+        test_user,
+        api_key,
+        payload={
+            "model": "openai/gpt-5",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "prompt_cache_key": "cache-conv-1",
+        },
+    )
+    service = OpenAIGatewayService(db_session, auth)
+    service._adopt_native_session_id(
+        {
+            "metadata": {
+                "user_id": '{"session_id": "claude-conv-1"}',
+            }
+        }
+    )
+    assert service._resolve_runtime_session() is None
+    assert _sessions_for(db_session, test_user.account_id) == []
+
+
+def test_plain_key_stream_attributes_usage(db_session, test_user):
+    """The streaming recorder uses the same resolver as the unary path."""
+    _plain_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_api_key(db_session, test_user, name="Stream key")
+    service = OpenAIGatewayService(
+        db_session,
+        ModelGatewayAuthContext(token="t", user=test_user, api_key=api_key),
+        client_session_id="stream-conv",
+    )
+
+    def _chunks():
+        yield {
+            "id": "chatcmpl_stream",
+            "choices": [{"index": 0, "delta": {"content": "ok"}}],
+        }
+        yield {
+            "id": "chatcmpl_stream",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+        }
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=_chunks(),
+    ):
+        events = list(
+            service.stream_chat_completion(
+                {
+                    "model": "openai/gpt-5",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "stream": True,
+                }
+            )
+        )
+        service.flush_deferred_stream_record()
+    assert events
+    usage = db_session.query(ApiUsage).filter(ApiUsage.api_key_id == api_key.id).one()
+    session = _sessions_for(db_session, test_user.account_id)[0]
+    assert usage.runtime_session_id == session.id
+    assert session.session_source_id == f"{api_key.id}:stream-conv"
+
+
+def test_principal_key_session_behavior_unchanged_with_and_without_header(
+    db_session, test_user
+):
+    """Principal-bearing keys keep source keying, header suffix and all."""
+    _plain_gateway_model(db_session, test_user.account_id)
+    principal_id = "static-agent-cred"
+    api_key, _token = crud_api_key.create_runtime_key(
+        db_session,
+        name="Static Agent",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={
+            "runtime_principal": {
+                "type": "custom",
+                "id": principal_id,
+                "name": "Static Agent",
+            }
+        },
+    )
+    _chat_with_plain_key(db_session, test_user, api_key)
+    base = crud_runtime_session.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="custom",
+        session_source_id=principal_id,
+    )
+    assert base is not None
+    assert base.runtime_principal_type == "custom"
+    assert base.runtime_principal_id == principal_id
+
+    headed, _token = crud_api_key.create_runtime_key(
+        db_session,
+        name="Static Agent Headed",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={
+            "runtime_principal": {
+                "type": "custom",
+                "id": principal_id,
+                "name": "Static Agent",
+            }
+        },
+    )
+    _chat_with_plain_key(
+        db_session, test_user, headed, client_session_id="run-explicit"
+    )
+    per_run = crud_runtime_session.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="custom",
+        session_source_id=f"{principal_id}:run-explicit",
+    )
+    assert per_run is not None
+    assert per_run.id != base.id
+    assert per_run.runtime_principal_type == "custom"
+
+
+def test_plain_key_integrity_race_attaches_winner_session(
+    db_session, test_user, monkeypatch
+):
+    """A losing upsert still attributes usage to the winner's open session."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy.exc import IntegrityError
+
+    _plain_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_api_key(db_session, test_user)
+    client_session_id = "conv-race"
+    session_source_id = f"{api_key.id}:{client_session_id}"
+    observed_at = datetime.now(UTC)
+    winner = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="api_key",
+        session_source_id=session_source_id,
+        runtime_principal_type="api_key",
+        runtime_principal_id=str(api_key.id),
+        started_at=observed_at,
+        last_activity_at=observed_at,
+        reopen_if_ended=True,
+    )
+    db_session.commit()
+    real_get = crud_runtime_session.get_by_source
+    state = {"calls": 0}
+
+    def flaky_get(*args, **kwargs):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            return None
+        return real_get(*args, **kwargs)
+
+    def losing_upsert(*_args, **_kwargs):
+        raise IntegrityError(
+            "INSERT ...",
+            {},
+            Exception("duplicate key value violates unique constraint"),
+        )
+
+    monkeypatch.setattr(crud_runtime_session, "get_by_source", flaky_get)
+    monkeypatch.setattr(crud_runtime_session, "upsert_by_source", losing_upsert)
+    _chat_with_plain_key(
+        db_session, test_user, api_key, client_session_id=client_session_id
+    )
+    usage = db_session.query(ApiUsage).filter(ApiUsage.api_key_id == api_key.id).one()
+    assert usage.runtime_session_id == winner.id

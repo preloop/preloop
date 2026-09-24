@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from preloop.api.endpoints.anthropic_gateway import get_anthropic_gateway_auth_context
 from preloop.models.crud import crud_account, crud_ai_model, crud_api_key
+from preloop.models.models.api_usage import ApiUsage
 from preloop.models.models.runtime_session import RuntimeSession
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 
@@ -385,16 +386,17 @@ def test_claude_code_session_header_reaches_gateway_service(
     )
     session_uuid = "26d2f152-2d10-49e5-a68c-e471d55aadad"
 
-    for headers, expected in (
-        ({"X-Claude-Code-Session-Id": session_uuid}, session_uuid),
+    for headers, expected, expected_explicit in (
+        ({"X-Claude-Code-Session-Id": session_uuid}, session_uuid, False),
         (
             {
                 "X-Claude-Code-Session-Id": session_uuid,
                 "X-Preloop-Session-Id": "explicit-run",
             },
             "explicit-run",
+            True,
         ),
-        ({}, None),
+        ({}, None, False),
     ):
         with patch(
             "preloop.api.endpoints.anthropic_gateway.OpenAIGatewayService"
@@ -416,6 +418,12 @@ def test_claude_code_session_header_reaches_gateway_service(
 
         assert response.status_code == 200
         assert service_cls.call_args.kwargs["client_session_id"] == expected
+        # Claude Code's vendor header is not the explicit opt-in; only
+        # X-Preloop-Session-Id is.
+        assert (
+            service_cls.call_args.kwargs["client_session_id_is_explicit"]
+            is expected_explicit
+        )
 
 
 _LITELLM_MESSAGE = {
@@ -630,3 +638,145 @@ def test_claude_code_agent_id_header_reaches_gateway_service(
         kwargs = service_cls.call_args.kwargs
         assert kwargs["client_session_id"] == expected_session
         assert kwargs["client_parent_session_id"] == expected_parent
+
+
+def _plain_console_key(db_session, test_user):
+    api_key, _token = crud_api_key.create_runtime_key(
+        db_session,
+        name="Console key",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={},
+    )
+    return api_key
+
+
+def test_plain_key_anthropic_message_attributes_session(
+    app, client, db_session, test_user
+):
+    """Non-streaming Anthropic traffic on a plain key honors the opt-in header."""
+    _claude_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_console_key(db_session, test_user)
+    app.dependency_overrides[get_anthropic_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user, api_key=api_key)
+    )
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=_LITELLM_MESSAGE,
+    ):
+        response = client.post(
+            "/anthropic/v1/messages",
+            headers={
+                "x-api-key": "ignored",
+                "anthropic-version": "2023-06-01",
+                "X-Preloop-Session-Id": "anthropic-conv",
+            },
+            json={
+                "model": "anthropic/claude-sonnet-4-5",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "max_tokens": 256,
+            },
+        )
+    assert response.status_code == 200
+    usage = db_session.query(ApiUsage).filter(ApiUsage.api_key_id == api_key.id).one()
+    session = (
+        db_session.query(RuntimeSession)
+        .filter(RuntimeSession.account_id == test_user.account_id)
+        .one()
+    )
+    assert usage.runtime_session_id == session.id
+    assert usage.auth_subject_type == "api_key"
+    assert session.session_source_id == f"{api_key.id}:anthropic-conv"
+
+
+def test_plain_key_anthropic_stream_attributes_session(
+    app, client, db_session, test_user
+):
+    """Streaming Anthropic traffic records the same plain-key session."""
+    _claude_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_console_key(db_session, test_user)
+    app.dependency_overrides[get_anthropic_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user, api_key=api_key)
+    )
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=iter(
+            [
+                {
+                    "id": "msg_123",
+                    "choices": [{"index": 0, "delta": {"content": "Hello"}}],
+                },
+                {
+                    "id": "msg_123",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    "usage": {
+                        "prompt_tokens": 5,
+                        "completion_tokens": 3,
+                        "total_tokens": 8,
+                    },
+                },
+            ]
+        ),
+    ):
+        response = client.post(
+            "/anthropic/v1/messages",
+            headers={
+                "x-api-key": "ignored",
+                "anthropic-version": "2023-06-01",
+                "X-Preloop-Session-Id": "anthropic-stream",
+            },
+            json={
+                "model": "anthropic/claude-sonnet-4-5",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "max_tokens": 256,
+                "stream": True,
+            },
+        )
+    assert response.status_code == 200
+    assert "event: message_stop" in response.text
+    usage = db_session.query(ApiUsage).filter(ApiUsage.api_key_id == api_key.id).one()
+    session = (
+        db_session.query(RuntimeSession)
+        .filter(RuntimeSession.account_id == test_user.account_id)
+        .one()
+    )
+    assert usage.runtime_session_id == session.id
+    assert session.session_source_type == "api_key"
+
+
+def test_plain_key_claude_code_header_does_not_create_session(
+    app, client, db_session, test_user
+):
+    """X-Claude-Code-Session-Id stays a principal signal and does not opt in."""
+    _claude_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_console_key(db_session, test_user)
+    app.dependency_overrides[get_anthropic_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user, api_key=api_key)
+    )
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=_LITELLM_MESSAGE,
+    ):
+        response = client.post(
+            "/anthropic/v1/messages",
+            headers={
+                "x-api-key": "ignored",
+                "anthropic-version": "2023-06-01",
+                "X-Claude-Code-Session-Id": "ebd4605d-7099-4c54-bd01-747f7a720e1b",
+            },
+            json={
+                "model": "anthropic/claude-sonnet-4-5",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "max_tokens": 256,
+            },
+        )
+    assert response.status_code == 200
+    assert (
+        db_session.query(RuntimeSession)
+        .filter(RuntimeSession.account_id == test_user.account_id)
+        .count()
+        == 0
+    )
+    usage = db_session.query(ApiUsage).filter(ApiUsage.api_key_id == api_key.id).one()
+    assert usage.runtime_session_id is None
+    assert usage.auth_subject_type == "api_key"

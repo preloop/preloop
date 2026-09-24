@@ -1506,6 +1506,26 @@ class TestGitApiTokensNotInScript:
             },
         }
 
+    def test_plain_push_exits_when_provenance_update_fails(self, container_executor):
+        from preloop.agents.container import (
+            build_github_pr_capture_shell,
+            provenance_failure_exit_shell,
+        )
+
+        capture = build_github_pr_capture_shell(
+            token_ref="${PRELOOP_GIT_TOKEN_1}",
+            owner="acme",
+            repo="private",
+            branch="preloop/fix",
+            execution_link="https://app.example.com/console/flows/executions/x",
+        )
+        warning = capture.split("PRELOOP_PROVENANCE_FAILED", 1)[1]
+        assert "exit 1" not in warning.split("elif", 1)[0]
+        commands = container_executor._prepare_git_post_execution_commands(
+            self._context()
+        )
+        assert provenance_failure_exit_shell().strip() in commands
+
     def test_post_execution_commands_contain_no_token(self, container_executor):
         context = self._context()
         commands = container_executor._prepare_git_post_execution_commands(context)
@@ -2229,6 +2249,30 @@ class TestPostExecutionPullRequest:
         assert "/tmp/preloop-commit-pr-list.txt" in commands
         assert 'git log --format="- %s"' in commands
 
+    def test_existing_pr_update_upserts_continuation_provenance(
+        self, container_executor, monkeypatch
+    ):
+        monkeypatch.setenv("PRELOOP_URL", "https://app.example.com")
+        context = self._context()
+        context["git_clone_config"]["publication_mode"] = "legacy"
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        # The existing-PR fallback parses the owned region and reuses the
+        # public application URL rather than fabricating links.
+        assert "append_provenance" in commands
+        assert "pr-failure-update.json" in commands
+        assert "PRELOOP_PR_METADATA_WARNING" in commands
+        assert "provenance_failed" in commands
+        from urllib.parse import urlsplit
+
+        hosts = [
+            urlsplit(token.strip("\"'")).hostname
+            for token in commands.replace("\\n", " ").split()
+            if "://" in token
+        ]
+        # Equality on the parsed host keeps this an exact test; a substring
+        # membership check trips CodeQL's URL-sanitization query.
+        assert any(host == "app.example.com" for host in hosts)
+
 
 class TestExtractMergeRequestRef:
     def test_github_pr_comment_issue_stub(self, container_executor):
@@ -2522,3 +2566,430 @@ class TestWorkspaceProbeRoots:
         assert cmd[:2] == ["sh", "-c"]
         assert cmd[3:] == ["sh", "/workspace", "/srv/my checkout"]
         assert "/srv/my checkout" not in cmd[2]
+
+
+_FAKE_PROVIDER = r'''#!{python}
+"""In-process stand-in for the GitHub or GitLab pull-request API."""
+import json
+import os
+import pathlib
+import sys
+
+store = pathlib.Path(os.environ["FAKE_STORE"])
+calls = pathlib.Path(os.environ["FAKE_CALLS"])
+kind = os.environ["FAKE_KIND"]
+update_status = os.environ.get("FAKE_UPDATE_STATUS", "200")
+args = sys.argv[1:]
+method = args[args.index("-X") + 1] if "-X" in args else "GET"
+url = next(arg for arg in args if arg.startswith("http"))
+output = args[args.index("-o") + 1] if "-o" in args else ""
+wants_code = "-w" in args
+blob = next((arg[1:] for arg in args if arg.startswith("@")), "")
+payload = json.loads(pathlib.Path(blob).read_text()) if blob else {{}}
+with calls.open("a") as stream:
+    stream.write(method + " " + url + "\n")
+pulls = json.loads(store.read_text()) if store.exists() else []
+
+
+def branch_of(item):
+    if kind == "gitlab":
+        return item.get("source_branch")
+    return (item.get("head") or {{}}).get("ref")
+
+
+def write(body, code):
+    if output and output != "/dev/null":
+        pathlib.Path(output).write_text(json.dumps(body))
+    if wants_code:
+        sys.stdout.write(code)
+
+
+if method == "POST":
+    branch = payload.get("head") or payload.get("source_branch") or ""
+    if any(branch_of(item) == branch for item in pulls):
+        write({{"message": "already exists"}}, "422")
+    else:
+        number = len(pulls) + 1
+        if kind == "gitlab":
+            row = {{
+                "iid": number,
+                "title": payload.get("title", ""),
+                "description": payload.get("description", ""),
+                "source_branch": branch,
+                "web_url": (
+                    "https://gitlab.example.com/example/widgets/-/merge_requests/"
+                    + str(number)
+                ),
+            }}
+        else:
+            row = {{
+                "number": number,
+                "title": payload.get("title", ""),
+                "body": payload.get("body", ""),
+                "head": {{"ref": branch}},
+                "html_url": f"https://github.com/example/widgets/pull/{{number}}",
+            }}
+        pulls.append(row)
+        store.write_text(json.dumps(pulls))
+        write(row, "201")
+elif method == "GET":
+    write(pulls, "200")
+else:
+    number = int(url.rstrip("/").rsplit("/", 1)[-1])
+    field = "description" if kind == "gitlab" else "body"
+    if update_status.startswith("2"):
+        for item in pulls:
+            ident = item.get("iid") if kind == "gitlab" else item.get("number")
+            if ident == number:
+                item[field] = payload.get(field, item.get(field))
+                if "title" in payload:
+                    item["title"] = payload["title"]
+        store.write_text(json.dumps(pulls))
+    write({{"ok": True}}, update_status)
+'''
+
+
+class TestLegacyContinuationProvenance:
+    """Legacy continuation upserts the owned block and does not claim a failed update."""
+
+    INITIAL = "11111111-1111-4111-8111-111111111111"
+    CURRENT = "33333333-3333-4333-8333-333333333333"
+    PRIOR_SHA = "c" * 40
+
+    def _run(
+        self,
+        tmp_path: pathlib.Path,
+        *,
+        provider: str,
+        body: str,
+        execution_id: str | None = None,
+        update_status: str = "200",
+        result_json: bytes
+        | None = b'{"pr_title":"Agent title","pr_body":"Agent body"}',
+        reset_store: bool = True,
+        same_branch_twin: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        import os
+        import shutil
+
+        from preloop.utils.pr_metadata import PublicationRecord, upsert_provenance
+
+        repo = tmp_path / "repo"
+        repo.mkdir(exist_ok=True)
+        workspace = tmp_path / "workspace"
+        (workspace / "evidence").mkdir(parents=True, exist_ok=True)
+        if result_json is not None:
+            (workspace / "result.json").write_bytes(result_json)
+        env = {
+            "PATH": os.environ["PATH"],
+            "HOME": str(tmp_path / "home"),
+            "GIT_CONFIG_GLOBAL": str(tmp_path / "home" / "gitconfig"),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_NAME": "Jane Doe",
+            "GIT_AUTHOR_EMAIL": "jane@example.com",
+            "GIT_COMMITTER_NAME": "Jane Doe",
+            "GIT_COMMITTER_EMAIL": "jane@example.com",
+            "PRELOOP_DISABLE_TELEMETRY": "true",
+            "PRELOOP_URL": "https://app.example.com",
+            "FAKE_STORE": str(tmp_path / "store.json"),
+            "FAKE_CALLS": str(tmp_path / "calls.txt"),
+            "FAKE_KIND": provider,
+            "FAKE_UPDATE_STATUS": update_status,
+        }
+        (tmp_path / "home").mkdir(exist_ok=True)
+        if not (repo / ".git").exists():
+            subprocess.run(
+                ["git", "init", "-b", "main"],
+                cwd=repo,
+                env=env,
+                check=True,
+                capture_output=True,
+            )
+            (repo / "README.md").write_text("seed\n")
+            subprocess.run(
+                ["git", "add", "README.md"],
+                cwd=repo,
+                env=env,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "seed"],
+                cwd=repo,
+                env=env,
+                check=True,
+                capture_output=True,
+            )
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.head = head
+        field = "description" if provider == "gitlab" else "body"
+        seeded_body = body
+        if "preloop:executions:start" not in body:
+            seeded_body = upsert_provenance(
+                body,
+                [PublicationRecord(self.INITIAL, self.PRIOR_SHA)],
+                "https://app.example.com",
+            )
+        row: dict[str, Any] = {
+            "title": "Original title",
+            field: seeded_body,
+        }
+        if provider == "gitlab":
+            row.update(
+                {
+                    "iid": 7,
+                    "source_branch": "preloop/issue-1",
+                    "web_url": "https://gitlab.example.com/example/widgets/-/merge_requests/7",
+                }
+            )
+        else:
+            row.update(
+                {
+                    "number": 7,
+                    "head": {"ref": "preloop/issue-1"},
+                    "html_url": "https://github.com/example/widgets/pull/7",
+                }
+            )
+        if reset_store or not (tmp_path / "store.json").exists():
+            rows = [row]
+            if same_branch_twin:
+                twin = dict(row)
+                if provider == "gitlab":
+                    twin["iid"] = 8
+                    twin["web_url"] = (
+                        "https://gitlab.example.com/example/widgets/-/merge_requests/8"
+                    )
+                else:
+                    twin["number"] = 8
+                    twin["html_url"] = "https://github.com/example/widgets/pull/8"
+                rows.append(twin)
+            (tmp_path / "store.json").write_text(json.dumps(rows))
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        (bin_dir / "curl").write_text(_FAKE_PROVIDER.format(python=sys.executable))
+        (bin_dir / "curl").chmod(0o755)
+        real_git = shutil.which("git")
+        assert real_git is not None
+        (bin_dir / "git").write_text("#!/bin/sh\n" + f'exec {real_git} "$@"\n')
+        (bin_dir / "git").chmod(0o755)
+        env["PATH"] = str(bin_dir) + os.pathsep + os.environ["PATH"]
+        executor = ContainerAgentExecutor("codex", {}, "test-image")
+        context = {
+            "execution_id": execution_id or self.CURRENT,
+            "flow_name": "Example flow",
+            "trigger_event_data": {"issue": {"number": 1}},
+            "git_clone_config": {
+                "create_pull_request": True,
+                "pull_request_title": "Configured title",
+                "pull_request_description": "Configured body",
+                "repositories": [
+                    {
+                        "repository_url": (
+                            "https://gitlab.example.com/example/widgets.git"
+                            if provider == "gitlab"
+                            else "https://github.com/example/widgets.git"
+                        ),
+                        "clone_path": str(repo),
+                        "tracker_id": "tracker-1",
+                    }
+                ],
+            },
+            "git_credentials_map": {
+                "tracker-1": {"token": "fake-token", "tracker_type": provider}
+            },
+            "_git_target_branch": "preloop/issue-1",
+            "_git_source_branch": "main",
+        }
+        script = executor._build_pr_or_mr_create_shell(
+            execution_context=context,
+            git_config=context["git_clone_config"],
+            token_ref="${PRELOOP_GIT_TOKEN}",
+            tracker_type=provider,
+            host_kind=provider,
+            repo_url=context["git_clone_config"]["repositories"][0]["repository_url"],
+            safe_target="preloop/issue-1",
+            safe_source="main",
+        )
+        assert script
+        from preloop.agents.container import provenance_failure_exit_shell
+
+        script = script.replace("/workspace", str(workspace)).replace(
+            "/tmp/preloop-", str(tmp_path / "preloop-")
+        )
+        script += provenance_failure_exit_shell()
+        return subprocess.run(
+            ["bash", "-c", script],
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    def _stored_body(self, tmp_path: pathlib.Path, provider: str) -> str:
+        row = json.loads((tmp_path / "store.json").read_text())[0]
+        return row["description" if provider == "gitlab" else "body"]
+
+    def test_github_continuation_appends_record_and_keeps_prose(self, tmp_path):
+        from preloop.utils.pr_metadata import PublicationRecord, upsert_provenance
+
+        fixtures = pathlib.Path(__file__).parents[1] / "fixtures/pr_templates"
+        prefix = (fixtures / "github/pull_request_template.md").read_text()
+        suffix = (fixtures / "gitlab/Default.md").read_text()
+        seeded = (
+            upsert_provenance(
+                prefix,
+                [PublicationRecord(self.INITIAL, self.PRIOR_SHA)],
+                "https://app.example.com",
+            )
+            + suffix
+        )
+        result = self._run(tmp_path, provider="github", body=seeded)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "PRELOOP_PR_OPENED" in result.stdout
+        body = self._stored_body(tmp_path, "github")
+        assert body.startswith(prefix)
+        assert body.endswith(suffix)
+        assert self.INITIAL in body and self.PRIOR_SHA in body
+        assert self.CURRENT in body and self.head in body
+        assert json.loads((tmp_path / "store.json").read_text())[0]["title"] == (
+            "Original title"
+        )
+        assert len(json.loads((tmp_path / "store.json").read_text())) == 1
+
+    def test_gitlab_continuation_appends_record(self, tmp_path):
+        from preloop.utils.pr_metadata import PublicationRecord, upsert_provenance
+
+        fixtures = pathlib.Path(__file__).parents[1] / "fixtures/pr_templates"
+        prefix = (fixtures / "gitlab/Default.md").read_text()
+        seeded = (
+            upsert_provenance(
+                prefix,
+                [PublicationRecord(self.INITIAL, self.PRIOR_SHA)],
+                "https://app.example.com",
+            )
+            + "Human suffix\n"
+        )
+        result = self._run(tmp_path, provider="gitlab", body=seeded)
+        assert result.returncode == 0, result.stdout + result.stderr
+        body = self._stored_body(tmp_path, "gitlab")
+        assert body.startswith(prefix)
+        assert body.endswith("Human suffix\n")
+        assert self.CURRENT in body and self.head in body
+        assert json.loads((tmp_path / "store.json").read_text())[0]["title"] == (
+            "Original title"
+        )
+
+    def test_repeated_continuation_is_idempotent_and_reuses_the_pr(self, tmp_path):
+        first = self._run(tmp_path, provider="github", body="Human prose\n")
+        assert first.returncode == 0, first.stdout + first.stderr
+        calls = (tmp_path / "calls.txt").read_text()
+        assert calls.count("POST ") == 1
+        assert "GET " in calls
+        (tmp_path / "calls.txt").write_text("")
+        second = self._run(
+            tmp_path,
+            provider="github",
+            body="ignored because seeded",
+            reset_store=False,
+        )
+        assert second.returncode == 0, second.stdout + second.stderr
+        assert "PRELOOP_PR_OPENED" in second.stdout
+        body = self._stored_body(tmp_path, "github")
+        assert body.count(self.CURRENT) == 1
+        assert body.count(self.head) == 1
+        second_calls = (tmp_path / "calls.txt").read_text()
+        assert "POST " in second_calls
+        assert "GET " in second_calls
+        assert "PATCH " not in second_calls
+        assert len(json.loads((tmp_path / "store.json").read_text())) == 1
+
+    @pytest.mark.parametrize("update_status", ["422", "503"])
+    def test_provider_update_failure_is_not_success(self, tmp_path, update_status):
+        result = self._run(
+            tmp_path,
+            provider="github",
+            body="Human prose\n",
+            update_status=update_status,
+        )
+        assert result.returncode != 0
+        combined = result.stdout + result.stderr
+        assert "PRELOOP_PR_METADATA_WARNING" in combined
+        assert "PRELOOP_PR_OPENED" not in result.stdout
+        assert self.CURRENT not in self._stored_body(tmp_path, "github")
+
+    def test_missing_metadata_warns_and_keeps_existing_prose(self, tmp_path):
+        fixtures = pathlib.Path(__file__).parents[1] / "fixtures/pr_templates"
+        prefix = (fixtures / "github/pull_request_template.md").read_text()
+        result = self._run(tmp_path, provider="github", body=prefix, result_json=None)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "PRELOOP_PR_METADATA_WARNING" in result.stderr
+        assert self._stored_body(tmp_path, "github").startswith(prefix)
+        assert self.CURRENT in self._stored_body(tmp_path, "github")
+
+    def test_malformed_region_leaves_the_body_unchanged(self, tmp_path):
+        original = "Human prose\n<!-- preloop:executions:start -->\n"
+        result = self._run(tmp_path, provider="gitlab", body=original)
+        assert result.returncode != 0
+        assert "PRELOOP_PR_METADATA_WARNING" in result.stderr
+        assert "PRELOOP_PR_OPENED" not in result.stdout
+        assert self._stored_body(tmp_path, "gitlab") == original
+
+    def test_multiple_open_prs_are_not_reported_as_opened(self, tmp_path):
+        original = "Human prose\n"
+        result = self._run(
+            tmp_path,
+            provider="github",
+            body=original,
+            same_branch_twin=True,
+        )
+        assert result.returncode != 0
+        assert "PRELOOP_PR_METADATA_WARNING" in result.stderr
+        assert "PRELOOP_PR_OPENED" not in result.stdout
+        stored = json.loads((tmp_path / "store.json").read_text())
+        assert len(stored) == 2
+        assert all(self.CURRENT not in row["body"] for row in stored)
+
+    def test_near_limit_failure_notice_is_not_reported_as_opened(self, tmp_path):
+        from preloop.utils.pr_metadata import PublicationRecord, upsert_provenance
+
+        seeded = upsert_provenance(
+            "Human prose\n",
+            [PublicationRecord(self.INITIAL, self.PRIOR_SHA)],
+            "https://app.example.com",
+        )
+        seeded += "h" * (65500 - len(seeded.encode("utf-8")))
+        result = self._run(
+            tmp_path,
+            provider="github",
+            body=seeded,
+            result_json=(
+                b'{"status":"failure","reason":"Tests are failing",'
+                b'"pr_title":"Agent title","pr_body":"Agent body"}'
+            ),
+        )
+        assert result.returncode != 0
+        assert "PRELOOP_PR_METADATA_WARNING" in result.stderr
+        assert "PRELOOP_PR_OPENED" not in result.stdout
+        assert self._stored_body(tmp_path, "github") == seeded
+
+    def test_oversize_region_leaves_the_body_unchanged(self, tmp_path):
+        from preloop.utils.pr_metadata import PublicationRecord, upsert_provenance
+
+        seeded = upsert_provenance(
+            "Human prose\n",
+            [PublicationRecord(self.INITIAL, self.PRIOR_SHA)],
+            "https://app.example.com",
+        )
+        seeded += "h" * (65536 - len(seeded.encode("utf-8")))
+        result = self._run(tmp_path, provider="github", body=seeded)
+        assert result.returncode != 0
+        assert "provider limit" in result.stderr
+        assert "PRELOOP_PR_OPENED" not in result.stdout
+        assert self._stored_body(tmp_path, "github") == seeded

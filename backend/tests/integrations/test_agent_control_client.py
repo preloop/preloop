@@ -158,6 +158,8 @@ async def test_client_connects_with_bearer_and_advertises_capabilities() -> None
         "voice": False,
         "interrupt": False,
         "tool_approval": False,
+        "desktop": "none",
+        "desktop_display": None,
     }
 
 

@@ -99,6 +99,8 @@ def test_checkpoint_roundtrip_preserves_unpushed_and_dirty_state(
     source = tmp_path / "source"
     source.mkdir()
     subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
+    for key, value in (("maintenance.auto", "0"), ("gc.auto", "0")):
+        subprocess.run(["git", "-C", str(source), "config", key, value], check=True)
     for key, value in (("user.name", "Test User"), ("user.email", "test@example.com")):
         subprocess.run(["git", "-C", str(source), "config", key, value], check=True)
     (source / "tracked.txt").write_text("committed")
@@ -135,6 +137,23 @@ def test_restore_refuses_overwriting_existing_work(tmp_path) -> None:
     with pytest.raises(ValueError, match="not_empty"):
         restore(archive_with("workspace/work", b"new"), destination)
     assert (destination / "work").read_text() == "existing"
+
+
+def test_capture_treats_a_vanished_file_as_busy(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+
+    (tmp_path / "keep.txt").write_text("ok")
+    real_read = Path.read_bytes
+
+    def flaky(self, *args, **kwargs):
+        if self.name == "keep.txt":
+            self.unlink()
+            raise FileNotFoundError(self)
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+    with pytest.raises(ValueError, match="workspace_busy"):
+        capture(tmp_path, max_bytes=100000)
 
 
 def test_capture_defers_while_git_transaction_is_open(tmp_path) -> None:

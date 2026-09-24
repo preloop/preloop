@@ -13,6 +13,7 @@ import '@shoelace-style/shoelace/dist/components/details/details.js';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import pricingStyles from '../../../styles/pricing-styles.css?inline';
 import { Router } from '../../../router';
+import type { SessionArtifactUsage } from '../../../types';
 import { PLAN_PAGE_PATH } from '../../../utils/premium-features';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -137,6 +138,7 @@ export class AccountView extends LitElement {
   @state() private _loading = true;
   @state() private _error: string | null = null;
   @state() private _canManageBilling = false;
+  @state() private _sessionArtifactUsage: SessionArtifactUsage | null = null;
 
   // The 2026 ladder's limits, in the order a buyer weighs them. The legacy
   // keys (api_calls_monthly, ai_calls_monthly, issues_ingested_monthly,
@@ -217,6 +219,26 @@ export class AccountView extends LitElement {
       this.accountOrganization = accountOrganization;
       this.features = features;
       this.organizationName = accountOrganization.organization_name || '';
+
+      try {
+        const usageRes = await fetchWithAuth(
+          '/api/v1/account/session-artifacts/usage'
+        );
+        if (usageRes.ok) {
+          const body = await usageRes.json();
+          const byKind = body?.by_kind;
+          if (
+            typeof body?.used_bytes === 'number' &&
+            typeof body?.budget_bytes === 'number' &&
+            typeof byKind?.screenshot === 'number' &&
+            typeof byKind?.recording === 'number'
+          ) {
+            this._sessionArtifactUsage = body;
+          }
+        }
+      } catch {
+        this._sessionArtifactUsage = null;
+      }
 
       // Only fetch billing data for proprietary version
       const isProprietary = features.features['billing'] === true;
@@ -507,6 +529,52 @@ export class AccountView extends LitElement {
    * consequence is thinner analytics detail. This is a product-safety rule
    * from the canonical pricing spec, not a tone preference.
    */
+  /** Used and budget bytes for session screenshots and recordings. */
+  private _formatBytes(value: number): string {
+    const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+    let size = value;
+    let unit = 0;
+    while (size >= 1024 && unit < units.length - 1) {
+      size /= 1024;
+      unit += 1;
+    }
+    const text = Number.isInteger(size) ? String(size) : size.toFixed(1);
+    return `${text} ${units[unit]}`;
+  }
+
+  private _renderSessionArtifactUsage() {
+    const usage = this._sessionArtifactUsage;
+    if (!usage) return '';
+    return html`
+      <div class="card" data-testid="session-artifact-usage">
+        <div class="current-row">
+          <span class="plan-name">Session artifact storage</span>
+        </div>
+        <div class="usage-grid">
+          <div class="usage-metric">
+            <div class="usage-label">Used</div>
+            <div class="usage-value">
+              ${this._formatBytes(usage.used_bytes)} /
+              ${this._formatBytes(usage.budget_bytes)}
+            </div>
+          </div>
+          <div class="usage-metric">
+            <div class="usage-label">Screenshots</div>
+            <div class="usage-value">
+              ${this._formatBytes(usage.by_kind.screenshot)}
+            </div>
+          </div>
+          <div class="usage-metric">
+            <div class="usage-label">Recordings</div>
+            <div class="usage-value">
+              ${this._formatBytes(usage.by_kind.recording)}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   private _renderIngestionQuota(quota: IngestionQuota | null) {
     if (!quota || quota.is_unlimited) return '';
     const percent = Math.min(Math.round(quota.usage_ratio * 100), 100);
@@ -941,6 +1009,7 @@ export class AccountView extends LitElement {
             </div>
           </sl-card>
 
+          ${this._renderSessionArtifactUsage()}
           ${
             isProprietary
               ? html`

@@ -53,6 +53,25 @@ func TestDetectAgentRuntimeStateMarksUninstalledCLIAgentMissing(t *testing.T) {
 	if !strings.Contains(detail, "agy") {
 		t.Fatalf("expected searched locations in detail, got %q", detail)
 	}
+
+	state, detail = detectAgentRuntimeState(AgentConfig{Name: "Copilot CLI"})
+	if state != agentRuntimeStateMissing {
+		t.Fatalf("expected Copilot CLI missing, got %s (%s)", state, detail)
+	}
+	if !strings.Contains(detail, "copilot") {
+		t.Fatalf("expected searched locations in detail, got %q", detail)
+	}
+}
+
+func TestDetectAgentRuntimeStateFindsCopilotCLI(t *testing.T) {
+	stubRuntimeProbes(t, map[string]string{"copilot": "/usr/local/bin/copilot"})
+	state, detail := detectAgentRuntimeState(AgentConfig{Name: "Copilot CLI"})
+	if state != agentRuntimeStatePresent {
+		t.Fatalf("expected present, got %s (%s)", state, detail)
+	}
+	if !strings.Contains(detail, "/usr/local/bin/copilot") {
+		t.Fatalf("expected resolved path in detail, got %q", detail)
+	}
 }
 
 func TestDetectAgentRuntimeStateGUIAppBundle(t *testing.T) {

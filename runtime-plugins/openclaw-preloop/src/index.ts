@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -247,14 +248,7 @@ export class PreloopOpenClawPlugin {
             status: "online",
             protocol: "preloop.agent_control.v1",
             runtime: this.runtime,
-            capabilities: {
-              new_session: true,
-              existing_session: true,
-              text: true,
-              voice: true,
-              interrupt: true,
-              tool_approval: this.toolApprovalEnabled(config),
-            },
+            capabilities: this.capabilities(config),
             runtime_principal_id: config.runtime_principal_id,
             runtime_principal_name: config.runtime_principal_name,
           },
@@ -420,6 +414,35 @@ export class PreloopOpenClawPlugin {
         throw new Error(`${key} must be a boolean`);
       }
     }
+  }
+
+  /**
+   * Capability object advertised on the presence envelope.
+   *
+   * `desktop` is `vnc` only for a loopback Preloop desktop manifest.
+   * The password file and the rest of that manifest are not included.
+   */
+  capabilities(config?: ControlConfig): {
+    new_session: boolean;
+    existing_session: boolean;
+    text: boolean;
+    voice: boolean;
+    interrupt: boolean;
+    tool_approval: boolean;
+    desktop: "vnc" | "none";
+    desktop_display: string | null;
+  } {
+    const desktop = readDesktopCapability();
+    return {
+      new_session: true,
+      existing_session: true,
+      text: true,
+      voice: true,
+      interrupt: true,
+      tool_approval: this.toolApprovalEnabled(config),
+      desktop: desktop.desktop,
+      desktop_display: desktop.desktop_display,
+    };
   }
 
   toolApprovalEnabled(config?: ControlConfig): boolean {
@@ -917,6 +940,50 @@ function loadOpenClawExecApprovals(
     return { security, ask };
   } catch {
     return null;
+  }
+}
+
+export type DesktopCapability = {
+  desktop: "vnc" | "none";
+  desktop_display: string | null;
+};
+
+/**
+ * Read `$PRELOOP_DESKTOP_FILE` or `~/.preloop/desktop.json`.
+ *
+ * A parsed object whose `vnc.host` is exactly `127.0.0.1` is a loopback VNC
+ * desktop. The password file is never opened, and host, port, auth, and
+ * browser are not returned.
+ */
+export function readDesktopCapability(
+  env: NodeJS.ProcessEnv = process.env,
+  homeDir: string = os.homedir(),
+): DesktopCapability {
+  const override = env.PRELOOP_DESKTOP_FILE?.trim();
+  const filePath = override
+    ? override
+    : path.join(homeDir, ".preloop", "desktop.json");
+  try {
+    const raw: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return { desktop: "none", desktop_display: null };
+    }
+    const document = raw as Record<string, unknown>;
+    const vnc = document.vnc;
+    if (!vnc || typeof vnc !== "object" || Array.isArray(vnc)) {
+      return { desktop: "none", desktop_display: null };
+    }
+    if ((vnc as Record<string, unknown>).host !== "127.0.0.1") {
+      return { desktop: "none", desktop_display: null };
+    }
+    const display = document.display;
+    return {
+      desktop: "vnc",
+      desktop_display:
+        typeof display === "string" && display ? display : null,
+    };
+  } catch {
+    return { desktop: "none", desktop_display: null };
   }
 }
 

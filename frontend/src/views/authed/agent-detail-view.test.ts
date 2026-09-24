@@ -690,6 +690,39 @@ describe('AgentDetailView', () => {
     expect(ids).to.not.contain('resume');
   });
 
+  it('shows a desktop badge only for a loopback vnc or rdp agent', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    const badge = () =>
+      element.shadowRoot?.querySelector('sl-badge.desktop-badge');
+
+    for (const desktop of [undefined, 'none'] as const) {
+      (element as any).agent = { ...(element as any).agent, desktop };
+      await element.updateComplete;
+      expect(badge(), `no badge when desktop is ${String(desktop)}`).to.not
+        .exist;
+    }
+
+    (element as any).agent = { ...(element as any).agent, desktop: 'vnc' };
+    await element.updateComplete;
+    expect(badge()?.textContent).to.contain(
+      'Desktop: VNC (loopback, brokered access coming)'
+    );
+
+    (element as any).agent = { ...(element as any).agent, desktop: 'rdp' };
+    await element.updateComplete;
+    expect(badge()?.textContent).to.contain(
+      'Desktop: RDP (loopback, brokered access coming)'
+    );
+  });
+
   // Wave 4: tags are labels, not states, so they lost the pill and took a
   // leading tag icon instead of the hash.
   it('shows operator tags as text with a leading tag icon', async () => {
