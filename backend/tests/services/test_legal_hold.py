@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import flow_artifact as crud_artifact
+from preloop.models.crud import runtime_session_artifact as crud_session_artifact
 from preloop.models.crud.history_policy import lock_account_for_retention
 from preloop.models.models.audit_log import AuditLog
 from preloop.models.models.legal_hold import LegalHold
@@ -357,7 +358,180 @@ def test_a_hold_freezes_a_runtime_session(
     db_session.refresh(runtime_session)
     assert runtime_session.legal_hold is True
     assert outcome.flagged["runtime_session"] == 1
+    assert outcome.flagged["runtime_session_artifact"] == 0
     assert outcome.hold.resource_type == "runtime_session"
+
+
+def test_a_session_hold_flags_its_artifacts_and_release_clears_them(
+    db_session, test_user, account, runtime_session
+):
+    """place_hold and release_hold move the flag on every artifact of the session."""
+    first = crud_session_artifact.store(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=runtime_session.id,
+        kind="screenshot",
+        source="browser_use",
+        source_ref="step-1",
+        content_type="image/png",
+        plaintext=b"unpublished-screenshot-bytes",
+        manifest={"step_index": 1},
+        commit=False,
+    )
+    second = crud_session_artifact.store(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=runtime_session.id,
+        kind="recording",
+        source="browser_use",
+        source_ref="clip-1",
+        content_type="video/webm",
+        plaintext=b"unpublished-recording-bytes",
+        manifest={"duration_ms": 1000},
+        commit=False,
+    )
+    db_session.commit()
+
+    outcome = place_hold(
+        db_session,
+        account_id=account.id,
+        resource_type="runtime_session",
+        resource_id=str(runtime_session.id),
+        reason="litigation hold, matter 2026-07",
+        user_id=test_user.id,
+    )
+
+    db_session.refresh(first)
+    db_session.refresh(second)
+    assert outcome.flagged["runtime_session_artifact"] == 2
+    assert first.legal_hold is True
+    assert second.legal_hold is True
+
+    release_hold(
+        db_session,
+        account_id=account.id,
+        hold_id=outcome.hold.id,
+        reason="matter closed 2026-08",
+        user_id=test_user.id,
+    )
+
+    db_session.refresh(first)
+    db_session.refresh(second)
+    assert first.legal_hold is False
+    assert second.legal_hold is False
+
+
+def test_the_janitor_expires_an_unheld_artifact_and_leaves_a_held_one(
+    db_session, test_user, account, runtime_session
+):
+    """Expiry clears unheld ciphertext and does not touch a held artifact."""
+    past = datetime.now(UTC) - timedelta(hours=2)
+    held = crud_session_artifact.store(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=runtime_session.id,
+        kind="screenshot",
+        source="browser_use",
+        source_ref="step-held",
+        content_type="image/png",
+        plaintext=b"held-screenshot-bytes",
+        manifest={"step_index": 1},
+        expires_at=past,
+        commit=False,
+    )
+    other = models.RuntimeSession(
+        account_id=account.id,
+        session_source_type="managed_agent",
+        session_source_id=f"agent-{uuid.uuid4().hex[:8]}",
+        started_at=past,
+        last_activity_at=past,
+        ended_at=past,
+    )
+    db_session.add(other)
+    db_session.flush()
+    unheld = crud_session_artifact.store(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=other.id,
+        kind="screenshot",
+        source="browser_use",
+        source_ref="step-open",
+        content_type="image/png",
+        plaintext=b"open-screenshot-bytes",
+        manifest={"step_index": 1},
+        expires_at=past,
+        commit=False,
+    )
+    db_session.commit()
+    place_hold(
+        db_session,
+        account_id=account.id,
+        resource_type="runtime_session",
+        resource_id=str(runtime_session.id),
+        reason="regulator request 2026-08",
+        user_id=test_user.id,
+    )
+
+    cleared = crud_session_artifact.cleanup(db_session, now=datetime.now(UTC))
+
+    db_session.expire_all()
+    held_row = db_session.get(models.RuntimeSessionArtifact, held.id)
+    unheld_row = db_session.get(models.RuntimeSessionArtifact, unheld.id)
+    assert held_row.ciphertext is not None
+    assert held_row.availability == "available"
+    assert unheld_row.ciphertext is None
+    assert unheld_row.availability == "expired"
+    assert cleared == 1
+
+
+def test_an_artifact_stored_on_a_held_session_survives_the_janitor(
+    db_session, test_user, account, runtime_session
+):
+    """A hold already in force covers artifacts written afterwards.
+
+    ``store`` copies the session flag. The janitor also skips the row when
+    that copy is missing and the session itself is still held.
+    """
+    past = datetime.now(UTC) - timedelta(hours=2)
+    place_hold(
+        db_session,
+        account_id=account.id,
+        resource_type="runtime_session",
+        resource_id=str(runtime_session.id),
+        reason="incident review still open",
+        user_id=test_user.id,
+    )
+    stored = crud_session_artifact.store(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=runtime_session.id,
+        kind="screenshot",
+        source="browser_use",
+        source_ref="step-after-hold",
+        content_type="image/png",
+        plaintext=b"held-after-store-bytes",
+        manifest={"step_index": 2},
+        expires_at=past,
+        commit=False,
+    )
+    db_session.commit()
+    db_session.refresh(stored)
+    assert stored.legal_hold is True
+
+    crud_session_artifact.cleanup(db_session, now=datetime.now(UTC))
+    db_session.expire_all()
+    row = db_session.get(models.RuntimeSessionArtifact, stored.id)
+    assert row.ciphertext is not None
+    assert row.availability == "available"
+
+    row.legal_hold = False
+    db_session.add(row)
+    db_session.commit()
+    crud_session_artifact.cleanup(db_session, now=datetime.now(UTC))
+    db_session.expire_all()
+    row = db_session.get(models.RuntimeSessionArtifact, stored.id)
+    assert row.ciphertext is not None
+    assert row.availability == "available"
 
 
 def test_a_hold_on_another_accounts_session_is_refused(

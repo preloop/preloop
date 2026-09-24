@@ -8,7 +8,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from cryptography.fernet import InvalidToken
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -86,7 +86,8 @@ def store(
     ``size_bytes`` are taken from the plaintext. A second call with the same
     ``(runtime_session_id, kind, source, source_ref)`` returns the stored row
     and does not replace its ciphertext. Rows with a null ``source_ref`` are
-    not idempotent.
+    not idempotent. The row copies ``legal_hold`` from its session, so an
+    artifact stored after a hold is placed is frozen immediately.
 
     Args:
         db: Database session.
@@ -125,6 +126,14 @@ def store(
         if existing is not None:
             return existing
 
+    session_held = (
+        db.query(models.RuntimeSession.legal_hold)
+        .filter(
+            models.RuntimeSession.id == runtime_session_id,
+            models.RuntimeSession.account_id == account_id,
+        )
+        .scalar()
+    )
     artifact = models.RuntimeSessionArtifact(
         account_id=account_id,
         runtime_session_id=runtime_session_id,
@@ -139,7 +148,7 @@ def store(
         ciphertext=_get_fernet().encrypt(plaintext),
         availability="available",
         expires_at=expires_at,
-        legal_hold=False,
+        legal_hold=bool(session_held),
         # Client clock, not transaction_timestamp(): two inserts in one
         # transaction would otherwise share created_at and sort by uuid.
         created_at=datetime.now(UTC),
@@ -244,6 +253,52 @@ def decrypt(artifact: models.RuntimeSessionArtifact) -> bytes:
         return bytes(_get_fernet().decrypt(bytes(artifact.ciphertext)))
     except InvalidToken as exc:
         raise ValueError("artifact_undecryptable") from exc
+
+
+def cleanup(db: Session, *, now: datetime) -> int:
+    """Clear ciphertext on expired artifacts that are not under legal hold.
+
+    A row is skipped when its own flag is set or its session is held, whatever
+    its ``expires_at`` says. The session check covers an artifact written
+    while a hold is already in force if the copied flag was missed. The hold
+    has to block payload expiry, not only deletion of the session: a
+    screenshot a regulator may ask for has to still be downloadable.
+
+    Args:
+        db: Database session.
+        now: Instant compared with ``expires_at``. Rows expiring at ``now``
+            stay until a later pass.
+
+    Returns:
+        Rows whose ciphertext was cleared.
+    """
+    session_held = (
+        select(models.RuntimeSession.id)
+        .where(
+            models.RuntimeSession.id
+            == models.RuntimeSessionArtifact.runtime_session_id,
+            models.RuntimeSession.legal_hold.is_(True),
+        )
+        .exists()
+    )
+    count = (
+        db.query(models.RuntimeSessionArtifact)
+        .filter(
+            models.RuntimeSessionArtifact.expires_at < now,
+            models.RuntimeSessionArtifact.legal_hold.is_(False),
+            ~session_held,
+            models.RuntimeSessionArtifact.availability == "available",
+        )
+        .update(
+            {
+                models.RuntimeSessionArtifact.ciphertext: None,
+                models.RuntimeSessionArtifact.availability: "expired",
+            },
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    return int(count or 0)
 
 
 def mark_unavailable(

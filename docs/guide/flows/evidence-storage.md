@@ -205,7 +205,7 @@ specific pack has to survive, place a legal hold on it or export the period.
 | `audit` | Audit log rows |
 | `approvals` | Approval requests and their events |
 | `evidence` | Evidence pack records (manifest and digest), not the payload |
-| `runtime_sessions` | Runtime sessions, session activity and the session search chunks derived from them |
+| `runtime_sessions` | Runtime sessions, session activity, session artifacts (removed with the session), and the session search chunks derived from them |
 | `usage` | API and gateway usage rows, and the search chunks quoting them |
 
 ```
@@ -237,7 +237,9 @@ Every pass that removed anything writes an audit row per record class with the
 cutoff and the count, so the deletion of records is itself a record. The audit
 row also carries `derived_deleted`: rows removed from tables that quote the
 records, counted separately so a report says how many sessions went without
-inflating the number by their search chunks.
+inflating the number by their search chunks. A runtime-session purge also
+names `runtime_session_artifact`, the artifact rows the session delete
+cascades.
 
 ### Legal hold
 
@@ -258,7 +260,9 @@ overlap safely: releasing an execution hold does not unfreeze a pack that
 carries its own hold. A hold on a runtime session covers that session's
 activity rows, which the purge only ever removes with the session itself, and
 the session reads back with `legal_hold: true` so a frozen session looks
-frozen wherever it is listed.
+frozen wherever it is listed. The same hold flags the session's artifacts,
+including artifacts stored after the hold is placed, and the expiry janitor
+leaves their ciphertext alone past `expires_at`.
 
 **What a legal hold is not.** It is a Preloop control, enforced by Preloop
 code against the Preloop database. It is not WORM, and it is not S3 Object
