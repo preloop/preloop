@@ -1170,19 +1170,6 @@ export class AgentDetailView extends LitElement {
    * capability gaps are amber and only appear when there is a gap, and tags
    * are outlined neutral so they read as labels rather than as state.
    */
-  /**
-   * Loopback desktop the runtime advertised. Hidden when the agent has none.
-   * Brokered viewing is not available yet; the badge only names the signal.
-   */
-  private renderDesktopBadge(): TemplateResult | typeof nothing {
-    const desktop = this.agent?.desktop;
-    if (desktop !== 'vnc' && desktop !== 'rdp') return nothing;
-    const kind = desktop === 'rdp' ? 'RDP' : 'VNC';
-    return html`<sl-badge class="desktop-badge" variant="primary" pill
-      >Desktop: ${kind} (loopback, brokered access coming)</sl-badge
-    >`;
-  }
-
   private renderHeaderChips(): TemplateResult | typeof nothing {
     if (!this.agent) return nothing;
 
@@ -1252,6 +1239,19 @@ export class AgentDetailView extends LitElement {
         `
       )}
     `;
+  }
+
+  /**
+   * Loopback desktop the runtime advertised. Hidden when the agent has none.
+   * Brokered viewing is not available yet; the badge only names the signal.
+   */
+  private renderDesktopBadge(): TemplateResult | typeof nothing {
+    const desktop = this.agent?.desktop;
+    if (desktop !== 'vnc' && desktop !== 'rdp') return nothing;
+    const kind = desktop === 'rdp' ? 'RDP' : 'VNC';
+    return html`<sl-badge class="desktop-badge" variant="primary" pill
+      >Desktop: ${kind} (loopback, brokered access coming)</sl-badge
+    >`;
   }
 
   private handleGatewayActivity(message: any): void {
