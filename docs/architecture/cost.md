@@ -30,27 +30,19 @@ This changes request scheduling and selected query execution only. Account
 isolation, history policies, ledger accounting, attribution, reporting limits,
 and full-query ordering remain unchanged. It adds no rollups or response cache.
 
-## Breakdown query shapes
+## Query shape
 
-The account summary's session breakdown aggregates `api_usage` by
-`(runtime_session, model)` before joining the descriptive tables
-(`runtime_session`, `managed_agent`, `flow`, `flow_execution`). Descriptive
-columns are functionally dependent on those group keys, so resolving them
-after the aggregate is exact, while the group/hash no longer carries wide
-title/summary/name columns through the whole window. Totals, attribution,
-ordering, pagination and the 250-row limit are unchanged: the limit is applied
-to aggregated rows, never to raw rows.
-
-The daily timeseries groups by `date_trunc('day', timestamp)` and orders the
-(at most a few hundred) buckets in Python instead of asking PostgreSQL for a
-sorted `date_trunc` expression. The `ORDER BY` was what made the planner merge
-the whole window; the grouped result is small enough to sort in-process. No
-index was added: the existing `ix_api_usage_account_action_ts` and
-`ix_api_usage_account_principal_ts` cover the account/action/time and
-account/principal/time predicates, and the query-shape work does not yet have a
-plan-confirmed index candidate. The reproducible harness lives in
-`scripts/perf/benchmark_gateway_usage.py`; rollups/backfill/caching from #368
-remain conditional on its one-year numbers still exceeding 500 ms warm.
+Session breakdowns aggregate raw `api_usage` rows by session and model first.
+Session name, agent, flow, and principal labels are joined onto that aggregate.
+The response limit applies after the full aggregation, so a capped session list
+still carries complete totals for each returned group. Daily series aggregate
+in a materialized day bucket, then sort those buckets. Per-user windows filter
+`runtime_principal_id` through `ix_api_usage_account_principal_id_ts`
+(`account_id`, `runtime_principal_id`, `timestamp` for `model_gateway` rows).
+`ix_api_usage_account_principal_ts` still leads with principal type. Accounting
+rules are unchanged: replay-validation rows stay excluded, retries stay included
+unless the caller sets `exclude_retries`, and there is no daily rollup or
+response cache.
 
 ## Cost Analytics and Budgeting
 *   **Purpose:** Turn model usage telemetry into explainable spend, enforceable budgets, and optimization guidance.

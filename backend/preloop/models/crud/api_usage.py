@@ -1628,6 +1628,91 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             for row in rows
         ]
 
+    def _session_usage_aggregate(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: datetime,
+        end_date: datetime,
+        ai_model_id: Optional[str] = None,
+        api_key_id: Optional[str] = None,
+        runtime_principal_id: Optional[str] = None,
+    ) -> Any:
+        """Aggregate gateway rows by session and model, before descriptive joins.
+
+        The group key is the identity stored on ``api_usage``: runtime session,
+        model, flow, flow execution, and the usage-row principal. Session
+        names and agent labels are not part of this pass. Replay-validation
+        rows are excluded. Rows with neither a runtime session nor a flow
+        execution are excluded, matching the session breakdown.
+
+        Args:
+            db: Database session.
+            account_id: Account whose gateway usage is aggregated.
+            start_date: Inclusive lower bound on usage timestamp.
+            end_date: Exclusive upper bound on usage timestamp.
+            ai_model_id: Restrict to one durable model.
+            api_key_id: Restrict to one API key.
+            runtime_principal_id: Restrict to one runtime principal on the
+                usage row (the same filter the breakdown applied before).
+
+        Returns:
+            A subquery of one row per identity group with summed tokens, cost,
+            request count, and the latest timestamp.
+        """
+        aggregated = db.query(
+            ApiUsage.runtime_session_id.label("runtime_session_id"),
+            ApiUsage.ai_model_id.label("ai_model_id"),
+            ApiUsage.model_alias.label("model_alias"),
+            ApiUsage.provider_name.label("provider_name"),
+            ApiUsage.flow_execution_id.label("flow_execution_id"),
+            ApiUsage.flow_id.label("flow_id"),
+            ApiUsage.runtime_principal_type.label("usage_principal_type"),
+            ApiUsage.runtime_principal_id.label("usage_principal_id"),
+            ApiUsage.runtime_principal_name.label("usage_principal_name"),
+            func.count(ApiUsage.id).label("request_count"),
+            func.coalesce(func.sum(ApiUsage.prompt_tokens), 0).label("prompt_tokens"),
+            func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
+                "completion_tokens"
+            ),
+            func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
+            func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
+                "estimated_cost"
+            ),
+            func.max(ApiUsage.timestamp).label("last_request_at"),
+            *cache_split_columns(),
+        ).filter(
+            ApiUsage.action_type == "model_gateway",
+            ApiUsage.account_id == account_id,
+            exclude_replay_usage_condition(),
+            or_(
+                ApiUsage.runtime_session_id.isnot(None),
+                ApiUsage.flow_execution_id.isnot(None),
+            ),
+            ApiUsage.timestamp >= start_date,
+            ApiUsage.timestamp < end_date,
+        )
+        if ai_model_id:
+            aggregated = aggregated.filter(ApiUsage.ai_model_id == ai_model_id)
+        if api_key_id:
+            aggregated = aggregated.filter(ApiUsage.api_key_id == api_key_id)
+        if runtime_principal_id:
+            aggregated = aggregated.filter(
+                ApiUsage.runtime_principal_id == runtime_principal_id
+            )
+        return aggregated.group_by(
+            ApiUsage.runtime_session_id,
+            ApiUsage.ai_model_id,
+            ApiUsage.model_alias,
+            ApiUsage.provider_name,
+            ApiUsage.flow_execution_id,
+            ApiUsage.flow_id,
+            ApiUsage.runtime_principal_type,
+            ApiUsage.runtime_principal_id,
+            ApiUsage.runtime_principal_name,
+        ).subquery("gateway_usage_by_session_agg")
+
     def get_gateway_usage_by_session(
         self,
         db: Session,
@@ -1640,152 +1725,122 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         runtime_principal_id: Optional[str] = None,
         limit: int = 20,
     ) -> List[Dict[str, Any]]:
-        """Group recent execution-backed gateway usage into session slices."""
+        """Group recent execution-backed gateway usage into session slices.
+
+        Raw usage is aggregated by session and model first. Session name,
+        agent, flow, and principal labels are joined onto that aggregate.
+        ``limit`` applies only after the full aggregation.
+        """
+        aggregated = self._session_usage_aggregate(
+            db,
+            account_id=account_id,
+            start_date=start_date,
+            end_date=end_date,
+            ai_model_id=ai_model_id,
+            api_key_id=api_key_id,
+            runtime_principal_id=runtime_principal_id,
+        )
+        legacy_session_source_type = case(
+            (aggregated.c.flow_execution_id.isnot(None), "flow_execution"),
+            else_=None,
+        )
+        legacy_session_source_id = cast(aggregated.c.flow_execution_id, String)
+        session_source_type = func.coalesce(
+            RuntimeSession.session_source_type, legacy_session_source_type
+        )
+        session_source_id = func.coalesce(
+            RuntimeSession.session_source_id, legacy_session_source_id
+        )
+        session_reference = func.coalesce(
+            RuntimeSession.session_reference, FlowExecution.agent_session_reference
+        )
         resolved_runtime_principal_type = func.coalesce(
-            RuntimeSession.runtime_principal_type, ApiUsage.runtime_principal_type
+            RuntimeSession.runtime_principal_type, aggregated.c.usage_principal_type
         )
         resolved_runtime_principal_id = func.coalesce(
-            RuntimeSession.runtime_principal_id, ApiUsage.runtime_principal_id
+            RuntimeSession.runtime_principal_id, aggregated.c.usage_principal_id
         )
         resolved_runtime_principal_name = func.coalesce(
-            RuntimeSession.runtime_principal_name, ApiUsage.runtime_principal_name
-        )
-        # Aggregate the narrow usage rows first, then join the descriptive
-        # tables on the (session, model) result. Grouping by
-        # title/summary/agent name/flow name before the aggregation forces
-        # Postgres to carry every wide descriptive column through the whole
-        # sort and spilled most of a 182k-row window to temp before the
-        # 250-row limit was applied. The descriptive columns are functionally
-        # dependent on the join keys below, so joining them after the
-        # aggregate is equivalent and the group/hash holds only the
-        # accounting columns.
-        aggregated_query = (
-            db.query(
-                ApiUsage.ai_model_id.label("ai_model_id"),
-                ApiUsage.runtime_session_id.label("usage_runtime_session_id"),
-                resolved_runtime_principal_type.label("runtime_principal_type"),
-                resolved_runtime_principal_id.label("runtime_principal_id"),
-                resolved_runtime_principal_name.label("runtime_principal_name"),
-                ApiUsage.flow_execution_id.label("flow_execution_id"),
-                ApiUsage.flow_id.label("flow_id"),
-                ApiUsage.model_alias.label("model_alias"),
-                ApiUsage.provider_name.label("provider_name"),
-                func.count(ApiUsage.id).label("request_count"),
-                func.coalesce(func.sum(ApiUsage.prompt_tokens), 0).label(
-                    "prompt_tokens"
-                ),
-                func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
-                    "completion_tokens"
-                ),
-                func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
-                func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
-                    "estimated_cost"
-                ),
-                func.max(ApiUsage.timestamp).label("last_request_at"),
-                *cache_split_columns(),
-            )
-            .outerjoin(RuntimeSession, ApiUsage.runtime_session_id == RuntimeSession.id)
-            .filter(
-                ApiUsage.action_type == "model_gateway",
-                ApiUsage.account_id == account_id,
-                exclude_replay_usage_condition(),
-                or_(
-                    ApiUsage.runtime_session_id.isnot(None),
-                    ApiUsage.flow_execution_id.isnot(None),
-                ),
-                ApiUsage.timestamp >= start_date,
-                ApiUsage.timestamp < end_date,
-            )
-        )
-        if ai_model_id:
-            aggregated_query = aggregated_query.filter(
-                ApiUsage.ai_model_id == ai_model_id
-            )
-        if api_key_id:
-            aggregated_query = aggregated_query.filter(
-                ApiUsage.api_key_id == api_key_id
-            )
-        if runtime_principal_id:
-            aggregated_query = aggregated_query.filter(
-                ApiUsage.runtime_principal_id == runtime_principal_id
-            )
-        aggregated = aggregated_query.group_by(
-            ApiUsage.ai_model_id,
-            ApiUsage.runtime_session_id,
-            resolved_runtime_principal_type,
-            resolved_runtime_principal_id,
-            resolved_runtime_principal_name,
-            ApiUsage.flow_execution_id,
-            ApiUsage.flow_id,
-            ApiUsage.model_alias,
-            ApiUsage.provider_name,
-        ).subquery("gateway_session_usage")
-
-        # Resolve descriptive columns on the grouped rows only. Each join key
-        # is in the aggregate's GROUP BY, so every descriptive column has a
-        # single value per group and the totals are not re-scaled by the join.
-        # Aliases keep these joins distinct from the same tables inside the
-        # aggregate subquery.
-        session_row = aliased(RuntimeSession, name="session_row")
-        execution_row = aliased(FlowExecution, name="execution_row")
-        flow_row = aliased(Flow, name="flow_row")
-        agent_row = aliased(ManagedAgent, name="agent_row")
-        grouped_session_source_type = func.coalesce(
-            session_row.session_source_type,
-            case(
-                (aggregated.c.flow_execution_id.isnot(None), "flow_execution"),
-                else_=None,
-            ),
-        )
-        grouped_session_source_id = func.coalesce(
-            session_row.session_source_id,
-            cast(aggregated.c.flow_execution_id, String),
-        )
-        grouped_session_reference = func.coalesce(
-            session_row.session_reference, execution_row.agent_session_reference
+            RuntimeSession.runtime_principal_name, aggregated.c.usage_principal_name
         )
         rows = (
             db.query(
                 aggregated.c.ai_model_id,
-                session_row.id.label("runtime_session_id"),
-                grouped_session_source_type.label("session_source_type"),
-                grouped_session_source_id.label("session_source_id"),
-                session_row.title.label("session_title"),
-                session_row.summary.label("session_summary"),
-                aggregated.c.runtime_principal_type,
-                aggregated.c.runtime_principal_id,
-                aggregated.c.runtime_principal_name,
-                agent_row.id.label("agent_id"),
-                agent_row.display_name.label("agent_name"),
+                RuntimeSession.id.label("runtime_session_id"),
+                session_source_type.label("session_source_type"),
+                session_source_id.label("session_source_id"),
+                RuntimeSession.title.label("session_title"),
+                RuntimeSession.summary.label("session_summary"),
+                resolved_runtime_principal_type.label("runtime_principal_type"),
+                resolved_runtime_principal_id.label("runtime_principal_id"),
+                resolved_runtime_principal_name.label("runtime_principal_name"),
+                ManagedAgent.id.label("agent_id"),
+                ManagedAgent.display_name.label("agent_name"),
                 aggregated.c.flow_execution_id,
                 aggregated.c.flow_id,
-                flow_row.name.label("flow_name"),
-                grouped_session_reference.label("session_reference"),
+                Flow.name.label("flow_name"),
+                session_reference.label("session_reference"),
                 aggregated.c.model_alias,
                 aggregated.c.provider_name,
-                aggregated.c.request_count,
-                aggregated.c.prompt_tokens,
-                aggregated.c.completion_tokens,
-                aggregated.c.total_tokens,
-                aggregated.c.estimated_cost,
-                aggregated.c.last_request_at,
-                aggregated.c.cache_read_tokens,
-                aggregated.c.cache_write_tokens,
-                aggregated.c.covered_prompt_tokens,
+                func.coalesce(func.sum(aggregated.c.request_count), 0).label(
+                    "request_count"
+                ),
+                func.coalesce(func.sum(aggregated.c.prompt_tokens), 0).label(
+                    "prompt_tokens"
+                ),
+                func.coalesce(func.sum(aggregated.c.completion_tokens), 0).label(
+                    "completion_tokens"
+                ),
+                func.coalesce(func.sum(aggregated.c.total_tokens), 0).label(
+                    "total_tokens"
+                ),
+                func.coalesce(func.sum(aggregated.c.estimated_cost), 0.0).label(
+                    "estimated_cost"
+                ),
+                func.max(aggregated.c.last_request_at).label("last_request_at"),
+                func.coalesce(func.sum(aggregated.c.cache_read_tokens), 0).label(
+                    "cache_read_tokens"
+                ),
+                func.coalesce(func.sum(aggregated.c.cache_write_tokens), 0).label(
+                    "cache_write_tokens"
+                ),
+                func.coalesce(func.sum(aggregated.c.covered_prompt_tokens), 0).label(
+                    "covered_prompt_tokens"
+                ),
+            )
+            .select_from(aggregated)
+            .outerjoin(
+                RuntimeSession, aggregated.c.runtime_session_id == RuntimeSession.id
+            )
+            .outerjoin(Flow, aggregated.c.flow_id == Flow.id)
+            .outerjoin(
+                FlowExecution, aggregated.c.flow_execution_id == FlowExecution.id
             )
             .outerjoin(
-                session_row,
-                aggregated.c.usage_runtime_session_id == session_row.id,
+                ManagedAgent, ManagedAgent.runtime_session_id == RuntimeSession.id
             )
-            .outerjoin(flow_row, aggregated.c.flow_id == flow_row.id)
-            .outerjoin(
-                execution_row,
-                aggregated.c.flow_execution_id == execution_row.id,
+            .group_by(
+                aggregated.c.ai_model_id,
+                RuntimeSession.id,
+                session_source_type,
+                session_source_id,
+                RuntimeSession.title,
+                RuntimeSession.summary,
+                resolved_runtime_principal_type,
+                resolved_runtime_principal_id,
+                resolved_runtime_principal_name,
+                ManagedAgent.id,
+                ManagedAgent.display_name,
+                aggregated.c.flow_execution_id,
+                aggregated.c.flow_id,
+                Flow.name,
+                session_reference,
+                aggregated.c.model_alias,
+                aggregated.c.provider_name,
             )
-            .outerjoin(agent_row, agent_row.runtime_session_id == session_row.id)
             .order_by(
-                aggregated.c.last_request_at.desc(),
-                aggregated.c.request_count.desc(),
+                func.max(aggregated.c.last_request_at).desc(),
+                func.sum(aggregated.c.request_count).desc(),
             )
             .limit(limit)
             .all()
@@ -1896,9 +1951,15 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         api_key_id: Optional[str] = None,
         runtime_principal_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Group gateway usage by day."""
+        """Group gateway usage by UTC day.
+
+        The day bucket is aggregated in a materialized CTE with no
+        ``ORDER BY``. Materializing stops the planner from pulling the
+        aggregate up under the outer sort, which otherwise sorts every usage
+        row. The outer query sorts only the day buckets.
+        """
         bucket = func.date_trunc("day", ApiUsage.timestamp)
-        query = db.query(
+        grouped = db.query(
             bucket.label("bucket"),
             func.count(ApiUsage.id).label("request_count"),
             func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
@@ -1918,21 +1979,21 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             ApiUsage.timestamp < end_date,
         )
         if flow_id:
-            query = query.filter(ApiUsage.flow_id == flow_id)
+            grouped = grouped.filter(ApiUsage.flow_id == flow_id)
         if ai_model_id:
-            query = query.filter(ApiUsage.ai_model_id == ai_model_id)
+            grouped = grouped.filter(ApiUsage.ai_model_id == ai_model_id)
         if api_key_id:
-            query = query.filter(ApiUsage.api_key_id == api_key_id)
+            grouped = grouped.filter(ApiUsage.api_key_id == api_key_id)
         if runtime_principal_id:
-            query = query.filter(ApiUsage.runtime_principal_id == runtime_principal_id)
-
-        # No SQL ``ORDER BY date_trunc(...)``: asking Postgres for sorted day
-        # buckets makes it choose a sort-based aggregate/merge over the whole
-        # window (the measured ~10 MB external sort) even though the result is
-        # at most a few hundred days. Group first, then order the tiny result
-        # set here.
-        rows = query.group_by(bucket).all()
-        rows = sorted(rows, key=lambda row: row.bucket)
+            grouped = grouped.filter(
+                ApiUsage.runtime_principal_id == runtime_principal_id
+            )
+        aggregated = (
+            grouped.group_by(bucket)
+            .cte("gateway_usage_by_day")
+            .prefix_with("MATERIALIZED")
+        )
+        rows = db.query(aggregated).order_by(aggregated.c.bucket.asc()).all()
         return [
             {
                 "date": row.bucket.date().isoformat(),
@@ -2302,11 +2363,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
     ) -> List[ApiUsage]:
         """List full model-gateway ``ApiUsage`` rows in a half-open window.
 
-        In-tree reporting uses
+        In-tree reporting and the Enterprise tool-cost detector use
         :meth:`list_gateway_tool_usage_in_window`, which projects
         ``tools_meta`` without transferring request/response payloads.
-        This method is kept for the Enterprise billing plugin's tool-cost
-        detector, which still loads complete rows.
+        This wide reader remains for callers that still need complete rows.
 
         Args:
             db: Database session.

@@ -50,6 +50,7 @@ jobs:
       frontend: ${{ steps.out.outputs.frontend }}
       cli: ${{ steps.out.outputs.cli }}
       egress: ${{ steps.out.outputs.egress }}
+      browser: ${{ steps.out.outputs.browser }}
       plugins: ${{ steps.out.outputs.plugins }}
       helm: ${{ steps.out.outputs.helm }}
       workflow: ${{ steps.out.outputs.workflow }}
@@ -78,6 +79,11 @@ jobs:
               - 'cli/**'
             egress:
               - 'environments/egress-proxy/**'
+            browser:
+              - 'environments/preloop/**'
+              - 'environments/egress-proxy/**'
+              - 'backend/tests/services/test_flow_environment.py'
+              - 'backend/preloop/services/flow_environment.py'
             plugins:
               - 'runtime-plugins/**'
               - 'pyproject.toml'
@@ -104,6 +110,7 @@ jobs:
           FRONTEND: ${{ steps.filter.outputs.frontend }}
           CLI: ${{ steps.filter.outputs.cli }}
           EGRESS: ${{ steps.filter.outputs.egress }}
+          BROWSER: ${{ steps.filter.outputs.browser }}
           PLUGINS: ${{ steps.filter.outputs.plugins }}
           HELM: ${{ steps.filter.outputs.helm }}
           WORKFLOW: ${{ steps.filter.outputs.workflow }}
@@ -114,6 +121,7 @@ jobs:
             echo "frontend=true" >> "$GITHUB_OUTPUT"
             echo "cli=true" >> "$GITHUB_OUTPUT"
             echo "egress=true" >> "$GITHUB_OUTPUT"
+            echo "browser=true" >> "$GITHUB_OUTPUT"
             echo "plugins=true" >> "$GITHUB_OUTPUT"
             echo "helm=true" >> "$GITHUB_OUTPUT"
             echo "workflow=true" >> "$GITHUB_OUTPUT"
@@ -123,6 +131,7 @@ jobs:
             echo "frontend=${FRONTEND:-false}" >> "$GITHUB_OUTPUT"
             echo "cli=${CLI:-false}" >> "$GITHUB_OUTPUT"
             echo "egress=${EGRESS:-false}" >> "$GITHUB_OUTPUT"
+            echo "browser=${BROWSER:-false}" >> "$GITHUB_OUTPUT"
             echo "plugins=${PLUGINS:-false}" >> "$GITHUB_OUTPUT"
             echo "helm=${HELM:-false}" >> "$GITHUB_OUTPUT"
             echo "workflow=false" >> "$GITHUB_OUTPUT"
@@ -720,6 +729,14 @@ jobs:
         working-directory: runtime-plugins/claude-preloop
         run: npm test
 
+      - name: Install Codex plugin dependencies
+        working-directory: runtime-plugins/codex-preloop
+        run: npm ci
+
+      - name: Run Codex plugin tests
+        working-directory: runtime-plugins/codex-preloop
+        run: npm test
+
   # ==========================================================================
   # CLI (Windows)
   # ==========================================================================
@@ -816,6 +833,63 @@ jobs:
 
       - name: Test
         run: go test -race ./...
+
+  # ==========================================================================
+  # Browser profile (Playwright MCP forced through the egress proxy)
+  # ==========================================================================
+  #
+  # Path-filtered. Installs the pinned @playwright/mcp tree, the Chromium
+  # build that tree expects, and runs the self-check against the proxy.
+  # PRELOOP_BROWSER_CI=1 makes a missing browser a failure, not a skip.
+
+  test-browser-profile:
+    name: Browser profile
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.browser == 'true'
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: environments/egress-proxy/go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: environments/preloop/tools/package-lock.json
+
+      - name: Install pinned Playwright MCP and Chromium
+        working-directory: environments/preloop/tools
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Set up Python
+        uses: ./.github/actions/setup-ci-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install test dependencies
+        run: |
+          pip install --require-hashes -r .github/requirements/app-dev.txt
+          pip install --no-deps -e .
+
+      - name: Prove browser egress is enforced
+        env:
+          PRELOOP_DISABLE_TELEMETRY: "true"
+          PRELOOP_BROWSER_CI: "1"
+        run: |
+          pytest -q --tb=short \
+            backend/tests/services/test_flow_environment.py::test_enable_blocks_metadata_and_non_allowlisted_origin \
+            backend/tests/services/test_flow_environment.py::test_rendered_harness_config_is_isolated_and_selfcheck_fails_closed \
+            backend/tests/services/test_flow_environment.py::test_removed_proxy_env_aborts_profile_setup \
+            backend/tests/services/test_flow_environment.py::test_example_browser_profile_is_a_valid_environment_profile \
+            backend/tests/services/test_flow_environment.py::test_browser_scripts_pass_bash_n
 
   # ==========================================================================
   # CLI Vulnerability Scan
@@ -973,6 +1047,7 @@ jobs:
       - test-frontend
       - test-runtime-plugins
       - test-egress-proxy
+      - test-browser-profile
       - cli-vuln-scan
     steps:
       - name: Require every suite to have passed or been skipped
@@ -987,6 +1062,7 @@ jobs:
           FRONTEND: ${{ needs.test-frontend.result }}
           PLUGINS: ${{ needs.test-runtime-plugins.result }}
           EGRESS: ${{ needs.test-egress-proxy.result }}
+          BROWSER: ${{ needs.test-browser-profile.result }}
           CLIVULN: ${{ needs.cli-vuln-scan.result }}
         run: |
           failed=0
@@ -1012,5 +1088,6 @@ jobs:
           check test-frontend "$FRONTEND"
           check test-runtime-plugins "$PLUGINS"
           check test-egress-proxy "$EGRESS"
+          check test-browser-profile "$BROWSER"
           check cli-vuln-scan "$CLIVULN"
           exit "$failed"

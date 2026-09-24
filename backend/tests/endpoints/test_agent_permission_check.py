@@ -130,3 +130,172 @@ def test_permission_check_requires_runtime_bearer(client):
         json={"source": "opencode", "tool_name": "Bash"},
     )
     assert response.status_code == 401
+
+
+def _repository_payload() -> dict:
+    return {
+        "remote": "github.com/example/repo",
+        "toplevel": "/home/dev/repo",
+        "relative_path": "pkg/sub",
+        "source": "hook_cwd",
+    }
+
+
+def test_permission_check_stores_repository_marker(client):
+    """The hook-observed repository is stamped next to ``_preloop_source``."""
+    token = _issue_opencode_runtime_token(client)
+    decide = AsyncMock(return_value=("allow", "Approved via Preloop.", "req-3", False))
+
+    with patch(
+        "preloop.api.endpoints.agent_permission.request_agent_permission", decide
+    ):
+        response = _post_permission_check(
+            client,
+            token,
+            {
+                "source": "opencode",
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls"},
+                "cwd": "/home/dev/repo/pkg/sub",
+                "repository": _repository_payload(),
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    tool_input = decide.await_args.kwargs["tool_input"]
+    assert tool_input["_preloop_source"] == "opencode"
+    assert tool_input["_preloop_repository"] == _repository_payload()
+
+
+def test_permission_check_stores_no_remote_marker(client):
+    """A work tree without origin records ``no_remote`` and an empty remote."""
+    token = _issue_opencode_runtime_token(client)
+    decide = AsyncMock(return_value=("allow", "Approved via Preloop.", "req-4", False))
+
+    with patch(
+        "preloop.api.endpoints.agent_permission.request_agent_permission", decide
+    ):
+        response = _post_permission_check(
+            client,
+            token,
+            {
+                "source": "opencode",
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls"},
+                "repository": {
+                    "remote": "",
+                    "toplevel": "/home/dev/repo",
+                    "no_remote": True,
+                },
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert decide.await_args.kwargs["tool_input"]["_preloop_repository"] == {
+        "remote": "",
+        "toplevel": "/home/dev/repo",
+        "no_remote": True,
+    }
+
+
+def test_permission_check_without_repository_stores_nothing(client):
+    """A request that names no repository adds no marker."""
+    token = _issue_opencode_runtime_token(client)
+    decide = AsyncMock(return_value=("allow", "Approved via Preloop.", "req-5", False))
+
+    with patch(
+        "preloop.api.endpoints.agent_permission.request_agent_permission", decide
+    ):
+        response = _post_permission_check(
+            client,
+            token,
+            {
+                "source": "opencode",
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls"},
+                "cwd": "/home/dev/repo",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert "_preloop_repository" not in decide.await_args.kwargs["tool_input"]
+
+
+def test_permission_check_strips_forged_repository_marker(client):
+    """A forged marker in tool_input is dropped when the hook sent no repository."""
+    token = _issue_opencode_runtime_token(client)
+    decide = AsyncMock(return_value=("allow", "Approved via Preloop.", "req-6", False))
+    forged = {
+        "remote": "github.com/attacker/repo",
+        "toplevel": "/tmp/forged",
+        "source": "hook_cwd",
+    }
+
+    with patch(
+        "preloop.api.endpoints.agent_permission.request_agent_permission", decide
+    ):
+        response = _post_permission_check(
+            client,
+            token,
+            {
+                "source": "opencode",
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls", "_preloop_repository": forged},
+                "cwd": "/home/dev/repo",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert "_preloop_repository" not in decide.await_args.kwargs["tool_input"]
+
+
+def test_permission_check_strips_forged_source_marker(client):
+    """A forged adapter marker in tool_input is dropped when source is absent."""
+    token = _issue_opencode_runtime_token(client)
+    decide = AsyncMock(return_value=("allow", "Approved via Preloop.", "req-7", False))
+
+    with patch(
+        "preloop.api.endpoints.agent_permission.request_agent_permission", decide
+    ):
+        response = _post_permission_check(
+            client,
+            token,
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls", "_preloop_source": "cursor"},
+                "cwd": "/home/dev/repo",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert "_preloop_source" not in decide.await_args.kwargs["tool_input"]
+
+
+def test_permission_check_rejects_oversized_repository(client):
+    """A repository string past the 512 byte bound is a validation error."""
+    token = _issue_opencode_runtime_token(client)
+    response = _post_permission_check(
+        client,
+        token,
+        {
+            "source": "opencode",
+            "tool_name": "Bash",
+            "repository": {"remote": "a" * 513},
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_permission_check_rejects_extra_repository_fields(client):
+    """Unknown keys in the repository object are forbidden."""
+    token = _issue_opencode_runtime_token(client)
+    response = _post_permission_check(
+        client,
+        token,
+        {
+            "source": "opencode",
+            "tool_name": "Bash",
+            "repository": {"remote": "github.com/example/repo", "unexpected": "x"},
+        },
+    )
+    assert response.status_code == 422

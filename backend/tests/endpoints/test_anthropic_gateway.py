@@ -385,16 +385,17 @@ def test_claude_code_session_header_reaches_gateway_service(
     )
     session_uuid = "26d2f152-2d10-49e5-a68c-e471d55aadad"
 
-    for headers, expected in (
-        ({"X-Claude-Code-Session-Id": session_uuid}, session_uuid),
+    for headers, expected, expected_explicit in (
+        ({"X-Claude-Code-Session-Id": session_uuid}, session_uuid, False),
         (
             {
                 "X-Claude-Code-Session-Id": session_uuid,
                 "X-Preloop-Session-Id": "explicit-run",
             },
             "explicit-run",
+            True,
         ),
-        ({}, None),
+        ({}, None, False),
     ):
         with patch(
             "preloop.api.endpoints.anthropic_gateway.OpenAIGatewayService"
@@ -416,6 +417,12 @@ def test_claude_code_session_header_reaches_gateway_service(
 
         assert response.status_code == 200
         assert service_cls.call_args.kwargs["client_session_id"] == expected
+        # Claude Code's vendor header is not the explicit opt-in; only
+        # X-Preloop-Session-Id is.
+        assert (
+            service_cls.call_args.kwargs["client_session_id_is_explicit"]
+            is expected_explicit
+        )
 
 
 _LITELLM_MESSAGE = {

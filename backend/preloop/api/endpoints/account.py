@@ -154,6 +154,7 @@ AGENT_CONTROL_SUPPORTED_AGENT_KINDS = {
     "opencode",
     "pi",
     "deepseek",
+    "codex",
 }
 AGENT_CONTROL_STATE_UNSUPPORTED = "unsupported"
 AGENT_CONTROL_STATE_INSTALL_PENDING = "install_pending"
@@ -727,6 +728,17 @@ def _managed_agent_control_fields(
         "supports_existing_session": control_enabled,
         "supports_voice": control_enabled and not active_session_only,
         "supports_interrupt": supports_interrupt,
+        "desktop": (
+            snapshot.get("desktop")
+            if snapshot.get("desktop") in ("vnc", "rdp")
+            else "none"
+        ),
+        "desktop_display": (
+            snapshot.get("desktop_display")
+            if snapshot.get("desktop") in ("vnc", "rdp")
+            and isinstance(snapshot.get("desktop_display"), str)
+            else None
+        ),
         "control_session_mode": session_mode,
         "control_last_heartbeat_at": heartbeat_at,
         "supported_input_modes": (
@@ -1058,6 +1070,22 @@ class AccountDetailsResponse(BaseModel):
     updated_at: str
 
 
+class SessionArtifactUsageByKind(BaseModel):
+    """Available plaintext bytes by artifact kind."""
+
+    screenshot: int
+    recording: int
+
+
+class SessionArtifactUsageResponse(BaseModel):
+    """Account session-artifact usage against the storage budget."""
+
+    used_bytes: int
+    budget_bytes: int
+    by_kind: SessionArtifactUsageByKind
+    evicted_count_30d: int
+
+
 class AccountDetailsUpdate(BaseModel):
     """Account details update request."""
 
@@ -1110,6 +1138,22 @@ async def get_account_details(
         hosted_minutes_remaining=getattr(account, "hosted_minutes_remaining", None),
         created_at=account.created_at.isoformat(),
         updated_at=account.updated_at.isoformat(),
+    )
+
+
+@router.get(
+    "/account/session-artifacts/usage",
+    response_model=SessionArtifactUsageResponse,
+)
+def get_session_artifact_usage(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    db: Session = Depends(get_db_session),
+) -> SessionArtifactUsageResponse:
+    """Return session-artifact bytes used, the budget, and recent evictions."""
+    from preloop.services.session_artifact_budget import account_usage
+
+    return SessionArtifactUsageResponse.model_validate(
+        account_usage(db, account_id=account.id)
     )
 
 
@@ -2635,6 +2679,7 @@ def _request_row_to_item(row: Any) -> RuntimeSessionRequestItem:
         total_tokens=int(row.total_tokens or 0),
         estimated_cost=float(row.estimated_cost or 0.0),
         endpoint=row.endpoint,
+        auth_subject_type=row.auth_subject_type,
         tools=tools,
         tools_total_schema_tokens=tools_total,
         # NULL cache columns stay NULL through the wire: the UI must say
