@@ -246,6 +246,40 @@ def decrypt(artifact: models.RuntimeSessionArtifact) -> bytes:
         raise ValueError("artifact_undecryptable") from exc
 
 
+def cleanup(db: Session, *, now: datetime) -> int:
+    """Clear ciphertext on expired artifacts that are not under legal hold.
+
+    A row under a legal hold is skipped whatever its ``expires_at`` says. The
+    hold has to block payload expiry, not only deletion of the session: a
+    screenshot a regulator may ask for has to still be downloadable.
+
+    Args:
+        db: Database session.
+        now: Instant compared with ``expires_at``. Rows expiring at ``now``
+            stay until a later pass.
+
+    Returns:
+        Rows whose ciphertext was cleared.
+    """
+    count = (
+        db.query(models.RuntimeSessionArtifact)
+        .filter(
+            models.RuntimeSessionArtifact.expires_at < now,
+            models.RuntimeSessionArtifact.legal_hold.is_(False),
+            models.RuntimeSessionArtifact.availability == "available",
+        )
+        .update(
+            {
+                models.RuntimeSessionArtifact.ciphertext: None,
+                models.RuntimeSessionArtifact.availability: "expired",
+            },
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    return int(count or 0)
+
+
 def mark_unavailable(
     db: Session,
     *,
