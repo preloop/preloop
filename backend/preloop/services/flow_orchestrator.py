@@ -1373,11 +1373,18 @@ class FlowExecutionOrchestrator:
         resolved_prompt = prompt_template
 
         # Create resolver context
+        from preloop.services.persistent_workspace import workspace_mode
+
         resolver_context = ResolverContext(
             db=self.db,
             trigger_event_data=self.trigger_event_data,
             flow_id=str(self.flow_id),
             execution_id=str(self.execution_log.id) if self.execution_log else "",
+            workspace_mode=workspace_mode(
+                agent_config=getattr(self.flow, "agent_config", None),
+                git_clone_config=getattr(self.flow, "git_clone_config", None),
+                trigger_event_data=self.trigger_event_data,
+            ),
         )
 
         # Extract all {{placeholder}} patterns, filters included. Dedup on
@@ -1483,6 +1490,10 @@ class FlowExecutionOrchestrator:
             resolver_registry.register(AccountResolver())
         if not resolver_registry.get("execution"):
             resolver_registry.register(ExecutionResolver())
+        if not resolver_registry.get("workspace"):
+            from preloop.services.prompt_resolvers.workspace import WorkspaceResolver
+
+            resolver_registry.register(WorkspaceResolver())
 
     def _sync_runtime_session(
         self,

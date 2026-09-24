@@ -27,6 +27,7 @@ from preloop.services.agent_control_dispatch import (
     dispatch_operator_message,
 )
 from preloop.services.agent_control_presence import control_heartbeat_is_fresh
+from preloop.services.persistent_workspace import workspace_metadata
 from preloop.services.runner_service import unwrap_agent_config
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,18 @@ def _flow_dispatch_metadata(
     resolved_timeout = timeout_seconds or execution_context.get("timeout_seconds")
     if resolved_timeout is not None:
         metadata["timeout_seconds"] = resolved_timeout
+    git_config = execution_context.get("git_clone_config")
+    try:
+        metadata["workspace"] = workspace_metadata(
+            git_clone_config=git_config,
+            trigger_event_data=execution_context.get("trigger_event_data"),
+        )
+    except Exception:
+        logger.warning(
+            "workspace metadata failed; sending clone_less",
+            exc_info=True,
+        )
+        metadata["workspace"] = {"mode": "clone_less"}
     return {key: value for key, value in metadata.items() if value is not None}
 
 
@@ -274,8 +287,20 @@ class AgentControlExecutor(AgentExecutor):
                 "persistent flow execution is missing a rendered prompt",
                 category="runner_error",
             )
+        dispatch_context = execution_context
+        # Copy the flow clone config only when the context omitted it.
+        # A confirmation nudge sets the key to None on purpose so the
+        # nudge does not repeat the original checkout. That path does not
+        # reach this executor while supports_confirmation_nudge is False.
+        if "git_clone_config" not in execution_context and self.flow is not None:
+            flow_git = getattr(self.flow, "git_clone_config", None)
+            if flow_git is not None:
+                dispatch_context = {
+                    **execution_context,
+                    "git_clone_config": flow_git,
+                }
         metadata = _flow_dispatch_metadata(
-            execution_context,
+            dispatch_context,
             timeout_seconds=self._timeout_seconds(),
         )
         try:

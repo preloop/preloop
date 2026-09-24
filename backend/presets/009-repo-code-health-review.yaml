@@ -1,4 +1,5 @@
 slug: repo-code-health-review
+supports_persistent: false
 name: Full Repo Code Health Review
 description: >-
   Whole-repository code health review across five lenses: correctness

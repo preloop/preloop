@@ -33,6 +33,8 @@ export interface FlowPresetRecord {
     enabled?: boolean;
     create_pull_request?: boolean;
   } | null;
+  /** Catalog marker. False or absent means the preset expects an ephemeral checkout. */
+  supports_persistent?: boolean;
 }
 
 export interface PresetChip {
@@ -251,8 +253,13 @@ export class PreloopFlowPresetPicker extends LitElement {
         border-bottom: none;
       }
 
-      .row:hover:not(.selected) {
-        background: var(--console-hover-tint);
+      .row.disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .row.disabled:hover {
+        background: transparent;
       }
 
       .row.selected {
@@ -356,6 +363,10 @@ export class PreloopFlowPresetPicker extends LitElement {
   @property({ type: Boolean })
   collapsed = false;
 
+  /** When true, presets that do not support persistent execution are disabled. */
+  @property({ type: Boolean })
+  persistent = false;
+
   @state()
   private search = '';
 
@@ -417,7 +428,23 @@ export class PreloopFlowPresetPicker extends LitElement {
     return this.presets.find((preset) => preset.id === this.selectedId);
   }
 
+  private presetDisabledReason(preset?: FlowPresetRecord): string {
+    if (!this.persistent || !preset) {
+      return '';
+    }
+    if (preset.supports_persistent === true) {
+      return '';
+    }
+    return 'This preset does not support persistent execution. It expects an ephemeral checkout.';
+  }
+
   private emitSelect(presetId: string): void {
+    if (presetId !== BLANK_PRESET_ID) {
+      const preset = this.presets.find((item) => item.id === presetId);
+      if (this.presetDisabledReason(preset)) {
+        return;
+      }
+    }
     this.dispatchEvent(
       new CustomEvent('preset-select', {
         detail: { presetId },
@@ -491,14 +518,20 @@ export class PreloopFlowPresetPicker extends LitElement {
   }) {
     const selected = this.selectedId === options.optionId;
     const active = this.activeId === options.optionId;
+    const disabledReason = this.presetDisabledReason(options.preset);
+    const disabled = Boolean(disabledReason);
     return html`
       <div
         id=${`preset-option-${options.optionId}`}
-        class=${classMap({ row: true, selected, active })}
+        class=${classMap({ row: true, selected, active, disabled })}
         role="option"
         data-preset-id=${options.optionId}
         aria-selected=${selected ? 'true' : 'false'}
-        @click=${() => this.emitSelect(options.optionId)}
+        aria-disabled=${disabled ? 'true' : 'false'}
+        title=${disabledReason || nothing}
+        @click=${() => {
+          if (!disabled) this.emitSelect(options.optionId);
+        }}
       >
         <sl-icon class="row-icon" name=${options.icon}></sl-icon>
         <div class="row-name">
@@ -517,7 +550,7 @@ export class PreloopFlowPresetPicker extends LitElement {
             ? html`<sl-icon class="row-check" name="check-lg"></sl-icon>`
             : html`<div></div>`
         }
-        <div class="row-desc">${options.description}</div>
+        <div class="row-desc">${disabledReason || options.description}</div>
       </div>
     `;
   }

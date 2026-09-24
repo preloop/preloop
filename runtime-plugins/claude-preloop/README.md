@@ -78,14 +78,30 @@ sidecar logs a loud warning instead of idling silently.
     "managed_agent_id": "...",
     "runtime_principal_id": "claude-code-...",
     "runtime_principal_name": "Claude Code",
-    "workspace_root": "/path/to/default/workspace"
+    "workspace_root": "/path/to/default/workspace",
+    "workspace_repositories_max": 20,
+    "workspace_fetch_timeout_ms": 120000
   }
 }
 ```
 
 Optional keys: `permission_mode`, `transcript_dir`, `observer_enabled`,
 `observer_poll_ms`, `turn_timeout_ms` (per-turn reply timeout, default 5
-minutes; a hung turn is rejected so the sidecar keeps serving commands).
+minutes; a hung turn is rejected so the sidecar keeps serving commands),
+`workspace_repositories_max` (how many persistent checkouts to keep,
+default 20; only clean directories are evicted), and
+`workspace_fetch_timeout_ms` (git fetch and clone timeout, default
+120000). `workspace_root` is the parent of those checkouts. A persistent
+flow with `metadata.workspace.mode` of `persistent_checkout` clones
+`<workspace_root>/<repository_slug>` once using the host's git
+credentials (the message never carries a token), fetches on that run
+and on later runs, then checks the commit out detached. A password in
+the clone URL is refused. `ssh://git@host/...` is allowed. A dirty tree
+fails the command instead of being reset. A persistent turn that leaves
+uncommitted edits with `spawn_worktree: false` fails the next run on that
+repository; use a worktree or commit/clean before the next turn. The sidecar records
+`preloop.managedcheckout` in git config so a later process still knows
+the tree is its own.
 
 ## Usage
 

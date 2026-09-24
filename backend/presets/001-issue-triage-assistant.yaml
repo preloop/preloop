@@ -1,4 +1,5 @@
 slug: issue-triage-assistant
+supports_persistent: false
 name: Issue Triage Assistant
 description: >-
   Improve a new or updated issue and apply its complexity tag using the

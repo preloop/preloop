@@ -31,6 +31,7 @@ import {
 import { QueryFactory, SessionManager, sdkQueryFactory } from "./sessions.js";
 import { SessionActivity, TranscriptObserver } from "./observer.js";
 import { LauncherBridge, OwnershipMode } from "./mode.js";
+import { WorkspaceManager, WorkspaceSpec } from "./workspace.js";
 
 export {
   ControlConfig,
@@ -40,6 +41,8 @@ export {
 } from "./config.js";
 export type { ConfigSource, LoadedConfig } from "./config.js";
 export { SessionManager } from "./sessions.js";
+export { WorkspaceManager } from "./workspace.js";
+export type { WorkspaceSpec } from "./workspace.js";
 export type { QueryFactory, SdkQueryHandle, SdkMessage, SdkUserMessage } from "./sessions.js";
 export { TranscriptObserver } from "./observer.js";
 export type { SessionActivity } from "./observer.js";
@@ -93,6 +96,8 @@ export class PreloopClaudeSidecar {
   private controlConfig?: ControlConfig;
   private socket?: WebSocket;
   private sessions?: SessionManager;
+  private workspaces?: WorkspaceManager;
+  private readonly workspaceByMessage = new Map<string, string>();
   private observer?: TranscriptObserver;
   private launcher = new LauncherBridge();
   private stopped = false;
@@ -319,12 +324,21 @@ export class PreloopClaudeSidecar {
     }
     try {
       const result = await this.dispatch(command);
-      const payload = {
+      const workspacePath = command.message_id
+        ? this.workspaceByMessage.get(command.message_id)
+        : undefined;
+      if (command.message_id) {
+        this.workspaceByMessage.delete(command.message_id);
+      }
+      const payload: Record<string, unknown> = {
         command_id: command.message_id,
         status: "completed",
         result,
         reply_text: typeof result === "string" ? result : "",
       };
+      if (workspacePath) {
+        payload.metadata = { workspace_path: workspacePath };
+      }
       this.rememberOutcome(command.message_id, {
         name: "command_result",
         payload,
@@ -335,6 +349,19 @@ export class PreloopClaudeSidecar {
         message_id: command.message_id,
         payload,
       });
+      if (workspacePath) {
+        this.sendOn(socket, {
+          type: "event",
+          name: "session_activity",
+          message_id: randomUUID(),
+          payload: {
+            workspace_path: workspacePath,
+            cwd: workspacePath,
+            last_event_at: new Date().toISOString(),
+            runtime: this.runtime,
+          },
+        });
+      }
     } catch (error) {
       const payload = {
         command_id: command.message_id,
@@ -396,20 +423,45 @@ export class PreloopClaudeSidecar {
     const spawnWorktree = Boolean(
       payload.spawn_worktree ?? payload.metadata?.["spawn_worktree"],
     );
-    const cwd =
+    const messageId = command.message_id;
+    let workspacePath: string | undefined;
+    const workspace = payload.metadata?.["workspace"];
+    let cwd =
       typeof payload.cwd === "string"
         ? payload.cwd
         : typeof payload.metadata?.["cwd"] === "string"
           ? String(payload.metadata["cwd"])
           : undefined;
-    return this.sessions.sendMessage({
-      text,
-      targetSessionId,
-      resumeSessionId,
-      metadata: payload.metadata,
-      spawnWorktree,
-      cwd,
-    });
+    if (workspace && typeof workspace === "object") {
+      const spec = workspace as WorkspaceSpec;
+      if (spec.mode === "persistent_checkout") {
+        const config = this.verify();
+        this.workspaces ??= new WorkspaceManager(config);
+        cwd = await this.workspaces.prepare(spec, spawnWorktree);
+        workspacePath = cwd;
+        if (messageId) {
+          this.workspaceByMessage.set(messageId, cwd);
+        }
+      }
+    }
+    const preparedCheckout = workspacePath !== undefined;
+    if (preparedCheckout && cwd) {
+      this.workspaces?.hold(cwd);
+    }
+    try {
+      return await this.sessions.sendMessage({
+        text,
+        targetSessionId,
+        resumeSessionId,
+        metadata: payload.metadata,
+        spawnWorktree: spawnWorktree && !preparedCheckout,
+        cwd,
+      });
+    } finally {
+      if (preparedCheckout && cwd) {
+        this.workspaces?.release(cwd);
+      }
+    }
   }
 
   currentMode(): OwnershipMode {

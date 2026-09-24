@@ -122,6 +122,68 @@ string as one audited `send_message` with `start_new_session=true`,
 | `trigger_event_source` | trigger payload |
 | `repository`, `ref` | trigger payload when present |
 | `timeout_seconds` | the flow's timeout budget |
+| `workspace` | checkout contract below. No credentials. |
+
+`workspace.mode` is also a prompt placeholder (`{{workspace.mode}}`).
+Ephemeral container runs render `ephemeral`. Persistent runs render
+`persistent_checkout` or `clone_less`.
+
+### Workspace
+
+When `git_clone_config.enabled` is true and the trigger or clone config
+names a repository, `workspace` is:
+
+| Key | Meaning |
+| --- | --- |
+| `mode` | `persistent_checkout` |
+| `repository_url` | credential-free clone URL |
+| `repository_slug` | `owner/repo` path under the sidecar `workspace_root` |
+| `default_branch` | repository default branch |
+| `ref` | branch the sidecar falls back to |
+| `fetch_ref` | pull or merge request ref to fetch first, when present |
+| `sha` | commit to check out detached, when the trigger has one |
+| `pr_number` | pull request or merge request number, when present |
+
+Clone depth and submodules are not part of this contract. The container
+clone path does not take them from `GitCloneConfig` either. A config with
+more than one repository stays `clone_less`: one workspace object cannot
+name every checkout the container would make.
+
+`repository_url` never contains a password. An `ssh://git@host/...` URL
+keeps the `git` user. Other schemes are dropped and the run is
+`clone_less` when no safe URL remains. A repository whose name cannot be
+a safe checkout directory name (unsafe or missing `repository_slug`) also
+stays `clone_less`: a persistent checkout is a directory named by the slug.
+
+When clone is disabled, or no repository can be resolved, `workspace` is
+`{mode: "clone_less"}`. The review reads the diff from the tracker.
+
+The Claude sidecar (`runtime-plugins/claude-preloop`) handles
+`persistent_checkout` as follows. The Codex sidecar implements the same
+contract separately.
+
+* Ensure `<workspace_root>/<repository_slug>` exists. Clone once, then
+  fetch on that same run and on later runs. Fetch tries `fetch_ref`, then
+  `sha`, then `ref`. The commit is checked out detached.
+* `spawn_worktree` creates a worktree after that checkout and runs the
+  turn there.
+* Git operations on one repository directory are serialized in-process.
+  Eviction takes the same lock and skips a directory whose turn is still
+  running.
+* A dirty tree fails the command with `command_error`. The sidecar does
+  not `reset --hard` or `clean` it. A persistent turn that leaves
+  uncommitted edits with `spawn_worktree: false` fails the next run on
+  that repository; use a worktree or commit/clean before the next turn.
+  Ownership is `preloop.managedcheckout` in the repository's git config,
+  so a restart still recognises a tree the sidecar checked out.
+* `ssh://git@host/...` is a valid clone URL. A password in the URL is
+  refused. `protocol.ext.allow` and `protocol.file.allow` are `never`.
+* The resolved path is `metadata.workspace_path` on `command_result`
+  (the ack handler does not store a payload) and on an
+  `event/session_activity`.
+* `workspace_repositories_max` (default 20) evicts the least recently
+  used clean checkout. Dirty directories are kept.
+* `workspace_fetch_timeout_ms` (default 120000) bounds fetch and clone.
 
 The envelope shape is the same one runtime plugins already accept (`text`,
 `metadata`, `input_mode`, `session_mode`, `start_new_session`, optional
@@ -177,13 +239,9 @@ operator endpoint uses the same
 
 ### Not covered yet
 
-* Workspace / clone contract on the persistent host (no `git_clone_config`
-  checkout, no `cwd`/`workspace_root` requirement).
-* Preset support matrix (PR-review and other presets still assume an
-  ephemeral clone).
-* CLI onboarding that installs the Codex sidecar and writes
-  `~/.codex/preloop-control.json` (tracked with issue #830's CLI slice). The
-  kind itself is already on the allow-list.
+* The Codex sidecar implementing this same persistent workspace contract.
+  Codex is already on the Agent Control allow-list, and CLI onboarding writes
+  `~/.codex/preloop-control.json`.
 
 ## Managed CLI/Desktop Agent Enrollment
 *   **Discovery Entry Point:** `preloop agents discover` can stay read-only (`--json`, `--no-onboard-prompt`) or hand off interactively into managed enrollment, with `--yes` available for auto-onboarding.

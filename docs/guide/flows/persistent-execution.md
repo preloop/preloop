@@ -43,10 +43,32 @@ picker; start refuses them because they cannot open a new session.
 See [Flow execution on a persistent agent](../../architecture/agent-control.md#flow-execution-on-a-persistent-agent)
 for the envelope, binding, and status table.
 
+## Checkout and clone-less
+
+Persistent execution sends a `workspace` object on the `send_message`.
+
+* **Checkout** (`workspace.mode` is `persistent_checkout`): the flow has git
+  clone enabled and the trigger names a repository. The sidecar keeps
+  `<workspace_root>/<repository_slug>` on the agent host, clones it once
+  with the host's own git credentials, then fetches and checks out later
+  runs. No tracker token is sent to the sidecar.
+* **Clone-less** (`workspace.mode` is `clone_less`): git clone is disabled,
+  no repository could be resolved, or the flow lists more than one
+  repository. The preset must not run git. The pull request reviewer
+  reads the diff from the tracker and says so in the review.
+* **Ephemeral** runs are unchanged. Their prompt renders
+  `workspace.mode` as `ephemeral` and the container still clones into
+  its own workspace.
+
+Presets declare `supports_persistent`. The marker means the prompt was
+checked against persistent modes. It does not mean the host captures
+container result files. When Persistent is selected, the flow form
+disables presets that do not support it. The pull request reviewer
+supports it. Presets that write a container result path, or that still
+assume an ephemeral checkout, do not.
+
 ## What this does not do yet
 
-Persistent mode does not check out the trigger repository onto the agent host,
-does not apply preset workspace assumptions, and does not add Codex to the
-Agent Control allow-list. Those are separate contracts. Until they exist, pick
-persistent only when the target agent already has whatever files and tools the
-prompt needs.
+Persistent mode does not forward git credentials, and it does not add
+Codex to the Agent Control allow-list. The Codex sidecar is a separate
+contract that should follow the same `workspace` metadata.

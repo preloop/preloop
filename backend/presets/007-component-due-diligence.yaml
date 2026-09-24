@@ -1,4 +1,5 @@
 slug: component-due-diligence
+supports_persistent: false
 name: Component Due Diligence Record
 description: >-
   Risk-based due diligence on ONE integrated third-party component

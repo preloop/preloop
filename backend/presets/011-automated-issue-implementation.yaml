@@ -1,4 +1,5 @@
 slug: automated-issue-implementation
+supports_persistent: false
 name: Automated Issue Implementation
 description: >-
   Turn a tracker issue into a working change: read the issue, implement it,

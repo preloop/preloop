@@ -1,4 +1,5 @@
 slug: pull-request-reviewer
+supports_persistent: true
 name: Pull Request Reviewer
 description: >-
   Automatically review pull requests for code quality, potential bugs, security
@@ -107,20 +108,40 @@ prompt_template: |
   2. **INCREMENTAL** — the trigger type is `pull_request_updated` (see the
      Trigger field above) AND a previous Preloop review exists AND its summary
      contains a `<!-- preloop-review:reviewed-sha:... -->` marker.
-     Verify the recorded SHA is usable, using git in the cloned repository:
+     Workspace mode for this run: {{workspace.mode}}
+
+     When workspace.mode is persistent_checkout, verify the recorded SHA in
+     the current working directory (the persistent checkout). Do not assume
+     a container path:
+     - `git cat-file -e <recorded_sha>` in cwd. The commit must exist.
+     - `git merge-base --is-ancestor <recorded_sha> HEAD` must succeed.
+       Failure means a force-push or rebase rewrote history.
+     If BOTH succeed: compute the delta with
+     `git diff <recorded_sha>..HEAD` and `git diff --name-only <recorded_sha>..HEAD`
+     in cwd.
+
+     When workspace.mode is clone_less, skip the git checks. The diff comes
+     from the tracker (`get_pull_request` in Step 1.1). State in the review
+     that the diff came from the tracker. If that diff is missing, fall back
+     to FULL. Never guess a delta.
+
+     When workspace.mode is ephemeral, verify the recorded SHA in the cloned
+     repository:
      - `git cat-file -e <recorded_sha>` — the commit must exist in the clone
      - `git merge-base --is-ancestor <recorded_sha> HEAD` — must succeed;
        failure means a force-push or rebase rewrote history
      If BOTH succeed: compute the delta with
      `git diff <recorded_sha>..HEAD` and `git diff --name-only <recorded_sha>..HEAD`.
-     In this scope:
+     If EITHER git check fails, or the marker SHA cannot be parsed, or the git
+     commands error for any reason: fall back to FULL. Never guess a delta.
+
+     In the INCREMENTAL scope (persistent_checkout or ephemeral, after the
+     checks succeed):
      - Phase 2 analyzes ONLY the hunks in that delta diff (not the full PR diff).
      - Phase 3 re-verifies ONLY previous findings whose file appears in the
        changed-files list. Previous findings in unchanged files KEEP their
-       previous status unchanged — do not re-read those files, do not touch
+       previous status unchanged. Do not re-read those files, do not touch
        their comments.
-     If EITHER git check fails, or the marker SHA cannot be parsed, or the git
-     commands error for any reason: fall back to FULL. Never guess a delta.
 
   3. **FULL** — everything else (first review of a large PR, re-review with no
      usable SHA marker, force-push/rebase detected). Review the entire diff
@@ -729,12 +750,16 @@ prompt_template: |
   ```
 
   **The `reviewed-sha` marker is REQUIRED**: it must contain the full 40-char
-  SHA of the commit you reviewed (`git rev-parse HEAD` in the clone if the
-  trigger payload lacks it). The next review run uses it to compute an
-  incremental diff (Step 1.2.2). Do not omit or abbreviate it. On INCREMENTAL
-  runs, carry forward the Issues/Resolved entries for findings that were out
-  of scope (unchanged files) exactly as they appeared in the previous summary,
-  and update the marker to the new HEAD SHA.
+  SHA of the commit you reviewed. When workspace.mode is ephemeral, read it
+  with `git rev-parse HEAD` in the clone if the trigger payload lacks it.
+  When workspace.mode is persistent_checkout, read it with `git rev-parse HEAD`
+  in the current working directory if the trigger payload lacks it. When
+  workspace.mode is clone_less, use the SHA from the trigger payload or from
+  `get_pull_request`. Do not run git. The next review run uses the marker to
+  compute an incremental diff (Step 1.2.2). Do not omit or abbreviate it. On
+  INCREMENTAL runs, carry forward the Issues/Resolved entries for findings
+  that were out of scope (unchanged files) exactly as they appeared in the
+  previous summary, and update the marker to the new HEAD SHA.
 
   **Step 6.4: Create or Update Summary Comment**
 
@@ -815,8 +840,12 @@ prompt_template: |
   one exception (a single stamp refresh).
 
   Use the commit SHA from the trigger event (extracted in Phase 1) to
-  reference the exact commit being reviewed. If you don't have a SHA,
-  use `git rev-parse HEAD` from the cloned repository.
+  reference the exact commit being reviewed. If you don't have a SHA:
+  when workspace.mode is ephemeral, use `git rev-parse HEAD` from the
+  cloned repository; when workspace.mode is persistent_checkout, use
+  `git rev-parse HEAD` in the current working directory; when
+  workspace.mode is clone_less, do not run git. Use the SHA from the
+  tracker and state in the review that the diff came from the tracker.
 
   **Step 7.1: Resolve ADDRESSED Issues**
 
@@ -895,8 +924,11 @@ prompt_template: |
 
   **Step 8.2: Record Completion (MANDATORY FINAL ACT)**
 
-  As your very last action, write /workspace/result.json — this file is how
-  Preloop confirms the review completed. It must be valid JSON, a single
+  When {{workspace.mode}} is ephemeral, write /workspace/result.json.
+  That file is how Preloop confirms the review completed. When
+  {{workspace.mode}} is persistent_checkout or clone_less, do not write
+  a container result path. Put the same JSON object in your final reply.
+  That reply is the confirmation. It must be valid JSON, a single
   top-level object:
 
   {
@@ -936,7 +968,10 @@ prompt_template: |
     mid-run that this review depends on, and a second fetch re-pays the full
     diff plus all comments.
   - Anything git-related (delta diffs, SHAs, file contents) comes from the
-    cloned repository, not from re-fetching the PR.
+    checkout when workspace.mode is ephemeral (the cloned repository) or
+    persistent_checkout (the current working directory), not from
+    re-fetching the PR. When workspace.mode is clone_less, those facts
+    come from the tracker diff. State that in the review.
 
   ⚠️ **READ DISCIPLINE** (largest cost lever — treat as hard rules)
   - Respect the bounded doc reads (Step 1.4), the 3-file context cap

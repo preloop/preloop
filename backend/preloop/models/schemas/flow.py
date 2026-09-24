@@ -1242,6 +1242,9 @@ class FlowResponse(FlowBase):
     # Catalog identity for built-in presets. Null for account flows and for
     # cloned presets, whose name is user-editable and is not identity.
     slug: Optional[str] = None
+    # Catalog marker copied from the preset YAML. Not a flow column: account
+    # copies inherit it from the global preset they were cloned from.
+    supports_persistent: bool = False
     # Template tracking - expose in response for UI to show update notifications
     source_preset_id: Optional[UUID] = None
     prompt_customized: bool = False

@@ -140,4 +140,73 @@ describe('PreloopFlowForm persistent target picker', () => {
       )
     ).to.not.exist;
   });
+
+  it('disables presets that do not support persistent execution', async () => {
+    const element = await mount();
+    (element as unknown as { presets: unknown[] }).presets = [
+      {
+        id: 'preset-review',
+        name: 'Pull Request Reviewer',
+        description: 'Reviews a pull request.',
+        supports_persistent: true,
+      },
+      {
+        id: 'preset-impl',
+        name: 'Automated Issue Implementation',
+        description: 'Implements an issue in a clone.',
+        supports_persistent: false,
+      },
+    ];
+    element.requestUpdate();
+    await element.updateComplete;
+    const picker = element.shadowRoot?.querySelector(
+      'preloop-flow-preset-picker'
+    ) as HTMLElement & { updateComplete: Promise<unknown> };
+    await picker.updateComplete;
+    const rows = [
+      ...(picker.shadowRoot?.querySelectorAll('[role="option"]') || []),
+    ];
+    const impl = rows.find((row) =>
+      (row.textContent || '').includes('Automated Issue Implementation')
+    );
+    const review = rows.find((row) =>
+      (row.textContent || '').includes('Pull Request Reviewer')
+    );
+    expect(impl?.getAttribute('aria-disabled')).to.equal('true');
+    expect(impl?.textContent || '').to.contain(
+      'does not support persistent execution'
+    );
+    expect(review?.getAttribute('aria-disabled')).to.equal('false');
+  });
+
+  it('clears an unsupported preset when switching to persistent', async () => {
+    const element = await mount();
+    const form = element as unknown as {
+      presets: unknown[];
+      pickerSelectedId: string;
+      sourcePresetId: string | null;
+      flowExecutionPath: string;
+      applyExecutionPath: (path: 'ephemeral' | 'persistent') => void;
+      persistentPresetNotice: string;
+      requestUpdate: () => void;
+      updateComplete: Promise<unknown>;
+    };
+    form.presets = [
+      {
+        id: 'preset-impl',
+        name: 'Automated Issue Implementation',
+        supports_persistent: false,
+      },
+    ];
+    form.pickerSelectedId = 'preset-impl';
+    form.sourcePresetId = 'preset-impl';
+    form.applyExecutionPath('persistent');
+    form.requestUpdate();
+    await form.updateComplete;
+    expect(form.pickerSelectedId).to.equal('');
+    expect(form.sourcePresetId).to.equal(null);
+    expect(form.persistentPresetNotice).to.contain(
+      'does not support persistent execution'
+    );
+  });
 });
