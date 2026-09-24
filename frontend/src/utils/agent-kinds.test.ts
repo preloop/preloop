@@ -8,6 +8,9 @@ import {
 
 describe('agent kinds', () => {
   it('identifies Pi and DeepSeek Harness independently of model providers', () => {
+    expect(getAgentKindPresentation('copilot_cli')?.label).to.equal(
+      'Copilot CLI'
+    );
     expect(getAgentKindPresentation('pi')?.label).to.equal('Pi');
     expect(getAgentKindPresentation('deepseek')?.label).to.equal(
       'DeepSeek Harness'
@@ -33,6 +36,7 @@ describe('agent kinds', () => {
       'cursor',
       'windsurf',
       'vscode',
+      'copilot_cli',
       'desktop_agent',
     ]) {
       expect(isCliOnboardableAgentKind(kind), kind).to.equal(true);
