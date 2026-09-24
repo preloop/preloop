@@ -284,6 +284,16 @@ def test_permission_check_rejects_oversized_repository(client):
         },
     )
     assert response.status_code == 422
+    multibyte = _post_permission_check(
+        client,
+        token,
+        {
+            "source": "opencode",
+            "tool_name": "Bash",
+            "repository": {"toplevel": "é" * 300},
+        },
+    )
+    assert multibyte.status_code == 422, multibyte.text
 
 
 def test_permission_check_rejects_extra_repository_fields(client):

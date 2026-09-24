@@ -35,6 +35,8 @@ import {
   getGatewayEventUserRequest,
 } from '../utils/session-observer';
 import { outcomeLabel } from '../utils/outcome-label';
+import { getApprovalRepository } from '../utils/approval-identity';
+import './repository-chip';
 import { getExampleSessionOptimization } from '../api';
 import './preloop-gateway-event';
 import './session-optimization-panel';
@@ -5511,6 +5513,13 @@ export class SessionReplayPanel extends LitElement {
           <span class="tool-row-name">
             ${item.tool_name || item.title || 'Tool call'}
           </span>
+          ${
+            getApprovalRepository(item.metadata)
+              ? html`<repository-chip
+                  .toolArgs=${item.metadata}
+                ></repository-chip>`
+              : nothing
+          }
           ${
             item.server_name
               ? html`<span class="event-meta">${item.server_name}</span>`

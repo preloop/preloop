@@ -566,6 +566,52 @@ describe('ApprovalView', () => {
     expect(buttons?.length).to.equal(2);
   });
 
+  it('shows a repository chip and keeps the marker out of arguments', async () => {
+    fetchStub = createFetchStub({
+      request: pendingRequest({
+        tool_args: {
+          command: 'git status',
+          _preloop_repository: {
+            remote: 'github.com/example/repo',
+            toplevel: '/tmp/example',
+            relative_path: 'sub/dir',
+            source: 'hook_cwd',
+          },
+        },
+      }),
+    });
+    const element = (await fixture(
+      html`<approval-view .requestId=${'req-1'}></approval-view>`
+    )) as ApprovalView;
+    await waitUntil(() => !(element as any).loading, 'still loading');
+    await element.updateComplete;
+
+    const host = element.shadowRoot?.querySelector('repository-chip') as
+      | (HTMLElement & {
+          updateComplete: Promise<boolean>;
+          renderRoot: ShadowRoot;
+        })
+      | null;
+    expect(host).to.not.equal(null);
+    await host!.updateComplete;
+    const chip = host!.renderRoot.querySelector(
+      '[data-testid="repository-chip"]'
+    );
+    expect(chip?.querySelector('.remote')?.textContent?.trim()).to.equal(
+      'example/repo'
+    );
+    expect(
+      chip
+        ?.querySelector('[data-testid="repository-relative"]')
+        ?.textContent?.trim()
+    ).to.equal('sub/dir');
+    expect(chip?.getAttribute('title')).to.contain('/tmp/example');
+    expect(element.shadowRoot?.textContent).to.contain('git status');
+    expect(element.shadowRoot?.textContent).to.not.contain(
+      '_preloop_repository'
+    );
+  });
+
   it('renders the resolved state for an approved request', async () => {
     fetchStub = createFetchStub({
       request: pendingRequest({

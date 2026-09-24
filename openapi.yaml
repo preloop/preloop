@@ -14362,7 +14362,8 @@ components:
         no_remote:
           type: boolean
           title: No Remote
-          description: True when the work tree has no 'origin' remote.
+          description: True when the work tree has no origin, or the origin is not
+            a host/owner/repo identity (a local path or file:// remote).
           default: false
       additionalProperties: false
       type: object

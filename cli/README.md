@@ -468,6 +468,8 @@ A shorter budget can deny before a longer workflow completes. Host-enforced
 limits and proxy timeouts can still cut a request short. OpenCode plugin
 onboarding retains its separate account-workflow timeout configuration.
 
+**Repository context.** When the hook event's cwd is inside a git work tree, the hook resolves the toplevel, the `origin` remote, and the path of cwd relative to the toplevel, within 500 ms, and sends that as `repository`. A timeout or any git error omits the field. No `origin` remote is recorded as `no_remote`. A directory outside a work tree records nothing. The value is an observation of the hook cwd, not of tool arguments, and it does not change policy evaluation. Linked worktrees report the worktree toplevel. Only `origin` is read. Strings are bounded to 512 bytes, and the remote is normalized to `host/owner/repo` with credentials removed. See [Tool configuration and approval workflow](../docs/architecture/approvals.md).
+
 Coverage follows the host's actual hook events: Claude Code uses `PreToolUse`;
 Cursor uses `beforeShellExecution`, `beforeMCPExecution`, and `preToolUse`, with
 deduplication only while the corresponding dedicated hook is installed. Cursor

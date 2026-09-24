@@ -11,6 +11,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { AuthedElement, fetchWithAuth, PermissionError } from '../../api';
 import { permissionErrorFromResponse } from '../../permissions';
 import { parseUTCDate } from '../../utils/date';
+import { withoutApprovalMetadata } from '../../utils/approval-identity';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -833,7 +834,16 @@ export class AuditView extends AuthedElement {
             : nothing
         }
         ${preferredItems} ${remainingItems} ${recipientChips}
-        ${this._renderJsonDetail('Arguments', details.tool_args)}
+        ${this._renderJsonDetail(
+          'Arguments',
+          details.tool_args &&
+            typeof details.tool_args === 'object' &&
+            !Array.isArray(details.tool_args)
+            ? withoutApprovalMetadata(
+                details.tool_args as Record<string, unknown>
+              )
+            : details.tool_args
+        )}
         ${this._renderJsonDetail('Result preview', details.result_preview)}
         ${this._renderJsonDetail('Budget', details.budget)}
         ${this._renderJsonDetail('New Value', details.new_value)}
@@ -1051,8 +1061,15 @@ export class AuditView extends AuthedElement {
   }
 
   private _getArgsSummary(details: Record<string, any> | null): string {
-    if (!details?.tool_args) return '';
-    const args = details.tool_args;
+    if (
+      !details?.tool_args ||
+      typeof details.tool_args !== 'object' ||
+      Array.isArray(details.tool_args)
+    )
+      return '';
+    const args = withoutApprovalMetadata(
+      details.tool_args as Record<string, unknown>
+    );
     const entries = Object.entries(args);
     if (entries.length === 0) return '';
     const parts = entries.slice(0, 3).map(([k, v]) => {

@@ -13,7 +13,7 @@ from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from preloop.api.auth.jwt import (
     _authenticate_with_api_key,
@@ -165,8 +165,19 @@ class AgentPermissionRepository(BaseModel):
         description="How the identity was observed, e.g. 'hook_cwd'.",
     )
     no_remote: bool = Field(
-        False, description="True when the work tree has no 'origin' remote."
+        False,
+        description=(
+            "True when the work tree has no origin, or the origin is not a "
+            "host/owner/repo identity (a local path or file:// remote)."
+        ),
     )
+
+    @field_validator("remote", "toplevel", "relative_path", "source")
+    @classmethod
+    def _at_most_512_bytes(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and len(value.encode("utf-8")) > 512:
+            raise ValueError("must be at most 512 bytes")
+        return value
 
 
 class AgentPermissionCheckRequest(BaseModel):

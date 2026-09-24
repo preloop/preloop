@@ -17,6 +17,7 @@ import {
   parseUTCDate,
 } from '../../utils/date';
 import { approvalRequesterName } from '../../utils/approval-identity';
+import '../../components/repository-chip';
 import {
   APPROVAL_REQUESTS_PAGE_LIMIT,
   approvalStatusLabel,
@@ -1593,6 +1594,7 @@ export class ApprovalsView extends AuthedElement {
                 <sl-icon name="cpu"></sl-icon>
                 ${approvalRequesterName(request)}
               </sl-badge>
+              <repository-chip .toolArgs=${request.tool_args}></repository-chip>
               ${
                 request.auto_approved_reason
                   ? html`<sl-tooltip
