@@ -936,6 +936,7 @@ export interface RuntimeSessionRequestItem {
   total_tokens: number;
   estimated_cost: number;
   endpoint: string | null;
+  auth_subject_type?: string | null;
   tools: RuntimeSessionRequestTool[];
   tools_total_schema_tokens: number;
   cache?: RuntimeSessionRequestCache;

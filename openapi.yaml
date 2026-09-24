@@ -26259,6 +26259,11 @@ components:
           - type: string
           - type: 'null'
           title: Endpoint
+        auth_subject_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Auth Subject Type
         tools:
           items:
             $ref: '#/components/schemas/RuntimeSessionRequestTool'
