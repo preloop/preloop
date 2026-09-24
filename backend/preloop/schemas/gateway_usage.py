@@ -826,6 +826,11 @@ class RuntimeSessionRequestItem(BaseModel):
     total_tokens: int = 0
     estimated_cost: float = 0.0
     endpoint: Optional[str] = None
+    #: Credential class that authorized the request (``api_key``,
+    #: ``oauth_mcp_token`` or ``user_token``). API consumers can tell a
+    #: plain-key session from a principal session; the console timeline
+    #: does not render this field yet.
+    auth_subject_type: Optional[str] = None
     tools: List[RuntimeSessionRequestTool] = Field(default_factory=list)
     tools_total_schema_tokens: int = 0
     cache: RuntimeSessionRequestCache = Field(

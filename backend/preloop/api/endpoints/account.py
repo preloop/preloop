@@ -2678,6 +2678,7 @@ def _request_row_to_item(row: Any) -> RuntimeSessionRequestItem:
         total_tokens=int(row.total_tokens or 0),
         estimated_cost=float(row.estimated_cost or 0.0),
         endpoint=row.endpoint,
+        auth_subject_type=row.auth_subject_type,
         tools=tools,
         tools_total_schema_tokens=tools_total,
         # NULL cache columns stay NULL through the wire: the UI must say
