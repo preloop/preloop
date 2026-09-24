@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `FLOW_EVIDENCE_LOG_PLAINTEXT` (default true) keeps today's Kubernetes
+  behavior: without a direct-upload token, `result.json`, the evidence pack,
+  and the workspace snapshot are still written to the pod log as base64.
+  Set it false, and use direct upload, when those bytes must not be in pod
+  logs. If plaintext is off and an execution has no upload token, the
+  wrapper fails closed: no artifact bytes, and an evidence receipt of
+  `failed` / `plaintext_disabled`. Encrypted log transport remains a
+  separate decision in #268.
+
 - `preloop agents install-runtime --desktop` installs a loopback-only headless
   desktop (Xvfb on `:99`, x11vnc on `127.0.0.1:5900`, Chromium) and exports
   `DISPLAY=:99`. `POST /api/v1/agent-deployments` accepts `desktop` and reports
