@@ -249,6 +249,28 @@ def test_permission_check_strips_forged_repository_marker(client):
     assert "_preloop_repository" not in decide.await_args.kwargs["tool_input"]
 
 
+def test_permission_check_strips_forged_source_marker(client):
+    """A forged adapter marker in tool_input is dropped when source is absent."""
+    token = _issue_opencode_runtime_token(client)
+    decide = AsyncMock(return_value=("allow", "Approved via Preloop.", "req-7", False))
+
+    with patch(
+        "preloop.api.endpoints.agent_permission.request_agent_permission", decide
+    ):
+        response = _post_permission_check(
+            client,
+            token,
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls", "_preloop_source": "cursor"},
+                "cwd": "/home/dev/repo",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert "_preloop_source" not in decide.await_args.kwargs["tool_input"]
+
+
 def test_permission_check_rejects_oversized_repository(client):
     """A repository string past the 512 byte bound is a validation error."""
     token = _issue_opencode_runtime_token(client)

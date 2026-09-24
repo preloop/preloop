@@ -267,8 +267,11 @@ async def agent_permission_check(
     identity = await run_db_off_loop(lambda: _resolve_permission_identity(token))
 
     tool_input = dict(payload.tool_input or {})
-    # Caller-supplied tool arguments must not be able to forge the trust marker.
+    # Caller-supplied tool arguments must never carry the trust markers: only
+    # the validated ``source``/``repository`` fields may set them, so a native
+    # tool argument cannot spoof the adapter or repository chip.
     tool_input.pop("_preloop_repository", None)
+    tool_input.pop("_preloop_source", None)
     if payload.cwd:
         tool_input["cwd"] = payload.cwd
     # The approval model intentionally has no adapter column. Preserve the
