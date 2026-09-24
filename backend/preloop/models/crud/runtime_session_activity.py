@@ -54,7 +54,7 @@ def _browser_step_metadata(step: BrowserStepIn) -> dict[str, Any]:
     for key in ("url", "target", "reasoning"):
         value = metadata.get(key)
         if isinstance(value, str) and value:
-            metadata[key], _changed = _redact_browser_text(value)
+            metadata[key] = _redact_browser_text(value)[0]
     return metadata
 
 
@@ -185,7 +185,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
 
         metadata = _browser_step_metadata(step)
         locator = metadata.get("url") or metadata.get("target") or ""
-        summary, _redacted = _redact_browser_text(f"{step.action} {locator}")
+        summary = _redact_browser_text(f"{step.action} {locator}")[0]
         activity_timestamp = step.occurred_at or datetime.now(timezone.utc)
         if activity_timestamp.tzinfo is None:
             activity_timestamp = activity_timestamp.replace(tzinfo=timezone.utc)

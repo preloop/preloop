@@ -539,7 +539,7 @@ def index_browser_step(
     body = f"{action} {url} {target} {reasoning}".strip()
     content_captured = bool(settings.model_gateway_capture_content)
     if content_captured:
-        body, _redacted = redact_text(body)
+        body = redact_text(body)[0]
         text = f"kind: {SOURCE_KIND_BROWSER_STEP}\n{body}"
     else:
         text = _descriptor(kind=SOURCE_KIND_BROWSER_STEP, role="browser", text=body)
