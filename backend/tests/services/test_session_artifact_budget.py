@@ -236,7 +236,77 @@ def test_recording_is_evicted_before_an_older_screenshot(
     db_session.refresh(step)
     assert screenshot.availability == "available"
     assert recording.availability == "evicted"
+    assert step.metadata_["screenshot"] is None
+
+
+def test_screenshot_eviction_marks_the_browser_step(
+    db_session: Session, account_id: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only an evicted screenshot stamps the browser step's screenshot field."""
+    monkeypatch.setattr(settings, "runtime_session_artifact_account_max_bytes", _CHUNK)
+    session = _session(db_session, account_id)
+    step = _browser_step(
+        db_session, account_id=account_id, runtime_session_id=session.id
+    )
+    crud.store(
+        db_session,
+        account_id=account_id,
+        runtime_session_id=session.id,
+        kind="screenshot",
+        source="browser_use",
+        source_ref="step-1",
+        content_type="image/png",
+        plaintext=b"x" * _CHUNK,
+        manifest={},
+        activity_id=step.id,
+    )
+    crud.store(
+        db_session,
+        account_id=account_id,
+        runtime_session_id=session.id,
+        kind="screenshot",
+        source="browser_use",
+        source_ref="step-2",
+        content_type="image/png",
+        plaintext=b"y" * _CHUNK,
+        manifest={},
+    )
+    db_session.refresh(step)
     assert step.metadata_["screenshot"]["availability"] == "evicted"
+
+
+def test_exhausted_budget_publishes_nothing(
+    db_session: Session, account_id: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store that still cannot fit does not announce evictions it will roll back."""
+    monkeypatch.setattr(settings, "runtime_session_artifact_account_max_bytes", 100)
+    emitted: list[dict[str, Any]] = []
+    monkeypatch.setattr(budget, "emit_account_event", emitted.append)
+    session = _session(db_session, account_id)
+    crud.store(
+        db_session,
+        account_id=account_id,
+        runtime_session_id=session.id,
+        kind="recording",
+        source="browser_use",
+        source_ref="clip-small",
+        content_type="video/webm",
+        plaintext=b"x" * 40,
+        manifest={},
+    )
+    with pytest.raises(ValueError, match="storage_budget_exhausted"):
+        crud.store(
+            db_session,
+            account_id=account_id,
+            runtime_session_id=session.id,
+            kind="recording",
+            source="browser_use",
+            source_ref="clip-large",
+            content_type="video/webm",
+            plaintext=b"y" * 120,
+            manifest={},
+        )
+    assert emitted == []
 
 
 def test_one_session_update_per_affected_session(

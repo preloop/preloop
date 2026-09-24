@@ -43,9 +43,12 @@ def enforce_account_budget(
     Alphabetical ``kind DESC`` would evict screenshots first (``screenshot``
     sorts after ``recording``), so the query ranks ``recording`` ahead
     explicitly. Each eviction clears ciphertext, writes an
-    ``artifact_evicted`` activity, and when the artifact points at a
-    ``browser_step`` updates that step's ``metadata.screenshot.availability``.
-    One ``runtime_session_updated`` event is emitted per affected session.
+    ``artifact_evicted`` activity, and when the evicted artifact is a
+    screenshot with an ``activity_id`` updates that browser step's
+    ``metadata.screenshot.availability``. Recording evictions do not stamp
+    the screenshot field. Realtime events are not published here: a failed
+    store rolls this transaction back, so :func:`notify_evicted` runs only
+    after ``store`` commits.
 
     Args:
         db: Database session. Eviction writes are flushed, not committed.
@@ -57,20 +60,16 @@ def enforce_account_budget(
 
     Raises:
         ValueError: ``storage_budget_exhausted`` when nothing unheld remains
-            and the budget is still exceeded.
+            and the budget is still exceeded. Nothing is published.
     """
     budget = int(settings.runtime_session_artifact_account_max_bytes)
+    used = crud_runtime_session_artifact.account_bytes(db, account_id=account_id)
+    if used + incoming_bytes <= budget:
+        return []
     evicted: list[models.RuntimeSessionArtifact] = []
-    affected: list[UUID] = []
-    while (
-        crud_runtime_session_artifact.account_bytes(db, account_id=account_id)
-        + incoming_bytes
-        > budget
-    ):
-        victim = _oldest_evictable(db, account_id=account_id)
-        if victim is None:
-            _emit_updated(db, account_id=account_id, session_ids=affected)
-            raise ValueError("storage_budget_exhausted")
+    for victim in _evictable(db, account_id=account_id):
+        if used + incoming_bytes <= budget:
+            break
         cleared = crud_runtime_session_artifact.mark_unavailable(
             db,
             account_id=account_id,
@@ -79,8 +78,8 @@ def enforce_account_budget(
             commit=False,
         )
         if not cleared:
-            _emit_updated(db, account_id=account_id, session_ids=affected)
-            raise ValueError("storage_budget_exhausted")
+            continue
+        used -= int(victim.size_bytes)
         crud_runtime_session_activity.log_artifact_evicted(
             db,
             account_id=account_id,
@@ -89,7 +88,7 @@ def enforce_account_budget(
             kind=victim.kind,
             commit=False,
         )
-        if victim.activity_id is not None:
+        if victim.kind == "screenshot" and victim.activity_id is not None:
             crud_runtime_session_activity.set_browser_step_screenshot_availability(
                 db,
                 account_id=account_id,
@@ -98,10 +97,31 @@ def enforce_account_budget(
                 commit=False,
             )
         evicted.append(victim)
-        if victim.runtime_session_id not in affected:
-            affected.append(victim.runtime_session_id)
-    _emit_updated(db, account_id=account_id, session_ids=affected)
+    if used + incoming_bytes > budget:
+        raise ValueError("storage_budget_exhausted")
     return evicted
+
+
+def notify_evicted(
+    db: Session,
+    *,
+    account_id: UUID,
+    artifacts: list[models.RuntimeSessionArtifact],
+) -> None:
+    """Publish one ``runtime_session_updated`` per session that was evicted.
+
+    Call this only after the eviction transaction has committed.
+
+    Args:
+        db: Database session.
+        account_id: Account that owns the artifacts.
+        artifacts: Rows cleared by :func:`enforce_account_budget`.
+    """
+    session_ids: list[UUID] = []
+    for artifact in artifacts:
+        if artifact.runtime_session_id not in session_ids:
+            session_ids.append(artifact.runtime_session_id)
+    _emit_updated(db, account_id=account_id, session_ids=session_ids)
 
 
 def account_usage(db: Session, *, account_id: UUID) -> dict[str, Any]:
@@ -146,10 +166,8 @@ def account_usage(db: Session, *, account_id: UUID) -> dict[str, Any]:
     }
 
 
-def _oldest_evictable(
-    db: Session, *, account_id: UUID
-) -> models.RuntimeSessionArtifact | None:
-    """Oldest available artifact that is not held, recordings first."""
+def _evictable(db: Session, *, account_id: UUID) -> list[models.RuntimeSessionArtifact]:
+    """Available unheld artifacts, recordings first, then oldest."""
     session_held = (
         select(models.RuntimeSession.id)
         .where(
@@ -175,7 +193,7 @@ def _oldest_evictable(
             models.RuntimeSessionArtifact.created_at.asc(),
             models.RuntimeSessionArtifact.id.asc(),
         )
-        .first()
+        .all()
     )
 
 

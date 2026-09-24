@@ -147,9 +147,14 @@ def store(
         if existing is not None:
             return existing
 
-    from preloop.services.session_artifact_budget import enforce_account_budget
+    from preloop.services.session_artifact_budget import (
+        enforce_account_budget,
+        notify_evicted,
+    )
 
-    enforce_account_budget(db, account_id=account_id, incoming_bytes=len(plaintext))
+    evicted = enforce_account_budget(
+        db, account_id=account_id, incoming_bytes=len(plaintext)
+    )
 
     session_held = (
         db.query(models.RuntimeSession.legal_hold)
@@ -200,6 +205,8 @@ def store(
     if commit:
         db.commit()
         db.refresh(artifact)
+        if evicted:
+            notify_evicted(db, account_id=account_id, artifacts=evicted)
     return artifact
 
 
