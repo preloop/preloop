@@ -14255,6 +14255,14 @@ components:
           - type: 'null'
           title: Cwd
           description: Working directory
+        repository:
+          anyOf:
+          - $ref: '#/components/schemas/AgentPermissionRepository'
+          - type: 'null'
+          description: Trusted repository identity the hook observed from its cwd.
+            Stored as the '_preloop_repository' marker inside tool_args, next to '_preloop_source',
+            so approvals and the session timeline can label which repository the call
+            ran in.
         agent_reasoning:
           anyOf:
           - type: string
@@ -14321,6 +14329,56 @@ components:
       - decision
       title: AgentPermissionCheckResponse
       description: Allow/deny decision for the agent's native tool call.
+    AgentPermissionRepository:
+      properties:
+        remote:
+          type: string
+          maxLength: 512
+          title: Remote
+          description: Normalized 'host/owner/repo' with credentials stripped; empty
+            when the work tree has no origin remote.
+          default: ''
+        toplevel:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Toplevel
+          description: Absolute work-tree root.
+        relative_path:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Relative Path
+          description: cwd relative to the work-tree root.
+        source:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Source
+          description: How the identity was observed, e.g. 'hook_cwd'.
+        no_remote:
+          type: boolean
+          title: No Remote
+          description: True when the work tree has no 'origin' remote.
+          default: false
+      additionalProperties: false
+      type: object
+      title: AgentPermissionRepository
+      description: 'Trusted hook observation of the repository a native call ran in.
+
+
+        The hook resolves its own ``cwd`` against git and sends the result; the
+
+        caller-supplied tool arguments are never used, so an MCP tool cannot
+
+        spoof the repository. Extra keys are forbidden and every string is
+
+        bounded: the object travels into approval ``tool_args`` and onto the
+
+        session timeline, and this is untrusted network input.'
     ApiKeyCreate:
       properties:
         name:

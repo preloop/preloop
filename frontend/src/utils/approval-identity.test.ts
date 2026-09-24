@@ -2,7 +2,9 @@ import { expect } from '@open-wc/testing';
 
 import {
   approvalRequesterName,
+  formatApprovalRepository,
   formatApprovalRequester,
+  getApprovalRepository,
   getApprovalSource,
   withoutApprovalMetadata,
 } from './approval-identity';
@@ -72,6 +74,55 @@ describe('approval identity', () => {
   it('keeps adapter metadata out of tool arguments', () => {
     const toolArgs = { command: 'git status', _preloop_source: 'cursor' };
     expect(getApprovalSource(toolArgs)).to.equal('cursor');
+    expect(withoutApprovalMetadata(toolArgs)).to.deep.equal({
+      command: 'git status',
+    });
+  });
+
+  it('reads the repository marker and shortens it to owner/repo', () => {
+    const repository = getApprovalRepository({
+      _preloop_repository: {
+        remote: 'github.com/example/repo',
+        toplevel: '/home/dev/repo',
+        relative_path: 'pkg/sub',
+        source: 'hook_cwd',
+      },
+    });
+    expect(repository).to.not.equal(null);
+    expect(formatApprovalRepository(repository)).to.equal('example/repo');
+    expect(repository!.relative_path).to.equal('pkg/sub');
+  });
+
+  it('keeps nested groups and drops the host', () => {
+    const repository = getApprovalRepository({
+      _preloop_repository: { remote: 'gitlab.com/group/sub/repo' },
+    });
+    expect(formatApprovalRepository(repository)).to.equal('group/sub/repo');
+  });
+
+  it('flags a work tree with no remote', () => {
+    const repository = getApprovalRepository({
+      _preloop_repository: { remote: '', no_remote: true },
+    });
+    expect(repository?.no_remote).to.equal(true);
+    expect(formatApprovalRepository(repository)).to.equal(null);
+  });
+
+  it('returns null for a missing or malformed repository marker', () => {
+    expect(getApprovalRepository({})).to.equal(null);
+    expect(getApprovalRepository({ _preloop_repository: null })).to.equal(null);
+    expect(
+      getApprovalRepository({ _preloop_repository: ['not', 'an', 'object'] })
+    ).to.equal(null);
+    expect(getApprovalRepository({ _preloop_repository: {} })).to.equal(null);
+  });
+
+  it('keeps repository metadata out of tool arguments too', () => {
+    const toolArgs = {
+      command: 'git status',
+      _preloop_source: 'cursor',
+      _preloop_repository: { remote: 'github.com/example/repo' },
+    };
     expect(withoutApprovalMetadata(toolArgs)).to.deep.equal({
       command: 'git status',
     });
