@@ -32,13 +32,38 @@ def test_snapshot_desktop_follows_presence_capabilities() -> None:
     )
     bogus = manager.snapshot("agent-desktop")
     assert bogus["desktop"] == "none"
-    assert bogus["desktop_display"] == ":99"
+    assert bogus["desktop_display"] is None
 
     manager.record_presence(
         "agent-desktop",
         {"capabilities": {"desktop": "rdp", "desktop_display": ":1"}},
     )
     assert manager.snapshot("agent-desktop")["desktop"] == "rdp"
+
+
+def test_snapshot_desktop_survives_heartbeat_without_capabilities() -> None:
+    """A heartbeat that omits capabilities must not clear the advertised desktop."""
+    manager = AgentControlConnectionManager()
+    manager.record_presence(
+        "agent-desktop",
+        {
+            "capabilities": {
+                "desktop": "vnc",
+                "desktop_display": ":99",
+                "interrupt": True,
+            }
+        },
+    )
+    manager.record_presence(
+        "agent-desktop",
+        {"observed_at": "2026-09-24T00:00:00+00:00"},
+    )
+
+    snapshot = manager.snapshot("agent-desktop")
+
+    assert snapshot["desktop"] == "vnc"
+    assert snapshot["desktop_display"] == ":99"
+    assert snapshot["supports_interrupt"] is True
 
 
 def test_managed_agent_api_includes_desktop(client, db_session, test_user) -> None:

@@ -734,7 +734,8 @@ def _managed_agent_control_fields(
         ),
         "desktop_display": (
             snapshot.get("desktop_display")
-            if isinstance(snapshot.get("desktop_display"), str)
+            if snapshot.get("desktop") in ("vnc", "rdp")
+            and isinstance(snapshot.get("desktop_display"), str)
             else None
         ),
         "control_session_mode": session_mode,
