@@ -12142,6 +12142,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BrowserStepBatchOut'
+        '401':
+          description: Missing or invalid bearer token
+        '403':
+          description: Credential is bound to a different runtime session
+        '404':
+          description: Runtime session not found
         '422':
           description: Validation Error
           content:

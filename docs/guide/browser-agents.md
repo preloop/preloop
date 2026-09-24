@@ -54,7 +54,9 @@ empty batch, is a 422 for the whole request.
 A missing or unknown bearer is 401. A session that belongs to another
 account is 404. When the key is pinned to a runtime session and the path
 names a different one, the response is 403. A session that has already
-ended is accepted, so an adapter can flush after the run.
+ended is accepted, including a key pinned to that session, so an adapter
+can flush after the run. The model gateway still rejects that key for
+inference.
 
 ## What is stored
 

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import case, func, tuple_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -160,7 +161,8 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
 
         Idempotency is ``(runtime_session_id, source, source_step_id)``
         among ``browser_step`` rows. A repeat returns that row unchanged
-        and does not touch the session again.
+        and does not touch the session again. A concurrent insert that
+        wins the unique index is treated the same way.
 
         Args:
             db: Database session.
@@ -201,7 +203,30 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             metadata_=sanitize_for_jsonb(metadata),
             timestamp=activity_timestamp,
         )
-        db.add(db_obj)
+        savepoint = db.begin_nested()
+        try:
+            db.add(db_obj)
+            # Flush the insert before touching the session. A conflicting
+            # key fails here, instead of as an autoflush inside the touch
+            # query, so the savepoint can roll the duplicate back.
+            db.flush()
+        except IntegrityError:
+            savepoint.rollback()
+            if db_obj in db:
+                db.expunge(db_obj)
+            with db.no_autoflush:
+                raced = self._find_browser_step(
+                    db,
+                    runtime_session_id=runtime_session_id,
+                    source=step.source,
+                    source_step_id=step.source_step_id,
+                )
+            if raced is None:
+                raise
+            return raced, False
+        else:
+            if savepoint.is_active:
+                savepoint.commit()
         self._touch_runtime_session_and_agent(
             db,
             account_id=account_id,
@@ -211,8 +236,6 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         if commit:
             db.commit()
             db.refresh(db_obj)
-        else:
-            db.flush()
         return db_obj, True
 
     def _find_browser_step(

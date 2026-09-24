@@ -6,13 +6,21 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import (
     crud_account,
     crud_api_key,
     crud_runtime_session,
     crud_runtime_session_activity,
+    crud_session_search_document,
 )
+from preloop.models.crud.runtime_session_activity import CRUDRuntimeSessionActivity
+from preloop.models.models.session_search_document import (
+    REDACTION_STATE_METADATA_ONLY,
+    SOURCE_KIND_BROWSER_STEP,
+)
+from preloop.schemas.browser_step import BrowserStepIn
 from preloop.services.runtime_session_explorer import _default_activity_title
 
 BASE = "/api/v1/runtime-sessions"
@@ -379,3 +387,107 @@ def test_session_search_finds_a_term_that_appears_only_in_reasoning(
     results = found.json()["results"]
     assert [item["runtime_session_id"] for item in results] == [str(session.id)]
     assert results[0]["snippets"][0]["source_kind"] == "browser_step"
+
+
+def test_pinned_key_can_flush_after_the_session_ends(client, db_session, test_user):
+    """A key bound to a finished session can still post its last steps."""
+    session = _session(
+        db_session,
+        test_user.account_id,
+        "browser-pinned-ended",
+        ended_at=STARTED + timedelta(minutes=5),
+    )
+    token = _token(db_session, test_user, runtime_session_id=session.id)
+
+    response = client.post(
+        f"{BASE}/{session.id}/browser-steps",
+        headers=_headers(token),
+        json={"steps": [_step("step-after", action="done")]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] == 1
+    assert len(_browser_rows(db_session, session.id)) == 1
+
+
+def test_capture_disabled_indexes_a_descriptor_without_reasoning(
+    client, db_session, test_user
+):
+    """With content capture off, the chunk records the shape, not the text."""
+    session = _session(db_session, test_user.account_id, "browser-capture-off")
+    token = _token(db_session, test_user)
+
+    with patch.object(settings, "model_gateway_capture_content", False):
+        response = client.post(
+            f"{BASE}/{session.id}/browser-steps",
+            headers=_headers(token),
+            json={
+                "steps": [
+                    _step(
+                        "step-private",
+                        action="type",
+                        reasoning="the zephyrledger passphrase",
+                    )
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    rows = _browser_rows(db_session, session.id)
+    chunks = crud_session_search_document.list_for_source(
+        db_session,
+        source_kind=SOURCE_KIND_BROWSER_STEP,
+        source_id=str(rows[0].id),
+    )
+    assert len(chunks) == 1
+    assert chunks[0].redaction_state == REDACTION_STATE_METADATA_ONLY
+    assert "content_captured: false" in chunks[0].content
+    assert "zephyrledger" not in chunks[0].content
+
+
+def test_a_concurrent_insert_of_the_same_step_is_a_duplicate(db_session, test_user):
+    """Losing the unique-index race returns the row the other writer stored."""
+    session = _session(db_session, test_user.account_id, "browser-race")
+    step = BrowserStepIn(
+        source="api",
+        source_step_id="step-race",
+        step_index=0,
+        action="wait",
+    )
+    first, created = crud_runtime_session_activity.log_browser_step(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        api_key_id=None,
+        step=step,
+        commit=False,
+    )
+    assert created is True
+    original = CRUDRuntimeSessionActivity._find_browser_step
+    calls = {"count": 0}
+
+    def miss_once(self, db, *, runtime_session_id, source, source_step_id):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return None
+        return original(
+            self,
+            db,
+            runtime_session_id=runtime_session_id,
+            source=source,
+            source_step_id=source_step_id,
+        )
+
+    with patch.object(CRUDRuntimeSessionActivity, "_find_browser_step", miss_once):
+        raced, raced_created = crud_runtime_session_activity.log_browser_step(
+            db_session,
+            account_id=test_user.account_id,
+            runtime_session_id=session.id,
+            api_key_id=None,
+            step=step,
+            commit=False,
+        )
+
+    assert raced_created is False
+    assert raced.id == first.id
+    assert len(_browser_rows(db_session, session.id)) == 1

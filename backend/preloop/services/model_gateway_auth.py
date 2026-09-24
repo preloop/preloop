@@ -105,7 +105,11 @@ class ModelGatewayAuthContext:
 
 
 async def authenticate_bearer_token(
-    token: str, db: Session, *, owns_db_session: bool = False
+    token: str,
+    db: Session,
+    *,
+    owns_db_session: bool = False,
+    allow_ended_runtime_session: bool = False,
 ) -> Optional[ModelGatewayAuthContext]:
     """Resolve bearer state in one worker, releasing HTTP-owned auth reads.
 
@@ -120,12 +124,21 @@ async def authenticate_bearer_token(
     from preloop.api.loop_safety import run_db_off_loop
 
     def authenticate_in_session(session: Session) -> Optional[ModelGatewayAuthContext]:
-        user = get_user_from_token_if_valid_sync(token, session)
+        user = get_user_from_token_if_valid_sync(
+            token,
+            session,
+            allow_ended_runtime_session=allow_ended_runtime_session,
+        )
         if user is not None:
             # A last-use commit may expire the user. Hydrate while this worker
             # still owns the session rather than issuing ORM I/O on the loop.
             _ = user.id, user.account_id, user.username, user.email, user.is_active
-        context = _resolve_bearer_context(token, session, user)
+        context = _resolve_bearer_context(
+            token,
+            session,
+            user,
+            allow_ended_runtime_session=allow_ended_runtime_session,
+        )
         return (
             context.snapshot() if owns_db_session and context is not None else context
         )
@@ -145,9 +158,22 @@ async def authenticate_bearer_token(
 
 
 def _resolve_bearer_context(
-    token: str, db: Session, user: Optional[models.User]
+    token: str,
+    db: Session,
+    user: Optional[models.User],
+    *,
+    allow_ended_runtime_session: bool = False,
 ) -> Optional[ModelGatewayAuthContext]:
-    """Resolve remaining gateway credentials on the session's worker thread."""
+    """Resolve remaining gateway credentials on the session's worker thread.
+
+    Args:
+        token: Presented bearer token.
+        db: Database session.
+        user: User already resolved from the token, if any.
+        allow_ended_runtime_session: When false, a key pinned to an ended
+            session is rejected. Browser step ingestion passes true so an
+            adapter can flush after the run.
+    """
     if user:
         api_key = crud_api_key.get_by_key(db, key=token)
         if api_key is not None:
@@ -164,7 +190,12 @@ def _resolve_bearer_context(
                     account_id=str(api_key.account_id),
                     runtime_session_id=str(runtime_session_id),
                 )
-                if runtime_session is None or runtime_session.ended_at is not None:
+                session_ended = (
+                    runtime_session is not None and runtime_session.ended_at is not None
+                )
+                if runtime_session is None or (
+                    session_ended and not allow_ended_runtime_session
+                ):
                     return None
             managed_agent = _managed_agent_for_api_key(
                 db, api_key, runtime_session=runtime_session

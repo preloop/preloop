@@ -1,10 +1,9 @@
 """Index browser-step idempotency lookups on runtime session activity.
 
-Adapters retry a flush after a dropped response. The lookup is
-``(runtime_session_id, metadata.source, metadata.source_step_id)`` for
-rows whose ``activity_type`` is ``browser_step``. The index is not unique:
-the writer returns the existing row when the key matches, and a unique
-constraint would turn that retry into an integrity error.
+Adapters retry a flush after a dropped response. The unique partial index
+is ``(runtime_session_id, metadata.source, metadata.source_step_id)`` for
+rows whose ``activity_type`` is ``browser_step``. A concurrent retry that
+loses the insert is caught and returned as the existing row.
 
 Revision ID: 20260924_browser_step_idx
 Revises: 20260921_auth_generation
@@ -36,7 +35,7 @@ def upgrade() -> None:
             sa.text("(metadata ->> 'source')"),
             sa.text("(metadata ->> 'source_step_id')"),
         ],
-        unique=False,
+        unique=True,
         postgresql_where=sa.text("activity_type = 'browser_step'"),
     )
 

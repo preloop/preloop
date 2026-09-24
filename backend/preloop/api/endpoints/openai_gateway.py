@@ -13,12 +13,9 @@ from preloop.services.agent_session_headers import (
     native_parent_session_id_from_headers,
     native_session_id_from_headers,
 )
-from preloop.services.model_gateway_auth import (
-    ModelGatewayAuthContext,
-    authenticate_bearer_token,
-)
+from preloop.api.gateway_auth_dependency import get_model_gateway_auth_context
+from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.api.deps import get_budget_enforcer
-from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.gateway_streaming import GatewayStreamingResponse
 from preloop.services.openai_gateway import OpenAIGatewayService
 
@@ -92,29 +89,6 @@ def _streaming_with_gateway_warnings(
         ),
         on_complete=service.flush_deferred_stream_record,
     )
-
-
-async def get_model_gateway_auth_context(
-    authorization: Optional[str] = Header(None),
-    db: Session = Depends(get_db_session),
-) -> ModelGatewayAuthContext:
-    """Authenticate a bearer token for the model gateway."""
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise ModelGatewayAPIError(
-            provider="openai",
-            status_code=401,
-            message="Missing bearer token",
-        )
-
-    token = authorization[7:]
-    auth_context = await authenticate_bearer_token(token, db, owns_db_session=True)
-    if not auth_context:
-        raise ModelGatewayAPIError(
-            provider="openai",
-            status_code=401,
-            message="Invalid authentication credentials",
-        )
-    return auth_context
 
 
 @router.get("/models")
