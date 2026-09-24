@@ -182,6 +182,45 @@ test("interrupt aborts a running turn and the outcome is stopped", async () => {
   manager.stop();
 });
 
+test("a second turn waits until the in-flight run finishes", async () => {
+  let releaseFirst;
+  const gate = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  let runs = 0;
+  const factory = () => ({
+    startThread() {
+      return {
+        id: "thread-serial",
+        async run(input) {
+          runs += 1;
+          if (runs === 1) {
+            await gate;
+          }
+          return { finalResponse: `echo: ${input}`, usage: null };
+        },
+      };
+    },
+    resumeThread() {
+      throw new Error("unexpected resume");
+    },
+  });
+  const manager = new SessionManager(baseConfig, factory);
+  const first = manager.sendMessage({ text: "one", startNewSession: true });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const second = manager.sendMessage({
+    text: "two",
+    targetSessionId: "thread-serial",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(runs, 1);
+  releaseFirst();
+  assert.equal((await first).reply_text, "echo: one");
+  assert.equal((await second).reply_text, "echo: two");
+  assert.equal(runs, 2);
+  manager.stop();
+});
+
 test("interrupt with no running turn reports the honest limitation", async () => {
   const { manager } = makeManager();
   await assert.rejects(

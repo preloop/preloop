@@ -198,7 +198,9 @@ describe('getAgentControlState', () => {
         control_capabilities: [],
       });
       expect(hint.supported).to.equal(true);
-      expect(hint.command).to.equal("preloop agents install-plugin 'Codex'");
+      expect(hint.command).to.equal('npm install -g @preloop-ai/codex-plugin');
+      expect(hint.command).to.not.contain('install-plugin');
+      expect(hint.helptext).to.contain('preloop-codex-plugin');
       expect(hint.helptext).to.not.contain(
         'does not have an Agent Control plugin'
       );

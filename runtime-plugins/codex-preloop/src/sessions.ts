@@ -78,6 +78,8 @@ type OwnedThread = {
   thread: CodexThread;
   controller?: AbortController;
   lastActivity: number;
+  /** Prior turn on this thread. The next turn waits so two runs cannot overlap. */
+  tail?: Promise<void>;
 };
 
 /** Options passed to `new Codex(...)`. Approval policy is intentionally absent. */
@@ -279,11 +281,20 @@ export class SessionManager {
       };
       this.remember(session);
     }
-    return this.runTurn(
-      session,
-      params.text,
-      this.config.turn_timeout_ms ?? DEFAULT_TURN_TIMEOUT_MS,
+    const timeoutMs = this.config.turn_timeout_ms ?? DEFAULT_TURN_TIMEOUT_MS;
+    // One run at a time per thread. A second send_message waits instead of
+    // replacing session.controller (which would hide the first turn from
+    // interrupt) or calling thread.run twice on a live SDK thread.
+    const previous = session.tail ?? Promise.resolve();
+    const outcome = previous.then(
+      () => this.runTurn(session, params.text, timeoutMs),
+      () => this.runTurn(session, params.text, timeoutMs),
     );
+    session.tail = outcome.then(
+      () => undefined,
+      () => undefined,
+    );
+    return outcome;
   }
 
   private async runTurn(

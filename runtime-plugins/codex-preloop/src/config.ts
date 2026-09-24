@@ -24,7 +24,7 @@ export type ControlConfig = {
   runtime_principal_name?: string;
   /** Default cwd for sessions started remotely. Defaults to the home dir. */
   workspace_root?: string;
-  /** Claude Code permission mode for owned sessions (e.g. "default"). */
+  /** Accepted for Claude-schema parity; never applied to a Codex thread. */
   permission_mode?: string;
   /** Root of Codex rollout transcripts. Defaults to ~/.codex/sessions. */
   transcript_dir?: string;

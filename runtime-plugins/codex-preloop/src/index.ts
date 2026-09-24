@@ -107,7 +107,7 @@ export class PreloopCodexSidecar {
   private socket?: WebSocket;
   private sessions?: SessionManager;
   private observer?: TranscriptObserver;
-  private launcher = new LauncherBridge();
+  private launcher: LauncherBridge;
   private stopped = false;
   private reconnectAttempts = 0;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
@@ -119,7 +119,10 @@ export class PreloopCodexSidecar {
   constructor(
     private readonly configPath?: string,
     private readonly clientFactory: CodexClientFactory = sdkCodexClientFactory,
-  ) {}
+    socketPath?: string,
+  ) {
+    this.launcher = new LauncherBridge(socketPath);
+  }
 
   setLogger(logger: (message: string) => void): void {
     this.logger = logger;
