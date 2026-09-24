@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Plain console API keys can opt into a runtime session by sending
+  `X-Preloop-Session-Id` on a gateway request. Vendor session headers and
+  body-level ids still require a runtime principal, and a request with no
+  valid header records usage without creating a session. Refs #912.
 - `FLOW_EVIDENCE_LOG_PLAINTEXT` (default true) keeps today's Kubernetes
   behavior: without a direct-upload token, `result.json`, the evidence pack,
   and the workspace snapshot are still written to the pod log as base64.
