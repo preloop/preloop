@@ -2363,11 +2363,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
     ) -> List[ApiUsage]:
         """List full model-gateway ``ApiUsage`` rows in a half-open window.
 
-        In-tree reporting uses
+        In-tree reporting and the Enterprise tool-cost detector use
         :meth:`list_gateway_tool_usage_in_window`, which projects
         ``tools_meta`` without transferring request/response payloads.
-        This method is kept for the Enterprise billing plugin's tool-cost
-        detector, which still loads complete rows.
+        This wide reader remains for callers that still need complete rows.
 
         Args:
             db: Database session.
