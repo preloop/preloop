@@ -35,6 +35,10 @@ import {
   getGatewayEventUserRequest,
 } from '../utils/session-observer';
 import { outcomeLabel } from '../utils/outcome-label';
+import {
+  formatRepositoryChip,
+  getRepositoryContext,
+} from '../utils/approval-identity';
 import { getExampleSessionOptimization } from '../api';
 import './preloop-gateway-event';
 import './session-optimization-panel';
@@ -1241,6 +1245,13 @@ export class SessionReplayPanel extends LitElement {
     .tool-row-name {
       font-weight: var(--sl-font-weight-semibold);
       font-size: var(--sl-font-size-small);
+    }
+
+    .repo-chip {
+      background: var(--sl-color-neutral-100);
+      border-radius: 999px;
+      font-size: var(--sl-font-size-x-small);
+      padding: 1px 6px;
     }
 
     .tool-row-chips {
@@ -5504,6 +5515,9 @@ export class SessionReplayPanel extends LitElement {
     const failed = String(item.status || '')
       .toLowerCase()
       .includes('fail');
+    const repository = formatRepositoryChip(
+      getRepositoryContext(item.metadata)
+    );
     return html`
       <div class="tool-row">
         <div class="tool-row-main">
@@ -5511,6 +5525,13 @@ export class SessionReplayPanel extends LitElement {
           <span class="tool-row-name">
             ${item.tool_name || item.title || 'Tool call'}
           </span>
+          ${
+            repository
+              ? html`<span class="repo-chip" title=${repository.title}
+                  >${repository.label}</span
+                >`
+              : nothing
+          }
           ${
             item.server_name
               ? html`<span class="event-meta">${item.server_name}</span>`

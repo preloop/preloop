@@ -17,7 +17,9 @@ import { unifiedWebSocketManager } from '../../services/unified-websocket-manage
 import {
   approvalRequesterName,
   formatApprovalSource,
+  formatRepositoryChip,
   getApprovalSource,
+  getRepositoryContext,
   withoutApprovalMetadata,
 } from '../../utils/approval-identity';
 import {
@@ -1450,6 +1452,9 @@ export class ApprovalView extends AuthedElement {
     countdown: string | null
   ) {
     const shortId = request.id.slice(0, 8);
+    const repository = formatRepositoryChip(
+      getRepositoryContext(request.tool_args)
+    );
     return html`
       <div class="fact-strip">
         <attribution-line class="fact" .source=${request}></attribution-line>
@@ -1462,6 +1467,16 @@ export class ApprovalView extends AuthedElement {
             ? html`<div class="fact">
                 <span class="fact-label">Adapter</span>
                 <span>${source}</span>
+              </div>`
+            : ''
+        }
+        ${
+          repository
+            ? html`<div class="fact">
+                <span class="fact-label">Repository</span>
+                <sl-badge pill class="chip repo-chip" title=${repository.title}
+                  >${repository.label}</sl-badge
+                >
               </div>`
             : ''
         }

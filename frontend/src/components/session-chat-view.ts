@@ -373,6 +373,14 @@ export class SessionChatView extends LitElement {
       font-weight: var(--sl-font-weight-semibold);
     }
 
+    .repo-chip {
+      background: var(--sl-color-neutral-100);
+      border-radius: 999px;
+      color: var(--sl-color-neutral-700);
+      font-size: var(--sl-font-size-x-small);
+      padding: 1px 6px;
+    }
+
     .step-kind-tool_call .step-label,
     .step-kind-tool_result .step-label {
       color: var(--sl-color-primary-700);
@@ -793,6 +801,13 @@ export class SessionChatView extends LitElement {
       <div class="step step-kind-${step.kind}">
         <div class="step-header">
           <span class="step-label">${step.label}</span>
+          ${
+            step.repositoryLabel
+              ? html`<span class="repo-chip" title=${step.repositoryTitle || ''}
+                  >${step.repositoryLabel}</span
+                >`
+              : nothing
+          }
           ${step.serverName ? html`<span>${step.serverName}</span>` : nothing}
           <span>${this.formatTime(step.timestamp)}</span>
           ${

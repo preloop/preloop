@@ -74,6 +74,51 @@ async function waitForStableScroll(thread: HTMLElement): Promise<void> {
 }
 
 describe('session-chat-view', () => {
+  it('shows a repository chip on a native tool row and hides it without the marker', async () => {
+    const withMarker = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .activity=${[
+          activityItem({
+            activity_type: 'tool_call',
+            timestamp: '2026-08-06T10:01:30Z',
+            title: 'Bash',
+            tool_name: 'Bash',
+            summary: 'git status',
+            metadata: {
+              _preloop_repository: {
+                remote: 'github.com/example/repo',
+                toplevel: '/tmp/example',
+                relative_path: 'sub/dir',
+                source: 'hook_cwd',
+              },
+            },
+          }),
+        ]}
+      ></session-chat-view>
+    `);
+    const chip = withMarker.shadowRoot?.querySelector('.repo-chip');
+    expect(chip?.textContent?.trim()).to.equal('example/repo · sub/dir');
+    expect(chip?.getAttribute('title')).to.contain('github.com/example/repo');
+    expect(chip?.getAttribute('title')).to.contain('/tmp/example');
+
+    const withoutMarker = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .activity=${[
+          activityItem({
+            activity_type: 'tool_call',
+            timestamp: '2026-08-06T10:01:30Z',
+            title: 'Bash',
+            tool_name: 'Bash',
+            summary: 'git status',
+          }),
+        ]}
+      ></session-chat-view>
+    `);
+    expect(withoutMarker.shadowRoot?.querySelector('.repo-chip')).to.equal(
+      null
+    );
+  });
+
   it('renders empty state without events', async () => {
     const el = await fixture<SessionChatView>(
       html`<session-chat-view></session-chat-view>`
