@@ -13,7 +13,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import case, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from preloop.config import settings
 from preloop.models import models
@@ -179,6 +179,15 @@ def _evictable(db: Session, *, account_id: UUID) -> list[models.RuntimeSessionAr
     )
     return (
         db.query(models.RuntimeSessionArtifact)
+        .options(
+            load_only(
+                models.RuntimeSessionArtifact.id,
+                models.RuntimeSessionArtifact.runtime_session_id,
+                models.RuntimeSessionArtifact.activity_id,
+                models.RuntimeSessionArtifact.kind,
+                models.RuntimeSessionArtifact.size_bytes,
+            )
+        )
         .filter(
             models.RuntimeSessionArtifact.account_id == account_id,
             models.RuntimeSessionArtifact.availability == "available",
