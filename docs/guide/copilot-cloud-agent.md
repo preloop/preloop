@@ -39,6 +39,12 @@ agent should call. Copilot calls the tools you list without asking for
 approval on GitHub. Preloop still applies its own tool policy on
 `/mcp/v1`.
 
+The same repository MCP configuration, including the Agents secret, is
+shared with Copilot code review. Code review only calls tools whose
+`tools/list` entries set `annotations.readOnlyHint` to true. Turn that
+off under **Settings → Copilot → Code review** if review sessions should
+not see these tools.
+
 ## Firewall allow list
 
 The cloud agent sandbox only reaches hosts on the Copilot firewall allow
@@ -48,9 +54,8 @@ cannot open `{PRELOOP_URL}/mcp/v1`.
 ## Model traffic
 
 Model calls from the cloud coding agent stay on GitHub-hosted models.
-This page does not route them through the Preloop gateway. Teams that can
-leave the cloud agent and run Copilot from a machine Preloop can govern
-should use [`preloop copilot`](copilot-cli.md).
+This page does not route them through the Preloop gateway, and it does
+not install a local Copilot CLI.
 
 ## Hooks
 
