@@ -23,6 +23,7 @@ from preloop.services.runner_service import (
 
 from preloop.services.host_exec import (
     HOST_EXEC_AGENT_TYPE,
+    ISOLATED_PUBLICATION_UNAVAILABLE,
     host_exec_profile_name,
     host_exec_unavailable_reason,
 )
@@ -36,10 +37,6 @@ from .runner_launch import (
 )
 
 logger = logging.getLogger(__name__)
-
-_ISOLATED_PUBLICATION_UNAVAILABLE = (
-    "isolated publication is unavailable on native host profiles"
-)
 
 
 def _config_without_publication_mode(git_clone_config: Any) -> Any:
@@ -429,11 +426,11 @@ class RemoteRunnerExecutor(AgentExecutor):
                     "Private publication requires a trusted policy snapshot"
                 )
             if profile:
-                raise ValueError(_ISOLATED_PUBLICATION_UNAVAILABLE)
+                raise ValueError(ISOLATED_PUBLICATION_UNAVAILABLE)
             payload["_publication"] = state
         if profile:
             if "_publication" in payload:
-                raise ValueError(_ISOLATED_PUBLICATION_UNAVAILABLE)
+                raise ValueError(ISOLATED_PUBLICATION_UNAVAILABLE)
             payload["host_exec_profile"] = profile
             timeout_seconds = context.get("timeout_seconds")
             if timeout_seconds is None and flow is not None:

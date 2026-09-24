@@ -180,7 +180,7 @@ _PULL_REQUEST_UNAVAILABLE = (
     "host execution cannot publish pull requests; isolated "
     "publication is unavailable on this path"
 )
-_ISOLATED_PUBLICATION_UNAVAILABLE = (
+ISOLATED_PUBLICATION_UNAVAILABLE = (
     "isolated publication is unavailable on native host profiles"
 )
 
@@ -201,8 +201,9 @@ def host_exec_unavailable_reason(
         resume_from: Prior execution id for native CLI resume.
         session_id: Server-supplied session id, which host execution rejects.
         custom_commands: Remote command block. Enabled commands are rejected.
-        publication_mode: Explicit mode. Defaults to the mode on
-            ``git_clone_config`` when omitted. ``isolated`` is rejected.
+        publication_mode: Explicit mode. When omitted, the mode on
+            ``git_clone_config`` is used. ``isolated`` on either the explicit
+            mode or the configured mode is rejected.
 
     Returns:
         A reason string when this host profile cannot run the request, or
@@ -229,7 +230,7 @@ def host_exec_unavailable_reason(
     if configured_mode == "isolated" or (
         isinstance(clone, Mapping) and clone.get("publication_mode") == "isolated"
     ):
-        return _ISOLATED_PUBLICATION_UNAVAILABLE
+        return ISOLATED_PUBLICATION_UNAVAILABLE
     if isinstance(clone, Mapping) and (
         clone.get("enabled") or clone.get("repositories") or clone.get("setup_commands")
     ):
