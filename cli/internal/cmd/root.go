@@ -118,6 +118,7 @@ func init() {
 	rootCmd.AddCommand(toolsCmd)
 	rootCmd.AddCommand(approvalsCmd)
 	rootCmd.AddCommand(agentsCmd)
+	rootCmd.AddCommand(copilotCmd)
 	rootCmd.AddCommand(notesCmd)
 	rootCmd.AddCommand(modelsCmd)
 	rootCmd.AddCommand(usageCmd)
