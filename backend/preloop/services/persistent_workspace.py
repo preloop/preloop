@@ -224,7 +224,10 @@ def ephemeral_clone_identity(
             return None
         repository_url = cleaned
     repository_slug = _repository_slug(payload, repository_url)
-    if not repository_url and not repository_slug:
+    # A persistent checkout is a directory named by the slug. An unsafe or
+    # missing name cannot be checked out, so this run is clone-less rather
+    # than a persistent_checkout with a null slug.
+    if not repository_slug:
         return None
 
     commit_sha = host._extract_commit_sha_from_trigger(trigger)
