@@ -662,6 +662,14 @@ mkdir -p ~/.codex
         script = (
             script
             + auth_block
+            + """
+# Setup writes this fragment before this script replaces config.toml.
+# Re-attach it so the browser MCP entry survives that replacement.
+if [ -f "${HOME}/.codex/preloop-browser-mcp.toml" ]; then
+  printf '\\n' >> ~/.codex/config.toml
+  cat "${HOME}/.codex/preloop-browser-mcp.toml" >> ~/.codex/config.toml
+fi
+"""
             + f"""
 # Debug: Show config files (with API key masked)
 echo "=== Codex Configuration ==="

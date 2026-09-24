@@ -23,6 +23,7 @@ from preloop.models.crud import (
     crud_ai_model,
     crud_api_key,
     crud_runtime_session,
+    crud_user,
 )
 from preloop.models.models.api_usage import ApiUsage
 from preloop.services.agent_session_headers import native_session_id_from_headers
@@ -96,11 +97,13 @@ def _service(
     api_key,
     *,
     client_session_id: Optional[str] = None,
+    client_session_id_is_explicit: Optional[bool] = None,
 ) -> OpenAIGatewayService:
     return OpenAIGatewayService(
         db_session,
         ModelGatewayAuthContext(token="t", user=test_user, api_key=api_key),
         client_session_id=client_session_id,
+        client_session_id_is_explicit=client_session_id_is_explicit,
     )
 
 
@@ -372,6 +375,355 @@ def test_malformed_header_falls_back_without_error(db_session, test_user):
     session_ids = {r.runtime_session_id for r in rows}
     assert None not in session_ids
     assert len(session_ids) == 1
+
+
+# --------------------------------------------------------------------------
+# Plain (principal-less) API keys: opt in per request with the explicit
+# X-Preloop-Session-Id. No header, a vendor session header, or a body-level
+# conversation id leaves them sessionless, exactly as before.
+# --------------------------------------------------------------------------
+
+
+def _plain_key(db_session, test_user, name: str = "Plain Console Key") -> Any:
+    """A console-created key: no runtime principal and no pinned session."""
+    plain_api_key, _ = crud_api_key.create_runtime_key(
+        db_session,
+        name=name,
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={},
+    )
+    return plain_api_key
+
+
+def _session_for_usage(db_session, row: ApiUsage) -> Any:
+    """Load the runtime session one usage row is attributed to."""
+    session = crud_runtime_session.get_account_session(
+        db_session,
+        account_id=str(row.account_id),
+        runtime_session_id=str(row.runtime_session_id),
+    )
+    assert session is not None
+    return session
+
+
+def _second_account_user(db_session: Any) -> Any:
+    """Create an independent account/user for isolation tests."""
+    account = crud_account.create(
+        db_session,
+        obj_in={"organization_name": "Other Organization", "is_active": True},
+    )
+    user = crud_user.create(
+        db_session,
+        obj_in={
+            "account_id": account.id,
+            "email": "other@example.com",
+            "username": "otheruser",
+            "full_name": "Other User",
+            "is_active": True,
+            "email_verified": True,
+            "hashed_password": "testpassword",
+            "user_source": "local",
+        },
+    )
+    db_session.flush()
+    return user
+
+
+def test_plain_key_explicit_header_creates_api_key_session(db_session, test_user):
+    """A plain key that names a session gets one, keyed by account/key/id."""
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_key(db_session, test_user)
+
+    _run_chat(
+        _service(db_session, test_user, api_key, client_session_id="run-plain-1"),
+        {"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    row = _usage_rows(db_session)[0]
+    assert row.runtime_session_id is not None
+    assert row.auth_subject_type == "api_key"
+    session = _session_for_usage(db_session, row)
+    assert session.session_source_type == "api_key"
+    assert session.session_source_id == f"{api_key.id}:run-plain-1"
+    assert session.runtime_principal_type == "api_key"
+    assert session.runtime_principal_id == str(api_key.id)
+
+
+def test_plain_key_without_header_records_no_session(db_session, test_user):
+    """No header keeps the historical behavior: usage has no session row."""
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_key(db_session, test_user)
+
+    _run_chat(
+        _service(db_session, test_user, api_key),
+        {"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert _usage_rows(db_session)[0].runtime_session_id is None
+
+
+def test_plain_key_repeated_header_reuses_session(db_session, test_user):
+    """The same (account, key, id) always resolves to one session row."""
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_key(db_session, test_user)
+    payload = {"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hi"}]}
+
+    for _ in range(2):
+        _run_chat(
+            _service(db_session, test_user, api_key, client_session_id="run-plain-x"),
+            payload,
+        )
+
+    rows = _usage_rows(db_session)
+    assert len(rows) == 2
+    session_ids = {str(r.runtime_session_id) for r in rows}
+    assert None not in session_ids
+    assert len(session_ids) == 1
+
+
+def test_plain_keys_with_same_id_get_separate_sessions(db_session, test_user):
+    """The key id is part of the source key, so two keys never share a row."""
+    _create_gateway_model(db_session, test_user.account_id)
+    payload = {"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hi"}]}
+
+    key_a = _plain_key(db_session, test_user, name="Plain Key A")
+    key_b = _plain_key(db_session, test_user, name="Plain Key B")
+    _run_chat(
+        _service(db_session, test_user, key_a, client_session_id="shared-run"), payload
+    )
+    _run_chat(
+        _service(db_session, test_user, key_b, client_session_id="shared-run"), payload
+    )
+
+    rows = _usage_rows(db_session)
+    session_ids = {str(r.runtime_session_id) for r in rows}
+    assert None not in session_ids
+    assert len(session_ids) == 2
+
+
+def test_plain_key_sessions_are_account_isolated(db_session, test_user):
+    """A caller-supplied id can never adopt another account's session."""
+    _create_gateway_model(db_session, test_user.account_id)
+    other_user = _second_account_user(db_session)
+    _create_gateway_model(db_session, other_user.account_id)
+
+    payload = {"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hi"}]}
+    key_a = _plain_key(db_session, test_user, name="Isolated Key A")
+    key_b = _plain_key(db_session, other_user, name="Isolated Key B")
+    _run_chat(
+        _service(db_session, test_user, key_a, client_session_id="same-id"), payload
+    )
+    _run_chat(
+        _service(db_session, other_user, key_b, client_session_id="same-id"), payload
+    )
+
+    rows = _usage_rows(db_session)
+    assert len(rows) == 2
+    session_ids = {str(r.runtime_session_id) for r in rows}
+    assert None not in session_ids
+    assert len(session_ids) == 2
+    accounts = {str(_session_for_usage(db_session, row).account_id) for row in rows}
+    assert accounts == {str(test_user.account_id), str(other_user.account_id)}
+
+
+def test_plain_key_invalid_header_creates_no_session(db_session, test_user):
+    """A malformed or oversized id degrades to no session, never an error."""
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_key(db_session, test_user)
+    payload = {"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hi"}]}
+
+    _run_chat(
+        _service(db_session, test_user, api_key, client_session_id="bad value!"),
+        payload,
+    )
+    _run_chat(
+        _service(db_session, test_user, api_key, client_session_id="x" * 5000),
+        payload,
+    )
+
+    rows = _usage_rows(db_session)
+    assert len(rows) == 2
+    assert all(r.runtime_session_id is None for r in rows)
+
+
+def test_plain_key_body_conversation_id_does_not_opt_in(db_session, test_user):
+    """prompt_cache_key is a body signal; it must not opt a plain key in."""
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_key(db_session, test_user)
+
+    _run_chat(
+        _service(db_session, test_user, api_key),
+        {
+            "model": "openai/gpt-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "prompt_cache_key": "conv-plain",
+        },
+    )
+
+    assert _usage_rows(db_session)[0].runtime_session_id is None
+
+
+def test_plain_key_vendor_session_header_does_not_opt_in(db_session, test_user):
+    """A vendor header is gated on the principal type; a plain key has none."""
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_key(db_session, test_user)
+
+    resolved = native_session_id_from_headers(
+        {"session-id": "abc", "x-session-id": "def"},
+        auth_context=SimpleNamespace(api_key=api_key),
+    )
+    assert resolved is None
+    _run_chat(
+        _service(db_session, test_user, api_key, client_session_id=resolved),
+        {"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert _usage_rows(db_session)[0].runtime_session_id is None
+
+
+def test_plain_key_vendor_native_id_marked_implicit_does_not_opt_in(
+    db_session, test_user
+):
+    """A vendor id the ingress marks implicit must not opt a plain key in.
+
+    The Anthropic ingress reads Claude Code's vendor header without a
+    principal-type gate, so it flags that id as *not* the explicit Preloop
+    header; the resolver must honor that.
+    """
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_key(db_session, test_user)
+
+    _run_chat(
+        _service(
+            db_session,
+            test_user,
+            api_key,
+            client_session_id="claude-native-run",
+            client_session_id_is_explicit=False,
+        ),
+        {"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert _usage_rows(db_session)[0].runtime_session_id is None
+
+
+def test_plain_key_explicit_header_creates_anthropic_session(db_session, test_user):
+    """The Anthropic ingress opts a plain key in on the same terms."""
+    _create_anthropic_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_key(db_session, test_user)
+
+    _run_message(
+        _service(db_session, test_user, api_key, client_session_id="anthropic-plain"),
+        {
+            "model": "anthropic/claude-sonnet-4-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 256,
+        },
+    )
+
+    row = _anthropic_usage_rows(db_session)[0]
+    assert row.runtime_session_id is not None
+    session = _session_for_usage(db_session, row)
+    assert session.session_source_type == "api_key"
+    assert session.session_source_id == f"{api_key.id}:anthropic-plain"
+
+
+def test_plain_key_streaming_header_attributes_usage(db_session, test_user):
+    """Streaming records the same session attribution through the deferred path."""
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_key(db_session, test_user)
+    service = _service(db_session, test_user, api_key, client_session_id="stream-plain")
+    stream_chunks = [
+        {
+            "id": "chatcmpl_stream",
+            "created": 1710000000,
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": "hi"}}],
+        },
+        {
+            "id": "chatcmpl_stream",
+            "created": 1710000000,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+        },
+    ]
+    with patch.object(service, "_call_litellm", return_value=iter(stream_chunks)):
+        events = list(
+            service.stream_chat_completion(
+                {
+                    "model": "openai/gpt-5",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                }
+            )
+        )
+        service.flush_deferred_stream_record()
+
+    assert events
+    row = _usage_rows(db_session)[0]
+    assert row.runtime_session_id is not None
+    session = _session_for_usage(db_session, row)
+    assert session.session_source_type == "api_key"
+    assert session.session_source_id == f"{api_key.id}:stream-plain"
+
+
+def test_plain_key_anthropic_streaming_header_attributes_usage(db_session, test_user):
+    """Anthropic streaming records a plain key's explicit session id too."""
+    _create_anthropic_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_key(db_session, test_user)
+    service = _service(
+        db_session, test_user, api_key, client_session_id="anthropic-stream"
+    )
+    stream_chunks = [
+        {"id": "msg_stream", "choices": [{"index": 0, "delta": {"content": "hi"}}]},
+        {
+            "id": "msg_stream",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+        },
+    ]
+    with patch.object(service, "_call_litellm", return_value=iter(stream_chunks)):
+        events = list(
+            service.stream_message(
+                {
+                    "model": "anthropic/claude-sonnet-4-5",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 256,
+                    "stream": True,
+                }
+            )
+        )
+        service.flush_deferred_stream_record()
+
+    assert events
+    row = _anthropic_usage_rows(db_session)[0]
+    assert row.runtime_session_id is not None
+    session = _session_for_usage(db_session, row)
+    assert session.session_source_type == "api_key"
+    assert session.session_source_id == f"{api_key.id}:anthropic-stream"
+
+
+def test_plain_key_session_detail_lists_attributed_request(
+    client, db_session, test_user
+):
+    """The session timeline lists usage rows attributed to a plain-key session."""
+    _create_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_key(db_session, test_user)
+    _run_chat(
+        _service(db_session, test_user, api_key, client_session_id="detail-run"),
+        {"model": "openai/gpt-5", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    row = _usage_rows(db_session)[0]
+    assert row.runtime_session_id is not None
+    assert row.auth_subject_type == "api_key"
+
+    response = client.get(f"/api/v1/runtime-sessions/{row.runtime_session_id}/requests")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["id"] == str(row.id)
+    assert body["items"][0]["auth_subject_type"] == "api_key"
 
 
 # --------------------------------------------------------------------------

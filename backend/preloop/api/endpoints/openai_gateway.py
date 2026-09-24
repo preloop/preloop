@@ -130,6 +130,9 @@ def create_chat_completion(
         owns_db_session=True,
         client_session_id=x_preloop_session_id
         or native_session_id_from_headers(request.headers, auth_context=auth_context),
+        # Only the explicit Preloop header opts a plain API key into a
+        # runtime session; a vendor-native header must not.
+        client_session_id_is_explicit=bool(x_preloop_session_id),
         client_parent_session_id=(
             None
             if x_preloop_session_id
@@ -169,6 +172,9 @@ def create_response(
         client_identity_headers=request.headers,
         client_session_id=x_preloop_session_id
         or native_session_id_from_headers(request.headers, auth_context=auth_context),
+        # Only the explicit Preloop header opts a plain API key into a
+        # runtime session; a vendor-native header must not.
+        client_session_id_is_explicit=bool(x_preloop_session_id),
         client_parent_session_id=(
             None
             if x_preloop_session_id
@@ -208,6 +214,9 @@ def create_embedding(
         owns_db_session=True,
         client_session_id=x_preloop_session_id
         or native_session_id_from_headers(request.headers, auth_context=auth_context),
+        # Only the explicit Preloop header opts a plain API key into a
+        # runtime session; a vendor-native header must not.
+        client_session_id_is_explicit=bool(x_preloop_session_id),
         client_parent_session_id=(
             None
             if x_preloop_session_id

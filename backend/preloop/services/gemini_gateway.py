@@ -61,6 +61,7 @@ class GeminiGatewayService(OpenAIGatewayService):
         client_session_id: Optional[str] = None,
         budget_enforcer: Optional[Any] = None,
         owns_db_session: bool = False,
+        client_session_id_is_explicit: Optional[bool] = None,
     ) -> None:
         # Forward the budget enforcer so Gemini traffic is subject to the same
         # account/flow budget policy enforcement as the OpenAI/Anthropic
@@ -71,6 +72,7 @@ class GeminiGatewayService(OpenAIGatewayService):
             client_session_id=client_session_id,
             budget_enforcer=budget_enforcer,
             owns_db_session=owns_db_session,
+            client_session_id_is_explicit=client_session_id_is_explicit,
         )
 
     @gateway_database_scope
