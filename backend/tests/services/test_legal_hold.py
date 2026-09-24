@@ -484,6 +484,56 @@ def test_the_janitor_expires_an_unheld_artifact_and_leaves_a_held_one(
     assert cleared == 1
 
 
+def test_an_artifact_stored_on_a_held_session_survives_the_janitor(
+    db_session, test_user, account, runtime_session
+):
+    """A hold already in force covers artifacts written afterwards.
+
+    ``store`` copies the session flag. The janitor also skips the row when
+    that copy is missing and the session itself is still held.
+    """
+    past = datetime.now(UTC) - timedelta(hours=2)
+    place_hold(
+        db_session,
+        account_id=account.id,
+        resource_type="runtime_session",
+        resource_id=str(runtime_session.id),
+        reason="incident review still open",
+        user_id=test_user.id,
+    )
+    stored = crud_session_artifact.store(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=runtime_session.id,
+        kind="screenshot",
+        source="browser_use",
+        source_ref="step-after-hold",
+        content_type="image/png",
+        plaintext=b"held-after-store-bytes",
+        manifest={"step_index": 2},
+        expires_at=past,
+        commit=False,
+    )
+    db_session.commit()
+    db_session.refresh(stored)
+    assert stored.legal_hold is True
+
+    crud_session_artifact.cleanup(db_session, now=datetime.now(UTC))
+    db_session.expire_all()
+    row = db_session.get(models.RuntimeSessionArtifact, stored.id)
+    assert row.ciphertext is not None
+    assert row.availability == "available"
+
+    row.legal_hold = False
+    db_session.add(row)
+    db_session.commit()
+    crud_session_artifact.cleanup(db_session, now=datetime.now(UTC))
+    db_session.expire_all()
+    row = db_session.get(models.RuntimeSessionArtifact, stored.id)
+    assert row.ciphertext is not None
+    assert row.availability == "available"
+
+
 def test_a_hold_on_another_accounts_session_is_refused(
     db_session, account, runtime_session
 ):
