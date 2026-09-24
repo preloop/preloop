@@ -379,10 +379,11 @@ def _existing_pr_failure_update_shell(
 ) -> str:
     """Refresh failure disclosure and upsert provenance on an open PR.
 
-    A malformed or oversized body is not written. A non-2xx provider response,
-    more than one open pull request for the branch, or a failure notice that
-    cannot be merged sets ``PRELOOP_PROVENANCE_FAILED`` so the caller does not
-    claim success.
+    A lookup that does not identify exactly one PR/MR, an invalid number, or an
+    unmergeable notice aborts without writing. A provenance parse or size
+    failure skips only the owned region; an already-merged failure disclosure
+    is still posted (exit 2). A non-2xx provider response sets
+    ``PRELOOP_PROVENANCE_FAILED`` so the caller does not claim success.
     """
     script = (
         inspect.getsource(pr_metadata)
