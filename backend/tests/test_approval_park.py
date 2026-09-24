@@ -402,6 +402,14 @@ class _FakeQuery:
         self._owner.filters.append(" AND ".join(_render(c) for c in criteria))
         return self
 
+    def with_for_update(self):
+        return self
+
+    def first(self):
+        if getattr(self._owner, "approval_pending", True):
+            return object()
+        return None
+
     def update(self, values, synchronize_session=False):
         self._owner.updates.append(values)
         clause = self._owner.filters[-1] if self._owner.filters else ""
@@ -432,6 +440,7 @@ class _FakeDB:
         self.filters = []
         self.updates = []
         self.commits = 0
+        self.approval_pending = True
 
     def query(self, *entities):
         return _FakeQuery(self)
@@ -462,10 +471,29 @@ class TestStatusTransitions:
             )
             is True
         )
-        clause = db.filters[0]
-        assert "status IN" in clause
-        assert "park_request_id IS NULL" in clause
+        park_clause = next(
+            clause for clause in db.filters if "park_request_id" in clause
+        )
+        assert "status IN" in park_clause
+        assert "park_request_id IS NULL" in park_clause
+        assert any("pending" in clause for clause in db.filters)
         assert db.commits == 1
+
+    def test_a_decided_request_is_not_parked(self):
+        """A decision that won the race must not be overwritten by a park."""
+        db = _FakeDB(rowcounts=[1])
+        db.approval_pending = False
+        assert (
+            self.crud.request_park(
+                db,
+                execution_id=uuid.uuid4(),
+                approval_request_id=uuid.uuid4(),
+                expires_at=datetime.now(UTC),
+            )
+            is False
+        )
+        assert db.updates == []
+        assert db.commits == 0
 
     def test_park_request_on_a_finished_run_is_a_no_op(self):
         db = _FakeDB(rowcounts=[0])
