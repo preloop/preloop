@@ -149,6 +149,22 @@ preloop tools exec <tool-name> --args-file ./input.json
 
 `preloop tools` talks directly to the MCP endpoint, so the visible and executable tools are automatically filtered by the current token's policy. Agent tokens only see the tools they are allowed to use.
 
+### Codex CLI Agent Control
+
+```bash
+preloop agents onboard "Codex CLI"
+preloop agents validate "Codex CLI"
+preloop codex sidecar enable
+preloop codex sidecar status
+preloop codex sidecar disable
+```
+
+Onboarding installs `@preloop-ai/codex-plugin` (`preloop-codex-plugin`) and
+writes `~/.codex/preloop-control.json`. `~/.codex/config.toml` stays
+Codex's own file. `preloop codex sidecar run` execs
+`preloop-codex-plugin run`. See
+[docs/guide/codex-cli.md](../docs/guide/codex-cli.md).
+
 ### Cursor Agent CLI
 
 ```bash
