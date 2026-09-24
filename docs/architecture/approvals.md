@@ -104,16 +104,21 @@ account cap (`account.meta_data["approval_window_max_seconds"]`, which may only
 tighten the 30 day deployment ceiling), and the resulting `expires_at` follows
 it.
 
-A window measured in days cannot be waited out in a container. When a gated
-call is still undecided after `settings.approval_park_after_seconds` (90
-seconds), the tool returns a structured `parked_for_human` result and the
-execution is **parked**: `park_request_id` is written on the row, the
-orchestrator's monitor sees it, captures the evidence pack, workspace snapshot
-and CLI session, stops the executor and sets the non-terminal status
-`WAITING_FOR_HUMAN` with no `end_time`. A parked run holds no container, no
-runner and no worker, and the flow's `timeout_seconds` budget is paused
-(`parked_compute_seconds` records the agent time already spent, and the resumed
-run gets the remainder).
+A window measured in days cannot be waited out in a container. When
+`should_park` is already true at request creation (the window is longer than
+`settings.approval_park_after_seconds`, 90 seconds), the execution is parked
+immediately: `park_request_id` is written before the tool result is returned,
+the orchestrator releases the container and sets `WAITING_FOR_HUMAN`, and the
+tool call returns a `parked_for_human` result telling the agent it will resume
+when the human answers. That park is a row write, so it stands even if the
+tool result never reaches the agent. Windows at or under the threshold keep
+the short in-process wait and only park if that wait elapses with the request
+still pending. A parked run holds no container, no runner and no worker, and
+the flow's `timeout_seconds` budget is paused (`parked_compute_seconds`
+records the agent time already spent, and the resumed run gets the remainder).
+An execution that ends failed, cancelled, or timed out cancels any approval
+requests it still holds as pending, with a reason, so the console does not
+show a question whose answer can no longer reach a run.
 
 The decision resumes it. Every resolution path funnels through
 `ApprovalService.update_approval_request`, which claims each parked execution
