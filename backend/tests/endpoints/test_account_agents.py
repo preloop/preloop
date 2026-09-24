@@ -331,6 +331,52 @@ def test_managed_agent_summary_coerces_null_session_mode():
     assert summary.control_session_mode == "offline"
 
 
+def test_managed_agent_control_fields_enable_codex_with_sidecar_flags():
+    """codex is a supported kind and can start a new session."""
+    connected = _managed_agent_control_fields(
+        {
+            "agent_kind": "codex",
+            "session_source_type": "codex",
+            "lifecycle_state": "active",
+            "runtime_session_id": "runtime-codex",
+            "ended_at": None,
+        },
+        {
+            "validation_result": {
+                "control_channel_configured": True,
+                "control_plugin_verified": True,
+                "control_ws_url_ok": True,
+                "control_bearer_token_ok": True,
+            },
+            "managed_config": {},
+        },
+        ws_connected=True,
+    )
+
+    assert connected["control_enabled"] is True
+    assert connected["control_online"] is True
+    assert connected["control_state"] == "plugin_connected"
+    assert "send_text_prompt" in connected["control_capabilities"]
+    assert "start_new_session" in connected["control_capabilities"]
+    assert connected["supports_new_session"] is True
+
+    no_plugin = _managed_agent_control_fields(
+        {
+            "agent_kind": "codex",
+            "session_source_type": "codex",
+            "lifecycle_state": "active",
+            "runtime_session_id": "runtime-codex",
+            "ended_at": None,
+        },
+        None,
+    )
+
+    assert no_plugin["control_enabled"] is False
+    assert no_plugin["control_online"] is False
+    assert no_plugin["control_state"] == "unsupported"
+    assert no_plugin["control_capabilities"] == []
+
+
 def test_managed_agent_control_fields_keep_unknown_kinds_unsupported():
     """Sidecar flags must not enable Agent Control for an unsupported kind."""
     fields = _managed_agent_control_fields(
