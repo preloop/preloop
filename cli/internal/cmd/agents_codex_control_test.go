@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -257,12 +258,21 @@ func TestOffboardCodexLeavesConfigTomlUntouched(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	servicePath := codexAgentControlSidecarSpec().launchdPath()
-	if err := os.MkdirAll(filepath.Dir(servicePath), 0o755); err != nil {
-		t.Fatal(err)
+	spec := codexAgentControlSidecarSpec()
+	servicePath := ""
+	switch runtime.GOOS {
+	case "darwin":
+		servicePath = spec.launchdPath()
+	case "linux":
+		servicePath = spec.systemdPath()
 	}
-	if err := os.WriteFile(servicePath, []byte("plist"), 0o644); err != nil {
-		t.Fatal(err)
+	if servicePath != "" {
+		if err := os.MkdirAll(filepath.Dir(servicePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(servicePath, []byte("service"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	agent := AgentConfig{Name: "Codex CLI", ConfigPath: configPath}
@@ -279,8 +289,10 @@ func TestOffboardCodexLeavesConfigTomlUntouched(t *testing.T) {
 	if _, err := os.Stat(codexControlConfigPath()); !os.IsNotExist(err) {
 		t.Fatalf("control file still present, stat err=%v", err)
 	}
-	if _, err := os.Stat(servicePath); !os.IsNotExist(err) {
-		t.Fatalf("sidecar service still present, stat err=%v", err)
+	if servicePath != "" {
+		if _, err := os.Stat(servicePath); !os.IsNotExist(err) {
+			t.Fatalf("sidecar service still present, stat err=%v", err)
+		}
 	}
 }
 
