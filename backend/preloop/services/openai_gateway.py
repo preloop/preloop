@@ -41,7 +41,7 @@ from urllib import request as urllib_request
 import httpx
 import litellm
 from sqlalchemy import inspect, text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
@@ -85,7 +85,10 @@ from preloop.services.account_realtime import (
     emit_account_event,
 )
 from preloop.services.account_governance_cache import get_cached_account_meta_data
-from preloop.services.agent_session_headers import normalize_session_id
+from preloop.services.agent_session_headers import (
+    normalize_session_id,
+    runtime_principal_type,
+)
 from preloop.services import alibaba_pricing
 from preloop.services import kill_switch as kill_switch_service
 from preloop.services.context_optimization import (
@@ -1016,6 +1019,9 @@ class OpenAIGatewayService:
         An explicit ``X-Preloop-Session-Id`` always wins, and this is a no-op
         once the runtime session has been resolved for the request, so the
         session identity of an in-flight request can never change mid-call.
+        Body ids stay gated on a runtime principal. Model content policy reads
+        the same client session id, so a plain key's vendor id is not copied
+        into the policy context.
 
         Args:
             payload: The Anthropic Messages request payload.
@@ -1064,13 +1070,7 @@ class OpenAIGatewayService:
         session ids are only adopted for principal-bearing credentials, so
         they cannot opt a plain key into a runtime session.
         """
-        api_key = self.auth_context.api_key
-        if api_key is None:
-            return False
-        context_data = getattr(api_key, "context_data", None) or {}
-        if not isinstance(context_data, dict):
-            return False
-        return bool(context_data.get("runtime_principal"))
+        return runtime_principal_type(self.auth_context) is not None
 
     def _runtime_session_idle_cutoff(self) -> Optional[datetime]:
         """Return the timestamp before which an idle session is considered over.
@@ -1396,6 +1396,21 @@ class OpenAIGatewayService:
                         parent_session_id=None,
                     )
                 runtime_session_id = str(rs.id)
+            except IntegrityError:
+                self.db.rollback()
+                rs = crud_runtime_session.get_by_source(
+                    self.db,
+                    account_id=account_id,
+                    session_source_type=session_source_type,
+                    session_source_id=session_source_id,
+                )
+                if rs is not None and rs.ended_at is None:
+                    runtime_session_id = str(rs.id)
+                else:
+                    logger.warning(
+                        "Failed to resolve plain-key runtime session for gateway request",
+                        exc_info=True,
+                    )
             except SQLAlchemyError:
                 self.db.rollback()
                 logger.warning(
