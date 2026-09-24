@@ -124,15 +124,19 @@ names a repository, `workspace` is:
 | `repository_url` | credential-free clone URL |
 | `repository_slug` | `owner/repo` path under the sidecar `workspace_root` |
 | `default_branch` | repository default branch |
-| `ref` | ref the sidecar fetches |
+| `ref` | branch the sidecar falls back to |
+| `fetch_ref` | pull or merge request ref to fetch first, when present |
 | `sha` | commit to check out detached, when the trigger has one |
 | `pr_number` | pull request or merge request number, when present |
-| `clone_depth` | depth passed to `git clone`, or null for a full clone |
-| `submodules` | whether the clone recurses into submodules |
 
-Those values are the ones the container clone resolves (`repository_url`,
-branch, and commit). Tokens are not copied. The agent host uses its own
-git credentials.
+Clone depth and submodules are not part of this contract. The container
+clone path does not take them from `GitCloneConfig` either. A config with
+more than one repository stays `clone_less`: one workspace object cannot
+name every checkout the container would make.
+
+`repository_url` never contains a password. An `ssh://git@host/...` URL
+keeps the `git` user. Other schemes are dropped and the run is
+`clone_less` when no safe URL remains.
 
 When clone is disabled, or no repository can be resolved, `workspace` is
 `{mode: "clone_less"}`. The review reads the diff from the tracker.
@@ -141,13 +145,20 @@ The Claude sidecar (`runtime-plugins/claude-preloop`) handles
 `persistent_checkout` as follows. The Codex sidecar implements the same
 contract separately.
 
-* Ensure `<workspace_root>/<repository_slug>` exists. Clone once. Later
-  runs `git fetch` the ref and check out `sha` detached.
+* Ensure `<workspace_root>/<repository_slug>` exists. Clone once, then
+  fetch on that same run and on later runs. Fetch tries `fetch_ref`, then
+  `sha`, then `ref`. The commit is checked out detached.
 * `spawn_worktree` creates a worktree after that checkout and runs the
   turn there.
 * Git operations on one repository directory are serialized in-process.
-* A dirty tree the sidecar did not create fails the command with
-  `command_error`. The sidecar does not `reset --hard` or `clean` it.
+  Eviction takes the same lock and skips a directory whose turn is still
+  running.
+* A dirty tree fails the command with `command_error`. The sidecar does
+  not `reset --hard` or `clean` it. Ownership is `preloop.managedcheckout`
+  in the repository's git config, so a restart still recognises a tree
+  the sidecar checked out.
+* `ssh://git@host/...` is a valid clone URL. A password in the URL is
+  refused. `protocol.ext.allow` and `protocol.file.allow` are `never`.
 * The resolved path is `metadata.workspace_path` on `command_result`
   (the ack handler does not store a payload) and on an
   `event/session_activity`.

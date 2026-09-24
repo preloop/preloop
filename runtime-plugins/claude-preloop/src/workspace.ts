@@ -18,10 +18,9 @@ export type WorkspaceSpec = {
   repository_slug?: string;
   default_branch?: string;
   ref?: string;
+  fetch_ref?: string;
   sha?: string;
   pr_number?: number | null;
-  clone_depth?: number | null;
-  submodules?: boolean;
 };
 
 export type GitRunResult = {
@@ -100,6 +99,18 @@ function assertSafeSlug(slug: string): string {
   return text;
 }
 
+function assertCloneUrl(url: string): void {
+  if (/^[a-z+][a-z+.-]*:\/\/[^/?#]*:[^@/?#]*@/i.test(url)) {
+    throw new WorkspaceError(
+      "refusing to clone with a password in repository_url; the host uses its own git credentials",
+    );
+  }
+  const scheme = url.includes("://") ? url.slice(0, url.indexOf(":")).toLowerCase() : "";
+  if (scheme && !["https", "http", "ssh", "git"].includes(scheme)) {
+    throw new WorkspaceError(`refusing clone scheme ${scheme}`);
+  }
+}
+
 /**
  * Host checkouts for persistent flow executions.
  *
@@ -111,8 +122,10 @@ export class WorkspaceManager {
   private readonly tails = new Map<string, Promise<void>>();
   /** Absolute checkout paths, oldest first. */
   private readonly lru: string[] = [];
-  /** Directories this process cloned or checked out clean. */
-  private readonly sidecarClean = new Set<string>();
+  /** Directories whose turn is still running. Eviction skips them. */
+  private readonly inUse = new Set<string>();
+  /** Turn cwd to the repository directory eviction must also skip. */
+  private readonly checkoutRoot = new Map<string, string>();
 
   constructor(
     private readonly config: ControlConfig,
@@ -145,6 +158,23 @@ export class WorkspaceManager {
     );
   }
 
+  /** Keep a checkout out of LRU eviction until the turn finishes. */
+  hold(dir: string): void {
+    this.inUse.add(dir);
+    const root = this.checkoutRoot.get(dir);
+    if (root) {
+      this.inUse.add(root);
+    }
+  }
+
+  release(dir: string): void {
+    const root = this.checkoutRoot.get(dir);
+    this.inUse.delete(dir);
+    if (root) {
+      this.inUse.delete(root);
+    }
+  }
+
   private exclusive<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.tails.get(key) ?? Promise.resolve();
     const run = previous.then(fn, fn);
@@ -174,17 +204,16 @@ export class WorkspaceManager {
     }
     if (!exists) {
       await this.clone(repoDir, spec);
-    } else {
-      await this.refuseForeignDirty(repoDir);
-      await this.fetch(repoDir, spec);
     }
+    await this.refuseDirty(repoDir);
+    await this.fetch(repoDir, spec);
     await this.checkout(repoDir, spec);
+    await this.markManaged(repoDir);
     this.touch(repoDir);
-    await this.evict();
-    if (spawnWorktree) {
-      return this.worktree(repoDir);
-    }
-    return repoDir;
+    await this.evict(repoDir);
+    const cwd = spawnWorktree ? await this.worktree(repoDir) : repoDir;
+    this.checkoutRoot.set(cwd, repoDir);
+    return cwd;
   }
 
   private async clone(repoDir: string, spec: WorkspaceSpec): Promise<void> {
@@ -194,18 +223,14 @@ export class WorkspaceManager {
         `cannot clone ${spec.repository_slug}: repository_url is missing`,
       );
     }
-    if (/^[a-z+]+:\/\/[^/]*@/i.test(url)) {
-      throw new WorkspaceError(
-        "refusing to clone with credentials in repository_url; the host uses its own git credentials",
-      );
-    }
-    const args = ["clone"];
-    if (typeof spec.clone_depth === "number" && spec.clone_depth > 0) {
-      args.push("--depth", String(spec.clone_depth));
-    }
-    if (spec.submodules) {
-      args.push("--recurse-submodules");
-    }
+    assertCloneUrl(url);
+    const args = [
+      "-c",
+      "protocol.ext.allow=never",
+      "-c",
+      "protocol.file.allow=never",
+      "clone",
+    ];
     args.push("--", url, repoDir);
     const result = await this.git(args, {
       cwd: path.dirname(repoDir),
@@ -219,27 +244,37 @@ export class WorkspaceManager {
   }
 
   private async fetch(repoDir: string, spec: WorkspaceSpec): Promise<void> {
-    const ref = (spec.ref || spec.default_branch || "HEAD").trim();
-    const result = await this.git(["fetch", "origin", ref], {
-      cwd: repoDir,
-      timeoutMs: workspaceFetchTimeoutMs(this.config),
-    });
-    if (result.code !== 0) {
+    const candidates = [
+      spec.fetch_ref,
+      spec.sha,
+      spec.ref,
+      spec.default_branch,
+    ]
+      .map((value) => (value ?? "").trim())
+      .filter((value) => value.length > 0);
+    const unique = [...new Set(candidates)];
+    if (unique.length === 0) {
       throw new WorkspaceError(
-        `git fetch failed for ${spec.repository_slug} ref ${ref}: ${result.stderr.trim() || "unknown error"}`,
+        `git fetch failed for ${spec.repository_slug}: no ref to fetch`,
       );
     }
-    if (spec.sha) {
-      const shaFetch = await this.git(["fetch", "origin", spec.sha], {
-        cwd: repoDir,
-        timeoutMs: workspaceFetchTimeoutMs(this.config),
-      });
-      if (shaFetch.code !== 0) {
-        throw new WorkspaceError(
-          `git fetch failed for ${spec.repository_slug} sha ${spec.sha}: ${shaFetch.stderr.trim() || "unknown error"}`,
-        );
+    let lastError = "unknown error";
+    for (const ref of unique) {
+      const result = await this.git(
+        ["-c", "protocol.ext.allow=never", "fetch", "origin", ref],
+        {
+          cwd: repoDir,
+          timeoutMs: workspaceFetchTimeoutMs(this.config),
+        },
+      );
+      if (result.code === 0) {
+        return;
       }
+      lastError = result.stderr.trim() || lastError;
     }
+    throw new WorkspaceError(
+      `git fetch failed for ${spec.repository_slug}: ${lastError}`,
+    );
   }
 
   private async checkout(repoDir: string, spec: WorkspaceSpec): Promise<void> {
@@ -249,7 +284,7 @@ export class WorkspaceManager {
         `cannot check out ${spec.repository_slug}: no sha or ref`,
       );
     }
-    await this.refuseForeignDirty(repoDir);
+    await this.refuseDirty(repoDir);
     const result = await this.git(["checkout", "--detach", target], {
       cwd: repoDir,
       timeoutMs: workspaceFetchTimeoutMs(this.config),
@@ -259,30 +294,51 @@ export class WorkspaceManager {
         `git checkout failed for ${spec.repository_slug} at ${target}: ${result.stderr.trim() || "unknown error"}`,
       );
     }
-    this.sidecarClean.add(repoDir);
   }
 
-  private async refuseForeignDirty(repoDir: string): Promise<void> {
+  private async markManaged(repoDir: string): Promise<void> {
+    const result = await this.git(
+      ["config", "preloop.managedcheckout", "1"],
+      { cwd: repoDir },
+    );
+    if (result.code !== 0) {
+      throw new WorkspaceError(
+        `could not record managed checkout in ${repoDir}`,
+      );
+    }
+  }
+
+  private async isManaged(repoDir: string): Promise<boolean> {
+    try {
+      const result = await this.git(
+        ["config", "--get", "preloop.managedcheckout"],
+        { cwd: repoDir },
+      );
+      return result.code === 0 && result.stdout.trim() === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  private async refuseDirty(repoDir: string): Promise<void> {
     let stat: GitRunResult;
     try {
       stat = await this.git(["status", "--porcelain"], { cwd: repoDir });
     } catch (error) {
-      if (!this.sidecarClean.has(repoDir)) {
-        throw new WorkspaceError(
-          `checkout ${repoDir} could not be inspected and was not created by the sidecar`,
-        );
-      }
-      throw error;
+      throw new WorkspaceError(
+        `checkout ${repoDir} could not be inspected: ${error instanceof Error ? error.message : "unknown error"}`,
+      );
     }
     const dirty = stat.stdout.trim().length > 0 || stat.code !== 0;
     if (!dirty) {
       return;
     }
-    if (this.sidecarClean.has(repoDir)) {
-      return;
-    }
+    const managed = await this.isManaged(repoDir);
+    const reason = managed
+      ? "a previous persistent turn left uncommitted changes (preloop.managedcheckout is set)"
+      : "uncommitted changes the sidecar did not make";
     throw new WorkspaceError(
-      `checkout ${repoDir} has uncommitted changes the sidecar did not make; refusing to reset or clean it`,
+      `checkout ${repoDir} has ${reason}; refusing to reset or clean it. Paths: ${stat.stdout.trim() || "unreadable"}`,
     );
   }
 
@@ -294,18 +350,26 @@ export class WorkspaceManager {
     this.lru.push(repoDir);
   }
 
-  private async evict(): Promise<void> {
+  private async evict(current: string): Promise<void> {
     const max = workspaceRepositoriesMax(this.config);
     while (this.lru.length > max) {
       let removed = false;
       for (let index = 0; index < this.lru.length; index += 1) {
         const candidate = this.lru[index];
-        if (await this.isDirty(candidate)) {
+        if (candidate === current || this.inUse.has(candidate)) {
+          continue;
+        }
+        const deleted = await this.exclusive(candidate, async () => {
+          if (this.inUse.has(candidate) || (await this.isDirty(candidate))) {
+            return false;
+          }
+          await fs.rm(candidate, { recursive: true, force: true });
+          return true;
+        });
+        if (!deleted) {
           continue;
         }
         this.lru.splice(index, 1);
-        this.sidecarClean.delete(candidate);
-        await fs.rm(candidate, { recursive: true, force: true });
         removed = true;
         break;
       }

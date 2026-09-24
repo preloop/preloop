@@ -55,8 +55,9 @@ def test_workspace_matches_container_clone_identity() -> None:
     assert workspace["default_branch"] == "main"
     assert workspace["sha"] == SHA
     assert workspace["pr_number"] == 7
-    assert workspace["clone_depth"] == 1
-    assert workspace["submodules"] is True
+    assert workspace["fetch_ref"] == "pull/7/head"
+    assert "clone_depth" not in workspace
+    assert "submodules" not in workspace
     assert "token" not in workspace
     assert "@" not in (workspace["repository_url"] or "")
 
@@ -214,13 +215,54 @@ def test_preset_renders_ephemeral_clone_checks() -> None:
     assert "git rev-parse HEAD` in the clone" in rendered
 
 
-def test_every_preset_declares_supports_persistent() -> None:
+def test_ssh_user_is_kept_and_password_is_stripped() -> None:
+    config = {
+        "enabled": True,
+        "repositories": [
+            {"repository_url": "ssh://git:secret@github.com/example/repo.git"}
+        ],
+    }
+    identity = ephemeral_clone_identity(config, PR_TRIGGER)
+    assert identity is not None
+    assert identity["repository_url"] == "ssh://git@github.com/example/repo.git"
+
+
+def test_multiple_repositories_stay_clone_less() -> None:
+    config = {
+        "enabled": True,
+        "repositories": [
+            {"repository_url": "https://github.com/example/one.git"},
+            {"repository_url": "https://github.com/example/two.git"},
+        ],
+    }
+    assert ephemeral_clone_identity(config, PR_TRIGGER) is None
+    assert workspace_metadata(
+        git_clone_config=config, trigger_event_data=PR_TRIGGER
+    ) == {"mode": "clone_less"}
+
+
+def test_persistent_preset_does_not_hardcode_workspace_path() -> None:
+    from pathlib import Path
+
     from preloop.flow_presets import PRESET_SLUGS, supports_persistent_for_slug
 
+    root = Path(__file__).resolve().parents[2] / "presets"
+    checked = 0
+    for path in root.glob("*.yaml"):
+        data = yaml.safe_load(path.read_text())
+        slug = data.get("slug")
+        if not isinstance(slug, str) or not supports_persistent_for_slug(slug):
+            continue
+        assert "/workspace" not in path.read_text()
+        checked += 1
+    assert checked >= 1
     assert supports_persistent_for_slug("pull-request-reviewer") is True
-    assert supports_persistent_for_slug("issue-triage-assistant") is True
+    assert supports_persistent_for_slug("issue-triage-assistant") is False
+    assert supports_persistent_for_slug("observe-eval") is False
+    assert supports_persistent_for_slug("sbom-verify") is False
+    assert supports_persistent_for_slug("sbom-exploit-check") is False
     assert supports_persistent_for_slug("automated-issue-implementation") is False
     assert supports_persistent_for_slug("portfolio-review") is False
-    assert set(PRESET_SLUGS)  # catalog loaded
+    assert set(PRESET_SLUGS)
     for slug in PRESET_SLUGS:
         assert isinstance(supports_persistent_for_slug(slug), bool)

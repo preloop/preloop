@@ -94,9 +94,12 @@ default 20; only clean directories are evicted), and
 120000). `workspace_root` is the parent of those checkouts. A persistent
 flow with `metadata.workspace.mode` of `persistent_checkout` clones
 `<workspace_root>/<repository_slug>` once using the host's git
-credentials (the message never carries a token), then fetches and checks
-out later runs. A dirty tree the sidecar did not create fails the
-command instead of being reset.
+credentials (the message never carries a token), fetches on that run
+and on later runs, then checks the commit out detached. A password in
+the clone URL is refused. `ssh://git@host/...` is allowed. A dirty tree
+fails the command instead of being reset. The sidecar records
+`preloop.managedcheckout` in git config so a later process still knows
+the tree is its own.
 
 ## Usage
 

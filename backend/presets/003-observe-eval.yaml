@@ -1,5 +1,5 @@
 slug: observe-eval
-supports_persistent: true
+supports_persistent: false
 name: Observe / Eval
 description: >-
   Run-measure-report evaluation runs with no write tools by default. The agent

@@ -53,17 +53,19 @@ Persistent execution sends a `workspace` object on the `send_message`.
   with the host's own git credentials, then fetches and checks out later
   runs. No tracker token is sent to the sidecar.
 * **Clone-less** (`workspace.mode` is `clone_less`): git clone is disabled,
-  or no repository could be resolved. The preset must not run git. The
-  pull request reviewer reads the diff from the tracker and says so in
-  the review.
+  no repository could be resolved, or the flow lists more than one
+  repository. The preset must not run git. The pull request reviewer
+  reads the diff from the tracker and says so in the review.
 * **Ephemeral** runs are unchanged. Their prompt renders
   `workspace.mode` as `ephemeral` and the container still clones into
   its own workspace.
 
-Presets declare `supports_persistent`. When Persistent is selected, the
-flow form disables presets that do not support it. The pull request
-reviewer supports it. Presets that still assume an ephemeral checkout
-do not.
+Presets declare `supports_persistent`. The marker means the prompt was
+checked against persistent modes. It does not mean the host captures
+container result files. When Persistent is selected, the flow form
+disables presets that do not support it. The pull request reviewer
+supports it. Presets that write a container result path, or that still
+assume an ephemeral checkout, do not.
 
 ## What this does not do yet
 

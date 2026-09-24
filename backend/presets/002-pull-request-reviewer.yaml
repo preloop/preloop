@@ -924,9 +924,11 @@ prompt_template: |
 
   **Step 8.2: Record Completion (MANDATORY FINAL ACT)**
 
-  As your very last action, write /workspace/result.json — this file is how
-  Preloop confirms the review completed. It must be valid JSON, a single
-  top-level object:
+  When {{workspace.mode}} is ephemeral, write the container result file the
+  flow already uses for confirmation. When {{workspace.mode}} is
+  persistent_checkout or clone_less, do not write a container result path.
+  Put the same JSON object in your final reply. That reply is the
+  confirmation. It must be valid JSON, a single top-level object:
 
   {
     "status": "success",

@@ -25,18 +25,6 @@ MODE_PERSISTENT_CHECKOUT = "persistent_checkout"
 MODE_CLONE_LESS = "clone_less"
 MODE_EPHEMERAL = "ephemeral"
 
-_CREDENTIAL_KEYS = frozenset(
-    {
-        "token",
-        "password",
-        "secret",
-        "credentials",
-        "git_credentials",
-        "git_credentials_map",
-        "authorization",
-    }
-)
-
 
 def _mapping(value: Any) -> Dict[str, Any]:
     if isinstance(value, Mapping):
@@ -156,22 +144,39 @@ def _pr_number(payload: Mapping[str, Any]) -> Optional[int]:
     return None
 
 
-def _optional_int(value: Any) -> Optional[int]:
-    if value is None or value == "":
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _first_repository(git_config: Mapping[str, Any]) -> Dict[str, Any]:
     repositories = git_config.get("repositories")
-    if isinstance(repositories, list) and repositories:
+    if isinstance(repositories, list) and len(repositories) == 1:
         first = repositories[0]
         if isinstance(first, dict):
             return first
     return {}
+
+
+def credential_free_clone_url(url: str) -> Optional[str]:
+    """Clone URL with any password removed.
+
+    ``https`` userinfo is stripped entirely. ``ssh://git@host/...`` keeps
+    the username, because ``git`` is the protocol user, not a secret.
+    Other schemes are refused.
+    """
+
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme in {"http", "https"}:
+        return strip_url_credentials(url)
+    if scheme == "ssh":
+        if not parsed.password:
+            return url
+        user = parsed.username or "git"
+        host = parsed.hostname or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        return f"ssh://{user}@{host}{port}{parsed.path}"
+    if scheme == "git":
+        return url
+    if not scheme and url.startswith("git@"):
+        return url
+    return None
 
 
 def ephemeral_clone_identity(
@@ -188,6 +193,12 @@ def ephemeral_clone_identity(
     git_config = _mapping(git_clone_config)
     if not git_config.get("enabled"):
         return None
+    repositories = git_config.get("repositories")
+    if isinstance(repositories, list) and len(repositories) > 1:
+        # The container clones every entry. One workspace object cannot
+        # name them all, so this run stays clone-less instead of checking
+        # out only the first.
+        return None
     trigger = trigger_event_data if isinstance(trigger_event_data, dict) else {}
     payload = _trigger_payload(trigger)
     host = _extractor()
@@ -198,14 +209,18 @@ def ephemeral_clone_identity(
         repository_url = configured.strip()
     if not repository_url:
         repository_url = host._extract_repo_url_from_trigger(trigger) or ""
-    repository_url = strip_url_credentials(repository_url) if repository_url else ""
+    if repository_url:
+        cleaned = credential_free_clone_url(repository_url)
+        if cleaned is None:
+            return None
+        repository_url = cleaned
     repository_slug = _repository_slug(payload, repository_url)
     if not repository_url and not repository_slug:
         return None
 
     commit_sha = host._extract_commit_sha_from_trigger(trigger)
     source_branch = (
-        str(repo.get("branch") or repo.get("source_branch") or "").strip()
+        str(repo.get("branch") or "").strip()
         or host._extract_source_branch_from_trigger(trigger)
         or git_config.get("source_branch")
         or "main"
@@ -217,23 +232,18 @@ def ephemeral_clone_identity(
         trigger_data=trigger,
     )
     if not ref:
-        ref = host._extract_merge_request_ref_from_trigger(trigger) or source_branch
-
-    depth = _optional_int(repo.get("clone_depth", git_config.get("clone_depth")))
-    submodules = bool(repo.get("submodules", git_config.get("submodules", False)))
+        ref = source_branch
+    fetch_ref = host._extract_merge_request_ref_from_trigger(trigger)
     identity: Dict[str, Any] = {
         "repository_url": repository_url or None,
         "repository_slug": repository_slug,
         "default_branch": _default_branch(payload, git_config, host, trigger),
         "ref": ref or None,
+        "fetch_ref": fetch_ref,
         "sha": commit_sha or None,
         "pr_number": _pr_number(payload),
-        "clone_depth": depth,
-        "submodules": submodules,
     }
-    return {
-        key: value for key, value in identity.items() if key not in _CREDENTIAL_KEYS
-    }
+    return identity
 
 
 def workspace_mode(

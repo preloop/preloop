@@ -1,5 +1,5 @@
 slug: sbom-verify
-supports_persistent: true
+supports_persistent: false
 name: SBOM Verify
 description: >-
   Verify and audit a CI-emitted SBOM (SPDX or CycloneDX) instead of

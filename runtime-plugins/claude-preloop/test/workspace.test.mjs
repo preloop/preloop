@@ -21,6 +21,24 @@ function spec(slug, overrides = {}) {
   };
 }
 
+function gitSubcommand(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "-c" || arg === "-C") {
+      index += 1;
+      continue;
+    }
+    if (arg === "--") {
+      break;
+    }
+    if (arg.startsWith("-")) {
+      continue;
+    }
+    return arg;
+  }
+  return args[0];
+}
+
 function makeGit(state) {
   let inFlight = 0;
   return async (args, options) => {
@@ -29,10 +47,26 @@ function makeGit(state) {
     state.calls.push({ args: [...args], cwd: options.cwd });
     await new Promise((resolve) => setTimeout(resolve, state.delayMs ?? 0));
     inFlight -= 1;
-    const command = args[0];
+    const command = gitSubcommand(args);
     if (command === "clone") {
       const dest = args[args.length - 1];
       await fs.mkdir(path.join(dest, ".git"), { recursive: true });
+      return { stdout: "", stderr: "", code: 0 };
+    }
+    if (command === "config") {
+      state.config ??= new Map();
+      if (args.includes("--get")) {
+        const key = args[args.length - 1];
+        const value = state.config.get(`${options.cwd}:${key}`) ?? "";
+        return {
+          stdout: value ? `${value}\n` : "",
+          stderr: "",
+          code: value ? 0 : 1,
+        };
+      }
+      const value = args[args.length - 1];
+      const name = args[args.length - 2];
+      state.config.set(`${options.cwd}:${name}`, value);
       return { stdout: "", stderr: "", code: 0 };
     }
     if (command === "status") {
@@ -61,10 +95,16 @@ test("first execution clones once; second fetches and checks out only", async ()
   const first = await manager.prepare(spec("example/repo"));
   const second = await manager.prepare(spec("example/repo"));
   assert.equal(first, second);
-  const clones = state.calls.filter((call) => call.args[0] === "clone");
-  const fetches = state.calls.filter((call) => call.args[0] === "fetch");
-  const checkouts = state.calls.filter((call) => call.args[0] === "checkout");
+  const clones = state.calls.filter((call) => call.args.includes("clone"));
+  const fetches = state.calls.filter((call) => call.args[0] === "fetch" || call.args.includes("fetch"));
+  const checkouts = state.calls.filter((call) => call.args.includes("checkout"));
   assert.equal(clones.length, 1);
+  assert.ok(clones[0].args.includes("protocol.ext.allow=never"));
+  const firstCheckout = state.calls.findIndex((call) => call.args.includes("checkout"));
+  const fetchBeforeCheckout = state.calls
+    .slice(0, firstCheckout)
+    .some((call) => call.args.includes("fetch"));
+  assert.equal(fetchBeforeCheckout, true);
   assert.ok(fetches.length >= 1);
   assert.ok(checkouts.length >= 2);
   assert.equal(state.destructive.length, 0);
@@ -124,4 +164,38 @@ test("LRU eviction skips dirty directories", async () => {
   await assert.rejects(() => fs.access(path.join(oldest, ".git")));
   await fs.access(path.join(dirty, ".git"));
   await fs.access(path.join(newest, ".git"));
+});
+
+test("ssh git user is allowed and a password is refused", async () => {
+  const root = await tempRoot();
+  const state = { calls: [], dirty: new Set(), destructive: [], maxInFlight: 0 };
+  const manager = new WorkspaceManager({ workspace_root: root }, makeGit(state));
+  const checkedOut = await manager.prepare(
+    spec("example/repo", {
+      repository_url: "ssh://git@github.com/example/repo.git",
+    }),
+  );
+  assert.equal(checkedOut, path.join(root, "example", "repo"));
+  await assert.rejects(
+    () =>
+      manager.prepare(
+        spec("example/other", {
+          repository_url: "ssh://git:secret@github.com/example/other.git",
+        }),
+      ),
+    /password in repository_url/,
+  );
+});
+
+test("managed dirty checkout fails without reset or clean", async () => {
+  const root = await tempRoot();
+  const state = { calls: [], dirty: new Set(), destructive: [], maxInFlight: 0 };
+  const manager = new WorkspaceManager({ workspace_root: root }, makeGit(state));
+  const repo = await manager.prepare(spec("example/repo"));
+  state.dirty.add(repo);
+  await assert.rejects(
+    () => manager.prepare(spec("example/repo")),
+    /preloop.managedcheckout/,
+  );
+  assert.equal(state.destructive.length, 0);
 });
