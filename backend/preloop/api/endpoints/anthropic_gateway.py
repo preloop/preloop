@@ -102,6 +102,7 @@ def create_message(
         budget_enforcer=budget_enforcer,
         owns_db_session=True,
         client_session_id=x_preloop_session_id or lineage.session_id,
+        explicit_preloop_session_id=x_preloop_session_id,
         client_parent_session_id=(
             None if x_preloop_session_id else lineage.parent_session_id
         ),
