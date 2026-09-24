@@ -369,15 +369,27 @@ Path(out_path).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf
 )
 
 
-def _existing_pr_failure_update_shell(
-    *, kind: str, api_url: str, authorization: str, branch: str
+def _existing_pr_update_shell(
+    *,
+    kind: str,
+    api_url: str,
+    authorization: str,
+    branch: str,
+    public_url: str = "",
 ) -> str:
-    """Refresh only the failure disclosure when branch lookup finds an open PR."""
+    """Upsert provenance and refresh the failure disclosure on an open PR/MR.
+
+    The create call returned no URL, so an open PR/MR already exists for this
+    branch: a continuation push or a metadata-only retry. Parse the existing
+    publisher-owned region, append this execution's record when absent, merge
+    any failure disclosure, and update only the body. A malformed/oversized
+    region warns visibly and leaves the provider body untouched.
+    """
     script = (
         inspect.getsource(pr_metadata)
         + r"""
 import sys
-lookup_path, payload_path, update_path, kind, branch = sys.argv[1:]
+lookup_path, payload_path, update_path, kind, branch, public_url = sys.argv[1:]
 try:
     with open(lookup_path, "rb") as stream:
         raw = stream.read(MAX_ARTIFACT_BYTES + 1)
@@ -391,13 +403,12 @@ try:
     if len(payload_raw) > MAX_ARTIFACT_BYTES:
         raise ValueError("payload too large")
     payload = json.loads(payload_raw)
+    if not isinstance(payload, dict):
+        raise ValueError("payload is not an object")
     field = "description" if kind == "gitlab" else "body"
-    notices = re.findall(
-        r"<!-- preloop:failure:([0-9a-f-]{36}):start -->.*?<!-- preloop:failure:\1:end -->",
-        payload[field], re.DOTALL,
-    )
-    if not notices:
-        sys.exit(0)
+    payload_body = payload.get(field) or ""
+    if not isinstance(payload_body, str):
+        raise ValueError("invalid payload description")
     candidates = [item for item in candidates if isinstance(item, dict) and (
         item.get("source_branch") if kind == "gitlab" else (item.get("head") or {}).get("ref")
     ) == branch]
@@ -407,26 +418,58 @@ try:
     number = existing.get("iid" if kind == "gitlab" else "number")
     if type(number) is not int or number <= 0:
         raise ValueError("invalid PR number")
-    body = existing.get(field) or ""
-    if not isinstance(body, str):
+    original = existing.get(field) or ""
+    if not isinstance(original, str):
         raise ValueError("invalid existing description")
+    body = original
+    # Continuation provenance: parse the owned region, append this execution.
+    if public_url:
+        try:
+            current = parse_provenance(payload_body)
+        except ValueError as error:
+            print("PRELOOP_PR_METADATA_WARNING: " + str(error), file=sys.stderr)
+            sys.exit(0)
+        if not current:
+            print(
+                "PRELOOP_PR_METADATA_WARNING: continuation exposes no execution provenance;"
+                " provenance left unchanged",
+                file=sys.stderr,
+            )
+        else:
+            try:
+                records = parse_provenance(body)
+                for record in current:
+                    if record not in records:
+                        records.append(record)
+                body = upsert_provenance(body, records, public_url)
+            except ValueError as error:
+                # Malformed ownership or the provider size limit must not erase
+                # or silently rewrite text the publisher does not own.
+                print("PRELOOP_PR_METADATA_WARNING: " + str(error), file=sys.stderr)
+                sys.exit(0)
+    # Failure disclosure: replace only this execution's owned region.
+    notices = re.findall(
+        r"<!-- preloop:failure:([0-9a-f-]{36}):start -->.*?<!-- preloop:failure:\1:end -->",
+        payload_body, re.DOTALL,
+    )
     for execution_id in notices:
         start = f"<!-- preloop:failure:{execution_id}:start -->"
         end = f"<!-- preloop:failure:{execution_id}:end -->"
-        notice = payload[field].split(start, 1)[1].split(end, 1)[0]
+        notice = payload_body.split(start, 1)[1].split(end, 1)[0]
         body = merge_failure_notice(body, start + notice + end)
-    Path(update_path).write_text(json.dumps({field: body}), encoding="utf-8")
-    print(number)
+    if body != original:
+        Path(update_path).write_text(json.dumps({field: body}), encoding="utf-8")
+        print(number)
 except (OSError, ValueError, KeyError, TypeError, RecursionError):
-    print("PRELOOP_PR_METADATA_WARNING: could not refresh existing failure disclosure", file=sys.stderr)
+    print("PRELOOP_PR_METADATA_WARNING: could not refresh existing PR description", file=sys.stderr)
 """
     )
-    update_path = f"{EVIDENCE_DIR_PATH}/pr-failure-update.json"
+    update_path = f"{EVIDENCE_DIR_PATH}/pr-update.json"
     method = "PUT" if kind == "gitlab" else "PATCH"
     return f"""
-      python3 - {PR_LOOKUP_FILE} {PR_PAYLOAD_FILE} {update_path} {kind} {shlex.quote(branch)} > {update_path}.number <<'PRELOOP_FAILURE_UPDATE'
+      python3 - {PR_LOOKUP_FILE} {PR_PAYLOAD_FILE} {update_path} {kind} {shlex.quote(branch)} {shlex.quote(public_url)} > {update_path}.number <<'PRELOOP_PR_UPDATE'
 {script}
-PRELOOP_FAILURE_UPDATE
+PRELOOP_PR_UPDATE
       PRELOOP_UPDATE_NUMBER=$(cat {update_path}.number)
       if [ -n "$PRELOOP_UPDATE_NUMBER" ] && [ -s {update_path} ]; then
         curl -fsS -o /dev/null -X {method} \
@@ -434,18 +477,19 @@ PRELOOP_FAILURE_UPDATE
           -H 'Content-Type: application/json' \
           --data-binary @{update_path} \
           "{api_url}/$PRELOOP_UPDATE_NUMBER" \
-          || echo "PRELOOP_PR_METADATA_WARNING: failed to update existing failure disclosure"
+          || echo "PRELOOP_PR_METADATA_WARNING: failed to update existing PR description"
       fi
 """
 
 
 def build_github_pr_capture_shell(
-    *, token_ref: str, owner: str, repo: str, branch: str
+    *, token_ref: str, owner: str, repo: str, branch: str, public_url: str = ""
 ) -> str:
     """Shell that turns the create-PR response into one recognizable line.
 
     Falls back to a head-branch lookup so an already-existing PR (the
-    "may already exist" branch) still binds to this execution.
+    "may already exist" branch) still binds to this execution. That fallback
+    also upserts this execution's provenance record onto the existing PR.
     """
 
     grep_pr = 'grep -o \'"html_url"[[:space:]]*:[[:space:]]*"[^"]*/pull/[0-9]*"\''
@@ -461,7 +505,7 @@ def build_github_pr_capture_shell(
         "https://api.github.com/repos/{owner}/{repo}/pulls?state=open&head={owner}:{branch}" \\
         || echo "PR lookup by head branch failed"
       PR_URL=$({grep_pr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
-      {_existing_pr_failure_update_shell(kind="github", api_url=f"https://api.github.com/repos/{owner}/{repo}/pulls", authorization=f"Authorization: token {token_ref}", branch=branch)}
+      {_existing_pr_update_shell(kind="github", api_url=f"https://api.github.com/repos/{owner}/{repo}/pulls", authorization=f"Authorization: token {token_ref}", branch=branch, public_url=public_url)}
     fi
     if [ -n "$PR_URL" ]; then
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$PR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"github\\"}}"
@@ -472,7 +516,12 @@ def build_github_pr_capture_shell(
 
 
 def build_gitlab_mr_capture_shell(
-    *, token_ref: str, gitlab_host: str, encoded_path: str, branch: str
+    *,
+    token_ref: str,
+    gitlab_host: str,
+    encoded_path: str,
+    branch: str,
+    public_url: str = "",
 ) -> str:
     """GitLab counterpart of :func:`build_github_pr_capture_shell`."""
 
@@ -490,7 +539,7 @@ def build_gitlab_mr_capture_shell(
         "https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests?state=opened&source_branch={branch}" \\
         || echo "MR lookup by source branch failed"
       MR_URL=$({grep_mr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
-      {_existing_pr_failure_update_shell(kind="gitlab", api_url=f"https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests", authorization=f"PRIVATE-TOKEN: {token_ref}", branch=branch)}
+      {_existing_pr_update_shell(kind="gitlab", api_url=f"https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests", authorization=f"PRIVATE-TOKEN: {token_ref}", branch=branch, public_url=public_url)}
     fi
     if [ -n "$MR_URL" ]; then
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$MR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"gitlab\\"}}"
@@ -4878,6 +4927,7 @@ true
                     owner=owner,
                     repo=repo,
                     branch=safe_target,
+                    public_url=preloop_url,
                 )
             )
 
@@ -4919,6 +4969,7 @@ true
                 gitlab_host=gitlab_host,
                 encoded_path=encoded_path,
                 branch=safe_target,
+                public_url=preloop_url,
             )
         )
 

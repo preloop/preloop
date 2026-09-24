@@ -23,6 +23,10 @@ PROVENANCE_END = "<!-- preloop:executions:end -->"
 _PROVENANCE = re.compile(
     re.escape(PROVENANCE_START) + r".*?" + re.escape(PROVENANCE_END), re.DOTALL
 )
+# One publisher-owned record line: ``- [label](url) — published `sha` ``.
+_PROVENANCE_RECORD = re.compile(
+    r"- \[[^\]\n]+\]\((?P<url>[^\s)]+)\) — published `(?P<sha>[0-9a-f]{40}|[0-9a-f]{64})`"
+)
 
 
 @dataclass(frozen=True)
@@ -288,6 +292,45 @@ def upsert_provenance(
     if len(result.encode("utf-8")) > 65536:
         raise ValueError("PR body plus provenance exceeds provider limit")
     return result
+
+
+def parse_provenance(body: str) -> list[PublicationRecord]:
+    """Read the publisher-owned region back into exact records.
+
+    Returns an empty list when ``body`` has no owned region. Raises
+    ``ValueError`` for ambiguous ownership (unbalanced delimiters,
+    unrecognized lines, a region without records) so the caller can warn
+    visibly and leave the provider body untouched rather than erase human
+    text. Repeated owned blocks are read in order; ``upsert_provenance``
+    collapses them into the single owned region.
+    """
+    matches = list(_PROVENANCE.finditer(body))
+    # Unbalanced delimiters are ambiguous ownership: refuse to guess.
+    if body.count(PROVENANCE_START) != len(matches) or body.count(
+        PROVENANCE_END
+    ) != len(matches):
+        raise ValueError(
+            "Malformed publisher provenance region; repair delimiters first"
+        )
+    records: list[PublicationRecord] = []
+    for match in matches:
+        inner = match.group(0)[len(PROVENANCE_START) : -len(PROVENANCE_END)]
+        for line in inner.splitlines():
+            candidate = line.strip()
+            if not candidate or candidate == "### Preloop executions":
+                continue
+            parsed = _PROVENANCE_RECORD.fullmatch(candidate)
+            if parsed is None:
+                raise ValueError("Malformed publisher provenance record")
+            _, separator, execution_id = parsed.group("url").rpartition(
+                "/console/flows/executions/"
+            )
+            if not separator:
+                raise ValueError("Malformed publisher provenance link")
+            records.append(PublicationRecord(execution_id, parsed.group("sha")))
+    if matches and not records:
+        raise ValueError("Publisher provenance region has no records")
+    return records
 
 
 def discover_template(

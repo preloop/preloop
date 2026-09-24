@@ -334,7 +334,33 @@ initial/repair execution links and published SHAs while preserving human edits
 outside that region, including metadata-only repairs. Links use `PRELOOP_URL`
 and existing authorization-protected console routes; tokens and transcripts
 are never provenance inputs. Legacy publication adds the current execution
-block on creation; continuation provenance updates require the isolated path.
+block on creation and now also upserts it when a continuation push or a
+metadata-only retry finds the PR/MR already open. A malformed owned region, or
+a rewrite that would exceed the provider limit, warns through
+`PRELOOP_PR_METADATA_WARNING` and leaves the provider body unchanged; a failed
+provider update is surfaced and never reported as successful publication.
+
+The publication-mode by provider matrix records where each behavior is
+delivered (with its test), closed by the legacy continuation upsert above, or
+unsupported by design:
+
+| Mode / provider | Create | Continuation push | Metadata-only retry | Failure disclosure | Human edits preserved | Provider failure surfaced |
+| --- | --- | --- | --- | --- | --- | --- |
+| `legacy` / GitHub | delivered: upsert in the create payload | gap closed here: existing-PR update shell | gap closed here: same existing-PR upsert | delivered: `merge_failure_notice` | delivered: owned region only | delivered: `PRELOOP_PR_METADATA_WARNING` on the update |
+| `legacy` / GitLab | delivered: same create path, `description` field | gap closed here: existing-MR update shell | gap closed here: same existing-MR upsert | delivered: `merge_failure_notice` | delivered: owned region only | delivered: `PRELOOP_PR_METADATA_WARNING` on the update |
+| `isolated` / GitHub | delivered: `PullRequestPublisher.upsert` | delivered: `PullRequestPublisher.upsert` | delivered: `PullRequestPublisher.upsert` | unsupported by design: isolated publishes only verified success (#599 disclosure out of scope) | delivered: owned region only | delivered: `PublicationError`, retryable |
+| `isolated` / GitLab | unsupported by design | unsupported by design | unsupported by design | unsupported by design | unsupported by design | unsupported by design |
+
+GitLab isolated publication stays rejected until a broker can enforce scope and
+lifetime alongside the GitHub App lease. Tests:
+`backend/tests/utils/test_pr_metadata.py` (parser round trip, append without
+duplicate, malformed region, oversize),
+`backend/tests/services/test_flow_pr_loop.py::TestLegacyContinuationProvenance`
+(legacy GitHub/GitLab continuation, idempotence, human prose, provider
+rejection) and `TestPostExecutionPullRequest` (legacy create),
+`backend/tests/services/test_failed_publication_metadata.py` (failure
+disclosure), and
+`backend/tests/services/test_trusted_publication.py` (isolated provider).
 
 Preset synchronization updates uncustomized fields and marks customized saved
 flows as having an available update. Inspect the effective saved prompt and

@@ -2229,6 +2229,20 @@ class TestPostExecutionPullRequest:
         assert "/tmp/preloop-commit-pr-list.txt" in commands
         assert 'git log --format="- %s"' in commands
 
+    def test_existing_pr_update_upserts_continuation_provenance(
+        self, container_executor, monkeypatch
+    ):
+        monkeypatch.setenv("PRELOOP_URL", "https://app.example.com")
+        context = self._context()
+        context["git_clone_config"]["publication_mode"] = "legacy"
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        # The existing-PR fallback parses the owned region and reuses the
+        # public application URL rather than fabricating links.
+        assert "parse_provenance" in commands
+        assert "pr-update.json" in commands
+        assert "PRELOOP_PR_METADATA_WARNING" in commands
+        assert "https://app.example.com" in commands
+
 
 class TestExtractMergeRequestRef:
     def test_github_pr_comment_issue_stub(self, container_executor):
