@@ -86,7 +86,8 @@ def store(
     ``size_bytes`` are taken from the plaintext. A second call with the same
     ``(runtime_session_id, kind, source, source_ref)`` returns the stored row
     and does not replace its ciphertext. Rows with a null ``source_ref`` are
-    not idempotent.
+    not idempotent. The row copies ``legal_hold`` from its session, so an
+    artifact stored after a hold is placed is frozen immediately.
 
     Args:
         db: Database session.
@@ -101,9 +102,6 @@ def store(
         activity_id: Optional activity the artifact illustrates.
         expires_at: Optional retention deadline. Not purged here.
         commit: When True, commit the insert. When False, only flush.
-
-    The row copies ``legal_hold`` from its session, so an artifact stored
-    after a hold is placed is frozen immediately.
 
     Returns:
         The new row, or the unchanged row when the source key already exists.
