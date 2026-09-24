@@ -176,6 +176,105 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         self._index_tool_call_chunks(db, activity=db_obj, commit=commit)
         return db_obj
 
+    def log_artifact_evicted(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        artifact_id: Any,
+        kind: str,
+        commit: bool = True,
+    ) -> RuntimeSessionActivity:
+        """Record that an artifact's bytes were dropped for the account budget.
+
+        Args:
+            db: Database session.
+            account_id: Owning account.
+            runtime_session_id: Session the artifact belonged to.
+            artifact_id: Artifact whose ciphertext was cleared.
+            kind: ``screenshot`` or ``recording``.
+            commit: When True, commit the row. When False, only flush.
+
+        Returns:
+            The new ``artifact_evicted`` activity.
+        """
+        activity_timestamp = datetime.now(timezone.utc)
+        db_obj = RuntimeSessionActivity(
+            account_id=account_id,
+            runtime_session_id=runtime_session_id,
+            activity_type="artifact_evicted",
+            summary="Session artifact evicted for the account storage budget",
+            metadata_=sanitize_for_jsonb(
+                {
+                    "artifact_id": str(artifact_id),
+                    "kind": kind,
+                    "reason": "account_budget",
+                }
+            ),
+            timestamp=activity_timestamp,
+        )
+        db.add(db_obj)
+        self._touch_runtime_session_and_agent(
+            db,
+            account_id=account_id,
+            runtime_session_id=runtime_session_id,
+            activity_timestamp=activity_timestamp,
+        )
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        else:
+            db.flush()
+        return db_obj
+
+    def set_browser_step_screenshot_availability(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        activity_id: Any,
+        availability: str,
+        commit: bool = True,
+    ) -> bool:
+        """Set ``metadata.screenshot.availability`` on a browser-step activity.
+
+        Args:
+            db: Database session.
+            account_id: Account the caller is allowed to update.
+            activity_id: Activity the artifact illustrates.
+            availability: New availability, for example ``evicted``.
+            commit: When True, commit the update. When False, only flush.
+
+        Returns:
+            True when a ``browser_step`` row in this account was updated.
+        """
+        from sqlalchemy.orm.attributes import flag_modified
+
+        row = (
+            db.query(self.model)
+            .filter(
+                self.model.id == activity_id,
+                self.model.account_id == account_id,
+                self.model.activity_type == "browser_step",
+            )
+            .one_or_none()
+        )
+        if row is None:
+            return False
+        metadata = dict(row.metadata_ or {})
+        screenshot = metadata.get("screenshot")
+        if not isinstance(screenshot, dict):
+            screenshot = {}
+        metadata["screenshot"] = {**screenshot, "availability": availability}
+        row.metadata_ = sanitize_for_jsonb(metadata)
+        flag_modified(row, "metadata_")
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+        return True
+
     def log_browser_step(
         self,
         db: Session,
