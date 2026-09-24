@@ -2643,6 +2643,7 @@ class TestLegacyContinuationProvenance:
         result_json: bytes
         | None = b'{"pr_title":"Agent title","pr_body":"Agent body"}',
         reset_store: bool = True,
+        same_branch_twin: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         import os
         import shutil
@@ -2733,7 +2734,19 @@ class TestLegacyContinuationProvenance:
                 }
             )
         if reset_store or not (tmp_path / "store.json").exists():
-            (tmp_path / "store.json").write_text(json.dumps([row]))
+            rows = [row]
+            if same_branch_twin:
+                twin = dict(row)
+                if provider == "gitlab":
+                    twin["iid"] = 8
+                    twin["web_url"] = (
+                        "https://gitlab.example.com/example/widgets/-/merge_requests/8"
+                    )
+                else:
+                    twin["number"] = 8
+                    twin["html_url"] = "https://github.com/example/widgets/pull/8"
+                rows.append(twin)
+            (tmp_path / "store.json").write_text(json.dumps(rows))
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir(exist_ok=True)
         (bin_dir / "curl").write_text(_FAKE_PROVIDER.format(python=sys.executable))
@@ -2903,6 +2916,44 @@ class TestLegacyContinuationProvenance:
         assert "PRELOOP_PR_METADATA_WARNING" in result.stderr
         assert "PRELOOP_PR_OPENED" not in result.stdout
         assert self._stored_body(tmp_path, "gitlab") == original
+
+    def test_multiple_open_prs_are_not_reported_as_opened(self, tmp_path):
+        original = "Human prose\n"
+        result = self._run(
+            tmp_path,
+            provider="github",
+            body=original,
+            same_branch_twin=True,
+        )
+        assert result.returncode != 0
+        assert "PRELOOP_PR_METADATA_WARNING" in result.stderr
+        assert "PRELOOP_PR_OPENED" not in result.stdout
+        stored = json.loads((tmp_path / "store.json").read_text())
+        assert len(stored) == 2
+        assert all(self.CURRENT not in row["body"] for row in stored)
+
+    def test_near_limit_failure_notice_is_not_reported_as_opened(self, tmp_path):
+        from preloop.utils.pr_metadata import PublicationRecord, upsert_provenance
+
+        seeded = upsert_provenance(
+            "Human prose\n",
+            [PublicationRecord(self.INITIAL, self.PRIOR_SHA)],
+            "https://app.example.com",
+        )
+        seeded += "h" * (65500 - len(seeded.encode("utf-8")))
+        result = self._run(
+            tmp_path,
+            provider="github",
+            body=seeded,
+            result_json=(
+                b'{"status":"failure","reason":"Tests are failing",'
+                b'"pr_title":"Agent title","pr_body":"Agent body"}'
+            ),
+        )
+        assert result.returncode != 0
+        assert "PRELOOP_PR_METADATA_WARNING" in result.stderr
+        assert "PRELOOP_PR_OPENED" not in result.stdout
+        assert self._stored_body(tmp_path, "github") == seeded
 
     def test_oversize_region_leaves_the_body_unchanged(self, tmp_path):
         from preloop.utils.pr_metadata import PublicationRecord, upsert_provenance

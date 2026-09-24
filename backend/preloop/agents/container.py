@@ -379,8 +379,10 @@ def _existing_pr_failure_update_shell(
 ) -> str:
     """Refresh failure disclosure and upsert provenance on an open PR.
 
-    A malformed or oversized body is not written. A non-2xx provider response
-    sets ``PRELOOP_PROVENANCE_FAILED`` so the caller does not claim success.
+    A malformed or oversized body is not written. A non-2xx provider response,
+    more than one open pull request for the branch, or a failure notice that
+    cannot be merged sets ``PRELOOP_PROVENANCE_FAILED`` so the caller does not
+    claim success.
     """
     script = (
         inspect.getsource(pr_metadata)
@@ -389,6 +391,7 @@ import sys
 lookup_path, payload_path, update_path, kind, branch = sys.argv[1:6]
 execution_link = sys.argv[6] if len(sys.argv) > 6 else ""
 head_sha = sys.argv[7] if len(sys.argv) > 7 else ""
+update_required = False
 try:
     with open(lookup_path, "rb") as stream:
         raw = stream.read(MAX_ARTIFACT_BYTES + 1)
@@ -416,6 +419,8 @@ try:
     candidates = [item for item in candidates if isinstance(item, dict) and (
         item.get("source_branch") if kind == "gitlab" else (item.get("head") or {}).get("ref")
     ) == branch]
+    if execution_link and candidates:
+        update_required = True
     if len(candidates) != 1:
         raise ValueError("lookup did not identify one source branch")
     existing = candidates[0]
@@ -452,6 +457,8 @@ except SystemExit:
     raise
 except (OSError, ValueError, KeyError, TypeError, RecursionError):
     print("PRELOOP_PR_METADATA_WARNING: could not refresh existing pull request body", file=sys.stderr)
+    if update_required:
+        sys.exit(3)
 """
     )
     update_path = f"{EVIDENCE_DIR_PATH}/pr-failure-update.json"
