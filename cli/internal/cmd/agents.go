@@ -204,6 +204,20 @@ var agentSpecs = []agentSpec{
 		BootstrapConfigPath: ".config/devin/config.json",
 		Parser:              parseGenericMCP,
 	},
+	{
+		// GitHub Copilot CLI (`copilot`). User MCP config lives at
+		// ~/.copilot/mcp-config.json (COPILOT_HOME can relocate the directory;
+		// we probe the home-relative path like other single-home agents).
+		// Schema is either `{ "mcpServers": {…} }` or a bare top-level map of
+		// servers; VS Code's `{ "servers": … }` shape is ignored. Inference
+		// stays on GitHub's backend — MCP-firewall only.
+		Name:                copilotCLIAgentName,
+		ConfigPaths:         []string{".copilot/mcp-config.json"},
+		DetectionPaths:      []string{".copilot"},
+		DetectionCommands:   []string{"copilot"},
+		BootstrapConfigPath: ".copilot/mcp-config.json",
+		Parser:              parseCopilotCLIMCP,
+	},
 }
 
 // Display names for the additional MCP-only agent adapters. Kept as
@@ -212,6 +226,7 @@ var agentSpecs = []agentSpec{
 const (
 	antigravityAgentName = "Antigravity"
 	devinAgentName       = "Devin"
+	copilotCLIAgentName  = "Copilot CLI"
 )
 
 // isAntigravityAgent reports whether the agent is the Antigravity surface
@@ -223,6 +238,12 @@ func isAntigravityAgent(agent AgentConfig) bool {
 // isDevinAgent reports whether the agent is Devin.
 func isDevinAgent(agent AgentConfig) bool {
 	return strings.EqualFold(strings.TrimSpace(agent.Name), devinAgentName)
+}
+
+// isCopilotCLIAgent reports whether the agent is the GitHub Copilot CLI
+// (distinct from "VSCode / Copilot", which is the editor MCP surface).
+func isCopilotCLIAgent(agent AgentConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(agent.Name), copilotCLIAgentName)
 }
 
 // isClaudeDesktopAgent reports whether the agent is the Claude Desktop app.
@@ -291,7 +312,7 @@ MCP server configurations without mutating local files or your Preloop account.
 
 Supported agents: Claude Code, Cursor, Windsurf, VSCode/Copilot,
                   Gemini CLI, OpenCode, Codex CLI, OpenClaw, Hermes,
-                  Antigravity, Devin.
+                  Antigravity, Devin, Copilot CLI.
 
 Each listed agent shows a pre-onboarding readiness probe:
   Auth     Ready / Not logged in / Unknown, detected from the agent's local
@@ -846,7 +867,7 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 
 	if len(discovered) == 0 {
 		fmt.Println("No AI agents found on this machine.")
-		fmt.Println("Looked for: Claude Code, Cursor, Windsurf, VSCode, Gemini CLI, OpenCode, Codex CLI, OpenClaw, Hermes, Antigravity, Devin")
+		fmt.Println("Looked for: Claude Code, Cursor, Windsurf, VSCode, Gemini CLI, OpenCode, Codex CLI, OpenClaw, Hermes, Antigravity, Devin, Copilot CLI")
 		return nil
 	}
 
@@ -2002,13 +2023,15 @@ func runAgentsInstallPlugin(cmd *cobra.Command, args []string) error {
 			err,
 		)
 	}
-	if runtimeSessionSourceTypeForAgent(agentName) == "claude_code" {
+	agentForInstall := AgentConfig{Name: agentName}
+	if agentControlPluginInstallerCommand(agentForInstall) == "npm" {
 		// npm install -g <source folder> links the folder as-is, so prepare an
-		// unbuilt Claude plugin checkout before installing it. This keeps the
+		// unbuilt sidecar checkout before installing it. This keeps the
 		// standalone command aligned with the onboarding installer.
-		if buildErr := buildClaudePluginSourceIfNeeded(
+		if buildErr := buildNpmSidecarSourceIfNeeded(
 			executable,
-			agentControlPluginInstallTarget(AgentConfig{Name: agentName}),
+			agentControlPluginInstallTarget(agentForInstall),
+			npmSidecarBuildLabel(agentForInstall),
 			cmd.ErrOrStderr(),
 		); buildErr != nil {
 			return fmt.Errorf("failed to prepare Preloop runtime plugin source: %w", buildErr)
@@ -2027,7 +2050,7 @@ func runAgentsInstallPlugin(cmd *cobra.Command, args []string) error {
 		}
 	}
 	var command *exec.Cmd
-	if runtimeSessionSourceTypeForAgent(agentName) == "claude_code" {
+	if agentControlPluginInstallerCommand(AgentConfig{Name: agentName}) == "npm" {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 		command = exec.CommandContext(ctx, executable, installArgs...)
@@ -3141,6 +3164,8 @@ func managedAgentKindForAgent(agentName string) string {
 		return "antigravity"
 	case strings.ToLower(devinAgentName):
 		return "devin"
+	case strings.ToLower(copilotCLIAgentName):
+		return "copilot_cli"
 	default:
 		return runtimeSessionSourceTypeForAgent(agentName)
 	}
@@ -5943,6 +5968,20 @@ func (a genericManagedMCPAdapter) EnsureServerContainer(doc map[string]interface
 		doc["mcp_servers"] = created
 		return created, nil
 	}
+	if isCopilotCLIAgent(a.agent) {
+		// Copilot CLI accepts either `{ "mcpServers": {…} }` or a bare
+		// top-level server map. Do not treat VS Code's `servers` key as the
+		// container — that shape belongs to the editor, not the CLI.
+		if servers, ok := asObjectMap(doc["mcpServers"]); ok {
+			return servers, nil
+		}
+		if looksLikeMCPServerContainer(doc) {
+			return doc, nil
+		}
+		created := make(map[string]interface{})
+		doc["mcpServers"] = created
+		return created, nil
+	}
 	if servers, ok := asObjectMap(doc["mcpServers"]); ok {
 		return servers, nil
 	}
@@ -6029,6 +6068,17 @@ func (a genericManagedMCPAdapter) BuildManagedServer(baseURL, token string) map[
 				"Authorization": "Bearer " + token,
 			},
 		}
+	case strings.ToLower(copilotCLIAgentName):
+		// Copilot CLI's MCP schema uses `type` (http) + `url` + headers —
+		// the same remote shape Gemini CLI accepts. Do not write a
+		// `transport` field; Copilot ignores it.
+		return map[string]interface{}{
+			"type": "http",
+			"url":  url,
+			"headers": map[string]interface{}{
+				"Authorization": "Bearer " + token,
+			},
+		}
 	case "claude desktop":
 		// claude_desktop_config.json only supports stdio servers
 		// (command/args/env); remote HTTP servers are added through the
@@ -6084,7 +6134,7 @@ func (a genericManagedMCPAdapter) ValidateManagedConfig(doc map[string]interface
 		"authorization_header_ok": false,
 	}
 	if !ok {
-		return result
+		return mergeNpmSidecarControlValidation(a.agent, doc, baseURL, result)
 	}
 
 	result["preloop_url_ok"] = preloop["url"] == expectedURL
@@ -6099,6 +6149,12 @@ func (a genericManagedMCPAdapter) ValidateManagedConfig(doc map[string]interface
 	if isDevinAgent(a.agent) {
 		// Devin defaults to Streamable HTTP and takes no transport field.
 		result["transport_ok"] = true
+	}
+	if isCopilotCLIAgent(a.agent) {
+		result["transport_ok"] = strings.EqualFold(
+			strings.TrimSpace(fmt.Sprint(preloop["type"])),
+			"http",
+		)
 	}
 	if strings.EqualFold(strings.TrimSpace(a.agent.Name), "gemini cli") {
 		if transport, _ := preloop["transport"].(string); strings.EqualFold(strings.TrimSpace(transport), "http-streaming") {
@@ -6347,6 +6403,21 @@ func (a genericManagedMCPAdapter) ValidateManagedConfig(doc map[string]interface
 			}
 		}
 	}
+	return mergeNpmSidecarControlValidation(a.agent, doc, baseURL, result)
+}
+
+func mergeNpmSidecarControlValidation(
+	agent AgentConfig,
+	doc map[string]interface{},
+	baseURL string,
+	result map[string]interface{},
+) map[string]interface{} {
+	if !isCodexCLIAgent(agent) && !isClaudeCodeAgent(agent) {
+		return result
+	}
+	for key, value := range validateAgentControlConfig(agent, doc, baseURL) {
+		result[key] = value
+	}
 	return result
 }
 
@@ -6525,6 +6596,17 @@ func lookupMCPServerContainer(doc map[string]interface{}) map[string]interface{}
 		}
 		if fallback == nil {
 			fallback = servers
+		}
+	}
+	// Bare top-level server maps (Copilot CLI's alternate schema). Only
+	// accept when every value looks like an MCP server entry so ordinary
+	// settings files are never mistaken for a server container.
+	if looksLikeMCPServerContainer(doc) {
+		if _, hasPreloop := doc["preloop"]; hasPreloop {
+			return doc
+		}
+		if fallback == nil {
+			fallback = doc
 		}
 	}
 	if fallback != nil {
@@ -6796,6 +6878,52 @@ func parseGenericMCP(path string) (map[string]MCPDef, error) {
 		return nil, err
 	}
 	return parseServerMapFromJSON(data)
+}
+
+// parseCopilotCLIMCP reads GitHub Copilot CLI's ~/.copilot/mcp-config.json.
+// Accepted shapes:
+//   - `{ "mcpServers": { name: { type, url, headers, … } } }`
+//   - a bare top-level map of server names to entries
+//
+// The VS Code `{ "servers": … }` shape is deliberately ignored so a stray
+// editor config cannot be mistaken for Copilot CLI's user file.
+func parseCopilotCLIMCP(path string) (map[string]MCPDef, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, err
+	}
+	return parseCopilotCLIServerMap(doc), nil
+}
+
+func parseCopilotCLIServerMap(doc map[string]interface{}) map[string]MCPDef {
+	if doc == nil {
+		return map[string]MCPDef{}
+	}
+	if servers, ok := asObjectMap(doc["mcpServers"]); ok {
+		return mcpDefsFromServerContainer(servers)
+	}
+	// Reject documents whose only server-related key is VS Code's `servers`.
+	if _, hasServers := doc["servers"]; hasServers && len(doc) == 1 {
+		return map[string]MCPDef{}
+	}
+	if looksLikeMCPServerContainer(doc) {
+		return mcpDefsFromServerContainer(doc)
+	}
+	return map[string]MCPDef{}
+}
+
+func mcpDefsFromServerContainer(container map[string]interface{}) map[string]MCPDef {
+	result := make(map[string]MCPDef, len(container))
+	for name, raw := range container {
+		if def, ok := mcpDefFromRawServer(raw); ok {
+			result[name] = def
+		}
+	}
+	return result
 }
 
 func parseCodexConfig(path string) (map[string]MCPDef, error) {

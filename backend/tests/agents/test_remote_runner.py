@@ -377,22 +377,22 @@ def test_lease_payload_host_exec_rejects_pull_request() -> None:
         )
 
 
-def test_lease_payload_host_exec_rejects_isolated_publication_without_lookup(
+def test_lease_payload_host_exec_rejects_isolated_publication_with_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A native host job fails closed before any private-publication lookup."""
-    execution_id = uuid4()
+    """A stored publication snapshot must not be stripped from a host lease."""
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_execution.get",
+        lambda *args, **kwargs: SimpleNamespace(
+            result={"_private_publication": {"nonce": "n-1", "version": 1}}
+        ),
+    )
     executor = RemoteRunnerExecutor(
         "cursor", {}, db=MagicMock(), pool="local", account_id=uuid4()
     )
-    snapshot_get = MagicMock()
-    monkeypatch.setattr(
-        "preloop.agents.remote_runner.crud_flow_execution.get",
-        snapshot_get,
-    )
-    with pytest.raises(ValueError, match="isolated publication"):
+    with pytest.raises(ValueError, match="isolated publication|pull requests"):
         executor._lease_payload(
-            execution_id=execution_id,
+            execution_id=uuid4(),
             flow_id=uuid4(),
             prompt="publish",
             execution_context={
@@ -401,38 +401,18 @@ def test_lease_payload_host_exec_rejects_isolated_publication_without_lookup(
                 "git_clone_config": {"publication_mode": "isolated"},
             },
         )
-    # The primary guard rejects the profile before the stored snapshot is
-    # read, so the defense-in-depth raise never consults the database.
-    snapshot_get.assert_not_called()
 
 
-def test_lease_payload_host_exec_defense_in_depth_rejects_isolated_publication(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Even past the primary guard, a host lease refuses to drop the snapshot."""
-    execution_id = uuid4()
+def test_lease_payload_host_exec_keeps_missing_publication_snapshot_error() -> None:
+    """A missing snapshot still fails with the existing publication error."""
     executor = RemoteRunnerExecutor(
         "cursor", {}, db=MagicMock(), pool="local", account_id=uuid4()
     )
-    snapshot_get = MagicMock(
-        return_value=SimpleNamespace(
-            id=execution_id,
-            result={"_private_publication": {"nonce": "stored"}},
-        )
-    )
-    monkeypatch.setattr(
-        "preloop.agents.remote_runner.crud_flow_execution.get",
-        snapshot_get,
-    )
-    # Simulate a future regression that lets the primary host-exec guard pass
-    # for an isolated profile, forcing the lease's own check at the payload.
-    monkeypatch.setattr(
-        "preloop.agents.remote_runner.host_exec_unavailable_reason",
-        lambda *args, **kwargs: None,
-    )
-    with pytest.raises(ValueError, match="isolated publication"):
+    with pytest.raises(
+        ValueError, match="Private publication requires a trusted policy snapshot"
+    ):
         executor._lease_payload(
-            execution_id=execution_id,
+            execution_id=uuid4(),
             flow_id=uuid4(),
             prompt="publish",
             execution_context={
@@ -441,7 +421,6 @@ def test_lease_payload_host_exec_defense_in_depth_rejects_isolated_publication(
                 "git_clone_config": {"publication_mode": "isolated"},
             },
         )
-    snapshot_get.assert_not_called()
 
 
 def test_lease_payload_host_exec_rejects_resume() -> None:

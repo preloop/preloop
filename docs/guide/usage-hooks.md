@@ -13,9 +13,11 @@ By default the command auto-detects the payload:
   are the contract third-party harnesses should target
 - Codex CLI session JSONL (`type` plus `payload`, typically starting
   with `session_meta`)
+- a GitHub Copilot CLI hook payload (camelCase lifecycle fields, or a
+  PascalCase `hook_event_name`)
 
-Override detection with `--from cursor`, `--from generic`, or
-`--from codex`. Read from a file with `--file` instead of stdin.
+Override detection with `--from cursor`, `--from generic`, `--from codex`,
+or `--from copilot`. Read from a file with `--file` instead of stdin.
 
 Every shipped record is labeled with a `cost_basis`. That basis is
 `estimated` unless the event explicitly carries a billed amount from a
@@ -32,6 +34,35 @@ assistant paragraph, 280 characters) so the runtime sessions list is
 readable; transcript text itself is shipped only when you opt in with
 `--store-transcript`. It never sends file paths, shell commands, or
 workspace contents.
+
+## Copilot CLI
+
+`preloop agents onboard "Copilot CLI"` writes one Preloop-owned file,
+`~/.copilot/hooks/preloop.json` (or `$COPILOT_HOME/hooks/preloop.json`).
+Re-onboard replaces that file's Preloop entries. Offboard deletes that
+file and leaves every other hook file in the directory alone.
+
+Session lifecycle is installed even without `--approvals`. `preToolUse`
+is added only with `--approvals`, and it calls the same permission-check
+hook as Claude Code, Codex, and Cursor.
+
+The usage command is `preloop usage hook --from copilot`. Ingest `source`
+is `copilot_cli`, the same value as the managed agent kind. Copilot hook
+payloads carry a session id and a transcript path, not token counts or a
+billed amount, so those fields are omitted.
+
+| Copilot event | Ingest `event_type` |
+| ------------- | ------------------- |
+| `sessionStart` / `SessionStart` | `session_start` |
+| `sessionEnd` / `SessionEnd` | `session_end` |
+| `subagentStart` | `subagent_start` |
+| `subagentStop` / `SubagentStop` | `subagent_stop` |
+| `agentStop` / `Stop` | `response` |
+
+CamelCase payloads have no event name. A payload with `agentId` or
+`agentType` is `subagentStop`. A top-level stop (`stopReason` or
+`stop_hook_active`) is `agentStop` even when it also carries a final
+message. The PascalCase form is selected by `hook_event_name`.
 
 ## Generic event schema (`preloop.usage.event.v1`)
 
