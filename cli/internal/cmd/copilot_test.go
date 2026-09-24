@@ -210,7 +210,12 @@ func TestPrepareCopilotLaunchBuildsEnvWithoutStartingProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareCopilotLaunch: %v", err)
 	}
-	wantBin := filepath.Join(binDir, "copilot")
+	wantName := "copilot"
+	if runtime.GOOS == "windows" {
+		// exec.LookPath appends a PATHEXT suffix; the stub is copilot.exe.
+		wantName = "copilot.exe"
+	}
+	wantBin := filepath.Join(binDir, wantName)
 	if launch.Bin != wantBin {
 		t.Fatalf("bin = %q, want %q", launch.Bin, wantBin)
 	}
