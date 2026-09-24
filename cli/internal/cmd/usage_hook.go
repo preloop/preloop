@@ -395,7 +395,9 @@ func resolveUsageHookSource(format usageHookFormat, flagValue string, flagChange
 	case usageHookFormatCodex:
 		return "codex"
 	case usageHookFormatCopilot:
-		return "copilot"
+		// Must match managedAgentKindForAgent("Copilot CLI"). The ingest
+		// API attributes by exact agent_kind, and "copilot" matches nothing.
+		return permissionSourceCopilotCLI
 	default:
 		if strings.TrimSpace(flagValue) == "" {
 			return "cursor"

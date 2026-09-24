@@ -123,9 +123,9 @@ func resolveCopilotHookEventName(event map[string]interface{}) string {
 	if firstStringField(event, "toolName", "tool_name") != "" {
 		return ""
 	}
-	if firstStringField(event, "agentId", "agent_id") != "" ||
-		firstStringField(event, "response") != "" ||
-		firstStringField(event, "last_assistant_message") != "" {
+	// subagentStop carries agentId/agentType. agentStop can also carry a
+	// final message, so message text alone must not select the subagent.
+	if firstStringField(event, "agentId", "agent_id", "agentType", "agent_type") != "" {
 		return "subagentStop"
 	}
 	if firstStringField(event, "agentName", "agent_name") != "" {

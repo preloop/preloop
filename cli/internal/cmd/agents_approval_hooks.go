@@ -627,65 +627,18 @@ func installCopilotUsageHooks(agent AgentConfig, out io.Writer) error {
 	if permissionSourceForAgent(agent) != permissionSourceCopilotCLI {
 		return nil
 	}
-	path, err := copilotPreloopHooksPath()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return fmt.Errorf("failed to create Copilot hooks directory: %w", err)
-	}
-	doc, err := loadJSONDocumentOrEmpty(path)
-	if err != nil {
-		return err
-	}
-	doc["version"] = 1
-	hooks := ensureObjectChild(doc, "hooks")
 	command := copilotUsageHookCommand()
 	for _, key := range copilotUsageHookEvents {
-		hooks[key] = []interface{}{
-			copilotCommandHookEntry(command, cursorUsageHookTimeoutSeconds),
+		if err := upsertCopilotHookEvent(key, command, cursorUsageHookTimeoutSeconds); err != nil {
+			return err
 		}
 	}
-	if err := writeJSONDocument(path, doc); err != nil {
-		return err
-	}
 	if out != nil {
+		path, err := copilotPreloopHooksPath()
+		if err != nil {
+			return err
+		}
 		fmt.Fprintf(out, "  Usage hooks: installed Copilot CLI session hooks (%s)\n", path) //nolint:errcheck
-	}
-	return nil
-}
-
-// removeCopilotUsageHooks strips lifecycle usage entries from preloop.json,
-// leaving a preToolUse approval entry if one is present. Deletes the file when
-// no hooks remain.
-func removeCopilotUsageHooks(agent AgentConfig, out io.Writer) error {
-	if permissionSourceForAgent(agent) != permissionSourceCopilotCLI {
-		return nil
-	}
-	path, err := copilotPreloopHooksPath()
-	if err != nil {
-		return err
-	}
-	doc, existed, err := loadJSONDocumentIfExists(path)
-	if err != nil || !existed {
-		return err
-	}
-	hooks, ok := asObjectMap(doc["hooks"])
-	if !ok {
-		return nil
-	}
-	for _, key := range copilotUsageHookEvents {
-		delete(hooks, key)
-	}
-	if len(hooks) == 0 {
-		delete(doc, "hooks")
-		delete(doc, "version")
-	}
-	if err := finalizeHookDocument(path, doc, true); err != nil {
-		return err
-	}
-	if out != nil {
-		fmt.Fprintln(out, "  Usage hooks: removed Copilot CLI session hooks") //nolint:errcheck
 	}
 	return nil
 }

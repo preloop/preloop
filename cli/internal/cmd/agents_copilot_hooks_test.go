@@ -231,7 +231,7 @@ func TestNormalizePermissionSourceCopilot(t *testing.T) {
 	}
 }
 
-func TestRemoveCopilotUsageHooksPreservesPreToolUse(t *testing.T) {
+func TestRemoveCopilotHooksDeletesPreloopFile(t *testing.T) {
 	home := testenv.SetHome(t, t.TempDir())
 	t.Setenv("COPILOT_HOME", "")
 	agent := copilotTestAgent(home)
@@ -242,17 +242,11 @@ func TestRemoveCopilotUsageHooksPreservesPreToolUse(t *testing.T) {
 	if err := installCopilotUsageHooks(agent, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeCopilotUsageHooks(agent, nil); err != nil {
+	if err := removeApprovalHooks(agent, nil); err != nil {
 		t.Fatal(err)
 	}
-	doc := readJSONDoc(t, filepath.Join(home, ".copilot", "hooks", "preloop.json"))
-	hooks, _ := doc["hooks"].(map[string]interface{})
-	if _, ok := hooks["preToolUse"]; !ok {
-		t.Fatalf("preToolUse should remain: %#v", hooks)
-	}
-	for _, key := range copilotUsageHookEvents {
-		if _, ok := hooks[key]; ok {
-			t.Errorf("usage event %s should be gone", key)
-		}
+	path := filepath.Join(home, ".copilot", "hooks", "preloop.json")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("preloop.json should be removed, stat err=%v", err)
 	}
 }

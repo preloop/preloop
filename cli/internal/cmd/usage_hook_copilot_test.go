@@ -40,6 +40,11 @@ func TestRecordsFromCopilotHookEventMapping(t *testing.T) {
 			wantType: "response",
 		},
 		{
+			name:     "agentStop with a final message is not a subagent",
+			payload:  `{"sessionId":"s1","timestamp":1720000004500,"cwd":"/tmp","stopReason":"end_turn","response":"finished the edit"}`,
+			wantType: "response",
+		},
+		{
 			name:     "SessionStart VS Code form",
 			payload:  `{"hook_event_name":"SessionStart","session_id":"s2","timestamp":"2026-09-24T12:00:00Z","cwd":"/tmp","source":"startup"}`,
 			wantType: "session_start",
@@ -119,7 +124,15 @@ func TestParseUsageHookFormatCopilot(t *testing.T) {
 }
 
 func TestResolveUsageHookSourceCopilot(t *testing.T) {
-	if got := resolveUsageHookSource(usageHookFormatCopilot, "cursor", false); got != "copilot" {
-		t.Errorf("default source=%q want copilot", got)
+	if got := resolveUsageHookSource(usageHookFormatCopilot, "cursor", false); got != "copilot_cli" {
+		t.Errorf("default source=%q want copilot_cli", got)
+	}
+}
+
+func TestCopilotUsageHookSourceMatchesManagedKind(t *testing.T) {
+	got := resolveUsageHookSource(usageHookFormatCopilot, "", false)
+	want := managedAgentKindForAgent(copilotCLIAgentName)
+	if got != want {
+		t.Fatalf("usage hook source %q != managed kind %q", got, want)
 	}
 }
