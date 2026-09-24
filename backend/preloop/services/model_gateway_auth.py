@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import json
 import logging
 import time
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from sqlalchemy.orm import Session
 
@@ -47,6 +47,38 @@ class ModelGatewayAuthContext:
     user: models.User | GatewayUserSnapshot
     api_key: models.ApiKey | GatewayApiKeySnapshot | None = None
     oauth_access_token: models.OAuthMCPAccessToken | GatewayOAuthSnapshot | None = None
+
+    @property
+    def account_id(self) -> Any:
+        """Account the credential belongs to."""
+        return self.user.account_id
+
+    @property
+    def api_key_id(self) -> Any | None:
+        """API key id when the bearer is a key, otherwise ``None``."""
+        if self.api_key is None:
+            return None
+        return self.api_key.id
+
+    @property
+    def runtime_session_id(self) -> str | None:
+        """Session pinned on the key, when the credential names one.
+
+        The dataclass stores the key, not a session column. A runtime key
+        may put ``runtime_session_id`` in ``context_data``; a user token
+        and an unpinned key leave this unset, and the caller may name any
+        session in the account.
+        """
+        api_key = self.api_key
+        if api_key is None:
+            return None
+        context = getattr(api_key, "context_data", None)
+        if not isinstance(context, dict):
+            return None
+        value = context.get("runtime_session_id")
+        if value is None or value == "":
+            return None
+        return str(value)
 
     def snapshot(self) -> ModelGatewayAuthContext:
         """Copy the authenticated identity before its owning worker closes DB."""

@@ -9,6 +9,8 @@ from sqlalchemy import case, func, tuple_
 from sqlalchemy.orm import Session
 
 from preloop.models import models
+from preloop.schemas.browser_step import BrowserStepIn
+from preloop.utils.redaction import redact_dict
 from ...utils.jsonb_sanitize import sanitize_for_jsonb
 from .base import CRUDBase
 
@@ -17,6 +19,43 @@ RuntimeSession = models.RuntimeSession
 RuntimeSessionActivity = models.RuntimeSessionActivity
 
 MAX_AGENT_CONTROL_MESSAGE_SUMMARY_LEN = 2000
+
+
+def _redact_browser_text(value: str | None) -> tuple[str | None, bool]:
+    """Mask credential-shaped text, leaving ``None`` and empty values alone."""
+    if not value:
+        return value, False
+    from preloop.services.session_search_index import redact_text
+
+    return redact_text(value)
+
+
+def _browser_step_metadata(step: BrowserStepIn) -> dict[str, Any]:
+    """Build the stored metadata for one browser step.
+
+    Field names are redacted first, then the free-text URL, target and
+    reasoning are masked. ``screenshot`` stays ``None`` until capture
+    exists. ``source`` and ``source_step_id`` are left intact so a retry
+    still matches the idempotency key.
+    """
+    metadata = redact_dict(
+        {
+            "source": step.source,
+            "source_step_id": step.source_step_id,
+            "step_index": step.step_index,
+            "action": step.action,
+            "url": step.url,
+            "target": step.target,
+            "reasoning": step.reasoning,
+            "extra": step.extra,
+            "screenshot": None,
+        }
+    )
+    for key in ("url", "target", "reasoning"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value:
+            metadata[key], _changed = _redact_browser_text(value)
+    return metadata
 
 
 class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
@@ -106,6 +145,95 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
 
         self._index_tool_call_chunks(db, activity=db_obj, commit=commit)
         return db_obj
+
+    def log_browser_step(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        api_key_id: Optional[Any],
+        step: BrowserStepIn,
+        commit: bool = True,
+    ) -> tuple[RuntimeSessionActivity, bool]:
+        """Persist one browser step, or return the existing row.
+
+        Idempotency is ``(runtime_session_id, source, source_step_id)``
+        among ``browser_step`` rows. A repeat returns that row unchanged
+        and does not touch the session again.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            runtime_session_id: Session the step is attached to.
+            api_key_id: Credential that reported the step, if any.
+            step: Validated ``BrowserStepIn``.
+            commit: Whether to commit this row. Batch ingestion passes
+                ``False`` and commits once for the batch.
+
+        Returns:
+            The stored row and whether this call created it.
+        """
+        existing = self._find_browser_step(
+            db,
+            runtime_session_id=runtime_session_id,
+            source=step.source,
+            source_step_id=step.source_step_id,
+        )
+        if existing is not None:
+            return existing, False
+
+        metadata = _browser_step_metadata(step)
+        locator = metadata.get("url") or metadata.get("target") or ""
+        summary, _redacted = _redact_browser_text(f"{step.action} {locator}")
+        activity_timestamp = step.occurred_at or datetime.now(timezone.utc)
+        if activity_timestamp.tzinfo is None:
+            activity_timestamp = activity_timestamp.replace(tzinfo=timezone.utc)
+        db_obj = RuntimeSessionActivity(
+            account_id=account_id,
+            runtime_session_id=runtime_session_id,
+            api_key_id=api_key_id,
+            activity_type="browser_step",
+            server_name=step.source,
+            tool_name=step.action,
+            status=step.status,
+            summary=summary,
+            metadata_=sanitize_for_jsonb(metadata),
+            timestamp=activity_timestamp,
+        )
+        db.add(db_obj)
+        self._touch_runtime_session_and_agent(
+            db,
+            account_id=account_id,
+            runtime_session_id=runtime_session_id,
+            activity_timestamp=activity_timestamp,
+        )
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        else:
+            db.flush()
+        return db_obj, True
+
+    def _find_browser_step(
+        self,
+        db: Session,
+        *,
+        runtime_session_id: Any,
+        source: str,
+        source_step_id: str,
+    ) -> Optional[RuntimeSessionActivity]:
+        """Return the browser step already stored for this idempotency key."""
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.runtime_session_id == runtime_session_id,
+                self.model.activity_type == "browser_step",
+                self.model.metadata_["source"].astext == source,
+                self.model.metadata_["source_step_id"].astext == source_step_id,
+            )
+            .first()
+        )
 
     @staticmethod
     def _index_tool_call_chunks(

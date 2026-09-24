@@ -33,6 +33,7 @@ from preloop.models.models.session_search_document import (
     REDACTION_STATE_CLEAR,
     REDACTION_STATE_METADATA_ONLY,
     REDACTION_STATE_REDACTED,
+    SOURCE_KIND_BROWSER_STEP,
     SOURCE_KIND_FLOW_LOG,
     SOURCE_KIND_GATEWAY_INTERACTION,
     SOURCE_KIND_OPERATOR_NOTE,
@@ -504,6 +505,61 @@ def index_tool_call(
         status=status,
         commit=commit,
         existing=existing,
+    )
+
+
+def index_browser_step(
+    db: Session,
+    *,
+    activity: Any,
+    commit: bool = True,
+) -> List[SessionSearchDocument]:
+    """Index one browser step activity.
+
+    The searchable text is the action, URL, target and reasoning, masked
+    with :func:`redact_text`. Content capture gates the body the same way
+    tool calls do: with capture off the chunk is a descriptor and the
+    reasoning is not stored.
+
+    Args:
+        db: Database session.
+        activity: Stored ``browser_step`` activity row.
+        commit: Whether to commit the chunk write. Callers that already
+            own a transaction pass ``False`` and commit once.
+
+    Returns:
+        The chunks now stored for this step. Empty when indexing is
+        disabled or the write fails; a failure is logged and never raised.
+    """
+    metadata = getattr(activity, "metadata_", None) or {}
+    action = str(metadata.get("action") or getattr(activity, "tool_name", None) or "")
+    url = str(metadata.get("url") or "")
+    target = str(metadata.get("target") or "")
+    reasoning = str(metadata.get("reasoning") or "")
+    body = f"{action} {url} {target} {reasoning}".strip()
+    content_captured = bool(settings.model_gateway_capture_content)
+    if content_captured:
+        body, _redacted = redact_text(body)
+        text = f"kind: {SOURCE_KIND_BROWSER_STEP}\n{body}"
+    else:
+        text = _descriptor(kind=SOURCE_KIND_BROWSER_STEP, role="browser", text=body)
+    if getattr(activity, "id", None) is None:
+        db.flush()
+    return write_source_chunks(
+        db,
+        account_id=activity.account_id,
+        runtime_session_id=activity.runtime_session_id,
+        source_kind=SOURCE_KIND_BROWSER_STEP,
+        source_id=activity.id,
+        text=text,
+        occurred_at=getattr(activity, "timestamp", None),
+        role="browser",
+        content_captured=content_captured,
+        already_sanitised=True,
+        meta_data={"activity_type": "browser_step"},
+        api_key_id=getattr(activity, "api_key_id", None),
+        status=getattr(activity, "status", None),
+        commit=commit,
     )
 
 
