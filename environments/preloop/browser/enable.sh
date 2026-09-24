@@ -5,7 +5,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE="${ROOT}/playwright-mcp.config.json"
-# Pin recorded for the sandbox image. Playwright in environments/preloop is 1.63.0.
+# Pin recorded for the sandbox image. The matching Playwright version is
+# pinned in environments/preloop/tools/package.json.
 PLAYWRIGHT_MCP_VERSION="0.0.82"
 
 if [[ -z "${PRELOOP_BROWSER_PROXY:-}" ]]; then

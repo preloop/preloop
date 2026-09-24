@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Prove Chromium's only network path is the egress proxy. Anything other than
-# a proxy denial of both probes fails closed with browser_egress_not_enforced.
+# a proxy denial of the metadata, non-allowlisted, and loopback probes fails
+# closed with browser_egress_not_enforced.
 set -euo pipefail
 
 fail() {
