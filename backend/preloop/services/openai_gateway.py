@@ -712,11 +712,6 @@ def _bounded_client_identity_headers(
 #: below, and any out-of-tree importer, read unchanged.
 _normalize_client_session_id = normalize_session_id
 
-# Distinguishes "caller did not say which id is X-Preloop-Session-Id" from an
-# absent header. HTTP routes pass the header explicitly so a vendor session id
-# sharing ``client_session_id`` cannot opt a plain key in.
-_EXPLICIT_PRELOOP_SESSION_UNSET = object()
-
 
 # Claude Code stamps its OWN session id on every Anthropic request in two
 # places: the ``X-Claude-Code-Session-Id`` header and the Anthropic-native
