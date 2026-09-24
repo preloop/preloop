@@ -149,6 +149,22 @@ preloop tools exec <tool-name> --args-file ./input.json
 
 `preloop tools` talks directly to the MCP endpoint, so the visible and executable tools are automatically filtered by the current token's policy. Agent tokens only see the tools they are allowed to use.
 
+### Codex CLI Agent Control
+
+```bash
+preloop agents onboard "Codex CLI"
+preloop agents validate "Codex CLI"
+preloop codex sidecar enable
+preloop codex sidecar status
+preloop codex sidecar disable
+```
+
+Onboarding installs `@preloop-ai/codex-plugin` (`preloop-codex-plugin`) and
+writes `~/.codex/preloop-control.json`. `~/.codex/config.toml` stays
+Codex's own file. `preloop codex sidecar run` execs
+`preloop-codex-plugin run`. See
+[docs/guide/codex-cli.md](../docs/guide/codex-cli.md).
+
 ### Cursor Agent CLI
 
 ```bash
@@ -163,6 +179,19 @@ output in `--print` mode. `preloop cursor run` injects
 usage to `/api/v1/usage/ingest`. Runs bill the user's own Cursor account;
 Preloop records estimates, not Cursor billing. See
 [docs/guide/cursor-cli.md](../docs/guide/cursor-cli.md).
+
+### Copilot CLI
+
+```bash
+preloop copilot --model openai/gpt-5
+preloop copilot --model anthropic/claude-sonnet-4-5 --provider anthropic
+```
+
+`preloop copilot` starts the GitHub Copilot CLI with BYOK environment
+variables pointed at the Preloop gateway. A missing binary, credential, or
+model alias exits without launching Copilot. `--token` and `PRELOOP_TOKEN`
+override the enrolled agent credential. See
+[docs/guide/copilot-cli.md](../docs/guide/copilot-cli.md).
 
 ### Usage
 

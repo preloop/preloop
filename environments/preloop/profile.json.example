@@ -126,5 +126,32 @@
       ".venv",
       "frontend/node_modules"
     ]
+  },
+  "preloop-browser": {
+    "version": 1,
+    "image": "registry.example.com/preloop-environment@sha256:REPLACE_WITH_PUBLISHED_DIGEST",
+    "harness": "codex",
+    "setup_timeout_seconds": 180,
+    "services": [
+      {
+        "name": "egress-proxy",
+        "image": "registry.example.com/preloop-egress-proxy@sha256:REPLACE_WITH_PUBLISHED_DIGEST",
+        "port": 3128,
+        "env": {
+          "EGRESS_ALLOWED_ORIGINS": "http://fixture-site:8080",
+          "EGRESS_ALLOW_PRIVATE_CIDRS": "172.20.0.0/16"
+        }
+      }
+    ],
+    "env": {
+      "PRELOOP_BROWSER_PROXY": "http://${service.egress-proxy}:3128",
+      "PRELOOP_HARNESS": "codex"
+    },
+    "setup_commands": [
+      "bash environments/preloop/browser/enable.sh"
+    ],
+    "artifact_paths": [
+      "result.json"
+    ]
   }
 }

@@ -133,46 +133,49 @@ def _permission_check_base_url() -> str:
     return base_url
 
 
-class RepositoryContext(BaseModel):
-    """Trusted observation of the work tree a native tool call ran in.
+class AgentPermissionRepository(BaseModel):
+    """Trusted hook observation of the repository a native call ran in.
 
-    Recorded from the permission hook's cwd. It is not a policy scope and
-    is not derived from tool arguments.
+    The hook resolves its own ``cwd`` against git and sends the result; the
+    caller-supplied tool arguments are never used, so an MCP tool cannot
+    spoof the repository. Extra keys are forbidden and every string is
+    bounded: the object travels into approval ``tool_args`` and onto the
+    session timeline, and this is untrusted network input.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     remote: str = Field(
-        default="",
+        "",
         max_length=512,
-        description="Normalized origin remote (host/owner/repo), or empty.",
+        description=(
+            "Normalized 'host/owner/repo' with credentials stripped; empty "
+            "when the work tree has no origin remote."
+        ),
     )
-    toplevel: str = Field(
-        default="",
+    toplevel: Optional[str] = Field(
+        None, max_length=512, description="Absolute work-tree root."
+    )
+    relative_path: Optional[str] = Field(
+        None, max_length=512, description="cwd relative to the work-tree root."
+    )
+    source: Optional[str] = Field(
+        None,
         max_length=512,
-        description="Absolute path of the work tree root.",
-    )
-    relative_path: str = Field(
-        default="",
-        max_length=512,
-        description="cwd relative to toplevel, or empty at the root.",
-    )
-    source: Literal["hook_cwd"] = Field(
-        "hook_cwd",
-        description="Where the observation came from. Only the hook cwd is trusted.",
+        description="How the identity was observed, e.g. 'hook_cwd'.",
     )
     no_remote: bool = Field(
         False,
         description=(
-            "True when the work tree has no origin remote, or the origin "
-            "is not a host/owner/repo identity."
+            "True when the work tree has no origin, or the origin is not a "
+            "host/owner/repo identity (a local path or file:// remote)."
         ),
     )
 
-    @field_validator("remote", "toplevel", "relative_path")
+    @field_validator("remote", "toplevel", "relative_path", "source")
     @classmethod
-    def _at_most_512_bytes(cls, value: str) -> str:
-        if len(value.encode("utf-8")) > 512:
+    def _at_most_512_bytes(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and len(value.encode("utf-8")) > 512:
             raise ValueError("must be at most 512 bytes")
         return value
 
@@ -195,13 +198,13 @@ class AgentPermissionCheckRequest(BaseModel):
     )
     session_id: Optional[str] = Field(None, description="Agent session id")
     cwd: Optional[str] = Field(None, description="Working directory")
-    repository: Optional[RepositoryContext] = Field(
+    repository: Optional[AgentPermissionRepository] = Field(
         None,
         description=(
-            "Trusted hook observation of the working tree. Stored as the "
-            "'_preloop_repository' marker inside tool_args so approver "
-            "surfaces can show it. Not a policy scope, and not taken from "
-            "tool arguments."
+            "Trusted repository identity the hook observed from its cwd. "
+            "Stored as the '_preloop_repository' marker inside tool_args, next "
+            "to '_preloop_source', so approvals and the session timeline can "
+            "label which repository the call ran in."
         ),
     )
     agent_reasoning: Optional[str] = Field(
@@ -275,19 +278,25 @@ async def agent_permission_check(
     identity = await run_db_off_loop(lambda: _resolve_permission_identity(token))
 
     tool_input = dict(payload.tool_input or {})
+    # Caller-supplied tool arguments must never carry the trust markers: only
+    # the validated ``source``/``repository`` fields may set them, so a native
+    # tool argument cannot spoof the adapter or repository chip.
+    tool_input.pop("_preloop_repository", None)
+    tool_input.pop("_preloop_source", None)
     if payload.cwd:
         tool_input["cwd"] = payload.cwd
     # The approval model intentionally has no adapter column. Preserve the
     # non-sensitive origin alongside the native tool input so approver
     # surfaces can distinguish the adapter without a schema migration.
-    tool_input.pop("_preloop_source", None)
     if payload.source and payload.source.strip():
         tool_input["_preloop_source"] = payload.source.strip()
-    # Drop a caller-supplied marker. Only the hook's repository field is
-    # trusted, and a request without one stores nothing.
-    tool_input.pop("_preloop_repository", None)
+    # Repository identity rides the same way as the source marker. Only the
+    # fields the hook actually set are stored, so an absent remote stays
+    # absent instead of materializing as an empty string.
     if payload.repository is not None:
-        tool_input["_preloop_repository"] = payload.repository.model_dump()
+        tool_input["_preloop_repository"] = payload.repository.model_dump(
+            exclude_unset=True, exclude_none=True
+        )
 
     # Claimed before the approval wait, in its own short-lived session, so no
     # connection is held while a human decides. Delivery is recorded here even

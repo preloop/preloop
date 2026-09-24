@@ -205,6 +205,17 @@ class ApiUsage(Base):
             "timestamp",
             postgresql_ops={"timestamp": "DESC"},
         ),
+        # Per-user summaries filter runtime_principal_id without the principal
+        # type, so the type-leading index above is not usable. This partial
+        # index covers that filter for model-gateway rows.
+        Index(
+            "ix_api_usage_account_principal_id_ts",
+            "account_id",
+            "runtime_principal_id",
+            "timestamp",
+            postgresql_ops={"timestamp": "DESC"},
+            postgresql_where=text("action_type = 'model_gateway'"),
+        ),
         Index(
             "ix_api_usage_rate_limited",
             "account_id",

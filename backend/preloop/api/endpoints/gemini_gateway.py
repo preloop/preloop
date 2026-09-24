@@ -87,6 +87,7 @@ def generate_content(
         db,
         auth_context,
         client_session_id=x_preloop_session_id,
+        client_session_id_is_explicit=bool(x_preloop_session_id),
         budget_enforcer=budget_enforcer,
         owns_db_session=True,
     ).generate_content(model_name, payload)
@@ -106,6 +107,7 @@ def stream_generate_content(
         db,
         auth_context,
         client_session_id=x_preloop_session_id,
+        client_session_id_is_explicit=bool(x_preloop_session_id),
         budget_enforcer=budget_enforcer,
         owns_db_session=True,
     )

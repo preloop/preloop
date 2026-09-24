@@ -10,15 +10,38 @@ exactly what that does and does not mean. Cross-link the
 [security audit presets](security-audit-presets.md) guide for the JSON
 contracts themselves.
 
-## Two transports
+## Transports
 
-**Legacy (default).** `FLOW_ARTIFACT_DIRECT_UPLOAD` is off. Hosted Docker
-copies the directory through the engine API. Kubernetes still emits a
-size-capped base64 block on the pod log channel
-(`MAX_EVIDENCE_ARCHIVE_BYTES`, 2 MiB compressed). The control plane stores
-the bytes on `flow_execution.evidence_archive`. Failed persist is visible as
-`evidence-status: failed` or `missing`; it must not look like a successful
-receipt. Existing downloads keep working.
+**Legacy log channel (default).** `FLOW_ARTIFACT_DIRECT_UPLOAD` is off and
+`FLOW_EVIDENCE_LOG_PLAINTEXT` is on (the default). Hosted Docker copies the
+directory through the engine API and does not put the pack on container
+logs, so the plaintext switch does not change Docker capture. Kubernetes
+still emits a size-capped base64 block on the pod log channel
+(`MAX_EVIDENCE_ARCHIVE_BYTES`, 2 MiB compressed) for `result.json`, the
+evidence pack, and the workspace snapshot. Base64 is not encryption. Anyone
+who can read retained pod logs can read those bytes. The control plane
+stores the evidence bytes on `flow_execution.evidence_archive`. Failed
+persist is visible as `evidence-status: failed` or `missing`; it must not
+look like a successful receipt. Existing downloads keep working.
+
+**Plaintext log channel off.** Set `FLOW_EVIDENCE_LOG_PLAINTEXT=false`
+(`flow_evidence_log_plaintext`) when a deployment must not put evidence in
+pod logs. Use it together with direct upload. The Kubernetes job receives
+`PRELOOP_EVIDENCE_LOG_PLAINTEXT=0`. If that job also has an upload token,
+the wrapper follows the direct path and still does not fall back to
+plaintext when the upload fails. If the token is absent, the wrapper fails
+closed: it does not base64 `result.json`, the evidence pack, or the
+workspace snapshot. The pod log gets three markers instead:
+`result unavailable plaintext_disabled`, `evidence unavailable
+plaintext_disabled`, and `workspace skipped plaintext_disabled`. The
+control plane records an evidence receipt with status `failed` and error
+`plaintext_disabled`, and it treats the result as missing (the same outcome
+as no `result.json`). It does not decode a payload that someone injects
+into the log. **Unavailable: plaintext disabled** means the pack was
+refused by policy, not that the agent forgot to write `/workspace/evidence`.
+Turning the switch off without direct upload makes evidence unavailable by
+design. Encrypted log transport (per-execution keys) is a separate decision
+tracked in issue #268 and is not this switch.
 
 **Direct upload (configured path).** Set `FLOW_ARTIFACT_DIRECT_UPLOAD=true`
 when the runner can reach `PRELOOP_URL`. Hosted containers and private
@@ -102,6 +125,7 @@ counts, expiry) atomically with the ciphertext.
 
 | Setting | Default | Role |
 | --- | --- | --- |
+| `FLOW_EVIDENCE_LOG_PLAINTEXT` | true | Kubernetes pod-log base64 channel. Default keeps today's emission. False refuses it |
 | `FLOW_EVIDENCE_MAX_BYTES` | 32 MiB | Compressed evidence cap on the direct path |
 | `FLOW_ARTIFACT_EXPANDED_MAX_BYTES` | 2 GiB | Extraction bomb limit (shared) |
 | `FLOW_ARTIFACT_ACCOUNT_QUOTA_BYTES` | 4 GiB | Retained encrypted payload per account |
@@ -501,15 +525,23 @@ the storage layer.
    consumer accepts a pack. A 404/409/410 is a release blocker, not a
    skippable warning.
 5. Keep Kubernetes RBAC for pod logs tight on clusters that still run the
-   legacy log channel (`FLOW_ARTIFACT_DIRECT_UPLOAD=false`).
-6. Decide record retention per class and set `RETENTION_PURGE_ENABLED`
+   legacy log channel (`FLOW_ARTIFACT_DIRECT_UPLOAD=false` and
+   `FLOW_EVIDENCE_LOG_PLAINTEXT=true`). To keep evidence bytes out of pod
+   logs, set `FLOW_EVIDENCE_LOG_PLAINTEXT=false` and enable direct upload.
+   `evidence-status` `failed` with error `plaintext_disabled` means the log
+   channel was refused and no upload token was available. That is not a
+   successful empty pack.
+6. This switch only governs the artifact wrapper. It does not hide the pod
+   spec (environment and tokens) from someone who can read the Job, and it
+   does not stop the agent from printing sensitive prose on ordinary stdout.
+7. Decide record retention per class and set `RETENTION_PURGE_ENABLED`
    deliberately. Until it is on, nothing is deleted and the stated retention
    is not enforced. Run `GET /api/v1/retention/purge-preview` before the
    first enabled pass.
-7. Place a legal hold before an incident review starts, not after the
+8. Place a legal hold before an incident review starts, not after the
    payload window has closed. A hold pins bytes that are still there; it
    cannot bring back bytes already cleared.
-8. Copy signed checkpoints (`GET /api/v1/audit/chain/checkpoints`) and the
+9. Copy signed checkpoints (`GET /api/v1/audit/chain/checkpoints`) and the
    public keys (`preloop audit keys`) somewhere Preloop cannot write. Held
    only here, they prove consistency between two things under the same
    control. Run `preloop audit verify` on a schedule and treat a break as an

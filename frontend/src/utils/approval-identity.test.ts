@@ -2,10 +2,10 @@ import { expect } from '@open-wc/testing';
 
 import {
   approvalRequesterName,
+  formatApprovalRepository,
   formatApprovalRequester,
-  formatRepositoryChip,
+  getApprovalRepository,
   getApprovalSource,
-  getRepositoryContext,
   withoutApprovalMetadata,
 } from './approval-identity';
 
@@ -72,54 +72,59 @@ describe('approval identity', () => {
   });
 
   it('keeps adapter metadata out of tool arguments', () => {
-    const toolArgs = {
-      command: 'git status',
-      _preloop_source: 'cursor',
-      _preloop_repository: {
-        remote: 'github.com/example/repo',
-        toplevel: '/tmp/example',
-        relative_path: '',
-        source: 'hook_cwd',
-      },
-    };
+    const toolArgs = { command: 'git status', _preloop_source: 'cursor' };
     expect(getApprovalSource(toolArgs)).to.equal('cursor');
     expect(withoutApprovalMetadata(toolArgs)).to.deep.equal({
       command: 'git status',
     });
   });
 
-  it('formats a repository chip from the hook marker', () => {
-    expect(
-      formatRepositoryChip({
+  it('reads the repository marker and shortens it to owner/repo', () => {
+    const repository = getApprovalRepository({
+      _preloop_repository: {
         remote: 'github.com/example/repo',
-        toplevel: '/tmp/example',
-        relative_path: 'sub/dir',
+        toplevel: '/home/dev/repo',
+        relative_path: 'pkg/sub',
         source: 'hook_cwd',
-      })
-    ).to.deep.equal({
-      label: 'example/repo · sub/dir',
-      title: 'github.com/example/repo\n/tmp/example',
+      },
     });
-    expect(
-      formatRepositoryChip({
-        remote: '',
-        toplevel: '/tmp/example',
-        relative_path: '',
-        no_remote: true,
-      })
-    ).to.deep.equal({
-      label: 'no remote',
-      title: '/tmp/example',
+    expect(repository).to.not.equal(null);
+    expect(formatApprovalRepository(repository)).to.equal('example/repo');
+    expect(repository!.relative_path).to.equal('pkg/sub');
+  });
+
+  it('keeps nested groups and drops the host', () => {
+    const repository = getApprovalRepository({
+      _preloop_repository: { remote: 'gitlab.com/group/sub/repo' },
     });
-    expect(formatRepositoryChip(null)).to.equal(null);
+    expect(formatApprovalRepository(repository)).to.equal('group/sub/repo');
+  });
+
+  it('flags a work tree with no remote', () => {
+    const repository = getApprovalRepository({
+      _preloop_repository: { remote: '', no_remote: true },
+    });
+    expect(repository?.no_remote).to.equal(true);
+    expect(formatApprovalRepository(repository)).to.equal(null);
+  });
+
+  it('returns null for a missing or malformed repository marker', () => {
+    expect(getApprovalRepository({})).to.equal(null);
+    expect(getApprovalRepository({ _preloop_repository: null })).to.equal(null);
     expect(
-      getRepositoryContext({
-        command: 'ls',
-        _preloop_repository: {
-          remote: 'github.com/example/repo',
-          toplevel: '/tmp/example',
-        },
-      })?.remote
-    ).to.equal('github.com/example/repo');
+      getApprovalRepository({ _preloop_repository: ['not', 'an', 'object'] })
+    ).to.equal(null);
+    expect(getApprovalRepository({ _preloop_repository: {} })).to.equal(null);
+  });
+
+  it('keeps repository metadata out of tool arguments too', () => {
+    const toolArgs = {
+      command: 'git status',
+      _preloop_source: 'cursor',
+      _preloop_repository: { remote: 'github.com/example/repo' },
+    };
+    expect(withoutApprovalMetadata(toolArgs)).to.deep.equal({
+      command: 'git status',
+    });
   });
 });

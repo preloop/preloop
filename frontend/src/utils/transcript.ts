@@ -28,10 +28,7 @@ import type {
   FlowGatewayEvent,
   RuntimeSessionActivityItem,
 } from '../types';
-import {
-  formatRepositoryChip,
-  getRepositoryContext,
-} from './approval-identity';
+import { repositoryObservationChip } from './approval-identity';
 
 export type TranscriptStepKind =
   'tool_call' | 'tool_result' | 'system' | 'injected' | 'intermediate';
@@ -514,9 +511,7 @@ export function buildConversation(
     const key = `activity:${index}:${item.timestamp || ''}`;
     if (activityType === 'tool_call') {
       stats.toolCallCount += 1;
-      const repository = formatRepositoryChip(
-        getRepositoryContext(item.metadata)
-      );
+      const repository = repositoryObservationChip(item.metadata);
       atoms.push({
         type: 'step',
         order: order++,

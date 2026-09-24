@@ -1,19 +1,20 @@
 export const APPROVAL_SOURCE_KEY = '_preloop_source';
 export const APPROVAL_REPOSITORY_KEY = '_preloop_repository';
 
-/** Trusted hook observation stored beside the source marker. */
-export interface RepositoryContext {
-  remote?: string;
-  toplevel?: string;
-  relative_path?: string;
-  source?: string;
-  no_remote?: boolean;
-}
-
-/** Compact label and tooltip for a repository chip. */
-export interface RepositoryChip {
-  label: string;
-  title: string;
+/**
+ * The trusted repository observation the hook recorded from its own cwd.
+ *
+ * Only the hook sets this: it is stamped next to `_preloop_source` and must
+ * never be read from caller-supplied tool arguments.
+ */
+export interface ApprovalRepository {
+  /** Normalized `host/owner/repo`, empty when the work tree has no origin. */
+  remote: string;
+  toplevel?: string | null;
+  relative_path?: string | null;
+  source?: string | null;
+  /** True when the work tree exists but has no `origin` remote. */
+  no_remote: boolean;
 }
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -45,6 +46,67 @@ export function formatApprovalSource(source: string | null): string | null {
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
       .join(' ')
   );
+}
+
+/**
+ * Read the repository marker, or null when there is none.
+ *
+ * A malformed marker (not an object, or no remote and no `no_remote` flag)
+ * yields null so a surface renders nothing rather than an empty chip.
+ */
+export function getApprovalRepository(
+  toolArgs: Record<string, unknown> | null | undefined
+): ApprovalRepository | null {
+  const raw = toolArgs?.[APPROVAL_REPOSITORY_KEY];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const remote = cleanString(record.remote);
+  const noRemote = record.no_remote === true;
+  if (!remote && !noRemote) return null;
+  return {
+    remote,
+    toplevel: cleanString(record.toplevel) || null,
+    relative_path: cleanString(record.relative_path) || null,
+    source: cleanString(record.source) || null,
+    no_remote: noRemote,
+  };
+}
+
+function cleanString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * The repository's short name: `owner/repo`, dropping the host and keeping
+ * nested groups (`group/sub/repo`). Null when there is no remote to name.
+ */
+export function formatApprovalRepository(
+  repository: ApprovalRepository | null | undefined
+): string | null {
+  if (!repository || repository.no_remote) return null;
+  const remote = repository.remote.trim();
+  if (!remote) return null;
+  const slash = remote.indexOf('/');
+  if (slash < 0) return remote;
+  return remote.slice(slash + 1).replace(/^\/+|\/+$/g, '') || remote;
+}
+
+/** Label and tooltip for a repository chip, including a relative path. */
+export function repositoryObservationChip(
+  toolArgs: Record<string, unknown> | null | undefined
+): { label: string; title: string } | null {
+  const repository = getApprovalRepository(toolArgs);
+  if (!repository) return null;
+  const name = formatApprovalRepository(repository);
+  const relative = (repository.relative_path || '').replace(/^\/+|\/+$/g, '');
+  let label = name;
+  if (label && relative) label = `${label} · ${relative}`;
+  if (!label && repository.no_remote) label = 'no remote';
+  if (!label) return null;
+  const title =
+    [repository.remote, repository.toplevel].filter(Boolean).join('\n') ||
+    label;
+  return { label, title };
 }
 
 export function formatApprovalRequester(
@@ -92,52 +154,6 @@ export function approvalRequesterName(
     request.tool_args,
     fallback
   );
-}
-
-function asRepositoryContext(value: unknown): RepositoryContext | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  return value as RepositoryContext;
-}
-
-/**
- * Read the hook's repository observation from tool args or activity metadata.
- *
- * The marker is not a tool argument. Callers that render arguments use
- * `withoutApprovalMetadata` so it never appears there.
- */
-export function getRepositoryContext(
-  record: Record<string, unknown> | null | undefined
-): RepositoryContext | null {
-  if (!record) return null;
-  const direct = asRepositoryContext(record[APPROVAL_REPOSITORY_KEY]);
-  if (direct) return direct;
-  const nested = record.tool_args;
-  if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
-    return asRepositoryContext(
-      (nested as Record<string, unknown>)[APPROVAL_REPOSITORY_KEY]
-    );
-  }
-  return null;
-}
-
-/** `owner/repo` plus a relative path, or "no remote" when the work tree has none. */
-export function formatRepositoryChip(
-  context: RepositoryContext | null | undefined
-): RepositoryChip | null {
-  if (!context) return null;
-  const remote = (context.remote || '').trim();
-  const toplevel = (context.toplevel || '').trim();
-  const relative = (context.relative_path || '').trim();
-  const noRemote = context.no_remote === true || (!remote && Boolean(toplevel));
-  const title = [remote, toplevel].filter(Boolean).join('\n');
-  if (noRemote) {
-    return { label: 'no remote', title: title || 'No origin remote' };
-  }
-  if (!remote) return null;
-  const parts = remote.split('/').filter(Boolean);
-  const ownerRepo = parts.length > 1 ? parts.slice(1).join('/') : remote;
-  const label = relative ? `${ownerRepo} · ${relative}` : ownerRepo;
-  return { label, title: title || remote };
 }
 
 export function withoutApprovalMetadata(

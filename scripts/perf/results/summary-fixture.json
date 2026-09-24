@@ -1,0 +1,12 @@
+{
+  "account_id": "33c7fb8f-650c-4e1b-9682-e283d44bac09",
+  "user_id": "dd72c5f3-6b9c-472c-b004-74bc8298177f",
+  "principal_id": "synthetic-agent-0",
+  "now": "2026-09-24T01:50:58.177685",
+  "rows": 200000,
+  "days": 400,
+  "users": 10,
+  "model_aliases": 16,
+  "sessions": 400,
+  "agents": 10
+}

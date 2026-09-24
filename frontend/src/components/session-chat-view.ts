@@ -858,10 +858,10 @@ export class SessionChatView extends LitElement {
             ? html`
                 <pre class="step-text">
 ${
-                    displayText.length > STEP_PREVIEW_CHARS && !expanded
-                      ? `${displayText.slice(0, STEP_PREVIEW_CHARS)}…`
-                      : displayText
-                  }</pre>
+  displayText.length > STEP_PREVIEW_CHARS && !expanded
+    ? `${displayText.slice(0, STEP_PREVIEW_CHARS)}…`
+    : displayText
+}</pre>
               `
             : nothing
         }

@@ -35,10 +35,7 @@ import {
   getGatewayEventUserRequest,
 } from '../utils/session-observer';
 import { outcomeLabel } from '../utils/outcome-label';
-import {
-  formatRepositoryChip,
-  getRepositoryContext,
-} from '../utils/approval-identity';
+import { repositoryObservationChip } from '../utils/approval-identity';
 import { getExampleSessionOptimization } from '../api';
 import './preloop-gateway-event';
 import './session-optimization-panel';
@@ -5515,9 +5512,7 @@ export class SessionReplayPanel extends LitElement {
     const failed = String(item.status || '')
       .toLowerCase()
       .includes('fail');
-    const repository = formatRepositoryChip(
-      getRepositoryContext(item.metadata)
-    );
+    const repository = repositoryObservationChip(item.metadata);
     return html`
       <div class="tool-row">
         <div class="tool-row-main">

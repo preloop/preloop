@@ -17,9 +17,8 @@ import { unifiedWebSocketManager } from '../../services/unified-websocket-manage
 import {
   approvalRequesterName,
   formatApprovalSource,
-  formatRepositoryChip,
+  getApprovalRepository,
   getApprovalSource,
-  getRepositoryContext,
   withoutApprovalMetadata,
 } from '../../utils/approval-identity';
 import {
@@ -44,6 +43,7 @@ import '../../components/answer-form';
 import type { AnswerForm } from '../../components/answer-form';
 import '../../components/approval-rule-context-block';
 import '../../components/attribution-line';
+import '../../components/repository-chip';
 import '../../components/args-diff';
 import { fileEditsFromArgs } from '../../components/args-diff';
 import type { QuestionAnswerDetail } from '../../components/question-answer-panel';
@@ -1452,9 +1452,6 @@ export class ApprovalView extends AuthedElement {
     countdown: string | null
   ) {
     const shortId = request.id.slice(0, 8);
-    const repository = formatRepositoryChip(
-      getRepositoryContext(request.tool_args)
-    );
     return html`
       <div class="fact-strip">
         <attribution-line class="fact" .source=${request}></attribution-line>
@@ -1471,12 +1468,12 @@ export class ApprovalView extends AuthedElement {
             : ''
         }
         ${
-          repository
+          getApprovalRepository(request.tool_args)
             ? html`<div class="fact">
                 <span class="fact-label">Repository</span>
-                <sl-badge pill class="chip repo-chip" title=${repository.title}
-                  >${repository.label}</sl-badge
-                >
+                <repository-chip
+                  .toolArgs=${request.tool_args}
+                ></repository-chip>
               </div>`
             : ''
         }

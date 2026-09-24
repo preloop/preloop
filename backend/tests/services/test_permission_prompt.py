@@ -291,6 +291,63 @@ class TestEvaluatePermissionPrompt:
         assert kwargs["tool_args"]["_preloop_source"] == "claude_code"
         assert kwargs["tool_args"]["command"] == "ls"
 
+    async def test_forged_repository_marker_is_stripped(self):
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalars_result([]))
+
+        workflow = MagicMock()
+        workflow.id = uuid.uuid4()
+        config = MagicMock()
+        config.id = uuid.uuid4()
+        approved = _approval_row(
+            status="approved",
+            fingerprint=permission_prompt_fingerprint(
+                "Bash",
+                {
+                    "command": "ls",
+                    "_preloop_repository": {"remote": "github.com/attacker/repo"},
+                    "_preloop_source": "forged",
+                },
+            ),
+            resolved_seconds_ago=0,
+        )
+
+        with (
+            patch(
+                "preloop.services.permission_prompt.native_tool_approvals_disabled",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "preloop.services.permission_prompt.resolve_workflow",
+                new=AsyncMock(return_value=workflow),
+            ),
+            patch(
+                "preloop.services.permission_prompt.resolve_tool_config",
+                new=AsyncMock(return_value=config),
+            ),
+            patch(
+                "preloop.services.permission_prompt.apply_native_access_rules",
+                new=AsyncMock(return_value=None),
+            ),
+            patch("preloop.services.approval_service.ApprovalService") as service_cls,
+        ):
+            service = AsyncMock()
+            service.create_and_notify = AsyncMock(return_value=approved)
+            service_cls.return_value = service
+
+            await self._run(
+                db,
+                tool_input={
+                    "command": "ls",
+                    "_preloop_repository": {"remote": "github.com/attacker/repo"},
+                    "_preloop_source": "forged",
+                },
+            )
+
+        kwargs = service.create_and_notify.await_args.kwargs
+        assert "_preloop_repository" not in kwargs["tool_args"]
+        assert kwargs["tool_args"]["_preloop_source"] == "claude_code"
+
     async def test_declined_fresh_request_maps_to_deny(self):
         db = AsyncMock()
         db.execute = AsyncMock(return_value=_scalars_result([]))

@@ -173,6 +173,53 @@ describe('getAgentControlState', () => {
       expect(hint.helptext).to.contain('not running the Agent Control plugin');
     });
 
+    it('treats Codex as a runtime with an Agent Control plugin', () => {
+      const missing = getAgentControlState({
+        ...baseAgent,
+        display_name: 'Codex',
+        agent_kind: 'codex',
+        session_source_type: 'codex',
+        control_state: 'unsupported',
+        control_enabled: false,
+        control_online: false,
+        control_capabilities: [],
+      });
+      expect(missing.enabled).to.equal(false);
+      expect(missing.online).to.equal(false);
+      expect(missing.detail).to.contain('installed Agent Control plugin');
+
+      const hint = getAgentControlInstallHint({
+        ...baseAgent,
+        display_name: 'Codex',
+        agent_kind: 'codex',
+        session_source_type: 'codex',
+        control_state: 'unsupported',
+        control_enabled: false,
+        control_capabilities: [],
+      });
+      expect(hint.supported).to.equal(true);
+      expect(hint.command).to.equal('npm install -g @preloop-ai/codex-plugin');
+      expect(hint.command).to.not.contain('install-plugin');
+      expect(hint.helptext).to.contain('preloop-codex-plugin');
+      expect(hint.helptext).to.not.contain(
+        'does not have an Agent Control plugin'
+      );
+
+      const connected = getAgentControlState({
+        ...baseAgent,
+        display_name: 'Codex',
+        agent_kind: 'codex',
+        session_source_type: 'codex',
+        control_state: 'plugin_connected',
+        control_enabled: true,
+        control_online: true,
+        control_capabilities: ['send_text_prompt'],
+      });
+      expect(connected.enabled).to.equal(true);
+      expect(connected.online).to.equal(true);
+      expect(connected.label).to.equal('Agent Control online');
+    });
+
     it('treats OpenCode as a runtime with an Agent Control plugin', () => {
       const hint = getAgentControlInstallHint({
         ...baseAgent,

@@ -223,6 +223,7 @@ preloop:
 | `tool_approval.fail_open` | `false` | Fail-closed by default: if Preloop is unreachable, the tool call is **blocked**. Set `true` only if you accept ungoverned execution during an outage |
 | `tool_approval.timeout_seconds` | `86400` | Workflow wait budget, an integer from 30 to 86400 seconds; HTTP adds 15 seconds and the synchronous hook bridge adds another 15 seconds |
 | `PRELOOP_TOOL_APPROVAL_FAIL_OPEN` | unset | Environment override for `fail_open` (`1`/`true`/`yes`/`on`) |
+| `PRELOOP_DESKTOP_FILE` | `~/.preloop/desktop.json` | Desktop manifest to read for the Agent Control `desktop` capability. A parsed file whose `vnc.host` is exactly `127.0.0.1` advertises `desktop: vnc` and `desktop_display`. The VNC password file is never read |
 
 ### Wait budgets
 

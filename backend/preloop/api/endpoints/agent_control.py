@@ -283,12 +283,19 @@ class AgentControlConnectionManager:
             queued_count = 0
         if queued_count > 0:
             session_mode = "queued"
+        raw_desktop = capabilities.get("desktop")
+        desktop = raw_desktop if raw_desktop in ("vnc", "rdp") else "none"
+        desktop_display = capabilities.get("desktop_display")
+        if desktop == "none" or not isinstance(desktop_display, str):
+            desktop_display = None
         return {
             "online": online,
             "supports_interrupt": bool(capabilities.get("interrupt")),
             "session_mode": session_mode,
             "capabilities": capabilities,
             "queued_count": queued_count,
+            "desktop": desktop,
+            "desktop_display": desktop_display,
         }
 
     def record_presence(
@@ -304,7 +311,15 @@ class AgentControlConnectionManager:
             and self._agent_connections.get(managed_agent_id) != connection_id
         ):
             return
-        self._presence[managed_agent_id] = payload or {}
+        incoming = dict(payload or {})
+        # Heartbeat and status frames omit capabilities. Replacing the whole
+        # entry would drop desktop (and interrupt) about 30s after connect.
+        if "capabilities" not in incoming:
+            previous = self._presence.get(managed_agent_id, {})
+            previous_capabilities = previous.get("capabilities")
+            if isinstance(previous_capabilities, dict):
+                incoming["capabilities"] = previous_capabilities
+        self._presence[managed_agent_id] = incoming
 
     async def send_to_agent(
         self, *, managed_agent_id: str, envelope: AgentControlEnvelope

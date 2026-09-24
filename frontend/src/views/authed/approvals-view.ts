@@ -18,8 +18,7 @@ import {
 } from '../../utils/date';
 import {
   approvalRequesterName,
-  formatRepositoryChip,
-  getRepositoryContext,
+  repositoryObservationChip,
 } from '../../utils/approval-identity';
 import {
   APPROVAL_REQUESTS_PAGE_LIMIT,
@@ -1524,9 +1523,7 @@ export class ApprovalsView extends AuthedElement {
     const selectable = waiting && offersAction(actions, 'approve');
     const selected = this.selection.isSelected(request.id);
     const isNew = waiting && this.newIds.includes(request.id);
-    const repository = formatRepositoryChip(
-      getRepositoryContext(request.tool_args)
-    );
+    const repository = repositoryObservationChip(request.tool_args);
     return html`
       <div
         class="approval-item ${request.status} ${
