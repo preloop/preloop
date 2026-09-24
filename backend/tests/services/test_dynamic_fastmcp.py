@@ -2462,3 +2462,66 @@ class TestProxiedTransportFailureUsageOutcome:
         assert all(
             call.kwargs.get("status") != "succeeded" for call in persist.call_args_list
         )
+
+
+class TestAttributedRefusalUsageOutcome:
+    """Denials that return early still leave a refused row when a session exists."""
+
+    async def test_replay_halt_records_refused_under_the_client_name(
+        self, dynamic_mcp, user_context
+    ):
+        user_context.runtime_session_id = str(uuid4())
+        dynamic_mcp.set_user_context_provider(lambda: user_context)
+        persist = MagicMock()
+        dynamic_mcp._persist_tool_call_activity = persist
+        dynamic_mcp._halt_dispatch_denial = AsyncMock(return_value="kill switch")
+        safe_account_id = user_context.account_id.replace("-", "_")
+        internal_name = f"account_{safe_account_id}_external_write"
+
+        result = await dynamic_mcp.call_registered_tool_without_policy(
+            internal_name,
+            {"path": "/tmp"},
+            account_id=user_context.account_id,
+        )
+
+        assert result.is_error
+        assert "kill switch" in result.content[0].text
+        persist.assert_called_once()
+        kwargs = persist.call_args.kwargs
+        assert kwargs["status"] == "refused"
+        assert kwargs["client_tool_name"] == "external_write"
+        assert kwargs["summary"] == "kill switch"
+
+    async def test_replay_halt_without_context_writes_no_row(self, dynamic_mcp):
+        dynamic_mcp._user_context_provider = lambda: None
+        persist = MagicMock()
+        dynamic_mcp._persist_tool_call_activity = persist
+        dynamic_mcp._halt_dispatch_denial = AsyncMock(return_value="owner halted")
+
+        result = await dynamic_mcp.call_registered_tool_without_policy(
+            "write", {}, account_id="approval-owner"
+        )
+
+        assert result.is_error
+        assert result.content[0].text == "owner halted"
+        persist.assert_not_called()
+
+    async def test_direct_internal_name_records_refused(
+        self, dynamic_mcp, user_context
+    ):
+        user_context.runtime_session_id = str(uuid4())
+        dynamic_mcp.set_user_context_provider(lambda: user_context)
+        persist = MagicMock()
+        dynamic_mcp._persist_tool_call_activity = persist
+        safe_account_id = user_context.account_id.replace("-", "_")
+        internal_name = f"account_{safe_account_id}_safe_tool"
+        dynamic_mcp._registered_proxied_tools.add(internal_name)
+
+        result = await dynamic_mcp.call_tool(internal_name, {"ok": "1"})
+
+        assert result.is_error
+        assert "internal tool name" in result.content[0].text
+        persist.assert_called_once()
+        kwargs = persist.call_args.kwargs
+        assert kwargs["status"] == "refused"
+        assert kwargs["client_tool_name"] == "safe_tool"

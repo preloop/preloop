@@ -1375,9 +1375,11 @@ async def {internal_name}({params_str}):
                 logger.warning(
                     f"Blocked direct invocation of internal proxied tool name: {name}"
                 )
-                return _tool_error_result(
+                denial = (
                     f"Access denied: Cannot invoke internal tool name '{name}' directly"
                 )
+                self._record_attributed_refusal(name, arguments, denial)
+                return _tool_error_result(denial)
 
             logger.info(
                 f"Internal proxied tool re-entry: {name} (skipping duplicate checks)"
@@ -2012,6 +2014,48 @@ async def {internal_name}({params_str}):
         finally:
             db.close()
 
+    def _client_visible_registered_name(
+        self, name: str, account_id: Optional[str]
+    ) -> str:
+        """Strip an ``account_<id>_`` prefix so the usage row matches the client."""
+        if not account_id:
+            return name
+        prefix = f"account_{account_id.replace('-', '_')}_"
+        if name.startswith(prefix) and len(name) > len(prefix):
+            return name[len(prefix) :]
+        return name
+
+    def _record_attributed_refusal(
+        self,
+        name: str,
+        arguments: Optional[dict[str, Any]],
+        text: str,
+        *,
+        account_id: Optional[str] = None,
+    ) -> None:
+        """Persist a refused row when this request already has a session.
+
+        Denials that return before the governed ``call_tool`` path still
+        belong on the timeline. A replay with no HTTP context has no
+        session to attribute, and stays silent.
+        """
+        user_context = self._get_current_user_context()
+        if user_context is None:
+            return
+        owner = account_id or getattr(user_context, "account_id", None)
+        try:
+            self._persist_tool_call_activity(
+                user_context,
+                tool_name=name,
+                client_tool_name=self._client_visible_registered_name(name, owner),
+                status=TOOL_CALL_STATUS_REFUSED,
+                summary=text,
+                arguments=arguments,
+                correlation_id=None,
+            )
+        except Exception as exc:  # pragma: no cover - best effort only
+            logger.debug("Failed to persist refused tool call '%s': %s", name, exc)
+
     async def _halt_dispatch_denial(self, account_id: str) -> Optional[str]:
         """Check fresh halt state after waits and fail closed before dispatch."""
 
@@ -2041,11 +2085,15 @@ async def {internal_name}({params_str}):
         """Execute an already-registered tool without re-running policy checks.
 
         Async approval polling calls this only after the original tool call has
-        been approved and claimed for idempotent re-execution.
+        been approved and claimed for idempotent re-execution. A halt denial
+        is recorded as refused when the polling request still has a session.
         """
         # The durable approval owns this dispatch, even without HTTP context.
         denial = await self._halt_dispatch_denial(account_id)
         if denial:
+            self._record_attributed_refusal(
+                name, arguments, denial, account_id=account_id
+            )
             return _tool_error_result(denial)
         translation_token = None
         if name in self._registered_proxied_tools:
