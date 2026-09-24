@@ -527,9 +527,7 @@ def test_desktop_stage_follows_validation_and_does_not_change_firewall():
     assert "PRELOOP_DEPLOY_DESKTOP_FAILED" not in disabled
     for script in (disabled, enabled):
         assert "gcloud compute firewall-rules" not in script
-    command = (
-        'preloop agents install-runtime "$deploy_runtime" --install-only --desktop -y'
-    )
+    command = 'preloop agents install-runtime "$deploy_runtime" --install-only --skip-install --desktop -y'
     assert command in enabled
     assert enabled.index("PRELOOP_DEPLOY_VALIDATION_FAILED") < enabled.index(
         "PRELOOP_DEPLOY_DESKTOP_FAILED"

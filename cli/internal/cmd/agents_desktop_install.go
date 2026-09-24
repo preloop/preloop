@@ -35,7 +35,11 @@ type desktopInstallOptions struct {
 	LookPath      func(string) (string, error)
 	Now           func() time.Time
 	Random        func(n int) ([]byte, error)
+	// EUID overrides os.Geteuid. Nil uses the real user id.
+	EUID func() int
 }
+
+var errDesktopPrivilegeRequired = errors.New("desktop_privilege_required")
 
 // installDesktop installs Xvfb, a loopback-only x11vnc server, and a browser.
 // Non-Debian distros return desktop_unsupported_distro before any runtime
@@ -110,7 +114,7 @@ func installDesktop(ctx context.Context, opts desktopInstallOptions) error {
 func desktopDryRunText() string {
 	return strings.Join([]string{
 		"Would install a loopback-only headless desktop:",
-		"  apt-get install -y xvfb x11vnc xdotool chromium (fall back to chromium-browser)",
+		"  apt-get install -y xvfb x11vnc xdotool chromium (sudo -n when not root; fall back to chromium-browser)",
 		"  x11vnc -storepasswd (password not printed) ~/.preloop/desktop/vncpasswd",
 		"  write ~/.preloop/desktop/start.sh with Xvfb :99 and x11vnc -localhost -rfbport 5900",
 		"  write ~/.config/systemd/user/preloop-desktop.service (Restart=on-failure)",
@@ -203,20 +207,47 @@ func parseOSRelease(content string) map[string]string {
 	return values
 }
 
+func (o desktopInstallOptions) euid() int {
+	if o.EUID != nil {
+		return o.EUID()
+	}
+	return os.Geteuid()
+}
+
 func installDesktopPackages(ctx context.Context, opts desktopInstallOptions) error {
 	packages := []string{"xvfb", "x11vnc", "xdotool", "chromium"}
-	if err := aptGetInstall(ctx, opts, packages); err != nil {
-		packages[3] = "chromium-browser"
-		if err = aptGetInstall(ctx, opts, packages); err != nil {
-			return fmt.Errorf("desktop package install failed: %w", err)
+	err := aptGetInstall(ctx, opts, packages)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, errDesktopPrivilegeRequired) {
+		return err
+	}
+	packages[3] = "chromium-browser"
+	if err = aptGetInstall(ctx, opts, packages); err != nil {
+		if errors.Is(err, errDesktopPrivilegeRequired) {
+			return err
 		}
+		return fmt.Errorf("desktop package install failed: %w", err)
 	}
 	return nil
 }
 
 func aptGetInstall(ctx context.Context, opts desktopInstallOptions, packages []string) error {
 	args := append([]string{"install", "-y"}, packages...)
-	if _, err := opts.run(ctx, "apt-get", args...); err != nil {
+	command := "apt-get"
+	// GCP deployment SSHes in as the non-root metadata user. Ubuntu images
+	// grant that user passwordless sudo; apt-get itself still needs root.
+	if opts.euid() != 0 {
+		if opts.Run == nil {
+			if _, err := exec.LookPath("sudo"); err != nil {
+				return errDesktopPrivilegeRequired
+			}
+		}
+		command = "sudo"
+		args = append([]string{"-n", "apt-get"}, args...)
+	}
+	if _, err := opts.run(ctx, command, args...); err != nil {
 		return err
 	}
 	return nil
@@ -255,8 +286,10 @@ func ensureDesktopVNCPassword(ctx context.Context, opts desktopInstallOptions, p
 	if err != nil {
 		return err
 	}
-	// x11vnc hashes the password into passwdPath. The plaintext is an
-	// argument only and is omitted from the error returned here.
+	// x11vnc hashes the password into passwdPath. The plaintext exists only
+	// as this process argument (visible briefly in /proc/pid/cmdline) and is
+	// omitted from the error returned here. VNC DES uses the first 8
+	// characters; the 24-byte seed is still what the issue requires.
 	if _, err := opts.run(ctx, "x11vnc", "-storepasswd", password, passwdPath); err != nil {
 		return errors.New("failed to store the VNC password")
 	}

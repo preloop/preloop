@@ -109,6 +109,7 @@ func TestInstallDesktopWritesManifestAndKeepsPassword(t *testing.T) {
 		HomeDir:       home,
 		OSReleasePath: release,
 		GOOS:          "linux",
+		EUID:          func() int { return 0 },
 		Output:        io.Discard,
 		Now:           func() time.Time { return fixed },
 		Random: func(n int) ([]byte, error) {
@@ -214,6 +215,7 @@ func TestInstallDesktopFallsBackToChromiumBrowserAndNohup(t *testing.T) {
 		HomeDir:       home,
 		OSReleasePath: release,
 		GOOS:          "linux",
+		EUID:          func() int { return 0 },
 		Output:        &output,
 		Now:           func() time.Time { return time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC) },
 		Random: func(n int) ([]byte, error) {
@@ -266,6 +268,65 @@ func TestInstallDesktopFallsBackToChromiumBrowserAndNohup(t *testing.T) {
 	}
 	if !strings.Contains(string(doc), `"DISPLAY": ":99"`) || !strings.Contains(string(doc), `"OPENAI_API_KEY": "kept"`) {
 		t.Fatalf("openclaw env = %s", doc)
+	}
+}
+
+func TestInstallDesktopUsesSudoWhenNotRoot(t *testing.T) {
+	home := t.TempDir()
+	release := writeOSRelease(t, "ID=ubuntu\nID_LIKE=debian\n")
+	var calls []string
+	err := installDesktop(context.Background(), desktopInstallOptions{
+		Runtime:       "hermes",
+		HomeDir:       home,
+		OSReleasePath: release,
+		GOOS:          "linux",
+		EUID:          func() int { return 1000 },
+		Output:        io.Discard,
+		Now:           func() time.Time { return time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC) },
+		Random: func(n int) ([]byte, error) {
+			return bytes.Repeat([]byte{2}, n), nil
+		},
+		LookPath: func(string) (string, error) {
+			return "/usr/bin/chromium", nil
+		},
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			calls = append(calls, name+" "+strings.Join(args, " "))
+			if name == "x11vnc" {
+				return nil, os.WriteFile(args[len(args)-1], []byte("hashed"), 0o600)
+			}
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) == 0 || calls[0] != "sudo -n apt-get install -y xvfb x11vnc xdotool chromium" {
+		t.Fatalf("package command = %#v", calls)
+	}
+}
+
+func TestDesktopAllowsInstallOnlyWithSkipInstall(t *testing.T) {
+	setInstallRuntimeFlags(t, map[string]string{
+		"dry-run":      "true",
+		"install-only": "true",
+		"skip-install": "true",
+		"desktop":      "true",
+	})
+	out := captureCommandStdout(t, func() error {
+		return runAgentsInstallRuntime(agentsInstallRuntimeCmd, []string{"hermes"})
+	})
+	if !strings.Contains(out, "Would skip upstream runtime installation") || !strings.Contains(out, "headless desktop") {
+		t.Fatalf("combined flags output:\n%s", out)
+	}
+	setInstallRuntimeFlags(t, map[string]string{
+		"dry-run":      "true",
+		"install-only": "true",
+		"skip-install": "true",
+		"desktop":      "false",
+	})
+	err := runAgentsInstallRuntime(agentsInstallRuntimeCmd, []string{"hermes"})
+	if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

@@ -205,7 +205,7 @@ PRELOOP_EVIDENCE
     if desktop:
         desktop_stage = r"""deploy_desktop_status=failed
 deploy_stage=PRELOOP_DEPLOY_DESKTOP_FAILED
-if preloop agents install-runtime "$deploy_runtime" --install-only --desktop -y </dev/null >"$work/desktop.log" 2>&1; then
+if preloop agents install-runtime "$deploy_runtime" --install-only --skip-install --desktop -y </dev/null >"$work/desktop.log" 2>&1; then
   deploy_desktop_status=installed
 else
   echo PRELOOP_DEPLOY_DESKTOP_FAILED

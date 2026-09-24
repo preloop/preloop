@@ -137,7 +137,11 @@ func runAgentsInstallRuntime(cmd *cobra.Command, args []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	skipInstall, _ := cmd.Flags().GetBool("skip-install")
 	installOnly, _ := cmd.Flags().GetBool("install-only")
-	if installOnly && skipInstall {
+	desktop, _ := cmd.Flags().GetBool("desktop")
+	// --desktop may combine both flags so a deployment can add the desktop
+	// without running the upstream installer a second time. Without --desktop
+	// the combination still does nothing and is rejected.
+	if installOnly && skipInstall && !desktop {
 		return fmt.Errorf("--install-only and --skip-install cannot be combined")
 	}
 	autoApprove := isAutoApprove(cmd)
@@ -145,7 +149,6 @@ func runAgentsInstallRuntime(cmd *cobra.Command, args []string) error {
 	skipLiveValidate, _ := cmd.Flags().GetBool("skip-live-validate")
 	preferredModel, _ := cmd.Flags().GetString("model")
 	preferredModel = strings.TrimSpace(preferredModel)
-	desktop, _ := cmd.Flags().GetBool("desktop")
 
 	if dryRun {
 		fmt.Printf("Would install %s with: %s\n", spec.displayName, spec.installSummary)

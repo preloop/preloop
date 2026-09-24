@@ -100,11 +100,19 @@ successful VM has no automatic lifetime limit.
 
 Set `desktop: true` to install a headless desktop on the target after live
 validation. The deployment runs `preloop agents install-runtime <runtime>
---install-only --desktop`. On Debian and Ubuntu that installs Xvfb on display
-`:99`, a Chromium browser, and x11vnc. The VNC server listens on
+--install-only --skip-install --desktop`, so the upstream runtime installer
+is not executed again after live validation. On Debian and Ubuntu that
+installs Xvfb on display `:99`, a Chromium browser, and x11vnc. The VNC
+server listens on
 `127.0.0.1:5900` only (`-localhost`, no `-listen 0.0.0.0`). A random password
 is stored with `x11vnc -storepasswd` in `~/.preloop/desktop/vncpasswd` (mode
-`0600`) and is not written anywhere else. The CLI records
+`0600`) and is not written anywhere else. The password is a command argument
+for that short-lived `x11vnc` process, so a desktop install assumes a
+single-tenant host. VNC DES uses the first 8 characters of the password.
+Package installation runs `apt-get` as root, or `sudo -n apt-get` when the
+SSH user is not root. The GCP Ubuntu image grants the metadata SSH user
+passwordless sudo; a target without that privilege reports `desktop: failed`
+and does not change the validated runtime. The CLI records
 `~/.preloop/desktop.json` and exports `DISPLAY=:99` for the runtime. A systemd
 user unit `preloop-desktop.service` keeps the session up; if a systemd user
 session is unavailable the CLI starts `~/.preloop/desktop/start.sh` with
