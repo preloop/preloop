@@ -966,6 +966,13 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			fmt.Fprintf(output, "  Warning: Cursor usage hooks not installed: %v\n", err) //nolint:errcheck
 		}
 	}
+	if !opts.NoUsageHooks && permissionSourceForAgent(agent) == permissionSourceCopilotCLI {
+		// Same split as Cursor: usage/session hooks install even when
+		// --approvals is off. preToolUse is owned by installApprovalHooks.
+		if err := installCopilotUsageHooks(agent, output); err != nil {
+			fmt.Fprintf(output, "  Warning: Copilot CLI usage hooks not installed: %v\n", err) //nolint:errcheck
+		}
+	}
 	pluginInstallResult := installAgentControlRuntimePlugin(agent, output)
 	gatewayRestartResult := restartHermesGatewayAfterReconfig(agent, output)
 	if err := saveLocalEnrollmentState(backupState); err != nil {
