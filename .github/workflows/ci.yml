@@ -729,6 +729,14 @@ jobs:
         working-directory: runtime-plugins/claude-preloop
         run: npm test
 
+      - name: Install Codex plugin dependencies
+        working-directory: runtime-plugins/codex-preloop
+        run: npm ci
+
+      - name: Run Codex plugin tests
+        working-directory: runtime-plugins/codex-preloop
+        run: npm test
+
   # ==========================================================================
   # CLI (Windows)
   # ==========================================================================

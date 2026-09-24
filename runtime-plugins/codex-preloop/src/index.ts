@@ -1,0 +1,713 @@
+#!/usr/bin/env node
+
+// Ported from runtime-plugins/claude-preloop/src/index.ts.
+// WebSocket client, reconnect/backoff, close code 4000, heartbeat, and
+// message_id dedupe stay aligned with that file. Session driving is Codex
+// (src/sessions.ts); rollout presence is src/observer.ts.
+
+// Codex CLI has no in-process plugin registry, so this runs as a long-lived
+// sidecar: it owns the Agent Control WebSocket and drives Codex through
+// @openai/codex-sdk for threads it starts or resumes. Interactive terminal
+// sessions are observed (presence + a coarse summary) via their JSONL
+// rollouts. Tool approvals stay on the hook installed at ~/.codex/hooks.json
+// by `preloop agents onboard "Codex CLI"`; the sidecar never reimplements
+// them and never sets approvalPolicy to "never", so its absence never
+// ungoverns anything. It does not read or write config.toml or auth.json.
+
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import { pathToFileURL } from "node:url";
+
+import WebSocket from "ws";
+
+import {
+  ControlConfig,
+  PROTOCOL,
+  RUNTIME,
+  defaultConfigPath,
+  defaultTranscriptDir,
+  loadConfigDetailed,
+  verifyConfig,
+} from "./config.js";
+import {
+  CodexClientFactory,
+  SessionManager,
+  TurnOutcome,
+  sdkCodexClientFactory,
+} from "./sessions.js";
+import { SessionActivity, TranscriptObserver } from "./observer.js";
+import { LauncherBridge, OwnershipMode } from "./mode.js";
+
+export {
+  ControlConfig,
+  loadConfig,
+  loadConfigDetailed,
+  verifyConfig,
+  resolveSandboxMode,
+} from "./config.js";
+export type { ConfigSource, LoadedConfig } from "./config.js";
+export { SessionManager, threadOptionsFor, clientOptionsFor } from "./sessions.js";
+export type {
+  CodexClient,
+  CodexClientFactory,
+  CodexThread,
+  TurnOutcome,
+} from "./sessions.js";
+export { TranscriptObserver, summarizeRolloutRecords } from "./observer.js";
+export type { SessionActivity } from "./observer.js";
+export { LauncherBridge, defaultSocketPath } from "./mode.js";
+export type { OwnershipMode, IpcMessage } from "./mode.js";
+
+export type OperatorCommand = {
+  message_id?: string;
+  type?: string;
+  name?: string;
+  payload?: {
+    text?: string;
+    message?: string;
+    input_mode?: string;
+    metadata?: Record<string, unknown>;
+    interrupt?: boolean;
+    target_session_id?: string;
+    session_source_id?: string;
+    session_reference?: string;
+    runtime_session_id?: string;
+    session_mode?: string;
+    start_new_session?: boolean;
+    cwd?: string;
+  };
+};
+
+/** Headers the Agent Control WS already accepts (Authorization: Bearer). */
+export function controlAuthHeaders(token: string): { Authorization: string } {
+  return { Authorization: `Bearer ${token}` };
+}
+
+/**
+ * Close code the server sends when evicting a superseded WebSocket.  Must
+ * match `EVICTION_CLOSE_CODE` on the server and in the Python client.
+ */
+const EVICTION_CLOSE_CODE = 4000;
+
+/** Reconnect backoff bounds and heartbeat cadence (mirror the other plugins). */
+const RECONNECT_BASE_DELAY_MS = 2_000;
+const RECONNECT_MAX_DELAY_MS = 30_000;
+const HEARTBEAT_INTERVAL_MS = 30_000;
+/** Bound on the message_id dedupe memory. */
+const DEDUPE_CAPACITY = 1_000;
+
+type StoredCommandOutcome = {
+  name: "command_result" | "command_error";
+  payload: Record<string, unknown>;
+};
+
+export class PreloopCodexSidecar {
+  readonly runtime = RUNTIME;
+  private controlConfig?: ControlConfig;
+  private socket?: WebSocket;
+  private sessions?: SessionManager;
+  private observer?: TranscriptObserver;
+  private launcher: LauncherBridge;
+  private stopped = false;
+  private reconnectAttempts = 0;
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private heartbeatTimer?: ReturnType<typeof setInterval>;
+  private commandOutcomes = new Map<string, StoredCommandOutcome>();
+  private inFlightMessageIds = new Set<string>();
+  private logger: (message: string) => void = () => {};
+
+  constructor(
+    private readonly configPath?: string,
+    private readonly clientFactory: CodexClientFactory = sdkCodexClientFactory,
+    socketPath?: string,
+  ) {
+    this.launcher = new LauncherBridge(socketPath);
+  }
+
+  setLogger(logger: (message: string) => void): void {
+    this.logger = logger;
+  }
+
+  private log(message: string): void {
+    this.logger(message);
+  }
+
+  configure(config: ControlConfig): void {
+    this.controlConfig = config;
+  }
+
+  verify(): ControlConfig {
+    let config = this.controlConfig;
+    if (!config) {
+      const loaded = loadConfigDetailed(this.configPath);
+      this.log(
+        `config: ${loaded.path} (${loaded.source === "control-block" ? 'nested "control" block' : loaded.source + " schema"})`,
+      );
+      if (loaded.source === "empty") {
+        const warning =
+          `preloop-control config at ${loaded.path} contains no usable control settings ` +
+          '(expected flat keys or a top-level "control" object); ' +
+          "the sidecar cannot connect to Agent Control. " +
+          'Re-run: preloop agents onboard "Codex CLI"';
+        this.log(warning);
+        console.error(warning);
+      }
+      config = loaded.config;
+    }
+    verifyConfig(config);
+    this.controlConfig = config;
+    return config;
+  }
+
+  async start(): Promise<void> {
+    this.stopped = false;
+    this.log(
+      `sidecar starting (pid ${process.pid}, config ${this.configPath ?? defaultConfigPath()})`,
+    );
+    const config = this.verify();
+    if (config.enabled === false) {
+      throw new Error("preloop-control is disabled (enabled=false)");
+    }
+    this.sessions ??= new SessionManager(config, this.clientFactory);
+    this.launcher.setLogger((message) => this.log(message));
+    this.launcher.onLauncherReleased(() => {
+      void this.sessions?.release();
+    });
+    await this.launcher.listen();
+    this.log("launcher control socket listening");
+    if (config.observer_enabled !== false) {
+      this.observer = new TranscriptObserver(
+        config.transcript_dir ?? defaultTranscriptDir(),
+        (activity) => this.sendSessionActivity(activity),
+        config.observer_poll_ms,
+      );
+      this.observer.start();
+    }
+    this.connect();
+  }
+
+  stop(): void {
+    this.stopped = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    this.stopHeartbeat();
+    this.observer?.stop();
+    this.observer = undefined;
+    this.sessions?.stop();
+    this.sessions = undefined;
+    this.launcher.stop();
+    this.socket?.close();
+    this.socket = undefined;
+  }
+
+  private connect(): void {
+    if (this.stopped) {
+      return;
+    }
+    const config = this.controlConfig!;
+    const wsUrl = new URL(config.control_ws_url!);
+    // Node's global WebSocket cannot set headers. The `ws` package can, so
+    // the durable bearer token is sent as Authorization: Bearer on the HTTP
+    // upgrade. That is the scheme Agent Control already prefers; the token
+    // stays out of the URL and out of access-log query strings.
+
+    // Log origin + pathname only: control_ws_url is user-supplied and could
+    // embed credentials in its query string; those must never reach the log.
+    this.log(`Agent Control: connecting to ${wsUrl.origin}${wsUrl.pathname}`);
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(wsUrl, {
+        headers: controlAuthHeaders(config.bearer_token!),
+      });
+    } catch (error) {
+      this.log(
+        `Preloop Agent Control connect failed: ${errorMessage(error)}`,
+      );
+      this.scheduleReconnect();
+      return;
+    }
+    this.socket = socket;
+
+    socket.on("open", () => {
+      this.log("Agent Control: connected; announcing capabilities");
+      this.reconnectAttempts = 0;
+      this.sendEnvelope({
+        type: "presence",
+        name: "capabilities",
+        message_id: randomUUID(),
+        payload: {
+          status: "online",
+          protocol: PROTOCOL,
+          runtime: this.runtime,
+          capabilities: {
+            // Same names the Claude sidecar advertises, minus `worktree`
+            // (this sidecar does not create git worktrees).
+            new_session: true,
+            existing_session: true,
+            text: true,
+            voice: true,
+            interrupt: true,
+            takeover: true,
+            release: true,
+            // Delegated to the ~/.codex/hooks.json approval hook, not us.
+            tool_approval: true,
+          },
+          session_mode: this.currentMode(),
+          queued_count: 0,
+          runtime_principal_id: config.runtime_principal_id,
+          runtime_principal_name: config.runtime_principal_name,
+        },
+      });
+      this.startHeartbeat(config);
+    });
+
+    socket.on("message", (data) => {
+      void this.handleFrame(socket, websocketDataToString(data));
+    });
+
+    socket.on("close", (code, reason) => {
+      this.log(`Agent Control: connection closed (code ${code})`);
+      this.stopHeartbeat();
+      if (this.socket === socket) {
+        this.socket = undefined;
+      }
+      if (code === EVICTION_CLOSE_CODE) {
+        const detail = reason
+          ? reason.toString()
+          : "superseded by newer connection";
+        this.log(
+          `Agent Control: evicted by server (${detail}); will not reconnect`,
+        );
+        this.stopped = true;
+        return;
+      }
+      this.scheduleReconnect();
+    });
+    socket.on("error", (error) => {
+      // 'error' is followed by 'close'; log and let close drive reconnect.
+      this.log(
+        `Preloop Agent Control websocket error: ${errorMessage(error)}`,
+      );
+    });
+  }
+
+  /** Process one inbound control frame. Exposed for tests. */
+  async handleFrame(socket: WebSocket, data: string): Promise<void> {
+    let command: OperatorCommand;
+    try {
+      command = JSON.parse(data) as OperatorCommand;
+    } catch (error) {
+      this.sendOn(socket, {
+        type: "status",
+        name: "command_error",
+        payload: {
+          status: "failed",
+          error: `invalid_json: ${errorMessage(error)}`,
+        },
+      });
+      return;
+    }
+    // Redelivered commands (reconnect replay) must not run twice. Dedupe
+    // only after a terminal success/error, and replay that stored outcome
+    // instead of a bare "duplicate" so a failed command is never silently
+    // converted into already-handled.
+    if (command.message_id && this.commandOutcomes.has(command.message_id)) {
+      const outcome = this.commandOutcomes.get(command.message_id)!;
+      this.sendOn(socket, {
+        type: "status",
+        name: outcome.name,
+        message_id: command.message_id,
+        payload: outcome.payload,
+      });
+      return;
+    }
+    if (command.message_id && this.inFlightMessageIds.has(command.message_id)) {
+      return;
+    }
+    if (command.message_id) {
+      this.inFlightMessageIds.add(command.message_id);
+    }
+    try {
+      const result = await this.dispatch(command);
+      const payload = commandResultPayload(command.message_id, result);
+      this.rememberOutcome(command.message_id, {
+        name: "command_result",
+        payload,
+      });
+      this.sendOn(socket, {
+        type: "status",
+        name: "command_result",
+        message_id: command.message_id,
+        payload,
+      });
+    } catch (error) {
+      const payload = {
+        command_id: command.message_id,
+        status: "failed",
+        error: errorMessage(error),
+      };
+      this.rememberOutcome(command.message_id, {
+        name: "command_error",
+        payload,
+      });
+      this.sendOn(socket, {
+        type: "status",
+        name: "command_error",
+        message_id: command.message_id,
+        payload,
+      });
+    } finally {
+      if (command.message_id) {
+        this.inFlightMessageIds.delete(command.message_id);
+      }
+    }
+  }
+
+  /** Execute one operator command envelope. Exposed for tests. */
+  async dispatch(command: OperatorCommand): Promise<unknown> {
+    if (command.type !== "command") {
+      return undefined;
+    }
+    if (!this.sessions) {
+      this.sessions = new SessionManager(this.verify(), this.clientFactory);
+    }
+    const payload = command.payload ?? {};
+    const targetSessionId = resolveTargetSessionId(payload);
+    const resumeSessionId = resolveResumeSessionId(payload);
+
+    if (command.name === "request_takeover") {
+      return this.takeOver(targetSessionId ?? resumeSessionId);
+    }
+    if (command.name === "release") {
+      return this.releaseToLocal(targetSessionId ?? resumeSessionId);
+    }
+    if (command.name !== "send_message") {
+      return undefined;
+    }
+
+    if (payload.interrupt) {
+      await this.sessions.interrupt(targetSessionId ?? resumeSessionId);
+      return "interrupted";
+    }
+
+    if (this.launcher.mode === "local") {
+      await this.takeOver(targetSessionId ?? resumeSessionId);
+    }
+
+    const text = payload.text ?? payload.message ?? "";
+    if (!text.trim()) {
+      throw new Error("send_message requires non-empty text");
+    }
+    const cwd =
+      typeof payload.cwd === "string"
+        ? payload.cwd
+        : typeof payload.metadata?.["cwd"] === "string"
+          ? String(payload.metadata["cwd"])
+          : undefined;
+    return this.sessions.sendMessage({
+      text,
+      targetSessionId,
+      resumeSessionId,
+      metadata: payload.metadata,
+      cwd,
+      startNewSession: payload.start_new_session === true,
+    });
+  }
+
+  currentMode(): OwnershipMode {
+    if (this.sessions && this.sessions.ownedSessionIds().length > 0) {
+      return "remote";
+    }
+    return this.launcher.mode;
+  }
+
+  async takeOver(sessionId?: string): Promise<string> {
+    const nativeId =
+      sessionId ?? this.launcher.lastSessionId ?? this.sessions?.ownedSessionIds()[0];
+    if (this.launcher.hasLauncher() && this.launcher.mode === "local") {
+      this.launcher.requestSwitch();
+      await waitForCondition(
+        () => this.launcher.mode === "remote" || !this.launcher.hasLauncher(),
+        8_000,
+      );
+    }
+    this.launcher.mode = "remote";
+    this.launcher.lastSessionId = nativeId ?? this.launcher.lastSessionId;
+    this.broadcastMode();
+    return nativeId ? `remote:${nativeId}` : "remote";
+  }
+
+  async releaseToLocal(sessionId?: string): Promise<string> {
+    const released = await this.sessions?.release(sessionId);
+    const nativeId = released ?? sessionId ?? this.launcher.lastSessionId;
+    this.launcher.lastSessionId = nativeId;
+    this.launcher.mode = this.launcher.hasLauncher() ? "local" : "offline";
+    this.launcher.requestRelease();
+    this.broadcastMode();
+    return nativeId ? `local:${nativeId}` : "local";
+  }
+
+  private broadcastMode(): void {
+    this.sendEnvelope({
+      type: "presence",
+      name: "session_mode",
+      message_id: randomUUID(),
+      payload: {
+        session_mode: this.currentMode(),
+        session_id: this.launcher.lastSessionId,
+        owned_session_ids: this.sessions?.ownedSessionIds() ?? [],
+      },
+    });
+    this.launcher.notifyStatus();
+  }
+
+  private rememberOutcome(
+    messageId: string | undefined,
+    outcome: StoredCommandOutcome,
+  ): void {
+    if (!messageId) {
+      return;
+    }
+    this.commandOutcomes.set(messageId, outcome);
+    if (this.commandOutcomes.size > DEDUPE_CAPACITY) {
+      const oldest = this.commandOutcomes.keys().next().value;
+      if (oldest !== undefined) {
+        this.commandOutcomes.delete(oldest);
+      }
+    }
+  }
+
+  private sendSessionActivity(activity: SessionActivity): void {
+    this.sendEnvelope({
+      type: "event",
+      name: "session_activity",
+      message_id: randomUUID(),
+      payload: {
+        ...activity,
+        runtime: this.runtime,
+        owned: this.sessions
+          ? this.sessions.ownedSessionIds().includes(activity.session_id)
+          : false,
+      },
+    });
+  }
+
+  private sendEnvelope(envelope: Record<string, unknown>): void {
+    if (this.socket && this.socket.readyState === this.socket.OPEN) {
+      this.sendOn(this.socket, envelope);
+    }
+  }
+
+  private sendOn(socket: WebSocket, envelope: Record<string, unknown>): void {
+    if (socket.readyState !== socket.OPEN) {
+      return;
+    }
+    socket.send(JSON.stringify(envelope));
+  }
+
+  private scheduleReconnect(): void {
+    if (this.stopped || this.reconnectTimer) {
+      return;
+    }
+    const delay = Math.min(
+      RECONNECT_MAX_DELAY_MS,
+      RECONNECT_BASE_DELAY_MS * 2 ** this.reconnectAttempts,
+    );
+    this.reconnectAttempts += 1;
+    this.log(`Agent Control: reconnecting in ${delay}ms`);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      this.connect();
+    }, delay);
+  }
+
+  private startHeartbeat(config: ControlConfig): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      this.sendEnvelope({
+        type: "status",
+        name: "heartbeat",
+        message_id: randomUUID(),
+        payload: {
+          status: "online",
+          runtime_principal_id: config.runtime_principal_id,
+          session_mode: this.currentMode(),
+        },
+      });
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
+  }
+}
+
+function commandResultPayload(
+  messageId: string | undefined,
+  result: unknown,
+): Record<string, unknown> {
+  if (isTurnOutcome(result)) {
+    const payload: Record<string, unknown> = {
+      command_id: messageId,
+      status: result.stopped ? "stopped" : "completed",
+      result: result.reply_text,
+      reply_text: result.reply_text,
+      session_id: result.session_id,
+    };
+    if (result.usage) {
+      payload.metadata = { usage: result.usage };
+    }
+    return payload;
+  }
+  return {
+    command_id: messageId,
+    status: "completed",
+    result,
+    reply_text: typeof result === "string" ? result : "",
+  };
+}
+
+function isTurnOutcome(result: unknown): result is TurnOutcome {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    "reply_text" in result &&
+    typeof (result as TurnOutcome).reply_text === "string"
+  );
+}
+
+export function resolveTargetSessionId(
+  payload: NonNullable<OperatorCommand["payload"]>,
+): string | undefined {
+  const metadata = payload.metadata ?? {};
+  for (const candidate of [
+    payload.target_session_id,
+    payload.session_reference,
+    payload.runtime_session_id,
+    metadata["session_id"],
+    metadata["runtime_session_id"],
+    metadata["session_reference"],
+  ]) {
+    if (typeof candidate === "string" && candidate.trim() !== "") {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+/** Native Codex thread id for resumeThread, when the envelope has it. */
+export function resolveResumeSessionId(
+  payload: NonNullable<OperatorCommand["payload"]>,
+): string | undefined {
+  const metadata = payload.metadata ?? {};
+  for (const candidate of [
+    payload.session_source_id,
+    metadata["session_source_id"],
+    resolveTargetSessionId(payload),
+  ]) {
+    if (typeof candidate === "string" && candidate.trim() !== "") {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function websocketDataToString(data: unknown): string {
+  if (typeof data === "string") {
+    return data;
+  }
+  if (Buffer.isBuffer(data)) {
+    return data.toString("utf8");
+  }
+  if (Array.isArray(data) && data.every((part) => Buffer.isBuffer(part))) {
+    return Buffer.concat(data).toString("utf8");
+  }
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(data).toString("utf8");
+  }
+  return String(data);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function waitForCondition(
+  predicate: () => boolean,
+  timeoutMs: number,
+): Promise<void> {
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const tick = () => {
+      if (predicate()) {
+        resolve();
+        return;
+      }
+      if (Date.now() - started >= timeoutMs) {
+        reject(new Error("timed out waiting for launcher switch"));
+        return;
+      }
+      setTimeout(tick, 25);
+    };
+    tick();
+  });
+}
+
+function parseArgs(): { command: string; configPath?: string } {
+  const [, , command = "verify", ...rest] = process.argv;
+  const configIndex = rest.indexOf("--config");
+  return {
+    command,
+    configPath: configIndex >= 0 ? rest[configIndex + 1] : undefined,
+  };
+}
+
+// Detect direct CLI invocation. npm installs the bin as a SYMLINK
+// (bin/preloop-codex-plugin -> .../dist/index.js) and Node resolves
+// import.meta.url to the realpath of the entry module, while process.argv[1]
+// keeps the symlink path. A naive string comparison therefore fails for every
+// npm-installed bin and the sidecar would exit 0 without ever listening.
+// Realpath argv[1] and compare file URLs instead.
+function invokedAsCli(): boolean {
+  const argv1 = process.argv[1];
+  if (!argv1) {
+    return false;
+  }
+  try {
+    return import.meta.url === pathToFileURL(fs.realpathSync(argv1)).href;
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsCli()) {
+  const args = parseArgs();
+  const sidecar = new PreloopCodexSidecar(args.configPath);
+  sidecar.setLogger((message) =>
+    console.error(`[${new Date().toISOString()}] ${message}`),
+  );
+  if (args.command === "verify") {
+    try {
+      sidecar.verify();
+      console.log("@preloop-ai/codex-plugin verified");
+    } catch (error: unknown) {
+      console.error(errorMessage(error));
+      process.exitCode = 1;
+    }
+  } else if (args.command === "run") {
+    void sidecar.start().catch((error: unknown) => {
+      console.error(
+        `@preloop-ai/codex-plugin failed to start: ${errorMessage(error)}`,
+      );
+      process.exitCode = 1;
+    });
+  } else {
+    console.error(`Unknown command: ${args.command}`);
+    process.exitCode = 1;
+  }
+}
