@@ -97,7 +97,9 @@ flow with `metadata.workspace.mode` of `persistent_checkout` clones
 credentials (the message never carries a token), fetches on that run
 and on later runs, then checks the commit out detached. A password in
 the clone URL is refused. `ssh://git@host/...` is allowed. A dirty tree
-fails the command instead of being reset. The sidecar records
+fails the command instead of being reset. A persistent turn that leaves
+uncommitted edits with `spawn_worktree: false` fails the next run on that
+repository; use a worktree or commit/clean before the next turn. The sidecar records
 `preloop.managedcheckout` in git config so a later process still knows
 the tree is its own.
 

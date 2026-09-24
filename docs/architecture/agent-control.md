@@ -169,9 +169,11 @@ contract separately.
   Eviction takes the same lock and skips a directory whose turn is still
   running.
 * A dirty tree fails the command with `command_error`. The sidecar does
-  not `reset --hard` or `clean` it. Ownership is `preloop.managedcheckout`
-  in the repository's git config, so a restart still recognises a tree
-  the sidecar checked out.
+  not `reset --hard` or `clean` it. A persistent turn that leaves
+  uncommitted edits with `spawn_worktree: false` fails the next run on
+  that repository; use a worktree or commit/clean before the next turn.
+  Ownership is `preloop.managedcheckout` in the repository's git config,
+  so a restart still recognises a tree the sidecar checked out.
 * `ssh://git@host/...` is a valid clone URL. A password in the URL is
   refused. `protocol.ext.allow` and `protocol.file.allow` are `never`.
 * The resolved path is `metadata.workspace_path` on `command_result`
