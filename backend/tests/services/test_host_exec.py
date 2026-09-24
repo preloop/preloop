@@ -104,13 +104,54 @@ def test_flow_errors_for_hosted_and_harness_mismatch() -> None:
     )
 
 
+_PULL_REQUEST_UNAVAILABLE = (
+    "host execution cannot publish pull requests; isolated "
+    "publication is unavailable on this path"
+)
+
+
 def test_unavailable_publication_and_resume() -> None:
-    assert host_exec_unavailable_reason(git_clone_config={"create_pull_request": True})
+    assert (
+        host_exec_unavailable_reason(git_clone_config={"create_pull_request": True})
+        == _PULL_REQUEST_UNAVAILABLE
+    )
     assert host_exec_unavailable_reason(
         resume_from="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     )
     assert host_exec_unavailable_reason(session_id="ses-untrusted")
     assert host_exec_unavailable_reason(git_clone_config={"enabled": True})
+
+
+def test_unavailable_reason_rejects_isolated_publication_mode() -> None:
+    """Isolated publication is unavailable on native host profiles."""
+    from_config = host_exec_unavailable_reason(
+        git_clone_config={"publication_mode": "isolated"}
+    )
+    from_keyword = host_exec_unavailable_reason(publication_mode="isolated")
+    assert from_config is not None
+    assert from_keyword == from_config
+    assert "isolated publication" in from_config
+    assert "native host" in from_config
+    assert (
+        host_exec_unavailable_reason(git_clone_config={"publication_mode": "legacy"})
+        is None
+    )
+    assert host_exec_unavailable_reason(publication_mode="legacy") is None
+
+
+def test_unavailable_reason_create_pull_request_unchanged() -> None:
+    """create_pull_request keeps its existing host-exec reason."""
+    assert (
+        host_exec_unavailable_reason(git_clone_config={"create_pull_request": True})
+        == _PULL_REQUEST_UNAVAILABLE
+    )
+    combined = host_exec_unavailable_reason(
+        git_clone_config={
+            "create_pull_request": True,
+            "publication_mode": "isolated",
+        }
+    )
+    assert combined == _PULL_REQUEST_UNAVAILABLE
 
 
 def test_host_exec_success_requires_structured_result() -> None:

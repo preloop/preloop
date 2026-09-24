@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -23,19 +23,42 @@ from preloop.services.runner_service import (
 
 from preloop.services.host_exec import (
     HOST_EXEC_AGENT_TYPE,
+    ISOLATED_PUBLICATION_UNAVAILABLE,
     host_exec_profile_name,
     host_exec_unavailable_reason,
 )
 
 from .base import AgentExecutionResult, AgentExecutor, AgentStatus
+from .images import agent_config_has_image, default_agent_image
 from .runner_launch import (
     LAUNCH_VERSION,
     flow_launch_fingerprint,
     prepare_runner_delivery,
 )
-from .images import agent_config_has_image, default_agent_image
 
 logger = logging.getLogger(__name__)
+
+
+def _config_without_publication_mode(git_clone_config: Any) -> Any:
+    """Return checkout config with publication mode removed.
+
+    The host lease rejects isolated mode after the snapshot lookup so a
+    missing snapshot keeps its existing error. Other host-exec checks still
+    see ``create_pull_request`` and remote setup fields.
+    """
+    if isinstance(git_clone_config, Mapping):
+        return {
+            key: value
+            for key, value in git_clone_config.items()
+            if key != "publication_mode"
+        }
+    if hasattr(git_clone_config, "model_dump"):
+        dumped = git_clone_config.model_dump()
+        if isinstance(dumped, Mapping):
+            return {
+                key: value for key, value in dumped.items() if key != "publication_mode"
+            }
+    return git_clone_config
 
 
 class RemoteRunnerExecutor(AgentExecutor):
@@ -353,8 +376,11 @@ class RemoteRunnerExecutor(AgentExecutor):
         git_clone_config = context_or_flow("git_clone_config")
         resume_from = _resume_from_execution_id(context, self.execution)
         if profile:
+            # Isolated mode is decided after the snapshot lookup below so a
+            # missing snapshot keeps its existing error. Passing the mode
+            # here would replace that error.
             blocked = host_exec_unavailable_reason(
-                git_clone_config=git_clone_config,
+                git_clone_config=_config_without_publication_mode(git_clone_config),
                 resume_from=resume_from,
                 session_id=context.get("session_id"),
                 custom_commands=context_or_flow("custom_commands"),
@@ -399,8 +425,12 @@ class RemoteRunnerExecutor(AgentExecutor):
                 raise ValueError(
                     "Private publication requires a trusted policy snapshot"
                 )
+            if profile:
+                raise ValueError(ISOLATED_PUBLICATION_UNAVAILABLE)
             payload["_publication"] = state
         if profile:
+            if "_publication" in payload:
+                raise ValueError(ISOLATED_PUBLICATION_UNAVAILABLE)
             payload["host_exec_profile"] = profile
             timeout_seconds = context.get("timeout_seconds")
             if timeout_seconds is None and flow is not None:

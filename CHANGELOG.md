@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Native host execution profiles reject `publication_mode: isolated` before
+  execution. A stored publication snapshot is no longer stripped from the
+  host lease, and a missing snapshot still fails with the existing policy
+  error. Container isolated publication is unchanged.
 - Legacy publication now appends the current execution and head SHA to an
   existing pull request or merge request, keeping earlier records and human
   prose. A malformed, oversized, or rejected provider update leaves the
