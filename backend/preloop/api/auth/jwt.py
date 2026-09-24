@@ -130,7 +130,11 @@ def _managed_agent_for_api_key(
 
 
 def _authenticate_with_api_key(
-    session: Any, api_key: Any, *, allow_stale_runtime_session: bool = False
+    session: Any,
+    api_key: Any,
+    *,
+    allow_stale_runtime_session: bool = False,
+    allow_ended_runtime_session: bool = False,
 ) -> User:
     """Validate an API key and return its active owner.
 
@@ -138,7 +142,9 @@ def _authenticate_with_api_key(
     (Agent Control WebSocket, native-tool permission checks): they outlive
     runtime sessions by design, so a missing or ended session binding must
     not reject the credential — callers resolve/reopen the agent's identity
-    session instead.
+    session instead. ``allow_ended_runtime_session`` only skips the ended
+    check, so a browser adapter can flush steps after the run; a missing
+    session is still rejected.
     """
     if not api_key:
         raise HTTPException(
@@ -179,6 +185,7 @@ def _authenticate_with_api_key(
             runtime_session is not None
             and runtime_session.ended_at is not None
             and not allow_stale_runtime_session
+            and not allow_ended_runtime_session
         ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -808,8 +815,21 @@ async def get_user_from_token_if_valid(token: str, db_session: Any) -> Optional[
     return await run_db_off_loop(authenticate)
 
 
-def get_user_from_token_if_valid_sync(token: str, db_session: Any) -> Optional[User]:
-    """Sync variant for short-lived sessions in WebSocket handlers."""
+def get_user_from_token_if_valid_sync(
+    token: str,
+    db_session: Any,
+    *,
+    allow_ended_runtime_session: bool = False,
+) -> Optional[User]:
+    """Sync variant for short-lived sessions in WebSocket handlers.
+
+    Args:
+        token: Presented bearer token.
+        db_session: Database session.
+        allow_ended_runtime_session: When true, a key pinned to a session
+            that has ended still resolves its user. Missing sessions stay
+            rejected. The model gateway leaves this false.
+    """
     if not token:
         return None
 
@@ -817,7 +837,11 @@ def get_user_from_token_if_valid_sync(token: str, db_session: Any) -> Optional[U
         if "." not in token:
             api_key = crud_api_key.get_by_key(db_session, key=token)
             if api_key:
-                return _authenticate_with_api_key(db_session, api_key)
+                return _authenticate_with_api_key(
+                    db_session,
+                    api_key,
+                    allow_ended_runtime_session=allow_ended_runtime_session,
+                )
 
         token_data = decode_token(token)
         # TokenData model, not a dict — read the refresh flag as an attribute so

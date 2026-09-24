@@ -12104,6 +12104,61 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runtime-sessions/{runtime_session_id}/browser-steps:
+    post:
+      tags:
+      - Runtime Sessions
+      summary: Ingest Runtime Session Browser Steps
+      description: "Store a batch of browser step observations on a runtime session.\n\
+        \nArgs:\n    runtime_session_id: Session the steps attach to.\n    batch:\
+        \ One to 200 steps.\n    db: Database session.\n    auth: Agent credential\
+        \ from the bearer token.\n\nReturns:\n    How many steps were stored, repeated,\
+        \ or refused.\n\nRaises:\n    HTTPException: 403 when the credential is pinned\
+        \ to another session,\n        404 when the session is not in the credential's\
+        \ account."
+      operationId: ingest_runtime_session_browser_steps_api_v1_runtime_sessions__runtime_session_id__browser_steps_post
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrowserStepBatchIn'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowserStepBatchOut'
+        '401':
+          description: Missing or invalid bearer token
+        '403':
+          description: Credential is bound to a different runtime session
+        '404':
+          description: Runtime session not found
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/runtime-sessions/search/saved:
     post:
       tags:
@@ -16535,6 +16590,118 @@ components:
       required:
       - file
       title: Body_validate_policy_api_v1_policies_validate_post
+    BrowserStepBatchIn:
+      properties:
+        steps:
+          items:
+            $ref: '#/components/schemas/BrowserStepIn'
+          type: array
+          maxItems: 200
+          minItems: 1
+          title: Steps
+      type: object
+      required:
+      - steps
+      title: BrowserStepBatchIn
+      description: A batch of browser steps from one agent flush.
+    BrowserStepBatchOut:
+      properties:
+        accepted:
+          type: integer
+          title: Accepted
+        duplicates:
+          type: integer
+          title: Duplicates
+        rejected:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Rejected
+      type: object
+      required:
+      - accepted
+      - duplicates
+      - rejected
+      title: BrowserStepBatchOut
+      description: How many steps in a batch were stored, repeated, or refused.
+    BrowserStepIn:
+      properties:
+        source:
+          type: string
+          enum:
+          - api
+          - browser_use
+          - skyvern
+          - playwright_mcp
+          title: Source
+          default: api
+        source_step_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Source Step Id
+        step_index:
+          type: integer
+          minimum: 0.0
+          title: Step Index
+        action:
+          type: string
+          enum:
+          - navigate
+          - click
+          - type
+          - select
+          - scroll
+          - screenshot
+          - extract
+          - wait
+          - done
+          - other
+          title: Action
+        url:
+          anyOf:
+          - type: string
+            maxLength: 2048
+          - type: 'null'
+          title: Url
+        target:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Target
+        reasoning:
+          anyOf:
+          - type: string
+            maxLength: 8000
+          - type: 'null'
+          title: Reasoning
+        status:
+          type: string
+          enum:
+          - success
+          - failed
+          - unknown
+          title: Status
+          default: success
+        occurred_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Occurred At
+        extra:
+          additionalProperties: true
+          type: object
+          title: Extra
+      type: object
+      required:
+      - source_step_id
+      - step_index
+      - action
+      title: BrowserStepIn
+      description: One browser action observed by an agent.
     BudgetPeriod:
       type: string
       enum:
@@ -27256,7 +27423,7 @@ components:
           - type: 'null'
           title: Source Kind
           description: 'One corpus source kind: gateway_interaction, transcript_message,
-            tool_call, operator_note, session_summary, flow_log.'
+            tool_call, browser_step, operator_note, session_summary, flow_log.'
       additionalProperties: false
       type: object
       title: SessionSearchFilters

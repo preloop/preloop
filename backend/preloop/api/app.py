@@ -824,6 +824,7 @@ def _register_control_plane_routes(
         pull_requests,
         retention,
         roles,
+        runtime_session_browser_steps,
         search as search_router,
         security_maintenance,
         security_screen,
@@ -1122,6 +1123,13 @@ def _register_control_plane_routes(
         prefix="/api/v1",
         tags=["Runtime Sessions"],
         dependencies=[Depends(get_current_active_user)],
+    )
+    # Browser steps authenticate with the agent bearer inside the route.
+    # A console-user dependency would reject the runtime key this exists for.
+    app.include_router(
+        runtime_session_browser_steps.router,
+        prefix="/api/v1",
+        tags=["Runtime Sessions"],
     )
     # Saved searches for that endpoint. They sit under the search path, not
     # beside it, because a two segment sibling of /runtime-sessions would be

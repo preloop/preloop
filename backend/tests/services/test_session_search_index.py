@@ -15,11 +15,13 @@ from preloop.models.crud import (
 from preloop.models.models.session_search_document import (
     REDACTION_STATE_METADATA_ONLY,
     REDACTION_STATE_REDACTED,
+    SOURCE_KIND_BROWSER_STEP,
     SOURCE_KIND_GATEWAY_INTERACTION,
     SOURCE_KIND_SESSION_SUMMARY,
     SOURCE_KIND_TOOL_CALL,
     SOURCE_KIND_TRANSCRIPT_MESSAGE,
 )
+from preloop.schemas.browser_step import BrowserStepIn
 from preloop.services import session_search_index
 from preloop.services.session_search_index import (
     CHUNK_OVERLAP_CHARS,
@@ -425,6 +427,50 @@ def test_tool_call_activity_is_indexed_where_it_is_written(db_session, test_user
     assert "read the deployment checklist" in chunks[0].content
     assert chunks[0].status == "success"
     assert chunks[0].role == "tool"
+
+
+def test_browser_step_reasoning_is_indexed_and_tokens_are_masked(db_session, test_user):
+    """A browser step is findable by reasoning, with URL tokens masked."""
+    session = _session(db_session, test_user.account_id, source_id="session-browser")
+    step = BrowserStepIn(
+        source="playwright_mcp",
+        source_step_id="step-zephyr",
+        step_index=0,
+        action="navigate",
+        url="https://x.example/?token=abc123secret",
+        reasoning="opened the zephyrledger panel",
+    )
+    activity, created = crud_runtime_session_activity.log_browser_step(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        api_key_id=None,
+        step=step,
+        commit=False,
+    )
+    assert created is True
+    assert "abc123secret" not in (activity.metadata_ or {})["url"]
+    assert REDACTED_VALUE in (activity.metadata_ or {})["url"]
+
+    stored = session_search_index.index_browser_step(
+        db_session, activity=activity, commit=False
+    )
+
+    chunks = crud_session_search_document.list_for_source(
+        db_session, source_kind=SOURCE_KIND_BROWSER_STEP, source_id=str(activity.id)
+    )
+    assert [row.id for row in chunks] == [row.id for row in stored]
+    assert len(chunks) == 1
+    assert "zephyrledger" in chunks[0].content
+    assert "abc123secret" not in chunks[0].content
+    assert chunks[0].redaction_state == REDACTION_STATE_REDACTED
+    hits = crud_session_search_document.search_account_chunks(
+        db_session,
+        account_id=test_user.account_id,
+        query="zephyrledger",
+        source_kind=SOURCE_KIND_BROWSER_STEP,
+    )
+    assert [row.runtime_session_id for row in hits] == [session.id]
 
 
 def test_session_summary_is_indexed_where_it_is_written(db_session, test_user):
