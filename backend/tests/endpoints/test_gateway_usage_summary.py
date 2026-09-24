@@ -1373,3 +1373,82 @@ def test_runtime_session_api_exposes_parent_session_id(client, db_session, test_
     assert child_detail.status_code == 200
     assert parent_detail.json()["session"]["parent_session_id"] is None
     assert child_detail.json()["session"]["parent_session_id"] == str(parent.id)
+
+
+def test_account_gateway_usage_summary_per_user_scopes_session_breakdown(
+    client, db_session, test_user
+):
+    """The per-user window aggregates only the requested principal's sessions."""
+    first = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id="principal-one",
+        runtime_principal_type="managed_agent",
+        runtime_principal_id="agent-1",
+        runtime_principal_name="Agent One",
+        started_at=datetime.now(UTC),
+        last_activity_at=datetime.now(UTC),
+    )
+    second = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id="principal-two",
+        runtime_principal_type="managed_agent",
+        runtime_principal_id="agent-2",
+        runtime_principal_name="Agent Two",
+        started_at=datetime.now(UTC),
+        last_activity_at=datetime.now(UTC),
+    )
+    db_session.commit()
+    for model_alias, total in (("model-a", 100), ("model-b", 50)):
+        crud_api_usage.log_gateway_request(
+            db_session,
+            endpoint="/openai/v1/responses",
+            method="POST",
+            status_code=200,
+            duration=0.1,
+            user_id=str(test_user.id),
+            account_id=str(test_user.account_id),
+            runtime_session_id=str(first.id),
+            runtime_principal_type="managed_agent",
+            runtime_principal_id="agent-1",
+            model_alias=model_alias,
+            provider_name="openai",
+            prompt_tokens=total,
+            completion_tokens=0,
+            total_tokens=total,
+            estimated_cost=0.01,
+        )
+    crud_api_usage.log_gateway_request(
+        db_session,
+        endpoint="/openai/v1/responses",
+        method="POST",
+        status_code=200,
+        duration=0.1,
+        user_id=str(test_user.id),
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(second.id),
+        runtime_principal_type="managed_agent",
+        runtime_principal_id="agent-2",
+        model_alias="model-c",
+        provider_name="openai",
+        prompt_tokens=999,
+        completion_tokens=0,
+        total_tokens=999,
+        estimated_cost=9.99,
+    )
+
+    response = client.get(
+        "/api/v1/account/gateway-usage/summary?runtime_principal_id=agent-1"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_requests"] == 2
+    assert body["token_usage"]["total_tokens"] == 150
+    sessions = body["usage_by_session"]
+    assert {row["model_alias"] for row in sessions} == {"model-a", "model-b"}
+    assert {row["runtime_principal_id"] for row in sessions} == {"agent-1"}
+    assert all(row["runtime_session_id"] == str(first.id) for row in sessions)
