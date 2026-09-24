@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -292,7 +293,12 @@ func installFakeCopilot(t *testing.T) string {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(binDir, "copilot")
+	name := "copilot"
+	if runtime.GOOS == "windows" {
+		// LookPath only matches PATHEXT (.exe, .bat, .cmd) on Windows.
+		name = "copilot.exe"
+	}
+	path := filepath.Join(binDir, name)
 	// Not a runnable script on purpose: prepareCopilotLaunch must succeed
 	// without exec'ing this file.
 	if err := os.WriteFile(path, []byte("#!/bin/sh\necho should-not-run\n"), 0o755); err != nil {
