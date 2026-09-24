@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Plain console API keys can opt into a runtime session by sending
+  `X-Preloop-Session-Id` on a gateway request. Vendor session headers and
+  body-level ids still require a runtime principal, and a request with no
+  valid header records usage without creating a session. Refs #912.
 - `preloop agents install-runtime --desktop` installs a loopback-only headless
   desktop (Xvfb on `:99`, x11vnc on `127.0.0.1:5900`, Chromium) and exports
   `DISPLAY=:99`. `POST /api/v1/agent-deployments` accepts `desktop` and reports
