@@ -657,6 +657,9 @@ export interface ManagedAgentSummary {
   supports_existing_session?: boolean;
   supports_voice?: boolean;
   supports_interrupt?: boolean;
+  /** Loopback desktop advertised by the runtime plugin. Missing means none. */
+  desktop?: 'vnc' | 'rdp' | 'none';
+  desktop_display?: string | null;
   control_session_mode?: 'local' | 'remote' | 'queued' | 'offline' | string;
   /** Last Agent Control heartbeat, so the age of the presence signal is readable. */
   control_last_heartbeat_at?: string | null;
