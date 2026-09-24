@@ -88,11 +88,9 @@ def _skipped(
     bytes parsed as one but the spec version is unsupported. A neighbour that
     is not an SBOM is recorded and does not fail the aggregate.
     """
-    body: dict[str, Any] = {
-        "status": "skipped",
-        "reason": reason,
-        "affects_passed": affects_passed,
-    }
+    body: dict[str, Any] = {"status": "skipped", "reason": reason}
+    if affects_passed:
+        body["affects_passed"] = True
     if path:
         body["path"] = path
     if sha256:
