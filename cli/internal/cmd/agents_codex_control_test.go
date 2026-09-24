@@ -136,6 +136,24 @@ func TestRunAgentsInstallPluginCodexDryRunPrintsNpmGlobalInstall(t *testing.T) {
 	}
 }
 
+func TestClaudeInstallWithoutNpmStillAttemptsManagedSidecar(t *testing.T) {
+	testenv.SetTempHome(t)
+	t.Setenv("PRELOOP_RUNTIME_PLUGINS_DIR", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+
+	result := installAgentControlRuntimePlugin(AgentConfig{Name: "Claude Code"}, io.Discard)
+	if result["control_plugin_install_status"] != "runtime_plugin_installer_not_found" {
+		t.Fatalf("status = %#v, want runtime_plugin_installer_not_found", result["control_plugin_install_status"])
+	}
+	if result["control_plugin_install_status"] == "plugin_not_available" {
+		t.Fatal("missing npm must not be reported as a missing published package")
+	}
+	verification, _ := result["control_plugin_verification"].(string)
+	if !strings.Contains(verification, "python3 is required") {
+		t.Fatalf("expected the managed sidecar fallback to run, got %q", verification)
+	}
+}
+
 func TestInstallCodexPluginWhenPackageAndSourceMissing(t *testing.T) {
 	testenv.SetTempHome(t)
 	t.Setenv("PRELOOP_RUNTIME_PLUGINS_DIR", t.TempDir())

@@ -4653,16 +4653,6 @@ func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[s
 	}
 	installerPath, err := resolveRuntimeExecutable(installer)
 	if err != nil {
-		if installer == "npm" && !installTargetIsLocalSource(installTarget) {
-			reason := npmSidecarPackageMissingReason(
-				agentControlPluginPackageName(agent),
-				"npm was not found and no local source directory is present",
-			)
-			if writer != nil {
-				fmt.Fprintln(writer, "  Warning: "+reason) //nolint:errcheck
-			}
-			return npmSidecarUnavailableResult(installTarget, reason)
-		}
 		result["control_plugin_install_status"] = "runtime_plugin_installer_not_found"
 		result["control_plugin_install_target"] = installTarget
 		result["control_plugin_installer_search"] = runtimeExecutableSearchDescription(installer)
@@ -4765,13 +4755,6 @@ func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[s
 			}
 		}
 		if !pipInstalled && !npmTarballInstalled {
-			if installer == "npm" && !installTargetIsLocalSource(installTarget) {
-				reason := npmSidecarPackageMissingReason(agentControlPluginPackageName(agent), message)
-				if writer != nil {
-					fmt.Fprintln(writer, "  Warning: "+reason) //nolint:errcheck
-				}
-				return npmSidecarUnavailableResult(installTarget, reason)
-			}
 			status, remediation := classifyRuntimePluginInstallFailure(installer, message)
 			result["control_plugin_install_status"] = status
 			result["control_plugin_install_error"] = message
