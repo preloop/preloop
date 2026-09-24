@@ -757,6 +757,18 @@ class Settings(BaseSettings):
     flow_native_session_retention_hours: int = Field(168, ge=0)
     flow_checkpoint_interval_seconds: int = Field(300, ge=30)
     flow_artifact_direct_upload: bool = False
+    flow_evidence_log_plaintext: bool = Field(
+        True,
+        description=(
+            "Emit result.json, the evidence pack, and the workspace snapshot "
+            "as base64 on the Kubernetes pod log when no direct-upload token "
+            "is present. The default true keeps today's behavior. Set false "
+            "to disable that plaintext log channel. Turning it off without "
+            "FLOW_ARTIFACT_DIRECT_UPLOAD makes evidence unavailable by design: "
+            "the wrapper writes no artifact bytes and an honest "
+            "plaintext_disabled marker."
+        ),
+    )
     flow_evidence_max_bytes: int = Field(
         32 * 1024 * 1024,
         ge=1,
