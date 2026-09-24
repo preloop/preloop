@@ -605,3 +605,61 @@ def test_gemini_closing_stream_closes_upstream_when_never_consumed() -> None:
     assert closed == ["upstream"]
     stream.close()
     assert closed == ["upstream"]
+
+
+def test_gemini_session_header_reaches_gateway_service(
+    app, client, db_session, test_user
+):
+    """X-Preloop-Session-Id is an explicit session opt-in on both Gemini ingresses."""
+    from preloop.api.endpoints.gemini_gateway import get_gemini_gateway_auth_context
+
+    app.dependency_overrides[get_gemini_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="gateway-token", user=test_user)
+    )
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
+    }
+    for path, method_name, headers, expected, explicit in (
+        (
+            "/gemini/v1beta/models/gemini-2.5-pro:generateContent",
+            "generate_content",
+            {"X-Preloop-Session-Id": "explicit-run"},
+            "explicit-run",
+            True,
+        ),
+        (
+            "/gemini/v1beta/models/gemini-2.5-pro:generateContent",
+            "generate_content",
+            {},
+            None,
+            False,
+        ),
+        (
+            "/gemini/v1beta/models/gemini-2.5-pro:streamGenerateContent",
+            "stream_generate_content",
+            {"X-Preloop-Session-Id": "explicit-run"},
+            "explicit-run",
+            True,
+        ),
+        (
+            "/gemini/v1beta/models/gemini-2.5-pro:streamGenerateContent",
+            "stream_generate_content",
+            {},
+            None,
+            False,
+        ),
+    ):
+        with patch(
+            "preloop.api.endpoints.gemini_gateway.GeminiGatewayService"
+        ) as service_cls:
+            getattr(service_cls.return_value, method_name).return_value = {
+                "candidates": []
+            }
+            response = client.post(
+                path,
+                headers={"x-goog-api-key": "ignored", **headers},
+                json=payload,
+            )
+        assert response.status_code == 200
+        assert service_cls.call_args.kwargs["client_session_id"] == expected
+        assert service_cls.call_args.kwargs["client_session_id_is_explicit"] is explicit

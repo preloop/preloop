@@ -102,7 +102,10 @@ def create_message(
         budget_enforcer=budget_enforcer,
         owns_db_session=True,
         client_session_id=x_preloop_session_id or lineage.session_id,
-        explicit_preloop_session_id=x_preloop_session_id,
+        # Claude Code's vendor header is read without a principal-type gate,
+        # so a plain API key must not be opted in by it: only the explicit
+        # Preloop header does that.
+        client_session_id_is_explicit=bool(x_preloop_session_id),
         client_parent_session_id=(
             None if x_preloop_session_id else lineage.parent_session_id
         ),

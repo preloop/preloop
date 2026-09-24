@@ -19,6 +19,9 @@ class DependencyService(BaseModel):
     image: str = Field(pattern=r"^[^\s]+@sha256:[a-f0-9]{64}$")
     port: int = Field(ge=1, le=65535)
     command: list[str] = Field(default_factory=list)
+    # Fixed when the profile is registered. Flows select the profile id and
+    # cannot copy keys from agent_config into the service. An origin allowlist
+    # such as EGRESS_ALLOWED_ORIGINS is therefore one value per profile.
     env: dict[str, str] = Field(default_factory=dict)
 
 

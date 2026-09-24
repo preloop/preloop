@@ -966,6 +966,13 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			fmt.Fprintf(output, "  Warning: Cursor usage hooks not installed: %v\n", err) //nolint:errcheck
 		}
 	}
+	if !opts.NoUsageHooks && permissionSourceForAgent(agent) == permissionSourceCopilotCLI {
+		// Same split as Cursor: usage/session hooks install even when
+		// --approvals is off. preToolUse is owned by installApprovalHooks.
+		if err := installCopilotUsageHooks(agent, output); err != nil {
+			fmt.Fprintf(output, "  Warning: Copilot CLI usage hooks not installed: %v\n", err) //nolint:errcheck
+		}
+	}
 	pluginInstallResult := installAgentControlRuntimePlugin(agent, output)
 	gatewayRestartResult := restartHermesGatewayAfterReconfig(agent, output)
 	if err := saveLocalEnrollmentState(backupState); err != nil {
@@ -4058,7 +4065,7 @@ func buildOpenClawManagedMCPEnrollmentPlan(
 
 func supportsAgentControlChannel(agent AgentConfig) bool {
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
-	case "openclaw", hermesSourceType, "claude code", "opencode", "pi", "deepseek harness", "deepseek", "dsh":
+	case "openclaw", hermesSourceType, "claude code", "codex cli", "opencode", "pi", "deepseek harness", "deepseek", "dsh":
 		return true
 	default:
 		return false
@@ -4164,6 +4171,15 @@ func applyManagedAgentControlConfig(
 			"Claude Code Agent Control config written to ~/.claude/preloop-control.json. Run `preloop claude` instead of `claude` for remote steer.",
 		)
 	}
+	if runtimeSessionSourceTypeForAgent(plan.Agent.Name) == "codex" {
+		if err := writePreloopControlFile(codexControlConfigPath(), control); err != nil {
+			return plan, err
+		}
+		plan.Notes = append(
+			plan.Notes,
+			"Codex CLI Agent Control config written to ~/.codex/preloop-control.json. Run `preloop codex sidecar enable` to keep the sidecar up.",
+		)
+	}
 	if isOpenCodeAgent(plan.Agent) {
 		// The plugin reads preloop.control from OpenCode's user config
 		// (opencode.json), not from the legacy config.json that carries the
@@ -4208,6 +4224,11 @@ func applyAgentControlConfigToDocument(
 	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
 		// Claude Code settings.json is reserved for Claude's own schema.
 		// Control lives in ~/.claude/preloop-control.json (written separately).
+		return
+	}
+	if runtimeSessionSourceTypeForAgent(agent.Name) == "codex" {
+		// Codex reserves ~/.codex/config.toml. Control lives in
+		// ~/.codex/preloop-control.json (written separately).
 		return
 	}
 	if isOpenCodeAgent(agent) {
@@ -4281,7 +4302,10 @@ func validRuntimeApprovalTimeout(value interface{}) bool {
 }
 
 func writeClaudePreloopControlFile(control map[string]interface{}) error {
-	path := claudeControlConfigPath()
+	return writePreloopControlFile(claudeControlConfigPath(), control)
+}
+
+func writePreloopControlFile(path string, control map[string]interface{}) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -4294,7 +4318,11 @@ func writeClaudePreloopControlFile(control map[string]interface{}) error {
 }
 
 func readClaudePreloopControlFile() (map[string]interface{}, bool) {
-	data, err := os.ReadFile(claudeControlConfigPath())
+	return readPreloopControlFile(claudeControlConfigPath())
+}
+
+func readPreloopControlFile(path string) (map[string]interface{}, bool) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false
 	}
@@ -4479,6 +4507,9 @@ func agentControlConfigFromDocument(
 	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
 		return readClaudePreloopControlFile()
 	}
+	if runtimeSessionSourceTypeForAgent(agent.Name) == "codex" {
+		return readPreloopControlFile(codexControlConfigPath())
+	}
 	if isOpenCodeAgent(agent) {
 		return readOpenCodePreloopControl()
 	}
@@ -4501,6 +4532,8 @@ func agentControlPluginPackageName(agent AgentConfig) string {
 		return "@preloop-ai/openclaw-plugin"
 	case "claude_code":
 		return "@preloop-ai/claude-plugin"
+	case "codex":
+		return "@preloop-ai/codex-plugin"
 	case "opencode":
 		return openCodePluginPackageName
 	default:
@@ -4517,6 +4550,8 @@ func agentControlPluginVerifyCommand(agent AgentConfig) string {
 		return "preloop-openclaw-plugin"
 	case "claude_code":
 		return "preloop-claude-plugin"
+	case "codex":
+		return "preloop-codex-plugin"
 	case "opencode":
 		return openCodePluginVerifyCommand
 	default:
@@ -4530,7 +4565,7 @@ func agentControlPluginInstallerCommand(agent AgentConfig) string {
 		return "hermes"
 	case "openclaw":
 		return "openclaw"
-	case "claude_code":
+	case "claude_code", "codex":
 		return "npm"
 	default:
 		return ""
@@ -4600,6 +4635,8 @@ func agentControlPluginSourceDirName(agent AgentConfig) string {
 		return "openclaw-preloop"
 	case "claude_code":
 		return "claude-preloop"
+	case "codex":
+		return "codex-preloop"
 	case "opencode":
 		return "opencode-preloop"
 	default:
@@ -4642,21 +4679,32 @@ func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[s
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if installer == "npm" && !installTargetIsLocalSource(installTarget) {
+		listed, detail := probeNpmPackageListed(agentControlPluginPackageName(agent))
+		if !listed {
+			reason := npmSidecarPackageMissingReason(agentControlPluginPackageName(agent), detail)
+			if writer != nil {
+				fmt.Fprintln(writer, "  Warning: "+reason) //nolint:errcheck
+			}
+			return npmSidecarUnavailableResult(installTarget, reason)
+		}
+	}
 	args := agentControlPluginInstallArgs(installer, installTarget)
 	if strings.EqualFold(agent.Name, "OpenClaw") {
 		// Onboarding already authorizes installing the official Preloop package.
 		args = append(args, "--force", "--accept-capabilities")
 	}
-	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
+	if installer == "npm" {
 		cancel()
 		ctx, cancel = context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 		// npm install -g <source folder> symlinks the folder as-is: it does
 		// not install the folder's devDependencies, so the TypeScript build
 		// (prepare script) cannot run and npm silently skips creating the
-		// preloop-claude-plugin bin link because dist/index.js is missing.
-		// Build the source first so the global install links a working bin.
-		if buildErr := buildClaudePluginSourceIfNeeded(installerPath, installTarget, writer); buildErr != nil {
+		// bin link because dist/index.js is missing. Build the source first
+		// so the global install links a working bin.
+		label := npmSidecarBuildLabel(agent)
+		if buildErr := buildNpmSidecarSourceIfNeeded(installerPath, installTarget, label, writer); buildErr != nil {
 			result["control_plugin_install_status"] = "plugin_source_build_failed"
 			result["control_plugin_install_target"] = installTarget
 			result["control_plugin_install_error"] = buildErr.Error()
@@ -4898,6 +4946,21 @@ func agentControlPluginSourceCandidates(startPath, dirName string) []string {
 // that npm install -g links the preloop-claude-plugin bin against a real
 // entry point.
 func buildClaudePluginSourceIfNeeded(npmPath, installTarget string, writer io.Writer) error {
+	return buildNpmSidecarSourceIfNeeded(npmPath, installTarget, "Claude", writer)
+}
+
+func npmSidecarBuildLabel(agent AgentConfig) string {
+	switch runtimeSessionSourceTypeForAgent(agent.Name) {
+	case "claude_code":
+		return "Claude"
+	case "codex":
+		return "Codex"
+	default:
+		return "Agent Control"
+	}
+}
+
+func buildNpmSidecarSourceIfNeeded(npmPath, installTarget, label string, writer io.Writer) error {
 	info, err := os.Stat(installTarget)
 	if err != nil || !info.IsDir() {
 		// Registry package name, not a local source folder.
@@ -4908,7 +4971,7 @@ func buildClaudePluginSourceIfNeeded(npmPath, installTarget string, writer io.Wr
 		return nil
 	}
 	if writer != nil {
-		fmt.Fprintf(writer, "  Building Claude Agent Control plugin from source (%s)...\n", installTarget) //nolint:errcheck
+		fmt.Fprintf(writer, "  Building %s Agent Control plugin from source (%s)...\n", label, installTarget) //nolint:errcheck
 	}
 	steps := [][]string{
 		{"install", "--no-audit", "--no-fund"},
@@ -4985,6 +5048,9 @@ func verifyAgentControlRuntimePlugin(agent AgentConfig) map[string]interface{} {
 	configPath := agent.ConfigPath
 	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
 		configPath = claudeControlConfigPath()
+	}
+	if runtimeSessionSourceTypeForAgent(agent.Name) == "codex" {
+		configPath = codexControlConfigPath()
 	}
 	if isOpenCodeAgent(agent) {
 		configPath = openCodeUserConfigPath()
@@ -6815,7 +6881,10 @@ func removeManagedAgentRuntimeArtifacts(agent AgentConfig) error {
 	case "gemini cli":
 		return removeManagedAgentLauncher("gemini", "gemini-cli.env")
 	case "codex cli":
-		return removeManagedAgentLauncher("codex", "codex-cli.env")
+		if err := removeManagedAgentLauncher("codex", "codex-cli.env"); err != nil {
+			return err
+		}
+		return removeCodexAgentControlArtifacts()
 	default:
 		return nil
 	}

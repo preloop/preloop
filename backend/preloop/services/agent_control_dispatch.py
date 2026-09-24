@@ -39,6 +39,7 @@ SUPPORTED_CONTROL_AGENT_KINDS = {
     "opencode",
     "pi",
     "deepseek",
+    "codex",
 }
 # Pi and DeepSeek accept text on an already-open session only. Shared so the
 # operator endpoint and persistent executor refuse start_new_session together.

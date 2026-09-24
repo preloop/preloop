@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -347,54 +346,17 @@ func printClaudePairingHint(out io.Writer) {
 }
 
 func ensureClaudeSidecarRunning(out io.Writer) error {
-	if _, err := os.Stat(claudeControlSocketPath()); err == nil {
-		if conn, dialErr := net.DialTimeout("unix", claudeControlSocketPath(), 200*time.Millisecond); dialErr == nil {
-			_ = conn.Close()
-			return nil
-		}
-	}
-	fmt.Fprintln(out, "Starting Claude Code sidecar...")
-	return startClaudeSidecarProcess()
+	return ensureAgentControlSidecarRunning(claudeAgentControlSidecarSpec(), out)
 }
 
 func startClaudeSidecarProcess() error {
-	invocation, err := resolveClaudeSidecarInvocation()
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(invocation.bin, append(invocation.args, "run", "--config", claudeControlConfigPath())...)
-	cmd.SysProcAttr = claudeSidecarSysProcAttr()
-	logDir := filepath.Dir(claudeSidecarLogPath())
-	_ = os.MkdirAll(logDir, 0o700)
-	stdout, err := os.OpenFile(claudeSidecarLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return err
-	}
-	// A 0-byte log after a real run is indistinguishable from "never ran";
-	// that ambiguity burned a whole debugging session. Record the launch here
-	// so the log is non-empty even if the sidecar dies before its first line.
-	fmt.Fprintf(
-		stdout,
-		"[%s] launcher: starting Claude sidecar: %s %s\n",
-		time.Now().Format(time.RFC3339),
-		invocation.bin,
-		strings.Join(append(invocation.args, "run", "--config", claudeControlConfigPath()), " "),
-	)
-	cmd.Stdout = stdout
-	cmd.Stderr = stdout
-	if err := cmd.Start(); err != nil {
-		_ = stdout.Close()
-		return err
-	}
-	go func() {
-		_ = cmd.Wait()
-		_ = stdout.Close()
-	}()
-	return nil
+	// The shared starter records the launch in the sidecar log so a 0-byte
+	// file is not ambiguous with "never ran".
+	return startAgentControlSidecarProcess(claudeAgentControlSidecarSpec())
 }
 
 func claudeSidecarLogPath() string {
-	return filepath.Join(filepath.Dir(claudeControlSocketPath()), "logs", "claude-sidecar.log")
+	return claudeAgentControlSidecarSpec().logPath()
 }
 
 // claudeSidecarInvocation describes how to start the sidecar: either the
@@ -411,29 +373,7 @@ type claudeSidecarInvocation struct {
 // not mean the package is missing. Fall back to the package entry point under
 // the npm global root before telling the user to onboard.
 func resolveClaudeSidecarInvocation() (claudeSidecarInvocation, error) {
-	if bin, err := resolveRuntimeExecutable("preloop-claude-plugin"); err == nil {
-		return claudeSidecarInvocation{bin: bin}, nil
-	}
-	entry, found, err := findClaudeSidecarPackageEntry(claudeNpmGlobalRootsFunc())
-	if err != nil {
-		return claudeSidecarInvocation{}, err
-	}
-	if found {
-		node, nodeErr := resolveRuntimeExecutable("node")
-		if nodeErr != nil {
-			return claudeSidecarInvocation{}, fmt.Errorf(
-				"found the Claude sidecar at %s but node was not found on %s",
-				entry,
-				runtimeExecutableSearchDescription("node"),
-			)
-		}
-		return claudeSidecarInvocation{bin: node, args: []string{entry}}, nil
-	}
-	return claudeSidecarInvocation{}, fmt.Errorf(
-		"preloop-claude-plugin was not found on %s or in the npm global directory; "+
-			"run: preloop agents onboard \"Claude Code\"",
-		runtimeExecutableSearchDescription("preloop-claude-plugin"),
-	)
+	return resolveAgentControlSidecarInvocation(claudeAgentControlSidecarSpec())
 }
 
 // findClaudeSidecarPackageEntry looks for @preloop-ai/claude-plugin under the
@@ -443,24 +383,7 @@ func resolveClaudeSidecarInvocation() (claudeSidecarInvocation, error) {
 // return an error that names the broken install instead of a generic
 // not-found message.
 func findClaudeSidecarPackageEntry(roots []string) (string, bool, error) {
-	for _, root := range roots {
-		pkgDir := filepath.Join(root, "@preloop-ai", "claude-plugin")
-		info, err := os.Stat(pkgDir)
-		if err != nil || !info.IsDir() {
-			continue
-		}
-		entry := filepath.Join(pkgDir, "dist", "index.js")
-		if entryInfo, entryErr := os.Stat(entry); entryErr == nil && !entryInfo.IsDir() {
-			return entry, true, nil
-		}
-		return "", false, fmt.Errorf(
-			"@preloop-ai/claude-plugin is installed at %s but its dist/index.js build output is missing; "+
-				"rerun preloop agents onboard \"Claude Code\" to rebuild it, "+
-				"or run: npm install -g @preloop-ai/claude-plugin",
-			pkgDir,
-		)
-	}
-	return "", false, nil
+	return findAgentControlSidecarPackageEntry(claudeAgentControlSidecarSpec(), roots)
 }
 
 // claudeNpmGlobalRootsFunc is a seam for tests: claudeNpmGlobalRoots probes
@@ -512,72 +435,27 @@ func claudeNpmGlobalRoots() []string {
 }
 
 func claudeSidecarLaunchdPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Library", "LaunchAgents", "ai.preloop.claude-sidecar.plist")
+	return claudeAgentControlSidecarSpec().launchdPath()
 }
 
 func claudeSidecarSystemdPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "systemd", "user", "preloop-claude-sidecar.service")
+	return claudeAgentControlSidecarSpec().systemdPath()
 }
 
 func runClaudeSidecarEnable(cmd *cobra.Command, args []string) error {
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	switch runtime.GOOS {
-	case "darwin":
-		return writeClaudeSidecarLaunchd(self, cmd.OutOrStdout())
-	case "linux":
-		return writeClaudeSidecarSystemd(self, cmd.OutOrStdout())
-	default:
-		return fmt.Errorf("sidecar service install is not implemented on %s; use preloop claude sidecar run", runtime.GOOS)
-	}
+	return runAgentControlSidecarEnable(claudeAgentControlSidecarSpec(), cmd, args)
 }
 
 func runClaudeSidecarDisable(cmd *cobra.Command, args []string) error {
-	switch runtime.GOOS {
-	case "darwin":
-		path := claudeSidecarLaunchdPath()
-		_ = exec.Command("launchctl", "unload", path).Run()
-		return os.Remove(path)
-	case "linux":
-		_ = exec.Command("systemctl", "--user", "disable", "--now", "preloop-claude-sidecar.service").Run()
-		return os.Remove(claudeSidecarSystemdPath())
-	default:
-		return fmt.Errorf("sidecar service install is not implemented on %s", runtime.GOOS)
-	}
+	return runAgentControlSidecarDisable(claudeAgentControlSidecarSpec(), cmd, args)
 }
 
 func runClaudeSidecarStatus(cmd *cobra.Command, args []string) error {
-	path := claudeSidecarLaunchdPath()
-	if runtime.GOOS == "linux" {
-		path = claudeSidecarSystemdPath()
-	}
-	if _, err := os.Stat(path); err == nil {
-		fmt.Fprintf(cmd.OutOrStdout(), "install: present (%s)\n", path)
-	} else {
-		fmt.Fprintln(cmd.OutOrStdout(), "install: missing")
-	}
-	if conn, err := net.DialTimeout("unix", claudeControlSocketPath(), 200*time.Millisecond); err == nil {
-		_ = conn.Close()
-		fmt.Fprintln(cmd.OutOrStdout(), "socket: listening")
-	} else {
-		fmt.Fprintln(cmd.OutOrStdout(), "socket: down")
-	}
-	return nil
+	return runAgentControlSidecarStatus(claudeAgentControlSidecarSpec(), cmd, args)
 }
 
 func runClaudeSidecarForeground(cmd *cobra.Command, args []string) error {
-	invocation, err := resolveClaudeSidecarInvocation()
-	if err != nil {
-		return err
-	}
-	child := exec.Command(invocation.bin, append(invocation.args, "run", "--config", claudeControlConfigPath())...)
-	child.Stdout = cmd.OutOrStdout()
-	child.Stderr = cmd.ErrOrStderr()
-	return child.Run()
+	return runAgentControlSidecarForeground(claudeAgentControlSidecarSpec(), cmd, args)
 }
 
 func xmlEscapeAttr(value string) string {
@@ -592,54 +470,9 @@ func xmlEscapeAttr(value string) string {
 }
 
 func writeClaudeSidecarLaunchd(bin string, out io.Writer) error {
-	path := claudeSidecarLaunchdPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	escaped := xmlEscapeAttr(bin)
-	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>ai.preloop.claude-sidecar</string>
-  <key>ProgramArguments</key>
-  <array><string>%s</string><string>claude</string><string>sidecar</string><string>run</string></array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-</dict>
-</plist>
-`, escaped)
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		return err
-	}
-	_ = exec.Command("launchctl", "load", path).Run()
-	fmt.Fprintf(out, "Installed %s\n", path)
-	return nil
+	return writeAgentControlSidecarLaunchd(claudeAgentControlSidecarSpec(), bin, out)
 }
 
 func writeClaudeSidecarSystemd(bin string, out io.Writer) error {
-	path := claudeSidecarSystemdPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	quoted, _ := json.Marshal(bin)
-	body := fmt.Sprintf(`[Unit]
-Description=Preloop Claude Code Agent Control sidecar
-After=network-online.target
-
-[Service]
-ExecStart=%s claude sidecar run
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-`, string(quoted))
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		return err
-	}
-	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
-	_ = exec.Command("systemctl", "--user", "enable", "--now", "preloop-claude-sidecar.service").Run()
-	fmt.Fprintf(out, "Installed %s\n", path)
-	return nil
+	return writeAgentControlSidecarSystemd(claudeAgentControlSidecarSpec(), bin, out)
 }

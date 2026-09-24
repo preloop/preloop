@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `X-Preloop-Session-Id` on a gateway request. Vendor session headers and
   body-level ids still require a runtime principal, and a request with no
   valid header records usage without creating a session. Refs #912.
+- `FLOW_EVIDENCE_LOG_PLAINTEXT` (default true) keeps today's Kubernetes
+  behavior: without a direct-upload token, `result.json`, the evidence pack,
+  and the workspace snapshot are still written to the pod log as base64.
+  Set it false, and use direct upload, when those bytes must not be in pod
+  logs. If plaintext is off and an execution has no upload token, the
+  wrapper fails closed: no artifact bytes, and an evidence receipt of
+  `failed` / `plaintext_disabled`. Encrypted log transport remains a
+  separate decision in #268.
+
 - `preloop agents install-runtime --desktop` installs a loopback-only headless
   desktop (Xvfb on `:99`, x11vnc on `127.0.0.1:5900`, Chromium) and exports
   `DISPLAY=:99`. `POST /api/v1/agent-deployments` accepts `desktop` and reports
@@ -21,8 +30,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is passed only to `x11vnc -storepasswd` (briefly visible to other local
   users; VNC DES keeps the first 8 characters) and is not written elsewhere.
 
+### Changed
+
+- One-year usage summaries aggregate session and model totals before joining
+  session, agent, flow, and principal labels, and hash the daily series by
+  materialized day bucket. Per-user windows use
+  `ix_api_usage_account_principal_id_ts`. Replay exclusion, retry handling, and
+  the breakdown limit are unchanged. Refs #914.
+
 ### Fixed
 
+- A gated tool call whose approval window is longer than
+  `approval_park_after_seconds` parks the execution when the request is
+  created, instead of polling in process for that long first. The park is
+  stored before the tool result is returned, so a harness that drops the
+  call still leaves a run waiting for the human. A failed, cancelled, or
+  timed out execution cancels approval requests it still holds as pending.
+- Native host execution profiles reject `publication_mode: isolated` before
+  execution. A stored publication snapshot is no longer stripped from the
+  host lease, and a missing snapshot still fails with the existing policy
+  error. Container isolated publication is unchanged.
+- Legacy publication now appends the current execution and head SHA to an
+  existing pull request or merge request, keeping earlier records and human
+  prose. A malformed, oversized, or rejected provider update leaves the
+  description unchanged and is not reported as a successful publication.
+  Isolated GitLab publication is still unsupported.
 - Harness images pin Node and install Pi and DeepSeek from lockfiles, so
   Scorecard no longer reports floating image or npm dependencies. Empty
   `except` handlers that intentionally ignore an optional driver or an

@@ -4609,3 +4609,53 @@ def test_principal_key_session_behavior_unchanged_with_and_without_header(
     assert per_run is not None
     assert per_run.id != base.id
     assert per_run.runtime_principal_type == "custom"
+
+
+def test_plain_key_integrity_race_attaches_winner_session(
+    db_session, test_user, monkeypatch
+):
+    """A losing upsert still attributes usage to the winner's open session."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy.exc import IntegrityError
+
+    _plain_gateway_model(db_session, test_user.account_id)
+    api_key = _plain_api_key(db_session, test_user)
+    client_session_id = "conv-race"
+    session_source_id = f"{api_key.id}:{client_session_id}"
+    observed_at = datetime.now(UTC)
+    winner = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="api_key",
+        session_source_id=session_source_id,
+        runtime_principal_type="api_key",
+        runtime_principal_id=str(api_key.id),
+        started_at=observed_at,
+        last_activity_at=observed_at,
+        reopen_if_ended=True,
+    )
+    db_session.commit()
+    real_get = crud_runtime_session.get_by_source
+    state = {"calls": 0}
+
+    def flaky_get(*args, **kwargs):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            return None
+        return real_get(*args, **kwargs)
+
+    def losing_upsert(*_args, **_kwargs):
+        raise IntegrityError(
+            "INSERT ...",
+            {},
+            Exception("duplicate key value violates unique constraint"),
+        )
+
+    monkeypatch.setattr(crud_runtime_session, "get_by_source", flaky_get)
+    monkeypatch.setattr(crud_runtime_session, "upsert_by_source", losing_upsert)
+    _chat_with_plain_key(
+        db_session, test_user, api_key, client_session_id=client_session_id
+    )
+    usage = db_session.query(ApiUsage).filter(ApiUsage.api_key_id == api_key.id).one()
+    assert usage.runtime_session_id == winner.id
