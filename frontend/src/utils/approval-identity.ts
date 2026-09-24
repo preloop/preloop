@@ -1,4 +1,21 @@
 export const APPROVAL_SOURCE_KEY = '_preloop_source';
+export const APPROVAL_REPOSITORY_KEY = '_preloop_repository';
+
+/**
+ * The trusted repository observation the hook recorded from its own cwd.
+ *
+ * Only the hook sets this: it is stamped next to `_preloop_source` and must
+ * never be read from caller-supplied tool arguments.
+ */
+export interface ApprovalRepository {
+  /** Normalized `host/owner/repo`, empty when the work tree has no origin. */
+  remote: string;
+  toplevel?: string | null;
+  relative_path?: string | null;
+  source?: string | null;
+  /** True when the work tree exists but has no `origin` remote. */
+  no_remote: boolean;
+}
 
 const SOURCE_LABELS: Record<string, string> = {
   claude_code: 'Claude Code',
@@ -29,6 +46,49 @@ export function formatApprovalSource(source: string | null): string | null {
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
       .join(' ')
   );
+}
+
+/**
+ * Read the repository marker, or null when there is none.
+ *
+ * A malformed marker (not an object, or no remote and no `no_remote` flag)
+ * yields null so a surface renders nothing rather than an empty chip.
+ */
+export function getApprovalRepository(
+  toolArgs: Record<string, unknown> | null | undefined
+): ApprovalRepository | null {
+  const raw = toolArgs?.[APPROVAL_REPOSITORY_KEY];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const remote = cleanString(record.remote);
+  const noRemote = record.no_remote === true;
+  if (!remote && !noRemote) return null;
+  return {
+    remote,
+    toplevel: cleanString(record.toplevel) || null,
+    relative_path: cleanString(record.relative_path) || null,
+    source: cleanString(record.source) || null,
+    no_remote: noRemote,
+  };
+}
+
+function cleanString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * The repository's short name: `owner/repo`, dropping the host and keeping
+ * nested groups (`group/sub/repo`). Null when there is no remote to name.
+ */
+export function formatApprovalRepository(
+  repository: ApprovalRepository | null | undefined
+): string | null {
+  if (!repository || repository.no_remote) return null;
+  const remote = repository.remote.trim();
+  if (!remote) return null;
+  const slash = remote.indexOf('/');
+  if (slash < 0) return remote;
+  return remote.slice(slash + 1).replace(/^\/+|\/+$/g, '') || remote;
 }
 
 export function formatApprovalRequester(
@@ -81,6 +141,10 @@ export function approvalRequesterName(
 export function withoutApprovalMetadata(
   toolArgs: Record<string, unknown>
 ): Record<string, unknown> {
-  const { [APPROVAL_SOURCE_KEY]: _source, ...displayArgs } = toolArgs;
+  const {
+    [APPROVAL_SOURCE_KEY]: _source,
+    [APPROVAL_REPOSITORY_KEY]: _repository,
+    ...displayArgs
+  } = toolArgs;
   return displayArgs;
 }
