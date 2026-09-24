@@ -61,6 +61,7 @@ type permissionCheckRequest struct {
 	ToolInput       map[string]interface{} `json:"tool_input,omitempty"`
 	SessionID       string                 `json:"session_id,omitempty"`
 	Cwd             string                 `json:"cwd,omitempty"`
+	Repository      *repositoryContext     `json:"repository,omitempty"`
 	AgentReasoning  string                 `json:"agent_reasoning,omitempty"`
 	ClientDecision  string                 `json:"client_decision,omitempty"`
 	EvaluationPhase string                 `json:"evaluation_phase,omitempty"`
@@ -577,6 +578,11 @@ func buildPermissionRequest(
 		stringField(req.ToolInput, "description"),
 		firstStringField(event, "agent_reasoning"),
 	)
+	// Repository identity is a trusted observation of the hook cwd only.
+	// Tool arguments are caller-supplied and must not influence it.
+	if req.Cwd != "" {
+		req.Repository = resolveHookRepository(req.Cwd)
+	}
 	return req, nil
 }
 
