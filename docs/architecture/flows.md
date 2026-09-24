@@ -352,8 +352,10 @@ block on creation. When an open pull request or merge request already exists
 for the branch, legacy mode fetches that description, appends the current
 execution id and head SHA to the owned block when that pair is not already
 present, and updates only the body. Human prose and the title stay as they
-were. A malformed or oversized body, or a provider update that is not 2xx,
-leaves the description unchanged and does not emit `PRELOOP_PR_OPENED`.
+were. A malformed owned region or an oversized rewrite warns through
+`PRELOOP_PR_METADATA_WARNING` and leaves the owned provenance region unchanged;
+the independent failure-disclosure refresh still runs. A failed provider update
+is surfaced and never reported as successful publication.
 Isolated GitLab publication stays unsupported until a broker can enforce
 credential scope and lifetime.
 

@@ -379,10 +379,11 @@ def _existing_pr_failure_update_shell(
 ) -> str:
     """Refresh failure disclosure and upsert provenance on an open PR.
 
-    A malformed or oversized body is not written. A non-2xx provider response,
-    more than one open pull request for the branch, or a failure notice that
-    cannot be merged sets ``PRELOOP_PROVENANCE_FAILED`` so the caller does not
-    claim success.
+    A lookup that does not identify exactly one PR/MR, an invalid number, or an
+    unmergeable notice aborts without writing. A provenance parse or size
+    failure skips only the owned region; an already-merged failure disclosure
+    is still posted (exit 2). A non-2xx provider response sets
+    ``PRELOOP_PROVENANCE_FAILED`` so the caller does not claim success.
     """
     script = (
         inspect.getsource(pr_metadata)
@@ -431,6 +432,7 @@ try:
     if not isinstance(original, str):
         raise ValueError("invalid existing description")
     body = original
+    provenance_failed = False
     for execution_id in notices:
         start = f"<!-- preloop:failure:{execution_id}:start -->"
         end = f"<!-- preloop:failure:{execution_id}:end -->"
@@ -448,11 +450,14 @@ try:
             )
         except ValueError as exc:
             print("PRELOOP_PR_METADATA_WARNING: " + str(exc), file=sys.stderr)
-            sys.exit(2)
+            provenance_failed = True
+    if body != original:
+        Path(update_path).write_text(json.dumps({field: body}), encoding="utf-8")
+        print(number)
+    if provenance_failed:
+        sys.exit(2)
     if body == original:
         sys.exit(0)
-    Path(update_path).write_text(json.dumps({field: body}), encoding="utf-8")
-    print(number)
 except SystemExit:
     raise
 except (OSError, ValueError, KeyError, TypeError, RecursionError):
@@ -468,21 +473,25 @@ except (OSError, ValueError, KeyError, TypeError, RecursionError):
         provenance_args = f' {shlex.quote(execution_link)} "$(git rev-parse HEAD)"'
     return f"""
       PRELOOP_PROVENANCE_FAILED=
+      py_status=0
       python3 - {PR_LOOKUP_FILE} {PR_PAYLOAD_FILE} {update_path} {kind} {shlex.quote(branch)}{provenance_args} > {update_path}.number <<'PRELOOP_FAILURE_UPDATE'
 {script}
 PRELOOP_FAILURE_UPDATE
-      if [ "$?" -ne 0 ]; then
+      py_status=$?
+      if [ "$py_status" -ne 0 ]; then
         PRELOOP_PROVENANCE_FAILED=1
       fi
       PRELOOP_UPDATE_NUMBER=$(cat {update_path}.number 2>/dev/null || true)
-      if [ -z "$PRELOOP_PROVENANCE_FAILED" ] && [ -n "$PRELOOP_UPDATE_NUMBER" ] && [ -s {update_path} ]; then
+      # Exit 2 means provenance was skipped after the failure disclosure was
+      # merged. Still post that body. Any other failure leaves it unchanged.
+      if {{ [ "$py_status" -eq 0 ] || [ "$py_status" -eq 2 ]; }} && [ -n "$PRELOOP_UPDATE_NUMBER" ] && [ -s {update_path} ]; then
         UPDATE_HTTP=$(curl -sS -o /dev/null -w "%{{http_code}}" -X {method} \\
           -H "{authorization}" \\
           -H 'Content-Type: application/json' \\
           --data-binary @{update_path} \\
           "{api_url}/$PRELOOP_UPDATE_NUMBER" || echo "000")
         case "$UPDATE_HTTP" in
-          2??) ;;
+          2??) PRELOOP_BODY_UPDATED=1 ;;
           *)
             echo "PRELOOP_PR_METADATA_WARNING: failed to update existing pull request body" >&2
             PRELOOP_PROVENANCE_FAILED=1
@@ -536,7 +545,7 @@ def build_github_pr_capture_shell(
       PR_URL=$({grep_pr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
       {_existing_pr_failure_update_shell(kind="github", api_url=f"https://api.github.com/repos/{owner}/{repo}/pulls", authorization=f"Authorization: token {token_ref}", branch=branch, execution_link=execution_link)}
     fi
-    if [ -n "$PRELOOP_PROVENANCE_FAILED" ]; then
+    if [ -n "$PRELOOP_PROVENANCE_FAILED" ] && [ -z "${{PRELOOP_BODY_UPDATED:-}}" ]; then
       echo "PRELOOP_PR_METADATA_WARNING: existing pull request body was left unchanged" >&2
     elif [ -n "$PR_URL" ]; then
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$PR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"github\\"}}"
@@ -572,7 +581,7 @@ def build_gitlab_mr_capture_shell(
       MR_URL=$({grep_mr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
       {_existing_pr_failure_update_shell(kind="gitlab", api_url=f"https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests", authorization=f"PRIVATE-TOKEN: {token_ref}", branch=branch, execution_link=execution_link)}
     fi
-    if [ -n "$PRELOOP_PROVENANCE_FAILED" ]; then
+    if [ -n "$PRELOOP_PROVENANCE_FAILED" ] && [ -z "${{PRELOOP_BODY_UPDATED:-}}" ]; then
       echo "PRELOOP_PR_METADATA_WARNING: existing pull request body was left unchanged" >&2
     elif [ -n "$MR_URL" ]; then
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$MR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"gitlab\\"}}"
