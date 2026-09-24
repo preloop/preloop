@@ -599,3 +599,111 @@ async def test_get_logs_include_lifecycle_and_activity(
     assert any("wrote review comment" in line for line in lines)
     assert not any("unrelated operator note" in line for line in lines)
     assert all(line.startswith("[agent_control]") for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_get_result_preserves_full_reply_text_beyond_console_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Persistent execution results should not be truncated to the 4096-char console limit."""
+    long_reply = "A" * 20_000
+    record = _command_record(
+        status="acked",
+        delivered_at=datetime.now(UTC),
+        acked_at=datetime.now(UTC),
+        envelope={
+            COMMAND_RESULT_ENVELOPE_KEY: {
+                "status": "completed",
+                "reply_text": long_reply,
+            }
+        },
+    )
+    executor, reference = _status_executor(monkeypatch, record)
+    result = await executor.get_result(reference)
+    assert result.status == AgentStatus.SUCCEEDED
+    assert result.output_summary == long_reply
+    assert len(result.output_summary) == 20_000
+
+
+def test_sanitize_agent_control_result_payload_preserves_large_outputs() -> None:
+    import json
+
+    from preloop.api.endpoints.agent_control import (
+        _MAX_AGENT_CONTROL_PAYLOAD_CHARS,
+        _MAX_AGENT_CONTROL_RESULT_CHARS,
+        _sanitize_agent_control_payload,
+        _sanitize_agent_control_result_payload,
+    )
+
+    payload = {
+        "reply_text": "X" * 20_000,
+        "result": {"structured": "data", "count": 42},
+        "api_key": "sk-secret-key-12345",
+    }
+    # Console payload must be truncated to 4096 and omit structured result
+    console_copy = _sanitize_agent_control_payload(payload)
+    assert len(console_copy["reply_text"]) == _MAX_AGENT_CONTROL_PAYLOAD_CHARS + len(
+        "...[truncated]"
+    )
+    assert console_copy["result"] == {"_omitted": "structured_result", "type": "dict"}
+    assert console_copy["api_key"] != "sk-secret-key-12345"
+
+    # Command result payload preserves full 20k characters and structured data
+    result_copy = _sanitize_agent_control_result_payload(payload)
+    assert len(result_copy["reply_text"]) == 20_000
+    assert result_copy["reply_text"] == "X" * 20_000
+    assert result_copy["result"] == {"structured": "data", "count": 42}
+    assert result_copy["api_key"] != "sk-secret-key-12345"
+
+    # Beyond 1 MiB, the reply is truncated so the serialized envelope fits,
+    # with slack only for the truncation marker.
+    marker = "...[truncated]"
+    huge_payload = {"reply_text": "Y" * (_MAX_AGENT_CONTROL_RESULT_CHARS + 500)}
+    huge_copy = _sanitize_agent_control_result_payload(huge_payload)
+    assert isinstance(huge_copy["reply_text"], str)
+    assert huge_copy["reply_text"].startswith("Y")
+    assert huge_copy["reply_text"].endswith(marker)
+    assert len(huge_copy["reply_text"]) > _MAX_AGENT_CONTROL_RESULT_CHARS - 64
+    assert "result" not in huge_copy
+    huge_serialized = len(json.dumps(huge_copy))
+    assert huge_serialized - len(marker) <= _MAX_AGENT_CONTROL_RESULT_CHARS
+
+    # A reply a few characters under the cap is trimmed, not discarded,
+    # when key and quote overhead pushes the envelope over budget.
+    near_cap = {"reply_text": "A" * (_MAX_AGENT_CONTROL_RESULT_CHARS - 5)}
+    near_copy = _sanitize_agent_control_result_payload(near_cap)
+    assert isinstance(near_copy["reply_text"], str)
+    assert near_copy["reply_text"].startswith("A" * 100)
+    assert near_copy["reply_text"].endswith(marker)
+    assert len(json.dumps(near_copy)) - len(marker) <= _MAX_AGENT_CONTROL_RESULT_CHARS
+
+    # An agent-supplied key longer than the budget cannot ride through.
+    huge_key = "K" * (_MAX_AGENT_CONTROL_RESULT_CHARS + 100)
+    keyed = _sanitize_agent_control_result_payload({huge_key: "done" + marker})
+    assert keyed == {"_omitted": "result_too_large"}
+    assert len(json.dumps(keyed)) <= _MAX_AGENT_CONTROL_RESULT_CHARS
+
+    # A structured result past the budget is omitted; other strings are
+    # shortened until the serialized envelope fits.
+    oversized = {
+        "reply_text": "kept",
+        "log": "L" * (_MAX_AGENT_CONTROL_RESULT_CHARS + 100),
+        "result": {"blob": "Z" * (_MAX_AGENT_CONTROL_RESULT_CHARS + 100)},
+    }
+    bounded = _sanitize_agent_control_result_payload(oversized)
+    assert bounded["reply_text"] == "kept"
+    assert bounded["result"] == {"_omitted": "result_too_large"}
+    assert isinstance(bounded["log"], str)
+    assert bounded["log"].endswith(marker)
+    assert len(json.dumps(bounded)) <= _MAX_AGENT_CONTROL_RESULT_CHARS
+
+    supplied = {
+        "reply_text": "ok",
+        "payload": {
+            "_omitted": "result_too_large",
+            "blob": "Q" * (_MAX_AGENT_CONTROL_RESULT_CHARS + 100),
+        },
+    }
+    guarded = _sanitize_agent_control_result_payload(supplied)
+    assert guarded["reply_text"] == "ok"
+    assert guarded["payload"] == {"_omitted": "result_too_large", "type": "dict"}

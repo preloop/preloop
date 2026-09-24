@@ -75,6 +75,40 @@ def test_build_runtime_key_auth_context_resolves_key_and_user(db_session, test_u
     assert auth_context.api_key.id == api_key.id
 
 
+@pytest.mark.asyncio
+async def test_an_ended_pinned_session_is_rejected_unless_flush_is_allowed(
+    db_session, test_user
+):
+    """Inference rejects a finished session; a post-run flush may still auth."""
+    from datetime import datetime, timezone
+
+    session_id = "12345678-1234-5678-1234-567812345679"
+    runtime_session = RuntimeSession(
+        id=session_id,
+        account_id=test_user.account_id,
+        session_source_type="custom",
+        session_source_id="ended-browser",
+        started_at=datetime.now(timezone.utc),
+        ended_at=datetime.now(timezone.utc),
+    )
+    db_session.add(runtime_session)
+    db_session.commit()
+    _key, presented_token = crud_api_key.create_runtime_key(
+        db_session,
+        name="Ended Session Token",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={"runtime_session_id": session_id},
+    )
+
+    assert await authenticate_bearer_token(presented_token, db_session) is None
+    allowed = await authenticate_bearer_token(
+        presented_token, db_session, allow_ended_runtime_session=True
+    )
+    assert allowed is not None
+    assert allowed.runtime_session_id == session_id
+
+
 def test_build_runtime_key_auth_context_rejects_deactivated_key(db_session, test_user):
     """A deactivated key yields no principal so callers fail closed."""
     api_key, presented_token = crud_api_key.create_runtime_key(

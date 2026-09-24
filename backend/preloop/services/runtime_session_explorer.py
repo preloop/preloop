@@ -89,6 +89,11 @@ def _default_activity_title(activity: Any) -> str:
         metadata = getattr(activity, "metadata_", None) or {}
         role = str(metadata.get("role") or "").lower()
         return _TRANSCRIPT_ROLE_TITLES.get(role, "Transcript message")
+    if activity_type == "browser_step":
+        metadata = getattr(activity, "metadata_", None) or {}
+        action = metadata.get("action") or ""
+        locator = metadata.get("url") or metadata.get("target") or ""
+        return f"{action} {locator}"[:120]
     return "Tool call"
 
 
@@ -974,7 +979,11 @@ class RuntimeSessionExplorerService:
                 RuntimeSessionActivityItem(
                     activity_type=activity.activity_type,
                     timestamp=self._normalize_timestamp(activity.timestamp),
-                    title=activity.tool_name or _default_activity_title(activity),
+                    title=(
+                        _default_activity_title(activity)
+                        if activity.activity_type == "browser_step"
+                        else (activity.tool_name or _default_activity_title(activity))
+                    ),
                     summary=activity.summary or activity.server_name,
                     status=activity.status,
                     tool_name=activity.tool_name,

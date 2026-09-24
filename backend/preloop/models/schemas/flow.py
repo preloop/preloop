@@ -1054,6 +1054,49 @@ class ModelRoutingConfig(BaseModel):
         return self
 
 
+class FlowExecutionLimits(BaseModel):
+    """Optional per-execution ceilings inside ``agent_config.limits`` (#840).
+
+    A flow bounds one run by wall clock (``timeout_seconds``); these bound
+    what that run may spend. All three are optional and independent; unset
+    means that ceiling does not apply. Values must be positive, and the
+    gateway refuses a request only once the run has *reached* a ceiling, so
+    the request that crosses it is allowed to complete.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_total_tokens: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=2_000_000_000,
+        description=(
+            "Hard ceiling on input+output tokens attributed to one execution. "
+            "The gateway sums the run's usage before each model request and "
+            "refuses once the total has reached it."
+        ),
+    )
+    max_usd: Optional[float] = Field(
+        default=None,
+        gt=0,
+        le=1_000_000,
+        description=(
+            "Hard ceiling in USD on the estimated cost attributed to one "
+            "execution. Unpriced runs are not compared (an unknown cost is "
+            "not an exceeded one)."
+        ),
+    )
+    max_turns: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=1_000_000,
+        description=(
+            "Hard ceiling on model requests (turns) attributed to one "
+            "execution. Counted at the gateway as one turn per request."
+        ),
+    )
+
+
 class FlowBase(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
@@ -1144,13 +1187,15 @@ class FlowBase(BaseModel):
     @field_validator("agent_config")
     @classmethod
     def validate_model_routing_config(cls, v):
-        """Validate optional agent_config.model_routing shape before persistence."""
+        """Validate optional agent_config keys before persistence."""
         if not isinstance(v, dict):
             return v
         routing = v.get("model_routing")
-        if routing is None:
-            return v
-        ModelRoutingConfig.model_validate(routing)
+        if routing is not None:
+            ModelRoutingConfig.model_validate(routing)
+        limits = v.get("limits")
+        if limits is not None:
+            FlowExecutionLimits.model_validate(limits)
         return v
 
     @field_validator("trigger_project_ids", mode="before")

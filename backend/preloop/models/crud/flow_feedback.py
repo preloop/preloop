@@ -6,13 +6,18 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import exists, or_, select, update
+from sqlalchemy import and_, exists, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from preloop.models import models
 
 TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "ABORTED", "STOPPED"}
+
+# Statuses a launch may have when it died before storing a session.
+# ``sessionless_retry`` in the feedback service uses the same set: a status
+# added on only one side would revive a thread the scheduler stopped on purpose.
+SESSIONLESS_RETRY_STATUSES = frozenset({"FAILED", "TIMED_OUT"})
 
 
 class CRUDFlowFeedback:
@@ -129,6 +134,75 @@ class CRUDFlowFeedback:
             )
         # Preserve the existing due time; repeated delivery cannot starve dispatch.
         db.commit()
+
+    def stopped_for_no_progress(
+        self, db: Session, *, limit: int = 20
+    ) -> list[models.FlowThread]:
+        """Threads a launch failure stopped before the agent stored a session.
+
+        Only rows that can actually be revived are returned. A genuine
+        no-progress stop never leaves ``stopped``, and ``claim_due`` will not
+        advance it, so a window over every stop lets permanent stops crowd
+        out the sessionless ones this scan exists to retry.
+
+        Args:
+            db: Database session.
+            limit: Maximum threads to return, oldest due first.
+
+        Returns:
+            Stopped threads whose latest execution failed or timed out
+            without a stored session id or checkpoint artifact.
+        """
+        execution = models.FlowExecution
+        session_id = execution.cli_session["session_id"].astext
+        artifact = execution.cli_session["artifact_reference"].astext
+        # Match execution_has_native_session: a missing or empty value is not
+        # a session. A stored artifact object still counts.
+        no_session = and_(
+            or_(session_id.is_(None), session_id == ""),
+            or_(artifact.is_(None), artifact == ""),
+        )
+        return list(
+            db.execute(
+                select(models.FlowThread)
+                .join(execution, execution.id == models.FlowThread.latest_execution_id)
+                .where(
+                    models.FlowThread.state == "stopped",
+                    models.FlowThread.stop_reason == "no_progress",
+                    execution.status.in_(tuple(SESSIONLESS_RETRY_STATUSES)),
+                    no_session,
+                )
+                .order_by(models.FlowThread.due_at)
+                .limit(limit)
+            ).scalars()
+        )
+
+    def revive(self, db: Session, thread_id: uuid.UUID, *, now: datetime) -> bool:
+        """Return one no-progress stop to the scheduler.
+
+        The update is conditional on the stopped/no-progress state, so two
+        replicas cannot interleave a revive with a later state change.
+        Commits only this transition.
+
+        Args:
+            db: Database session.
+            thread_id: Thread to return to the waiting queue.
+            now: Due time the scheduler should pick the thread up at.
+
+        Returns:
+            True when this call changed the row.
+        """
+        result = db.execute(
+            update(models.FlowThread)
+            .where(
+                models.FlowThread.id == thread_id,
+                models.FlowThread.state == "stopped",
+                models.FlowThread.stop_reason == "no_progress",
+            )
+            .values(state="waiting", stop_reason=None, no_progress=0, due_at=now)
+        )
+        db.commit()
+        return result.rowcount > 0
 
     def claim_due(
         self, db: Session, *, now: datetime, limit: int = 20

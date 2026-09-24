@@ -21,6 +21,7 @@ from preloop.models.models.flow import Flow
 from preloop.models.models.flow_execution import FlowExecution
 from preloop.models.models.legal_hold import LegalHold
 from preloop.models.models.runtime_session import RuntimeSession
+from preloop.models.models.runtime_session_artifact import RuntimeSessionArtifact
 
 
 def execution_in_account(account_id: Any):
@@ -207,6 +208,35 @@ def set_runtime_session_flag(
         .where(
             RuntimeSession.id == runtime_session_id,
             RuntimeSession.account_id == account_id,
+        )
+        .values(legal_hold=held)
+        .execution_options(synchronize_session=False)
+    )
+    return int(result.rowcount or 0)
+
+
+def set_runtime_session_artifact_flags(
+    db: Session, *, account_id: Any, runtime_session_id: Any, held: bool
+) -> int:
+    """Set the flag on every artifact of one runtime session.
+
+    A hold that freezes the session row and lets its screenshots expire would
+    keep the record and lose the bytes. The session hold reaches the artifacts.
+
+    Args:
+        db: Database session.
+        account_id: Account that owns the session.
+        runtime_session_id: Session whose artifacts are flagged.
+        held: Derived flag value.
+
+    Returns:
+        Rows touched.
+    """
+    result = db.execute(
+        update(RuntimeSessionArtifact)
+        .where(
+            RuntimeSessionArtifact.account_id == account_id,
+            RuntimeSessionArtifact.runtime_session_id == runtime_session_id,
         )
         .values(legal_hold=held)
         .execution_options(synchronize_session=False)

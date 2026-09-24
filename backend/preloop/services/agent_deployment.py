@@ -31,6 +31,7 @@ class DeploymentResult:
     agent_id: str
     runtime_version: str
     model_alias: str
+    desktop: str = "skipped"
 
 
 def deployment_capabilities() -> dict[str, bool]:
@@ -100,7 +101,13 @@ def parse_host_key(value: str) -> asyncssh.SSHKey:
 
 
 def installation_script(
-    runtime: str, alias: str, url: str, token: str, request_id: UUID
+    runtime: str,
+    alias: str,
+    url: str,
+    token: str,
+    request_id: UUID,
+    *,
+    desktop: bool = False,
 ) -> str:
     """Build a fixed script; every variable is shell quoted and secrets use stdin."""
     cli_url = os.getenv("PRELOOP_DEPLOY_CLI_URL", "")
@@ -123,10 +130,11 @@ def installation_script(
     assignments = "\n".join(
         f"deploy_{key}={shlex.quote(value)}" for key, value in values.items()
     )
-    return (
+    script = (
         assignments
         + r"""
 set -euo pipefail
+deploy_desktop_status=skipped
 deploy_stage=PRELOOP_DEPLOY_PREREQUISITES_FAILED
 trap 'printf "%s\n" "$deploy_stage"' ERR
 umask 077
@@ -170,7 +178,7 @@ deploy_stage=PRELOOP_DEPLOY_VERSION_UNAVAILABLE
 deploy_stage=PRELOOP_DEPLOY_STATUS_FAILED
 preloop agents status "$deploy_runtime" --json </dev/null >"$work/status.json" 2>/dev/null
 deploy_stage=PRELOOP_DEPLOY_ONBOARDING_INCOMPLETE
-python3 - "$work" "$deploy_alias" <<'PRELOOP_EVIDENCE'
+python3 - "$work" "$deploy_alias" "$deploy_desktop_status" <<'PRELOOP_EVIDENCE'
 import json,pathlib,sys
 p=pathlib.Path(sys.argv[1])
 s=json.loads((p/'status.json').read_text())
@@ -187,10 +195,25 @@ version=(p/'version').read_text().strip()
 if not version or len(version)>512:
     print('PRELOOP_DEPLOY_VERSION_UNAVAILABLE')
     raise SystemExit(1)
-print(json.dumps({'agent_id':a['id'],'runtime_version':version,'model_alias':valid['live_validation_model_alias']}))
+desktop=sys.argv[3]
+if desktop not in ('installed','failed','skipped'):
+    desktop='skipped'
+print(json.dumps({'agent_id':a['id'],'runtime_version':version,'model_alias':valid['live_validation_model_alias'],'desktop':desktop}))
 PRELOOP_EVIDENCE
 """
     )
+    if desktop:
+        desktop_stage = r"""deploy_desktop_status=failed
+deploy_stage=PRELOOP_DEPLOY_DESKTOP_FAILED
+if preloop agents install-runtime "$deploy_runtime" --install-only --skip-install --desktop -y </dev/null >"$work/desktop.log" 2>&1; then
+  deploy_desktop_status=installed
+else
+  echo PRELOOP_DEPLOY_DESKTOP_FAILED
+fi
+"""
+        needle = "deploy_stage=PRELOOP_DEPLOY_VERSION_UNAVAILABLE\n"
+        script = script.replace(needle, desktop_stage + needle, 1)
+    return script
 
 
 async def install_over_ssh(
@@ -201,6 +224,7 @@ async def install_over_ssh(
     url: str,
     token: str,
     request_id: UUID,
+    desktop: bool = False,
 ) -> DeploymentResult:
     """Install and validate without falling back to agent or known_hosts trust."""
     address = await resolve_ssh_address(ssh.host, ssh.port)
@@ -215,7 +239,9 @@ async def install_over_ssh(
             raise DeploymentError(
                 "The supplied SSH private key could not be read"
             ) from exc
-    script = installation_script(runtime, alias, url, token, request_id)
+    script = installation_script(
+        runtime, alias, url, token, request_id, desktop=desktop
+    )
     try:
         async with asyncssh.connect(
             address,
@@ -283,10 +309,14 @@ async def install_over_ssh(
         )
         if not version_match:
             raise ValueError("No runtime version in verified evidence")
+        desktop_state = evidence.get("desktop", "skipped")
+        if desktop_state not in {"installed", "failed", "skipped"}:
+            desktop_state = "skipped"
         return DeploymentResult(
             agent_id,
             f"{runtime} {version_match.group(1)}",
             str(evidence["model_alias"]),
+            str(desktop_state),
         )
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise DeploymentError(

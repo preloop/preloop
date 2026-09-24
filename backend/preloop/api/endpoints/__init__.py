@@ -23,6 +23,7 @@ __all__ = [
     "public_approval",
     "pull_requests",
     "roles",
+    "runtime_session_browser_steps",
     "search",
     "tools",
     "trackers",

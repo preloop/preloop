@@ -7,8 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `preloop agents install-runtime --desktop` installs a loopback-only headless
+  desktop (Xvfb on `:99`, x11vnc on `127.0.0.1:5900`, Chromium) and exports
+  `DISPLAY=:99`. `POST /api/v1/agent-deployments` accepts `desktop` and reports
+  `installed`, `failed`, or `skipped` without failing a runtime that already
+  validated. Non-root users install packages with `sudo -n`. The VNC password
+  is passed only to `x11vnc -storepasswd` (briefly visible to other local
+  users; VNC DES keeps the first 8 characters) and is not written elsewhere.
+
 ### Fixed
 
+- Harness images pin Node and install Pi and DeepSeek from lockfiles, so
+  Scorecard no longer reports floating image or npm dependencies. Empty
+  `except` handlers that intentionally ignore an optional driver or an
+  expected flush failure now say why.
 - PR follow-up trusts a reviewer by username or GitHub App slug. Enabling
   follow-up starts with `preloop`, which matches reviews from `preloop[bot]`.
   An empty list still ignores every bot. Cursor flows no longer ask for a
@@ -18,7 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the published branch when checkpoint uploads are disabled. A later
   repair still requires its own checkpoint. A repair that failed or timed
   out before it stored a session is tried again from that same published
-  branch, and the review it already picked up is not dropped.
+  branch, and the review it already picked up is not dropped. That failure
+  does not count as no progress, and a thread already stopped for no
+  progress in that situation is picked up again.
 - Pi and DeepSeek can check out a pull request on Kubernetes. The workspace
   volume stays owned by root, so Git accepted the clone and then refused
   the commit checkout as dubious ownership. Both harnesses run as that

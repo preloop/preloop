@@ -1,6 +1,7 @@
 from .flow import (
     CallableFlowEntry,
     FlowCreate,
+    FlowExecutionLimits,
     FlowFailureNotifications,
     FlowNotifications,
     FlowResponse,
@@ -77,6 +78,7 @@ __all__ = [
     "CallableFlowEntry",
     "FlowMatrixEntry",
     "FlowCreate",
+    "FlowExecutionLimits",
     "FlowFailureNotifications",
     "FlowNotifications",
     "FlowSuccessNotifications",

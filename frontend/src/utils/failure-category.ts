@@ -52,6 +52,11 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'The provider refused the call: billing or quota. Retry after the account is topped up.',
   },
+  budget_exceeded: {
+    label: 'budget exceeded',
+    tooltip:
+      'The run reached a token, USD or turn ceiling configured for it, so the gateway refused further model calls.',
+  },
   /**
    * Superseded by `provider_billing`, which the server writes now. Kept so
    * runs classified before it still read as something.

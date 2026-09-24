@@ -1598,6 +1598,9 @@ def get_flow_execution_metrics(
         - cost_is_partial: Whether estimated_cost excludes unpriced requests
         - unpriced_requests: Requests that could not be priced
         - unpriced_tokens: Token volume behind the unpriced requests
+        - limits: Configured per-execution ceilings (only keys that are set)
+        - limit_status: Current usage against those ceilings
+          (``total_tokens``, ``estimated_cost_usd``, ``turns``)
     """
     from preloop.services.execution_metrics import ExecutionMetricsService
 
@@ -1612,6 +1615,20 @@ def get_flow_execution_metrics(
     metrics_service = ExecutionMetricsService(db)
     try:
         metrics = metrics_service.get_execution_metrics(str(execution_id))
+        # Per-execution ceilings and how the run measures against them, so the
+        # page can render "used / allowed" without re-reading the flow. Empty
+        # limits and zero usage for flows that configure none.
+        from preloop.services.flow_execution_limits import (
+            describe_execution_limits,
+        )
+
+        limits, usage = describe_execution_limits(db, execution)
+        metrics["limits"] = limits.as_dict()
+        metrics["limit_status"] = {
+            "total_tokens": usage.total_tokens,
+            "estimated_cost_usd": usage.cost_usd,
+            "turns": usage.turns,
+        }
         return metrics
     except Exception as e:
         # Log error but return zero metrics instead of failing
@@ -1630,6 +1647,12 @@ def get_flow_execution_metrics(
             "cost_is_partial": False,
             "unpriced_requests": 0,
             "unpriced_tokens": 0,
+            "limits": {},
+            "limit_status": {
+                "total_tokens": 0,
+                "estimated_cost_usd": None,
+                "turns": 0,
+            },
         }
 
 

@@ -74,6 +74,19 @@ DeepSeek Harness `0.1.5-rc.2`. DeepSeek is a developer preview; its main-branch
 headless flags differ from the published release. `stdin.mjs` supplies its
 headless startup service so even large prompts avoid command-line size limits.
 
+Image builds install those versions with `npm ci` from `agents/pi` and
+`agents/deepseek`. Bump a pin in `backend/preloop/agents/harness.py` and in
+`agents/<name>/package.json` together, then regenerate that lockfile:
+
+```sh
+npm install --ignore-scripts --package-lock-only \
+  --prefix runtime-plugins/harness-preloop/agents/pi
+```
+
+Every `resolved` entry needs an `integrity` hash. npm sometimes omits one on a
+nested `@earendil-works/*` copy; copy it from
+`npm view <package>@<version> dist.integrity`.
+
 The default Node worker installs pinned packages at startup. For faster,
 registry-independent launches, build the plugin and harness into an image:
 

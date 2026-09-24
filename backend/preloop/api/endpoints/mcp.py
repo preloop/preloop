@@ -104,12 +104,14 @@ try:
 
     _DATABASE_ERRORS.append(psycopg2.Error)
 except ImportError:
+    # psycopg2 is optional. SQLAlchemyError still classifies database failures.
     pass
 try:
     import psycopg
 
     _DATABASE_ERRORS.append(psycopg.Error)
 except ImportError:
+    # psycopg v3 is optional. SQLAlchemyError still classifies database failures.
     pass
 _DATABASE_ERROR_TYPES = tuple(_DATABASE_ERRORS)
 

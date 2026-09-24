@@ -221,9 +221,16 @@ def _apply_flags(
         # One flag covers the session and, through the cascade that ties them
         # to it, its activity rows: the purge deletes the session row and lets
         # the database take the activity with it, so a session it never
-        # reaches keeps everything under it.
+        # reaches keeps everything under it. Artifacts carry their own flag
+        # because the janitor clears ciphertext without deleting the row.
         flagged["runtime_session"] = crud.set_runtime_session_flag(
             db, account_id=account_id, runtime_session_id=resource_id, held=held
+        )
+        flagged["runtime_session_artifact"] = crud.set_runtime_session_artifact_flags(
+            db,
+            account_id=account_id,
+            runtime_session_id=resource_id,
+            held=held,
         )
     else:
         execution_id = db.execute(

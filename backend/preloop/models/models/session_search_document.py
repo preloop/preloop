@@ -1,7 +1,8 @@
 """Chunked search corpus rows for runtime session content.
 
 One row is one chunk of one source: a gateway interaction, a transcript
-message, a tool call, an operator note, a session summary or a flow log line.
+message, a tool call, a browser step, an operator note, a session summary
+or a flow log line.
 The corpus is account scoped and session scoped on purpose, so a query can be
 bounded by account before it ever touches the full text index.
 
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 SOURCE_KIND_GATEWAY_INTERACTION = "gateway_interaction"
 SOURCE_KIND_TRANSCRIPT_MESSAGE = "transcript_message"
 SOURCE_KIND_TOOL_CALL = "tool_call"
+SOURCE_KIND_BROWSER_STEP = "browser_step"
 SOURCE_KIND_OPERATOR_NOTE = "operator_note"
 SOURCE_KIND_SESSION_SUMMARY = "session_summary"
 SOURCE_KIND_FLOW_LOG = "flow_log"
@@ -50,6 +52,7 @@ SOURCE_KINDS = (
     SOURCE_KIND_GATEWAY_INTERACTION,
     SOURCE_KIND_TRANSCRIPT_MESSAGE,
     SOURCE_KIND_TOOL_CALL,
+    SOURCE_KIND_BROWSER_STEP,
     SOURCE_KIND_OPERATOR_NOTE,
     SOURCE_KIND_SESSION_SUMMARY,
     SOURCE_KIND_FLOW_LOG,

@@ -1002,6 +1002,17 @@ agent_type: codex
 agent_config:
   sandbox_type: exec
   enable_auto_lint: true
+  # A safety net for a run that loops or over-reads, not a budget. Observed
+  # PR reviews sit at 167k-645k tokens with a 1.64M maximum, so 2M tokens
+  # clears the worst legitimate case; the USD and turn ceilings catch a run
+  # that keeps going on an expensive model long after it should have stopped.
+  # The request that crosses a ceiling is allowed to finish so the reviewer
+  # can still post its verdict; the next one is refused and the run fails with
+  # the budget_exceeded category.
+  limits:
+    max_total_tokens: 2000000
+    max_usd: 50
+    max_turns: 300
 allowed_mcp_servers: []
 allowed_mcp_tools:
   # get_issue is read-only and is what makes Step 2.8 (issue coverage)

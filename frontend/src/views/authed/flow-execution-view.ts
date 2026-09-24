@@ -127,6 +127,12 @@ interface FlowExecution {
   park?: ExecutionPark | null;
 }
 
+interface FlowExecutionLimits {
+  max_total_tokens?: number;
+  max_usd?: number;
+  max_turns?: number;
+}
+
 interface Flow {
   id: string;
   name: string;
@@ -135,6 +141,8 @@ interface Flow {
   trigger_event_source: string;
   trigger_event_type: string;
   ai_model_name?: string | null;
+  /** Per-execution ceilings the run is measured against, when configured. */
+  agent_config?: { limits?: FlowExecutionLimits } | null;
 }
 
 interface ToolActivityEntry {
@@ -1896,6 +1904,25 @@ export class FlowExecutionView extends LitElement {
   }
 
   /**
+   * The per-execution ceilings the run is measured against, when the flow
+   * configured any. Read straight off the flow's `agent_config.limits`, so the
+   * strip can show "used / allowed" while the run is still going, not only
+   * once the metrics endpoint has a final number.
+   */
+  private get executionLimits(): FlowExecutionLimits | null {
+    const limits = this.flow?.agent_config?.limits;
+    if (!limits) return null;
+    if (
+      limits.max_total_tokens === undefined &&
+      limits.max_usd === undefined &&
+      limits.max_turns === undefined
+    ) {
+      return null;
+    }
+    return limits;
+  }
+
+  /**
    * Keep whichever split actually states a direction.
    *
    * The metrics endpoint and the execution row can both carry a token usage
@@ -2924,6 +2951,22 @@ ${execution.resolved_input_prompt}</pre>
         ? 'Not priced'
         : '—';
 
+    const limits = this.executionLimits;
+    const tokenLimit = limits?.max_total_tokens;
+    const usdLimit = limits?.max_usd;
+    const tokenCeiling =
+      tokenLimit !== undefined
+        ? html`<span class="strip-note">
+            / ${formatTokenCount(tokenLimit)}</span
+          >`
+        : '';
+    const costCeiling =
+      usdLimit !== undefined
+        ? html`<span class="strip-note">
+            / ${formatEstimatedCost(usdLimit)}</span
+          >`
+        : '';
+
     return html`
       <div class="summary-strip" data-testid="summary-strip">
         <div class="strip-item">
@@ -2995,12 +3038,14 @@ ${execution.resolved_input_prompt}</pre>
                   : // The same absence the token figures component prints,
                     // drawn the same way on the same page.
                     '-'
-            }</span
+            }${tokenCeiling}</span
           >
         </div>
         <div class="strip-item">
           <span class="strip-label">$ est.</span>
-          <span class="strip-value" data-testid="strip-cost">${costText}</span>
+          <span class="strip-value" data-testid="strip-cost"
+            >${costText}${costCeiling}</span
+          >
         </div>
         <div class="strip-item">
           <span class="strip-label">Tools</span>

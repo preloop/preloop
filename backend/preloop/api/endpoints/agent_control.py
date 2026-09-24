@@ -776,10 +776,161 @@ _AGENT_CONTROL_TRUNCATE_KEYS = frozenset(
     {"result", "reply_text", "error", "message", "text", "output"}
 )
 _MAX_AGENT_CONTROL_PAYLOAD_CHARS = 4096
+_MAX_AGENT_CONTROL_RESULT_CHARS = 1_048_576
+_AGENT_CONTROL_TRUNCATION_MARKER = "...[truncated]"
+_AGENT_CONTROL_OMISSION_MARKERS = frozenset({"result_too_large", "structured_result"})
 
 
-def _sanitize_agent_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Redact secrets and truncate bulky agent output before emit/persist."""
+def _truncate_agent_control_text(value: str, max_chars: int) -> str:
+    """Cap one string field, keeping a marker when the tail is dropped."""
+    if len(value) > max_chars:
+        return value[:max_chars] + _AGENT_CONTROL_TRUNCATION_MARKER
+    return value
+
+
+def _is_omission_marker(value: Any) -> bool:
+    """True for a marker this sanitizer wrote, not an agent-supplied dict."""
+    return (
+        isinstance(value, dict)
+        and set(value) <= {"_omitted", "type"}
+        and value.get("_omitted") in _AGENT_CONTROL_OMISSION_MARKERS
+    )
+
+
+def _payload_within_budget(payload: dict[str, Any], max_chars: int) -> bool:
+    """True when the JSON form of ``payload`` fits in ``max_chars``."""
+    try:
+        return len(json.dumps(payload, default=str)) <= max_chars
+    except (TypeError, ValueError):
+        return False
+
+
+def _single_truncated_field_fits(payload: dict[str, Any], max_chars: int) -> bool:
+    """Allow one truncated string to carry its marker past the serialized budget.
+
+    The slack is the marker only, measured on ``json.dumps`` so key names
+    and punctuation count. A second bulky field, or a key long enough to
+    blow the envelope, does not qualify.
+    """
+    texts = [value for value in payload.values() if isinstance(value, str)]
+    if len(texts) != 1 or not texts[0].endswith(_AGENT_CONTROL_TRUNCATION_MARKER):
+        return False
+    if not all(
+        isinstance(value, (str, int, float, bool, type(None)))
+        or _is_omission_marker(value)
+        for value in payload.values()
+    ):
+        return False
+    try:
+        serialized = len(json.dumps(payload, default=str))
+    except (TypeError, ValueError):
+        return False
+    return serialized - len(_AGENT_CONTROL_TRUNCATION_MARKER) <= max_chars
+
+
+def _refit_string_field(payload: dict[str, Any], key: str, max_chars: int) -> bool:
+    """Shorten ``payload[key]`` until the envelope fits, keeping a prefix.
+
+    Returns:
+        True when the shortened field meets the hard budget or the
+        single-truncated-field slack. False when even a marker-only value
+        cannot fit; the caller should omit the field.
+    """
+    text = payload.get(key)
+    if not isinstance(text, str):
+        return False
+    original = text
+    lo = 0
+    hi = len(text)
+    best: str | None = None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if mid >= len(text):
+            candidate = text
+        else:
+            candidate = text[:mid] + _AGENT_CONTROL_TRUNCATION_MARKER
+        payload[key] = candidate
+        if _payload_within_budget(payload, max_chars) or _single_truncated_field_fits(
+            payload, max_chars
+        ):
+            best = candidate
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    if best is None:
+        payload[key] = original
+        return False
+    payload[key] = best
+    return True
+
+
+def _cap_persisted_result_payload(
+    sanitized: dict[str, Any], max_chars: int
+) -> dict[str, Any]:
+    """Drop or shorten values until the persisted envelope fits its budget.
+
+    Each string is already truncated to ``max_chars``. Structured values
+    become an omission marker. A string that still blows the serialized
+    envelope is shortened so the JSON fits, marker included, before it is
+    omitted. One truncated string may exceed the budget by the marker only.
+    Key names count toward the serialized size.
+    """
+    if _payload_within_budget(sanitized, max_chars) or _single_truncated_field_fits(
+        sanitized, max_chars
+    ):
+        return sanitized
+    capped = dict(sanitized)
+    if "result" in capped and not _is_omission_marker(capped["result"]):
+        capped["result"] = {"_omitted": "result_too_large"}
+        if _payload_within_budget(capped, max_chars):
+            return capped
+    bounded: dict[str, Any] = {}
+    for key, value in capped.items():
+        if isinstance(value, (str, int, float, bool, type(None))):
+            bounded[key] = value
+        elif _is_omission_marker(value):
+            bounded[key] = value
+        else:
+            bounded[key] = {
+                "_omitted": "result_too_large",
+                "type": type(value).__name__,
+            }
+    while not _payload_within_budget(
+        bounded, max_chars
+    ) and not _single_truncated_field_fits(bounded, max_chars):
+        strings = [
+            (key, value) for key, value in bounded.items() if isinstance(value, str)
+        ]
+        if not strings:
+            return {"_omitted": "result_too_large"}
+        longest = max(strings, key=lambda item: len(item[1]))[0]
+        if _refit_string_field(bounded, longest, max_chars):
+            continue
+        bounded[longest] = {"_omitted": "result_too_large"}
+    return bounded
+
+
+def _sanitize_agent_control_payload(
+    payload: dict[str, Any],
+    *,
+    max_chars: int = _MAX_AGENT_CONTROL_PAYLOAD_CHARS,
+    drop_structured_result: bool = True,
+) -> dict[str, Any]:
+    """Redact secrets and bound bulky agent output before emit or persist.
+
+    Args:
+        payload: Inbound agent-control envelope fields.
+        max_chars: Character budget for each string and, when structured
+            results are kept, for the serialized payload.
+        drop_structured_result: When True, replace a non-scalar ``result``
+            with a type marker. Live console and audit logs use this.
+            Persistent command rows pass False so a later step can read a
+            structured result that still fits in ``max_chars``.
+
+    Returns:
+        A JSON-safe dict. Secrets are redacted. Oversized values are
+        truncated or replaced with an omission marker.
+    """
     from preloop.utils.redaction import redact_dict
 
     safe = redact_dict(payload)
@@ -787,24 +938,33 @@ def _sanitize_agent_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
         return {}
     sanitized: dict[str, Any] = {}
     for key, value in safe.items():
-        if key in _AGENT_CONTROL_TRUNCATE_KEYS and isinstance(value, str):
-            if len(value) > _MAX_AGENT_CONTROL_PAYLOAD_CHARS:
-                sanitized[key] = (
-                    value[:_MAX_AGENT_CONTROL_PAYLOAD_CHARS] + "...[truncated]"
-                )
-            else:
-                sanitized[key] = value
-        elif key == "result" and not isinstance(
-            value, (str, int, float, bool, type(None))
+        if (
+            drop_structured_result
+            and key == "result"
+            and not isinstance(value, (str, int, float, bool, type(None)))
         ):
-            # Drop bulky structured results from realtime/audit surfaces.
             sanitized[key] = {
                 "_omitted": "structured_result",
                 "type": type(value).__name__,
             }
+        elif isinstance(value, str) and (
+            key in _AGENT_CONTROL_TRUNCATE_KEYS or not drop_structured_result
+        ):
+            sanitized[key] = _truncate_agent_control_text(value, max_chars)
         else:
             sanitized[key] = value
-    return sanitized
+    if drop_structured_result:
+        return sanitized
+    return _cap_persisted_result_payload(sanitized, max_chars)
+
+
+def _sanitize_agent_control_result_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Redact secrets and bound execution output persisted on the command row."""
+    return _sanitize_agent_control_payload(
+        payload,
+        max_chars=_MAX_AGENT_CONTROL_RESULT_CHARS,
+        drop_structured_result=False,
+    )
 
 
 def _persist_agent_control_result(
@@ -863,12 +1023,13 @@ def _persist_agent_control_result(
         "error",
     }
     error_text = inbound.payload.get("error")
+    full_result_payload = _sanitize_agent_control_result_payload(inbound.payload)
     crud_agent_control_command.mark_terminal_result(
         db,
         account_id=context.account_id,
         managed_agent_id=context.managed_agent_id,
         command_id=command_id.strip(),
-        result_payload=sanitized,
+        result_payload=full_result_payload,
         failed=failed,
         error=error_text if isinstance(error_text, str) else None,
         commit=commit,
