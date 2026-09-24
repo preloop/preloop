@@ -245,6 +245,49 @@ current OpenCode runtime, then write `preloop.control` with the generated
 runtime bearer token. Users should never have to hand-author runtime bearer
 tokens.
 
+## Codex CLI sidecar
+
+Codex CLI has no plugin marketplace. The sidecar is an npm package, same
+shape as `@preloop-ai/claude-plugin`: install with npm, then run the bin.
+`publish-runtime-plugins.yml` enumerates OpenClaw, Hermes, and the harness
+plugin only (the Claude sidecar is not in that workflow either), so this
+package is published by hand the same way.
+
+Versions are a single `package.json` field (there is no second manifest to
+keep in lockstep). Confirm the name is `@preloop-ai/codex-plugin` and the
+bin is `preloop-codex-plugin`.
+
+Build and validate:
+
+```bash
+cd preloop/runtime-plugins/codex-preloop
+npm ci
+npm test
+npm pack --dry-run
+npm publish --access public --dry-run
+```
+
+Publish to npm:
+
+```bash
+npm publish --access public
+```
+
+Manual smoke test on a machine without the Preloop CLI:
+
+```bash
+npm install -g @preloop-ai/codex-plugin
+preloop-codex-plugin verify --config ~/.codex/preloop-control.json
+preloop-codex-plugin run --config ~/.codex/preloop-control.json
+```
+
+The control file is `~/.codex/preloop-control.json`. Do not write Codex
+`config.toml` or `auth.json` from this package. If that file is missing, a
+separate connect helper must obtain a Preloop API token and write
+`preloop.control` (the same OAuth CLI flow the other plugins use:
+`client_id=cli`, `redirect_uri=urn:ietf:wg:oauth:2.0:oob`). Users should
+never have to hand-author runtime bearer tokens.
+
 ## Hermes Plugin
 
 Hermes has no central plugin marketplace. Discovery is PyPI plus the correct

@@ -65,6 +65,7 @@ MODE = {mode!r}
 args = sys.argv[1:]
 method = args[args.index("-X") + 1] if "-X" in args else "GET"
 url = next((arg for arg in args if arg.startswith("http")), "")
+wants_code = "-w" in args
 with CALLS.open("a") as stream:
     stream.write(f"{{method}} {{url}}\n")
 
@@ -86,7 +87,8 @@ def payload():
 def write(body, code):
     if output != "/dev/null":
         pathlib.Path(output).write_text(json.dumps(body))
-    print(code, end="")
+    if wants_code:
+        print(code, end="")
 
 
 if method == "POST":
@@ -114,13 +116,16 @@ elif method == "GET":
     branch = head.split(":")[-1]
     write([p for p in pulls if p["head"]["ref"] == branch and p["state"] == "open"], "200")
 else:  # PATCH / PUT: the failure-disclosure refresh
-    number = int(url.rstrip("/").rsplit("/", 1)[-1])
-    body = payload()
-    for pull in pulls:
-        if pull["number"] == number:
-            pull.update(body)
-    STORE.write_text(json.dumps(pulls))
-    write({{"number": number}}, "200")
+    if MODE == "reject_update":
+        write({{"message": "update rejected"}}, "422")
+    else:
+        number = int(url.rstrip("/").rsplit("/", 1)[-1])
+        body = payload()
+        for pull in pulls:
+            if pull["number"] == number:
+                pull.update(body)
+        STORE.write_text(json.dumps(pulls))
+        write({{"number": number}}, "200")
 '''
 
 
@@ -516,6 +521,33 @@ class TestPublishFailureDegradesTheRun:
         # missing, and the next run retries it on the same branch.
         assert repo.origin_show(REPORT_BRANCH, DOCUMENT) == "first report"
         assert repo.pull_requests() == []
+
+    def test_a_failed_body_update_prints_one_marker_and_exits_zero(
+        self, repo: PublishingRepo
+    ) -> None:
+        """A provenance failure must not kill the report wrapper.
+
+        The commit is already on the branch. The wrapper still prints exactly
+        one marker and exits zero so the run records the failed update.
+        """
+        assert repo.outcome(repo.run())["outcome"] == "published"
+        repo.write_report("second report\n")
+
+        result = repo.run(provider="reject_update")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        markers = [
+            line
+            for line in result.stdout.splitlines()
+            if line.strip().startswith("PRELOOP_REPORT_")
+        ]
+        assert len(markers) == 1, result.stdout + result.stderr
+        parsed = parse_report_publication_marker(markers[0])
+        assert parsed is not None
+        assert parsed["outcome"] == "failed"
+        assert parsed["reason"] == "pull_request_unavailable"
+        assert "PRELOOP_PR_OPENED" not in result.stdout
+        assert repo.origin_show(REPORT_BRANCH, DOCUMENT) == "second report"
 
     def test_a_second_run_opens_the_pull_request_the_first_could_not(
         self, repo: PublishingRepo

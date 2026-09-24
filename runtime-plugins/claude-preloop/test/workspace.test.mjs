@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { WorkspaceManager } from "../dist/workspace.js";
+import { WorkspaceManager, assertGitArgs } from "../dist/workspace.js";
 
 function spec(slug, overrides = {}) {
   return {
@@ -198,6 +198,71 @@ test("managed dirty checkout fails without reset or clean", async () => {
     /preloop.managedcheckout/,
   );
   assert.equal(state.destructive.length, 0);
+});
+
+test("manager-built paths may contain spaces; remote tokens may not", () => {
+  assertGitArgs(["clone", "--", "https://github.com/example/repo.git", "/vol/my work/repo"]);
+  assert.throws(
+    () => assertGitArgs(["fetch", "origin", "--upload-pack=touch"]),
+    /unsafe git argument/,
+  );
+});
+
+test("a ref with a space is refused before git runs", async () => {
+  const root = await tempRoot();
+  const state = { calls: [], dirty: new Set(), destructive: [], maxInFlight: 0 };
+  const manager = new WorkspaceManager({ workspace_root: root }, makeGit(state));
+  await assert.rejects(
+    () =>
+      manager.prepare(
+        spec("example/repo", {
+          ref: "bad ref",
+          sha: "",
+          fetch_ref: "",
+          default_branch: "",
+        }),
+      ),
+    /unsafe git argument/,
+  );
+});
+
+test("eviction does not delete a checkout that starts preparing during isDirty", async () => {
+  const root = await tempRoot();
+  let releaseStatus = () => {};
+  const gate = new Promise((resolve) => {
+    releaseStatus = resolve;
+  });
+  let markStarted = () => {};
+  const started = new Promise((resolve) => {
+    markStarted = resolve;
+  });
+  const state = {
+    calls: [],
+    dirty: new Set(),
+    destructive: [],
+    maxInFlight: 0,
+    pauseStatus: "",
+  };
+  const inner = makeGit(state);
+  const git = async (args, options) => {
+    if (gitSubcommand(args) === "status" && options.cwd === state.pauseStatus) {
+      markStarted();
+      await gate;
+    }
+    return inner(args, options);
+  };
+  const manager = new WorkspaceManager(
+    { workspace_root: root, workspace_repositories_max: 1 },
+    git,
+  );
+  const oldest = await manager.prepare(spec("example/old"));
+  state.pauseStatus = oldest;
+  const evicting = manager.prepare(spec("example/new"));
+  await started;
+  const reprepare = manager.prepare(spec("example/old"));
+  releaseStatus();
+  await Promise.all([evicting, reprepare]);
+  await fs.access(path.join(oldest, ".git"));
 });
 
 test("concurrent prepares on different repositories do not deadlock", async () => {

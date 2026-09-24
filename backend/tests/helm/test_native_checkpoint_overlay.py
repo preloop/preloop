@@ -38,6 +38,7 @@ def test_checkpoint_overlay_reaches_api_and_execution_workers(template: str) -> 
             env = {item["name"]: item for item in env_items}
             assert len(env) == len(env_items)
             assert env["FLOW_ARTIFACT_DIRECT_UPLOAD"]["value"] == "true"
+            assert env["FLOW_EVIDENCE_LOG_PLAINTEXT"]["value"] == "false"
             assert env["WORKSPACE_SNAPSHOT_MAX_BYTES"]["value"] == "67108864"
             assert env["FLOW_NATIVE_SESSION_RETENTION_HOURS"]["value"] == "168"
             assert env["WORKSPACE_SNAPSHOT_TTL_HOURS"]["value"] == "168"

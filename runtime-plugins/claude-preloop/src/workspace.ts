@@ -90,14 +90,35 @@ export async function defaultGitRunner(
   }
 }
 
-function assertGitArgs(args: string[]): string[] {
-  return args.map((arg) => {
-    const matched = /^(?:--|-c|[A-Za-z0-9][A-Za-z0-9._:=/@+-]*)$/.exec(arg);
-    if (!matched || arg.includes("upload-pack") || arg.includes("\n") || arg.includes("\0")) {
-      throw new WorkspaceError("refusing unsafe git argument");
-    }
-    return matched[0];
-  });
+function refuseUnsafeGitText(arg: string): void {
+  if (arg.includes("upload-pack") || arg.includes("\n") || arg.includes("\0")) {
+    throw new WorkspaceError("refusing unsafe git argument");
+  }
+}
+
+/**
+ * Guard a git argv list.
+ *
+ * `execFile` does not invoke a shell, so a space or backslash in a
+ * manager-built path is not an injection vector. Newlines, NULs, and
+ * `upload-pack` overrides are refused on every argument. The character
+ * check for caller-supplied remotes and refs lives in `assertRemoteToken`.
+ */
+export function assertGitArgs(args: string[]): string[] {
+  for (const arg of args) {
+    refuseUnsafeGitText(arg);
+  }
+  return args;
+}
+
+const REMOTE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:@/+-]*$/;
+
+function assertRemoteToken(value: string): string {
+  refuseUnsafeGitText(value);
+  if (!REMOTE_TOKEN.test(value)) {
+    throw new WorkspaceError("refusing unsafe git argument");
+  }
+  return value;
 }
 
 function assertSafeSlug(slug: string): string {
@@ -117,12 +138,21 @@ function assertSafeSlug(slug: string): string {
 }
 
 function assertCloneUrl(url: string): void {
-  if (/^[a-z+][a-z+.-]*:\/\/[^/?#]*:[^@/?#]*@/i.test(url)) {
+  refuseUnsafeGitText(url);
+  const schemeSep = url.indexOf("://");
+  if (schemeSep === -1) {
+    return;
+  }
+  const scheme = url.slice(0, schemeSep).toLowerCase();
+  const rest = url.slice(schemeSep + 3);
+  const cut = rest.search(/[/?#]/);
+  const authority = cut === -1 ? rest : rest.slice(0, cut);
+  const at = authority.lastIndexOf("@");
+  if (at !== -1 && authority.slice(0, at).includes(":")) {
     throw new WorkspaceError(
       "refusing to clone with a password in repository_url; the host uses its own git credentials",
     );
   }
-  const scheme = url.includes("://") ? url.slice(0, url.indexOf(":")).toLowerCase() : "";
   if (scheme && !["https", "http", "ssh", "git"].includes(scheme)) {
     throw new WorkspaceError(`refusing clone scheme ${scheme}`);
   }
@@ -285,6 +315,7 @@ export class WorkspaceManager {
     }
     let lastError = "unknown error";
     for (const ref of unique) {
+      assertRemoteToken(ref);
       const result = await this.git(
         ["-c", "protocol.ext.allow=never", "fetch", "origin", ref],
         {
@@ -310,6 +341,7 @@ export class WorkspaceManager {
       );
     }
     await this.refuseDirty(repoDir);
+    assertRemoteToken(target);
     const result = await this.git(["checkout", "--detach", target], {
       cwd: repoDir,
       timeoutMs: workspaceFetchTimeoutMs(this.config),
@@ -379,20 +411,27 @@ export class WorkspaceManager {
     const max = workspaceRepositoriesMax(this.config);
     while (this.lru.length > max) {
       let removed = false;
-      for (let index = 0; index < this.lru.length; index += 1) {
-        const candidate = this.lru[index];
-        if (
-          candidate === current ||
-          this.inUse.has(candidate) ||
-          this.preparing.has(candidate)
-        ) {
+      for (const candidate of [...this.lru]) {
+        if (candidate === current) {
           continue;
         }
-        if (await this.isDirty(candidate)) {
+        const deleted = await this.exclusive(candidate, async () => {
+          const at = this.lru.indexOf(candidate);
+          if (
+            at < 0 ||
+            this.inUse.has(candidate) ||
+            this.preparing.has(candidate) ||
+            (await this.isDirty(candidate))
+          ) {
+            return false;
+          }
+          this.lru.splice(at, 1);
+          await fs.rm(candidate, { recursive: true, force: true });
+          return true;
+        });
+        if (!deleted) {
           continue;
         }
-        this.lru.splice(index, 1);
-        await fs.rm(candidate, { recursive: true, force: true });
         removed = true;
         break;
       }

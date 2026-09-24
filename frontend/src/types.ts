@@ -657,6 +657,9 @@ export interface ManagedAgentSummary {
   supports_existing_session?: boolean;
   supports_voice?: boolean;
   supports_interrupt?: boolean;
+  /** Loopback desktop advertised by the runtime plugin. Missing means none. */
+  desktop?: 'vnc' | 'rdp' | 'none';
+  desktop_display?: string | null;
   control_session_mode?: 'local' | 'remote' | 'queued' | 'offline' | string;
   /** Last Agent Control heartbeat, so the age of the presence signal is readable. */
   control_last_heartbeat_at?: string | null;
@@ -936,6 +939,7 @@ export interface RuntimeSessionRequestItem {
   total_tokens: number;
   estimated_cost: number;
   endpoint: string | null;
+  auth_subject_type?: string | null;
   tools: RuntimeSessionRequestTool[];
   tools_total_schema_tokens: number;
   cache?: RuntimeSessionRequestCache;
@@ -1258,6 +1262,17 @@ export interface RuntimeSessionOptimizationAppliedAction {
 
 export interface RuntimeSessionOptimizationActionListResponse {
   items: RuntimeSessionOptimizationAppliedAction[];
+}
+
+/** Session screenshot and recording bytes against the account storage budget. */
+export interface SessionArtifactUsage {
+  used_bytes: number;
+  budget_bytes: number;
+  by_kind: {
+    screenshot: number;
+    recording: number;
+  };
+  evicted_count_30d: number;
 }
 
 export interface AccountGatewayUsageSummaryResponse {

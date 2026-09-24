@@ -176,33 +176,61 @@ def host_exec_flow_error(
     return None
 
 
+_PULL_REQUEST_UNAVAILABLE = (
+    "host execution cannot publish pull requests; isolated "
+    "publication is unavailable on this path"
+)
+ISOLATED_PUBLICATION_UNAVAILABLE = (
+    "isolated publication is unavailable on native host profiles"
+)
+
+
 def host_exec_unavailable_reason(
     *,
     git_clone_config: Any = None,
     resume_from: Any = None,
     session_id: Any = None,
     custom_commands: Any = None,
+    publication_mode: Any = None,
 ) -> Optional[str]:
-    """Fail closed for publication and native resume in this first slice."""
+    """Fail closed for publication and native resume in this first slice.
+
+    Args:
+        git_clone_config: Flow checkout config. ``create_pull_request`` and
+            ``publication_mode`` are read from a mapping or model.
+        resume_from: Prior execution id for native CLI resume.
+        session_id: Server-supplied session id, which host execution rejects.
+        custom_commands: Remote command block. Enabled commands are rejected.
+        publication_mode: Explicit mode. When omitted, the mode on
+            ``git_clone_config`` is used. ``isolated`` on either the explicit
+            mode or the configured mode is rejected.
+
+    Returns:
+        A reason string when this host profile cannot run the request, or
+        None when the request is allowed.
+    """
     if isinstance(session_id, str) and session_id.strip():
         return "host execution does not accept server-supplied session ids"
     if isinstance(resume_from, str) and resume_from.strip():
         return "host execution does not resume native CLI sessions in this version"
     clone = git_clone_config
+    configured_mode = publication_mode
     if hasattr(clone, "model_dump"):
         clone = clone.model_dump()
     elif hasattr(clone, "create_pull_request") and not isinstance(clone, Mapping):
         if getattr(clone, "create_pull_request", False):
-            return (
-                "host execution cannot publish pull requests; isolated "
-                "publication is unavailable on this path"
-            )
+            return _PULL_REQUEST_UNAVAILABLE
+        if configured_mode is None:
+            configured_mode = getattr(clone, "publication_mode", None)
         clone = None
     if isinstance(clone, Mapping) and clone.get("create_pull_request"):
-        return (
-            "host execution cannot publish pull requests; isolated "
-            "publication is unavailable on this path"
-        )
+        return _PULL_REQUEST_UNAVAILABLE
+    if isinstance(clone, Mapping) and configured_mode is None:
+        configured_mode = clone.get("publication_mode")
+    if configured_mode == "isolated" or (
+        isinstance(clone, Mapping) and clone.get("publication_mode") == "isolated"
+    ):
+        return ISOLATED_PUBLICATION_UNAVAILABLE
     if isinstance(clone, Mapping) and (
         clone.get("enabled") or clone.get("repositories") or clone.get("setup_commands")
     ):

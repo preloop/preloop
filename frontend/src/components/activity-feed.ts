@@ -29,6 +29,8 @@ import {
 } from '../utils/execution-subject';
 import './attribution-line';
 import type { AttributionSource } from './attribution-line';
+import './repository-chip';
+import { getApprovalRepository } from '../utils/approval-identity';
 
 export type FeedTone = 'success' | 'warning' | 'danger' | 'neutral';
 
@@ -1562,6 +1564,10 @@ export class ActivityFeed extends LitElement {
         margin-bottom: var(--sl-spacing-x-small);
       }
 
+      .body-repository {
+        margin-bottom: var(--sl-spacing-x-small);
+      }
+
       .fields {
         display: grid;
         gap: var(--sl-spacing-x-small) var(--sl-spacing-medium);
@@ -2101,6 +2107,15 @@ export class ActivityFeed extends LitElement {
                 class="body-attribution"
                 .source=${event.attribution}
               ></attribution-line>`
+            : nothing
+        }
+        ${
+          event.attribution &&
+          getApprovalRepository(event.attribution.tool_args)
+            ? html`<repository-chip
+                class="body-repository"
+                .toolArgs=${event.attribution.tool_args}
+              ></repository-chip>`
             : nothing
         }
         <dl class="fields">

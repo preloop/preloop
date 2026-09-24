@@ -253,7 +253,11 @@ def test_persistent_preset_does_not_hardcode_workspace_path() -> None:
         slug = data.get("slug")
         if not isinstance(slug, str) or not supports_persistent_for_slug(slug):
             continue
-        assert "/workspace" not in path.read_text() or slug == "pull-request-reviewer"
+        # A supported preset may mention the container path only on the
+        # ephemeral branch. The escape is that line, not the whole slug.
+        for line in path.read_text().splitlines():
+            if "/workspace" in line:
+                assert "ephemeral" in line, path.name
         checked += 1
     assert checked >= 1
     assert supports_persistent_for_slug("pull-request-reviewer") is True
@@ -285,3 +289,56 @@ def test_persistent_preset_rejection_uses_catalog_name() -> None:
         )
         is None
     )
+
+
+def test_workspace_metadata_failure_degrades_to_clone_less(monkeypatch) -> None:
+    from preloop.agents import agent_control
+
+    def _boom(**_kwargs):
+        raise RuntimeError("workspace helper failed")
+
+    monkeypatch.setattr(agent_control, "workspace_metadata", _boom)
+    metadata = agent_control._flow_dispatch_metadata({"flow_id": "flow-1"})
+    assert metadata["workspace"] == {"mode": "clone_less"}
+
+
+def test_create_flow_rejects_persistent_opt_out_preset(db_session, test_user) -> None:
+    """POST /flows returns 422 when a catalog preset opts out of persistent."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from preloop.api.auth import get_current_active_user
+    from preloop.api.endpoints.flows import router
+    from preloop.models.crud import crud_flow
+    from preloop.models.db.session import get_db_session
+    from preloop.models.schemas.flow import FlowCreate
+
+    preset = crud_flow.create(
+        db=db_session,
+        flow_in=FlowCreate(
+            name="Automated Issue Implementation",
+            prompt_template="implement the issue",
+            agent_type="codex",
+            agent_config={},
+            is_preset=True,
+        ),
+        account_id=test_user.account_id,
+    )
+    db_session.commit()
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    app.dependency_overrides[get_current_active_user] = lambda: test_user
+    client = TestClient(app)
+    response = client.post(
+        "/flows",
+        json={
+            "name": "Persistent copy",
+            "prompt_template": "implement the issue",
+            "agent_type": "codex",
+            "agent_config": {"execution_path": "persistent"},
+            "source_preset_id": str(preset.id),
+        },
+    )
+    assert response.status_code == 422, response.text
+    assert "does not support persistent execution" in response.text
