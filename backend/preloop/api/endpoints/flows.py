@@ -915,7 +915,7 @@ def read_flow_execution(
             # the console shows a refusal string where it already shows an
             # error, and never leaks the raw argument payload.
             succeeded = str(row.status or "").startswith("succ")
-            return {
+            entry: Dict[str, Any] = {
                 "timestamp": row.timestamp.isoformat() if row.timestamp else None,
                 "tool_name": row.tool_name,
                 "server_name": row.server_name,
@@ -924,9 +924,12 @@ def read_flow_execution(
                 "result_summary": row.summary if succeeded else None,
                 "error": None if succeeded else row.summary,
                 "correlation_id": (row.metadata_ or {}).get("correlation_id"),
-                "started_at": (row.metadata_ or {}).get("started_at"),
                 "arguments_summary": (row.metadata_ or {}).get("arguments_summary"),
             }
+            started_at = (row.metadata_ or {}).get("started_at")
+            if started_at:
+                entry["started_at"] = started_at
+            return entry
 
         activity_logs = [_activity_log(row) for row in activity_rows]
         existing_logs: List[Any] = (
