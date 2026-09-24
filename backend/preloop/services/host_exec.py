@@ -17,6 +17,10 @@ HOST_EXEC_COMPLETION_PROTOCOL = "host_exec"
 HOST_EXEC_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 HOST_EXEC_CAPABILITIES = frozenset({"host_exec", "cursor_cli", "stdout", "cancel"})
 HOST_EXEC_MAX_RESULT_BYTES = 256 * 1024
+HOST_EXEC_ISOLATED_PUBLICATION_REASON = (
+    "host execution cannot use isolated publication; isolated publication "
+    "is unavailable on native host profiles"
+)
 _HOST_EXEC_TERMINAL = frozenset(
     {"SUCCEEDED", "FAILED", "STOPPED", "TIMEOUT", "CANCELLED"}
 )
@@ -182,12 +186,20 @@ def host_exec_unavailable_reason(
     resume_from: Any = None,
     session_id: Any = None,
     custom_commands: Any = None,
+    publication_mode: Any = None,
 ) -> Optional[str]:
-    """Fail closed for publication and native resume in this first slice."""
+    """Fail closed for publication and native resume in this first slice.
+
+    Isolated publication is the same boundary as ``create_pull_request``: a
+    native host profile has no trusted publisher, so the check must reject the
+    mode before any credential or snapshot is considered.
+    """
     if isinstance(session_id, str) and session_id.strip():
         return "host execution does not accept server-supplied session ids"
     if isinstance(resume_from, str) and resume_from.strip():
         return "host execution does not resume native CLI sessions in this version"
+    if _isolated_publication_requested(git_clone_config, publication_mode):
+        return HOST_EXEC_ISOLATED_PUBLICATION_REASON
     clone = git_clone_config
     if hasattr(clone, "model_dump"):
         clone = clone.model_dump()
@@ -213,6 +225,31 @@ def host_exec_unavailable_reason(
     if isinstance(commands, Mapping) and commands.get("enabled"):
         return "host execution does not support remote custom commands in this version"
     return None
+
+
+def _isolated_publication_requested(
+    git_clone_config: Any, publication_mode: Any = None
+) -> bool:
+    """True when isolated publication is selected, from either source.
+
+    Accepts an explicit mode, a JSON ``git_clone_config`` mapping, or a
+    pydantic config object so every caller can fail closed the same way.
+    """
+    candidates: List[Any] = [publication_mode]
+    clone = git_clone_config
+    if hasattr(clone, "model_dump"):
+        try:
+            clone = clone.model_dump()
+        except Exception:  # pragma: no cover - defensive dump guard
+            clone = None
+    if isinstance(clone, Mapping):
+        candidates.append(clone.get("publication_mode"))
+    elif clone is not None:
+        candidates.append(getattr(clone, "publication_mode", None))
+    return any(
+        isinstance(candidate, str) and candidate.strip().lower() == "isolated"
+        for candidate in candidates
+    )
 
 
 def _completion_result(message: Mapping[str, Any]) -> Optional[Dict[str, Any]]:

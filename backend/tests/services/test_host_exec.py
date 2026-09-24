@@ -113,6 +113,37 @@ def test_unavailable_publication_and_resume() -> None:
     assert host_exec_unavailable_reason(git_clone_config={"enabled": True})
 
 
+def test_unavailable_reason_names_isolated_publication() -> None:
+    """Isolated mode is rejected exactly like create_pull_request."""
+    reason = host_exec_unavailable_reason(
+        git_clone_config={"publication_mode": "isolated"}
+    )
+    assert reason is not None
+    assert "isolated publication" in reason
+    assert "unavailable" in reason
+
+    explicit = host_exec_unavailable_reason(
+        git_clone_config={"enabled": True}, publication_mode="isolated"
+    )
+    assert explicit is not None
+    assert "isolated publication" in explicit
+
+    # A pydantic-shaped config object fails closed the same way.
+    assert host_exec_unavailable_reason(
+        git_clone_config=SimpleNamespace(publication_mode="isolated")
+    )
+
+    # The legacy mode and an absent mode keep the previous behaviour.
+    assert (
+        host_exec_unavailable_reason(
+            git_clone_config={"publication_mode": "legacy", "enabled": False}
+        )
+        is None
+    )
+    assert host_exec_unavailable_reason(git_clone_config={"enabled": False}) is None
+    assert host_exec_unavailable_reason(publication_mode="legacy") is None
+
+
 def test_host_exec_success_requires_structured_result() -> None:
     failed, _, _ = validate_host_exec_completion(
         {"status": "SUCCEEDED", "exit_code": 0}

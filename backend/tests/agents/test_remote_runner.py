@@ -377,6 +377,35 @@ def test_lease_payload_host_exec_rejects_pull_request() -> None:
         )
 
 
+def test_lease_payload_host_exec_rejects_isolated_publication_with_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored snapshot must not let a native host job drop the publication."""
+    execution_id = uuid4()
+    executor = RemoteRunnerExecutor(
+        "cursor", {}, db=MagicMock(), pool="local", account_id=uuid4()
+    )
+    snapshot_execution = SimpleNamespace(
+        id=execution_id,
+        result={"_private_publication": {"nonce": "stored"}},
+    )
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_execution.get",
+        lambda *args, **kwargs: snapshot_execution,
+    )
+    with pytest.raises(ValueError, match="isolated publication"):
+        executor._lease_payload(
+            execution_id=execution_id,
+            flow_id=uuid4(),
+            prompt="publish",
+            execution_context={
+                "agent_type": "cursor",
+                "agent_config": {"host_exec_profile": "cursor-ask"},
+                "git_clone_config": {"publication_mode": "isolated"},
+            },
+        )
+
+
 def test_lease_payload_host_exec_rejects_resume() -> None:
     executor = RemoteRunnerExecutor(
         "cursor", {}, db=MagicMock(), pool="local", account_id=uuid4()

@@ -23,6 +23,7 @@ from preloop.services.runner_service import (
 
 from preloop.services.host_exec import (
     HOST_EXEC_AGENT_TYPE,
+    HOST_EXEC_ISOLATED_PUBLICATION_REASON,
     host_exec_profile_name,
     host_exec_unavailable_reason,
 )
@@ -387,6 +388,10 @@ class RemoteRunnerExecutor(AgentExecutor):
         if (payload.get("git_clone_config") or {}).get(
             "publication_mode"
         ) == "isolated":
+            if profile:
+                # Defense in depth: the host-exec guard above already rejects
+                # this, but a host job must never silently drop the snapshot.
+                raise ValueError(HOST_EXEC_ISOLATED_PUBLICATION_REASON)
             execution = crud_flow_execution.get(
                 self.db, id=execution_id, account_id=str(self.account_id), refresh=True
             )

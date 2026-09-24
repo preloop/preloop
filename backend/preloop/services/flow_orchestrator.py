@@ -2305,12 +2305,19 @@ class FlowExecutionOrchestrator:
 
         profile = host_exec_profile_name(self.flow.agent_config)
         if effective_agent_type == "cursor" or profile:
+            git_clone_config = self.flow.git_clone_config
+            publication_mode = (
+                git_clone_config.get("publication_mode")
+                if isinstance(git_clone_config, dict)
+                else getattr(git_clone_config, "publication_mode", None)
+            )
             error = host_exec_flow_error(
                 agent_type=effective_agent_type,
                 agent_config=self.flow.agent_config,
                 runner_pool=self.flow.runner_pool,
             ) or host_exec_unavailable_reason(
-                git_clone_config=self.flow.git_clone_config,
+                git_clone_config=git_clone_config,
+                publication_mode=publication_mode,
                 custom_commands=self.flow.custom_commands,
             )
             if error:
