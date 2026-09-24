@@ -619,10 +619,23 @@ def _unmeasurable_sbom(path: str, raw: bytes) -> bool:
     lowered = path.lower()
     if lowered.endswith(".cdx.xml") or lowered.endswith(".spdx"):
         return True
-    head = raw.lstrip()[:256]
-    if head.startswith(b"SPDXVersion:"):
+    window = raw[:4096]
+    if b"<" in window and b"cyclonedx" in window.lower():
         return True
-    return head.startswith(b"<") and b"cyclonedx" in head.lower()
+    return _tag_value_header(window)
+
+
+def _tag_value_header(raw: bytes) -> bool:
+    """True when ``raw`` is SPDX tag-value, allowing leading comments.
+
+    Tag-value permits ``#`` comment lines before ``SPDXVersion:``.
+    """
+    for line in raw.splitlines():
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith(b"#"):
+            continue
+        return stripped.startswith(b"SPDXVersion:")
+    return False
 
 
 def _looks_like_sbom(path: str, raw: bytes) -> bool:

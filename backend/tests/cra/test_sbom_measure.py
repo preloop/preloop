@@ -327,6 +327,34 @@ class TestTriggerSeeds:
             item.get("path") == "sbom/build.spdx" for item in measured["documents"]
         )
 
+    def test_comment_prefixed_tag_value_is_recorded(self) -> None:
+        body = b"# written by an example toolchain\n\nSPDXVersion: SPDX-2.3\n"
+        trigger = {
+            "workspace_files": [
+                {
+                    "path": "docs/legacy.spdx.txt",
+                    "content_base64": base64.b64encode(body).decode(),
+                }
+            ]
+        }
+        measured = measure_trigger(trigger)
+        assert measured["status"] == "skipped"
+        assert "does not measure" in measured["reason"]
+        assert measured["documents"][0]["path"] == "docs/legacy.spdx.txt"
+        preamble = b"<!-- " + (b"x" * 400) + b" -->"
+        xml = preamble + b'<bom xmlns="http://cyclonedx.org/schema/bom/1.6"/>'
+        xml_trigger = {
+            "workspace_files": [
+                {
+                    "path": "docs/legacy.cdx.txt",
+                    "content_base64": base64.b64encode(xml).decode(),
+                }
+            ]
+        }
+        xml_measured = measure_trigger(xml_trigger)
+        assert "does not measure" in xml_measured["reason"]
+        assert xml_measured["documents"][0]["path"] == "docs/legacy.cdx.txt"
+
     def test_aggregate_is_deterministic(self) -> None:
         first = _cdx([_component("lib-a")])
         second = _cdx([_component("lib-b"), _component("lib-c")])
