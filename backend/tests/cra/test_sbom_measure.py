@@ -355,6 +355,34 @@ class TestTriggerSeeds:
         assert "does not measure" in xml_measured["reason"]
         assert xml_measured["documents"][0]["path"] == "docs/legacy.cdx.txt"
 
+    def test_a_mention_of_cyclonedx_is_not_an_sbom(self) -> None:
+        readme = b'# notes\nSee <a href="https://example.com">cyclonedx</a>.\n'
+        trigger = {
+            "workspace_files": [
+                {
+                    "path": "sbom/README.md",
+                    "content_base64": base64.b64encode(readme).decode(),
+                }
+            ]
+        }
+        measured = measure_trigger(trigger)
+        assert measured["reason"] == "no SBOM seeds reachable"
+        assert "documents" not in measured or not measured["documents"]
+
+    def test_gzipped_tag_value_is_recorded(self) -> None:
+        raw = gzip.compress(b"# note\nSPDXVersion: SPDX-2.3\n")
+        trigger = {
+            "workspace_files": [
+                {
+                    "path": "docs/legacy.spdx.txt.gz",
+                    "content_base64": base64.b64encode(raw).decode(),
+                }
+            ]
+        }
+        measured = measure_trigger(trigger)
+        assert "does not measure" in measured["reason"]
+        assert measured["documents"][0]["path"] == "docs/legacy.spdx.txt.gz"
+
     def test_aggregate_is_deterministic(self) -> None:
         first = _cdx([_component("lib-a")])
         second = _cdx([_component("lib-b"), _component("lib-c")])

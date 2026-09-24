@@ -620,7 +620,10 @@ def _unmeasurable_sbom(path: str, raw: bytes) -> bool:
     if lowered.endswith(".cdx.xml") or lowered.endswith(".spdx"):
         return True
     window = raw[:4096]
-    if b"<" in window and b"cyclonedx" in window.lower():
+    if window.startswith(_GZIP_MAGIC):
+        inflated, _reason = _gunzip_bounded(raw)
+        window = (inflated or b"")[:4096]
+    if window.lstrip().startswith(b"<") and b"cyclonedx" in window.lower():
         return True
     return _tag_value_header(window)
 
