@@ -144,6 +144,16 @@ def test_decrypt_round_trip_ciphertext_differs_from_plaintext(
     assert stored.activity_id == scope["activity_id"]
 
 
+def test_decrypt_corrupt_ciphertext_raises_artifact_undecryptable(
+    db_session: Session, scope: dict[str, Any]
+) -> None:
+    """A non-null token that is not valid Fernet is one documented error."""
+    stored = _store(db_session, scope)
+    stored.ciphertext = b"not-a-fernet-token"
+    with pytest.raises(ValueError, match="artifact_undecryptable"):
+        crud.decrypt(stored)
+
+
 def test_mark_unavailable_clears_ciphertext_and_bytes(
     db_session: Session, scope: dict[str, Any]
 ) -> None:

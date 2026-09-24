@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
+from cryptography.fernet import InvalidToken
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -231,11 +232,15 @@ def decrypt(artifact: models.RuntimeSessionArtifact) -> bytes:
 
     Raises:
         ValueError: ``artifact_unavailable`` when the ciphertext has been
-            cleared.
+            cleared, or ``artifact_undecryptable`` when the stored token
+            cannot be decrypted.
     """
     if artifact.ciphertext is None:
         raise ValueError("artifact_unavailable")
-    return bytes(_get_fernet().decrypt(bytes(artifact.ciphertext)))
+    try:
+        return bytes(_get_fernet().decrypt(bytes(artifact.ciphertext)))
+    except InvalidToken as exc:
+        raise ValueError("artifact_undecryptable") from exc
 
 
 def mark_unavailable(
