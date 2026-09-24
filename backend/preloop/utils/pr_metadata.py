@@ -23,6 +23,13 @@ PROVENANCE_END = "<!-- preloop:executions:end -->"
 _PROVENANCE = re.compile(
     re.escape(PROVENANCE_START) + r".*?" + re.escape(PROVENANCE_END), re.DOTALL
 )
+_PROVENANCE_RECORD = re.compile(
+    r"^- \[(?:Initial execution|Repair execution)\]"
+    r"\(https?://[^)\s]+/console/flows/executions/"
+    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)"
+    r" \u2014 published `([0-9a-f]{40}|[0-9a-f]{64})`$"
+)
 
 
 @dataclass(frozen=True)
@@ -288,6 +295,62 @@ def upsert_provenance(
     if len(result.encode("utf-8")) > 65536:
         raise ValueError("PR body plus provenance exceeds provider limit")
     return result
+
+
+def parse_provenance(body: str) -> list[PublicationRecord]:
+    """Return records from every well-formed owned provenance region.
+
+    Args:
+        body: Pull request or merge request description.
+
+    Returns:
+        Execution records in region order. An absent region is an empty list.
+
+    Raises:
+        ValueError: Delimiters are unbalanced or a region line is not a record.
+    """
+    matches = list(_PROVENANCE.finditer(body))
+    if body.count(PROVENANCE_START) != len(matches) or body.count(
+        PROVENANCE_END
+    ) != len(matches):
+        raise ValueError(
+            "Malformed publisher provenance region; repair delimiters first"
+        )
+    records: list[PublicationRecord] = []
+    for match in matches:
+        region = match.group(0)
+        inner = region[len(PROVENANCE_START) : len(region) - len(PROVENANCE_END)]
+        for line in inner.splitlines():
+            if not line.strip() or line.strip() == "### Preloop executions":
+                continue
+            found = _PROVENANCE_RECORD.match(line)
+            if found is None:
+                raise ValueError(
+                    "Malformed publisher provenance region; repair delimiters first"
+                )
+            records.append(PublicationRecord(found.group(1), found.group(2)))
+    return records
+
+
+def append_provenance(body: str, record: PublicationRecord, public_url: str) -> str:
+    """Append one execution record unless that id and SHA are already present.
+
+    Args:
+        body: Existing description, including any human prose.
+        record: Current execution and published head.
+        public_url: Public application origin used for execution links.
+
+    Returns:
+        Description with a single owned provenance region.
+
+    Raises:
+        ValueError: The owned region is malformed or the result exceeds the
+            provider body limit. The caller must leave the remote body unchanged.
+    """
+    records = parse_provenance(body)
+    if record not in records:
+        records.append(record)
+    return upsert_provenance(body, records, public_url)
 
 
 def discover_template(
