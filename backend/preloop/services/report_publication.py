@@ -464,7 +464,12 @@ _preloop_report_publish() {{
   PRELOOP_REPORT_OUTCOME={OUTCOME_PUBLISHED}
   PRELOOP_REPORT_REASON=
 {pull_request_shell}
-  if [ -z "${{PR_URL:-}}${{MR_URL:-}}" ]; then
+  # The embedded capture shell sets this flag and keeps going. A bare exit
+  # there would skip this marker. The body update failed after the push.
+  if [ -n "${{PRELOOP_PROVENANCE_FAILED:-}}" ]; then
+    PRELOOP_REPORT_OUTCOME={OUTCOME_FAILED}
+    PRELOOP_REPORT_REASON=pull_request_unavailable
+  elif [ -z "${{PR_URL:-}}${{MR_URL:-}}" ]; then
     PRELOOP_REPORT_OUTCOME={OUTCOME_FAILED}
     PRELOOP_REPORT_REASON=pull_request_unavailable
   fi

@@ -1506,6 +1506,26 @@ class TestGitApiTokensNotInScript:
             },
         }
 
+    def test_plain_push_exits_when_provenance_update_fails(self, container_executor):
+        from preloop.agents.container import (
+            build_github_pr_capture_shell,
+            provenance_failure_exit_shell,
+        )
+
+        capture = build_github_pr_capture_shell(
+            token_ref="${PRELOOP_GIT_TOKEN_1}",
+            owner="acme",
+            repo="private",
+            branch="preloop/fix",
+            execution_link="https://app.example.com/console/flows/executions/x",
+        )
+        warning = capture.split("PRELOOP_PROVENANCE_FAILED", 1)[1]
+        assert "exit 1" not in warning.split("elif", 1)[0]
+        commands = container_executor._prepare_git_post_execution_commands(
+            self._context()
+        )
+        assert provenance_failure_exit_shell().strip() in commands
+
     def test_post_execution_commands_contain_no_token(self, container_executor):
         context = self._context()
         commands = container_executor._prepare_git_post_execution_commands(context)
@@ -2761,9 +2781,12 @@ class TestLegacyContinuationProvenance:
             safe_source="main",
         )
         assert script
+        from preloop.agents.container import provenance_failure_exit_shell
+
         script = script.replace("/workspace", str(workspace)).replace(
             "/tmp/preloop-", str(tmp_path / "preloop-")
         )
+        script += provenance_failure_exit_shell()
         return subprocess.run(
             ["bash", "-c", script],
             cwd=repo,

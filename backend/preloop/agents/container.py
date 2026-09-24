@@ -485,6 +485,21 @@ PRELOOP_FAILURE_UPDATE
 """
 
 
+def provenance_failure_exit_shell() -> str:
+    """Non-zero exit for the plain push path when a body update failed.
+
+    Capture shells only set ``PRELOOP_PROVENANCE_FAILED``. A bare ``exit``
+    inside them also kills the report-publication wrapper, which must stay
+    at status zero and print one marker. Call this after the capture shell
+    on the plain push path only.
+    """
+    return """
+if [ -n "${PRELOOP_PROVENANCE_FAILED:-}" ]; then
+  exit 1
+fi
+"""
+
+
 def build_github_pr_capture_shell(
     *,
     token_ref: str,
@@ -516,9 +531,7 @@ def build_github_pr_capture_shell(
     fi
     if [ -n "$PRELOOP_PROVENANCE_FAILED" ]; then
       echo "PRELOOP_PR_METADATA_WARNING: existing pull request body was left unchanged" >&2
-      exit 1
-    fi
-    if [ -n "$PR_URL" ]; then
+    elif [ -n "$PR_URL" ]; then
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$PR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"github\\"}}"
     else
       echo "No pull request URL could be resolved for branch {branch}"
@@ -554,9 +567,7 @@ def build_gitlab_mr_capture_shell(
     fi
     if [ -n "$PRELOOP_PROVENANCE_FAILED" ]; then
       echo "PRELOOP_PR_METADATA_WARNING: existing pull request body was left unchanged" >&2
-      exit 1
-    fi
-    if [ -n "$MR_URL" ]; then
+    elif [ -n "$MR_URL" ]; then
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$MR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"gitlab\\"}}"
     else
       echo "No merge request URL could be resolved for branch {branch}"
@@ -5576,6 +5587,7 @@ true
                     )
                     if pr_create_cmd:
                         repo_post_commands.append(pr_create_cmd)
+                        repo_post_commands.append(provenance_failure_exit_shell())
 
                 repo_post_commands.extend(
                     [
