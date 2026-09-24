@@ -8,6 +8,14 @@ Account usage summaries filter ``runtime_principal_id`` without
 the type column, so the planner cannot use it for that filter and scans the
 account's raw rows. This partial index is the measured access path for the
 per-user window.
+
+The index is built inside the migration transaction, like every other index
+migration in this history. That takes a SHARE lock on ``api_usage`` and pauses
+gateway usage inserts for the duration of the build, which is acceptable at
+current ``api_usage`` sizes because the partial predicate limits the build to
+``model_gateway`` rows. A deployment with tens of millions of rows should build
+it concurrently instead (``postgresql_concurrently=True`` inside
+``op.get_context().autocommit_block()``, with the matching concurrent drop).
 """
 
 from typing import Sequence, Union
