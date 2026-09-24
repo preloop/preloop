@@ -178,4 +178,35 @@ describe('PreloopFlowForm persistent target picker', () => {
     );
     expect(review?.getAttribute('aria-disabled')).to.equal('false');
   });
+
+  it('clears an unsupported preset when switching to persistent', async () => {
+    const element = await mount();
+    const form = element as unknown as {
+      presets: unknown[];
+      pickerSelectedId: string;
+      sourcePresetId: string | null;
+      flowExecutionPath: string;
+      applyExecutionPath: (path: 'ephemeral' | 'persistent') => void;
+      persistentPresetNotice: string;
+      requestUpdate: () => void;
+      updateComplete: Promise<unknown>;
+    };
+    form.presets = [
+      {
+        id: 'preset-impl',
+        name: 'Automated Issue Implementation',
+        supports_persistent: false,
+      },
+    ];
+    form.pickerSelectedId = 'preset-impl';
+    form.sourcePresetId = 'preset-impl';
+    form.applyExecutionPath('persistent');
+    form.requestUpdate();
+    await form.updateComplete;
+    expect(form.pickerSelectedId).to.equal('');
+    expect(form.sourcePresetId).to.equal(null);
+    expect(form.persistentPresetNotice).to.contain(
+      'does not support persistent execution'
+    );
+  });
 });

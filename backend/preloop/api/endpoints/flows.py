@@ -114,6 +114,17 @@ def _reject_host_exec_flow(
             raise HTTPException(status_code=400, detail=blocked)
 
 
+def _reject_unsupported_persistent_preset(agent_config: Any, preset: Any) -> None:
+    """Reject a persistent execution path for a catalog preset that opts out."""
+    if preset is None:
+        return
+    from preloop.services.persistent_workspace import persistent_preset_rejection
+
+    reason = persistent_preset_rejection(agent_config, getattr(preset, "name", None))
+    if reason:
+        raise HTTPException(status_code=422, detail=reason)
+
+
 @router.post("/flows", response_model=schemas.FlowResponse)
 @require_permission("create_flows")
 def create_flow(
@@ -199,6 +210,7 @@ def create_flow(
                 detail=f"Source flow {flow_in.source_preset_id} is not a preset. "
                 "Only preset flows can be used as a source.",
             )
+        _reject_unsupported_persistent_preset(flow_in.agent_config, preset)
 
         # Security: Preset must be global (account_id is None) or belong to the user's account
         if (
@@ -2303,6 +2315,14 @@ def update_flow(
     # We forcibly preserve the existing source_preset_id to prevent any modification,
     # including unlinking by setting to None.
     flow_in.source_preset_id = flow.source_preset_id
+    if flow.source_preset_id:
+        source_preset = crud_flow.get(db=db, id=flow.source_preset_id)
+        agent_config = (
+            flow_in.agent_config
+            if flow_in.agent_config is not None
+            else flow.agent_config
+        )
+        _reject_unsupported_persistent_preset(agent_config, source_preset)
 
     # Check for name uniqueness if name is being changed
     # Note: We intentionally allow flows to have the same name as global presets

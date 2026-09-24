@@ -143,10 +143,17 @@ def _flow_dispatch_metadata(
     if resolved_timeout is not None:
         metadata["timeout_seconds"] = resolved_timeout
     git_config = execution_context.get("git_clone_config")
-    metadata["workspace"] = workspace_metadata(
-        git_clone_config=git_config,
-        trigger_event_data=execution_context.get("trigger_event_data"),
-    )
+    try:
+        metadata["workspace"] = workspace_metadata(
+            git_clone_config=git_config,
+            trigger_event_data=execution_context.get("trigger_event_data"),
+        )
+    except Exception:
+        logger.warning(
+            "workspace metadata failed; sending clone_less",
+            exc_info=True,
+        )
+        metadata["workspace"] = {"mode": "clone_less"}
     return {key: value for key, value in metadata.items() if value is not None}
 
 
@@ -281,7 +288,11 @@ class AgentControlExecutor(AgentExecutor):
                 category="runner_error",
             )
         dispatch_context = execution_context
-        if execution_context.get("git_clone_config") is None and self.flow is not None:
+        # Copy the flow clone config only when the context omitted it.
+        # A confirmation nudge sets the key to None on purpose so the
+        # nudge does not repeat the original checkout. That path does not
+        # reach this executor while supports_confirmation_nudge is False.
+        if "git_clone_config" not in execution_context and self.flow is not None:
             flow_git = getattr(self.flow, "git_clone_config", None)
             if flow_git is not None:
                 dispatch_context = {

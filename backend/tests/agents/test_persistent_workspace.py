@@ -264,5 +264,24 @@ def test_persistent_preset_does_not_hardcode_workspace_path() -> None:
     assert supports_persistent_for_slug("automated-issue-implementation") is False
     assert supports_persistent_for_slug("portfolio-review") is False
     assert set(PRESET_SLUGS)
-    for slug in PRESET_SLUGS:
-        assert isinstance(supports_persistent_for_slug(slug), bool)
+    root = Path(__file__).resolve().parents[2] / "presets"
+    for path in root.glob("*.yaml"):
+        data = yaml.safe_load(path.read_text())
+        assert "supports_persistent" in data, path.name
+        assert isinstance(data["supports_persistent"], bool), path.name
+
+
+def test_persistent_preset_rejection_uses_catalog_name() -> None:
+    from preloop.services.persistent_workspace import persistent_preset_rejection
+
+    persistent = {"execution_path": "persistent"}
+    assert persistent_preset_rejection(persistent, "Pull Request Reviewer") is None
+    reason = persistent_preset_rejection(persistent, "Automated Issue Implementation")
+    assert reason is not None
+    assert "does not support persistent execution" in reason
+    assert (
+        persistent_preset_rejection(
+            {"execution_path": "ephemeral"}, "Automated Issue Implementation"
+        )
+        is None
+    )

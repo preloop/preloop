@@ -246,6 +246,33 @@ def ephemeral_clone_identity(
     return identity
 
 
+def persistent_preset_rejection(
+    agent_config: Any, preset_name: Optional[str]
+) -> Optional[str]:
+    """Reason a persistent run cannot use this catalog preset, if any.
+
+    Blank flows and renamed account copies have no catalog name, so they
+    are not rejected here.
+    """
+
+    config = unwrap_agent_config(agent_config)
+    if not isinstance(config, dict):
+        config = agent_config if isinstance(agent_config, dict) else {}
+    if not isinstance(config, dict) or config.get("execution_path") != "persistent":
+        return None
+    if not preset_name:
+        return None
+    from preloop.flow_presets import PRESET_SLUGS_BY_NAME, supports_persistent_for_slug
+
+    slug = PRESET_SLUGS_BY_NAME.get(preset_name)
+    if slug is None or supports_persistent_for_slug(slug):
+        return None
+    return (
+        "This preset does not support persistent execution. "
+        "It expects an ephemeral checkout."
+    )
+
+
 def workspace_mode(
     *,
     agent_config: Any = None,

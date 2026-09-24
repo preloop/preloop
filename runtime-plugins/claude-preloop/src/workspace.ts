@@ -61,8 +61,9 @@ export async function defaultGitRunner(
   args: string[],
   options: { cwd?: string; timeoutMs?: number },
 ): Promise<GitRunResult> {
+  const safeArgs = assertGitArgs(args);
   try {
-    const { stdout, stderr } = await execFileAsync("git", args, {
+    const { stdout, stderr } = await execFileAsync("git", safeArgs, {
       cwd: options.cwd,
       timeout: options.timeoutMs,
       maxBuffer: 8 * 1024 * 1024,
@@ -89,8 +90,26 @@ export async function defaultGitRunner(
   }
 }
 
+function assertGitArgs(args: string[]): string[] {
+  for (const arg of args) {
+    if (arg === "--upload-pack" || arg.startsWith("--upload-pack=")) {
+      throw new WorkspaceError("refusing git upload-pack override");
+    }
+    if (arg.includes("\n") || arg.includes("\0")) {
+      throw new WorkspaceError("refusing git argument with a newline");
+    }
+  }
+  return args;
+}
+
 function assertSafeSlug(slug: string): string {
-  const text = slug.trim().replace(/^\/+|\/+$/g, "");
+  let text = slug.trim();
+  while (text.startsWith("/")) {
+    text = text.slice(1);
+  }
+  while (text.endsWith("/")) {
+    text = text.slice(0, -1);
+  }
   if (!text || text.split("/").some((part) => part === ".." || part === "")) {
     throw new WorkspaceError(
       `repository_slug ${JSON.stringify(slug)} is not a safe checkout path`,
