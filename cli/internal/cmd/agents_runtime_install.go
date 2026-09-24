@@ -28,6 +28,7 @@ Examples:
   preloop agents install-runtime hermes
   preloop agents install-runtime openclaw -y
   preloop agents install-runtime hermes --dry-run
+  preloop agents install-runtime hermes --install-only --desktop --dry-run
   preloop agents install-runtime openclaw --skip-install -y`,
 	Args: cobra.ExactArgs(1),
 	RunE: runAgentsInstallRuntime,
@@ -38,6 +39,7 @@ func init() {
 	agentsInstallRuntimeCmd.Flags().Bool("dry-run", false, "preview install and onboarding steps without running them")
 	agentsInstallRuntimeCmd.Flags().Bool("skip-install", false, "skip upstream runtime installation and only onboard an already-installed agent")
 	agentsInstallRuntimeCmd.Flags().Bool("install-only", false, "install the upstream runtime without authentication or Preloop onboarding")
+	agentsInstallRuntimeCmd.Flags().Bool("desktop", false, "install a loopback-only headless desktop (Xvfb, x11vnc on 127.0.0.1:5900) and export DISPLAY=:99")
 	agentsInstallRuntimeCmd.Flags().BoolP("yes", "y", false, "skip onboarding confirmation prompts")
 	agentsInstallRuntimeCmd.Flags().BoolP("force", "f", false, "alias for --yes")
 	agentsInstallRuntimeCmd.Flags().Bool("live-validate", true, "after onboarding, run a supported live validation prompt through the agent")
@@ -143,11 +145,15 @@ func runAgentsInstallRuntime(cmd *cobra.Command, args []string) error {
 	skipLiveValidate, _ := cmd.Flags().GetBool("skip-live-validate")
 	preferredModel, _ := cmd.Flags().GetString("model")
 	preferredModel = strings.TrimSpace(preferredModel)
+	desktop, _ := cmd.Flags().GetBool("desktop")
 
 	if dryRun {
 		fmt.Printf("Would install %s with: %s\n", spec.displayName, spec.installSummary)
 		if skipInstall {
 			fmt.Println("Would skip upstream runtime installation (--skip-install).")
+		}
+		if desktop {
+			fmt.Print(desktopDryRunText())
 		}
 		if installOnly {
 			return nil
@@ -164,6 +170,20 @@ func runAgentsInstallRuntime(cmd *cobra.Command, args []string) error {
 			fmt.Printf("  Note: %s\n", note)
 		}
 		return nil
+	}
+
+	if desktop {
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		// Unsupported desktops fail here, before the runtime installer runs.
+		if err := installDesktop(ctx, desktopInstallOptions{
+			Runtime: spec.kind,
+			Output:  os.Stdout,
+		}); err != nil {
+			return err
+		}
 	}
 
 	if !skipInstall {
