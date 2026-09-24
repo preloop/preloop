@@ -638,9 +638,7 @@ def test_plain_key_streaming_header_attributes_usage(db_session, test_user):
         {
             "id": "chatcmpl_stream",
             "created": 1710000000,
-            "choices": [
-                {"index": 0, "delta": {"role": "assistant", "content": "hi"}}
-            ],
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": "hi"}}],
         },
         {
             "id": "chatcmpl_stream",
