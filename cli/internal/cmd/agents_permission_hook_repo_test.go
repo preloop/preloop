@@ -196,7 +196,16 @@ func TestResolveHookRepositoryTimeoutOmitsField(t *testing.T) {
 func TestBuildPermissionRequestUsesCwdNotToolArguments(t *testing.T) {
 	dir := initRepo(t, "https://user:ghp_exampletokenvalue@github.com/example/repo.git")
 	other := initRepo(t, "https://gitlab.com/other/secret.git")
-	raw := []byte(`{"cwd":"` + dir + `","tool_name":"Bash","tool_input":{"path":"` + other + `","command":"ls"}}`)
+	// Marshal the event so a Windows temp path (backslashes) is escaped
+	// correctly instead of being spliced into the JSON literal.
+	raw, err := json.Marshal(map[string]any{
+		"cwd":        dir,
+		"tool_name":  "Bash",
+		"tool_input": map[string]any{"path": other, "command": "ls"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	req, err := buildPermissionRequest(permissionSourceClaudeCode, raw, permissionHookCredential{})
 	if err != nil {
 		t.Fatal(err)
