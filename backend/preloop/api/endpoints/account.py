@@ -1058,6 +1058,22 @@ class AccountDetailsResponse(BaseModel):
     updated_at: str
 
 
+class SessionArtifactUsageByKind(BaseModel):
+    """Available plaintext bytes by artifact kind."""
+
+    screenshot: int
+    recording: int
+
+
+class SessionArtifactUsageResponse(BaseModel):
+    """Account session-artifact usage against the storage budget."""
+
+    used_bytes: int
+    budget_bytes: int
+    by_kind: SessionArtifactUsageByKind
+    evicted_count_30d: int
+
+
 class AccountDetailsUpdate(BaseModel):
     """Account details update request."""
 
@@ -1110,6 +1126,22 @@ async def get_account_details(
         hosted_minutes_remaining=getattr(account, "hosted_minutes_remaining", None),
         created_at=account.created_at.isoformat(),
         updated_at=account.updated_at.isoformat(),
+    )
+
+
+@router.get(
+    "/account/session-artifacts/usage",
+    response_model=SessionArtifactUsageResponse,
+)
+def get_session_artifact_usage(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    db: Session = Depends(get_db_session),
+) -> SessionArtifactUsageResponse:
+    """Return session-artifact bytes used, the budget, and recent evictions."""
+    from preloop.services.session_artifact_budget import account_usage
+
+    return SessionArtifactUsageResponse.model_validate(
+        account_usage(db, account_id=account.id)
     )
 
 

@@ -792,6 +792,17 @@ class Settings(BaseSettings):
             "Larger payloads are rejected before they are encrypted or stored."
         ),
     )
+    # TODO: per-account override of this budget. Global setting only for now.
+    runtime_session_artifact_account_max_bytes: int = Field(
+        5 * 1024**3,
+        ge=1,
+        description=(
+            "Per-account plaintext budget for runtime-session screenshots and "
+            "recordings. A store that would exceed it evicts the oldest "
+            "unheld artifacts before inserting. There is no per-account "
+            "override yet."
+        ),
+    )
     flow_environment_profiles_file: str = ""
 
     # Record retention, legal hold and the purge job

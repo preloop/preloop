@@ -107,9 +107,13 @@ def store(
         The new row, or the unchanged row when the source key already exists.
 
     Raises:
-        ValueError: ``artifact_kind_invalid`` for an unknown kind, or
-            ``artifact_too_large`` when the plaintext exceeds that kind's cap.
-            Nothing is written in either case.
+        ValueError: ``artifact_kind_invalid`` for an unknown kind,
+            ``artifact_too_large`` when the plaintext exceeds that kind's cap,
+            or ``storage_budget_exhausted`` when the account budget cannot fit
+            the plaintext even after evicting every unheld artifact. Nothing
+            is inserted in those cases. Callers map
+            ``storage_budget_exhausted`` to HTTP 507 for recordings and to a
+            rejected row for screenshots.
     """
     if len(plaintext) > _max_bytes(kind):
         raise ValueError("artifact_too_large")
@@ -125,6 +129,32 @@ def store(
         )
         if existing is not None:
             return existing
+
+    # Serialize budget checks the way flow-artifact quota checks do.
+    # Account identity does not change, so NO KEY UPDATE is sufficient.
+    db.query(models.Account).filter(models.Account.id == account_id).with_for_update(
+        key_share=True
+    ).one()
+    if source_ref is not None:
+        existing = _existing_source_row(
+            db,
+            account_id=account_id,
+            runtime_session_id=runtime_session_id,
+            kind=kind,
+            source=source,
+            source_ref=source_ref,
+        )
+        if existing is not None:
+            return existing
+
+    from preloop.services.session_artifact_budget import (
+        enforce_account_budget,
+        notify_evicted,
+    )
+
+    evicted = enforce_account_budget(
+        db, account_id=account_id, incoming_bytes=len(plaintext)
+    )
 
     session_held = (
         db.query(models.RuntimeSession.legal_hold)
@@ -175,6 +205,8 @@ def store(
     if commit:
         db.commit()
         db.refresh(artifact)
+        if evicted:
+            notify_evicted(db, account_id=account_id, artifacts=evicted)
     return artifact
 
 
