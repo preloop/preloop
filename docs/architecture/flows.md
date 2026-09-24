@@ -337,8 +337,9 @@ are never provenance inputs. Legacy publication adds the current execution
 block on creation and now also upserts it when a continuation push or a
 metadata-only retry finds the PR/MR already open. A malformed owned region, or
 a rewrite that would exceed the provider limit, warns through
-`PRELOOP_PR_METADATA_WARNING` and leaves the provider body unchanged; a failed
-provider update is surfaced and never reported as successful publication.
+`PRELOOP_PR_METADATA_WARNING` and leaves the owned provenance region unchanged;
+the independent failure-disclosure refresh still runs, and a failed provider
+update is surfaced and never reported as successful publication.
 
 The publication-mode by provider matrix records where each behavior is
 delivered (with its test), closed by the legacy continuation upsert above, or
@@ -356,8 +357,9 @@ lifetime alongside the GitHub App lease. Tests:
 `backend/tests/utils/test_pr_metadata.py` (parser round trip, append without
 duplicate, malformed region, oversize),
 `backend/tests/services/test_flow_pr_loop.py::TestLegacyContinuationProvenance`
-(legacy GitHub/GitLab continuation, idempotence, human prose, provider
-rejection) and `TestPostExecutionPullRequest` (legacy create),
+(legacy GitHub/GitLab continuation, idempotence, human prose, failure-disclosure
+decoupling, provider rejection) and `TestPostExecutionPullRequest` (legacy
+create),
 `backend/tests/services/test_failed_publication_metadata.py` (failure
 disclosure), and
 `backend/tests/services/test_trusted_publication.py` (isolated provider).

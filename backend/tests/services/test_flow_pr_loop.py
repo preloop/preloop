@@ -1027,6 +1027,45 @@ class TestLegacyContinuationProvenance:
         assert sent == ""
 
     @bash_required
+    def test_malformed_region_still_refreshes_failure_disclosure(self, tmp_path):
+        # A provenance bail-out must not suppress the independent #599
+        # disclosure: the owned region stays untouched, but the failure
+        # notice still reaches the provider.
+        script = build_github_pr_capture_shell(
+            token_ref="${TOKEN}",
+            owner="acme",
+            repo="app",
+            branch=CONTINUATION_BRANCH,
+            public_url=PUBLIC_URL,
+        )
+        notice = (
+            f"<!-- preloop:failure:{REPAIR_EXECUTION}:start -->\nfailed run\n"
+            f"<!-- preloop:failure:{REPAIR_EXECUTION}:end -->"
+        )
+        completed, sent = _run_legacy_continuation(
+            tmp_path,
+            script,
+            lookup=_github_lookup("Human\n" + PROVENANCE_START),
+            payload={
+                "title": "t",
+                "body": self._payload_body(REPAIR_EXECUTION, REPAIR_HEAD)
+                + "\n\n"
+                + notice,
+                "head": CONTINUATION_BRANCH,
+                "base": "main",
+            },
+        )
+        assert "PRELOOP_PR_METADATA_WARNING" in completed.stderr
+        body = json.loads(sent)["body"]
+        # Disclosure applied while the malformed owned region is left as-is.
+        assert f"<!-- preloop:failure:{REPAIR_EXECUTION}:start -->" in body
+        assert "failed run" in body
+        assert body.count(PROVENANCE_START) == 1
+        assert REPAIR_HEAD not in body
+        with pytest.raises(ValueError):
+            parse_provenance(body)
+
+    @bash_required
     def test_oversized_existing_body_warns_and_leaves_the_body_alone(self, tmp_path):
         script = build_github_pr_capture_shell(
             token_ref="${TOKEN}",

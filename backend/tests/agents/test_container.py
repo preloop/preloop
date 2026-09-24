@@ -2249,7 +2249,9 @@ class TestPostExecutionPullRequest:
             for token in commands.replace("\\n", " ").split()
             if "://" in token
         ]
-        assert "app.example.com" in hosts
+        # Equality on the parsed host keeps this an exact test; a substring
+        # membership check trips CodeQL's URL-sanitization query.
+        assert any(host == "app.example.com" for host in hosts)
 
 
 class TestExtractMergeRequestRef:
