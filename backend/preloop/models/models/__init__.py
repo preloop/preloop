@@ -98,6 +98,7 @@ from .repricing_job import RepricingJob
 from .policy_snapshot import PolicySnapshot
 from .runtime_session import RuntimeSession
 from .runtime_session_activity import RuntimeSessionActivity
+from .runtime_session_artifact import RuntimeSessionArtifact
 from .runtime_session_optimization_action import RuntimeSessionOptimizationAction
 from .runtime_session_optimization_result import RuntimeSessionOptimizationResult
 from .runtime_session_replay_run import RuntimeSessionReplayRun
@@ -241,6 +242,7 @@ __all__ = [
     "PolicySnapshot",
     "RuntimeSession",
     "RuntimeSessionActivity",
+    "RuntimeSessionArtifact",
     "RuntimeSessionOptimizationAction",
     "RuntimeSessionReplayRun",
     "RuntimeSessionOptimizationResult",

@@ -20,6 +20,7 @@ describe('failure-category', () => {
       'model_transient',
       'model_auth',
       'provider_billing',
+      'budget_exceeded',
       'model_quota',
       'model_config',
       'no_confirmation',

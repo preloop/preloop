@@ -134,6 +134,7 @@ from .repricing_job import crud_repricing_job
 from .policy_snapshot import CRUDPolicySnapshot, crud_policy_snapshot
 from .runtime_session import CRUDRuntimeSession
 from .runtime_session_activity import CRUDRuntimeSessionActivity
+from . import runtime_session_artifact as crud_runtime_session_artifact
 from .runtime_session_optimization_action import (
     CRUDRuntimeSessionOptimizationAction,
 )
@@ -365,6 +366,7 @@ __all__ = [
     "crud_policy_snapshot",
     "crud_runtime_session",
     "crud_runtime_session_activity",
+    "crud_runtime_session_artifact",
     "crud_runtime_session_optimization_action",
     "crud_runtime_session_replay_run",
     "crud_runtime_session_optimization_result",

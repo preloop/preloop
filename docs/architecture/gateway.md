@@ -122,6 +122,24 @@ if that alias is later renamed or disabled, but do not follow the model to its
 new alias. Review and explicitly replace those policies when changing model
 routing. Listing policies never rewrites aliases or historical spend.
 
+### Per-execution ceilings
+
+`BudgetPolicy` bounds an account, flow, API key or agent over a period; it does
+not bound one run. A flow can additionally set
+`agent_config.limits.{max_total_tokens,max_usd,max_turns}`. The runtime API key
+minted for a flow run carries its `flow_execution_id`, and every gateway
+request is attributed to that execution, so before forwarding a request the
+gateway sums the run's own usage (`api_usage.action_type='model_gateway'`,
+`flow_execution_id` match) and refuses with `execution_budget_exceeded` once a
+ceiling has been reached. Only *already spent* usage is compared, never a
+forecast: the request that crosses a ceiling completes once so the agent can
+emit its verdict, and the next one is refused. A run whose usage is entirely
+unpriced passes the USD check, for the same reason an unpriced model passes a
+hard limit. Refusal marks the execution `FAILED` with the `budget_exceeded`
+failure category and a message naming the ceiling. `max_turns` is counted at
+the gateway as one turn per model request, since no bundled runtime exposes a
+usable max-turns flag. Flows without `limits` are unchanged.
+
 ### Historical repricing jobs
 
 The billing repricing endpoint runs windows up to seven days in a worker

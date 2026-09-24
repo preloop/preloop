@@ -18,7 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the published branch when checkpoint uploads are disabled. A later
   repair still requires its own checkpoint. A repair that failed or timed
   out before it stored a session is tried again from that same published
-  branch, and the review it already picked up is not dropped.
+  branch, and the review it already picked up is not dropped. That failure
+  does not count as no progress, and a thread already stopped for no
+  progress in that situation is picked up again.
 - Pi and DeepSeek can check out a pull request on Kubernetes. The workspace
   volume stays owned by root, so Git accepted the clone and then refused
   the commit checkout as dubious ownership. Both harnesses run as that
