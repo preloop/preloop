@@ -53,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A workspace checkpoint that exceeds the storage cap logs
+  `PRELOOP_CHECKPOINT skipped checkpoint_oversized` and lets the run finish.
+  The last completed checkpoint stays the resume point. Other checkpoint
+  errors still block publication.
 - A gated tool call whose approval window is longer than
   `approval_park_after_seconds` parks the execution when the request is
   created, instead of polling in process for that long first. The park is

@@ -624,7 +624,22 @@ def main() -> None:
                     raise SystemExit(2) from None
                 print("PRELOOP_EVIDENCE failed " + type(exc).__name__, flush=True)
                 raise SystemExit(1) from None
-            print("PRELOOP_CHECKPOINT failed " + type(exc).__name__, flush=True)
+            # The cap is a storage limit, not a failed review. The legacy
+            # snapshot path prints a skip and returns 0; a direct upload that
+            # cannot fit must do the same or prepublication exits 1 after the
+            # agent has already finished.
+            if str(exc) == "checkpoint_oversized":
+                print(
+                    "PRELOOP_CHECKPOINT skipped checkpoint_oversized",
+                    flush=True,
+                )
+                return
+            reason = str(exc)
+            detail = " " + reason if re.fullmatch(r"[a-z0-9_]+", reason) else ""
+            print(
+                "PRELOOP_CHECKPOINT failed " + type(exc).__name__ + detail,
+                flush=True,
+            )
             raise SystemExit(1) from None
 
 
