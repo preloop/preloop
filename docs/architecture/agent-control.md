@@ -151,7 +151,9 @@ name every checkout the container would make.
 
 `repository_url` never contains a password. An `ssh://git@host/...` URL
 keeps the `git` user. Other schemes are dropped and the run is
-`clone_less` when no safe URL remains.
+`clone_less` when no safe URL remains. A repository whose name cannot be
+a safe checkout directory name (unsafe or missing `repository_slug`) also
+stays `clone_less`: a persistent checkout is a directory named by the slug.
 
 When clone is disabled, or no repository can be resolved, `workspace` is
 `{mode: "clone_less"}`. The review reads the diff from the tracker.
