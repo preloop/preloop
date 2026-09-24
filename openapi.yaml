@@ -22673,6 +22673,19 @@ components:
           type: boolean
           title: Supports Interrupt
           default: false
+        desktop:
+          type: string
+          enum:
+          - vnc
+          - rdp
+          - none
+          title: Desktop
+          default: none
+        desktop_display:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Desktop Display
         control_session_mode:
           type: string
           title: Control Session Mode

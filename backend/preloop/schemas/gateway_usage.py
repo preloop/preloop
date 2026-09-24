@@ -463,6 +463,10 @@ class ManagedAgentSummary(BaseModel):
     supports_existing_session: bool = False
     supports_voice: bool = False
     supports_interrupt: bool = False
+    #: Loopback desktop the runtime plugin advertised. ``none`` when the key
+    #: is missing or not a known desktop kind.
+    desktop: Literal["vnc", "rdp", "none"] = "none"
+    desktop_display: Optional[str] = None
     control_session_mode: str = "offline"
     #: Last Agent Control heartbeat this agent's plugin sent. Exposed so an
     #: operator (and staging debugging) can tell "no plugin" from "the plugin
