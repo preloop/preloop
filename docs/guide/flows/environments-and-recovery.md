@@ -79,7 +79,10 @@ enables direct uploads with a 64 MiB compressed cap and matching 80 MiB proxy
 limits. Merge its `extraEnv` entries with existing installation values.
 Without it, the legacy snapshot path remains in effect, including the 2 MiB
 Kubernetes log-channel cap. Raising `WORKSPACE_SNAPSHOT_MAX_BYTES` alone does
-not raise that log cap. A skipped legacy snapshot does not mean setup failed.
+not raise that log cap. `FLOW_EVIDENCE_LOG_PLAINTEXT=false` refuses that log
+channel (the snapshot is then skipped with `plaintext_disabled`); see
+[evidence storage](evidence-storage.md). A skipped legacy snapshot does not
+mean setup failed.
 With direct upload enabled, workspace
 checkpoints travel through authenticated HTTP, never the pod log channel.
 The service validates compressed and expanded size, archive paths and file

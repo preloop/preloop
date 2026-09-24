@@ -2947,8 +2947,9 @@ class ContainerAgentExecutor(AgentExecutor):
             )
             return None
         stream = self._extract_artifact_stream(lines, "workspace")
-        if self._marker_plaintext_disabled(stream) or (
-            not self._evidence_log_plaintext_enabled()
+        if stream is not None and (
+            self._marker_plaintext_disabled(stream)
+            or not self._evidence_log_plaintext_enabled()
         ):
             self.logger.info(
                 f"Workspace snapshot from Job {job_name} skipped "
