@@ -1,4 +1,5 @@
 slug: issue-refinement-readiness
+supports_persistent: false
 name: Issue Refinement and Readiness
 description: Produce a reviewable acceptance contract from triage; readiness authorization is separate.
 icon: clipboard-check

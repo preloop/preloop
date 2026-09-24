@@ -1,4 +1,5 @@
 slug: standards-compliance-walk
+supports_persistent: false
 name: Standards Compliance Walk
 description: >-
   Walks one repository against standards the trigger payload names

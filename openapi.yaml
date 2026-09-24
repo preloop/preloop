@@ -19394,6 +19394,10 @@ components:
           - type: string
           - type: 'null'
           title: Slug
+        supports_persistent:
+          type: boolean
+          title: Supports Persistent
+          default: false
         execution_stats:
           anyOf:
           - additionalProperties: true

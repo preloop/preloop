@@ -3062,6 +3062,7 @@ export class PreloopFlowForm extends LitElement {
                   .presets=${this.presets}
                   .selectedId=${this.pickerSelectedId}
                   ?collapsed=${this.pickerCollapsed}
+                  ?persistent=${this.flowExecutionPath === 'persistent'}
                   @preset-select=${this.handlePickerSelect}
                   @preset-change-request=${this.handlePickerChangeRequest}
                 ></preloop-flow-preset-picker>

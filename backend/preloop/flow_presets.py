@@ -30,7 +30,7 @@ import logging
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -89,6 +89,7 @@ def _load_yaml_file(path: Path) -> Dict[str, Any]:
 
 
 _PRESET_SLUGS: Dict[str, str] = {}
+_SUPPORTS_PERSISTENT: Dict[str, bool] = {}
 
 
 @lru_cache()
@@ -106,8 +107,8 @@ def load_flow_presets() -> List[Dict[str, Any]]:
     skipped; an empty catalog is the open-source default.
     """
 
-    # slug -> (numeric order, slug, source path, config)
-    merged: Dict[str, Tuple[int, str, Path, Dict[str, Any]]] = {}
+    # slug -> (numeric order, slug, source path, config, supports_persistent)
+    merged: Dict[str, Tuple[int, str, Path, Dict[str, Any], bool]] = {}
     for directory in PRESETS_DIRS:
         if not directory.exists():
             continue
@@ -116,6 +117,15 @@ def load_flow_presets() -> List[Dict[str, Any]]:
             # The slug is loader-internal identity; pop it so it never leaks
             # into the catalog dicts handed to downstream consumers.
             slug = config.pop("slug", None) or _derive_slug(path.stem)
+            raw_persistent = config.pop("supports_persistent", None)
+            if raw_persistent is None:
+                supports_persistent = False
+            elif isinstance(raw_persistent, bool):
+                supports_persistent = raw_persistent
+            else:
+                raise ValueError(
+                    f"Preset file {path} has an invalid 'supports_persistent' value"
+                )
             previous = merged.get(slug)
             if previous is not None and previous[2].parent == directory:
                 # Cross-directory collisions are the override feature; a
@@ -129,19 +139,31 @@ def load_flow_presets() -> List[Dict[str, Any]]:
                     slug,
                 )
             # Later directories override earlier ones on slug collision.
-            merged[slug] = (_extract_order(path.stem), slug, path, config)
+            merged[slug] = (
+                _extract_order(path.stem),
+                slug,
+                path,
+                config,
+                supports_persistent,
+            )
 
     catalog: List[Dict[str, Any]] = []
     slugs: Dict[str, str] = {}
-    for _, slug, _, config in sorted(merged.values(), key=lambda e: (e[0], e[1])):
+    persistent: Dict[str, bool] = {}
+    for _, slug, _, config, supports_persistent in sorted(
+        merged.values(), key=lambda e: (e[0], e[1])
+    ):
         if config.pop("disabled", False):
             continue  # Tombstone: suppress this slug entirely.
         name = config.get("name")
         if isinstance(name, str) and name:
             slugs[slug] = name
+        persistent[slug] = supports_persistent
         catalog.append(config)
     _PRESET_SLUGS.clear()
     _PRESET_SLUGS.update(slugs)
+    _SUPPORTS_PERSISTENT.clear()
+    _SUPPORTS_PERSISTENT.update(persistent)
     return catalog
 
 
@@ -156,3 +178,14 @@ PRESET_SLUGS: Dict[str, str] = dict(_PRESET_SLUGS)
 PRESET_SLUGS_BY_NAME: Dict[str, str] = {}
 for _catalog_slug, _catalog_name in PRESET_SLUGS.items():
     PRESET_SLUGS_BY_NAME.setdefault(_catalog_name, _catalog_slug)
+
+
+def supports_persistent_for_slug(slug: Optional[str]) -> bool:
+    """Whether a catalog preset may be selected for persistent execution.
+
+    Missing or unknown slugs are unsupported. A preset has to opt in.
+    """
+
+    if not slug:
+        return False
+    return bool(_SUPPORTS_PERSISTENT.get(slug, False))

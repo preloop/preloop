@@ -1,4 +1,5 @@
 slug: weekly-model-price-review
+supports_persistent: false
 name: Weekly model price review
 description: >-
   Compare supported provider prices with the catalog, record first-party

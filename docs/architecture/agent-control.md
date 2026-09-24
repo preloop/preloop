@@ -107,6 +107,53 @@ string as one audited `send_message` with `start_new_session=true`,
 | `trigger_event_source` | trigger payload |
 | `repository`, `ref` | trigger payload when present |
 | `timeout_seconds` | the flow's timeout budget |
+| `workspace` | checkout contract below. No credentials. |
+
+`workspace.mode` is also a prompt placeholder (`{{workspace.mode}}`).
+Ephemeral container runs render `ephemeral`. Persistent runs render
+`persistent_checkout` or `clone_less`.
+
+### Workspace
+
+When `git_clone_config.enabled` is true and the trigger or clone config
+names a repository, `workspace` is:
+
+| Key | Meaning |
+| --- | --- |
+| `mode` | `persistent_checkout` |
+| `repository_url` | credential-free clone URL |
+| `repository_slug` | `owner/repo` path under the sidecar `workspace_root` |
+| `default_branch` | repository default branch |
+| `ref` | ref the sidecar fetches |
+| `sha` | commit to check out detached, when the trigger has one |
+| `pr_number` | pull request or merge request number, when present |
+| `clone_depth` | depth passed to `git clone`, or null for a full clone |
+| `submodules` | whether the clone recurses into submodules |
+
+Those values are the ones the container clone resolves (`repository_url`,
+branch, and commit). Tokens are not copied. The agent host uses its own
+git credentials.
+
+When clone is disabled, or no repository can be resolved, `workspace` is
+`{mode: "clone_less"}`. The review reads the diff from the tracker.
+
+The Claude sidecar (`runtime-plugins/claude-preloop`) handles
+`persistent_checkout` as follows. The Codex sidecar implements the same
+contract separately.
+
+* Ensure `<workspace_root>/<repository_slug>` exists. Clone once. Later
+  runs `git fetch` the ref and check out `sha` detached.
+* `spawn_worktree` creates a worktree after that checkout and runs the
+  turn there.
+* Git operations on one repository directory are serialized in-process.
+* A dirty tree the sidecar did not create fails the command with
+  `command_error`. The sidecar does not `reset --hard` or `clean` it.
+* The resolved path is `metadata.workspace_path` on `command_result`
+  (the ack handler does not store a payload) and on an
+  `event/session_activity`.
+* `workspace_repositories_max` (default 20) evicts the least recently
+  used clean checkout. Dirty directories are kept.
+* `workspace_fetch_timeout_ms` (default 120000) bounds fetch and clone.
 
 The envelope shape is the same one runtime plugins already accept (`text`,
 `metadata`, `input_mode`, `session_mode`, `start_new_session`, optional
@@ -162,12 +209,9 @@ operator endpoint uses the same
 
 ### Not covered yet
 
-* Workspace / clone contract on the persistent host (no `git_clone_config`
-  checkout, no `cwd`/`workspace_root` requirement).
-* Preset support matrix (PR-review and other presets still assume an
-  ephemeral clone).
 * Expanding the Agent Control kind allow-list (for example Codex). That is a
-  separate change.
+  separate change. The Codex sidecar should implement this same workspace
+  contract.
 
 ## Managed CLI/Desktop Agent Enrollment
 *   **Discovery Entry Point:** `preloop agents discover` can stay read-only (`--json`, `--no-onboard-prompt`) or hand off interactively into managed enrollment, with `--yes` available for auto-onboarding.

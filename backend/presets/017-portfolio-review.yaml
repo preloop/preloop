@@ -1,4 +1,5 @@
 slug: portfolio-review
+supports_persistent: false
 name: Portfolio Review
 description: >-
   Reviews a repository full of independently built projects and answers

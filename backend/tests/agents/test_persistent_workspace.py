@@ -1,0 +1,226 @@
+"""Persistent workspace metadata matches the container clone identity."""
+
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+from uuid import uuid4
+
+import pytest
+import yaml
+
+from preloop.agents.agent_control import AgentControlExecutor
+from preloop.services.persistent_workspace import (
+    ephemeral_clone_identity,
+    workspace_metadata,
+    workspace_mode,
+)
+from preloop.services.prompt_resolvers.base import ResolverContext
+from preloop.services.prompt_resolvers.workspace import WorkspaceResolver
+
+SHA = "a" * 40
+PR_TRIGGER = {
+    "source": "github",
+    "payload": {
+        "repository": {
+            "full_name": "example/repo",
+            "clone_url": "https://github.com/example/repo.git",
+            "default_branch": "main",
+        },
+        "pull_request": {
+            "number": 7,
+            "head": {"ref": "feature", "sha": SHA},
+            "base": {"ref": "main"},
+        },
+    },
+}
+CLONE_CONFIG = {
+    "enabled": True,
+    "repositories": [{"repository_url": "https://github.com/example/repo.git"}],
+    "source_branch": "main",
+    "clone_depth": 1,
+    "submodules": True,
+}
+
+
+def test_workspace_matches_container_clone_identity() -> None:
+    identity = ephemeral_clone_identity(CLONE_CONFIG, PR_TRIGGER)
+    workspace = workspace_metadata(
+        git_clone_config=CLONE_CONFIG, trigger_event_data=PR_TRIGGER
+    )
+    assert identity is not None
+    assert workspace["mode"] == "persistent_checkout"
+    for key, value in identity.items():
+        assert workspace[key] == value
+    assert workspace["repository_url"] == "https://github.com/example/repo.git"
+    assert workspace["repository_slug"] == "example/repo"
+    assert workspace["default_branch"] == "main"
+    assert workspace["sha"] == SHA
+    assert workspace["pr_number"] == 7
+    assert workspace["clone_depth"] == 1
+    assert workspace["submodules"] is True
+    assert "token" not in workspace
+    assert "@" not in (workspace["repository_url"] or "")
+
+
+def test_clone_disabled_is_clone_less() -> None:
+    workspace = workspace_metadata(
+        git_clone_config={"enabled": False},
+        trigger_event_data=PR_TRIGGER,
+    )
+    assert workspace == {"mode": "clone_less"}
+
+
+def test_ephemeral_prompt_context_mode() -> None:
+    assert (
+        workspace_mode(
+            agent_config={"execution_path": "ephemeral"},
+            git_clone_config=CLONE_CONFIG,
+            trigger_event_data=PR_TRIGGER,
+        )
+        == "ephemeral"
+    )
+    assert (
+        workspace_mode(
+            agent_config={},
+            git_clone_config=CLONE_CONFIG,
+            trigger_event_data=PR_TRIGGER,
+        )
+        == "ephemeral"
+    )
+
+
+@pytest.mark.asyncio
+async def test_workspace_resolver_renders_mode() -> None:
+    resolver = WorkspaceResolver()
+    context = ResolverContext(
+        db=MagicMock(),
+        trigger_event_data={},
+        flow_id="flow",
+        execution_id="exec",
+        workspace_mode="persistent_checkout",
+    )
+    assert await resolver.resolve("mode", context) == "persistent_checkout"
+
+
+@pytest.mark.asyncio
+async def test_executor_metadata_carries_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_id = uuid4()
+    agent = SimpleNamespace(
+        id=uuid4(),
+        account_id=account_id,
+        display_name="Review node",
+        lifecycle_state="active",
+        agent_kind="openclaw",
+        session_source_type="openclaw",
+        runtime_session_id=uuid4(),
+        control_last_heartbeat_at=None,
+    )
+    captured: dict = {}
+
+    async def fake_dispatch(*args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(command_id="cmd-1", local_delivery=True, subject=None)
+
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.agent_has_control_config",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.control_heartbeat_is_fresh",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.create_command_history_session",
+        lambda *args, **kwargs: SimpleNamespace(id=uuid4()),
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.crud_runtime_session_activity.log_agent_control_message",
+        MagicMock(),
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.crud_flow_execution.bind_agent_control_command",
+        MagicMock(),
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.crud_managed_agent.get_for_account",
+        lambda *args, **kwargs: agent,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.dispatch_operator_message",
+        fake_dispatch,
+    )
+    executor = AgentControlExecutor(
+        "codex",
+        {"execution_path": "persistent", "target_agent_id": str(agent.id)},
+        db=MagicMock(),
+        account_id=account_id,
+        flow=SimpleNamespace(
+            timeout_seconds=1800,
+            name="Persistent review",
+            account_id=account_id,
+            git_clone_config=CLONE_CONFIG,
+            agent_config={"execution_path": "persistent"},
+        ),
+        execution=SimpleNamespace(id=uuid4(), account_id=account_id),
+    )
+    await executor.start(
+        {
+            "prompt": "Review the pull request",
+            "execution_id": str(executor.execution.id),
+            "flow_id": str(uuid4()),
+            "flow_name": "Persistent review",
+            "account_id": account_id,
+            "trigger_event_data": PR_TRIGGER,
+        }
+    )
+    assert captured["metadata"]["workspace"]["mode"] == "persistent_checkout"
+    assert captured["metadata"]["workspace"]["sha"] == SHA
+    assert captured["metadata"]["workspace"]["repository_slug"] == "example/repo"
+
+
+def _reviewer_prompt() -> str:
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "presets"
+        / "002-pull-request-reviewer.yaml"
+    )
+    data = yaml.safe_load(path.read_text())
+    return data["prompt_template"]
+
+
+def _render(mode: str) -> str:
+    return _reviewer_prompt().replace("{{workspace.mode}}", mode)
+
+
+def test_preset_renders_persistent_checkout_in_cwd() -> None:
+    rendered = _render("persistent_checkout")
+    assert "persistent_checkout" in rendered
+    assert "current working directory" in rendered
+    assert "{{workspace.mode}}" not in rendered
+
+
+def test_preset_renders_clone_less_from_tracker() -> None:
+    rendered = _render("clone_less")
+    assert "skip the git checks" in rendered
+    assert "diff came from the tracker" in rendered
+
+
+def test_preset_renders_ephemeral_clone_checks() -> None:
+    rendered = _render("ephemeral")
+    assert "must exist in the clone" in rendered
+    assert "git rev-parse HEAD` in the clone" in rendered
+
+
+def test_every_preset_declares_supports_persistent() -> None:
+    from preloop.flow_presets import PRESET_SLUGS, supports_persistent_for_slug
+
+    assert supports_persistent_for_slug("pull-request-reviewer") is True
+    assert supports_persistent_for_slug("issue-triage-assistant") is True
+    assert supports_persistent_for_slug("automated-issue-implementation") is False
+    assert supports_persistent_for_slug("portfolio-review") is False
+    assert set(PRESET_SLUGS)  # catalog loaded
+    for slug in PRESET_SLUGS:
+        assert isinstance(supports_persistent_for_slug(slug), bool)

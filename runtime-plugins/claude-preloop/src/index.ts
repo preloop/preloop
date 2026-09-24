@@ -31,6 +31,7 @@ import {
 import { QueryFactory, SessionManager, sdkQueryFactory } from "./sessions.js";
 import { SessionActivity, TranscriptObserver } from "./observer.js";
 import { LauncherBridge, OwnershipMode } from "./mode.js";
+import { WorkspaceManager, WorkspaceSpec } from "./workspace.js";
 
 export {
   ControlConfig,
@@ -40,6 +41,8 @@ export {
 } from "./config.js";
 export type { ConfigSource, LoadedConfig } from "./config.js";
 export { SessionManager } from "./sessions.js";
+export { WorkspaceManager } from "./workspace.js";
+export type { WorkspaceSpec } from "./workspace.js";
 export type { QueryFactory, SdkQueryHandle, SdkMessage, SdkUserMessage } from "./sessions.js";
 export { TranscriptObserver } from "./observer.js";
 export type { SessionActivity } from "./observer.js";
@@ -93,6 +96,8 @@ export class PreloopClaudeSidecar {
   private controlConfig?: ControlConfig;
   private socket?: WebSocket;
   private sessions?: SessionManager;
+  private workspaces?: WorkspaceManager;
+  private lastWorkspacePath?: string;
   private observer?: TranscriptObserver;
   private launcher = new LauncherBridge();
   private stopped = false;
@@ -319,12 +324,15 @@ export class PreloopClaudeSidecar {
     }
     try {
       const result = await this.dispatch(command);
-      const payload = {
+      const payload: Record<string, unknown> = {
         command_id: command.message_id,
         status: "completed",
         result,
         reply_text: typeof result === "string" ? result : "",
       };
+      if (this.lastWorkspacePath) {
+        payload.metadata = { workspace_path: this.lastWorkspacePath };
+      }
       this.rememberOutcome(command.message_id, {
         name: "command_result",
         payload,
@@ -335,6 +343,19 @@ export class PreloopClaudeSidecar {
         message_id: command.message_id,
         payload,
       });
+      if (this.lastWorkspacePath) {
+        this.sendOn(socket, {
+          type: "event",
+          name: "session_activity",
+          message_id: randomUUID(),
+          payload: {
+            workspace_path: this.lastWorkspacePath,
+            cwd: this.lastWorkspacePath,
+            last_event_at: new Date().toISOString(),
+            runtime: this.runtime,
+          },
+        });
+      }
     } catch (error) {
       const payload = {
         command_id: command.message_id,
@@ -360,6 +381,7 @@ export class PreloopClaudeSidecar {
 
   /** Execute one operator command envelope. Exposed for tests. */
   async dispatch(command: OperatorCommand): Promise<unknown> {
+    this.lastWorkspacePath = undefined;
     if (command.type !== "command") {
       return undefined;
     }
@@ -396,18 +418,29 @@ export class PreloopClaudeSidecar {
     const spawnWorktree = Boolean(
       payload.spawn_worktree ?? payload.metadata?.["spawn_worktree"],
     );
-    const cwd =
+    this.lastWorkspacePath = undefined;
+    const workspace = payload.metadata?.["workspace"];
+    let cwd =
       typeof payload.cwd === "string"
         ? payload.cwd
         : typeof payload.metadata?.["cwd"] === "string"
           ? String(payload.metadata["cwd"])
           : undefined;
+    if (workspace && typeof workspace === "object") {
+      const spec = workspace as WorkspaceSpec;
+      if (spec.mode === "persistent_checkout") {
+        const config = this.verify();
+        this.workspaces ??= new WorkspaceManager(config);
+        cwd = await this.workspaces.prepare(spec, spawnWorktree);
+        this.lastWorkspacePath = cwd;
+      }
+    }
     return this.sessions.sendMessage({
       text,
       targetSessionId,
       resumeSessionId,
       metadata: payload.metadata,
-      spawnWorktree,
+      spawnWorktree: spawnWorktree && !this.lastWorkspacePath,
       cwd,
     });
   }

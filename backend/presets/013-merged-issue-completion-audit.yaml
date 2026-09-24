@@ -1,4 +1,5 @@
 slug: merged-issue-completion-audit
+supports_persistent: false
 name: Merged Issue Completion Audit
 description: Independently check acceptance at the exact closing merge revision and propose bounded follow-ups.
 icon: clipboard-check

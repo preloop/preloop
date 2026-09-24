@@ -364,14 +364,25 @@ def read_presets(
     ``POST /flows/run-preset`` takes, so scripted callers do not have to
     match on a display name that can be renamed.
     """
-    from preloop.flow_presets import PRESET_SLUGS_BY_NAME
+    from preloop.flow_presets import PRESET_SLUGS_BY_NAME, supports_persistent_for_slug
 
     presets = crud_flow.get_presets_for_account(db, account_id=current_user.account_id)
+    by_id = {preset.id: preset for preset in presets}
     for preset in presets:
         # Account-specific rows are copies: their name is user-editable and
-        # is not catalog identity, so they stay unslugged.
+        # is not catalog identity, so they stay unslugged. Persistent support
+        # still follows the catalog preset they were cloned from.
+        slug = None
         if getattr(preset, "account_id", None) is None:
-            preset.slug = PRESET_SLUGS_BY_NAME.get(getattr(preset, "name", None) or "")
+            slug = PRESET_SLUGS_BY_NAME.get(getattr(preset, "name", None) or "")
+            preset.slug = slug
+        else:
+            source = by_id.get(getattr(preset, "source_preset_id", None))
+            if source is not None and getattr(source, "account_id", None) is None:
+                slug = PRESET_SLUGS_BY_NAME.get(getattr(source, "name", None) or "")
+            else:
+                slug = PRESET_SLUGS_BY_NAME.get(getattr(preset, "name", None) or "")
+        preset.supports_persistent = supports_persistent_for_slug(slug)
     return presets
 
 
