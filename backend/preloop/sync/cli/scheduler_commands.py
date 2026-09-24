@@ -14,6 +14,7 @@ from ..services.event_bus import event_bus_service
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.executors.asyncio import AsyncIOExecutor
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from ..config import logger
 
@@ -21,6 +22,15 @@ from ..config import logger
 # --- Scheduler Setup ---
 # Global scheduler instance
 scheduler = None
+
+
+def optimization_digest_trigger() -> CronTrigger:
+    """Return the weekly digest trigger: Monday 09:00 UTC.
+
+    No startup offset. A freshly started scheduler waits until the next
+    Monday, so a deploy cannot send the digest.
+    """
+    return CronTrigger(day_of_week="mon", hour=9, minute=0, timezone="UTC")
 
 
 def shutdown_scheduler():
@@ -227,8 +237,12 @@ async def run_scheduler_async(
         subscription_reconcile_hours,
     )
 
-    # Weekly cost optimization & savings digest. The worker-side task no-ops
-    # unless the Enterprise billing plugin is present.
+    # Weekly cost digest. Cron only: the job store is in-memory, so a
+    # next_run_time of "now + 10 minutes" sent a digest after every scheduler
+    # restart, including every prod deploy. CronTrigger's next fire is the
+    # next Monday 09:00 UTC, including when the process starts on Monday
+    # after that minute. The worker-side task no-ops unless the Enterprise
+    # billing plugin is present.
     if getattr(settings, "cost_digest_enabled", True):
 
         async def _publish_optimization_digest() -> None:
@@ -239,14 +253,13 @@ async def run_scheduler_async(
 
         scheduler.add_job(
             _publish_optimization_digest,
-            trigger=IntervalTrigger(days=7),
+            trigger=optimization_digest_trigger(),
             id="optimization_digest_job",
             name="Send Weekly Optimization Digest",
             replace_existing=True,
             misfire_grace_time=3600,
-            next_run_time=datetime.now(pytz.utc) + timedelta(minutes=10),
         )
-        logger.info("Scheduled weekly optimization digest.")
+        logger.info("Scheduled weekly optimization digest for Monday 09:00 UTC.")
 
     await stop_event.wait()
     logger.info("Scheduler event loop stopped.")

@@ -2876,6 +2876,64 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             "provider_usage_rows": int(row.provider_usage_rows or 0),
         }
 
+    def list_top_sessions_by_cache_write(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        start: datetime,
+        end: datetime,
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Return the sessions that wrote the most prompt-cache tokens.
+
+        Used by the weekly digest to bound idle-expiry analysis to a handful
+        of sessions instead of walking every transcript.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            start: Inclusive window start.
+            end: Exclusive window end.
+            limit: Maximum sessions to return.
+
+        Returns:
+            Dicts with ``runtime_session_id``, ``runtime_principal_name``,
+            and ``cache_write_tokens``, highest write first.
+        """
+        rows = (
+            db.query(
+                ApiUsage.runtime_session_id,
+                func.max(ApiUsage.runtime_principal_name).label(
+                    "runtime_principal_name"
+                ),
+                func.coalesce(func.sum(ApiUsage.cache_creation_tokens), 0).label(
+                    "cache_write_tokens"
+                ),
+            )
+            .filter(
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.account_id == account_id,
+                ApiUsage.runtime_session_id.isnot(None),
+                ApiUsage.cache_creation_tokens > 0,
+                exclude_replay_usage_condition(),
+                ApiUsage.timestamp >= start,
+                ApiUsage.timestamp < end,
+            )
+            .group_by(ApiUsage.runtime_session_id)
+            .order_by(func.sum(ApiUsage.cache_creation_tokens).desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "runtime_session_id": str(row.runtime_session_id),
+                "runtime_principal_name": row.runtime_principal_name,
+                "cache_write_tokens": int(row.cache_write_tokens or 0),
+            }
+            for row in rows
+        ]
+
     def get_subscription_absorbed_cost(
         self,
         db: Session,
