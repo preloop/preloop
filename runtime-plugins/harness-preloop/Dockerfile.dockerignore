@@ -3,3 +3,10 @@
 !runtime-plugins/harness-preloop/
 !runtime-plugins/harness-preloop/*.mjs
 !runtime-plugins/harness-preloop/package*.json
+!runtime-plugins/harness-preloop/agents/
+!runtime-plugins/harness-preloop/agents/pi/
+!runtime-plugins/harness-preloop/agents/deepseek/
+!runtime-plugins/harness-preloop/agents/pi/package.json
+!runtime-plugins/harness-preloop/agents/pi/package-lock.json
+!runtime-plugins/harness-preloop/agents/deepseek/package.json
+!runtime-plugins/harness-preloop/agents/deepseek/package-lock.json

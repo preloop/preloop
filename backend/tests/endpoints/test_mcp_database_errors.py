@@ -165,6 +165,7 @@ async def test_handled_flush_failure_preserves_partial_provider_result(
         try:
             db.flush()  # Required description is missing; this deactivates the session.
         except mcp.SQLAlchemyError:
+            # The missing description makes flush fail and deactivates the session.
             pass
         assert not db.is_active
         return "partial: provider write completed, cache update failed"

@@ -229,7 +229,7 @@ async def test_cancel_during_key_creation_keeps_loop_responsive_and_revokes_key(
         finally:
             finish.set()
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await asyncio.wait_for(task, timeout=5)
         update.assert_called_once_with(
             cleanup_db, db_obj=record, obj_in={"is_active": False}
         )
