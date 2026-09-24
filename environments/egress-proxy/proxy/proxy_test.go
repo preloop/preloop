@@ -866,6 +866,101 @@ func TestServerTimeouts(t *testing.T) {
 	}
 }
 
+func TestConnectHostHeaderMustMatchRequestLine(t *testing.T) {
+	p, _, _ := testProxy(t, map[string]string{
+		"EGRESS_ALLOWED_ORIGINS": "https://allowed.example,https://evil.example",
+	})
+	p.DialContext = func(context.Context, string, string) (net.Conn, error) {
+		t.Fatal("dialed a CONNECT whose Host header disagreed with the request line")
+		return nil, io.EOF
+	}
+	// net/http copies the request-line authority into Host before the
+	// handler. Build the mismatch directly so the check is what is tested.
+	req, err := http.NewRequest(http.MethodConnect, "http://allowed.example:443", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.URL.Host = "allowed.example:443"
+	req.Host = "evil.example:443"
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "invalid_target") {
+		t.Fatalf("status %d body %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDialFallsThroughCheckedAddresses(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "second")
+	}))
+	t.Cleanup(up.Close)
+	p, _, ts := testProxy(t, map[string]string{
+		"EGRESS_ALLOWED_ORIGINS": "http://allowed.example",
+	})
+	p.Resolver = &scriptedResolver{ips: map[string][]net.IP{
+		"allowed.example": {net.ParseIP("203.0.113.10"), net.ParseIP("203.0.113.11")},
+	}}
+	var dialed []string
+	p.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialed = append(dialed, address)
+		if strings.HasPrefix(address, "203.0.113.10:") {
+			return nil, io.ErrClosedPipe
+		}
+		var d net.Dialer
+		return d.DialContext(ctx, network, up.Listener.Addr().String())
+	}
+	resp, err := proxyClient(ts.URL).Get("http://allowed.example/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || mustBody(t, resp) != "second" {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	if len(dialed) != 2 || dialed[0] != "203.0.113.10:80" || dialed[1] != "203.0.113.11:80" {
+		t.Fatalf("dialed %v", dialed)
+	}
+}
+
+func TestDialErrorIsBadGateway(t *testing.T) {
+	p, logs, ts := testProxy(t, map[string]string{
+		"EGRESS_ALLOWED_ORIGINS": "https://allowed.example,http://allowed.example",
+	})
+	p.Resolver = &scriptedResolver{ips: map[string][]net.IP{
+		"allowed.example": {net.ParseIP("203.0.113.10")},
+	}}
+	p.DialContext = func(context.Context, string, string) (net.Conn, error) {
+		return nil, io.ErrClosedPipe
+	}
+	resp, err := doConnect(t, ts.URL, "allowed.example:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := mustBody(t, resp)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(body, "egress_denied: dial_error") {
+		t.Fatalf("connect status %d body %q", resp.StatusCode, body)
+	}
+	resp, err = proxyClient(ts.URL).Get("http://allowed.example/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = mustBody(t, resp)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(body, "egress_denied: dial_error") {
+		t.Fatalf("forward status %d body %q", resp.StatusCode, body)
+	}
+	var n int
+	for _, rec := range denialLines(t, logs) {
+		if rec["reason"] == "dial_error" {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("logs %s", logs.String())
+	}
+}
+
 func TestIPLiteralDoesNotResolve(t *testing.T) {
 	p, _, ts := testProxy(t, map[string]string{
 		"EGRESS_ALLOWED_ORIGINS":     "http://203.0.113.10",

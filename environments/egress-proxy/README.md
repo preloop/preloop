@@ -49,8 +49,10 @@ is denied. `CONNECT` to this process's listen port is denied even when a
 carve-out would otherwise allow the address.
 
 Dial timeout is 10s. Idle timeout on accepted connections and on a
-`CONNECT` tunnel is 120s. A denied proxy request returns `403` with body
-`egress_denied: <reason>` and one JSON line on stdout:
+`CONNECT` tunnel is 120s. A policy denial returns `403`. A checked address
+that cannot be dialed returns `502`. Both use the body
+`egress_denied: <reason>` and one JSON line on stdout. When a name has
+several checked addresses, each is dialed in order until one connects.
 
 ```json
 {"ts":"...","method":"CONNECT","target":"evil.example:443","reason":"not_allowlisted","resolved":[]}

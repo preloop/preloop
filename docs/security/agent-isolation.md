@@ -231,7 +231,9 @@ of the primary user's.
   inside the cluster, not what it can post to a pastebin. Deployments that
   need that constraint should replace the `0.0.0.0/0` rule with an FQDN
   policy or route agents through a proxy (`extraEgress` plus the proxy env
-  in `agentExecution`).
+  in `agentExecution`). A sandboxed browser uses the allowlist sidecar in
+  `environments/egress-proxy` (`environments/egress-proxy/README.md`); that
+  proxy, not an MCP tool list, is the network boundary.
 - **The API is still one hop away.** MCP and the model gateway are exactly
   what the agent is supposed to reach, so the credential above, not the
   network, is what limits it.

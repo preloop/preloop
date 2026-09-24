@@ -74,6 +74,17 @@ func New(cfg Config) *Proxy {
 	p.transport = &http.Transport{
 		Proxy: nil,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if ips, ok := ctx.Value(dialIPsKey{}).([]net.IP); ok && len(ips) > 0 {
+				_, portStr, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, err
+				}
+				port, err := strconv.Atoi(portStr)
+				if err != nil {
+					return nil, err
+				}
+				return p.dialAny(ctx, port, ips)
+			}
 			return p.dial(ctx, network, addr)
 		},
 		ForceAttemptHTTP2:     false,
@@ -156,9 +167,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
-	target := r.Host
+	// The request line is the authority that is checked and dialed. The
+	// Host header must match it; a header must not select a different target.
+	target := r.URL.Host
 	if target == "" {
-		target = r.URL.Host
+		target = r.Host
 	}
 	host, port, err := splitRequiredPort(target)
 	if err != nil {
@@ -169,14 +182,18 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if port == 80 {
 		scheme = "http"
 	}
-	ip, resolved, reason := p.authorize(r.Context(), scheme, host, port)
+	if r.Host != "" && r.URL.Host != "" && !sameAuthority(r.Host, host, port, scheme) {
+		p.deny(w, r.Method, target, reasonInvalid, nil)
+		return
+	}
+	ips, resolved, reason := p.authorize(r.Context(), scheme, host, port)
 	if reason != "" {
 		p.deny(w, r.Method, target, reason, resolved)
 		return
 	}
-	upstream, err := p.dial(r.Context(), "tcp", net.JoinHostPort(ip.String(), strconv.Itoa(port)))
+	upstream, err := p.dialAny(r.Context(), port, ips)
 	if err != nil {
-		p.deny(w, r.Method, target, reasonDial, resolved)
+		p.fail(w, r.Method, target, reasonDial, resolved, http.StatusBadGateway)
 		return
 	}
 	if p.Config.LogAllowed {
@@ -268,19 +285,20 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 		p.deny(w, r.Method, r.URL.String(), reasonInvalid, nil)
 		return
 	}
-	ip, resolved, reason := p.authorize(r.Context(), scheme, canon, port)
+	ips, resolved, reason := p.authorize(r.Context(), scheme, canon, port)
 	if reason != "" {
 		p.deny(w, r.Method, r.URL.String(), reason, resolved)
 		return
 	}
-	out, err := forwardRequest(r, scheme, canon, port, ip)
+	out, err := forwardRequest(r, scheme, canon, port, ips[0])
 	if err != nil {
 		p.deny(w, r.Method, r.URL.String(), reasonInvalid, resolved)
 		return
 	}
+	out = out.WithContext(context.WithValue(out.Context(), dialIPsKey{}, ips))
 	resp, err := p.transport.RoundTrip(out)
 	if err != nil {
-		p.deny(w, r.Method, r.URL.String(), reasonDial, resolved)
+		p.fail(w, r.Method, r.URL.String(), reasonDial, resolved, http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
@@ -332,7 +350,9 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	_, _ = io.Copy(w, resp.Body)
 }
 
-func (p *Proxy) authorize(ctx context.Context, scheme, host string, port int) (net.IP, []string, string) {
+type dialIPsKey struct{}
+
+func (p *Proxy) authorize(ctx context.Context, scheme, host string, port int) ([]net.IP, []string, string) {
 	canon, literal, err := canonicalHost(host)
 	if err != nil {
 		return nil, nil, reasonInvalid
@@ -358,11 +378,32 @@ func (p *Proxy) authorize(ctx context.Context, scheme, host string, port int) (n
 			return nil, resolved, reasonPrivate
 		}
 	}
-	dialIP := ips[0]
-	if p.isSelf(dialIP, port) {
+	dialable := make([]net.IP, 0, len(ips))
+	for _, ip := range ips {
+		if !p.isSelf(ip, port) {
+			dialable = append(dialable, ip)
+		}
+	}
+	if len(dialable) == 0 {
 		return nil, resolved, reasonSelf
 	}
-	return dialIP, resolved, ""
+	return dialable, resolved, ""
+}
+
+// dialAny tries each already-checked address. It does not resolve again.
+func (p *Proxy) dialAny(ctx context.Context, port int, ips []net.IP) (net.Conn, error) {
+	var last error
+	for _, ip := range ips {
+		conn, err := p.dial(ctx, "tcp", net.JoinHostPort(ip.String(), strconv.Itoa(port)))
+		if err == nil {
+			return conn, nil
+		}
+		last = err
+	}
+	if last == nil {
+		last = errors.New("no dialable address")
+	}
+	return nil, last
 }
 
 func (p *Proxy) isSelf(ip net.IP, port int) bool {
@@ -393,6 +434,10 @@ func (p *Proxy) dial(ctx context.Context, network, address string) (net.Conn, er
 }
 
 func (p *Proxy) deny(w http.ResponseWriter, method, target, reason string, resolved []string) {
+	p.fail(w, method, target, reason, resolved, http.StatusForbidden)
+}
+
+func (p *Proxy) fail(w http.ResponseWriter, method, target, reason string, resolved []string, status int) {
 	if resolved == nil {
 		resolved = []string{}
 	}
@@ -405,7 +450,7 @@ func (p *Proxy) deny(w http.ResponseWriter, method, target, reason string, resol
 	})
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.WriteHeader(http.StatusForbidden)
+	w.WriteHeader(status)
 	_, _ = io.WriteString(w, "egress_denied: "+reason+"\n")
 }
 
