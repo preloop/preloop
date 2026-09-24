@@ -1846,10 +1846,12 @@ class ApprovalService:
         )
 
         # Format tool arguments for display (redact sensitive fields)
-        from preloop.utils.redaction import redact_dict
+        from preloop.utils.redaction import omit_preloop_markers, redact_dict
 
         tool_args_redacted = redact_dict(approval_request.tool_args or {})
-        tool_args_formatted = json.dumps(tool_args_redacted, indent=2)
+        tool_args_formatted = json.dumps(
+            omit_preloop_markers(tool_args_redacted), indent=2
+        )
         ask_text = (approval_request.summary or "").strip() or None
         headline = ask_text or f"Approval Required: {approval_request.tool_name}"
 

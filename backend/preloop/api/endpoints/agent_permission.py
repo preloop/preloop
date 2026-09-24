@@ -13,7 +13,7 @@ from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from preloop.api.auth.jwt import (
     _authenticate_with_api_key,
@@ -133,6 +133,40 @@ def _permission_check_base_url() -> str:
     return base_url
 
 
+class RepositoryContext(BaseModel):
+    """Trusted observation of the work tree a native tool call ran in.
+
+    Recorded from the permission hook's cwd. It is not a policy scope and
+    is not derived from tool arguments.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    remote: str = Field(
+        default="",
+        max_length=512,
+        description="Normalized origin remote (host/owner/repo), or empty.",
+    )
+    toplevel: str = Field(
+        default="",
+        max_length=512,
+        description="Absolute path of the work tree root.",
+    )
+    relative_path: str = Field(
+        default="",
+        max_length=512,
+        description="cwd relative to toplevel, or empty at the root.",
+    )
+    source: Literal["hook_cwd"] = Field(
+        "hook_cwd",
+        description="Where the observation came from. Only the hook cwd is trusted.",
+    )
+    no_remote: bool = Field(
+        False,
+        description="True when the work tree has no origin remote.",
+    )
+
+
 class AgentPermissionCheckRequest(BaseModel):
     """A native tool-call permission check from an onboarded agent."""
 
@@ -151,6 +185,15 @@ class AgentPermissionCheckRequest(BaseModel):
     )
     session_id: Optional[str] = Field(None, description="Agent session id")
     cwd: Optional[str] = Field(None, description="Working directory")
+    repository: Optional[RepositoryContext] = Field(
+        None,
+        description=(
+            "Trusted hook observation of the working tree. Stored as the "
+            "'_preloop_repository' marker inside tool_args so approver "
+            "surfaces can show it. Not a policy scope, and not taken from "
+            "tool arguments."
+        ),
+    )
     agent_reasoning: Optional[str] = Field(
         None, description="Why the agent wants this call (shown to the approver)"
     )
@@ -229,6 +272,11 @@ async def agent_permission_check(
     # surfaces can distinguish the adapter without a schema migration.
     if payload.source and payload.source.strip():
         tool_input["_preloop_source"] = payload.source.strip()
+    # Drop a caller-supplied marker. Only the hook's repository field is
+    # trusted, and a request without one stores nothing.
+    tool_input.pop("_preloop_repository", None)
+    if payload.repository is not None:
+        tool_input["_preloop_repository"] = payload.repository.model_dump()
 
     # Claimed before the approval wait, in its own short-lived session, so no
     # connection is held while a human decides. Delivery is recorded here even

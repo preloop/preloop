@@ -442,9 +442,9 @@ async def send_approval_request_email(
     # Format tool arguments for display (redact sensitive fields)
     import json
 
-    from preloop.utils.redaction import redact_dict
+    from preloop.utils.redaction import omit_preloop_markers, redact_dict
 
-    tool_args = redact_dict(tool_args)
+    tool_args = omit_preloop_markers(redact_dict(tool_args))
     tool_args_formatted = json.dumps(tool_args, indent=2)
 
     # Plain text version

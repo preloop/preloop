@@ -14239,6 +14239,13 @@ components:
           - type: 'null'
           title: Cwd
           description: Working directory
+        repository:
+          anyOf:
+          - $ref: '#/components/schemas/RepositoryContext'
+          - type: 'null'
+          description: Trusted hook observation of the working tree. Stored as the
+            '_preloop_repository' marker inside tool_args so approver surfaces can
+            show it. Not a policy scope, and not taken from tool arguments.
         agent_reasoning:
           anyOf:
           - type: string
@@ -24655,6 +24662,46 @@ components:
         ``extra=''forbid''``: a misspelled key here is a document that silently
 
         lands somewhere else, or not at all.'
+    RepositoryContext:
+      properties:
+        remote:
+          type: string
+          maxLength: 512
+          title: Remote
+          description: Normalized origin remote (host/owner/repo), or empty.
+          default: ''
+        toplevel:
+          type: string
+          maxLength: 512
+          title: Toplevel
+          description: Absolute path of the work tree root.
+          default: ''
+        relative_path:
+          type: string
+          maxLength: 512
+          title: Relative Path
+          description: cwd relative to toplevel, or empty at the root.
+          default: ''
+        source:
+          type: string
+          const: hook_cwd
+          title: Source
+          description: Where the observation came from. Only the hook cwd is trusted.
+          default: hook_cwd
+        no_remote:
+          type: boolean
+          title: No Remote
+          description: True when the work tree has no origin remote.
+          default: false
+      additionalProperties: false
+      type: object
+      title: RepositoryContext
+      description: 'Trusted observation of the work tree a native tool call ran in.
+
+
+        Recorded from the permission hook''s cwd. It is not a policy scope and
+
+        is not derived from tool arguments.'
     RepriceRequest:
       properties:
         start_date:

@@ -73,6 +73,29 @@ def _is_sensitive_key(key: str) -> bool:
     return False
 
 
+def omit_preloop_markers(data: Any) -> Any:
+    """Drop trusted ``_preloop_`` markers from a tool-argument display copy.
+
+    The markers travel on the stored approval so surfaces can read them.
+    They are not arguments the model chose, so a rendered argument list
+    leaves them out. Nested values are unchanged.
+
+    Args:
+        data: Tool arguments, or any other value.
+
+    Returns:
+        A shallow copy of a dict without ``_preloop_`` keys. Non-dicts are
+        returned unchanged.
+    """
+    if not isinstance(data, dict):
+        return data
+    return {
+        key: value
+        for key, value in data.items()
+        if not (isinstance(key, str) and key.startswith("_preloop_"))
+    }
+
+
 def redact_dict(
     data: Any,
     field_names: Optional[Set[str]] = None,
