@@ -220,56 +220,51 @@ def resolve_native_checkpoint(
             raise ValueError("resume_failed: published branch binding mismatch")
         return {"cold_handoff_authorized": True}
 
-    # Explicit adoption, and a publisher that never stored a session.
-    # reserve() has already incremented turns, so the first repair is
-    # turns <= 1. A repair that failed or timed out before storing a session
-    # is the same situation on a later turn: there is no conversation to
-    # resume. A repair that finished successfully still requires its own
-    # checkpoint.
+    # Explicit adoption, a publisher/repair that never stored a recoverable
+    # checkpoint, or Cloud with uploads off: review continues on the published
+    # branch. A session id alone is not recoverable without an uploaded
+    # native_session artifact. Fail closed only when an artifact was stored
+    # but is expired, mismatched, or bound to the wrong execution.
     session = native_session(prior)
-    has_session = execution_has_native_session(prior)
+    reference = session.get("artifact_reference") or {}
+    has_artifact_ref = bool(reference.get("artifact_id"))
     if (
         source_cold_handoff(thread, prior.id)
-        or (not has_session and int(thread.turns) <= 1)
         or sessionless_retry(prior)
+        or not has_artifact_ref
+        or not settings.flow_artifact_direct_upload
     ):
         return published_branch()
-    if not settings.flow_artifact_direct_upload:
-        raise ValueError("resume_failed: checkpoint uploads disabled")
-    if not has_session:
-        raise ValueError("resume_failed: native checkpoint missing")
     from preloop.agents.cli_session import valid_session_id
 
     if not valid_session_id(
         session.get("agent_type", ""), session.get("session_id", "")
     ):
         raise ValueError("resume_failed: invalid native session identity")
-    if settings.flow_artifact_direct_upload:
-        from preloop.models.crud import flow_artifact
-        from preloop.services.flow_artifacts import artifact_reference
+    from preloop.models.crud import flow_artifact
+    from preloop.services.flow_artifacts import artifact_reference
 
-        reference = session.get("artifact_reference") or {}
-        try:
-            artifact = flow_artifact.get(
-                db,
-                artifact_id=uuid.UUID(str(reference.get("artifact_id"))),
-                account_id=account_id,
-                flow_id=flow_id,
-                thread_id=str(thread.id),
-            )
-        except (ValueError, TypeError):
-            artifact = None
-        if (
-            artifact is None
-            or artifact.kind != "native_session"
-            or artifact.execution_id != prior.id
-            or artifact.ciphertext is None
-            or artifact.expires_at.replace(tzinfo=UTC) <= datetime.now(UTC)
-            or str(reference.get("execution_id")) != str(prior.id)
-            or reference.get("manifest_sha256")
-            != artifact_reference(artifact).manifest_sha256
-        ):
-            raise ValueError("resume_failed: native checkpoint unavailable")
+    try:
+        artifact = flow_artifact.get(
+            db,
+            artifact_id=uuid.UUID(str(reference.get("artifact_id"))),
+            account_id=account_id,
+            flow_id=flow_id,
+            thread_id=str(thread.id),
+        )
+    except (ValueError, TypeError):
+        artifact = None
+    if (
+        artifact is None
+        or artifact.kind != "native_session"
+        or artifact.execution_id != prior.id
+        or artifact.ciphertext is None
+        or artifact.expires_at.replace(tzinfo=UTC) <= datetime.now(UTC)
+        or str(reference.get("execution_id")) != str(prior.id)
+        or reference.get("manifest_sha256")
+        != artifact_reference(artifact).manifest_sha256
+    ):
+        raise ValueError("resume_failed: native checkpoint unavailable")
     if session.get("thread_id") and session["thread_id"] != str(thread.id):
         raise ValueError("resume_failed: native session thread mismatch")
     return dict(session)

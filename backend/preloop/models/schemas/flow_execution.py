@@ -23,6 +23,17 @@ class ExecutionModelUsage(BaseModel):
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
 
+class ExecutionResumeTotals(BaseModel):
+    """Combined tokens and cost for a publishing execution and its repairs."""
+
+    total_tokens: int = Field(0, description="Summed tokens across the resume chain")
+    estimated_cost: float = Field(
+        0.0, description="Summed estimated cost across the resume chain"
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ExecutionModelProjection(BaseModel):
     """Which model(s) ran an execution, derived from gateway usage.
 
@@ -56,6 +67,22 @@ class ExecutionModelProjection(BaseModel):
             "Tokens this execution's gateway traffic consumed, split by "
             "direction and cache participation. Null when the run has no "
             "attributable gateway usage, which is not the same as zero."
+        ),
+    )
+    resume_of: Optional[uuid.UUID] = Field(
+        None,
+        description=(
+            "Publishing execution this repair resumes. Null when the row is "
+            "not a review/CI resumption. Distinct from parent_execution_id "
+            "(delegation)."
+        ),
+    )
+    resume_totals: Optional[ExecutionResumeTotals] = Field(
+        None,
+        description=(
+            "Summed total_tokens and estimated_cost for the publishing "
+            "execution and every repair that points at it. Null when the "
+            "execution is not part of a multi-turn resume chain."
         ),
     )
 

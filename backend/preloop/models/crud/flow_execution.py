@@ -1047,6 +1047,12 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     FlowExecution.trigger_subject_url,
                     subject["url"].astext,
                 ),
+                with_expression(
+                    FlowExecution.resume_of,
+                    FlowExecution.trigger_event_details["_resume"][
+                        "resume_root"
+                    ].astext,
+                ),
             )
 
         # Eagerly load flow relationship to avoid N+1 queries
