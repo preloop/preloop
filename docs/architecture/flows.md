@@ -159,18 +159,32 @@ The controller writes the chosen rule or default onto the execution under reserv
 Failed executions always appear as console attention items of kind `flow`, and there is no failure comment: `on_failure.comment_on_trigger_issue` (removed 2026-09) and `on_failure.attention_item` are parsed and ignored so flows stored before the removal still load. `notifications` is a JSONB column, so nothing is migrated; a save from the console writes the blob back without the `on_failure` block.
 
 **Evidence packs.** Audit-style flows (`backend/presets/004`–`007`) write a
-human-readable evidence pack under `/workspace/evidence/`. With
-`FLOW_ARTIFACT_DIRECT_UPLOAD` unset, the runner captures a size-capped tar.gz
-(Docker archive API, or the Kubernetes log-channel emission capped at
-`MAX_EVIDENCE_ARCHIVE_BYTES`) and stores it on `flow_execution.evidence_archive`.
-With the flag set, hosted containers and private Docker runners upload through
-the shared encrypted artifact API (`kind=evidence`); Kubernetes logs carry
-status markers only. `GET .../result` and `GET .../evidence-status` report the
-persisted receipt (`kind=evidence`) without decrypt; download verifies digest
-and tenancy and reports `available` / `missing` / `expired` / `failed`
-distinctly. Packs are signed at capture with the account Ed25519 key; the
-signature lives beside the archive so the content-addressed digest does not
-change. See
+human-readable evidence pack under `/workspace/evidence/`. Two transports
+move that pack to the control plane. Direct upload
+(`FLOW_ARTIFACT_DIRECT_UPLOAD`) gives hosted containers and private Docker
+runners an execution-scoped PUT to the encrypted artifact store
+(`kind=evidence`). Kubernetes logs then carry status markers only, including
+when the upload fails: there is no plaintext fallback. The legacy transport
+is the default. Docker copies the directory through the engine archive API
+and does not use the log channel, so `FLOW_EVIDENCE_LOG_PLAINTEXT` does not
+change Docker capture. Kubernetes, with the plaintext switch left at its
+default `true`, emits a size-capped base64 block (`MAX_EVIDENCE_ARCHIVE_BYTES`,
+2 MiB) of `result.json`, the evidence pack, and the workspace snapshot into
+the pod log. That default is an exposure window: base64 is not encryption,
+and anyone who can read retained pod logs can read the artifacts. Set
+`FLOW_EVIDENCE_LOG_PLAINTEXT=false` to refuse that channel. Without an
+upload token the wrapper fails closed (markers `unavailable` /
+`skipped` with reason `plaintext_disabled`, no artifact bytes). The receipt
+is `failed` with error `plaintext_disabled`, which means unavailable by
+policy, and result capture reports a missing result rather than a decoded
+payload. The switch does not cover pod-spec access or ordinary agent
+stdout. Encrypted log transport with per-execution keys is a separate
+decision tracked in issue #268. `GET .../result` and `GET .../evidence-status`
+report the persisted receipt (`kind=evidence`) without decrypt; download
+verifies digest and tenancy and reports `available` / `missing` / `expired`
+/ `failed` distinctly. Packs are signed at capture with the account Ed25519
+key; the signature lives beside the archive so the content-addressed digest
+does not change. See
 [evidence-storage.md](../guide/flows/evidence-storage.md). This is operational
 retention, not object-lock.
 
@@ -334,35 +348,30 @@ initial/repair execution links and published SHAs while preserving human edits
 outside that region, including metadata-only repairs. Links use `PRELOOP_URL`
 and existing authorization-protected console routes; tokens and transcripts
 are never provenance inputs. Legacy publication adds the current execution
-block on creation and now also upserts it when a continuation push or a
-metadata-only retry finds the PR/MR already open. A malformed owned region, or
-a rewrite that would exceed the provider limit, warns through
-`PRELOOP_PR_METADATA_WARNING` and leaves the owned provenance region unchanged;
-the independent failure-disclosure refresh still runs, and a failed provider
-update is surfaced and never reported as successful publication.
+block on creation. When an open pull request or merge request already exists
+for the branch, legacy mode fetches that description, appends the current
+execution id and head SHA to the owned block when that pair is not already
+present, and updates only the body. Human prose and the title stay as they
+were. A malformed or oversized body, or a provider update that is not 2xx,
+leaves the description unchanged and does not emit `PRELOOP_PR_OPENED`.
+Isolated GitLab publication stays unsupported until a broker can enforce
+credential scope and lifetime.
 
-The publication-mode by provider matrix records where each behavior is
-delivered (with its test), closed by the legacy continuation upsert above, or
-unsupported by design:
+Publication acceptance matrix (issue #431). Each cell is delivered (test
+name) or unsupported by design.
 
-| Mode / provider | Create | Continuation push | Metadata-only retry | Failure disclosure | Human edits preserved | Provider failure surfaced |
-| --- | --- | --- | --- | --- | --- | --- |
-| `legacy` / GitHub | delivered: upsert in the create payload | gap closed here: existing-PR update shell | gap closed here: same existing-PR upsert | delivered: `merge_failure_notice` | delivered: owned region only | delivered: `PRELOOP_PR_METADATA_WARNING` on the update |
-| `legacy` / GitLab | delivered: same create path, `description` field | gap closed here: existing-MR update shell | gap closed here: same existing-MR upsert | delivered: `merge_failure_notice` | delivered: owned region only | delivered: `PRELOOP_PR_METADATA_WARNING` on the update |
-| `isolated` / GitHub | delivered: `PullRequestPublisher.upsert` | delivered: `PullRequestPublisher.upsert` | delivered: `PullRequestPublisher.upsert` | unsupported by design: isolated publishes only verified success (#599 disclosure out of scope) | delivered: owned region only | delivered: `PublicationError`, retryable |
-| `isolated` / GitLab | unsupported by design | unsupported by design | unsupported by design | unsupported by design | unsupported by design | unsupported by design |
+| Mode | Provider | Create | Continuation push to an existing PR | Metadata-only retry | Failure disclosure | Human edits preserved | Provider failure surfaced |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| legacy | github | delivered (`TestWritePrPayloadPy.test_commit_fallback_single_commit_includes_execution_link`; create script calls `upsert_provenance` once) | delivered (`test_github_continuation_appends_record_and_keeps_prose`) | delivered (`test_repeated_continuation_is_idempotent_and_reuses_the_pr`, `test_missing_metadata_warns_and_keeps_existing_prose`) | delivered (`test_already_pushed_commits_refresh_existing_failure_notice`, `test_existing_body_preserved_and_notice_idempotent`) | delivered (`test_github_continuation_appends_record_and_keeps_prose`) | delivered (`test_provider_update_failure_is_not_success`; a create miss is `test_no_url_anywhere_emits_no_marker`) |
+| legacy | gitlab | delivered (same create script, `kind == "gitlab"`) | delivered (`test_gitlab_continuation_appends_record`) | delivered (`test_repeated_continuation_is_idempotent_and_reuses_the_pr`) | delivered (same failure-disclosure tests, GitLab payload) | delivered (`test_gitlab_continuation_appends_record`) | delivered (`test_provider_update_failure_is_not_success`) |
+| isolated | github | delivered (`test_provider_create_retry_metadata_update_preserves_human_edits`) | delivered (same test, repair upsert) | delivered (same test: one POST, later upserts only) | out of scope (issue #599; the isolated publisher upserts provenance only) | delivered (same test) | delivered (`test_provider_failure_is_observable`) |
+| isolated | gitlab | unsupported by design (flows.md: "Stored PATs and GitLab publication are rejected in this mode until a broker can enforce their scope and lifetime") | unsupported by design (same) | unsupported by design (same) | unsupported by design (same) | unsupported by design (same) | unsupported by design (same) |
 
-GitLab isolated publication stays rejected until a broker can enforce scope and
-lifetime alongside the GitHub App lease. Tests:
-`backend/tests/utils/test_pr_metadata.py` (parser round trip, append without
-duplicate, malformed region, oversize),
-`backend/tests/services/test_flow_pr_loop.py::TestLegacyContinuationProvenance`
-(legacy GitHub/GitLab continuation, idempotence, human prose, failure-disclosure
-decoupling, provider rejection) and `TestPostExecutionPullRequest` (legacy
-create),
-`backend/tests/services/test_failed_publication_metadata.py` (failure
-disclosure), and
-`backend/tests/services/test_trusted_publication.py` (isolated provider).
+Continuation append keeps the first execution record and the most recent 199 repair records (`PROVENANCE_RECENT_RECORDS`). The 201st continuation still lands (`test_append_provenance_keeps_the_first_record_and_recent_199`).
+
+The standalone metadata client still accepts a GitLab payload shape. Isolated
+mode does not: `validate_publication_tracker` rejects PAT and GitLab
+credentials before a lease is minted.
 
 Preset synchronization updates uncustomized fields and marks customized saved
 flows as having an available update. Inspect the effective saved prompt and

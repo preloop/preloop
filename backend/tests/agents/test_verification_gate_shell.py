@@ -679,7 +679,7 @@ class TestLegacyReportedOutcome:
             repo.repo.parent / "workspace/evidence/verification/evidence.json"
         ).exists()
         payload = json.loads(
-            (repo.repo.parent / "workspace/evidence/pr-update.json").read_text()
+            (repo.repo.parent / "workspace/evidence/pr-failure-update.json").read_text()
         )
         body = payload["body" if provider == "github" else "description"]
         assert body.startswith("Human introduction\n")

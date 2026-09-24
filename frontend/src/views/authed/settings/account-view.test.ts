@@ -53,6 +53,7 @@ describe('AccountView', () => {
       effectivePlanId?: string;
       effectivePlan?: Record<string, unknown> | null;
       summaryPlan?: Record<string, unknown> | null;
+      sessionArtifactUsage?: Record<string, unknown> | null;
     } = {}
   ) {
     return sinon
@@ -80,6 +81,13 @@ describe('AccountView', () => {
             created_at: '2026-01-01T00:00:00Z',
             updated_at: '2026-01-02T00:00:00Z',
           });
+        }
+
+        if (url.includes('/api/v1/account/session-artifacts/usage')) {
+          if (!opts.sessionArtifactUsage) {
+            return json({ detail: 'no usage in this test' }, 404);
+          }
+          return json(opts.sessionArtifactUsage);
         }
 
         if (url.includes('/api/v1/features')) {
@@ -1124,6 +1132,37 @@ describe('AccountView', () => {
       'the window dispatch should fetch summary once'
     );
     expect(summaryGets()).to.equal(before + 1);
+  });
+
+  it('renders session artifact usage as used, budget, and per kind', async () => {
+    fetchStub = createFetchStub({
+      billing: false,
+      sessionArtifactUsage: {
+        used_bytes: 409600,
+        budget_bytes: 1048576,
+        by_kind: { screenshot: 0, recording: 409600 },
+        evicted_count_30d: 1,
+      },
+    });
+    const element = await fixture<AccountView>(
+      html`<account-view></account-view>`
+    );
+    await waitUntil(() => !(element as any)._loading, 'load');
+    await element.updateComplete;
+
+    const row = element.shadowRoot?.querySelector(
+      '[data-testid="session-artifact-usage"]'
+    );
+    expect(row, 'expected the session artifact usage row').to.exist;
+    const text = (row?.textContent ?? '').replace(/\s+/g, ' ');
+    expect(text).to.contain('400 KiB');
+    expect(text).to.contain('1 MiB');
+    expect(text).to.contain('0 B');
+    const cells = usageCells(element);
+    expect(cells['Screenshots']).to.equal('0 B');
+    expect(cells['Recordings']).to.equal('400 KiB');
+    expect(cells['Used']).to.contain('400 KiB');
+    expect(cells['Used']).to.contain('1 MiB');
   });
 
   it('stops listening after disconnect so a window dispatch fetches nothing', async () => {

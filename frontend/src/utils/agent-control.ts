@@ -146,6 +146,7 @@ const AGENT_CONTROL_SUPPORTED_KINDS = new Set([
   'opencode',
   'pi',
   'deepseek',
+  'codex',
 ]);
 
 /**
@@ -166,6 +167,20 @@ export function getAgentControlInstallHint(
   );
   const name = agent?.display_name || 'this agent';
   const state = getAgentControlState(agent);
+
+  // The CLI installer does not know Codex yet (`install-plugin` has no
+  // codex case). Offer the sidecar's npm install instead of a command
+  // that fails. The CLI slice will switch this back to install-plugin.
+  if (kind === 'codex') {
+    return {
+      supported: true,
+      command: 'npm install -g @preloop-ai/codex-plugin',
+      docsUrl: AGENT_CONTROL_DOCS_URL,
+      placeholder: `Install Agent Control to talk to ${name}`,
+      helptext:
+        'Install the Codex sidecar, then run preloop-codex-plugin verify and preloop-codex-plugin run on the machine that runs Codex. The control file is ~/.codex/preloop-control.json.',
+    };
+  }
 
   if (!agent || !AGENT_CONTROL_SUPPORTED_KINDS.has(kind)) {
     return {

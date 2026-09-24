@@ -166,8 +166,11 @@ def capture(root: Path, *, max_bytes: int) -> bytes:
                 # Runtime remotes can embed clone credentials; recreate from
                 # trusted repository configuration when resuming.
                 continue
-            data = path.read_bytes()
-            after = path.stat()
+            try:
+                data = path.read_bytes()
+                after = path.stat()
+            except FileNotFoundError:
+                raise ValueError("checkpoint_workspace_busy") from None
             if (before.st_size, before.st_mtime_ns) != (
                 after.st_size,
                 after.st_mtime_ns,
@@ -194,7 +197,10 @@ def capture(root: Path, *, max_bytes: int) -> bytes:
         archive.addfile(info, io.BytesIO(metadata))
     # Detect files changing between their individual capture and archive end.
     for path, before in files:
-        after = path.stat()
+        try:
+            after = path.stat()
+        except FileNotFoundError:
+            raise ValueError("checkpoint_workspace_busy") from None
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             raise ValueError("checkpoint_workspace_busy")
     final_paths: set[Path] = set()

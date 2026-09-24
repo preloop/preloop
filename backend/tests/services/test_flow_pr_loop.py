@@ -822,9 +822,17 @@ def _run_legacy_continuation(
         'if [ -n "$data" ]; then\n'
         '  cp "${data#@}" "$FAKE_UPDATE_FILE"\n'
         '  if [ -n "$FAKE_FAIL_DATA" ]; then exit 22; fi\n'
+        "  printf '200'\n"
         'elif [ -n "$out" ]; then cat "$FAKE_LOOKUP_FILE" > "$out"; fi\n'
     )
     fake_curl.chmod(0o755)
+    fake_git = bin_dir / "git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "rev-parse" ]; then printf "%s\\n" "$FAKE_GIT_HEAD"; exit 0; fi\n'
+        'exec /usr/bin/git "$@"\n'
+    )
+    fake_git.chmod(0o755)
     lookup_file = tmp_path / "lookup.json"
     lookup_file.write_text(lookup)
 
@@ -832,6 +840,7 @@ def _run_legacy_continuation(
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["FAKE_LOOKUP_FILE"] = str(lookup_file)
     env["FAKE_UPDATE_FILE"] = str(update_file)
+    env["FAKE_GIT_HEAD"] = REPAIR_HEAD
     if fail_update:
         env["FAKE_FAIL_DATA"] = "1"
     script = script.replace("/workspace/evidence", str(evidence))
@@ -897,7 +906,7 @@ class TestLegacyContinuationProvenance:
             owner="acme",
             repo="app",
             branch=CONTINUATION_BRANCH,
-            public_url=PUBLIC_URL,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
         )
         completed, sent = _run_legacy_continuation(
             tmp_path,
@@ -931,7 +940,7 @@ class TestLegacyContinuationProvenance:
             gitlab_host="gitlab.com",
             encoded_path="acme%2Fapp",
             branch=CONTINUATION_BRANCH,
-            public_url=PUBLIC_URL,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
         )
         completed, sent = _run_legacy_continuation(
             tmp_path,
@@ -957,7 +966,7 @@ class TestLegacyContinuationProvenance:
             owner="acme",
             repo="app",
             branch=CONTINUATION_BRANCH,
-            public_url=PUBLIC_URL,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
         )
         # The existing body already owns this execution's exact record.
         body = (
@@ -987,7 +996,7 @@ class TestLegacyContinuationProvenance:
             owner="acme",
             repo="app",
             branch=CONTINUATION_BRANCH,
-            public_url=PUBLIC_URL,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
         )
         completed, sent = _run_legacy_continuation(
             tmp_path,
@@ -1010,7 +1019,7 @@ class TestLegacyContinuationProvenance:
             owner="acme",
             repo="app",
             branch=CONTINUATION_BRANCH,
-            public_url=PUBLIC_URL,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
         )
         completed, sent = _run_legacy_continuation(
             tmp_path,
@@ -1036,7 +1045,7 @@ class TestLegacyContinuationProvenance:
             owner="acme",
             repo="app",
             branch=CONTINUATION_BRANCH,
-            public_url=PUBLIC_URL,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
         )
         notice = (
             f"<!-- preloop:failure:{REPAIR_EXECUTION}:start -->\nfailed run\n"
@@ -1072,7 +1081,7 @@ class TestLegacyContinuationProvenance:
             owner="acme",
             repo="app",
             branch=CONTINUATION_BRANCH,
-            public_url=PUBLIC_URL,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
         )
         completed, sent = _run_legacy_continuation(
             tmp_path,
@@ -1095,7 +1104,7 @@ class TestLegacyContinuationProvenance:
             owner="acme",
             repo="app",
             branch=CONTINUATION_BRANCH,
-            public_url=PUBLIC_URL,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
         )
         completed, sent = _run_legacy_continuation(
             tmp_path,
@@ -1108,8 +1117,8 @@ class TestLegacyContinuationProvenance:
                 "base": "main",
             },
         )
-        assert "no execution provenance" in completed.stderr
-        assert sent == ""
+        body = json.loads(sent)["body"]
+        assert REPAIR_EXECUTION in body and REPAIR_HEAD in body
 
     @bash_required
     def test_provider_rejection_is_surfaced(self, tmp_path):
@@ -1118,7 +1127,7 @@ class TestLegacyContinuationProvenance:
             owner="acme",
             repo="app",
             branch=CONTINUATION_BRANCH,
-            public_url=PUBLIC_URL,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
         )
         completed, sent = _run_legacy_continuation(
             tmp_path,
@@ -1132,7 +1141,7 @@ class TestLegacyContinuationProvenance:
             },
             fail_update=True,
         )
-        assert "failed to update existing PR description" in completed.stdout
+        assert "failed to update existing pull request body" in completed.stderr
         assert REPAIR_EXECUTION in json.loads(sent)["body"]
 
     @bash_required
@@ -1142,7 +1151,7 @@ class TestLegacyContinuationProvenance:
             owner="acme",
             repo="app",
             branch=CONTINUATION_BRANCH,
-            public_url=PUBLIC_URL,
+            execution_link=f"{PUBLIC_URL}/console/flows/executions/{REPAIR_EXECUTION}",
         )
         completed, sent = _run_legacy_continuation(
             tmp_path,

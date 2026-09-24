@@ -1,0 +1,1 @@
+{"browser": {"browserName": "chromium", "isolated": true, "launchOptions": {"headless": true, "args": ["--proxy-server=${PRELOOP_BROWSER_PROXY}", "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE ${PRELOOP_BROWSER_PROXY_HOST}", "--proxy-bypass-list=<-loopback>"]}}, "capabilities": ["core","tabs"]}

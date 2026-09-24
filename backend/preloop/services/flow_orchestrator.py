@@ -160,6 +160,14 @@ WAITING_FOR_HUMAN_STATUS = "WAITING_FOR_HUMAN"
 WAITING_FOR_CHILDREN_STATUS = "WAITING_FOR_CHILDREN"
 PARKED_STATUSES = frozenset({WAITING_FOR_HUMAN_STATUS, WAITING_FOR_CHILDREN_STATUS})
 
+# Terminal outcomes that leave a pending approval with nowhere to land.
+# SUCCEEDED ran the tool after a decision. STOPPED is an operator halt and
+# is left to the stop path. TIMEOUT is the spelling some monitors write;
+# the agent monitor itself reports a timeout as FAILED.
+_APPROVAL_CANCEL_ON_TERMINAL = frozenset(
+    {"FAILED", "CANCELLED", "CANCELED", "TIMEOUT", "TIMED_OUT"}
+)
+
 # Sentinel string that agents print when completing successfully.
 FLOW_SUCCESS_SENTINEL = "FLOW_EXECUTION_SUCCESS"
 
@@ -2305,13 +2313,19 @@ class FlowExecutionOrchestrator:
 
         profile = host_exec_profile_name(self.flow.agent_config)
         if effective_agent_type == "cursor" or profile:
+            clone_config = self.flow.git_clone_config
+            if isinstance(clone_config, dict):
+                publication_mode = clone_config.get("publication_mode")
+            else:
+                publication_mode = getattr(clone_config, "publication_mode", None)
             error = host_exec_flow_error(
                 agent_type=effective_agent_type,
                 agent_config=self.flow.agent_config,
                 runner_pool=self.flow.runner_pool,
             ) or host_exec_unavailable_reason(
-                git_clone_config=self.flow.git_clone_config,
+                git_clone_config=clone_config,
                 custom_commands=self.flow.custom_commands,
+                publication_mode=publication_mode,
             )
             if error:
                 raise ValueError(error)
@@ -5910,6 +5924,12 @@ class FlowExecutionOrchestrator:
         self.db.refresh(updated_log)
         self.execution_log = updated_log
 
+        # A run that has finished cannot deliver an answer. Cancel questions
+        # it still holds so the console does not offer one. Parked runs omit
+        # status here; their approval stays pending until the human decides.
+        if status in _APPROVAL_CANCEL_ON_TERMINAL:
+            self._cancel_pending_approvals(status)
+
         # Debug: Verify the values were actually set
         if "tool_calls_count" in kwargs or "total_tokens" in kwargs:
             logger.info(
@@ -5932,6 +5952,40 @@ class FlowExecutionOrchestrator:
         await self._publish_update("status_update", status_payload)
 
         logger.debug(f"Execution log updated: status={status}")
+
+    def _cancel_pending_approvals(self, status: str) -> None:
+        """Cancel pending approvals this execution can no longer deliver.
+
+        Never raises: losing the cancel must not rewrite the terminal status
+        that was just committed. The reason is stored on the request so the
+        console can say why the question disappeared.
+        """
+        if self.execution_log is None:
+            return
+        try:
+            from preloop.models.crud import crud_approval_request
+
+            cancelled = crud_approval_request.cancel_pending_for_execution(
+                self.db,
+                execution_id=str(self.execution_log.id),
+                reason=(
+                    f"{crud_approval_request.EXECUTION_ENDED_CANCEL_REASON} "
+                    f"Execution status: {status}."
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "Could not cancel pending approvals for terminal execution %s",
+                getattr(self.execution_log, "id", "unknown"),
+            )
+            return
+        if cancelled:
+            logger.info(
+                "Cancelled %s pending approval(s) on terminal execution %s (%s)",
+                cancelled,
+                self.execution_log.id,
+                status,
+            )
 
     def _emit_execution_finished_webhook(
         self, status: str, failure_category: Optional[str]

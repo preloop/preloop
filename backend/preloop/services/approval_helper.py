@@ -907,6 +907,28 @@ async def require_approval(
 
                     return (False, json.dumps(async_response))
 
+                # A window longer than the in-process wait is a park at
+                # request time. The park row is committed inside
+                # ``_park_and_build_payload`` before this return, so a
+                # transport that closes without delivering the tool result
+                # still leaves a park request for the orchestrator. The
+                # short wait below is only for windows the human can answer
+                # before a park would be worth a container restart.
+                from preloop.services.approval_window import should_park
+
+                if should_park(workflow_timeout_seconds):
+                    parked_payload = await _park_and_build_payload(
+                        execution_id=caller.execution_id,
+                        approval_request_id=approval_request_id,
+                        expires_at=approval_request_expires_at,
+                        window_seconds=workflow_timeout_seconds,
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        base_url=base_url,
+                    )
+                    if parked_payload is not None:
+                        return (False, parked_payload)
+
                 # Send initial notification via Context (FastMCP streaming)
                 if ctx:
                     try:
@@ -1075,13 +1097,10 @@ async def require_approval(
                         )
                         break
 
-                    # Park the flow execution rather than burn it against a
-                    # human timescale. After a short in-process wait the run
-                    # holds a container, a runner slot and a pooled DB session
-                    # for nothing: the decision is minutes or days away. The
-                    # tool returns a structured pending result, the
-                    # orchestrator releases the runtime, and the decision (or
-                    # the expiry) resumes the same agent session.
+                    # Fallback for a park that could not be recorded at request
+                    # time (the execution row was not live yet). Windows at or
+                    # under the threshold never park here: should_park is
+                    # false for them, and they keep this in-process wait.
                     if elapsed >= int(settings.approval_park_after_seconds):
                         parked_payload = await _park_and_build_payload(
                             execution_id=caller.execution_id,
