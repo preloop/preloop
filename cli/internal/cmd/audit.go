@@ -15,6 +15,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -66,6 +67,21 @@ type chainCheckpoint struct {
 	SignedPayload     map[string]interface{}    `json:"signed_payload"`
 	Digest            string                    `json:"digest"`
 	SignatureDocument *verify.SignatureDocument `json:"signature_document"`
+}
+
+// UnmarshalJSON keeps number tokens in the signed payload. A float64
+// round trip would reprint 0.0 as 0 and fail the checkpoint digest the
+// same way segment rows used to.
+func (c *chainCheckpoint) UnmarshalJSON(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	type checkpointAlias chainCheckpoint
+	var alias checkpointAlias
+	if err := decoder.Decode(&alias); err != nil {
+		return err
+	}
+	*c = chainCheckpoint(alias)
+	return nil
 }
 
 // serverChainVerdict is GET /audit/chain/verify, kept only so a disagreement
@@ -321,7 +337,10 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 			"edited after sealing. It does not show they were true when written.",
 	}
 
-	serverVersion := fetchServerVersion(client)
+	serverVersion := ""
+	if !auditJSON && report.ServerStatus == "ok" && report.Status == "broken" {
+		serverVersion = fetchServerVersion(client)
+	}
 	if auditJSON {
 		encoder := json.NewEncoder(out)
 		encoder.SetIndent("", "  ")
