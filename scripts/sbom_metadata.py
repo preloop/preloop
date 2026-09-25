@@ -50,6 +50,19 @@ SOURCE_MAINTAINER = "package_metadata_maintainer"
 SOURCE_NPM_SCOPE = "npm_scope"
 SOURCE_MODULE_PATH = "module_path"
 SOURCE_UNRESOLVED = "unresolved"
+SOURCE_MANUAL = "manual_override"
+
+# These distributions publish no author and no repository URL in the files
+# an offline scan can read. The names below are copied from text the package
+# itself ships (aiodocker's description links github.com/aio-libs/aiodocker;
+# py-key-value-aio's description links strawgate.com/py-key-value) or, for
+# lighthouse-logger, from the first maintainer on its npm registry record.
+# The published tarball does not carry that maintainer.
+MANUAL_SUPPLIERS: dict[tuple[str, str], str] = {
+    ("pypi", "aiodocker"): "aio-libs",
+    ("pypi", "py-key-value-aio"): "strawgate.com/py-key-value",
+    ("npm", "lighthouse-logger"): "paulirish",
+}
 
 _PERSON_RE = re.compile(
     r"^\s*(?P<name>[^<(]*?)\s*"
@@ -427,9 +440,12 @@ def _npm_supplier(manifest: Path) -> tuple[dict[str, Any], str] | None:
     except (OSError, json.JSONDecodeError):
         return None
     authors = _npm_people(data.get("author"))
-    authors.extend(_npm_people(data.get("contributors")))
     maintainers = _npm_people(data.get("maintainers"))
-    return supplier_from_people(authors, maintainers)
+    chosen = supplier_from_people(authors, maintainers)
+    if chosen is not None:
+        return chosen
+    contributors = _npm_people(data.get("contributors"))
+    return supplier_from_people(contributors, [])
 
 
 def _npm_scope_supplier(name: str) -> tuple[dict[str, Any], str] | None:
@@ -536,7 +552,9 @@ def derive_supplier(
         chosen = _python_supplier(paths)
         if chosen is not None:
             return chosen
-        return _component_repository_supplier(component)
+        chosen = _component_repository_supplier(component)
+        if chosen is not None:
+            return chosen
     if ecosystem == "npm":
         manifest = index.npm_manifest(purl_name or name)
         scoped = _npm_scope_supplier(purl_name or name)
@@ -556,9 +574,16 @@ def derive_supplier(
                 chosen = supplier_from_path(repository)
                 if chosen is not None:
                     return chosen
-        return _component_repository_supplier(component)
-    if ecosystem == "golang":
-        return _go_supplier(purl_name or name)
+        chosen = _component_repository_supplier(component)
+        if chosen is not None:
+            return chosen
+    elif ecosystem == "golang":
+        chosen = _go_supplier(purl_name or name)
+        if chosen is not None:
+            return chosen
+    manual = MANUAL_SUPPLIERS.get((ecosystem, purl_name or name))
+    if manual:
+        return {"name": manual}, SOURCE_MANUAL
     return None
 
 

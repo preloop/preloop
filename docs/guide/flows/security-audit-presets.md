@@ -945,7 +945,9 @@ already on the component when no person and no scope are present.
 `author` is left as author. Each
 derived component records `preloop:supplier_source`
 (`package_metadata_author`, `package_metadata_maintainer`, `npm_scope`,
-`module_path`, or `unresolved`). The `sbom` job fails when
+`module_path`, `manual_override`, or `unresolved`). `manual_override` is a
+checked-in name for a distribution whose files name no person and no
+repository. The `sbom` job fails when
 `python -m preloop.cra measure` reports `passed: false`.
 
 OpenVEX for the CLI lives in `security/vex/preloop-cli.openvex.json` and is

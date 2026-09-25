@@ -116,6 +116,34 @@ class SupplierDerivationTest(unittest.TestCase):
         self.assertEqual(scope_source, "npm_scope")
         self.assertEqual(scope_supplier["name"], "@widgets")
 
+    def test_npm_maintainer_outranks_contributor(self) -> None:
+        root = self._tmp()
+        modules = root / "node_modules"
+        self._write_npm(
+            modules / "ranked",
+            "ranked",
+            maintainers=["Pat Maintainer"],
+        )
+        manifest = modules / "ranked" / "package.json"
+        body = json.loads(manifest.read_text(encoding="utf-8"))
+        body["contributors"] = ["Connie Contributor"]
+        manifest.write_text(json.dumps(body), encoding="utf-8")
+        index = sbom_metadata.MetadataIndex([], [modules])
+        supplier, source = sbom_metadata.derive_supplier(
+            _component("ranked", "pkg:npm/ranked@1.2.3"), index
+        )
+        self.assertEqual(source, "package_metadata_maintainer")
+        self.assertEqual(supplier["name"], "Pat Maintainer")
+
+    def test_manual_override_for_metadata_with_no_person(self) -> None:
+        index = sbom_metadata.MetadataIndex([], [])
+        supplier, source = sbom_metadata.derive_supplier(
+            _component("lighthouse-logger", "pkg:npm/lighthouse-logger@1.4.2"),
+            index,
+        )
+        self.assertEqual(source, "manual_override")
+        self.assertEqual(supplier["name"], "paulirish")
+
     def test_npm_repository_path_when_no_person_or_scope(self) -> None:
         root = self._tmp()
         modules = root / "node_modules"
@@ -211,6 +239,28 @@ class SupplierDerivationTest(unittest.TestCase):
         measured = measure_inputs([("example.cdx.json", json.dumps(document).encode())])
         self.assertTrue(measured["passed"], measured)
         self.assertEqual(measured["missing_counts"]["supplier"], 0)
+
+    def test_measure_command_imports_without_third_party_packages(self) -> None:
+        import os
+        import subprocess
+        import sys
+
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(REPO_ROOT / "backend")
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-S",
+                "-c",
+                "import preloop.cra.__main__ as entry; assert callable(entry.main)",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(probe.returncode, 0, probe.stderr)
 
     def _tmp(self) -> Path:
         from tempfile import TemporaryDirectory

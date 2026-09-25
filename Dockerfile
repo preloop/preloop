@@ -36,10 +36,13 @@ COPY scripts/ scripts/
 # `--no-deps` is what OpenSSF Scorecard accepts for an editable install.
 RUN pip install --no-cache-dir --no-deps -e .
 
-# The server never invokes pip. Drop the installer tooling from the runtime
-# layer so the image does not ship pip, setuptools or wheel. Import is
-# checked in the same layer: if the editable install needed setuptools at
-# import time, this build fails instead of publishing a broken image.
+# The server never invokes pip. Drop the installer tooling from the merged
+# filesystem so a process in the container cannot import pip, setuptools or
+# wheel. Earlier layers still contain those files; a scanner that reads each
+# layer tarball will still see them. The SBOM is generated from the merged
+# environment, which is the view this uninstall changes. Import is checked
+# in the same layer: if the editable install needed setuptools at import
+# time, this build fails instead of publishing a broken image.
 RUN python -m pip uninstall -y pip setuptools wheel \
     && python -c "import preloop"
 

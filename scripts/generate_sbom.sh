@@ -165,7 +165,7 @@ if [ -d "${REPO_ROOT}/frontend/node_modules" ]; then
   STAMP_ARGS+=(--npm-root "${REPO_ROOT}/frontend/node_modules")
 fi
 "${TOOL_VENV}/bin/python" "${REPO_ROOT}/scripts/sbom_metadata.py" --validate \
-  "${STAMP_ARGS[@]}" \
+  ${STAMP_ARGS[@]+"${STAMP_ARGS[@]}"} \
   "${OUT_DIR}"/*.cdx.json
 
 log "digests"
