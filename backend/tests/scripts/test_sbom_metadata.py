@@ -259,6 +259,11 @@ class SupplierDerivationTest(unittest.TestCase):
             "angle-url",
             author="Example Person <http://example.test>",
         )
+        self._write_npm(
+            modules / "url-only",
+            "url-only",
+            author={"url": "http://example.test"},
+        )
         index = sbom_metadata.MetadataIndex([], [modules])
         document = {
             "bomFormat": "CycloneDX",
@@ -279,12 +284,14 @@ class SupplierDerivationTest(unittest.TestCase):
                 _component("path-shape", "pkg:npm/path-shape@1.2.3"),
                 _component("string-shape", "pkg:npm/string-shape@1.2.3"),
                 _component("angle-url", "pkg:npm/angle-url@1.2.3"),
+                _component("url-only", "pkg:npm/url-only@1.2.3"),
             ],
             "dependencies": [
                 {"ref": "example", "dependsOn": []},
                 {"ref": "pkg:npm/path-shape@1.2.3", "dependsOn": []},
                 {"ref": "pkg:npm/string-shape@1.2.3", "dependsOn": []},
                 {"ref": "pkg:npm/angle-url@1.2.3", "dependsOn": []},
+                {"ref": "pkg:npm/url-only@1.2.3", "dependsOn": []},
             ],
         }
         sbom_metadata.fill_component_suppliers(document, index)
@@ -301,6 +308,11 @@ class SupplierDerivationTest(unittest.TestCase):
         angle_supplier = by_name["angle-url"]
         self.assertEqual(angle_supplier["url"], ["http://example.test"])
         self.assertNotIn("email", json.dumps(angle_supplier))
+
+        url_only = by_name["url-only"]
+        self.assertEqual(url_only["name"], "http://example.test")
+        self.assertEqual(url_only["url"], ["http://example.test"])
+        self.assertNotIn("contact", url_only)
 
         self._assert_cyclonedx_1_6(document)
 
