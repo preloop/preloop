@@ -477,7 +477,9 @@ state of the portfolio.
   projects/<slug>/<lens>/result.json  # each child's own result envelope, verbatim
 ```
 
-The cover is the same three-box one-pager the rest of the family uses
+The console Report tab on the execution page reads `evidence/portfolio-report.md`
+and `evidence/findings.json` from the pack. The cover is the same three-box
+one-pager the rest of the family uses
 (What we checked / What we did not check / What you should do next
 week). Here the "what we did not check" box is load bearing: it names the
 discovered projects no lens ran on and why (not selected, the selection

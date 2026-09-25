@@ -10147,6 +10147,79 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/executions/{execution_id}/evidence/members:
+    get:
+      tags:
+      - Flows
+      summary: Get Flow Execution Evidence Members
+      description: 'List a pack''s manifest members, or return one member when ``path``
+        is set.
+
+
+        Auth, decryption, digest verification and legal hold follow
+
+        ``GET .../evidence``. Only a path that the manifest lists is readable.
+
+        Absolute paths and ``..`` are refused. A member larger than 8 MiB is
+
+        refused; download the pack for that file. Markdown, JSON and plain text
+
+        are served with those content types.
+
+
+        The full download is not audited. This read is not audited either.'
+      operationId: get_flow_execution_evidence_members_api_v1_flows_executions__execution_id__evidence_members_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      - name: path
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Path
+      responses:
+        '200':
+          description: JSON member list, or one member's bytes when path is set.
+          content:
+            application/json:
+              schema:
+                type: object
+            text/markdown:
+              schema:
+                type: string
+            text/plain:
+              schema:
+                type: string
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+          headers:
+            X-Preloop-Evidence-Integrity:
+              schema:
+                type: string
+            X-Preloop-Evidence-SHA256:
+              schema:
+                type: string
+            X-Preloop-Evidence-Member:
+              schema:
+                type: string
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/flows/executions/{execution_id}/workspace:
     get:
       tags:

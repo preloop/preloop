@@ -316,7 +316,9 @@ the response, not to a stored config.
 ```
 
 `result.json` stays under 200 KB; long listings live in the pack and are
-referenced from `artifacts`.
+referenced from `artifacts`. The execution page Report tab reads those
+`evidence/` files from the pack (the report, `findings.json`, and the
+register) instead of asking the operator to download the archive.
 
 ## Honest limits
 

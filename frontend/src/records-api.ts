@@ -448,3 +448,58 @@ export async function downloadEvidence(
     'Could not download the evidence pack'
   );
 }
+
+export interface EvidenceMember {
+  path: string;
+  size_bytes: number | null;
+  sha256: string | null;
+  content_type: string;
+}
+
+export interface EvidenceMemberList {
+  execution_id: string | null;
+  status: string;
+  sha256: string | null;
+  integrity: string | null;
+  integrity_note: string | null;
+  legal_hold: boolean;
+  members: EvidenceMember[];
+}
+
+export async function listEvidenceMembers(
+  executionId: string
+): Promise<EvidenceMemberList> {
+  const response = await fetchWithAuth(
+    `/api/v1/flows/executions/${executionId}/evidence/members`
+  );
+  if (!response.ok) {
+    return fail(response, 'Could not list evidence pack members');
+  }
+  return response.json();
+}
+
+export async function readEvidenceMember(
+  executionId: string,
+  path: string
+): Promise<string> {
+  const query = new URLSearchParams({ path });
+  const response = await fetchWithAuth(
+    `/api/v1/flows/executions/${executionId}/evidence/members?${query.toString()}`
+  );
+  if (!response.ok) {
+    return fail(response, 'Could not read the evidence member');
+  }
+  return response.text();
+}
+
+export async function downloadEvidenceMember(
+  executionId: string,
+  path: string
+): Promise<BinaryDownload> {
+  const query = new URLSearchParams({ path });
+  const response = await fetchWithAuth(
+    `/api/v1/flows/executions/${executionId}/evidence/members?${query.toString()}`
+  );
+  const leaf = path.split('/').pop() || 'member';
+  return readBinary(response, leaf, 'Could not download the evidence member');
+}
