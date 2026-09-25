@@ -1,8 +1,10 @@
 package verify
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 )
 
@@ -44,6 +46,21 @@ type Segment struct {
 	Entries        []SegmentEntry `json:"entries"`
 	HasMore        bool           `json:"has_more"`
 	Note           string         `json:"note"`
+}
+
+// UnmarshalJSON decodes a segment with json.Number so a number keeps the
+// spelling the server emitted. encoding/json would turn 0.0 into float64 and
+// reprint it as 0, which no longer matches the sealed row hash.
+func (s *Segment) UnmarshalJSON(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	type segmentAlias Segment
+	var alias segmentAlias
+	if err := decoder.Decode(&alias); err != nil {
+		return err
+	}
+	*s = Segment(alias)
+	return nil
 }
 
 // Break is the first place a local walk stopped agreeing with the chain.

@@ -13,16 +13,18 @@ import (
 
 	"github.com/preloop/preloop/cli/internal/testenv"
 	"github.com/preloop/preloop/cli/internal/verify"
+	"github.com/preloop/preloop/cli/internal/version"
 )
 
 // fakeChain is a server side chain the CLI can be pointed at, including the
 // ability to serve rows that no longer match their sealed hashes.
 type fakeChain struct {
-	entries     []verify.SegmentEntry
-	checkpoints []chainCheckpoint
-	keys        verify.KeyList
-	private     ed25519.PrivateKey
-	verdict     string
+	entries       []verify.SegmentEntry
+	checkpoints   []chainCheckpoint
+	keys          verify.KeyList
+	private       ed25519.PrivateKey
+	verdict       string
+	serverVersion string
 }
 
 func newFakeChain(t *testing.T, rows int) *fakeChain {
@@ -144,6 +146,12 @@ func (c *fakeChain) serve(t *testing.T) *httptest.Server {
 			_ = json.NewEncoder(w).Encode(c.checkpoints)
 		case signingKeysPath:
 			_ = json.NewEncoder(w).Encode(c.keys)
+		case serverVersionPath:
+			if c.serverVersion == "" {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"server_version": c.serverVersion})
 		default:
 			http.NotFound(w, r)
 		}
@@ -224,6 +232,29 @@ func TestAuditVerifyContradictsAServerThatClaimsAllIsWell(t *testing.T) {
 	}
 	if !strings.Contains(out, `The server reports "ok" and this local walk reports "broken"`) {
 		t.Fatalf("the disagreement was not reported: %q", out)
+	}
+	if strings.Contains(out, "preloop update") {
+		t.Fatalf("update hint without a newer server version: %q", out)
+	}
+}
+
+func TestAuditVerifySuggestsUpdateWhenTheCLIIsOlder(t *testing.T) {
+	chain := newFakeChain(t, 5)
+	chain.entries[1].Payload["action"] = "something_else"
+	chain.verdict = "ok"
+	chain.serverVersion = "9.9.9"
+	old := version.Version
+	version.Version = "0.1.0"
+	t.Cleanup(func() { version.Version = old })
+	pointCLIAt(t, chain.serve(t).URL)
+
+	out, err := runAudit(t)
+
+	if err == nil {
+		t.Fatal("a broken chain exited zero")
+	}
+	if !strings.Contains(out, "Trust the walk") || !strings.Contains(out, "preloop update") {
+		t.Fatalf("output = %q", out)
 	}
 }
 
