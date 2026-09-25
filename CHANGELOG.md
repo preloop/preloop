@@ -72,6 +72,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prose. A malformed, oversized, or rejected provider update leaves the
   description unchanged and is not reported as a successful publication.
   Isolated GitLab publication is still unsupported.
+- Release SBOMs carry a per-component supplier derived from local package
+  metadata, and the release SBOM job fails when the platform
+  minimum-elements measurement does not pass. The backend runtime image
+  drops pip, setuptools and wheel after install. The frontend lockfile
+  pins the `cookies` dev dependency to 0.9.2. OpenVEX files ship with the
+  SBOM artifact.
 - Harness images pin Node and install Pi and DeepSeek from lockfiles, so
   Scorecard no longer reports floating image or npm dependencies. Empty
   `except` handlers that intentionally ignore an optional driver or an

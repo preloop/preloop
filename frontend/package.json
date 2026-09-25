@@ -23,7 +23,8 @@
     "postcss": "^8.5.18",
     "yaml": "2.9.0",
     "image-size": "npm:image-size-next@2.1.1",
-    "fflate": "0.7.5"
+    "fflate": "0.7.5",
+    "cookies": "0.9.2"
   },
   "scripts": {
     "start": "npm run dev",

@@ -36,6 +36,13 @@ COPY scripts/ scripts/
 # `--no-deps` is what OpenSSF Scorecard accepts for an editable install.
 RUN pip install --no-cache-dir --no-deps -e .
 
+# The server never invokes pip. Drop the installer tooling from the runtime
+# layer so the image does not ship pip, setuptools or wheel. Import is
+# checked in the same layer: if the editable install needed setuptools at
+# import time, this build fails instead of publishing a broken image.
+RUN python -m pip uninstall -y pip setuptools wheel \
+    && python -c "import preloop"
+
 # Expose the port
 EXPOSE 8000
 
