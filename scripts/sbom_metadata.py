@@ -69,6 +69,37 @@ _PERSON_RE = re.compile(
     r"(?:<(?P<email>[^>]+)>)?\s*"
     r"(?:\((?P<url>[^)]+)\))?\s*$"
 )
+_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+
+
+def looks_like_email(value: str) -> bool:
+    """True when ``value`` can be a CycloneDX ``idn-email``.
+
+    One ``@``, no URI scheme, no whitespace. A homepage written as
+    ``<http://example.test>`` fails this and must not be emitted as
+    ``contact.email``.
+    """
+    if any(character.isspace() for character in value):
+        return False
+    if value.count("@") != 1:
+        return False
+    return _SCHEME_RE.match(value) is None and "://" not in value
+
+
+def looks_like_url(value: str) -> bool:
+    """True when ``value`` is a URL that belongs on ``supplier.url``."""
+    return _SCHEME_RE.match(value) is not None
+
+
+def _take_email_and_url(email: str, url: str) -> tuple[str, str]:
+    """Move a non-email out of the email slot when it is a URL."""
+    email = email.strip()
+    url = url.strip()
+    if email and not looks_like_email(email):
+        if not url and looks_like_url(email):
+            url = email
+        email = ""
+    return email, url
 
 
 def read_authors(pyproject: Path) -> list[dict[str, str]]:
@@ -161,10 +192,14 @@ def parse_person(value: str) -> dict[str, str] | None:
     if match is None:
         return {"name": text}
     name = (match.group("name") or "").strip().strip(",").strip()
-    email_address = (match.group("email") or "").strip()
-    url = (match.group("url") or "").strip()
+    email_address, url = _take_email_and_url(
+        match.group("email") or "",
+        match.group("url") or "",
+    )
     if not name and email_address:
         name = email_address
+    if not name and url:
+        name = url
     if not name:
         return None
     person: dict[str, str] = {"name": name}
@@ -242,13 +277,14 @@ def supplier_from_people(
 
 def _supplier_dict(person: dict[str, str]) -> dict[str, Any]:
     supplier: dict[str, Any] = {"name": person["name"]}
-    if person.get("url"):
-        supplier["url"] = [person["url"]]
+    email, url = _take_email_and_url(person.get("email") or "", person.get("url") or "")
+    if url:
+        supplier["url"] = [url]
     contact: dict[str, str] = {}
-    if person.get("name") and person["name"] != person.get("email"):
+    if person.get("name") and person["name"] != email and person["name"] != url:
         contact["name"] = person["name"]
-    if person.get("email"):
-        contact["email"] = person["email"]
+    if email:
+        contact["email"] = email
     if contact:
         supplier["contact"] = [contact]
     return supplier
@@ -413,14 +449,19 @@ def _npm_person(value: Any) -> dict[str, str] | None:
         email_address = value.get("email")
         url = value.get("url")
         person: dict[str, str] = {}
+        email_text = email_address.strip() if isinstance(email_address, str) else ""
+        url_text = url.strip() if isinstance(url, str) else ""
+        email_text, url_text = _take_email_and_url(email_text, url_text)
         if isinstance(name, str) and name.strip():
             person["name"] = name.strip()
-        if isinstance(email_address, str) and email_address.strip():
-            person["email"] = email_address.strip()
-        if isinstance(url, str) and url.strip():
-            person["url"] = url.strip()
+        if email_text:
+            person["email"] = email_text
+        if url_text:
+            person["url"] = url_text
         if not person.get("name") and person.get("email"):
             person["name"] = person["email"]
+        if not person.get("name") and person.get("url"):
+            person["name"] = person["url"]
         if person.get("name"):
             return person
     return None

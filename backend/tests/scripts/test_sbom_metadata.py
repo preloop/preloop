@@ -240,6 +240,70 @@ class SupplierDerivationTest(unittest.TestCase):
         self.assertTrue(measured["passed"], measured)
         self.assertEqual(measured["missing_counts"]["supplier"], 0)
 
+    def test_url_is_not_emitted_as_contact_email(self) -> None:
+        """A homepage is supplier.url. Only a real email is contact.email."""
+        root = self._tmp()
+        modules = root / "node_modules"
+        self._write_npm(
+            modules / "path-shape",
+            "path-shape",
+            author={"name": "Example Person", "url": "http://example.test"},
+        )
+        self._write_npm(
+            modules / "string-shape",
+            "string-shape",
+            author="Example Person <person@example.com> (http://example.test)",
+        )
+        self._write_npm(
+            modules / "angle-url",
+            "angle-url",
+            author="Example Person <http://example.test>",
+        )
+        index = sbom_metadata.MetadataIndex([], [modules])
+        document = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+            "version": 1,
+            "metadata": {
+                "timestamp": "2026-09-25T00:00:00Z",
+                "tools": [{"vendor": "example", "name": "fixture", "version": "0"}],
+                "component": {
+                    "type": "application",
+                    "name": "example",
+                    "version": "1.0.0",
+                    "bom-ref": "example",
+                },
+            },
+            "components": [
+                _component("path-shape", "pkg:npm/path-shape@1.2.3"),
+                _component("string-shape", "pkg:npm/string-shape@1.2.3"),
+                _component("angle-url", "pkg:npm/angle-url@1.2.3"),
+            ],
+            "dependencies": [
+                {"ref": "example", "dependsOn": []},
+                {"ref": "pkg:npm/path-shape@1.2.3", "dependsOn": []},
+                {"ref": "pkg:npm/string-shape@1.2.3", "dependsOn": []},
+                {"ref": "pkg:npm/angle-url@1.2.3", "dependsOn": []},
+            ],
+        }
+        sbom_metadata.fill_component_suppliers(document, index)
+        by_name = {item["name"]: item["supplier"] for item in document["components"]}
+
+        object_supplier = by_name["path-shape"]
+        self.assertEqual(object_supplier["url"], ["http://example.test"])
+        self.assertNotIn("email", object_supplier.get("contact", [{}])[0])
+
+        string_supplier = by_name["string-shape"]
+        self.assertEqual(string_supplier["url"], ["http://example.test"])
+        self.assertEqual(string_supplier["contact"][0]["email"], "person@example.com")
+
+        angle_supplier = by_name["angle-url"]
+        self.assertEqual(angle_supplier["url"], ["http://example.test"])
+        self.assertNotIn("email", json.dumps(angle_supplier))
+
+        self._assert_cyclonedx_1_6(document)
+
     def test_measure_command_imports_without_third_party_packages(self) -> None:
         import os
         import subprocess
@@ -282,7 +346,7 @@ class SupplierDerivationTest(unittest.TestCase):
         directory: Path,
         name: str,
         *,
-        author: str | None = None,
+        author: str | dict | None = None,
         maintainers: list[str] | None = None,
     ) -> None:
         directory.mkdir(parents=True)
@@ -292,6 +356,15 @@ class SupplierDerivationTest(unittest.TestCase):
         if maintainers is not None:
             body["maintainers"] = maintainers
         (directory / "package.json").write_text(json.dumps(body), encoding="utf-8")
+
+    def _assert_cyclonedx_1_6(self, document: dict) -> None:
+        from cyclonedx.schema import SchemaVersion
+        from cyclonedx.validation.json import JsonStrictValidator
+
+        error = JsonStrictValidator(SchemaVersion.V1_6).validate_str(
+            json.dumps(document)
+        )
+        self.assertIsNone(error, error)
 
 
 if __name__ == "__main__":

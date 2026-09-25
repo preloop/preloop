@@ -137,6 +137,8 @@ dev = [
     # directly, but a second copy of the same range is what drifted last time.
     "PyYAML>=6.0",  # test_nginx_route_parity imports yaml
     "jsonschema>=4.0",  # test_cra_result_json_contract validates fixtures
+    # Schema check in test_sbom_metadata. Same pin family as the release SBOM job.
+    "cyclonedx-python-lib>=11.12.0",
 ]
 ai-providers = [
     "anthropic>=0.39.0",  # For Anthropic Claude API key validation
