@@ -28,6 +28,9 @@ describe('evidence report markdown', () => {
     }
     expect(headings.map((heading) => heading.text)).to.not.include('comment');
     expect(html).to.contain('<code>What you should do next</code>');
+    const ampersand = renderReportMarkdown('## A & B\n');
+    expect(ampersand.headings[0].text).to.equal('A & B');
+    expect(ampersand.html).to.contain('A &amp; B');
   });
 
   it('treats a pack status with the same fields as unchanged', () => {

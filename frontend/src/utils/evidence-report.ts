@@ -179,25 +179,19 @@ function headingId(text: string, used: Map<string, number>): string {
   return id;
 }
 
-function headingText(html: string): string {
-  return html
-    .replace(/<[^>]+>/g, '')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .trim();
+function plainHeading(text: string): string {
+  return text.replace(/[`*_]+/g, '').trim();
 }
 
 export function renderReportMarkdown(source: string): RenderedReport {
   const used = new Map<string, number>();
   const headings: ReportHeading[] = [];
   const renderer = new Renderer();
-  renderer.heading = function ({ tokens, depth }) {
+  renderer.heading = function ({ tokens, text, depth }) {
     const inner = this.parser.parseInline(tokens);
-    const text = headingText(inner);
-    const id = headingId(text, used);
-    headings.push({ id, text, level: depth });
+    const label = plainHeading(text);
+    const id = headingId(label, used);
+    headings.push({ id, text: label, level: depth });
     return `<h${depth} id="${id}">${inner}</h${depth}>`;
   };
   const parsed = marked.parse(source, {
