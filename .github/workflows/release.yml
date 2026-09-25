@@ -212,6 +212,32 @@ jobs:
           GOARCH: amd64
         run: ./scripts/generate_sbom.sh
 
+      - name: Measure NTIA minimum elements
+        run: |
+          set -euo pipefail
+          PYTHONPATH=backend python -m preloop.cra measure sbom/*.cdx.json \
+            | tee "$RUNNER_TEMP/minimum-elements.json"
+          python - "$RUNNER_TEMP/minimum-elements.json" <<'PY'
+          import json
+          import sys
+
+          measured = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          counts = measured.get("missing_counts") or {}
+          print("minimum elements")
+          print(f"{'element':<24}{'missing':>8}")
+          for key, value in counts.items():
+              print(f"{key:<24}{value:>8}")
+          print(f"passed: {measured.get('passed')}")
+          print(f"components: {measured.get('components')}")
+          print(f"author_only: {measured.get('author_only')}")
+          print(
+              "missing_supplier_and_author: "
+              f"{measured.get('missing_supplier_and_author')}"
+          )
+          if measured.get("passed") is not True:
+              sys.exit(1)
+          PY
+
       - name: Record SBOM digests
         run: |
           set -euo pipefail
@@ -229,6 +255,9 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: 'sbom/*.cdx.json'
+
+      - name: Attach OpenVEX to the SBOM artifact
+        run: cp security/vex/*.openvex.json sbom/
 
       - name: Upload SBOMs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -615,6 +644,15 @@ jobs:
           # binaries, which is what an assessor asks for.
           if [ -d "artifacts/sbom" ]; then
             cp artifacts/sbom/*.cdx.json release-assets/
+          fi
+          # OpenVEX travels with the SBOMs so a release audit can apply it.
+          # The sbom artifact also carries these files; the checkout copy
+          # covers a run whose artifact layout nests them one level down.
+          if compgen -G "artifacts/sbom/*.openvex.json" > /dev/null; then
+            cp artifacts/sbom/*.openvex.json release-assets/
+          fi
+          if compgen -G "security/vex/*.openvex.json" > /dev/null; then
+            cp security/vex/*.openvex.json release-assets/
           fi
           # Copy installer assets
           cp docker-compose.release.yaml release-assets/docker-compose.release.yaml

@@ -932,6 +932,28 @@ the contract still requires the agent to write the correct verdict, and
 the repair exists so one enum does not cost a complete, digest-verified
 audit.
 
+## What our own SBOMs carry
+
+The release SBOMs (`scripts/generate_sbom.sh`, stamped by
+`scripts/sbom_metadata.py`) set a supplier on each component, not only on
+the document. The name comes from installed Python `METADATA` (author, then
+maintainer, then `pyproject.toml` in that wheel), from `package.json`
+(`author`, `maintainers`, `contributors`, then the npm scope), or from a module or repository path (`The Go Authors` for `std` and
+`golang.org/x`, the GitHub org, or host plus first path segment). The
+path rule also applies to an npm `repository` field or a repository URL
+already on the component when no person and no scope are present.
+`author` is left as author. Each
+derived component records `preloop:supplier_source`
+(`package_metadata_author`, `package_metadata_maintainer`, `npm_scope`,
+`module_path`, `manual_override`, or `unresolved`). `manual_override` is a
+checked-in name for a distribution whose files name no person and no
+repository. The `sbom` job fails when
+`python -m preloop.cra measure` reports `passed: false`.
+
+OpenVEX for the CLI lives in `security/vex/preloop-cli.openvex.json` and is
+copied into the SBOM artifact and the GitHub release next to the CycloneDX
+files.
+
 ## What the platform measures itself
 
 `minimum_elements` on an SBOM audit used to be the agent's own claim. The
