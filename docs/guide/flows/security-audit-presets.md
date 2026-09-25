@@ -235,7 +235,8 @@ audit of the reshaped file that reads as an audit of their build.
 
 This schema has no top-level `status` field. Completion is the
 `verdict`. Artifacts: `audit_report` (`evidence/audit-report.md`),
-`findings` (`evidence/findings.json`).
+`findings` (`evidence/findings.json`). The execution page Report tab reads
+those `evidence/` paths from the pack.
 
 ### `preloop.cra.vulnscan/v1` (SBOM Exploit Check)
 
@@ -379,6 +380,8 @@ method", never "zero vulnerabilities".
 
 Artifacts: `findings` (`evidence/findings.json`), `source_matrix`
 (`evidence/source-matrix.json`), `report` (`evidence/vuln-report.md`).
+The Report tab uses package, CVSS, KEV, fix and VEX columns when the
+findings carry them.
 
 ### `preloop.cra.releaseaudit/v1` (Release Security Audit)
 

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The execution page Report tab reads one evidence-pack member at a time
+  (`GET /api/v1/flows/executions/{id}/evidence/members`) and shows the report,
+  findings and register. A verdict or findings summary on the run appears in
+  the header strip and links to that tab. Members above 8 MiB stay on the
+  full pack download.
+
 - The console Settings > Records page shows audit chain status and
   verification, signing keys, retention, legal holds, and signed period
   exports. The audit timeline links to that page and marks a row sealed only

@@ -74,6 +74,11 @@ from preloop.services.flow_continuation_adoption import (
     preview_continuation,
     adopt_continuation,
 )
+from preloop.cra.evidence_pack import (
+    EvidenceMemberError,
+    list_evidence_members,
+    read_evidence_member,
+)
 from preloop.services.flow_artifacts import (
     EvidenceUnavailableError,
     attach_evidence_signature,
@@ -1271,17 +1276,37 @@ def get_flow_execution_evidence(
     receipt = attach_evidence_signature(
         db, account_id=current_user.account_id, receipt=receipt
     )
+    return Response(
+        content=archive,
+        media_type="application/gzip",
+        headers=_evidence_download_headers(
+            execution,
+            receipt,
+            filename=f"evidence-{execution.id}.tar.gz",
+        ),
+    )
+
+
+def _evidence_download_headers(
+    execution: Any,
+    receipt: dict[str, Any],
+    *,
+    filename: str,
+    member_path: str | None = None,
+) -> dict[str, str]:
+    """Integrity and signature headers shared by the pack and member reads.
+
+    The full download is not written to the audit log. A member read uses the
+    same headers and the same omission, so the two reads leave the same trail.
+    """
     digest = receipt.get("sha256") or receipt.get("digest") or ""
     signature = receipt.get("signature") or {}
+    safe_name = filename.replace('"', "").replace("\r", "").replace("\n", "")
     headers = {
-        "Content-Disposition": (
-            f'attachment; filename="evidence-{execution.id}.tar.gz"'
-        ),
+        "Content-Disposition": f'attachment; filename="{safe_name}"',
         "Cache-Control": "no-store",
         "X-Preloop-Evidence-Status": str(receipt.get("status") or "available"),
         "X-Preloop-Evidence-Kind": "evidence",
-        # The same three-state word the status endpoint reports, so the
-        # header and the poll cannot describe one pack differently.
         "X-Preloop-Evidence-Integrity": (
             "verified" if receipt.get("integrity_verified") else "unverified"
         ),
@@ -1295,17 +1320,85 @@ def get_flow_execution_evidence(
     }
     if digest:
         headers["X-Preloop-Evidence-SHA256"] = str(digest)
+    if member_path:
+        headers["X-Preloop-Evidence-Member"] = member_path
     if signature:
-        # The signature covers a small payload the caller can rebuild from
-        # the bytes it just downloaded, so these headers are checkable
-        # without trusting the response that carried them (#558).
         headers["X-Preloop-Signature"] = str(signature.get("signature") or "")
         headers["X-Preloop-Signing-Key-Id"] = str(signature.get("key_id") or "")
         headers["X-Preloop-Signed-At"] = str(signature.get("signed_at") or "")
+    return headers
+
+
+def _load_verified_evidence(
+    db: Session, *, execution: Any, account_id: Any
+) -> tuple[bytes, dict[str, Any]]:
+    """Decrypt and verify a pack, or raise the same HTTP errors as download."""
+    try:
+        archive, receipt = load_evidence(db, account_id=account_id, execution=execution)
+    except EvidenceUnavailableError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return archive, attach_evidence_signature(
+        db, account_id=account_id, receipt=receipt
+    )
+
+
+@router.get(
+    "/flows/executions/{execution_id}/evidence/members",
+    response_model=None,
+)
+@require_permission("view_flows")
+def get_flow_execution_evidence_members(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+    path: str | None = None,
+) -> Dict[str, Any] | Response:
+    """List a pack's manifest members, or return one member when ``path`` is set.
+
+    Auth, decryption, digest verification and legal hold follow
+    ``GET .../evidence``. Only a path that the manifest lists is readable.
+    Absolute paths and ``..`` are refused. A member larger than 8 MiB is
+    refused; download the pack for that file. Markdown, JSON and plain text
+    are served with those content types.
+
+    The full download is not audited. This read is not audited either.
+    """
+    execution = crud_flow_execution.get(
+        db=db, id=execution_id, account_id=current_user.account_id
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Flow execution not found")
+    archive, receipt = _load_verified_evidence(
+        db, execution=execution, account_id=current_user.account_id
+    )
+    try:
+        if path is None:
+            members = list_evidence_members(archive)
+        else:
+            body, meta = read_evidence_member(archive, path)
+    except EvidenceMemberError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    if path is None:
+        return {
+            "execution_id": str(execution.id),
+            "status": receipt.get("status") or "available",
+            "sha256": receipt.get("sha256") or receipt.get("digest"),
+            "integrity": receipt.get("integrity"),
+            "integrity_note": receipt.get("integrity_note"),
+            "legal_hold": bool(receipt.get("legal_hold")),
+            "members": members,
+        }
+    leaf = meta["path"].rsplit("/", 1)[-1]
     return Response(
-        content=archive,
-        media_type="application/gzip",
-        headers=headers,
+        content=body,
+        media_type=meta["content_type"],
+        headers=_evidence_download_headers(
+            execution,
+            receipt,
+            filename=leaf or "member",
+            member_path=meta["path"],
+        ),
     )
 
 

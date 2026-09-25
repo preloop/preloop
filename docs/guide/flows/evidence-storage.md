@@ -76,6 +76,25 @@ That field is runner bootstrap metadata and is emitted even when
 A failed or missing final PUT is stored as `failed`/`missing` even
 when an earlier trap artifact exists.
 
+## Reading a pack in the console
+
+The execution page adds a Report tab when the pack is present, expired, or
+failed. A missing pack hides the tab. The tab reads one manifest member at a
+time through `GET /api/v1/flows/executions/{id}/evidence/members?path=...`
+(the same account check, decryption, digest check and legal hold as
+`GET .../evidence`). Omit `path` to list members with size, sha256 and
+content type. A path that is not in the manifest, or that contains `..`, is
+refused. A member larger than 8 MiB is refused; download the pack for that
+file. Markdown, JSON and plain text are returned with those content types.
+
+The tab shows the report named by `artifacts.report`, a findings table from
+`artifacts.findings`, and the register from `result.register` items (gap and
+partial rows first). When the result has no register items, the tab renders
+the `artifacts.register` markdown instead. The integrity word and sha256 on
+that tab are the ones
+`GET .../evidence-status` already shows on the Records card. An expired or
+failed pack stays on the tab as that status, with the same explanation.
+
 ## What is in a pack
 
 A pack is a gzip tar holding the agent's files under `evidence/`,

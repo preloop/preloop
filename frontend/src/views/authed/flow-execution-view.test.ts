@@ -920,6 +920,57 @@ describe('FlowExecutionView', () => {
       expect(running.shadowRoot!.querySelector('.status-dot')).to.exist;
     });
 
+    it('hides the Report tab when the run has no evidence pack', async () => {
+      const element = await load('exec-1');
+      await element.updateComplete;
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="report-tab"]')
+      ).to.equal(null);
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="strip-verdict"]')
+      ).to.equal(null);
+    });
+
+    it('links a verdict and findings count to the Report tab', async () => {
+      const element = await load('exec-1');
+      await waitUntil(() =>
+        fetchStub
+          .getCalls()
+          .some((call) => String(call.args[0]).includes('/evidence-status'))
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await element.updateComplete;
+      (element as any).evidenceStatus = {
+        status: 'available',
+        sha256: 'abc123',
+        integrity: 'not_checked',
+        integrity_note: 'Availability only.',
+        legal_hold: false,
+        object_lock: false,
+      };
+      (element as any).execution = {
+        ...(element as any).execution,
+        result: {
+          verdict: 'pass_with_findings',
+          findings_summary: {
+            counts_by_severity: { medium: 1, low: 9, high: 0 },
+          },
+        },
+      };
+      await element.updateComplete;
+      expect(element.shadowRoot!.querySelector('[data-testid="report-tab"]')).to
+        .exist;
+      const findings = element.shadowRoot!.querySelector(
+        '[data-testid="strip-findings"]'
+      ) as HTMLButtonElement;
+      expect(findings.textContent!.replace(/\s+/g, ' ').trim()).to.equal(
+        '10 findings: 1 medium, 9 low'
+      );
+      findings.click();
+      await element.updateComplete;
+      expect((element as any).activeTab).to.equal('report');
+    });
+
     it('offers the five tabs with Timeline first', async () => {
       const element = await load('exec-1');
 
