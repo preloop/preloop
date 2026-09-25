@@ -25,12 +25,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import email
 import json
 import re
 import sys
 import tomllib
+from email import message_from_string
 from email import policy
+from email.message import Message
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
@@ -161,7 +162,7 @@ def parse_person(value: str) -> dict[str, str] | None:
     return person
 
 
-def _header_people(message: email.message.Message, field: str) -> list[dict[str, str]]:
+def _header_people(message: Message, field: str) -> list[dict[str, str]]:
     people: list[dict[str, str]] = []
     for raw in message.get_all(field, []):
         if not isinstance(raw, str):
@@ -177,7 +178,7 @@ def people_from_metadata(
     text: str,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """Return ``(authors, maintainers)`` from a ``METADATA`` or ``PKG-INFO`` body."""
-    message = email.message_from_string(text, policy=policy.compat32)
+    message = message_from_string(text, policy=policy.compat32)
     authors = _header_people(message, "Author")
     authors.extend(_header_people(message, "Author-email"))
     maintainers = _header_people(message, "Maintainer")
@@ -331,7 +332,7 @@ class MetadataIndex:
             if not metadata.parent.name.endswith(".dist-info"):
                 continue
             try:
-                message = email.message_from_string(
+                message = message_from_string(
                     metadata.read_text(encoding="utf-8", errors="replace"),
                     policy=policy.compat32,
                 )
