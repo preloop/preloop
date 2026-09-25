@@ -946,10 +946,14 @@ export class ConsoleShell extends LitElement {
                               )
                             : ''
                         }
-                        ${this._renderNavLink(
-                          '/console/settings/records',
-                          html`<sl-menu-item>Records</sl-menu-item>`
-                        )}
+                        ${
+                          this._permissionsLoaded
+                            ? this._renderNavLink(
+                                '/console/settings/records',
+                                html`<sl-menu-item>Records</sl-menu-item>`
+                              )
+                            : ''
+                        }
                         ${
                           this.features.user_management
                             ? this._renderNavLink(
