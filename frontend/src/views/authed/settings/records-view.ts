@@ -209,7 +209,14 @@ export class RecordsView extends LitElement {
     void this.load();
   }
 
-  protected firstUpdated(): void {
+  /** The hash target does not exist until permissions have loaded and the sections render. */
+  private hashScrolled = false;
+
+  protected updated(): void {
+    if (this.hashScrolled || !this.permissionsReady) {
+      return;
+    }
+    this.hashScrolled = true;
     const id = window.location.hash.replace(/^#/, '');
     if (id) {
       this.jump(id);

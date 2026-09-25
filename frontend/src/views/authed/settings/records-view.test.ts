@@ -399,6 +399,24 @@ describe('RecordsView', () => {
     click.restore();
   });
 
+  it('scrolls an incoming hash after the sections render', async () => {
+    install({});
+    const scrolled: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolled.push(this.id);
+    };
+    const restore = window.location.pathname + window.location.search;
+    window.history.replaceState(null, '', `${restore}#audit-integrity`);
+    try {
+      await mount();
+      expect(scrolled).to.include('audit-integrity');
+    } finally {
+      Element.prototype.scrollIntoView = original;
+      window.history.replaceState(null, '', restore);
+    }
+  });
+
   it('scrolls a jump link to the section inside the shadow root', async () => {
     install({});
     const scrolled: string[] = [];
