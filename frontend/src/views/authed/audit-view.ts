@@ -45,7 +45,11 @@ interface AuditLog {
   user_agent: string | null;
   details: Record<string, any> | null;
   timestamp: string;
-  /** Present only when the timeline payload already carries a chain position. */
+  /**
+   * Present only when the timeline payload already carries a chain position.
+   * The grouped timeline response in this tree does not add the field, so the
+   * seal mark stays hidden until a serializer includes it.
+   */
   chain_seq?: number | null;
 }
 

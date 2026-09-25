@@ -209,6 +209,28 @@ export class RecordsView extends LitElement {
     void this.load();
   }
 
+  protected firstUpdated(): void {
+    const id = window.location.hash.replace(/^#/, '');
+    if (id) {
+      this.jump(id);
+    }
+  }
+
+  private onJump = (event: Event): void => {
+    const anchor = event.currentTarget as HTMLAnchorElement;
+    const id = (anchor.getAttribute('href') || '').replace(/^#/, '');
+    event.preventDefault();
+    if (!id) {
+      return;
+    }
+    window.history.replaceState(null, '', `#${id}`);
+    this.jump(id);
+  };
+
+  private jump(id: string): void {
+    this.shadowRoot?.getElementById(id)?.scrollIntoView({ block: 'start' });
+  }
+
   private async load(): Promise<void> {
     try {
       const profile = await getUserProfile();
@@ -806,7 +828,7 @@ ${offlineAuditCommand(range)}</pre>
             : html`<sl-button
                 size="small"
                 @click=${() => this.loadCheckpoints(false)}
-                >Older checkpoints</sl-button
+                >Newer checkpoints</sl-button
               >`
         }
       </section>
@@ -1328,11 +1350,11 @@ ${evidenceVerifyCommand(result.filename, result.keyId)}</pre>
       <div class="column-layout wide">
         <div class="main-column">
           <nav class="jump">
-            <a href="#audit-integrity">Audit integrity</a>
-            <a href="#signing-keys">Signing keys</a>
-            <a href="#retention">Retention</a>
-            <a href="#legal-holds">Legal holds</a>
-            <a href="#period-exports">Period exports</a>
+            <a href="#audit-integrity" @click=${this.onJump}>Audit integrity</a>
+            <a href="#signing-keys" @click=${this.onJump}>Signing keys</a>
+            <a href="#retention" @click=${this.onJump}>Retention</a>
+            <a href="#legal-holds" @click=${this.onJump}>Legal holds</a>
+            <a href="#period-exports" @click=${this.onJump}>Period exports</a>
           </nav>
           ${this.renderIntegrity()} ${this.renderKeys()}
           ${this.renderRetention()} ${this.renderHolds()}

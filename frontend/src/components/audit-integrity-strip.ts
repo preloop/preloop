@@ -59,6 +59,13 @@ export class AuditIntegrityStrip extends LitElement {
       return nothing;
     }
     const status = this.status;
+    if (!status.enabled) {
+      return html`
+        <div class="strip" data-testid="audit-integrity-strip">
+          <span>Audit chain is disabled on this deployment.</span>
+        </div>
+      `;
+    }
     const checkpoint = status.latest_checkpoint;
     return html`
       <div class="strip" data-testid="audit-integrity-strip">

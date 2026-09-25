@@ -77,4 +77,40 @@ describe('AuditIntegrityStrip', () => {
       '/console/settings/records#audit-integrity'
     );
   });
+
+  it('says the chain is disabled instead of sealing seq 0', async () => {
+    invalidateApiCaches();
+    localStorage.setItem('accessToken', 'token');
+    localStorage.setItem('refreshToken', 'refresh');
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (data: unknown) =>
+          new Response(JSON.stringify(data), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        if (url.includes('/auth/users/me')) {
+          return json({
+            username: 'operator',
+            email: 'operator@example.com',
+            email_verified: true,
+            permissions: ['view_audit_logs'],
+          });
+        }
+        if (url.includes('/audit/chain/status')) {
+          return json({ ...STATUS, enabled: false, head_seq: 0 });
+        }
+        return json({});
+      });
+    const el = await fixture<AuditIntegrityStrip>(
+      html`<audit-integrity-strip></audit-integrity-strip>`
+    );
+    await waitUntil(
+      () => el.shadowRoot?.textContent?.includes('disabled'),
+      'disabled note did not render'
+    );
+    expect(el.shadowRoot!.textContent).to.not.contain('Sealed through');
+  });
 });

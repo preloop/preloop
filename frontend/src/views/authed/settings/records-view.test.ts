@@ -103,6 +103,7 @@ describe('RecordsView', () => {
     permissions?: string[] | null;
     verify?: Record<string, unknown>;
     holds?: unknown[];
+    checkpoints?: unknown[];
   }) {
     calls.length = 0;
     invalidateApiCaches();
@@ -140,7 +141,9 @@ describe('RecordsView', () => {
           }
         );
       }
-      if (url.includes('/audit/chain/checkpoints')) return json([]);
+      if (url.includes('/audit/chain/checkpoints')) {
+        return json(options.checkpoints ?? []);
+      }
       if (url.includes('/signing/keys')) return json(KEYS);
       if (url.includes('/retention/settings') && method === 'PUT') {
         return json(RETENTION);
@@ -394,5 +397,44 @@ describe('RecordsView', () => {
     expect(exports).to.have.length(1);
     expect(exports[0].method).to.equal('POST');
     click.restore();
+  });
+
+  it('scrolls a jump link to the section inside the shadow root', async () => {
+    install({});
+    const scrolled: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolled.push(this.id);
+    };
+    try {
+      const el = await mount();
+      const link = el.shadowRoot!.querySelector(
+        'a[href="#legal-holds"]'
+      ) as HTMLAnchorElement;
+      link.click();
+      expect(scrolled).to.include('legal-holds');
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it('labels the next checkpoint page as newer rows', async () => {
+    const page = Array.from({ length: 50 }, (_, index) => ({
+      seq: index + 1,
+      chain_hash: 'abc',
+      row_count: 1,
+      checkpointed_at: '2026-09-25T00:00:00Z',
+      signing_key_id: 'psk_active',
+      signature: 'sig',
+      signed_payload: {},
+      digest: 'dig',
+      signature_document: null,
+    }));
+    install({ checkpoints: page });
+    const el = await mount();
+    await waitUntil(
+      () => el.shadowRoot?.textContent?.includes('Newer checkpoints'),
+      'checkpoint pager did not render'
+    );
   });
 });
