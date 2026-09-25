@@ -400,7 +400,18 @@ GET  /api/v1/audit/chain/checkpoints   signed anchors over the chain head
 recomputes every hash on your machine, checks the checkpoint signatures, and
 reports the first break with its sequence and row id. Exit status is 1 on a
 break, so CI can gate on it. When Preloop's verdict and the local walk
-disagree, the CLI prints both and tells you to trust the walk.
+disagree, the CLI prints both and tells you to trust the walk. If that CLI
+is older than the server version reported by `/api/v1/version`, it also
+suggests `preloop update` before you treat the disagreement as tampering.
+
+A row hash is `sha256` of the domain separator `preloop.audit.chain/v1\n`
+followed by the canonical JSON of the row. Canonical JSON sorts object keys
+by UTF-8 byte order, uses `,` and `:` with no space, and writes strings as
+UTF-8 (`ensure_ascii` off), escaping only quotes, backslashes, and control
+characters. Numbers keep the exact decimal spelling Python's `json.dumps`
+produces: `0.0` stays `0.0`, `1.0` stays `1.0`, and a value such as `1e-05`
+keeps that exponent form. A verifier that reparses numbers as IEEE floats
+and reprints them will not match rows that were already sealed.
 
 ```
 preloop audit verify

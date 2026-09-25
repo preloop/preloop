@@ -15,6 +15,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/verify"
+	"github.com/preloop/preloop/cli/internal/version"
 )
 
 const (
@@ -31,6 +33,7 @@ const (
 	auditChainSegmentPath     = "/api/v1/audit/chain/segment"
 	auditChainCheckpointsPath = "/api/v1/audit/chain/checkpoints"
 	signingKeysPath           = "/api/v1/signing/keys"
+	serverVersionPath         = "/api/v1/version"
 
 	auditSegmentPageSize = 500
 	// auditMaxPages bounds one run at half a million rows. A chain longer
@@ -64,6 +67,21 @@ type chainCheckpoint struct {
 	SignedPayload     map[string]interface{}    `json:"signed_payload"`
 	Digest            string                    `json:"digest"`
 	SignatureDocument *verify.SignatureDocument `json:"signature_document"`
+}
+
+// UnmarshalJSON keeps number tokens in the signed payload. A float64
+// round trip would reprint 0.0 as 0 and fail the checkpoint digest the
+// same way segment rows used to.
+func (c *chainCheckpoint) UnmarshalJSON(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	type checkpointAlias chainCheckpoint
+	var alias checkpointAlias
+	if err := decoder.Decode(&alias); err != nil {
+		return err
+	}
+	*c = chainCheckpoint(alias)
+	return nil
 }
 
 // serverChainVerdict is GET /audit/chain/verify, kept only so a disagreement
@@ -319,6 +337,10 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 			"edited after sealing. It does not show they were true when written.",
 	}
 
+	serverVersion := ""
+	if !auditJSON && report.ServerStatus == "ok" && report.Status == "broken" {
+		serverVersion = fetchServerVersion(client)
+	}
 	if auditJSON {
 		encoder := json.NewEncoder(out)
 		encoder.SetIndent("", "  ")
@@ -326,15 +348,16 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	} else {
-		printAuditVerify(cmd, status, report)
+		printAuditVerify(cmd, status, report, serverVersion)
 	}
+
 	if report.Status == "broken" {
 		return fmt.Errorf("the audit chain is broken at sequence %d", breakSeq(report.FirstBreak))
 	}
 	return nil
 }
 
-func printAuditVerify(cmd *cobra.Command, status chainStatus, report auditVerifyReport) {
+func printAuditVerify(cmd *cobra.Command, status chainStatus, report auditVerifyReport, serverVersion string) {
 	out := cmd.OutOrStdout()
 	switch report.Status {
 	case "ok":
@@ -370,6 +393,12 @@ func printAuditVerify(cmd *cobra.Command, status chainStatus, report auditVerify
 	if report.ServerStatus != "" && !report.ServerAgrees {
 		fmt.Fprintf(out, "\nThe server reports %q and this local walk reports %q. Trust the walk: it used the row content.\n",
 			report.ServerStatus, report.Status)
+		// A client that reprints numbers differently from the sealer looks
+		// like tampering. When this binary is older than the server, say so.
+		if report.ServerStatus == "ok" && report.Status == "broken" &&
+			version.UpdateAvailable(version.Version, serverVersion) {
+			fmt.Fprintln(out, "This CLI is older than the server. Run `preloop update` and verify again.")
+		}
 	}
 	if status.UnsealedRows > 0 {
 		fmt.Fprintf(out, "\n%d row(s) are written but not sealed yet, so they are outside this result.\n", status.UnsealedRows)
@@ -475,6 +504,16 @@ func checkCheckpoints(checkpoints []chainCheckpoint, keys verify.KeyList, walk *
 	}
 	sort.Slice(verdicts, func(i, j int) bool { return verdicts[i].Seq < verdicts[j].Seq })
 	return verdicts
+}
+
+func fetchServerVersion(client *api.Client) string {
+	var info struct {
+		ServerVersion string `json:"server_version"`
+	}
+	if err := client.Get(serverVersionPath, &info); err != nil {
+		return ""
+	}
+	return info.ServerVersion
 }
 
 func fetchSegment(client *api.Client, afterSeq int64) (verify.Segment, error) {
