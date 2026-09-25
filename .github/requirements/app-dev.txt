@@ -414,6 +414,10 @@ black==26.5.1 \
     --hash=sha256:ecb3e624844c798144e9bd986954e0adc81d8911a1f30f375e1252fe26e8c294 \
     --hash=sha256:ed1a20af114c301a0269bf01163d51dbef72737fd65f850001e7cbe7f3c7abae
     # via preloop (pyproject.toml)
+boolean-py==5.0 \
+    --hash=sha256:60cbc4bad079753721d32649545505362c754e121570ada4658b852a3a318d95 \
+    --hash=sha256:ef28a70bd43115208441b53a045d1549e2f0ec6e3d08a9d142cbc41c1938e8d9
+    # via license-expression
 boto3==1.43.75 \
     --hash=sha256:08a79edb68e6a0d65d305eb90188639313650e155aed015e86eef59d8475dde0 \
     --hash=sha256:86da93d3d5b46a58b03fa51b598ffa4aeaff485a3000affacf78491c105e44f0
@@ -1010,6 +1014,10 @@ cryptography==50.0.0 \
     #   pyopenssl
     #   secretstorage
     #   webauthn
+cyclonedx-python-lib==11.12.0 \
+    --hash=sha256:0e807521a921a5c3cb8ce1153f8a61d29eedfe76a46aac2796b7c6b573391a54 \
+    --hash=sha256:16767c4039de90c04e9f03348f8f0ed4b8ff842eaa7eefcad3a95685f970dacf
+    # via preloop (pyproject.toml)
 cyclopts==4.23.0 \
     --hash=sha256:1581758c5b9982c3b2ae7df6d87243e3a6fc3265ea621f96caeb349b6fa43ad2 \
     --hash=sha256:2f764bbd90f1888073971c09576f90e594f80353588e10aa615b7d59bc009821
@@ -1017,7 +1025,9 @@ cyclopts==4.23.0 \
 defusedxml==0.7.1 \
     --hash=sha256:1bb3032db185915b62d7c6209c5a8792be6a32ab2fedacc84e01b52c51aa3e69 \
     --hash=sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61
-    # via jira
+    # via
+    #   jira
+    #   py-serializable
 distlib==0.4.3 \
     --hash=sha256:4b0ce306c966eb73bc3a7b6abad017c556dadd92c44701562cd528ac7fde4d5b \
     --hash=sha256:f152097224a0ae24be5a0f6bae1b9359af82133bce63f98a95f86cae1aede9ed
@@ -2034,6 +2044,10 @@ librt==0.15.0 ; platform_python_implementation != 'PyPy' \
     --hash=sha256:fc1ed11c4ad0b91af24def2050f2840ea4567828e3dd058fbe608d982f6e5465 \
     --hash=sha256:febb1ce6cac545a54e6b769982824e955a700fdd9fbf3a08a3d82c990968b57d
     # via mypy
+license-expression==30.4.4 \
+    --hash=sha256:421788fdcadb41f049d2dc934ce666626265aeccefddd25e162a26f23bcbf8a4 \
+    --hash=sha256:73448f0aacd8d0808895bdc4b2c8e01a8d67646e4188f887375398c761f340fd
+    # via cyclonedx-python-lib
 litellm==1.101.0 \
     --hash=sha256:140ee0997324b8fd2405f7f8c26f42c0f364996dc4030187344a90cf27916667 \
     --hash=sha256:734ab2b8cad6a3b582d52d9c9c5fcab759eb382b93935ef808fda0e16d822ac3 \
@@ -2738,6 +2752,10 @@ opentelemetry-semantic-conventions==0.65b0 \
     --hash=sha256:1cacde7b0ad306f84c5ef08c3dbe1bbaf20165bba6f8bff43b670e555a086bcb \
     --hash=sha256:f9b2b81e9d5b64f11bc952075e7e9c7fb0aab075c7fd1c46d597f1b919852d60
     # via opentelemetry-sdk
+packageurl-python==0.17.6 \
+    --hash=sha256:1252ce3a102372ca6f86eb968e16f9014c4ba511c5c37d95a7f023e2ca6e5c25 \
+    --hash=sha256:31a85c2717bc41dd818f3c62908685ff9eebcb68588213745b14a6ee9e7df7c9
+    # via cyclonedx-python-lib
 packaging==26.3 \
     --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
@@ -3229,6 +3247,10 @@ py-key-value-aio==0.4.5 \
     --hash=sha256:ab862adbcb8c72547d1c57821f22cbbb71ab86509039c96f36e914e0336c8dd7 \
     --hash=sha256:c6563a2c6abe5da5e20f4f9e875c2a9b425a2244a54fadbf46cf140a9eea45d7
     # via fastmcp-slim
+py-serializable==2.1.0 \
+    --hash=sha256:9d5db56154a867a9b897c0163b33a793c804c80cee984116d02d49e4578fc103 \
+    --hash=sha256:b56d5d686b5a03ba4f4db5e769dc32336e142fc3bd4d68a8c25579ebb0a67304
+    # via cyclonedx-python-lib
 pyasn1==0.6.4 \
     --hash=sha256:9c447d8431c947fe4c8febc4ed9e760bc29011a5b01e5c74b67025bd9fb8ce81 \
     --hash=sha256:deda9277cfd454080ec40b207fb6df82206a3a2688735233cdcd8d3d565f088b
@@ -4037,6 +4059,10 @@ sniffio==1.3.1 \
     # via
     #   anthropic
     #   openai
+sortedcontainers==2.4.0 \
+    --hash=sha256:25caa5a06cc30b6b83d11423433f65d1f9d76c4c6a0c90e3379eaa43b9bfdb88 \
+    --hash=sha256:a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0
+    # via cyclonedx-python-lib
 sqlalchemy==2.0.52 \
     --hash=sha256:11560064cc4696e772298b6221ede59e646386d9f2a85d549365473b972f7850 \
     --hash=sha256:1b2d9e507a458832adcfbd8af6e2036ddf069b7710b799448542ebccae2dceee \
@@ -4267,6 +4293,7 @@ typing-extensions==4.16.0 \
     #   anthropic
     #   anyio
     #   asyncssh
+    #   cyclonedx-python-lib
     #   exceptiongroup
     #   fastapi
     #   fastmcp-slim
