@@ -1004,4 +1004,78 @@ describe('AuditView', () => {
 
     document.body.removeChild(element);
   });
+
+  it('marks a row sealed only when the payload already carries chain_seq', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+        return new Response(
+          JSON.stringify({
+            groups: [
+              {
+                correlation_id: null,
+                outcome: 'created',
+                primary_event: {
+                  id: 'sealed-1',
+                  action: 'runtime_session_created',
+                  status: 'created',
+                  timestamp: '2026-03-10T10:00:00Z',
+                  details: {},
+                  chain_seq: 12,
+                },
+                sub_events: [],
+              },
+              {
+                correlation_id: null,
+                outcome: 'created',
+                primary_event: {
+                  id: 'open-1',
+                  action: 'runtime_session_created',
+                  status: 'created',
+                  timestamp: '2026-03-10T10:01:00Z',
+                  details: {},
+                  chain_seq: null,
+                },
+                sub_events: [],
+              },
+              {
+                correlation_id: null,
+                outcome: 'created',
+                primary_event: {
+                  id: 'plain-1',
+                  action: 'runtime_session_created',
+                  status: 'created',
+                  timestamp: '2026-03-10T10:02:00Z',
+                  details: {},
+                },
+                sub_events: [],
+              },
+            ],
+            total: 3,
+            skip: 0,
+            limit: 50,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify({ detail: 'no' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const element = document.createElement('audit-view') as AuditView;
+    document.body.appendChild(element);
+    await waitUntil(
+      () => !(element as any)._loading,
+      'Audit view did not finish loading'
+    );
+    await element.updateComplete;
+    const marks = [
+      ...(element.shadowRoot?.querySelectorAll('[data-testid="seal-mark"]') ??
+        []),
+    ].map((node) => node.textContent?.trim());
+    expect(marks).to.deep.equal(['Sealed 12', 'Unsealed']);
+    element.remove();
+  });
 });

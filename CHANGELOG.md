@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The console Settings > Records page shows audit chain status and
+  verification, signing keys, retention, legal holds, and signed period
+  exports. The audit timeline links to that page and marks a row sealed only
+  when the row already carries a chain sequence. A flow execution shows its
+  evidence pack. Approvals and runtime sessions can place or release a legal
+  hold.
+
 - `python -m preloop.cra measure` prints the platform's NTIA minimum-elements
   measurement for one or more CycloneDX or SPDX JSON files. SBOM Verify and
   Release Security Audit copy `passed` and `missing` from that object.

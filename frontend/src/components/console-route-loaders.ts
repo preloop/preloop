@@ -28,6 +28,7 @@ export const consoleRouteLoaders = {
   'appearance-view': () => import('../views/authed/settings/appearance-view'),
   'account-view': () => import('../views/authed/settings/account-view'),
   'plan-view': () => import('../views/authed/settings/plan-view'),
+  'records-view': () => import('../views/authed/settings/records-view'),
   'emergency-view': () => import('../views/authed/settings/emergency-view'),
   'user-management-view': () =>
     import('../views/authed/settings/user-management-view'),

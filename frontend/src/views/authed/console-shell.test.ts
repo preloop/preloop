@@ -783,12 +783,109 @@ describe('ConsoleShell', () => {
         'a[href^="/console/settings/"]'
       ) ?? []
     ).map((link) => link.getAttribute('href'));
-    const order = ['account', 'plan', 'users'].map((page) =>
+    const order = ['account', 'plan', 'records', 'users'].map((page) =>
       settingsPaths.indexOf(`/console/settings/${page}`)
     );
     expect(order[0]).to.be.greaterThan(-1);
     expect(order[1]).to.equal(order[0] + 1);
     expect(order[2]).to.equal(order[1] + 1);
+    expect(order[3]).to.equal(order[2] + 1);
+  });
+
+  it('hides Records unless the operator can read the audit or policies', async () => {
+    invalidateApiCaches();
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/api/v1/features')) {
+        return new Response(
+          JSON.stringify({ plugins: [], features: { user_management: true } }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.endsWith('/api/v1/auth/users/me')) {
+        return new Response(
+          JSON.stringify({
+            username: 'test',
+            email: 'test@example.com',
+            email_verified: true,
+            permissions: ['view_flows'],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (
+        url.includes('approval-requests') ||
+        url.endsWith('/api/v1/trackers')
+      ) {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const hidden = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+    await waitUntil(
+      () =>
+        hidden.shadowRoot?.querySelector(
+          'a[href="/console/settings/api-keys"]'
+        ) !== null,
+      'Settings links did not render'
+    );
+    expect(
+      hidden.shadowRoot?.querySelector('a[href="/console/settings/records"]')
+    ).to.not.exist;
+
+    hidden.remove();
+    invalidateApiCaches();
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/api/v1/features')) {
+        return new Response(JSON.stringify({ plugins: [], features: {} }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/api/v1/auth/users/me')) {
+        return new Response(
+          JSON.stringify({
+            username: 'test',
+            email: 'test@example.com',
+            email_verified: true,
+            permissions: ['view_audit_logs'],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (
+        url.includes('approval-requests') ||
+        url.endsWith('/api/v1/trackers')
+      ) {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const shown = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+    await waitUntil(
+      () =>
+        shown.shadowRoot?.querySelector(
+          'a[href="/console/settings/records"]'
+        ) !== null,
+      'Records link did not render'
+    );
   });
 
   it('still offers the plan page where there is no user management', async () => {

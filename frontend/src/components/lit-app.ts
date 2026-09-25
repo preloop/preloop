@@ -389,6 +389,7 @@ export class LitApp extends LitElement {
           { path: 'settings/appearance', component: 'appearance-view' },
           { path: 'settings/account', component: 'account-view' },
           { path: 'settings/plan', component: 'plan-view' },
+          { path: 'settings/records', component: 'records-view' },
           { path: 'settings/emergency', component: 'emergency-view' },
           { path: 'settings/users', component: 'user-management-view' },
           { path: 'settings/teams', component: 'team-management-view' },

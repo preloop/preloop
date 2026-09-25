@@ -238,6 +238,13 @@ PUT  /api/v1/retention/settings        # {"classes": {"audit": 400}}; below the 
 GET  /api/v1/retention/purge-preview   # what today's purge would remove, per class
 ```
 
+### In the console
+
+Settings > Records edits days per class, never below the floor, and previews
+what a purge would remove. Purge itself stays a deployment setting. The page
+says when the sweeper is off, so a stated policy is not mistaken for a
+deletion that already happened.
+
 ### The purge
 
 Records past retention are deleted by a background sweeper, never on a
@@ -278,6 +285,13 @@ GET  /api/v1/retention/holds
 POST /api/v1/retention/holds                  # {"resource_type": "execution", "resource_id": "...", "reason": "..."}
 POST /api/v1/retention/holds/{id}/release     # {"reason": "..."}
 ```
+
+### In the console
+
+Settings > Records lists legal holds, and the same page is where retention
+days are edited. A flow execution, an approval, and a runtime session each
+offer place and release for that one record. A hold is still not object lock:
+the execution page shows `object_lock` as false.
 
 A hold on an execution also covers that execution's evidence packs. Holds
 overlap safely: releasing an execution hold does not unfreeze a pack that
@@ -424,6 +438,15 @@ purge under a stated policy: the purge raises that floor as it deletes, so
 enforcing retention does not read as tampering. Rows written since the last
 sealing pass are not chained yet (`unsealed_rows`).
 
+### In the console
+
+Settings > Records, under Audit integrity, shows sealed and unsealed counts,
+the seal lag, and the latest checkpoint. Verify chain runs on the server.
+Verify offline shows `preloop audit verify` and the account key id, with a
+download of the public key. The audit timeline links there. A clean result
+shows the rows were not reordered, removed or edited after sealing; not that
+they were true when written.
+
 Every `AUDIT_CHAIN_CHECKPOINT_INTERVAL` sealed rows, Preloop signs a
 checkpoint over the chain head. A checkpoint you copied off the platform is
 the one artifact here that a rewritten chain cannot reproduce, because it was
@@ -482,6 +505,14 @@ preloop evidence verify export.tar.gz --public-key ./account-key.pub
 verification time only shows that the bundle matches whatever key we serve you
 today; a key you copied when the bundle was issued does not depend on us at
 all. `preloop audit keys` prints them for that purpose.
+
+### In the console
+
+Settings > Records lists the active key and retired keys, and can rotate a
+key. Period exports are on the same page: the download names the signing key
+from the response headers and shows `preloop evidence verify` with that key
+file. The execution page downloads an evidence pack and shows the integrity
+header from that download.
 
 Packs captured before signing existed, and accounts whose key could not be
 minted, have no signature. The receipt says `signature: null` rather than
@@ -547,16 +578,20 @@ the storage layer.
    does not stop the agent from printing sensitive prose on ordinary stdout.
 7. Decide record retention per class and set `RETENTION_PURGE_ENABLED`
    deliberately. Until it is on, nothing is deleted and the stated retention
-   is not enforced. Run `GET /api/v1/retention/purge-preview` before the
-   first enabled pass.
+   is not enforced. Run `GET /api/v1/retention/purge-preview`, or Preview
+   purge on Settings > Records, before the first enabled pass.
 8. Place a legal hold before an incident review starts, not after the
    payload window has closed. A hold pins bytes that are still there; it
-   cannot bring back bytes already cleared.
-9. Copy signed checkpoints (`GET /api/v1/audit/chain/checkpoints`) and the
-   public keys (`preloop audit keys`) somewhere Preloop cannot write. Held
+   cannot bring back bytes already cleared. Place it from Settings > Records
+   or from the execution, approval, or session page, or with
+   `POST /api/v1/retention/holds`.
+9. Copy signed checkpoints (`GET /api/v1/audit/chain/checkpoints`, or the
+   table on Settings > Records) and the public keys (`preloop audit keys`,
+   or Download public key on that page) somewhere Preloop cannot write. Held
    only here, they prove consistency between two things under the same
    control. Run `preloop audit verify` on a schedule and treat a break as an
-   incident.
+   incident. The console Verify chain button is the server's own walk, not a
+   substitute for that command.
 
 ### Cloud analytics history and stored records
 

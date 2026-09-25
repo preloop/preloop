@@ -496,6 +496,8 @@ export interface RuntimeSessionSummary {
   latest_note_author_display?: string | null;
   latest_note_author_auth_method?: string | null;
   latest_note_at?: string | null;
+  /** True while a legal hold freezes this session. */
+  legal_hold?: boolean;
 }
 
 export interface AccountRuntimeSessionListResponse {

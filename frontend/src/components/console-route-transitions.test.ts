@@ -131,6 +131,7 @@ const MATRIX: Landing[] = [
     params: {},
   },
   { path: '/console/settings/plan', tag: 'plan-view', params: {} },
+  { path: '/console/settings/records', tag: 'records-view', params: {} },
   { path: '/console/settings/emergency', tag: 'emergency-view', params: {} },
   // Legacy pricing links land on the plan page, which is where plans live.
   {

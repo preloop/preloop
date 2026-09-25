@@ -67,6 +67,7 @@ def list_for_account(
     account_id: Any,
     active_only: bool = False,
     resource_type: Optional[str] = None,
+    resource_id: Optional[str] = None,
     skip: int = 0,
     limit: int = 100,
 ) -> list[LegalHold]:
@@ -76,6 +77,8 @@ def list_for_account(
         stmt = stmt.where(LegalHold.released_at.is_(None))
     if resource_type:
         stmt = stmt.where(LegalHold.resource_type == resource_type)
+    if resource_id:
+        stmt = stmt.where(LegalHold.resource_id == str(resource_id))
     stmt = stmt.order_by(LegalHold.placed_at.desc()).offset(skip).limit(limit)
     return list(db.execute(stmt).scalars().all())
 
