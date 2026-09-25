@@ -162,42 +162,82 @@ export function severityRank(severity: string): number {
   return index === -1 ? SEVERITY_ORDER.length : index;
 }
 
-export function markdownOutline(source: string): ReportHeading[] {
-  const used = new Map<string, number>();
-  const headings: ReportHeading[] = [];
-  for (const line of source.split('\n')) {
-    const match = /^(#{1,3})\s+(.+?)\s*$/.exec(line);
-    if (!match) continue;
-    const text = match[2].replace(/[`*_]/g, '').trim();
-    let id =
-      text
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-|-$/g, '') || 'section';
-    const seen = (used.get(id) || 0) + 1;
-    used.set(id, seen);
-    if (seen > 1) id = `${id}-${seen}`;
-    headings.push({ id, text, level: match[1].length });
-  }
-  return headings;
+export interface RenderedReport {
+  html: string;
+  headings: ReportHeading[];
 }
 
-export function renderReportMarkdown(source: string): string {
-  const outline = markdownOutline(source);
-  let index = 0;
+function headingId(text: string, used: Map<string, number>): string {
+  let id =
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '') || 'section';
+  const seen = (used.get(id) || 0) + 1;
+  used.set(id, seen);
+  if (seen > 1) id = `${id}-${seen}`;
+  return id;
+}
+
+function headingText(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .trim();
+}
+
+export function renderReportMarkdown(source: string): RenderedReport {
+  const used = new Map<string, number>();
+  const headings: ReportHeading[] = [];
   const renderer = new Renderer();
-  renderer.heading = ({ text, depth }) => {
-    const item = outline[index];
-    index += 1;
-    const id = item?.id || `section-${index}`;
-    return `<h${depth} id="${id}">${text}</h${depth}>`;
+  renderer.heading = function ({ tokens, depth }) {
+    const inner = this.parser.parseInline(tokens);
+    const text = headingText(inner);
+    const id = headingId(text, used);
+    headings.push({ id, text, level: depth });
+    return `<h${depth} id="${id}">${inner}</h${depth}>`;
   };
   const parsed = marked.parse(source, {
     async: false,
     gfm: true,
     renderer,
   });
-  return DOMPurify.sanitize(typeof parsed === 'string' ? parsed : '', {
-    ADD_ATTR: ['id'],
-  });
+  return {
+    html: DOMPurify.sanitize(typeof parsed === 'string' ? parsed : '', {
+      ADD_ATTR: ['id'],
+    }),
+    headings,
+  };
+}
+
+export function sameEvidencePack(
+  current: {
+    status?: string;
+    sha256?: string | null;
+    legal_hold?: boolean;
+    integrity?: string | null;
+    integrity_note?: string | null;
+    error?: string | null;
+  } | null,
+  next: {
+    status?: string;
+    sha256?: string | null;
+    legal_hold?: boolean;
+    integrity?: string | null;
+    integrity_note?: string | null;
+    error?: string | null;
+  } | null
+): boolean {
+  if (!current || !next) return current === next;
+  return (
+    current.status === next.status &&
+    (current.sha256 || '') === (next.sha256 || '') &&
+    Boolean(current.legal_hold) === Boolean(next.legal_hold) &&
+    (current.integrity || '') === (next.integrity || '') &&
+    (current.integrity_note || '') === (next.integrity_note || '') &&
+    (current.error || '') === (next.error || '')
+  );
 }

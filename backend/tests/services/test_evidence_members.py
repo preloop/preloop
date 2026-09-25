@@ -44,6 +44,9 @@ def test_member_paths_reject_traversal() -> None:
         "evidence/./findings.json",
         "",
         "evidence//findings.json",
+        "evidence/a\nb.md",
+        "evidence/a\rb.md",
+        "evidence/n\u00e4me.md",
     ):
         with pytest.raises(EvidenceMemberError) as exc:
             normalize_member_path(path)

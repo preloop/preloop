@@ -67,7 +67,10 @@ import '../../components/view-header.ts';
 import '../../components/execution-records-card';
 import '../../components/execution-report-panel';
 import { getEvidenceStatus, type EvidenceStatus } from '../../records-api';
-import { findingsSummaryLabel } from '../../utils/evidence-report';
+import {
+  findingsSummaryLabel,
+  sameEvidencePack,
+} from '../../utils/evidence-report';
 import '../../components/json-tree.ts';
 import '../../components/session-chat-view';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -2262,12 +2265,15 @@ export class FlowExecutionView extends LitElement {
     try {
       const status = await getEvidenceStatus(executionId);
       if (!this.isConnected || this.executionId !== executionId) return;
+      if (sameEvidencePack(this.evidenceStatus, status)) return;
       this.evidenceStatus = status;
       if (!this.showReportTab() && this.activeTab === 'report') {
         this.activeTab = 'timeline';
       }
     } catch {
-      if (this.executionId === executionId) this.evidenceStatus = null;
+      if (this.executionId === executionId && this.evidenceStatus !== null) {
+        this.evidenceStatus = null;
+      }
     }
   }
 

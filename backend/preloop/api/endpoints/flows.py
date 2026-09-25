@@ -1267,14 +1267,8 @@ def get_flow_execution_evidence(
     )
     if not execution:
         raise HTTPException(status_code=404, detail="Flow execution not found")
-    try:
-        archive, receipt = load_evidence(
-            db, account_id=current_user.account_id, execution=execution
-        )
-    except EvidenceUnavailableError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    receipt = attach_evidence_signature(
-        db, account_id=current_user.account_id, receipt=receipt
+    archive, receipt = _load_verified_evidence(
+        db, execution=execution, account_id=current_user.account_id
     )
     return Response(
         content=archive,
@@ -1345,6 +1339,26 @@ def _load_verified_evidence(
 @router.get(
     "/flows/executions/{execution_id}/evidence/members",
     response_model=None,
+    responses={
+        200: {
+            "description": (
+                "JSON member list, or one member's bytes when path is set."
+            ),
+            "content": {
+                "application/json": {"schema": {"type": "object"}},
+                "text/markdown": {"schema": {"type": "string"}},
+                "text/plain": {"schema": {"type": "string"}},
+                "application/octet-stream": {
+                    "schema": {"type": "string", "format": "binary"}
+                },
+            },
+            "headers": {
+                "X-Preloop-Evidence-Integrity": {"schema": {"type": "string"}},
+                "X-Preloop-Evidence-SHA256": {"schema": {"type": "string"}},
+                "X-Preloop-Evidence-Member": {"schema": {"type": "string"}},
+            },
+        }
+    },
 )
 @require_permission("view_flows")
 def get_flow_execution_evidence_members(

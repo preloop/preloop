@@ -711,7 +711,11 @@ def normalize_member_path(path: str) -> str:
     """
     if not isinstance(path, str) or path == "" or path.strip() != path:
         raise EvidenceMemberError(400, "Evidence member path is not allowed")
-    if "\x00" in path or "\\" in path or path.startswith("/") or ":" in path:
+    # Header values are latin-1. A CR, LF, or non-ASCII name becomes a 500
+    # when it is copied into X-Preloop-Evidence-Member or Content-Disposition.
+    if any(ord(ch) < 0x20 or ord(ch) > 0x7E for ch in path):
+        raise EvidenceMemberError(400, "Evidence member path is not allowed")
+    if "\\" in path or path.startswith("/") or ":" in path:
         raise EvidenceMemberError(400, "Evidence member path is not allowed")
     parts = path.split("/")
     if any(part in {"", ".", ".."} for part in parts):

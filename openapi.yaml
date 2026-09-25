@@ -10189,10 +10189,31 @@ paths:
           title: Path
       responses:
         '200':
-          description: Successful Response
+          description: JSON member list, or one member's bytes when path is set.
           content:
             application/json:
-              schema: {}
+              schema:
+                type: object
+            text/markdown:
+              schema:
+                type: string
+            text/plain:
+              schema:
+                type: string
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+          headers:
+            X-Preloop-Evidence-Integrity:
+              schema:
+                type: string
+            X-Preloop-Evidence-SHA256:
+              schema:
+                type: string
+            X-Preloop-Evidence-Member:
+              schema:
+                type: string
         '422':
           description: Validation Error
           content:

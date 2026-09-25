@@ -13,7 +13,6 @@ import consoleStyles from '../styles/console-styles.css?inline';
 import {
   findingsSummaryLabel,
   isCraFindings,
-  markdownOutline,
   parseFindings,
   parseRegister,
   renderReportMarkdown,
@@ -165,11 +164,11 @@ export class ExecutionReportPanel extends LitElement {
 
   private async load(): Promise<void> {
     const executionId = this.executionId;
+    this.loading = true;
+    this.error = null;
     try {
       const listed = await listEvidenceMembers(executionId);
       if (this.executionId !== executionId) return;
-      this.loading = true;
-      this.error = null;
       this.members = listed.members || [];
       const reportPath = this.artifactPath('report');
       const findingsPath = this.artifactPath('findings');
@@ -182,8 +181,11 @@ export class ExecutionReportPanel extends LitElement {
           : Promise.resolve(''),
       ]);
       if (this.executionId !== executionId) return;
-      this.headings = markdownOutline(report);
-      this.reportHtml = report ? renderReportMarkdown(report) : '';
+      const rendered = report
+        ? renderReportMarkdown(report)
+        : { html: '', headings: [] };
+      this.headings = rendered.headings;
+      this.reportHtml = rendered.html;
       this.findings = findings ? parseFindings(JSON.parse(findings)) : [];
       this.registerHtml = '';
       if (!parseRegister(this.result).length) {
@@ -191,7 +193,9 @@ export class ExecutionReportPanel extends LitElement {
         if (registerPath) {
           const markdown = await readEvidenceMember(executionId, registerPath);
           if (this.executionId !== executionId) return;
-          this.registerHtml = markdown ? renderReportMarkdown(markdown) : '';
+          this.registerHtml = markdown
+            ? renderReportMarkdown(markdown).html
+            : '';
         }
       }
     } catch (err) {
