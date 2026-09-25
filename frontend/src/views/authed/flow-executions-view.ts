@@ -129,7 +129,7 @@ const DURATION_TICK_MS = 1000;
 const SEARCH_DEBOUNCE_MS = 300;
 
 /** The ranges the pill offers, and how far back each one reaches. */
-const RANGE_OPTIONS: Array<{
+export const RANGE_OPTIONS: Array<{
   value: string;
   label: string;
   days: number;
@@ -604,7 +604,12 @@ export class FlowExecutionsView extends AuthedElement {
     } else {
       url.searchParams.set('range', filters.range);
     }
-    window.history.replaceState({}, '', url.toString());
+    try {
+      window.history.replaceState({}, '', url.toString());
+    } catch {
+      // Safari throws SecurityError after about 100 history writes in 30s.
+      // The list still uses the filters; the next successful write catches up.
+    }
   }
 
   /** Back to the page defaults, including storage and the URL. */
@@ -732,13 +737,16 @@ export class FlowExecutionsView extends AuthedElement {
    */
   private handleSearchChange(value: string): void {
     this.searchQuery = value.slice(0, FLOW_EXECUTION_QUERY_MAX);
-    this.persistFilters();
     if (this.searchDebounceId !== undefined) {
       clearTimeout(this.searchDebounceId);
     }
+    // Storage and the URL wait for the same pause as the request. A
+    // replaceState per character trips Safari's history throttle, and a
+    // throw there used to skip re-arming this timer.
     this.searchDebounceId = window.setTimeout(() => {
       this.searchDebounceId = undefined;
       this.currentPage = 1;
+      this.persistFilters();
       void this.loadExecutions();
     }, SEARCH_DEBOUNCE_MS);
   }

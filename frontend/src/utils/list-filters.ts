@@ -148,7 +148,7 @@ export function loadFlowExecutionFilters(): FlowExecutionListFilters | null {
     clearFlowExecutionFilters();
     return null;
   }
-  if (!isRecord(parsed) || storedShapeDiffers(parsed, filters)) {
+  if (storedShapeDiffers(parsed as Record<string, unknown>, filters)) {
     saveFlowExecutionFilters(filters);
   }
   return filters;

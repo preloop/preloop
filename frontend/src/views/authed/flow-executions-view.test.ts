@@ -2,7 +2,7 @@ import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import '../../components/view-header.ts';
 import './flow-executions-view';
-import { FlowExecutionsView } from './flow-executions-view';
+import { FlowExecutionsView, RANGE_OPTIONS } from './flow-executions-view';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import type { ConfirmDialog } from '../../components/confirm-dialog';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
@@ -11,7 +11,11 @@ import {
   FINISHED_EXECUTION_COST,
   FINISHED_EXECUTION_TOOL_CALLS,
 } from './test-finished-execution';
-import { FLOW_EXECUTION_FILTERS_KEY } from '../../utils/list-filters';
+import {
+  FLOW_EXECUTION_FILTERS_KEY,
+  FLOW_EXECUTION_RANGES,
+  FLOW_EXECUTION_STATUSES,
+} from '../../utils/list-filters';
 
 const tick = (ms = 150) => new Promise((r) => setTimeout(r, ms));
 
@@ -380,7 +384,7 @@ describe('FlowExecutionsView', () => {
         status: 'SUCCEEDED',
         flow: 'flow-1',
         range: 'week',
-        q: '',
+        q: 'nightly',
       })
     );
     const requested: string[] = [];
@@ -406,6 +410,7 @@ describe('FlowExecutionsView', () => {
     const executions = requested.find((url) => url.includes('/executions'));
     expect(executions).to.contain('status=SUCCEEDED');
     expect(executions).to.contain('flow_id=flow-1');
+    expect(executions).to.contain('search=nightly');
     const started = new URL(
       executions || '',
       'http://localhost'
@@ -428,6 +433,10 @@ describe('FlowExecutionsView', () => {
     expect(window.location.search).to.contain('status=SUCCEEDED');
     expect(window.location.search).to.contain('flow_id=flow-1');
     expect(window.location.search).to.contain('range=week');
+    expect(window.location.search).to.contain('q=nightly');
+    const toolbar = el.shadowRoot?.querySelector('list-toolbar') as
+      (HTMLElement & { search: string }) | null;
+    expect(toolbar?.search).to.equal('nightly');
     expect(el.shadowRoot?.querySelector('.reset-filters')).to.exist;
   });
 
@@ -539,6 +548,43 @@ describe('FlowExecutionsView', () => {
     expect(fetchStub.callCount).to.equal(callsBefore);
   });
 
+  it('still searches when history.replaceState throws', async () => {
+    const requested: string[] = [];
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
+      requested.push(String(input));
+      return new Response(JSON.stringify(EXECUTIONS), { status: 200 });
+    });
+    const replaceState = sinon
+      .stub(window.history, 'replaceState')
+      .throws(new DOMException('The operation is insecure.', 'SecurityError'));
+    const el = (await fixture(
+      html`<flow-executions-view></flow-executions-view>`
+    )) as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+    replaceState.resetHistory();
+    requested.length = 0;
+
+    const toolbar = el.shadowRoot?.querySelector('list-toolbar');
+    toolbar?.dispatchEvent(
+      new CustomEvent('search-change', { detail: { value: 'ni' } })
+    );
+    toolbar?.dispatchEvent(
+      new CustomEvent('search-change', { detail: { value: 'nightly' } })
+    );
+    await tick(400);
+    await el.updateComplete;
+
+    expect(requested.some((url) => url.includes('search=nightly'))).to.equal(
+      true
+    );
+    const saved = JSON.parse(
+      localStorage.getItem(FLOW_EXECUTION_FILTERS_KEY) || '{}'
+    );
+    expect(saved.q).to.equal('nightly');
+    expect(replaceState.callCount).to.be.lessThan(3);
+  });
+
   it('offers every execution status in the status filter', async () => {
     fetchStub = stub(EXECUTIONS);
     const el = (await fixture(
@@ -552,12 +598,14 @@ describe('FlowExecutionsView', () => {
     ).map((option) => option.getAttribute('value'));
     expect(options).to.eql([
       '',
-      'RUNNING',
-      'PENDING',
-      'SUCCEEDED',
-      'FAILED',
-      'CANCELLED',
+      ...FLOW_EXECUTION_STATUSES.filter((status) => status !== 'all'),
     ]);
+  });
+
+  it('keeps the stored range allowlist in step with the control', () => {
+    expect([...FLOW_EXECUTION_RANGES]).to.deep.equal(
+      RANGE_OPTIONS.map((option) => option.value)
+    );
   });
 
   it('names the filter selects for a screen reader without printing them', async () => {
