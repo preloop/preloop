@@ -5135,6 +5135,16 @@ paths:
           - type: string
           - type: 'null'
           title: Resource Type
+      - name: resource_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Only holds on this resource id
+          title: Resource Id
+        description: Only holds on this resource id
       - name: limit
         in: query
         required: false

@@ -56,6 +56,9 @@ const NAV_PERMISSIONS: Record<string, string[]> = {
   '/console/settings/invitations': ['invite_users', 'view_users'],
   '/console/settings/account': ['manage_account', 'view_billing'],
   '/console/settings/plan': ['manage_account', 'view_billing'],
+  // Audit integrity and exports use view_audit_logs. Retention and holds
+  // use view_policies. Either permission is enough to open the page.
+  '/console/settings/records': ['view_audit_logs', 'view_policies'],
   // Halting an account is the kill switch permission, not the billing one.
   // The controls used to sit on the account page, where a reader who could
   // not use them still saw them.
@@ -943,6 +946,10 @@ export class ConsoleShell extends LitElement {
                               )
                             : ''
                         }
+                        ${this._renderNavLink(
+                          '/console/settings/records',
+                          html`<sl-menu-item>Records</sl-menu-item>`
+                        )}
                         ${
                           this.features.user_management
                             ? this._renderNavLink(

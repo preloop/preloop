@@ -14,6 +14,7 @@ import type {
   SubjectGovernanceConfig,
 } from '../../types';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
+import '../../components/legal-hold-control';
 import {
   approvalRequesterName,
   formatApprovalSource,
@@ -1227,6 +1228,10 @@ export class ApprovalView extends AuthedElement {
           >
             ${displayStatus}
           </sl-badge>
+          <legal-hold-control
+            resource-type="approval"
+            resource-id=${request.id}
+          ></legal-hold-control>
           ${
             countdown
               ? html`<sl-badge

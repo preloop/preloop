@@ -6538,3 +6538,36 @@ export async function getConfigurationCapabilities(): Promise<ConfigurationCapab
     throw new Error('Configuration capabilities are unavailable');
   return response.json();
 }
+
+export {
+  createLegalHold,
+  createPeriodExport,
+  downloadEvidence,
+  getAuditChainSegment,
+  getAuditChainStatus,
+  getEvidenceStatus,
+  getRetentionSettings,
+  listAuditChainCheckpoints,
+  listLegalHolds,
+  listSigningKeys,
+  previewRetentionPurge,
+  releaseLegalHold,
+  rotateSigningKey,
+  updateRetentionSettings,
+  verifyAuditChain,
+} from './records-api';
+export type {
+  BinaryDownload,
+  ChainBreak,
+  ChainCheckpoint,
+  ChainSegment,
+  ChainStatus,
+  ChainVerifyResult,
+  EvidenceStatus,
+  LegalHold,
+  PurgePreview,
+  RetentionClass,
+  RetentionSettings,
+  SigningKey,
+  SigningKeyList,
+} from './records-api';
