@@ -382,11 +382,23 @@ func codexOAuthSyncBackoffActive(state *localEnrollmentState) bool {
 }
 
 func recordCodexOAuthSyncFailure(state *localEnrollmentState, err error) (codexOAuthSyncOutcome, error) {
-	if state != nil {
+	if state != nil && codexEnrollmentStateStillPresent(state) {
 		state.CodexOAuthSyncLastAttempt = time.Now().UTC().Format(time.RFC3339Nano)
 		_ = saveLocalEnrollmentState(state)
 	}
 	return codexOAuthSyncOutcome{}, err
+}
+
+// codexEnrollmentStateStillPresent reports whether offboard removed the
+// enrollment file while a push was in flight. A failure must not write the
+// stale copy back and look enrolled again.
+func codexEnrollmentStateStillPresent(state *localEnrollmentState) bool {
+	path, pathErr := localEnrollmentStatePath(state.AgentName, state.ConfigPath)
+	if pathErr != nil {
+		return false
+	}
+	_, statErr := os.Stat(path)
+	return statErr == nil
 }
 
 func pushCodexOAuthBundle(

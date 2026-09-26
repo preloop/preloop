@@ -991,6 +991,48 @@ func TestCodexOAuthSyncBackoffAndAttemptTimeout(t *testing.T) {
 	}
 }
 
+func TestCodexOAuthSyncFailureDoesNotRecreateRemovedEnrollment(t *testing.T) {
+	silenceCodexKeychain(t)
+	home := testenv.SetTempHome(t)
+	codexDir := filepath.Join(home, ".codex")
+	t.Setenv("CODEX_HOME", codexDir)
+	agent := codexSyncAgent(t, home)
+	writeCodexAuthFile(
+		t,
+		codexDir,
+		codexTestJWT(t, map[string]interface{}{"exp": 1893456000}),
+		"refresh-example-1",
+		"acct-example",
+		"2026-09-18T11:43:27.789Z",
+	)
+	saveCodexSyncState(t, agent, "2020-01-01T00:00:00Z", 1)
+	statePath, err := localEnrollmentStatePath(agent.Name, agent.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := removeLocalEnrollmentState(agent); err != nil {
+			t.Errorf("remove enrollment: %v", err)
+		}
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	restore := setCodexSyncFlags(t, server.URL)
+	defer restore()
+
+	state, err := loadLocalEnrollmentState(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := syncCodexOAuthCredentials(agent, state, false); err == nil {
+		t.Fatal("expected push error")
+	}
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("failure save recreated enrollment state: %v", err)
+	}
+}
+
 func codexSyncModel(id, name, secretID, agentID string) aiModelResponse {
 	return aiModelResponse{
 		ID:                  id,
