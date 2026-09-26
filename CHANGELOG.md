@@ -66,6 +66,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Release OpenVEX states that `undici-types` 7.16.0 is not affected by
+  undici runtime advisories matched through its repository URL, because
+  the package ships only TypeScript declarations. `lodash.camelcase`
+  4.3.0 stays a dev dependency of the test runner (its parents have no
+  release that dropped it) and is recorded as not on the shipped
+  frontend execute path. Frontend SBOMs mark declaration-only packages
+  with `preloop:types_only`.
 - A workspace checkpoint that exceeds the storage cap logs
   `PRELOOP_CHECKPOINT skipped checkpoint_oversized` and lets the run finish.
   The last completed checkpoint stays the resume point. Other checkpoint
