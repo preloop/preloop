@@ -13,6 +13,7 @@ plus a managed-agent binding, then serves the request.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -25,6 +26,7 @@ from preloop.models.crud import (
     crud_managed_agent_ai_model_binding,
 )
 from preloop.models.models import ManagedAgent
+from preloop.services import openai_gateway as gateway_module
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.openai_gateway import OpenAIGatewayService
@@ -33,6 +35,43 @@ from preloop.services.secret_service import (
 )
 
 PINNED_ALIAS = "anthropic/claude-fable-5"
+
+
+@pytest.fixture(autouse=True)
+def _claude_family_verification_is_opt_in(monkeypatch):
+    """Keep the suite on the pre-verification contract by default.
+
+    The existing tests were written against registration without an upstream
+    probe. This leaves them on that path (and out of the network), while the
+    verification tests below turn the flag on explicitly. The process-level
+    verification cache is cleared around every test so one test's answer never
+    leaks into the next.
+    """
+    monkeypatch.setattr(
+        settings, "model_gateway_claude_family_autoregister_verify_upstream", False
+    )
+    with gateway_module._CLAUDE_FAMILY_VERIFY_CACHE_LOCK:
+        gateway_module._CLAUDE_FAMILY_VERIFY_CACHE.clear()
+    yield
+    with gateway_module._CLAUDE_FAMILY_VERIFY_CACHE_LOCK:
+        gateway_module._CLAUDE_FAMILY_VERIFY_CACHE.clear()
+
+
+def _enable_verification(monkeypatch, *, outcome: str) -> list[str]:
+    """Turn on verification and stub the upstream probe, recording its calls."""
+    calls: list[str] = []
+
+    def _probe(*, identifier: str, access_token: str) -> str:
+        # Record only the identifier: the token must never reach a test
+        # failure message or a log assertion.
+        calls.append(identifier)
+        return outcome
+
+    monkeypatch.setattr(
+        settings, "model_gateway_claude_family_autoregister_verify_upstream", True
+    )
+    monkeypatch.setattr(gateway_module, "_probe_anthropic_model_identifier", _probe)
+    return calls
 
 
 def _make_agent(db_session, test_user) -> ManagedAgent:
@@ -325,3 +364,175 @@ def test_user_token_never_autoregisters(db_session, test_user):
     with pytest.raises(ModelGatewayAPIError) as err:
         service._resolve_requested_model("claude-sonnet-4-9", provider="anthropic")
     assert err.value.status_code == 404
+
+
+def test_upstream_rejection_blocks_autoregistration(db_session, test_user, monkeypatch):
+    """An identifier Anthropic 404s never becomes a catalog row."""
+    _agent, _pinned, service = _enrolled_service(db_session, test_user)
+    calls = _enable_verification(monkeypatch, outcome="rejected")
+
+    with pytest.raises(ModelGatewayAPIError) as err:
+        service._resolve_requested_model(
+            "anthropic/claude-made-up-9", provider="anthropic"
+        )
+    assert err.value.status_code == 404
+    assert calls == ["claude-made-up-9"]
+
+    leaked = [
+        model
+        for model in crud_ai_model.get_by_account(
+            db_session, account_id=test_user.account_id
+        )
+        if model.model_identifier == "claude-made-up-9"
+    ]
+    assert leaked == []
+
+
+def test_upstream_rejection_is_negative_cached(db_session, test_user, monkeypatch):
+    """A rejected id is not re-probed within the negative-cache window."""
+    _agent, _pinned, service = _enrolled_service(db_session, test_user)
+    calls = _enable_verification(monkeypatch, outcome="rejected")
+
+    for _ in range(2):
+        with pytest.raises(ModelGatewayAPIError):
+            service._resolve_requested_model(
+                "anthropic/claude-made-up-9", provider="anthropic"
+            )
+    assert calls == ["claude-made-up-9"]
+
+
+def test_negative_cache_expires(db_session, test_user, monkeypatch):
+    """After the negative TTL the identifier is probed again."""
+    _agent, _pinned, service = _enrolled_service(db_session, test_user)
+    calls = _enable_verification(monkeypatch, outcome="rejected")
+    monkeypatch.setattr(
+        gateway_module, "_CLAUDE_FAMILY_VERIFY_NEGATIVE_TTL_SECONDS", 0
+    )
+
+    for _ in range(2):
+        with pytest.raises(ModelGatewayAPIError):
+            service._resolve_requested_model(
+                "anthropic/claude-made-up-9", provider="anthropic"
+            )
+    assert calls == ["claude-made-up-9", "claude-made-up-9"]
+
+
+def test_upstream_acceptance_registers_marked_verified(
+    db_session, test_user, monkeypatch
+):
+    """A 200 still creates exactly today's row, now marked verified."""
+    agent, pinned, service = _enrolled_service(db_session, test_user)
+    _enable_verification(monkeypatch, outcome="verified")
+
+    resolved = service._resolve_requested_model(
+        "anthropic/claude-sonnet-4-9", provider="anthropic"
+    )
+
+    assert resolved.model_identifier == "claude-sonnet-4-9"
+    assert resolved.credentials_secret_id == pinned.credentials_secret_id
+    assert resolved.meta_data["managed_by"] == (
+        "model-gateway claude-family autoregister"
+    )
+    assert resolved.meta_data["upstream_verification"] == "verified"
+    bindings = crud_managed_agent_ai_model_binding.list_for_agent(
+        db_session,
+        account_id=str(test_user.account_id),
+        agent_id=str(agent.id),
+    )
+    assert "anthropic/claude-sonnet-4-9" in {
+        binding.gateway_alias for binding in bindings
+    }
+
+
+def test_inconclusive_probe_falls_back_marked_unverified(
+    db_session, test_user, monkeypatch, caplog
+):
+    """A 5xx/transport answer registers as before and is marked unverified."""
+    _agent, _pinned, service = _enrolled_service(db_session, test_user)
+    _enable_verification(monkeypatch, outcome="unknown")
+
+    with caplog.at_level("WARNING", logger="preloop.services.openai_gateway"):
+        resolved = service._resolve_requested_model(
+            "anthropic/claude-sonnet-4-9", provider="anthropic"
+        )
+
+    assert resolved.meta_data["upstream_verification"] == "unverified"
+    inconclusive = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and "inconclusive" in record.getMessage()
+    ]
+    assert len(inconclusive) == 1
+    # The access token is never part of a log line.
+    assert "oauth-access-token" not in caplog.text
+
+
+def test_verify_disabled_skips_probe_and_metadata(
+    db_session, test_user, monkeypatch
+):
+    """Flag off: no probe, and no new metadata beyond today's row."""
+    _agent, _pinned, service = _enrolled_service(db_session, test_user)
+    # The autouse fixture disabled verification; a probe would be a bug.
+    monkeypatch.setattr(
+        gateway_module,
+        "_probe_anthropic_model_identifier",
+        lambda **kwargs: pytest.fail("probe must not run when verification is off"),
+    )
+
+    resolved = service._resolve_requested_model(
+        "anthropic/claude-sonnet-4-9", provider="anthropic"
+    )
+
+    assert resolved.meta_data["managed_by"] == (
+        "model-gateway claude-family autoregister"
+    )
+    assert "upstream_verification" not in resolved.meta_data
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [(200, "verified"), (404, "rejected"), (500, "unknown"), (401, "unknown")],
+)
+def test_probe_anthropic_model_identifier_classifies(monkeypatch, status, expected):
+    """The probe is a body-less OAuth GET whose status maps to one outcome."""
+    import httpx
+
+    seen = {}
+
+    def _get(url, *, headers, timeout):
+        # A GET with no body argument: the client's request body can never
+        # reach the verification call.
+        seen["url"] = url
+        seen["headers"] = headers
+        seen["timeout"] = timeout
+        return httpx.Response(status)
+
+    monkeypatch.setattr(gateway_module.httpx, "get", _get)
+
+    outcome = gateway_module._probe_anthropic_model_identifier(
+        identifier="claude-made-up-9", access_token="secret-token"
+    )
+
+    assert outcome == expected
+    assert seen["url"] == "https://api.anthropic.com/v1/models/claude-made-up-9"
+    assert seen["headers"]["Authorization"] == "Bearer secret-token"
+    assert seen["headers"]["anthropic-beta"] == "oauth-2025-04-20"
+    assert seen["headers"]["anthropic-version"] == "2023-06-01"
+    assert seen["timeout"] == gateway_module._ANTHROPIC_MODEL_VERIFY_TIMEOUT_SECONDS
+
+
+def test_probe_transport_error_is_unknown(monkeypatch):
+    """A connection failure degrades to the register-anyway fallback."""
+    import httpx
+
+    def _get(url, *, headers, timeout):
+        raise httpx.ConnectError("offline")
+
+    monkeypatch.setattr(gateway_module.httpx, "get", _get)
+
+    outcome = gateway_module._probe_anthropic_model_identifier(
+        identifier="claude-made-up-9", access_token="secret-token"
+    )
+
+    assert outcome == "unknown"
