@@ -1,8 +1,9 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { AnsiUp } from 'ansi_up';
 import DOMPurify from 'dompurify';
+import { router } from '../../router';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 
 const ansiConverter = new AnsiUp();
@@ -126,6 +127,19 @@ interface FlowExecution {
   /** The in/out/cache split behind `total_tokens`, when the server attributes one. */
   token_usage?: GatewayTokenUsage | null;
   estimated_cost?: number;
+  /**
+   * Publishing execution this repair resumes. Absent on a first publication.
+   * Distinct from parent_execution_id (delegation tree).
+   */
+  resume_of?: string | null;
+  /**
+   * Summed tokens and cost for the publishing execution plus every repair
+   * that points at it. Absent when the row is not part of a multi-turn chain.
+   */
+  resume_totals?: {
+    total_tokens: number;
+    estimated_cost: number;
+  } | null;
   execution_logs?: FlowExecutionUpdate[];
   /**
    * Why a WAITING_FOR_HUMAN run is waiting, and until when. Present only
@@ -370,6 +384,18 @@ export class FlowExecutionView extends LitElement {
         display: flex;
         align-items: center;
         gap: 8px;
+      }
+      .resume-line {
+        font-size: var(--console-text-meta);
+        color: var(--console-meta-color);
+        margin-top: var(--sl-spacing-2x-small);
+      }
+      .resume-line a {
+        color: var(--sl-color-primary-600);
+        text-decoration: none;
+      }
+      .resume-line a:hover {
+        text-decoration: underline;
       }
       /* One of the page's two ambient animations: the dot that says this run
          is still going. The chip beside it stays a soft tint. */
@@ -3178,6 +3204,40 @@ ${execution.resolved_input_prompt}</pre>
   }
 
   /**
+   * Review/CI repair label: not a delegation child. Link the publishing
+   * execution and state the chain total when the server rolled one up.
+   */
+  private renderResumeLine(
+    execution: FlowExecution,
+    options: { asDescriptionSlot?: boolean } = {}
+  ) {
+    const resumeOf = execution.resume_of;
+    const totals = execution.resume_totals;
+    if (!resumeOf && !totals) return '';
+    const chain =
+      totals != null
+        ? html` · ${formatTokenCount(totals.total_tokens)} ·
+          ${formatEstimatedCost(totals.estimated_cost)}`
+        : '';
+    const href = resumeOf
+      ? router.urlForPath(`/console/flows/executions/${resumeOf}`)
+      : '';
+    const body = resumeOf
+      ? html`Resumption of
+          <a href=${href} data-testid="resume-of-link"
+            >${resumeOf.slice(0, 8)}</a
+          >${chain}`
+      : html`Chain total${chain}`;
+    return html`<div
+      class="resume-line"
+      data-testid="resume-line"
+      slot=${options.asDescriptionSlot ? 'description' : nothing}
+    >
+      ${body}
+    </div>`;
+  }
+
+  /**
    * The run's actions, from the one registry the executions list reads
    * (`src/actions/flow-execution-actions.ts`). The page used to spell out its
    * own Cancel and Retry with its own copy of the retry predicate, and its
@@ -3324,8 +3384,9 @@ ${execution.resolved_input_prompt}</pre>
           !isSubjectFallback(execution)
             ? html`<div slot="description" class="execution-subject-line">
                 ${renderExecutionSubject(execution)}
+                ${this.renderResumeLine(execution)}
               </div>`
-            : ''
+            : this.renderResumeLine(execution, { asDescriptionSlot: true })
         }
         ${this.renderHeaderActions(execution)}
       </view-header>
