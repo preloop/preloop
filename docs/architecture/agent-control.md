@@ -63,7 +63,7 @@ migrated disposable PostgreSQL database (UTC), then run that file with pytest.
 *   **Runtime Plugins (shipping):** Standalone open-source runtime plugins live in `runtime-plugins/` — `@preloop-ai/openclaw-plugin` (npm, TypeScript) and `preloop-hermes-plugin` (PyPI, Python) — and implement the `preloop.agent_control.v1` protocol: they read `preloop.control.control_ws_url`, connect with the durable runtime bearer token, own reconnect/backoff behavior, keep the WebSocket open, send heartbeat/status events, advertise capabilities, receive `send_message` command envelopes, acknowledge delivery, map operator messages into their own interactive runtime, and gate native tool calls through Preloop approvals (fail-closed by default). `preloop agents install-plugin <agent>` delegates installation to the runtime marketplace; `PUBLISHING.md` covers lockstep versioning. Existing enrollment can rewrite MCP and model traffic even when the runtime plugin is absent, but Agent Control is not enabled until that plugin is running inside the agent process.
 *   **Desktop capability:** Hermes and OpenClaw read `$PRELOOP_DESKTOP_FILE` or `~/.preloop/desktop.json` and add two keys to the presence `capabilities` object. A parsed file whose `vnc.host` is exactly `127.0.0.1` sends `desktop: "vnc"` and `desktop_display` (the manifest `display`, typically `:99`); every other case, including a missing file or a missing key from another plugin, sends `desktop: "none"`. The VNC password file and the rest of the manifest (host, port, auth, browser) stay on the machine. The backend stores that envelope with the agent's presence and exposes `desktop` (`"vnc"`, `"rdp"`, or `"none"`) and `desktop_display` on the managed-agent API. Brokered viewing and RDP detection are not part of this signal.
 *   **Claude Code Sidecar (prototype):** Claude Code has no in-process plugin API for message injection, so `@preloop-ai/claude-plugin` (`runtime-plugins/claude-preloop`) runs as a standalone sidecar daemon implementing the same `preloop.agent_control.v1` protocol. It reads `~/.claude/preloop-control.json` (its own file; `settings.json` stays reserved for Claude Code), drives sidecar-owned sessions through the Claude Agent SDK (streaming input for `send_message`, `resume` for persisted sessions, `interrupt()`), and reports presence/telemetry for interactive terminal sessions by tailing `~/.claude/projects/**/*.jsonl` (summaries only, no transcript upload). Interactive TUI sessions are observe-and-approve, not steerable mid-turn; targeting one resumes it headlessly. Tool approvals remain on the PreToolUse permission hook installed by `preloop agents onboard --approvals`; owned sessions load filesystem setting sources so the same hook fires there, and stopping the sidecar never ungoverns anything.
-*   **Codex CLI Sidecar (prototype):** Codex CLI likewise has no in-process plugin API for message injection, so `@preloop-ai/codex-plugin` (`runtime-plugins/codex-preloop`, bin `preloop-codex-plugin`) runs as a standalone sidecar implementing `preloop.agent_control.v1` with `runtime: "codex"`. It reads `~/.codex/preloop-control.json` (its own file; `config.toml` and `auth.json` stay reserved for Codex). Owned threads are driven through `@openai/codex-sdk`: `start_new_session` calls `startThread` in `cwd` or `workspace_root`, a follow-up turn on an owned thread calls `thread.run`, an unknown `target_session_id` calls `resumeThread`, and `interrupt` aborts the in-flight run with an `AbortController` and answers `command_result` with a stopped marker (`status: "stopped"`). Presence for interactive sessions comes from tailing `~/.codex/sessions/**/*.jsonl` (summaries only). Advertised capabilities match the Claude sidecar except `worktree`. Tool approvals stay on the hook installed at `~/.codex/hooks.json` by `preloop agents onboard "Codex CLI" --approvals`. The sidecar does not set `approvalPolicy` to `never`, does not rewrite `config.toml` or `auth.json`, and stopping it never ungoverns anything (fail-closed). `codex_sandbox_mode` defaults to `workspace-write`; `danger-full-access` is refused unless `codex_allow_full_access` is also set.
+*   **Codex CLI Sidecar (prototype):** Codex CLI likewise has no in-process plugin API for message injection, so `@preloop-ai/codex-plugin` (`runtime-plugins/codex-preloop`, bin `preloop-codex-plugin`) runs as a standalone sidecar implementing `preloop.agent_control.v1` with `runtime: "codex"`. It reads `~/.codex/preloop-control.json` (its own file; `config.toml` and `auth.json` stay reserved for Codex). Owned threads are driven through `@openai/codex-sdk`: `start_new_session` calls `startThread` in `<workspace_root>/<repository_slug>` when `metadata.workspace.mode` is `persistent_checkout`, otherwise in `cwd` or `workspace_root`, a follow-up turn on an owned thread calls `thread.run`, an unknown `target_session_id` calls `resumeThread`, and `interrupt` aborts the in-flight run with an `AbortController` and answers `command_result` with a stopped marker (`status: "stopped"`). Presence for interactive sessions comes from tailing `~/.codex/sessions/**/*.jsonl` (summaries only). Advertised capabilities match the Claude sidecar except `worktree`. Tool approvals stay on the hook installed at `~/.codex/hooks.json` by `preloop agents onboard "Codex CLI" --approvals`. The sidecar does not set `approvalPolicy` to `never`, does not rewrite `config.toml` or `auth.json`, and stopping it never ungoverns anything (fail-closed). `codex_sandbox_mode` defaults to `workspace-write`; `danger-full-access` is refused unless `codex_allow_full_access` is also set.
 
 ### Runtime support
 
@@ -158,24 +158,35 @@ stays `clone_less`: a persistent checkout is a directory named by the slug.
 When clone is disabled, or no repository can be resolved, `workspace` is
 `{mode: "clone_less"}`. The review reads the diff from the tracker.
 
-The Claude sidecar (`runtime-plugins/claude-preloop`) handles
-`persistent_checkout` as follows. The Codex sidecar implements the same
-contract separately.
+The Claude sidecar (`runtime-plugins/claude-preloop`) and the Codex
+sidecar (`runtime-plugins/codex-preloop`) both handle `persistent_checkout`
+as follows.
 
 * Ensure `<workspace_root>/<repository_slug>` exists. Clone once, then
   fetch on that same run and on later runs. Fetch tries `fetch_ref`, then
-  `sha`, then `ref`. The commit is checked out detached.
-* `spawn_worktree` creates a worktree after that checkout and runs the
-  turn there.
+  `sha`, then `ref`. The commit is checked out detached. The Codex sidecar
+  runs the thread with `workingDirectory` set to that checkout. `clone_less`
+  and a missing `workspace` keep the previous directory (`cwd`, else
+  `workspace_root`).
+* `spawn_worktree` on the Claude sidecar creates a worktree after that
+  checkout and runs the turn there. The Codex sidecar does not create git
+  worktrees. A `spawn_worktree` request fails with `command_error` before
+  git runs.
+* A second `persistent_checkout` for the same repository while a turn is
+  still running can check out another commit in that directory. Eviction
+  skips the in-use directory, but checkout does not. That matches the
+  Claude sidecar, which can isolate the turn with `spawn_worktree`. The
+  Codex sidecar cannot, so wait for the turn to finish.
 * Git operations on one repository directory are serialized in-process.
   Eviction takes the same lock and skips a directory whose turn is still
   running.
 * A dirty tree fails the command with `command_error`. The sidecar does
   not `reset --hard` or `clean` it. A persistent turn that leaves
-  uncommitted edits with `spawn_worktree: false` fails the next run on
-  that repository; use a worktree or commit/clean before the next turn.
-  Ownership is `preloop.managedcheckout` in the repository's git config,
-  so a restart still recognises a tree the sidecar checked out.
+  uncommitted edits in the checkout fails the next run on that repository.
+  The Claude sidecar can isolate that turn with `spawn_worktree`. The Codex
+  sidecar does not, so commit or clean before the next turn. Ownership is
+  `preloop.managedcheckout` in the repository's git config, so a restart
+  still recognises a tree the sidecar checked out.
 * `ssh://git@host/...` is a valid clone URL. A password in the URL is
   refused. `protocol.ext.allow` and `protocol.file.allow` are `never`.
 * The resolved path is `metadata.workspace_path` on `command_result`
@@ -236,12 +247,6 @@ text on an already-open session (currently Pi and DeepSeek) also fail at
 start: persistent dispatch always sends `start_new_session=true`. The
 operator endpoint uses the same
 `CONTROL_NEW_SESSION_UNSUPPORTED_KINDS` set.
-
-### Not covered yet
-
-* The Codex sidecar implementing this same persistent workspace contract.
-  Codex is already on the Agent Control allow-list, and CLI onboarding writes
-  `~/.codex/preloop-control.json`.
 
 ## Managed CLI/Desktop Agent Enrollment
 *   **Discovery Entry Point:** `preloop agents discover` can stay read-only (`--json`, `--no-onboard-prompt`) or hand off interactively into managed enrollment, with `--yes` available for auto-onboarding.

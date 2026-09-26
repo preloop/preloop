@@ -198,11 +198,31 @@ describe('getAgentControlState', () => {
         control_capabilities: [],
       });
       expect(hint.supported).to.equal(true);
-      expect(hint.command).to.equal('npm install -g @preloop-ai/codex-plugin');
-      expect(hint.command).to.not.contain('install-plugin');
-      expect(hint.helptext).to.contain('preloop-codex-plugin');
+      expect(hint.command).to.equal(
+        "preloop agents install-plugin 'Codex CLI'"
+      );
+      expect(hint.helptext).to.contain(
+        'npm install -g @preloop-ai/codex-plugin'
+      );
       expect(hint.helptext).to.not.contain(
         'does not have an Agent Control plugin'
+      );
+
+      const pending = getAgentControlInstallHint({
+        ...baseAgent,
+        display_name: 'Codex',
+        agent_kind: 'codex',
+        session_source_type: 'codex',
+        control_state: 'install_pending',
+        control_enabled: false,
+        control_capabilities: [],
+      });
+      expect(pending.command).to.equal(
+        "preloop agents install-plugin 'Codex CLI'"
+      );
+      expect(pending.helptext).to.contain('has not connected yet');
+      expect(pending.helptext).to.contain(
+        'npm install -g @preloop-ai/codex-plugin'
       );
 
       const connected = getAgentControlState({
