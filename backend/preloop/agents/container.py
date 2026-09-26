@@ -533,6 +533,10 @@ def build_github_pr_capture_shell(
     grep_pr = 'grep -o \'"html_url"[[:space:]]*:[[:space:]]*"[^"]*/pull/[0-9]*"\''
     sed_url = 'sed \'s/.*"\\(https[^"]*\\)"$/\\1/\''
     return f"""
+    # Initialised here, not only in the lookup fallback: the happy path
+    # (URL in the create response) reads these under ``set -u``.
+    PRELOOP_PROVENANCE_FAILED=
+    PRELOOP_BODY_UPDATED=
     PR_URL=$({grep_pr} {PR_RESPONSE_FILE} 2>/dev/null | head -1 | {sed_url})
     if [ -z "$PR_URL" ]; then
       echo "No PR URL in the create response; looking it up by head branch"
@@ -545,9 +549,9 @@ def build_github_pr_capture_shell(
       PR_URL=$({grep_pr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
       {_existing_pr_failure_update_shell(kind="github", api_url=f"https://api.github.com/repos/{owner}/{repo}/pulls", authorization=f"Authorization: token {token_ref}", branch=branch, execution_link=execution_link)}
     fi
-    if [ -n "$PRELOOP_PROVENANCE_FAILED" ] && [ -z "${{PRELOOP_BODY_UPDATED:-}}" ]; then
+    if [ -n "${{PRELOOP_PROVENANCE_FAILED:-}}" ] && [ -z "${{PRELOOP_BODY_UPDATED:-}}" ]; then
       echo "PRELOOP_PR_METADATA_WARNING: existing pull request body was left unchanged" >&2
-    elif [ -n "$PR_URL" ]; then
+    elif [ -n "${{PR_URL:-}}" ]; then
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$PR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"github\\"}}"
     else
       echo "No pull request URL could be resolved for branch {branch}"
@@ -570,6 +574,10 @@ def build_gitlab_mr_capture_shell(
     )
     sed_url = 'sed \'s/.*"\\(https[^"]*\\)"$/\\1/\''
     return f"""
+    # Initialised here, not only in the lookup fallback: the happy path
+    # (URL in the create response) reads these under ``set -u``.
+    PRELOOP_PROVENANCE_FAILED=
+    PRELOOP_BODY_UPDATED=
     MR_URL=$({grep_mr} {PR_RESPONSE_FILE} 2>/dev/null | head -1 | {sed_url})
     if [ -z "$MR_URL" ]; then
       echo "No MR URL in the create response; looking it up by source branch"
@@ -581,9 +589,9 @@ def build_gitlab_mr_capture_shell(
       MR_URL=$({grep_mr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
       {_existing_pr_failure_update_shell(kind="gitlab", api_url=f"https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests", authorization=f"PRIVATE-TOKEN: {token_ref}", branch=branch, execution_link=execution_link)}
     fi
-    if [ -n "$PRELOOP_PROVENANCE_FAILED" ] && [ -z "${{PRELOOP_BODY_UPDATED:-}}" ]; then
+    if [ -n "${{PRELOOP_PROVENANCE_FAILED:-}}" ] && [ -z "${{PRELOOP_BODY_UPDATED:-}}" ]; then
       echo "PRELOOP_PR_METADATA_WARNING: existing pull request body was left unchanged" >&2
-    elif [ -n "$MR_URL" ]; then
+    elif [ -n "${{MR_URL:-}}" ]; then
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$MR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"gitlab\\"}}"
     else
       echo "No merge request URL could be resolved for branch {branch}"
