@@ -881,16 +881,7 @@ func claudeSelectionFallbackModelAlias(selection string) string {
 }
 
 func resolveClaudeSelectionFromAnthropicModels(selection string) string {
-	credential, _ := resolveClaudeOAuthCredential()
-	token := ""
-	if credential != nil {
-		token = strings.TrimSpace(credential.AccessToken)
-	}
-	if token == "" {
-		if managedKey, _ := resolveClaudeManagedAPIKey(); managedKey != "" {
-			token = managedKey
-		}
-	}
+	token := resolveClaudeLiveAccessToken()
 	if token == "" {
 		return ""
 	}
@@ -901,8 +892,29 @@ func resolveClaudeSelectionFromAnthropicModels(selection string) string {
 	return selectHighestClaudeModelAlias(selection, models)
 }
 
+// resolveClaudeLiveAccessToken returns the Anthropic credential the CLI uses
+// to query the live Anthropic models API: the local Claude Code OAuth access
+// token when present, otherwise the managed API key. It returns "" when no
+// local Anthropic credential is available.
+func resolveClaudeLiveAccessToken() string {
+	credential, _ := resolveClaudeOAuthCredential()
+	if credential != nil {
+		if token := strings.TrimSpace(credential.AccessToken); token != "" {
+			return token
+		}
+	}
+	if managedKey, _ := resolveClaudeManagedAPIKey(); managedKey != "" {
+		return managedKey
+	}
+	return ""
+}
+
+// anthropicModelsURL is the Anthropic models endpoint. It is a package
+// variable so tests can point the live-list lookup at an httptest server.
+var anthropicModelsURL = "https://api.anthropic.com/v1/models"
+
 func fetchAnthropicModelIDs(token string) ([]string, error) {
-	req, err := http.NewRequest(http.MethodGet, "https://api.anthropic.com/v1/models", nil)
+	req, err := http.NewRequest(http.MethodGet, anthropicModelsURL, nil)
 	if err != nil {
 		return nil, err
 	}
