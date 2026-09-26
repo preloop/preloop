@@ -762,6 +762,10 @@ type localEnrollmentState struct {
 	// at that push. The no-change path stats the file and reads this state
 	// once, then skips the network.
 	CodexOAuthSyncedAuthMtimeNS int64 `json:"codex_oauth_synced_auth_mtime_ns,omitempty"`
+	// CodexOAuthSyncLastAttempt is when a push was last tried and failed.
+	// The permission hook waits before trying again so a stalled API cannot
+	// hold every tool decision.
+	CodexOAuthSyncLastAttempt string `json:"codex_oauth_sync_last_attempt,omitempty"`
 }
 
 type managedMCPAdapter interface {
@@ -1903,6 +1907,7 @@ func runAgentsValidate(cmd *cobra.Command, args []string) error {
 				}
 				result["model_status"] = mStatus
 				result["model_summary"] = summary
+				result["model_credential_type"] = m.CredentialType
 				if strings.EqualFold(mStatus, "error") {
 					status = "validation_failed"
 					if result["error"] == nil {
@@ -1962,10 +1967,7 @@ func runAgentsValidate(cmd *cobra.Command, args []string) error {
 		"error",
 	} {
 		if value, ok := result[key]; ok {
-			shown := value
-			if text, ok := value.(string); ok && (key == "model_summary" || key == "error") {
-				shown = annotateCodexOAuth401Summary(agent, openaiCodexOAuthCredentialType, text)
-			}
+			shown := displayedValidationValue(agent, result, key, value)
 			fmt.Printf("  %s: %s\n", key, formatManagedValidationValue(key, shown))
 		}
 	}
@@ -1975,7 +1977,7 @@ func runAgentsValidate(cmd *cobra.Command, args []string) error {
 	if sum, ok := result["model_summary"].(string); ok && sum != "" {
 		fmt.Printf(
 			"Model summary: %s\n",
-			annotateCodexOAuth401Summary(agent, openaiCodexOAuthCredentialType, sum),
+			displayedValidationValue(agent, result, "model_summary", sum),
 		)
 	}
 	fmt.Printf("  onboarding_mode: %s\n", onboardingStateLabel(onboardingStateFromValidation(result)))
@@ -5833,9 +5835,42 @@ func saveLocalEnrollmentState(state *localEnrollmentState) error {
 	if err != nil {
 		return fmt.Errorf("failed to encode local enrollment state: %w", err)
 	}
-	if err := os.WriteFile(statePath, data, 0600); err != nil {
+	// Write a temp file in the same directory and rename it over the target.
+	// os.WriteFile truncates in place, so two hook processes (or a hook and
+	// sync-credentials) can tear the JSON. Rename replaces the inode on Unix.
+	dir := filepath.Dir(statePath)
+	tmp, err := os.CreateTemp(dir, ".enrollment-*.json")
+	if err != nil {
 		return fmt.Errorf("failed to persist local enrollment state: %w", err)
 	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to persist local enrollment state: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to persist local enrollment state: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to persist local enrollment state: %w", err)
+	}
+	if err := os.Rename(tmpName, statePath); err != nil {
+		// Windows rename does not replace an existing file.
+		if rmErr := os.Remove(statePath); rmErr != nil && !os.IsNotExist(rmErr) {
+			return fmt.Errorf("failed to persist local enrollment state: %w", err)
+		}
+		if err := os.Rename(tmpName, statePath); err != nil {
+			return fmt.Errorf("failed to persist local enrollment state: %w", err)
+		}
+	}
+	cleanup = false
 	return nil
 }
 

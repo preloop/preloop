@@ -671,6 +671,321 @@ func TestAnnotateCodexOAuth401Summary(t *testing.T) {
 	if annotateCodexOAuth401Summary(codex, openaiCodexOAuthCredentialType, "healthy") != "healthy" {
 		t.Fatal("healthy summary was rewritten")
 	}
+	summary401 := "openai refresh failed (status=401, code=invalid_refresh_token)"
+	oauthShown := displayedValidationValue(codex, map[string]interface{}{
+		"model_credential_type": openaiCodexOAuthCredentialType,
+	}, "model_summary", summary401)
+	if text, _ := oauthShown.(string); !strings.Contains(text, "sync-credentials") {
+		t.Fatalf("oauth validate line = %q", oauthShown)
+	}
+	apiKeyShown := displayedValidationValue(codex, map[string]interface{}{
+		"model_credential_type": "api_key",
+	}, "error", summary401)
+	if apiKeyShown != summary401 {
+		t.Fatalf("api_key validate line = %q", apiKeyShown)
+	}
+}
+
+func TestCodexFileBundleNewerTreatsEmptyMarkerAsMtime(t *testing.T) {
+	const stamp = "2026-09-18T11:43:27.789Z"
+	if !codexFileBundleNewer(stamp, 100, "", 200) {
+		t.Fatal("empty last_refresh with a newer mtime should be pushed")
+	}
+	if codexFileBundleNewer(stamp, 200, "", 100) {
+		t.Fatal("empty last_refresh with an older mtime should not be pushed")
+	}
+	if codexFileBundleNewer(stamp, 100, "", 100) {
+		t.Fatal("empty last_refresh with the same mtime should not be pushed")
+	}
+}
+
+func TestSaveLocalEnrollmentStateReplacesAtomically(t *testing.T) {
+	home := testenv.SetTempHome(t)
+	agent := codexSyncAgent(t, home)
+	state := &localEnrollmentState{
+		AgentName:                   agent.Name,
+		ConfigPath:                  agent.ConfigPath,
+		CodexOAuthSyncedLastRefresh: "first",
+	}
+	if err := saveLocalEnrollmentState(state); err != nil {
+		t.Fatal(err)
+	}
+	state.CodexOAuthSyncedLastRefresh = "second"
+	if err := saveLocalEnrollmentState(state); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadLocalEnrollmentState(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.CodexOAuthSyncedLastRefresh != "second" {
+		t.Fatalf("reloaded stamp = %q", loaded.CodexOAuthSyncedLastRefresh)
+	}
+	path, err := localEnrollmentStatePath(agent.Name, agent.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %o", info.Mode().Perm())
+	}
+	matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".enrollment-*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("leftover temp files: %v", matches)
+	}
+}
+
+func TestCodexOAuthSyncEmptyMarkerUsesMtime(t *testing.T) {
+	silenceCodexKeychain(t)
+	home := testenv.SetTempHome(t)
+	codexDir := filepath.Join(home, ".codex")
+	t.Setenv("CODEX_HOME", codexDir)
+	agent := codexSyncAgent(t, home)
+	access := codexTestJWT(t, map[string]interface{}{"exp": 1893456000})
+	document := map[string]interface{}{
+		"tokens": map[string]interface{}{
+			"access_token":  access,
+			"refresh_token": "refresh-example-1",
+			"account_id":    "acct-example",
+		},
+	}
+	data, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(codexDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexDir, "auth.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saveCodexSyncState(t, agent, "2026-09-18T11:43:27.789Z", 1)
+
+	puts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/agents":
+			_ = json.NewEncoder(w).Encode(managedAgentListResponse{
+				Items: []managedAgentSummary{{
+					ID:                "agent-codex-1",
+					SessionSourceType: "codex",
+					SessionSourceID:   runtimePrincipalIDForAgent(agent),
+				}},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/ai-models":
+			_ = json.NewEncoder(w).Encode([]aiModelResponse{
+				codexSyncModel("model-alpha", "Example Alpha", "secret-shared", "agent-codex-1"),
+			})
+		case r.Method == http.MethodPut:
+			puts++
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	restore := setCodexSyncFlags(t, server.URL)
+	defer restore()
+
+	state, err := loadLocalEnrollmentState(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := syncCodexOAuthCredentials(agent, state, false); err != nil {
+		t.Fatal(err)
+	}
+	if puts != 1 {
+		t.Fatalf("PUTs = %d, want 1 for an empty last_refresh and a newer mtime", puts)
+	}
+}
+
+func TestCodexOAuthSyncPartialPutReportsUpdatedRows(t *testing.T) {
+	silenceCodexKeychain(t)
+	home := testenv.SetTempHome(t)
+	codexDir := filepath.Join(home, ".codex")
+	t.Setenv("CODEX_HOME", codexDir)
+	agent := codexSyncAgent(t, home)
+	writeCodexAuthFile(
+		t,
+		codexDir,
+		codexTestJWT(t, map[string]interface{}{"exp": 1893456000}),
+		"refresh-must-not-print",
+		"acct-example",
+		"2026-09-18T11:43:27.789Z",
+	)
+	const originalStamp = "2020-01-01T00:00:00Z"
+	saveCodexSyncState(t, agent, originalStamp, 1)
+
+	puts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/agents":
+			_ = json.NewEncoder(w).Encode(managedAgentListResponse{
+				Items: []managedAgentSummary{{
+					ID:                "agent-codex-1",
+					SessionSourceType: "codex",
+					SessionSourceID:   runtimePrincipalIDForAgent(agent),
+				}},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/ai-models":
+			_ = json.NewEncoder(w).Encode([]aiModelResponse{
+				codexSyncModel("model-alpha", "Example Alpha", "secret-a", "agent-codex-1"),
+				codexSyncModel("model-beta", "Example Beta", "secret-a", "agent-codex-1"),
+				codexSyncModel("model-gamma", "Example Gamma", "secret-b", "agent-codex-1"),
+			})
+		case r.Method == http.MethodPut:
+			puts++
+			if puts == 1 {
+				_, _ = w.Write([]byte(`{}`))
+				return
+			}
+			http.Error(w, "unavailable", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	restore := setCodexSyncFlags(t, server.URL)
+	defer restore()
+
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	err := runAgentsSyncCredentials(cmd, []string{"Codex CLI"})
+	if err == nil {
+		t.Fatal("expected the second PUT to fail")
+	}
+	text := out.String()
+	if !strings.Contains(text, "Example Alpha") || !strings.Contains(text, "Example Beta") {
+		t.Fatalf("partial success was not printed: %s", text)
+	}
+	if strings.Contains(text, "Example Gamma") {
+		t.Fatalf("failed group was reported as updated: %s", text)
+	}
+	if strings.Contains(text, "refresh-must-not-print") {
+		t.Fatalf("output printed token material: %s", text)
+	}
+	reloaded, loadErr := loadLocalEnrollmentState(agent)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if reloaded.CodexOAuthSyncedLastRefresh != originalStamp {
+		t.Fatalf("stamp advanced to %q", reloaded.CodexOAuthSyncedLastRefresh)
+	}
+	if strings.TrimSpace(reloaded.CodexOAuthSyncLastAttempt) == "" {
+		t.Fatal("failed push did not record an attempt")
+	}
+}
+
+func TestCodexOAuthSyncBackoffAndAttemptTimeout(t *testing.T) {
+	silenceCodexKeychain(t)
+	home := testenv.SetTempHome(t)
+	codexDir := filepath.Join(home, ".codex")
+	t.Setenv("CODEX_HOME", codexDir)
+	agent := codexSyncAgent(t, home)
+	writeCodexAuthFile(
+		t,
+		codexDir,
+		codexTestJWT(t, map[string]interface{}{"exp": 1893456000}),
+		"refresh-example-1",
+		"acct-example",
+		"2026-09-18T11:43:27.789Z",
+	)
+	saveCodexSyncState(t, agent, "2020-01-01T00:00:00Z", 1)
+	state, err := loadLocalEnrollmentState(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.CodexOAuthSyncLastAttempt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := saveLocalEnrollmentState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := 0
+	prevClient := newCodexOAuthSyncClient
+	newCodexOAuthSyncClient = func() (*api.Client, error) {
+		calls++
+		return nil, fmt.Errorf("opened")
+	}
+	t.Cleanup(func() { newCodexOAuthSyncClient = prevClient })
+
+	fresh, err := loadLocalEnrollmentState(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := syncCodexOAuthCredentials(agent, fresh, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Unchanged || calls != 0 {
+		t.Fatalf("backoff outcome=%+v calls=%d", outcome, calls)
+	}
+
+	forced, err := syncCodexOAuthCredentials(agent, fresh, true)
+	if err == nil || calls != 1 {
+		t.Fatalf("force err=%v calls=%d outcome=%+v", err, calls, forced)
+	}
+
+	fresh.CodexOAuthSyncLastAttempt = time.Now().Add(-2 * time.Minute).UTC().Format(time.RFC3339Nano)
+	if err := saveLocalEnrollmentState(fresh); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := loadLocalEnrollmentState(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := syncCodexOAuthCredentials(agent, retry, false); err == nil || calls != 2 {
+		t.Fatalf("expired backoff err=%v calls=%d", err, calls)
+	}
+
+	newCodexOAuthSyncClient = prevClient
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/agents":
+			_ = json.NewEncoder(w).Encode(managedAgentListResponse{
+				Items: []managedAgentSummary{{
+					ID:                "agent-codex-1",
+					SessionSourceType: "codex",
+					SessionSourceID:   runtimePrincipalIDForAgent(agent),
+				}},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/ai-models":
+			_ = json.NewEncoder(w).Encode([]aiModelResponse{
+				codexSyncModel("model-alpha", "Example Alpha", "secret-shared", "agent-codex-1"),
+			})
+		case r.Method == http.MethodPut:
+			select {
+			case <-r.Context().Done():
+			case <-time.After(20 * time.Second):
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	restore := setCodexSyncFlags(t, server.URL)
+	defer restore()
+	hung, err := loadLocalEnrollmentState(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hung.CodexOAuthSyncLastAttempt = ""
+	started := time.Now()
+	if _, err := syncCodexOAuthCredentials(agent, hung, false); err == nil {
+		t.Fatal("expected the hung PUT to fail")
+	}
+	if elapsed := time.Since(started); elapsed > 8*time.Second {
+		t.Fatalf("hung sync took %s, want under 8s", elapsed)
+	}
 }
 
 func codexSyncModel(id, name, secretID, agentID string) aiModelResponse {

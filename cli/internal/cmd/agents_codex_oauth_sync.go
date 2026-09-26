@@ -21,9 +21,17 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/zalando/go-keyring"
 
 	"github.com/preloop/preloop/cli/internal/api"
+)
+
+const (
+	// codexOAuthSyncAttemptTimeout bounds each sync request so a stalled API
+	// cannot hold a Codex permission decision for the client's 30s default.
+	codexOAuthSyncAttemptTimeout = 3 * time.Second
+	// codexOAuthSyncRetryAfter is how long the hook waits after a failed
+	// push before trying again.
+	codexOAuthSyncRetryAfter = time.Minute
 )
 
 // newCodexOAuthSyncClient builds the operator session used to PUT model
@@ -187,21 +195,28 @@ func syncCodexOAuthCredentials(
 	if !force && !bundle.Newer {
 		return codexOAuthSyncOutcome{Unchanged: true}, nil
 	}
+	if !force && codexOAuthSyncBackoffActive(state) {
+		return codexOAuthSyncOutcome{Unchanged: true}, nil
+	}
 	client, err := newCodexOAuthSyncClient()
 	if err != nil {
-		return codexOAuthSyncOutcome{}, fmt.Errorf("codex oauth sync: %w", err)
+		return recordCodexOAuthSyncFailure(state, fmt.Errorf("codex oauth sync: %w", err))
 	}
 	if client == nil || !client.IsAuthenticated() {
-		return codexOAuthSyncOutcome{}, fmt.Errorf(
+		return recordCodexOAuthSyncFailure(state, fmt.Errorf(
 			"codex oauth sync: CLI session is missing or stale; run preloop login",
-		)
+		))
 	}
+	client.SetTimeout(codexOAuthSyncAttemptTimeout)
 	updated, err := pushCodexOAuthBundle(client, agent, bundle.Credential.Payload())
 	if err != nil {
-		return codexOAuthSyncOutcome{}, err
+		outcome, failErr := recordCodexOAuthSyncFailure(state, err)
+		outcome.Updated = updated
+		return outcome, failErr
 	}
 	state.CodexOAuthSyncedLastRefresh = codexOAuthStampValue(bundle.Marker, bundle.MtimeNS)
 	state.CodexOAuthSyncedAuthMtimeNS = bundle.MtimeNS
+	state.CodexOAuthSyncLastAttempt = ""
 	if saveErr := saveLocalEnrollmentState(state); saveErr != nil {
 		return codexOAuthSyncOutcome{Updated: updated}, fmt.Errorf(
 			"codex oauth sync: credentials were pushed but the local stamp was not saved: %w",
@@ -280,6 +295,11 @@ func codexFileBundleNewer(stamp string, syncedMtime int64, marker string, mtimeN
 	if stamp == "" {
 		return true
 	}
+	// A re-login can rewrite auth.json without a last_refresh field. The
+	// newer mtime is the only signal that the local bundle changed.
+	if marker == "" {
+		return syncedMtime > 0 && mtimeNS > syncedMtime
+	}
 	if codexOAuthMarkerIsNewer(marker, stamp) {
 		return true
 	}
@@ -347,19 +367,26 @@ func defaultReadCodexKeychainOAuthForSync() (*codexOAuthCredential, string) {
 	if runtime.GOOS != "darwin" {
 		return nil, ""
 	}
-	account := computeCodexKeychainAccount(resolveCodexHomePath())
-	secret, err := keyring.Get("Codex Auth", account)
-	if err != nil || strings.TrimSpace(secret) == "" {
-		return nil, ""
+	return readCodexKeychainOAuthBundle()
+}
+
+func codexOAuthSyncBackoffActive(state *localEnrollmentState) bool {
+	if state == nil {
+		return false
 	}
-	cred := parseCodexOAuthCredentialBlob(
-		[]byte(secret),
-		time.Now().UTC().Add(time.Hour).UnixMilli(),
-	)
-	if cred == nil {
-		return nil, ""
+	attempted, ok := parseCodexOAuthRefreshTime(state.CodexOAuthSyncLastAttempt)
+	if !ok {
+		return false
 	}
-	return cred, codexOAuthLastRefreshFromJSON([]byte(secret))
+	return time.Since(attempted) < codexOAuthSyncRetryAfter
+}
+
+func recordCodexOAuthSyncFailure(state *localEnrollmentState, err error) (codexOAuthSyncOutcome, error) {
+	if state != nil {
+		state.CodexOAuthSyncLastAttempt = time.Now().UTC().Format(time.RFC3339Nano)
+		_ = saveLocalEnrollmentState(state)
+	}
+	return codexOAuthSyncOutcome{}, err
 }
 
 func pushCodexOAuthBundle(
@@ -390,7 +417,7 @@ func pushCodexOAuthBundle(
 		var response aiModelResponse
 		path := "/api/v1/ai-models/" + url.PathEscape(strings.TrimSpace(target.ID))
 		if err := client.Put(path, body, &response); err != nil {
-			return nil, fmt.Errorf(
+			return updated, fmt.Errorf(
 				"codex oauth sync: update model %s: %w",
 				strings.TrimSpace(target.ID),
 				err,
@@ -480,6 +507,18 @@ func annotateCodexOAuth401Summary(agent AgentConfig, credentialType, summary str
 		return summary
 	}
 	return summary + " " + codexOAuthSyncRemedy
+}
+
+// displayedValidationValue rewrites the Codex 401 lines validate prints,
+// using the credential type stored on the result. API-key rows keep their
+// original text.
+func displayedValidationValue(agent AgentConfig, result map[string]interface{}, key string, value interface{}) interface{} {
+	text, ok := value.(string)
+	if !ok || (key != "model_summary" && key != "error") {
+		return value
+	}
+	credType, _ := result["model_credential_type"].(string)
+	return annotateCodexOAuth401Summary(agent, credType, text)
 }
 
 func codexOAuthSummaryLooksLike401(summary string) bool {
