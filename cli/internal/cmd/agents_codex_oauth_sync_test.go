@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -729,7 +730,9 @@ func TestSaveLocalEnrollmentStateReplacesAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows reports no Unix permission bits, so Stat comes back as 0666
+	// even after Chmod 0600.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %o", info.Mode().Perm())
 	}
 	matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".enrollment-*.json"))
