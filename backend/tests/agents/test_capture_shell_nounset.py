@@ -9,6 +9,7 @@ the ``PRELOOP_PR_OPENED`` line never printed. The older harness in
 the bug passed CI.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -145,23 +146,86 @@ def test_capture_shell_201_prints_marker_under_nounset(
     ],
     ids=["github", "gitlab"],
 )
+@pytest.mark.parametrize("flags", [("-u",), ("-euo", "pipefail")], ids=["u", "euo"])
 def test_capture_shell_no_url_fallback_prints_marker_under_nounset(
-    tmp_path, build, response, lookup, url
+    tmp_path, build, response, lookup, url, flags
 ):
-    completed = _run(tmp_path, build(), response=response, lookup=lookup)
+    """The harness runs this block under ``set -euo pipefail``: a grep with
+    no match on the create response must not end it before the lookup."""
+    completed = _run(tmp_path, build(), response=response, lookup=lookup, flags=flags)
     assert completed.returncode == 0, completed.stderr
     assert "unbound variable" not in completed.stderr
     assert [m["url"] for m in _markers(completed.stdout)] == [url]
 
 
 @pytest.mark.parametrize("build", [_github, _gitlab], ids=["github", "gitlab"])
-def test_capture_shell_nothing_resolved_runs_clean_under_nounset(tmp_path, build):
+@pytest.mark.parametrize("flags", [("-u",), ("-euo", "pipefail")], ids=["u", "euo"])
+def test_capture_shell_nothing_resolved_runs_clean_under_nounset(
+    tmp_path, build, flags
+):
     completed = _run(
-        tmp_path, build(), response='{"message":"Bad credentials"}', lookup="[]"
+        tmp_path,
+        build(),
+        response='{"message":"Bad credentials"}',
+        lookup="[]",
+        flags=flags,
     )
     assert completed.returncode == 0, completed.stderr
     assert "unbound variable" not in completed.stderr
     assert _markers(completed.stdout) == []
+    assert "could be resolved for branch" in completed.stdout
+
+
+def _existing_github_pr(body="Existing body"):
+    return json.dumps(
+        [
+            {
+                "number": 7,
+                "html_url": "https://github.com/acme/app/pull/7",
+                "head": {"ref": BRANCH},
+                "body": body,
+            }
+        ]
+    )
+
+
+def test_fallback_provenance_failure_is_recorded_not_fatal_under_errexit(tmp_path):
+    """The body-update script exits 2 when provenance is skipped. Under
+    ``set -e`` a bare call aborted the block before ``py_status`` was read;
+    now the failure is recorded and disclosed and the block finishes."""
+    script = _github(
+        execution_link="https://preloop.example/console/flows/executions/not-a-uuid"
+    )
+    completed = _run(
+        tmp_path,
+        script,
+        response='{"message":"A pull request already exists"}',
+        lookup=_existing_github_pr(),
+        flags=("-euo", "pipefail"),
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "existing pull request body was left unchanged" in completed.stderr
+    assert _markers(completed.stdout) == []
+
+
+def test_fallback_body_update_then_marker_under_errexit(tmp_path):
+    script = _github(
+        execution_link=(
+            "https://preloop.example/console/flows/executions/"
+            "0976028b-ee59-4fc6-a38a-a770cfdc800a"
+        )
+    )
+    completed = _run(
+        tmp_path,
+        script,
+        response='{"message":"A pull request already exists"}',
+        lookup=_existing_github_pr(),
+        flags=("-euo", "pipefail"),
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert [m["url"] for m in _markers(completed.stdout)] == [
+        "https://github.com/acme/app/pull/7"
+    ]
 
 
 def test_capture_shell_201_with_execution_link_prints_marker(tmp_path):
