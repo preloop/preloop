@@ -33,6 +33,17 @@ UNDICI_PURL = "pkg:npm/undici-types@7.16.0"
 LODASH_PURL = "pkg:npm/lodash.camelcase@4.3.0"
 
 
+def _document_identity(document_id: str) -> tuple[str, int]:
+    """Return ``(product version, document version)`` from an OpenVEX ``@id``."""
+    prefix = "https://preloop.ai/vex/preloop-frontend-"
+    if not document_id.startswith(prefix):
+        raise AssertionError(document_id)
+    product_version, separator, raw_version = document_id[len(prefix) :].rpartition("-")
+    if not separator or not product_version or not raw_version.isdigit():
+        raise AssertionError(document_id)
+    return product_version, int(raw_version)
+
+
 def _load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -91,11 +102,30 @@ class FrontendOpenVexTest(unittest.TestCase):
         self.assertIn("shipped execute path", statement["impact_statement"])
 
     def test_checked_in_document_matches_the_generator(self) -> None:
+        """Compare against the product version already in the document id.
+
+        Regeneration stamps the live ``VERSION`` file. This check passes
+        that stamped version back in, so a later ``VERSION`` bump does not
+        fail CI before someone regenerates the document. The npm package
+        pins are still verified against the lockfile.
+        """
         document = _load(FRONTEND_VEX)
+        product_version, document_version = _document_identity(document["@id"])
         rebuilt = generate_vex.build_frontend_document(
-            document["timestamp"], document["version"]
+            document["timestamp"],
+            document_version,
+            product_version=product_version,
         )
         self.assertEqual(rebuilt, document)
+        self.assertEqual(document_version, document["version"])
+
+    def test_generator_defaults_product_version_to_the_version_file(self) -> None:
+        document = generate_vex.build_frontend_document("2026-09-27T00:00:00Z", 1)
+        expected = generate_vex.read_product_version()
+        self.assertEqual(
+            document["@id"],
+            f"https://preloop.ai/vex/preloop-frontend-{expected}-1",
+        )
 
     def test_release_workflow_attaches_every_vex_document(self) -> None:
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")

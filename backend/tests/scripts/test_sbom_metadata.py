@@ -416,6 +416,42 @@ class SupplierDerivationTest(unittest.TestCase):
             }
         )
 
+    def test_types_only_skips_a_different_installed_version(self) -> None:
+        root = self._tmp()
+        modules = root / "node_modules"
+        self._write_npm(modules / "undici-types", "undici-types")
+        manifest = modules / "undici-types" / "package.json"
+        body = json.loads(manifest.read_text(encoding="utf-8"))
+        body["version"] = "9.9.9"
+        manifest.write_text(json.dumps(body), encoding="utf-8")
+        (modules / "undici-types" / "index.d.ts").write_text(
+            "export {}", encoding="utf-8"
+        )
+        index = sbom_metadata.MetadataIndex([], [modules])
+        component = _component("undici-types", "pkg:npm/undici-types@1.2.3")
+        sbom_metadata.stamp_types_only({"components": [component]}, index)
+        self.assertIsNone(_property(component))
+
+    def test_types_only_skips_shebang_and_executable_files(self) -> None:
+        root = self._tmp()
+        modules = root / "node_modules"
+        self._write_npm(modules / "shebang-types", "shebang-types")
+        cli = modules / "shebang-types" / "cli"
+        cli.write_text("#!/usr/bin/env node\nconsole.log(1)\n", encoding="utf-8")
+        self._write_npm(modules / "mode-types", "mode-types")
+        tool = modules / "mode-types" / "tool"
+        tool.write_text("echo hi\n", encoding="utf-8")
+        tool.chmod(0o755)
+        index = sbom_metadata.MetadataIndex([], [modules])
+        shebang = _component("shebang-types", "pkg:npm/shebang-types@1.2.3")
+        executable = _component("mode-types", "pkg:npm/mode-types@1.2.3")
+        sbom_metadata.stamp_types_only(
+            {"components": [shebang, executable]},
+            index,
+        )
+        self.assertIsNone(_property(shebang))
+        self.assertIsNone(_property(executable))
+
     def _tmp(self) -> Path:
         from tempfile import TemporaryDirectory
 

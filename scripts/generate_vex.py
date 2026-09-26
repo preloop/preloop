@@ -286,19 +286,28 @@ def _statement(
     }
 
 
-def build_frontend_document(timestamp: str, version: int) -> dict[str, Any]:
+def build_frontend_document(
+    timestamp: str,
+    version: int,
+    product_version: str | None = None,
+) -> dict[str, Any]:
     """Build the frontend OpenVEX document.
 
     Args:
         timestamp: RFC 3339 timestamp stamped on the document and statements.
         version: OpenVEX document version. Must not go backwards.
+        product_version: Product version embedded in the document id.
+            Defaults to the ``VERSION`` file. A parity test passes the
+            version already stamped on the checked-in document so a later
+            bump of ``VERSION`` does not fail CI before regeneration.
 
     Returns:
         An OpenVEX 0.2.0 document. ``undici-types`` statements use
         ``vulnerable_code_not_present``. The ``lodash.camelcase`` statement
         uses ``vulnerable_code_not_in_execute_path``.
     """
-    product_version = read_product_version()
+    if product_version is None:
+        product_version = read_product_version()
     undici_version = require_npm_version(UNDICI_TYPES_PACKAGE, UNDICI_TYPES_VERSION)
     lodash_version = require_npm_version(
         LODASH_CAMELCASE_PACKAGE, LODASH_CAMELCASE_VERSION

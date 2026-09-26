@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stamp manufacturer metadata onto CycloneDX SBOMs and measure their quality.
 
-Two jobs, both driven by the NTIA minimum elements:
+Three jobs. The first two are driven by the NTIA minimum elements:
 
 1. Fill the fields the generators leave empty. syft and the CycloneDX
    generators emit ``metadata.authors: null`` and no ``metadata.supplier``,
@@ -409,11 +409,38 @@ def is_types_package_name(name: str) -> bool:
     return len(leaf) > len("-types") and leaf.endswith("-types")
 
 
+def _is_runtime_file(path: Path) -> bool:
+    """True when ``path`` can carry executable or runtime code.
+
+    Declaration files are ignored. A known runtime suffix, an executable
+    bit, or a ``#!`` prefix all count. An unreadable file counts too, so a
+    types-only stamp is never a guess.
+    """
+    lowered = path.name.lower()
+    if lowered.endswith(_DECLARATION_SUFFIXES):
+        return False
+    if path.suffix.lower() in _RUNTIME_SUFFIXES:
+        return True
+    try:
+        mode = path.stat().st_mode
+    except OSError:
+        return True
+    if mode & 0o111:
+        return True
+    try:
+        with path.open("rb") as handle:
+            prefix = handle.read(2)
+    except OSError:
+        return True
+    return prefix == b"#!"
+
+
 def directory_has_runtime_file(root: Path) -> bool:
     """True when ``root`` contains a file other than a TypeScript declaration.
 
     Nested ``node_modules`` are ignored. A missing directory is treated as
-    having runtime files so a types-only stamp is never a guess.
+    having runtime files so a types-only stamp is never a guess. Extensionless
+    files count when they are executable or start with a shebang.
 
     Args:
         root: Installed package directory.
@@ -426,21 +453,31 @@ def directory_has_runtime_file(root: Path) -> bool:
     for _current, dirnames, filenames in os.walk(root):
         dirnames[:] = [name for name in dirnames if name != "node_modules"]
         for filename in filenames:
-            lowered = filename.lower()
-            if lowered.endswith(_DECLARATION_SUFFIXES):
-                continue
-            if Path(lowered).suffix in _RUNTIME_SUFFIXES:
+            if _is_runtime_file(Path(_current) / filename):
                 return True
     return False
+
+
+def manifest_version(manifest: Path) -> str | None:
+    """Return the ``version`` field of a ``package.json``, if it is a string."""
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    version = data.get("version") if isinstance(data, dict) else None
+    if isinstance(version, str) and version.strip():
+        return version.strip()
+    return None
 
 
 def stamp_types_only(document: dict[str, Any], index: MetadataIndex) -> None:
     """Mark npm declaration packages that contain no runtime files.
 
     The property is ``preloop:types_only`` = ``true``. It is set only when
-    the purl names an ``@types/*`` or ``*-types`` package and the installed
-    directory has no runtime file. A package that is not on disk is left
-    unmarked.
+    the purl names an ``@types/*`` or ``*-types`` package, the installed
+    directory has no runtime file, and the installed ``package.json``
+    version matches the component version when both are present. A package
+    that is not on disk, or whose installed version differs, is left unmarked.
 
     Args:
         document: CycloneDX document being stamped.
@@ -456,6 +493,15 @@ def stamp_types_only(document: dict[str, Any], index: MetadataIndex) -> None:
             continue
         manifest = index.npm_manifest(purl_name)
         if manifest is None:
+            continue
+        installed = manifest_version(manifest)
+        component_version = component.get("version")
+        if (
+            isinstance(component_version, str)
+            and component_version.strip()
+            and installed is not None
+            and installed != component_version.strip()
+        ):
             continue
         if directory_has_runtime_file(manifest.parent):
             continue
