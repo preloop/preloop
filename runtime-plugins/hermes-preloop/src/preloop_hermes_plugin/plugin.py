@@ -11,7 +11,7 @@ import threading
 from collections.abc import Coroutine
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 from urllib import parse, request
 from uuid import uuid4
 
@@ -176,6 +176,7 @@ class HermesPreloopPlugin:
 
     def capabilities(self) -> AgentControlCapabilities:
         """Advertise the Hermes control surface exposed by this plugin."""
+        desktop, desktop_display = read_desktop_capability()
         return AgentControlCapabilities(
             supports_new_session=True,
             supports_existing_session=True,
@@ -183,6 +184,8 @@ class HermesPreloopPlugin:
             supports_voice=True,
             supports_interrupt=True,
             supports_tool_approval=True,
+            desktop=desktop,
+            desktop_display=desktop_display,
         )
 
     async def start(self, hermes_runtime: Any | None = None) -> AgentControlClient:
@@ -641,6 +644,34 @@ plugin = HermesPreloopPlugin()
 def register(ctx: Any) -> None:
     """Module-level entry point Hermes can call to wire plugin hooks."""
     plugin.register(ctx)
+
+
+def read_desktop_capability() -> tuple[Literal["vnc", "none"], str | None]:
+    """Report a loopback Preloop desktop without sending secret material.
+
+    Reads ``$PRELOOP_DESKTOP_FILE`` or ``~/.preloop/desktop.json``. A parsed
+    object whose ``vnc.host`` is exactly ``127.0.0.1`` yields ``"vnc"`` and
+    the manifest ``display`` string. Every other case yields ``"none"``.
+    The VNC password file is never opened, and host, port, auth, and browser
+    are not returned.
+
+    Returns:
+        ``("vnc", display)`` or ``("none", None)``.
+    """
+    override = os.environ.get("PRELOOP_DESKTOP_FILE", "").strip()
+    path = Path(override) if override else Path.home() / ".preloop" / "desktop.json"
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return "none", None
+    if not isinstance(document, dict):
+        return "none", None
+    vnc = document.get("vnc")
+    if not isinstance(vnc, dict) or vnc.get("host") != "127.0.0.1":
+        return "none", None
+    display = document.get("display")
+    desktop_display = display if isinstance(display, str) and display else None
+    return "vnc", desktop_display
 
 
 def _env_presence(name: str) -> str:

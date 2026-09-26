@@ -1,0 +1,91 @@
+{
+  "row_domain": "preloop.audit.chain/v1\n",
+  "cases": [
+    {
+      "name": "zero_and_one",
+      "payload": {
+        "budget": {
+          "flow_current_spend_usd": 0.0,
+          "estimated_request_cost_usd": 1.0,
+          "nested": null
+        }
+      },
+      "canonical": "{\"budget\":{\"estimated_request_cost_usd\":1.0,\"flow_current_spend_usd\":0.0,\"nested\":null}}",
+      "sha256": "0d8d80b1a6f8bd4cb29d43b9add594c6121b5720b331d9fc0d5ee0180ca93c22"
+    },
+    {
+      "name": "small_and_scientific",
+      "payload": {
+        "values": [
+          0.000123,
+          1e-05,
+          123456789.5,
+          -1.5,
+          -0.0
+        ]
+      },
+      "canonical": "{\"values\":[0.000123,1e-05,123456789.5,-1.5,-0.0]}",
+      "sha256": "49b71cf48a504453e2aa5cf10595ff156a598f89862a961bcd3f6083365a7639"
+    },
+    {
+      "name": "integers",
+      "payload": {
+        "n": [
+          0,
+          1,
+          -2,
+          1000
+        ]
+      },
+      "canonical": "{\"n\":[0,1,-2,1000]}",
+      "sha256": "c60c6eae4009d7dfb2af69c622d3fe52b66704a05110ef8d4da90a53d3238681"
+    },
+    {
+      "name": "nested_nulls",
+      "payload": {
+        "details": {
+          "budget": {
+            "cap": null,
+            "inner": {}
+          },
+          "tags": []
+        }
+      },
+      "canonical": "{\"details\":{\"budget\":{\"cap\":null,\"inner\":{}},\"tags\":[]}}",
+      "sha256": "0bd22802e0fca64e918310c41ed3c93b9ef98cbc7d86c72681760a0cee5e3a1e"
+    },
+    {
+      "name": "unicode_and_html",
+      "payload": {
+        "note": "héllo → ✓",
+        "emoji": "🔐",
+        "html": "<a>&amp;</a>",
+        "é": 1,
+        "a": 2,
+        "β": 3
+      },
+      "canonical": "{\"a\":2,\"emoji\":\"🔐\",\"html\":\"<a>&amp;</a>\",\"note\":\"héllo → ✓\",\"é\":1,\"β\":3}",
+      "sha256": "191a446bc6a0c1d843d8dd3e473e4e65355fbaf5c25ce9b43d54e42b61fac4c5"
+    },
+    {
+      "name": "empty",
+      "payload": {},
+      "canonical": "{}",
+      "sha256": "e4d65b9dd03fd30491829b18838801d9c28ffb247da638f7c565170c0eb84795"
+    },
+    {
+      "name": "array_only_via_wrap",
+      "payload": {
+        "items": [
+          {},
+          [],
+          null,
+          true,
+          false
+        ]
+      },
+      "canonical": "{\"items\":[{},[],null,true,false]}",
+      "sha256": "74abbdd54dc4ed24edfa02fe91cbb1c613270849f380446d46016fffdae9ed2e"
+    }
+  ]
+}

@@ -235,7 +235,8 @@ audit of the reshaped file that reads as an audit of their build.
 
 This schema has no top-level `status` field. Completion is the
 `verdict`. Artifacts: `audit_report` (`evidence/audit-report.md`),
-`findings` (`evidence/findings.json`).
+`findings` (`evidence/findings.json`). The execution page Report tab reads
+those `evidence/` paths from the pack.
 
 ### `preloop.cra.vulnscan/v1` (SBOM Exploit Check)
 
@@ -379,6 +380,8 @@ method", never "zero vulnerabilities".
 
 Artifacts: `findings` (`evidence/findings.json`), `source_matrix`
 (`evidence/source-matrix.json`), `report` (`evidence/vuln-report.md`).
+The Report tab uses package, CVSS, KEV, fix and VEX columns when the
+findings carry them.
 
 ### `preloop.cra.releaseaudit/v1` (Release Security Audit)
 
@@ -913,14 +916,17 @@ The persist boundary now rewrites the label and records what it did:
 
 Two limits make this safe to rely on:
 
-- **Only the label moves.** `valid`, `minimum_elements`, `coverage`,
-  `license_flags`, the findings and the gate are exactly as the agent
-  wrote them. The platform re-derives a word, never a measurement.
-- **Only upwards.** A correction may make the verdict more severe and
-  never less. `pass` to `pass_with_findings` and anything to `fail` are
-  applied; `fail` to `pass` is refused and the result still fails
-  closed, because that direction is the platform clearing a release it
-  was handed as denied.
+- **The verdict label only moves toward more severe.** `coverage`,
+  `license_flags`, the findings and the gate stay as the agent wrote
+  them. `minimum_elements` is replaced only when the platform measured
+  the delivered bytes and the agent's `passed: true` contradicts that
+  measurement (see below). `counts_by_severity` is replaced only when
+  it disagrees with the findings list.
+- **Never less severe.** `pass` to `pass_with_findings` and anything to
+  `fail` are applied; `fail` to `pass` is refused and the result still
+  fails closed, because that direction is the platform clearing a
+  release it was handed as denied. An agent who already failed minimum
+  elements keeps that claim.
 
 The corrected result is then re-validated in full. If anything else in
 the contract is also wrong, the run fails closed exactly as before, with
@@ -928,6 +934,64 @@ the raw document under `result.raw`. Presets are not told about this:
 the contract still requires the agent to write the correct verdict, and
 the repair exists so one enum does not cost a complete, digest-verified
 audit.
+
+## What our own SBOMs carry
+
+The release SBOMs (`scripts/generate_sbom.sh`, stamped by
+`scripts/sbom_metadata.py`) set a supplier on each component, not only on
+the document. The name comes from installed Python `METADATA` (author, then
+maintainer, then `pyproject.toml` in that wheel), from `package.json`
+(`author`, `maintainers`, `contributors`, then the npm scope), or from a module or repository path (`The Go Authors` for `std` and
+`golang.org/x`, the GitHub org, or host plus first path segment). The
+path rule also applies to an npm `repository` field or a repository URL
+already on the component when no person and no scope are present.
+`author` is left as author. Each
+derived component records `preloop:supplier_source`
+(`package_metadata_author`, `package_metadata_maintainer`, `npm_scope`,
+`module_path`, `manual_override`, or `unresolved`). `manual_override` is a
+checked-in name for a distribution whose files name no person and no
+repository. The `sbom` job fails when
+`python -m preloop.cra measure` reports `passed: false`.
+
+OpenVEX for the CLI lives in `security/vex/preloop-cli.openvex.json` and is
+copied into the SBOM artifact and the GitHub release next to the CycloneDX
+files.
+
+## What the platform measures itself
+
+`minimum_elements` on an SBOM audit used to be the agent's own claim. The
+platform now measures the delivered SBOM bytes (CycloneDX 1.4 to 1.6 and
+SPDX 2.2 and 2.3, including gzip) and stores that object on the result as
+`minimum_elements_measured` (on the nested `sbom_audit` for a release
+audit). The denominator is every component except the document's root
+product. A supplier is `supplier.name` (SPDX: `supplier` other than
+`NOASSERTION`). Author, authors, publisher and manufacturer are counted
+separately and do not satisfy supplier. A unique identifier is a purl or
+a CPE.
+
+If the agent reports `passed: true` and the measurement finds missing
+elements, the platform replaces `minimum_elements` with the measured
+object, keeps the agent's claim on `verdict_corrected`, and lets the
+existing verdict floor move the label to `fail`. That replacement is the
+measurement of the delivered bytes becoming the authority. The agent's
+field was a claim, not a measurement the platform is rewriting. If the
+agent is already stricter than the measurement, the agent's value stays.
+If no SBOM seeds are reachable, the platform does not guess: the same key
+records why measurement was skipped, and the rest of the contract behaves
+as before.
+
+`counts_by_severity` is arithmetic over the findings list the agent
+submitted. When that aggregate is the only contract failure, the platform
+recomputes it, records each key as reported versus derived on
+`verdict_corrected`, and re-validates in full. Findings are not edited.
+A count mismatch together with any other failure still fails closed, and
+the other failure is what is reported. An agent's evidence-pack prose that
+repeats the wrong number is left as the agent wrote it.
+
+A run is never made less severe by the platform. Corrections move a
+verdict toward `fail`, replace a passing minimum-elements claim that the
+bytes contradict, or replace an aggregate that does not match the
+findings. They do not clear a release the agent denied.
 
 ## CI runbook
 

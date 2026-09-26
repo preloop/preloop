@@ -21,7 +21,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import posixpath
 import tarfile
+from pathlib import PurePosixPath
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 from urllib.parse import urlsplit
@@ -658,6 +660,195 @@ def accept_evidence_archive(
             "controller digest"
         )
     return None
+
+
+# One member read is for the console, not a second copy of the pack. 8 MiB
+# covers the reports and findings ledgers these presets write. Larger members
+# stay on the full archive download.
+EVIDENCE_MEMBER_READ_MAX_BYTES = 8 * 1024 * 1024
+
+
+class EvidenceMemberError(Exception):
+    """A single pack member cannot be served."""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
+def member_content_type(name: str) -> str:
+    """Content type for a manifest member the console may render or download.
+
+    Args:
+        name: Archive member path.
+
+    Returns:
+        A media type. Markdown, JSON and plain text are named. Anything else
+        is an opaque download.
+    """
+    suffix = PurePosixPath(name).suffix.lower()
+    if suffix in {".md", ".markdown"}:
+        return "text/markdown; charset=utf-8"
+    if suffix == ".json":
+        return "application/json"
+    if suffix in {".txt", ".log"}:
+        return "text/plain; charset=utf-8"
+    return "application/octet-stream"
+
+
+def normalize_member_path(path: str) -> str:
+    """Reject a member path that is not a relative manifest name.
+
+    Args:
+        path: Caller-supplied member path.
+
+    Returns:
+        The same path when every segment is a normal relative name.
+
+    Raises:
+        EvidenceMemberError: The path is absolute, empty, or walks upward.
+    """
+    if not isinstance(path, str) or path == "" or path.strip() != path:
+        raise EvidenceMemberError(400, "Evidence member path is not allowed")
+    # Header values are latin-1. A CR, LF, or non-ASCII name becomes a 500
+    # when it is copied into X-Preloop-Evidence-Member or Content-Disposition.
+    if any(ord(ch) < 0x20 or ord(ch) > 0x7E for ch in path):
+        raise EvidenceMemberError(400, "Evidence member path is not allowed")
+    if "\\" in path or path.startswith("/") or ":" in path:
+        raise EvidenceMemberError(400, "Evidence member path is not allowed")
+    parts = path.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise EvidenceMemberError(400, "Evidence member path is not allowed")
+    normalized = posixpath.normpath(path)
+    if normalized != path or normalized.startswith("../") or normalized == "..":
+        raise EvidenceMemberError(400, "Evidence member path is not allowed")
+    return path
+
+
+def _manifest_member_index(archive: bytes) -> dict[str, dict[str, Any]]:
+    """Manifest members keyed by name, or an error when there is no manifest."""
+    try:
+        manifest = read_pack_manifest(archive)
+    except EvidencePackError as exc:
+        raise EvidenceMemberError(
+            409, "Evidence pack manifest is not readable"
+        ) from exc
+    if manifest is None:
+        raise EvidenceMemberError(
+            409,
+            "This evidence pack has no manifest, so individual members cannot be read",
+        )
+    listed_raw = manifest.get("members")
+    if not isinstance(listed_raw, list):
+        raise EvidenceMemberError(409, "Evidence pack manifest lists no members")
+    listed: dict[str, dict[str, Any]] = {}
+    for entry in listed_raw:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            raise EvidenceMemberError(
+                409, "Evidence pack manifest has an invalid member"
+            )
+        listed[entry["name"]] = entry
+    return listed
+
+
+def list_evidence_members(archive: bytes) -> list[dict[str, Any]]:
+    """List manifest members with size, digest and content type.
+
+    Args:
+        archive: Verified evidence gzip body.
+
+    Returns:
+        One dict per manifest member, in manifest order.
+
+    Raises:
+        EvidenceMemberError: The pack has no usable manifest.
+    """
+    listed = _manifest_member_index(archive)
+    members: list[dict[str, Any]] = []
+    for name, entry in listed.items():
+        size = entry.get("size_bytes")
+        digest = entry.get("sha256")
+        members.append(
+            {
+                "path": name,
+                "size_bytes": size if isinstance(size, int) else None,
+                "sha256": digest if isinstance(digest, str) else None,
+                "content_type": member_content_type(name),
+            }
+        )
+    return members
+
+
+def _reject_oversize(size: int) -> None:
+    if size > EVIDENCE_MEMBER_READ_MAX_BYTES:
+        raise EvidenceMemberError(
+            413,
+            "Evidence member exceeds the 8 MiB read limit",
+        )
+
+
+def read_evidence_member(archive: bytes, path: str) -> tuple[bytes, dict[str, Any]]:
+    """Read one manifest-listed member and check it against that listing.
+
+    Args:
+        archive: Verified evidence gzip body.
+        path: Member path from the caller.
+
+    Returns:
+        The member bytes and a description (path, size, sha256, content type).
+
+    Raises:
+        EvidenceMemberError: The path is unsafe, unlisted, oversized, or its
+            bytes do not match the manifest.
+    """
+    safe = normalize_member_path(path)
+    listed = _manifest_member_index(archive)
+    entry = listed.get(safe)
+    if entry is None:
+        raise EvidenceMemberError(404, "Evidence member is not in the manifest")
+    declared = entry.get("size_bytes")
+    if isinstance(declared, int):
+        _reject_oversize(declared)
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+            try:
+                member = tar.getmember(safe)
+            except KeyError as exc:
+                raise EvidenceMemberError(
+                    404, "Evidence member is not in the archive"
+                ) from exc
+            if (
+                member.name != safe
+                or not member.isfile()
+                or member.issym()
+                or member.islnk()
+            ):
+                raise EvidenceMemberError(400, "Evidence member path is not allowed")
+            _reject_oversize(int(member.size))
+            source = tar.extractfile(member)
+            if source is None:
+                raise EvidenceMemberError(409, "Evidence member is not readable")
+            body = source.read(EVIDENCE_MEMBER_READ_MAX_BYTES + 1)
+    except (tarfile.TarError, OSError) as exc:
+        raise EvidenceMemberError(409, "Evidence archive is corrupt") from exc
+    _reject_oversize(len(body))
+    digest = hashlib.sha256(body).hexdigest()
+    expected = entry.get("sha256")
+    if isinstance(expected, str) and expected and digest != expected:
+        raise EvidenceMemberError(
+            409, "Evidence member does not match its manifest digest"
+        )
+    if isinstance(declared, int) and declared != len(body):
+        raise EvidenceMemberError(
+            409, "Evidence member does not match its manifest size"
+        )
+    return body, {
+        "path": safe,
+        "size_bytes": len(body),
+        "sha256": digest,
+        "content_type": member_content_type(safe),
+    }
 
 
 def same_origin(left: str, right: str) -> bool:

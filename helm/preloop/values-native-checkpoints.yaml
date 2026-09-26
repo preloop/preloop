@@ -9,6 +9,11 @@
 extraEnv:
   - name: FLOW_ARTIFACT_DIRECT_UPLOAD
     value: "true"
+  # Direct upload is on, so refuse the pod-log plaintext channel. A job
+  # that does not receive an upload token fails closed instead of emitting
+  # base64. Chart defaults leave FLOW_EVIDENCE_LOG_PLAINTEXT unset (true).
+  - name: FLOW_EVIDENCE_LOG_PLAINTEXT
+    value: "false"
   # Both workspace and native archive uploads use this compressed-byte cap.
   # 64 MiB stays below the accompanying ingress/console limit of 80 MiB.
   - name: WORKSPACE_SNAPSHOT_MAX_BYTES

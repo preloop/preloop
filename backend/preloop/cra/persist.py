@@ -9,6 +9,7 @@ Non-CRA JSON is unchanged.
 
 from __future__ import annotations
 
+import copy
 import logging
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
@@ -18,11 +19,24 @@ from preloop.cra.schemas import (
     CAPTURE_ERROR_CODES,
     INVALID_ERROR,
     MISSING_ERROR,
+    SCHEMA_RELEASEAUDIT_V1,
+    SCHEMA_SBOMAUDIT_V1,
     UNSUPPORTED_ERROR,
     expected_cra_schema_from_prompt,
     is_cra_schema_id,
 )
-from preloop.cra.repair import corrections_summary, verdict_corrections
+from preloop.cra.repair import (
+    apply_derived_severity_counts,
+    apply_measured_minimum_elements,
+    corrections_summary,
+    failures_are_only_counts,
+    verdict_corrections,
+)
+from preloop.cra.sbom_measure import (
+    copy_measurement,
+    measure_trigger,
+    place_measurement,
+)
 from preloop.cra.validate import (
     AUTHORITY_OFFLINE,
     AUTHORITY_REQUIRED,
@@ -320,37 +334,49 @@ def apply_cra_persist_boundary(
             persisted = dict(payload)
         return CraPersistDecision(artifact=persisted, validation=validation)
 
-    if validation.ok:
-        persisted = dict(payload) if isinstance(payload, Mapping) else payload
+    candidate = _candidate_with_measurement(payload, trigger_payload)
+    candidate, element_corrections = apply_measured_minimum_elements(candidate)
+    count_corrections: list[Any] = []
+    # Counts are repaired only when they are the whole failure. Any other
+    # contract failure still fails closed, and is what the operator sees.
+    if not validation.ok and failures_are_only_counts(validation.failures):
+        candidate, count_corrections = apply_derived_severity_counts(candidate)
+
+    verdict_list: list[Any] = []
+    schema = payload.get("schema") if isinstance(payload, Mapping) else None
+    if schema in (SCHEMA_SBOMAUDIT_V1, SCHEMA_RELEASEAUDIT_V1) and (
+        not validation.ok or element_corrections or count_corrections
+    ):
+        candidate, verdict_list = verdict_corrections(candidate)
+
+    corrections = [*element_corrections, *count_corrections, *verdict_list]
+    if corrections:
+        # Re-validated in full. The run is saved only when the whole contract
+        # then passes. Receipts and evidence packs are built from this object
+        # later, so they bind the corrected result.
+        revalidated = _validate(candidate)
+        if revalidated.ok:
+            revalidated.advisories.append(
+                "verdict corrected by the platform: " + corrections_summary(corrections)
+            )
+            logger.warning(
+                "CRA result %s corrected at persist: %s",
+                revalidated.schema_id,
+                corrections_summary(corrections),
+            )
+            return CraPersistDecision(artifact=candidate, validation=revalidated)
+        reported = revalidated
+    elif validation.ok:
         if validation.advisories:
             logger.info(
                 "CRA result %s coverage advisories: %s",
                 validation.schema_id,
                 "; ".join(validation.advisories),
             )
+        persisted = candidate if isinstance(candidate, dict) else payload
         return CraPersistDecision(artifact=persisted, validation=validation)
-
-    # A complete audit whose only defect is a verdict label the platform can
-    # derive is corrected and recorded, not discarded (dogfood round 2, P6).
-    # The correction is re-validated in full: it is allowed to save the run
-    # only if the whole contract then passes.
-    reported = validation
-    candidate, corrections = verdict_corrections(payload)
-    if corrections:
-        revalidated = _validate(candidate)
-        if revalidated.ok:
-            revalidated.advisories.append(
-                f"verdict corrected by the platform: {corrections_summary(corrections)}"
-            )
-            logger.warning(
-                "CRA result %s verdict corrected at persist: %s",
-                revalidated.schema_id,
-                corrections_summary(corrections),
-            )
-            return CraPersistDecision(artifact=candidate, validation=revalidated)
-        # The label moved; report what still fails on the corrected copy so
-        # the operator is not sent after a verdict the platform already fixed.
-        reported = revalidated
+    else:
+        reported = validation
 
     safe_failures = failure_strings(reported.failures)
     joined = " ".join(safe_failures).lower()
@@ -361,8 +387,26 @@ def apply_cra_persist_boundary(
     else:
         error = INVALID_ERROR
     wrapped = wrap_invalid_cra_result(payload, reported.failures, error=error)
+    copy_measurement(candidate, wrapped)
     logger.warning("CRA persist failed closed: %s", wrapped.get("detail"))
     return CraPersistDecision(artifact=wrapped, validation=reported)
+
+
+def _candidate_with_measurement(payload: Any, trigger_payload: Any) -> Any:
+    """Copy an SBOM audit and attach the platform measurement, or skip it.
+
+    The copy is what corrections mutate. The caller's payload stays the
+    document the agent submitted, and is what a fail-closed wrap stores
+    under ``raw``.
+    """
+    if not isinstance(payload, Mapping):
+        return payload
+    schema = payload.get("schema")
+    if schema not in (SCHEMA_SBOMAUDIT_V1, SCHEMA_RELEASEAUDIT_V1):
+        return payload
+    candidate = copy.deepcopy(dict(payload))
+    place_measurement(candidate, measure_trigger(trigger_payload))
+    return candidate
 
 
 def cra_fail_closed_error_message(decision: CraPersistDecision) -> str:

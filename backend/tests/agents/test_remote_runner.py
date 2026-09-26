@@ -377,6 +377,52 @@ def test_lease_payload_host_exec_rejects_pull_request() -> None:
         )
 
 
+def test_lease_payload_host_exec_rejects_isolated_publication_with_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored publication snapshot must not be stripped from a host lease."""
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_execution.get",
+        lambda *args, **kwargs: SimpleNamespace(
+            result={"_private_publication": {"nonce": "n-1", "version": 1}}
+        ),
+    )
+    executor = RemoteRunnerExecutor(
+        "cursor", {}, db=MagicMock(), pool="local", account_id=uuid4()
+    )
+    with pytest.raises(ValueError, match="isolated publication|pull requests"):
+        executor._lease_payload(
+            execution_id=uuid4(),
+            flow_id=uuid4(),
+            prompt="publish",
+            execution_context={
+                "agent_type": "cursor",
+                "agent_config": {"host_exec_profile": "cursor-ask"},
+                "git_clone_config": {"publication_mode": "isolated"},
+            },
+        )
+
+
+def test_lease_payload_host_exec_keeps_missing_publication_snapshot_error() -> None:
+    """A missing snapshot still fails with the existing publication error."""
+    executor = RemoteRunnerExecutor(
+        "cursor", {}, db=MagicMock(), pool="local", account_id=uuid4()
+    )
+    with pytest.raises(
+        ValueError, match="Private publication requires a trusted policy snapshot"
+    ):
+        executor._lease_payload(
+            execution_id=uuid4(),
+            flow_id=uuid4(),
+            prompt="publish",
+            execution_context={
+                "agent_type": "cursor",
+                "agent_config": {"host_exec_profile": "cursor-ask"},
+                "git_clone_config": {"publication_mode": "isolated"},
+            },
+        )
+
+
 def test_lease_payload_host_exec_rejects_resume() -> None:
     executor = RemoteRunnerExecutor(
         "cursor", {}, db=MagicMock(), pool="local", account_id=uuid4()

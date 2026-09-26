@@ -10,15 +10,38 @@ exactly what that does and does not mean. Cross-link the
 [security audit presets](security-audit-presets.md) guide for the JSON
 contracts themselves.
 
-## Two transports
+## Transports
 
-**Legacy (default).** `FLOW_ARTIFACT_DIRECT_UPLOAD` is off. Hosted Docker
-copies the directory through the engine API. Kubernetes still emits a
-size-capped base64 block on the pod log channel
-(`MAX_EVIDENCE_ARCHIVE_BYTES`, 2 MiB compressed). The control plane stores
-the bytes on `flow_execution.evidence_archive`. Failed persist is visible as
-`evidence-status: failed` or `missing`; it must not look like a successful
-receipt. Existing downloads keep working.
+**Legacy log channel (default).** `FLOW_ARTIFACT_DIRECT_UPLOAD` is off and
+`FLOW_EVIDENCE_LOG_PLAINTEXT` is on (the default). Hosted Docker copies the
+directory through the engine API and does not put the pack on container
+logs, so the plaintext switch does not change Docker capture. Kubernetes
+still emits a size-capped base64 block on the pod log channel
+(`MAX_EVIDENCE_ARCHIVE_BYTES`, 2 MiB compressed) for `result.json`, the
+evidence pack, and the workspace snapshot. Base64 is not encryption. Anyone
+who can read retained pod logs can read those bytes. The control plane
+stores the evidence bytes on `flow_execution.evidence_archive`. Failed
+persist is visible as `evidence-status: failed` or `missing`; it must not
+look like a successful receipt. Existing downloads keep working.
+
+**Plaintext log channel off.** Set `FLOW_EVIDENCE_LOG_PLAINTEXT=false`
+(`flow_evidence_log_plaintext`) when a deployment must not put evidence in
+pod logs. Use it together with direct upload. The Kubernetes job receives
+`PRELOOP_EVIDENCE_LOG_PLAINTEXT=0`. If that job also has an upload token,
+the wrapper follows the direct path and still does not fall back to
+plaintext when the upload fails. If the token is absent, the wrapper fails
+closed: it does not base64 `result.json`, the evidence pack, or the
+workspace snapshot. The pod log gets three markers instead:
+`result unavailable plaintext_disabled`, `evidence unavailable
+plaintext_disabled`, and `workspace skipped plaintext_disabled`. The
+control plane records an evidence receipt with status `failed` and error
+`plaintext_disabled`, and it treats the result as missing (the same outcome
+as no `result.json`). It does not decode a payload that someone injects
+into the log. **Unavailable: plaintext disabled** means the pack was
+refused by policy, not that the agent forgot to write `/workspace/evidence`.
+Turning the switch off without direct upload makes evidence unavailable by
+design. Encrypted log transport (per-execution keys) is a separate decision
+tracked in issue #268 and is not this switch.
 
 **Direct upload (configured path).** Set `FLOW_ARTIFACT_DIRECT_UPLOAD=true`
 when the runner can reach `PRELOOP_URL`. Hosted containers and private
@@ -52,6 +75,25 @@ That field is runner bootstrap metadata and is emitted even when
 `result.json` is missing or invalid; agent `result` JSON cannot set it.
 A failed or missing final PUT is stored as `failed`/`missing` even
 when an earlier trap artifact exists.
+
+## Reading a pack in the console
+
+The execution page adds a Report tab when the pack is present, expired, or
+failed. A missing pack hides the tab. The tab reads one manifest member at a
+time through `GET /api/v1/flows/executions/{id}/evidence/members?path=...`
+(the same account check, decryption, digest check and legal hold as
+`GET .../evidence`). Omit `path` to list members with size, sha256 and
+content type. A path that is not in the manifest, or that contains `..`, is
+refused. A member larger than 8 MiB is refused; download the pack for that
+file. Markdown, JSON and plain text are returned with those content types.
+
+The tab shows the report named by `artifacts.report`, a findings table from
+`artifacts.findings`, and the register from `result.register` items (gap and
+partial rows first). When the result has no register items, the tab renders
+the `artifacts.register` markdown instead. The integrity word and sha256 on
+that tab are the ones
+`GET .../evidence-status` already shows on the Records card. An expired or
+failed pack stays on the tab as that status, with the same explanation.
 
 ## What is in a pack
 
@@ -102,6 +144,7 @@ counts, expiry) atomically with the ciphertext.
 
 | Setting | Default | Role |
 | --- | --- | --- |
+| `FLOW_EVIDENCE_LOG_PLAINTEXT` | true | Kubernetes pod-log base64 channel. Default keeps today's emission. False refuses it |
 | `FLOW_EVIDENCE_MAX_BYTES` | 32 MiB | Compressed evidence cap on the direct path |
 | `FLOW_ARTIFACT_EXPANDED_MAX_BYTES` | 2 GiB | Extraction bomb limit (shared) |
 | `FLOW_ARTIFACT_ACCOUNT_QUOTA_BYTES` | 4 GiB | Retained encrypted payload per account |
@@ -214,6 +257,13 @@ PUT  /api/v1/retention/settings        # {"classes": {"audit": 400}}; below the 
 GET  /api/v1/retention/purge-preview   # what today's purge would remove, per class
 ```
 
+### In the console
+
+Settings > Records edits days per class, never below the floor, and previews
+what a purge would remove. Purge itself stays a deployment setting. The page
+says when the sweeper is off, so a stated policy is not mistaken for a
+deletion that already happened.
+
 ### The purge
 
 Records past retention are deleted by a background sweeper, never on a
@@ -254,6 +304,13 @@ GET  /api/v1/retention/holds
 POST /api/v1/retention/holds                  # {"resource_type": "execution", "resource_id": "...", "reason": "..."}
 POST /api/v1/retention/holds/{id}/release     # {"reason": "..."}
 ```
+
+### In the console
+
+Settings > Records lists legal holds, and the same page is where retention
+days are edited. A flow execution, an approval, and a runtime session each
+offer place and release for that one record. A hold is still not object lock:
+the execution page shows `object_lock` as false.
 
 A hold on an execution also covers that execution's evidence packs. Holds
 overlap safely: releasing an execution hold does not unfreeze a pack that
@@ -376,7 +433,18 @@ GET  /api/v1/audit/chain/checkpoints   signed anchors over the chain head
 recomputes every hash on your machine, checks the checkpoint signatures, and
 reports the first break with its sequence and row id. Exit status is 1 on a
 break, so CI can gate on it. When Preloop's verdict and the local walk
-disagree, the CLI prints both and tells you to trust the walk.
+disagree, the CLI prints both and tells you to trust the walk. If that CLI
+is older than the server version reported by `/api/v1/version`, it also
+suggests `preloop update` before you treat the disagreement as tampering.
+
+A row hash is `sha256` of the domain separator `preloop.audit.chain/v1\n`
+followed by the canonical JSON of the row. Canonical JSON sorts object keys
+by UTF-8 byte order, uses `,` and `:` with no space, and writes strings as
+UTF-8 (`ensure_ascii` off), escaping only quotes, backslashes, and control
+characters. Numbers keep the exact decimal spelling Python's `json.dumps`
+produces: `0.0` stays `0.0`, `1.0` stays `1.0`, and a value such as `1e-05`
+keeps that exponent form. A verifier that reparses numbers as IEEE floats
+and reprints them will not match rows that were already sealed.
 
 ```
 preloop audit verify
@@ -388,6 +456,15 @@ than glossed over. Rows below `pruned_below_seq` were removed by the retention
 purge under a stated policy: the purge raises that floor as it deletes, so
 enforcing retention does not read as tampering. Rows written since the last
 sealing pass are not chained yet (`unsealed_rows`).
+
+### In the console
+
+Settings > Records, under Audit integrity, shows sealed and unsealed counts,
+the seal lag, and the latest checkpoint. Verify chain runs on the server.
+Verify offline shows `preloop audit verify` and the account key id, with a
+download of the public key. The audit timeline links there. A clean result
+shows the rows were not reordered, removed or edited after sealing; not that
+they were true when written.
 
 Every `AUDIT_CHAIN_CHECKPOINT_INTERVAL` sealed rows, Preloop signs a
 checkpoint over the chain head. A checkpoint you copied off the platform is
@@ -448,6 +525,14 @@ verification time only shows that the bundle matches whatever key we serve you
 today; a key you copied when the bundle was issued does not depend on us at
 all. `preloop audit keys` prints them for that purpose.
 
+### In the console
+
+Settings > Records lists the active key and retired keys, and can rotate a
+key. Period exports are on the same page: the download names the signing key
+from the response headers and shows `preloop evidence verify` with that key
+file. The execution page downloads an evidence pack and shows the integrity
+header from that download.
+
 Packs captured before signing existed, and accounts whose key could not be
 minted, have no signature. The receipt says `signature: null` rather than
 pretending, and signing is never a precondition for storing evidence: bytes
@@ -501,19 +586,31 @@ the storage layer.
    consumer accepts a pack. A 404/409/410 is a release blocker, not a
    skippable warning.
 5. Keep Kubernetes RBAC for pod logs tight on clusters that still run the
-   legacy log channel (`FLOW_ARTIFACT_DIRECT_UPLOAD=false`).
-6. Decide record retention per class and set `RETENTION_PURGE_ENABLED`
+   legacy log channel (`FLOW_ARTIFACT_DIRECT_UPLOAD=false` and
+   `FLOW_EVIDENCE_LOG_PLAINTEXT=true`). To keep evidence bytes out of pod
+   logs, set `FLOW_EVIDENCE_LOG_PLAINTEXT=false` and enable direct upload.
+   `evidence-status` `failed` with error `plaintext_disabled` means the log
+   channel was refused and no upload token was available. That is not a
+   successful empty pack.
+6. This switch only governs the artifact wrapper. It does not hide the pod
+   spec (environment and tokens) from someone who can read the Job, and it
+   does not stop the agent from printing sensitive prose on ordinary stdout.
+7. Decide record retention per class and set `RETENTION_PURGE_ENABLED`
    deliberately. Until it is on, nothing is deleted and the stated retention
-   is not enforced. Run `GET /api/v1/retention/purge-preview` before the
-   first enabled pass.
-7. Place a legal hold before an incident review starts, not after the
+   is not enforced. Run `GET /api/v1/retention/purge-preview`, or Preview
+   purge on Settings > Records, before the first enabled pass.
+8. Place a legal hold before an incident review starts, not after the
    payload window has closed. A hold pins bytes that are still there; it
-   cannot bring back bytes already cleared.
-8. Copy signed checkpoints (`GET /api/v1/audit/chain/checkpoints`) and the
-   public keys (`preloop audit keys`) somewhere Preloop cannot write. Held
+   cannot bring back bytes already cleared. Place it from Settings > Records
+   or from the execution, approval, or session page, or with
+   `POST /api/v1/retention/holds`.
+9. Copy signed checkpoints (`GET /api/v1/audit/chain/checkpoints`, or the
+   table on Settings > Records) and the public keys (`preloop audit keys`,
+   or Download public key on that page) somewhere Preloop cannot write. Held
    only here, they prove consistency between two things under the same
    control. Run `preloop audit verify` on a schedule and treat a break as an
-   incident.
+   incident. The console Verify chain button is the server's own walk, not a
+   substitute for that command.
 
 ### Cloud analytics history and stored records
 

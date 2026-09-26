@@ -13,16 +13,19 @@ import (
 
 	"github.com/preloop/preloop/cli/internal/testenv"
 	"github.com/preloop/preloop/cli/internal/verify"
+	"github.com/preloop/preloop/cli/internal/version"
 )
 
 // fakeChain is a server side chain the CLI can be pointed at, including the
 // ability to serve rows that no longer match their sealed hashes.
 type fakeChain struct {
-	entries     []verify.SegmentEntry
-	checkpoints []chainCheckpoint
-	keys        verify.KeyList
-	private     ed25519.PrivateKey
-	verdict     string
+	entries       []verify.SegmentEntry
+	checkpoints   []chainCheckpoint
+	keys          verify.KeyList
+	private       ed25519.PrivateKey
+	verdict       string
+	serverVersion string
+	versionHits   int
 }
 
 func newFakeChain(t *testing.T, rows int) *fakeChain {
@@ -144,6 +147,13 @@ func (c *fakeChain) serve(t *testing.T) *httptest.Server {
 			_ = json.NewEncoder(w).Encode(c.checkpoints)
 		case signingKeysPath:
 			_ = json.NewEncoder(w).Encode(c.keys)
+		case serverVersionPath:
+			c.versionHits++
+			if c.serverVersion == "" {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"server_version": c.serverVersion})
 		default:
 			http.NotFound(w, r)
 		}
@@ -185,6 +195,9 @@ func TestAuditVerifyWalksEveryPageAndReportsIntact(t *testing.T) {
 	if !strings.Contains(out, "Chain intact: 7 rows, sequences 1 to 7") {
 		t.Fatalf("output = %q", out)
 	}
+	if chain.versionHits != 0 {
+		t.Fatalf("a clean walk called /version %d times", chain.versionHits)
+	}
 	// The honesty line is part of the output, not a footnote in the docs.
 	if !strings.Contains(out, "does not show they were true when they were written") {
 		t.Fatalf("missing the scope statement: %q", out)
@@ -224,6 +237,86 @@ func TestAuditVerifyContradictsAServerThatClaimsAllIsWell(t *testing.T) {
 	}
 	if !strings.Contains(out, `The server reports "ok" and this local walk reports "broken"`) {
 		t.Fatalf("the disagreement was not reported: %q", out)
+	}
+	if strings.Contains(out, "preloop update") {
+		t.Fatalf("update hint without a newer server version: %q", out)
+	}
+}
+
+func TestAuditVerifySuggestsUpdateWhenTheCLIIsOlder(t *testing.T) {
+	chain := newFakeChain(t, 5)
+	chain.entries[1].Payload["action"] = "something_else"
+	chain.verdict = "ok"
+	chain.serverVersion = "9.9.9"
+	old := version.Version
+	version.Version = "0.1.0"
+	t.Cleanup(func() { version.Version = old })
+	pointCLIAt(t, chain.serve(t).URL)
+
+	out, err := runAudit(t)
+
+	if err == nil {
+		t.Fatal("a broken chain exited zero")
+	}
+	if !strings.Contains(out, "Trust the walk") || !strings.Contains(out, "preloop update") {
+		t.Fatalf("output = %q", out)
+	}
+	if chain.versionHits != 1 {
+		t.Fatalf("version endpoint hits = %d, want 1", chain.versionHits)
+	}
+}
+
+func TestAuditVerifyJSONDoesNotCheckTheServerVersion(t *testing.T) {
+	chain := newFakeChain(t, 5)
+	chain.entries[1].Payload["action"] = "something_else"
+	chain.verdict = "ok"
+	chain.serverVersion = "9.9.9"
+	auditJSON = true
+	pointCLIAt(t, chain.serve(t).URL)
+
+	out, err := runAudit(t)
+
+	if err == nil {
+		t.Fatal("a broken chain exited zero")
+	}
+	if chain.versionHits != 0 {
+		t.Fatalf("json mode called /version: %s", out)
+	}
+}
+
+func TestCheckpointDecodeKeepsFractionalZero(t *testing.T) {
+	raw := []byte(`{
+		"seq": 1,
+		"chain_hash": "abc",
+		"row_count": 1,
+		"checkpointed_at": "2026-09-10T12:00:00Z",
+		"signing_key_id": "key-1",
+		"signature": "",
+		"signed_payload": {"schema":"preloop.audit.chain_checkpoint/v1","amount":0.0,"seq":1},
+		"digest": ""
+	}`)
+	var checkpoint chainCheckpoint
+	if err := json.Unmarshal(raw, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	got, err := verify.DigestOf(checkpoint.SignedPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBody, err := verify.CanonicalFromRaw([]byte(
+		`{"amount":0.0,"schema":"preloop.audit.chain_checkpoint/v1","seq":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := verify.CanonicalJSON(checkpoint.SignedPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != string(wantBody) {
+		t.Fatalf("canonical\n got  %s\n want %s", body, wantBody)
+	}
+	if got != verify.DigestOfBytes(wantBody) {
+		t.Fatalf("digest %s", got)
 	}
 }
 

@@ -26,6 +26,7 @@ class ResolverContext:
     trigger_event_data: Dict[str, Any]
     flow_id: str
     execution_id: str
+    workspace_mode: str = "ephemeral"
 
 
 class PromptResolver(ABC):

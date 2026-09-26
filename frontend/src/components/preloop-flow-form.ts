@@ -428,6 +428,9 @@ export class PreloopFlowForm extends LitElement {
   private pickerSelectedId = '';
 
   @state()
+  private persistentPresetNotice = '';
+
+  @state()
   private pickerCollapsed = false;
 
   @state()
@@ -2274,6 +2277,45 @@ export class PreloopFlowForm extends LitElement {
     }
   }
 
+  private applyExecutionPath(path: 'ephemeral' | 'persistent') {
+    this.flowExecutionPath = path;
+    if (path !== 'persistent') {
+      this.persistentPresetNotice = '';
+    } else {
+      if (!this.targetAgentId && this.longRunningAgents.length > 0) {
+        const enabledAgents = this.persistentControlAgents();
+        const onlineAgents = enabledAgents.filter(
+          (agent) => getAgentControlState(agent).online
+        );
+        const pick = onlineAgents[0] || enabledAgents[0];
+        if (pick) {
+          this.targetAgentId = pick.id;
+        }
+      }
+      this.updateModelSelectionForAgent();
+      this.clearUnsupportedPersistentPreset();
+    }
+    this.requestUpdate();
+  }
+
+  private clearUnsupportedPersistentPreset() {
+    if (!this.pickerSelectedId || this.pickerSelectedId === BLANK_PRESET_ID) {
+      this.persistentPresetNotice = '';
+      return;
+    }
+    const preset = this.presets.find(
+      (item) => item.id === this.pickerSelectedId
+    );
+    if (!preset || preset.supports_persistent === true) {
+      this.persistentPresetNotice = '';
+      return;
+    }
+    this.pickerSelectedId = '';
+    this.sourcePresetId = null;
+    this.persistentPresetNotice =
+      'This preset does not support persistent execution. It expects an ephemeral checkout. Pick another preset.';
+  }
+
   private async applyPresetSelection(presetId: string) {
     if (presetId === BLANK_PRESET_ID) {
       this.selectBlankFlow();
@@ -3062,9 +3104,17 @@ export class PreloopFlowForm extends LitElement {
                   .presets=${this.presets}
                   .selectedId=${this.pickerSelectedId}
                   ?collapsed=${this.pickerCollapsed}
+                  ?persistent=${this.flowExecutionPath === 'persistent'}
                   @preset-select=${this.handlePickerSelect}
                   @preset-change-request=${this.handlePickerChangeRequest}
                 ></preloop-flow-preset-picker>
+                ${
+                  this.persistentPresetNotice
+                    ? html`<p class="persistent-preset-notice">
+                        ${this.persistentPresetNotice}
+                      </p>`
+                    : nothing
+                }
               `
             : nothing
         }
@@ -3256,27 +3306,12 @@ export class PreloopFlowForm extends LitElement {
                     </label>
                     <sl-radio-group
                       value=${this.flowExecutionPath}
-                      @sl-change=${(e: any) => {
-                        this.flowExecutionPath = e.target.value as
-                          'ephemeral' | 'persistent';
-                        if (this.flowExecutionPath === 'persistent') {
-                          if (
-                            !this.targetAgentId &&
-                            this.longRunningAgents.length > 0
-                          ) {
-                            const enabledAgents =
-                              this.persistentControlAgents();
-                            const onlineAgents = enabledAgents.filter(
-                              (a) => getAgentControlState(a).online
-                            );
-                            const pick = onlineAgents[0] || enabledAgents[0];
-                            if (pick) {
-                              this.targetAgentId = pick.id;
-                            }
-                          }
-                          this.updateModelSelectionForAgent();
+                      @sl-change=${(e: Event) => {
+                        const target = e.target as HTMLInputElement | null;
+                        const value = target?.value;
+                        if (value === 'ephemeral' || value === 'persistent') {
+                          this.applyExecutionPath(value);
                         }
-                        this.requestUpdate();
                       }}
                       style="display: flex; gap: var(--sl-spacing-large);"
                     >

@@ -284,6 +284,9 @@ def list_legal_holds(
     db: Session = Depends(get_db_session),
     active_only: bool = Query(True, description="Hide released holds"),
     resource_type: Optional[str] = Query(None),
+    resource_id: Optional[str] = Query(
+        None, description="Only holds on this resource id"
+    ),
     limit: int = Query(100, ge=1, le=500),
 ):
     """List this account's legal holds, newest first."""
@@ -292,6 +295,7 @@ def list_legal_holds(
         account_id=account.id,
         active_only=active_only,
         resource_type=resource_type,
+        resource_id=resource_id,
         limit=limit,
     )
     return [_hold_read(row) for row in rows]

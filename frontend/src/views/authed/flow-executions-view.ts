@@ -47,6 +47,16 @@ import type {
 } from '../../utils/execution-presentation';
 import type { GatewayTokenUsage } from '../../types';
 import { renderFailureCategoryChip } from '../../utils/failure-category';
+import {
+  DEFAULT_FLOW_EXECUTION_FILTERS,
+  FLOW_EXECUTION_QUERY_MAX,
+  FLOW_EXECUTION_STATUSES,
+  clearFlowExecutionFilters,
+  isDefaultFlowExecutionFilters,
+  loadFlowExecutionFilters,
+  saveFlowExecutionFilters,
+  type FlowExecutionListFilters,
+} from '../../utils/list-filters';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 import '../../components/view-header.ts';
@@ -132,7 +142,7 @@ const DURATION_TICK_MS = 1000;
 const SEARCH_DEBOUNCE_MS = 300;
 
 /** The ranges the pill offers, and how far back each one reaches. */
-const RANGE_OPTIONS: Array<{
+export const RANGE_OPTIONS: Array<{
   value: string;
   label: string;
   days: number;
@@ -330,6 +340,15 @@ export class FlowExecutionsView extends AuthedElement {
         white-space: nowrap;
         border: 0;
       }
+      .reset-filters {
+        background: none;
+        border: 0;
+        padding: 0;
+        color: var(--sl-color-primary-600);
+        font-size: var(--console-text-meta);
+        cursor: pointer;
+        text-decoration: underline;
+      }
       .connection-status {
         display: flex;
         align-items: center;
@@ -495,18 +514,36 @@ export class FlowExecutionsView extends AuthedElement {
   private applyQueryParams(): void {
     const params = new URLSearchParams(window.location.search);
     const status = params.get('status');
+    const hasUrlFilters =
+      status !== null ||
+      params.has('flow') ||
+      params.has('flow_id') ||
+      params.has('q') ||
+      params.has('range');
+    if (hasUrlFilters) {
+      this.applyExplicitQueryParams(params, status);
+      return;
+    }
+    const stored = loadFlowExecutionFilters();
+    if (!stored || isDefaultFlowExecutionFilters(stored)) return;
+    // A stored visit keeps the range the operator left, including 30d.
+    // Only a deep link with status or flow and no range opens on All.
+    this.statusFilter = stored.status;
+    this.flowIdFilter = stored.flow;
+    this.range = stored.range;
+    this.searchQuery = stored.q;
+    this.writeFiltersToUrl();
+  }
+
+  /** URL params win over storage so Attention and Overview links stay exact. */
+  private applyExplicitQueryParams(
+    params: URLSearchParams,
+    status: string | null
+  ): void {
     if (status) {
-      const known = [
-        'all',
-        'RUNNING',
-        'PENDING',
-        'SUCCEEDED',
-        'FAILED',
-        'CANCELLED',
-      ];
       const normalized =
         status.toLowerCase() === 'all' ? 'all' : status.toUpperCase();
-      if (known.includes(normalized)) {
+      if ((FLOW_EXECUTION_STATUSES as readonly string[]).includes(normalized)) {
         this.statusFilter = normalized;
       }
     }
@@ -514,7 +551,9 @@ export class FlowExecutionsView extends AuthedElement {
     // and the Overview inventory link with. Both mean the same filter.
     this.flowIdFilter = params.get('flow_id') || params.get('flow');
     const search = params.get('q');
-    if (search) this.searchQuery = search;
+    if (search) {
+      this.searchQuery = search.slice(0, FLOW_EXECUTION_QUERY_MAX);
+    }
     const range = params.get('range');
     if (range && RANGE_OPTIONS.some((option) => option.value === range)) {
       this.range = range;
@@ -523,6 +562,93 @@ export class FlowExecutionsView extends AuthedElement {
       // could hide exactly that run, so a filtered entry opens on All.
       this.range = 'all';
     }
+  }
+
+  private currentFilters(): FlowExecutionListFilters {
+    const status = (FLOW_EXECUTION_STATUSES as readonly string[]).includes(
+      this.statusFilter
+    )
+      ? this.statusFilter
+      : DEFAULT_FLOW_EXECUTION_FILTERS.status;
+    const range = RANGE_OPTIONS.some((option) => option.value === this.range)
+      ? this.range
+      : DEFAULT_FLOW_EXECUTION_FILTERS.range;
+    return {
+      status: status as FlowExecutionListFilters['status'],
+      flow: this.flowIdFilter || null,
+      range: range as FlowExecutionListFilters['range'],
+      q: this.searchQuery.slice(0, FLOW_EXECUTION_QUERY_MAX),
+    };
+  }
+
+  /** Any control off its default, so Reset filters has something to undo. */
+  private get filtersActive(): boolean {
+    return !isDefaultFlowExecutionFilters(this.currentFilters());
+  }
+
+  /**
+   * Remember the filters and put them on the URL.
+   *
+   * A refresh and the back button then show the same list. Defaults are
+   * removed from both places.
+   */
+  private persistFilters(): void {
+    const filters = this.currentFilters();
+    this.searchQuery = filters.q;
+    if (isDefaultFlowExecutionFilters(filters)) {
+      clearFlowExecutionFilters();
+    } else {
+      saveFlowExecutionFilters(filters);
+    }
+    this.writeFiltersToUrl();
+  }
+
+  /** Mirror the filters into the URL the way the flow select already did. */
+  private writeFiltersToUrl(): void {
+    const filters = this.currentFilters();
+    const url = new URL(window.location.href);
+    url.searchParams.delete('flow');
+    if (filters.status === 'all') {
+      url.searchParams.delete('status');
+    } else {
+      url.searchParams.set('status', filters.status);
+    }
+    if (filters.flow) {
+      url.searchParams.set('flow_id', filters.flow);
+    } else {
+      url.searchParams.delete('flow_id');
+    }
+    if (filters.q) {
+      url.searchParams.set('q', filters.q);
+    } else {
+      url.searchParams.delete('q');
+    }
+    // A status or flow link with no range opens on All. Write the range
+    // whenever any filter is set so a refresh does not widen a stored 30d.
+    if (isDefaultFlowExecutionFilters(filters)) {
+      url.searchParams.delete('range');
+    } else {
+      url.searchParams.set('range', filters.range);
+    }
+    try {
+      window.history.replaceState({}, '', url.toString());
+    } catch {
+      // Safari throws SecurityError after about 100 history writes in 30s.
+      // The list still uses the filters; the next successful write catches up.
+    }
+  }
+
+  /** Back to the page defaults, including storage and the URL. */
+  private resetFilters(): void {
+    this.statusFilter = DEFAULT_FLOW_EXECUTION_FILTERS.status;
+    this.flowIdFilter = DEFAULT_FLOW_EXECUTION_FILTERS.flow;
+    this.flowNameFilter = null;
+    this.range = DEFAULT_FLOW_EXECUTION_FILTERS.range;
+    this.searchQuery = DEFAULT_FLOW_EXECUTION_FILTERS.q;
+    this.currentPage = 1;
+    clearFlowExecutionFilters();
+    this.writeFiltersToUrl();
+    void this.loadExecutions();
   }
 
   /**
@@ -627,14 +753,7 @@ export class FlowExecutionsView extends AuthedElement {
       ? this.flowOptions.find((flow) => flow.id === flowId)?.name || null
       : null;
     this.currentPage = 1;
-    const url = new URL(window.location.href);
-    url.searchParams.delete('flow');
-    if (flowId) {
-      url.searchParams.set('flow_id', flowId);
-    } else {
-      url.searchParams.delete('flow_id');
-    }
-    window.history.replaceState({}, '', url.toString());
+    this.persistFilters();
     void this.loadExecutions();
   }
 
@@ -643,13 +762,17 @@ export class FlowExecutionsView extends AuthedElement {
    * is that run" for an account with thousands. One request per pause.
    */
   private handleSearchChange(value: string): void {
-    this.searchQuery = value;
+    this.searchQuery = value.slice(0, FLOW_EXECUTION_QUERY_MAX);
     if (this.searchDebounceId !== undefined) {
       clearTimeout(this.searchDebounceId);
     }
+    // Storage and the URL wait for the same pause as the request. A
+    // replaceState per character trips Safari's history throttle, and a
+    // throw there used to skip re-arming this timer.
     this.searchDebounceId = window.setTimeout(() => {
       this.searchDebounceId = undefined;
       this.currentPage = 1;
+      this.persistFilters();
       void this.loadExecutions();
     }, SEARCH_DEBOUNCE_MS);
   }
@@ -657,6 +780,7 @@ export class FlowExecutionsView extends AuthedElement {
   private setRange(range: string): void {
     this.range = range;
     this.currentPage = 1;
+    this.persistFilters();
     void this.loadExecutions();
   }
 
@@ -855,6 +979,7 @@ export class FlowExecutionsView extends AuthedElement {
   setStatusFilter(status: string) {
     this.statusFilter = status;
     this.currentPage = 1; // Reset to first page when filter changes
+    this.persistFilters();
     void this.loadExecutions();
   }
 
@@ -1178,6 +1303,17 @@ export class FlowExecutionsView extends AuthedElement {
           <sl-option value="FAILED">Failed</sl-option>
           <sl-option value="CANCELLED">Cancelled</sl-option>
         </sl-select>
+        ${
+          this.filtersActive
+            ? html`<button
+                type="button"
+                class="reset-filters"
+                @click=${() => this.resetFilters()}
+              >
+                Reset filters
+              </button>`
+            : nothing
+        }
 
         <time-range-select
           ariaLabel="Executions time range"

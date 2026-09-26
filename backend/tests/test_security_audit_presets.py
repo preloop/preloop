@@ -347,6 +347,11 @@ class TestSbomVerifyPreset:
         assert "may only summarize" in norm
         assert "Strictly one page" in norm
 
+    def test_minimum_elements_come_from_the_measure_command(self):
+        prompt = _load_preset(PRESET_FILES["SBOM Verify"])["prompt_template"]
+        assert "python -m preloop.cra measure" in prompt
+        assert "are not a supplier" in prompt
+
 
 class TestSbomExploitCheckPreset:
     def test_vuln_sources_and_honest_limits(self):
@@ -396,6 +401,11 @@ class TestReleaseSecurityAuditPreset:
         assert "never guess a baseline" in _norm(prompt)
         assert "api.osv.dev/v1/querybatch" in prompt
         assert "known_exploited_vulnerabilities.json" in prompt
+
+    def test_measure_command_and_counted_severities(self):
+        prompt = _load_preset(PRESET_FILES["Release Security Audit"])["prompt_template"]
+        assert "python -m preloop.cra measure" in prompt
+        assert "Count that list" in prompt
 
     def test_designed_for_schedules(self):
         data = _load_preset(PRESET_FILES["Release Security Audit"])

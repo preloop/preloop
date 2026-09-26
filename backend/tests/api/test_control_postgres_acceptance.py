@@ -314,31 +314,38 @@ async def test_independent_row_lock_is_bounded_and_other_socket_http_progress(
                 )
             )
             assert await asyncio.to_thread(requested_lock.wait, 2)
+            # These must finish while the row lock is still held. The server
+            # gives up after 1500ms, so a deadline under that still fails if
+            # the wait blocks the event loop, without stacking four serial
+            # budgets that a busy runner cannot meet.
             async with httpx.AsyncClient(
                 base_url=f"http://{control_server.url}"
             ) as client:
-                assert (
-                    await asyncio.wait_for(client.get("/ping"), 0.8)
-                ).status_code == 200
-                assert (
-                    await asyncio.wait_for(
-                        client.get("/auth", params={"token": principal[1].token}), 0.8
-                    )
-                ).status_code == 200
-                assert (
-                    await asyncio.wait_for(
-                        client.post(
+
+                async def ping() -> None:
+                    assert (await client.get("/ping")).status_code == 200
+
+                async def auth() -> None:
+                    assert (
+                        await client.get("/auth", params={"token": principal[1].token})
+                    ).status_code == 200
+
+                async def refresh() -> None:
+                    assert (
+                        await client.post(
                             "/refresh",
                             json={
                                 "refresh_token": create_refresh_token(
                                     sub=principal[1].connection.user_id, scopes=[]
                                 )
                             },
-                        ),
-                        0.8,
-                    )
-                ).status_code == 200
-            await asyncio.wait_for(heartbeat(other), 0.8)
+                        )
+                    ).status_code == 200
+
+                await asyncio.wait_for(
+                    asyncio.gather(ping(), auth(), refresh(), heartbeat(other)),
+                    1.2,
+                )
             with pytest.raises(websockets.exceptions.ConnectionClosed) as closed:
                 await asyncio.wait_for(ws.recv(), 4)
             assert closed.value.rcvd.code == 1013

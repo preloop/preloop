@@ -541,7 +541,7 @@ def test_embeddings_pass_derived_parent_to_gateway_service(
         ModelGatewayAuthContext(token="runtime-token", user=test_user, api_key=api_key)
     )
 
-    for headers, expected_session, expected_parent in (
+    for headers, expected_session, expected_parent, expected_explicit in (
         (
             {
                 "X-Session-Id": "ses_child",
@@ -549,6 +549,7 @@ def test_embeddings_pass_derived_parent_to_gateway_service(
             },
             "ses_child",
             "ses_parent",
+            False,
         ),
         (
             {
@@ -558,6 +559,7 @@ def test_embeddings_pass_derived_parent_to_gateway_service(
             },
             "explicit-run",
             None,
+            True,
         ),
     ):
         with patch(
@@ -578,6 +580,9 @@ def test_embeddings_pass_derived_parent_to_gateway_service(
         kwargs = service_cls.call_args.kwargs
         assert kwargs["client_session_id"] == expected_session
         assert kwargs["client_parent_session_id"] == expected_parent
+        # Only the explicit Preloop header opts a plain key in; a gated
+        # vendor header does not.
+        assert kwargs["client_session_id_is_explicit"] is expected_explicit
 
 
 def test_embedding_first_opencode_subagent_records_parent_over_http(

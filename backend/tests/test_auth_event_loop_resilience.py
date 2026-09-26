@@ -117,8 +117,10 @@ async def test_auth_row_lock_does_not_block_loop(
         release_from_loop()
 
     timer = asyncio.create_task(release_when_writer_waits())
-    # A blocked-loop regression must fail promptly rather than hang pytest.
-    watchdog = threading.Timer(0.7, release.set)
+    # A blocked loop never sets loop_released, so the assertion still fails.
+    # The timer only unblocks the row lock. It stays under the holder's 3s
+    # wait, and above a slow checkout, so the update can still reach the loop.
+    watchdog = threading.Timer(2.5, release.set)
     watchdog.start()
     try:
         with Session(db_engine) as db:

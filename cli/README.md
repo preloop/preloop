@@ -149,6 +149,22 @@ preloop tools exec <tool-name> --args-file ./input.json
 
 `preloop tools` talks directly to the MCP endpoint, so the visible and executable tools are automatically filtered by the current token's policy. Agent tokens only see the tools they are allowed to use.
 
+### Codex CLI Agent Control
+
+```bash
+preloop agents onboard "Codex CLI"
+preloop agents validate "Codex CLI"
+preloop codex sidecar enable
+preloop codex sidecar status
+preloop codex sidecar disable
+```
+
+Onboarding installs `@preloop-ai/codex-plugin` (`preloop-codex-plugin`) and
+writes `~/.codex/preloop-control.json`. `~/.codex/config.toml` stays
+Codex's own file. `preloop codex sidecar run` execs
+`preloop-codex-plugin run`. See
+[docs/guide/codex-cli.md](../docs/guide/codex-cli.md).
+
 ### Cursor Agent CLI
 
 ```bash
@@ -163,6 +179,19 @@ output in `--print` mode. `preloop cursor run` injects
 usage to `/api/v1/usage/ingest`. Runs bill the user's own Cursor account;
 Preloop records estimates, not Cursor billing. See
 [docs/guide/cursor-cli.md](../docs/guide/cursor-cli.md).
+
+### Copilot CLI
+
+```bash
+preloop copilot --model openai/gpt-5
+preloop copilot --model anthropic/claude-sonnet-4-5 --provider anthropic
+```
+
+`preloop copilot` starts the GitHub Copilot CLI with BYOK environment
+variables pointed at the Preloop gateway. A missing binary, credential, or
+model alias exits without launching Copilot. `--token` and `PRELOOP_TOKEN`
+override the enrolled agent credential. See
+[docs/guide/copilot-cli.md](../docs/guide/copilot-cli.md).
 
 ### Usage
 
@@ -438,6 +467,8 @@ file (86400 for the current ceiling) and re-onboard so the host deadline matches
 A shorter budget can deny before a longer workflow completes. Host-enforced
 limits and proxy timeouts can still cut a request short. OpenCode plugin
 onboarding retains its separate account-workflow timeout configuration.
+
+**Repository context.** When the hook event's cwd is inside a git work tree, the hook resolves the toplevel, the `origin` remote, and the path of cwd relative to the toplevel, within 500 ms, and sends that as `repository`. A timeout or any git error omits the field. No `origin` remote is recorded as `no_remote`. A directory outside a work tree records nothing. The value is an observation of the hook cwd, not of tool arguments, and it does not change policy evaluation. Linked worktrees report the worktree toplevel. Only `origin` is read. Strings are bounded to 512 bytes, and the remote is normalized to `host/owner/repo` with credentials removed. See [Tool configuration and approval workflow](../docs/architecture/approvals.md).
 
 Coverage follows the host's actual hook events: Claude Code uses `PreToolUse`;
 Cursor uses `beforeShellExecution`, `beforeMCPExecution`, and `preToolUse`, with

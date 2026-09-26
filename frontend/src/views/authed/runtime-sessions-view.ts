@@ -12,6 +12,7 @@ import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '../../components/view-header.ts';
+import '../../components/legal-hold-control';
 import '../../components/json-tree.ts';
 import '../../components/list-toolbar.ts';
 import '../../components/preloop-session-observer.ts';
@@ -2239,6 +2240,11 @@ export class RuntimeSessionsView extends LitElement {
               <sl-badge variant=${this.getSessionVariant(session)}>
                 ${this.getSessionLabel(session)}
               </sl-badge>
+              <legal-hold-control
+                resource-type="runtime_session"
+                resource-id=${session.id}
+                ?known-held=${session.legal_hold === true}
+              ></legal-hold-control>
             </div>
           </div>
           <div class="detail-meta">

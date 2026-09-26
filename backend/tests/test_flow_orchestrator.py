@@ -2278,6 +2278,11 @@ class TestSuccessConfirmationChannels:
             "id": None,
             "attested_by": "control_plane",
         }
+        expected["sbom_audit"] = dict(expected["sbom_audit"])
+        expected["sbom_audit"]["minimum_elements_measured"] = {
+            "status": "skipped",
+            "reason": "no SBOM seeds reachable",
+        }
         assert result["status"] == "SUCCEEDED"
         assert result["result"] == expected
 
@@ -2308,6 +2313,10 @@ class TestSuccessConfirmationChannels:
             "kind": "hosted",
             "id": None,
             "attested_by": "control_plane",
+        }
+        expected["minimum_elements_measured"] = {
+            "status": "skipped",
+            "reason": "no SBOM seeds reachable",
         }
         assert result["status"] == "FAILED"
         assert "result.json" in (

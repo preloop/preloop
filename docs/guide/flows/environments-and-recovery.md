@@ -71,6 +71,61 @@ steps are joined with newlines). Issue acceptance command IDs must also appear
 in the verification policy. Capability readiness is not test-result attestation;
 agent-sandbox files and log markers cannot authorize isolated publication.
 
+## Browser profile
+
+`preloop-browser` in `environments/preloop/profile.json.example` uses the same
+image as the component profile and adds an `egress-proxy` sidecar. The proxy
+contract (listen port, `EGRESS_ALLOWED_ORIGINS`, `EGRESS_ALLOW_PRIVATE_CIDRS`,
+`EGRESS_DENY_PRIVATE`, and `GET /healthz`) is the one in
+`environments/egress-proxy/README.md`. `DependencyService.env` already stores
+that service environment on the registered profile. A flow only selects the
+profile identifier, so the origin allowlist is fixed per profile rather than
+copied from `agent_config`.
+
+`environments/preloop/browser/enable.sh` reads `PRELOOP_BROWSER_PROXY`
+(`http://egress-proxy:3128` on Docker, `http://127.0.0.1:3128` on Kubernetes),
+renders `playwright-mcp.config.json`, and registers a `browser` MCP server for
+`PRELOOP_HARNESS` (`codex` or `claude`). Codex reads
+`~/.codex/config.toml` (`[mcp_servers.browser]` with `command` and `args`).
+The hosted Codex executor writes `[mcp_servers.preloop]` from
+`backend/preloop/agents/codex.py` and would replace that file; setup also
+leaves `~/.codex/preloop-browser-mcp.toml`, which the executor appends after
+its own write. There is no Claude Code writer in this repository; Claude Code
+reads `.mcp.json` in the checkout, and `enable.sh` merges the `browser` entry
+there. The pinned package is `@playwright/mcp@0.0.82`, installed in the profile
+image next to Playwright `1.64.0-alpha-1789764292000` (the build that package
+bundles). The MCP command is the image binary
+`/opt/preloop-env-tools/node_modules/.bin/playwright-mcp` with `--config`,
+`--proxy-server`, `--isolated`, and `--headless`. Setup does not fetch the
+package from the npm registry. `--isolated` starts Chromium with an empty
+profile: no cookies and no operator storage state. The rendered launch args
+also include `--proxy-bypass-list=<-loopback>` so loopback is not a path
+around the proxy. The self-check probes the metadata address, a
+non-allowlisted origin, and a listener on `127.0.0.1`.
+
+The example profile does not list `test_commands`. A flow that gates
+verification on command IDs must add those IDs to the registered profile;
+otherwise readiness reports `environment_command_missing`.
+
+Chromium is started with the two flags the proxy README requires:
+`--proxy-server` and `--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE
+<proxy host>`. Without them the browser can open connections that never pass
+the allowlist. `--no-sandbox` is added only when the probe runs as uid 0.
+
+The proxy enforces origins. The harness MCP entry and Preloop tool permissions
+decide which tools the agent may call. Tool selection is not a network
+boundary. `enable.sh` then runs `selfcheck.sh`, which requires
+`$PRELOOP_BROWSER_PROXY/healthz` to answer `ok` and launches Chromium once
+against `http://169.254.169.254/` and `https://example.org/`. Both probes must
+fail with a proxy error (`egress_denied` or a Chromium proxy/tunnel error).
+Any other outcome, including a missing proxy variable, a failed health check,
+or a probe that loads, exits `browser_egress_not_enforced` and aborts profile
+setup.
+
+Routing this browser MCP server through the Preloop firewall is a follow-up.
+The control plane cannot reach the execution network to sit on that path
+today. Issue #885 would then add timeline rows for those tool calls.
+
 ## Durable hosted artifacts
 
 Enable `FLOW_ARTIFACT_DIRECT_UPLOAD` when the runner can reach `PRELOOP_URL`.
@@ -79,7 +134,10 @@ enables direct uploads with a 64 MiB compressed cap and matching 80 MiB proxy
 limits. Merge its `extraEnv` entries with existing installation values.
 Without it, the legacy snapshot path remains in effect, including the 2 MiB
 Kubernetes log-channel cap. Raising `WORKSPACE_SNAPSHOT_MAX_BYTES` alone does
-not raise that log cap. A skipped legacy snapshot does not mean setup failed.
+not raise that log cap. `FLOW_EVIDENCE_LOG_PLAINTEXT=false` refuses that log
+channel (the snapshot is then skipped with `plaintext_disabled`); see
+[evidence storage](evidence-storage.md). A skipped legacy snapshot does not
+mean setup failed.
 With direct upload enabled, workspace
 checkpoints travel through authenticated HTTP, never the pod log channel.
 The service validates compressed and expanded size, archive paths and file
@@ -106,8 +164,11 @@ modification times and membership for changes during capture, declining a busy
 snapshot rather than committing inconsistent state. The last completed
 checkpoint survives process/pod loss; writes after that checkpoint can be lost.
 Controlled exits attempt a final checkpoint. Before legacy wrapper publication,
-a failed checkpoint blocks publication. A trusted external publisher must make
-this checkpoint barrier part of its handoff as well.
+a failed checkpoint blocks publication, except when the archive exceeds the
+storage cap: that case logs `PRELOOP_CHECKPOINT skipped checkpoint_oversized`,
+exits 0, and leaves the last completed checkpoint as the resume point. A
+trusted external publisher must make this checkpoint barrier part of its
+handoff as well.
 
 Restore occurs before setup or agent startup on Docker and Kubernetes. It logs
 the age of the checkpoint it recovered (`PRELOOP_CHECKPOINT restored

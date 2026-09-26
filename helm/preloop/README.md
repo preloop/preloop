@@ -935,6 +935,9 @@ and merge the overlay entries into your full `extraEnv` list. The overlay sets a
 64 MiB compressed upload cap and an 80 MiB `gateway.proxy.bodySize` for ingress
 and the console proxy. Measure representative archives and adjust both limits
 together. The legacy 2 MiB pod-log cap applies only while
-`FLOW_ARTIFACT_DIRECT_UPLOAD` is disabled. See the
+`FLOW_ARTIFACT_DIRECT_UPLOAD` is disabled and `FLOW_EVIDENCE_LOG_PLAINTEXT`
+stays at its default (`true`). This overlay sets the plaintext switch to
+`false` so a job without an upload token does not emit artifact bytes.
+See the
 [deployment prerequisites](../../docs/guide/flows/durable-implementation-feedback.md#deployment-prerequisites)
 for retention, quota, egress, rollback and validation requirements.

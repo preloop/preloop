@@ -1579,7 +1579,17 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         ``kind`` says what the run is waiting on: an approval request by
         default, or the children it started (``PARK_KIND_CHILDREN``, #633),
         in which case ``approval_request_id`` is the wait id grouping them.
+
+        A human park is refused when that approval is no longer pending.
+        The decision and this write run in different transactions; without
+        the check, a decision that commits first resumes nothing, and the
+        park then suspends a run whose answer is already on the request.
+        Children parks are not approval requests and skip the check.
         """
+        if kind == self.PARK_KIND_HUMAN and not self._approval_still_pending(
+            db, approval_request_id
+        ):
+            return False
         count = (
             db.query(models.FlowExecution)
             .filter(
@@ -1600,6 +1610,25 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         if commit:
             db.commit()
         return bool(count)
+
+    def _approval_still_pending(self, db: Session, approval_request_id: Any) -> bool:
+        """Lock the approval row and report whether it is still pending.
+
+        Same transaction as the park write that follows. A missing row is
+        not pending: there is nothing to wait on.
+        """
+        from preloop.models.models.approval_request import ApprovalRequest
+
+        row = (
+            db.query(ApprovalRequest.id)
+            .filter(
+                ApprovalRequest.id == approval_request_id,
+                ApprovalRequest.status == "pending",
+            )
+            .with_for_update()
+            .first()
+        )
+        return row is not None
 
     def get_park_request(self, db: Session, *, execution_id: Any) -> Optional[dict]:
         """Read park intent fresh on each monitor poll (see get_stop_request)."""

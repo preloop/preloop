@@ -11,6 +11,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { AuthedElement, fetchWithAuth, PermissionError } from '../../api';
 import { permissionErrorFromResponse } from '../../permissions';
 import { parseUTCDate } from '../../utils/date';
+import { withoutApprovalMetadata } from '../../utils/approval-identity';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -27,6 +28,7 @@ import '@shoelace-style/shoelace/dist/components/divider/divider.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 import '../../components/view-header.ts';
+import '../../components/audit-integrity-strip';
 import '../../components/permission-denied';
 import { showToast } from '../../components/confirm-dialog';
 
@@ -43,6 +45,12 @@ interface AuditLog {
   user_agent: string | null;
   details: Record<string, any> | null;
   timestamp: string;
+  /**
+   * Present only when the timeline payload already carries a chain position.
+   * The grouped timeline response in this tree does not add the field, so the
+   * seal mark stays hidden until a serializer includes it.
+   */
+  chain_seq?: number | null;
 }
 
 interface SubEvent {
@@ -833,7 +841,16 @@ export class AuditView extends AuthedElement {
             : nothing
         }
         ${preferredItems} ${remainingItems} ${recipientChips}
-        ${this._renderJsonDetail('Arguments', details.tool_args)}
+        ${this._renderJsonDetail(
+          'Arguments',
+          details.tool_args &&
+            typeof details.tool_args === 'object' &&
+            !Array.isArray(details.tool_args)
+            ? withoutApprovalMetadata(
+                details.tool_args as Record<string, unknown>
+              )
+            : details.tool_args
+        )}
         ${this._renderJsonDetail('Result preview', details.result_preview)}
         ${this._renderJsonDetail('Budget', details.budget)}
         ${this._renderJsonDetail('New Value', details.new_value)}
@@ -1051,8 +1068,15 @@ export class AuditView extends AuthedElement {
   }
 
   private _getArgsSummary(details: Record<string, any> | null): string {
-    if (!details?.tool_args) return '';
-    const args = details.tool_args;
+    if (
+      !details?.tool_args ||
+      typeof details.tool_args !== 'object' ||
+      Array.isArray(details.tool_args)
+    )
+      return '';
+    const args = withoutApprovalMetadata(
+      details.tool_args as Record<string, unknown>
+    );
     const entries = Object.entries(args);
     if (entries.length === 0) return '';
     const parts = entries.slice(0, 3).map(([k, v]) => {
@@ -1168,6 +1192,7 @@ export class AuditView extends AuthedElement {
                   message=${this._permissionError.message}
                 ></permission-denied>`
               : html`
+                  <audit-integrity-strip></audit-integrity-strip>
                   ${this._renderFilterBar()}
                   ${
                     this._loading
@@ -1407,6 +1432,23 @@ export class AuditView extends AuthedElement {
     `;
   }
 
+  /**
+   * Sealed or unsealed, only when the row already carries chain_seq.
+   * A missing field is not the same as an unsealed row.
+   */
+  private _renderSeal(event: AuditLog) {
+    if (!Object.prototype.hasOwnProperty.call(event, 'chain_seq')) {
+      return nothing;
+    }
+    const sealed = event.chain_seq != null;
+    const title = sealed
+      ? 'Sealed into the hash chain. This shows the row was not edited after sealing. It does not show the row was true when written.'
+      : 'Written, not sealed yet. Sealing runs behind the write.';
+    return html`<span class="seal-mark" title=${title} data-testid="seal-mark"
+      >${sealed ? `Sealed ${event.chain_seq}` : 'Unsealed'}</span
+    >`;
+  }
+
   private _renderGroup(group: AuditGroup) {
     const key = this._getGroupKey(group);
     const expanded = this._expandedGroups.has(key);
@@ -1449,6 +1491,7 @@ export class AuditView extends AuthedElement {
                 ? html`<span class="exec-time">${execTime}ms</span>`
                 : nothing
             }
+            ${this._renderSeal(event)}
             <sl-badge class="status-chip" variant=${badge.variant} pill
               >${badge.label}</sl-badge
             >

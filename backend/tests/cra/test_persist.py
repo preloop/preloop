@@ -105,6 +105,9 @@ def test_valid_fail_verdict_is_execution_completed(
     assert decision.fail_closed_status is None
     assert decision.validation.execution_completed
     assert decision.validation.release_denied
+    assert decision.artifact is not None
+    measured = decision.artifact.pop("minimum_elements_measured")
+    assert measured["status"] == "skipped"
     assert decision.artifact == payload
 
 
@@ -132,6 +135,9 @@ def test_incompletion_envelope_is_persisted_intact_and_fails_the_run() -> None:
     }
     decision = apply_cra_persist_boundary(payload)
     assert not decision.invalid
+    assert decision.artifact is not None
+    measured = decision.artifact.pop("minimum_elements_measured")
+    assert measured["status"] == "skipped"
     assert decision.artifact == payload
     assert "error" not in decision.artifact
     assert decision.validation.incomplete

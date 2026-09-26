@@ -14,9 +14,11 @@ import type {
   SubjectGovernanceConfig,
 } from '../../types';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
+import '../../components/legal-hold-control';
 import {
   approvalRequesterName,
   formatApprovalSource,
+  getApprovalRepository,
   getApprovalSource,
   withoutApprovalMetadata,
 } from '../../utils/approval-identity';
@@ -42,6 +44,7 @@ import '../../components/answer-form';
 import type { AnswerForm } from '../../components/answer-form';
 import '../../components/approval-rule-context-block';
 import '../../components/attribution-line';
+import '../../components/repository-chip';
 import '../../components/args-diff';
 import { fileEditsFromArgs } from '../../components/args-diff';
 import type { QuestionAnswerDetail } from '../../components/question-answer-panel';
@@ -1225,6 +1228,10 @@ export class ApprovalView extends AuthedElement {
           >
             ${displayStatus}
           </sl-badge>
+          <legal-hold-control
+            resource-type="approval"
+            resource-id=${request.id}
+          ></legal-hold-control>
           ${
             countdown
               ? html`<sl-badge
@@ -1462,6 +1469,16 @@ export class ApprovalView extends AuthedElement {
             ? html`<div class="fact">
                 <span class="fact-label">Adapter</span>
                 <span>${source}</span>
+              </div>`
+            : ''
+        }
+        ${
+          getApprovalRepository(request.tool_args)
+            ? html`<div class="fact">
+                <span class="fact-label">Repository</span>
+                <repository-chip
+                  .toolArgs=${request.tool_args}
+                ></repository-chip>
               </div>`
             : ''
         }

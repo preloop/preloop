@@ -1,4 +1,5 @@
 slug: docs-currency-review
+supports_persistent: false
 name: Docs Currency Review
 description: >-
   Checks whether a project's documentation still matches its code and

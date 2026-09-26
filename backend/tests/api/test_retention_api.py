@@ -281,6 +281,21 @@ def test_holds_are_listed_and_released(client, pack):
 
     listed = client.get(f"{BASE}/holds").json()
     assert [row["id"] for row in listed] == [created["id"]]
+    matched = client.get(
+        f"{BASE}/holds",
+        params={"resource_type": "execution", "resource_id": str(execution.id)},
+    ).json()
+    assert [row["id"] for row in matched] == [created["id"]]
+    assert (
+        client.get(
+            f"{BASE}/holds",
+            params={
+                "resource_type": "execution",
+                "resource_id": "00000000-0000-4000-8000-000000000001",
+            },
+        ).json()
+        == []
+    )
 
     released = client.post(
         f"{BASE}/holds/{created['id']}/release",

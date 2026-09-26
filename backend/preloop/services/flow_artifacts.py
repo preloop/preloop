@@ -876,7 +876,13 @@ def get_artifact(
     if artifact is None or artifact.execution_id != reference.execution_id:
         raise ValueError("artifact_missing")
     now = datetime.now(UTC)
-    if artifact.expires_at <= now or artifact.ciphertext is None:
+    # A legal hold keeps the ciphertext past expires_at. Treating that row as
+    # expired would make a held pack undownloadable, which is the opposite of
+    # the hold. Ciphertext that is already gone is still expired.
+    held = bool(getattr(artifact, "legal_hold", False)) and (
+        artifact.ciphertext is not None
+    )
+    if artifact.ciphertext is None or (artifact.expires_at <= now and not held):
         raise ValueError("artifact_expired")
     if (
         artifact.manifest_sha256 != reference.manifest_sha256

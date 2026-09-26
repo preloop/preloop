@@ -45,6 +45,8 @@ export interface TranscriptStep {
   toolName?: string | null;
   serverName?: string | null;
   status?: string | null;
+  /** Tool-call metadata, when it may carry `_preloop_repository`. */
+  repositoryArgs?: Record<string, unknown> | null;
   /** True when the classification came from exact structure, not a heuristic. */
   detectionExact: boolean;
 }
@@ -519,6 +521,7 @@ export function buildConversation(
           toolName: item.tool_name,
           serverName: item.server_name,
           status: item.status,
+          repositoryArgs: item.metadata ?? null,
           detectionExact: true,
         },
       });

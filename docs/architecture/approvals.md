@@ -89,6 +89,8 @@ graph TD
 - `POST /approval/{id}/decide` - Public endpoint for approval responses (token-based)
 - `POST /api/v1/agents/permission-check` - Lets an onboarded agent raise an approval for one of its **native/built-in** tool calls (not just MCP tools), authenticated with the agent's managed-runtime credential. It reuses `ApprovalService.create_and_notify` → `wait_for_approval` and blocks until decided, returning `{"decision":"allow"|"deny","reason","request_id","timed_out"}` (deny is the safe default). `timed_out: true` marks an expired approval. It remains a deny in CLI and runtime adapters, including with fail-open enabled; it must not become a local prompt that could bypass a required central approval. Transport failures and timeouts fail closed by default. Explicit fail-open applies only to transport/timeouts and HTTP 5xx availability failures; HTTP 4xx, malformed replies, and invalid configuration always block. The request's non-sensitive originating adapter travels as a `_preloop_source` marker inside `tool_args` so approver surfaces can distinguish e.g. a Cursor-originated `Write` from a Claude Code one without a schema migration. A client `deny` is honoured before native access rules so a Preloop allow cannot widen the host agent's policy. Rules then run before the hook's `client_decision` allow is honoured, and a matching rule wins (a blocked tool is denied without creating an approval). Only scoped rules whose stored `source` is `agent` or absent are honoured, so per-agent MCP rules named like native tools do not fire.
 
+**Repository identity on the permission hook.** The CLI hook observes its own `cwd` and resolves the repository it sits in before calling the endpoint: `git rev-parse --show-toplevel`, then `git remote get-url origin`, normalized to `host/owner/repo` with scheme, userinfo, credentials, a trailing `.git` and a trailing slash stripped (the host is lowercased; the owner and repository keep their case). This is a trusted observation of the hook's working directory, not a policy input — it adds no repository or path scope to rule evaluation. The endpoint stores it as a `_preloop_repository` marker beside `_preloop_source`, so approval cards can name the repository the call ran in. Native-hook approvals store the marker on the approval request; they do not write a tool-call activity in this slice — the timeline chip renders when a tool-call activity's metadata carries the marker. Identity is only ever derived from `cwd`, never from tool arguments, because MCP paths are caller-supplied. A work tree with no `origin`, and an origin that is not a host/owner/repo identity (a local path or a `file://` remote), is recorded as `no_remote` with an empty remote; outside a git work tree, or when git does not answer within a 500 ms budget, the field is omitted and the call proceeds (fail open). Linked worktrees resolve to the worktree root, and a nested `cwd` carries the path relative to that root.
+
 **Agent questions (`ask_user`).** Beyond allow/deny gating, the built-in `ask_user` MCP tool lets an agent ask the operator a question with multiple-choice `options` and/or a free-text answer, routed through the same approval workflow, notification, and audit pipeline. The question payload (`is_question`, `question`, `options`, `allow_free_text`) rides in the approval request's `tool_args` JSONB (no schema migration) and is surfaced on `ApprovalRequestResponse` as computed fields. The operator's reply is submitted via the same decision endpoints, where `ApprovalDecision` now accepts `selected_option`/`answer_text` (precedence: `answer_text` > `selected_option` > `comment`); the resulting text is returned to the agent as the tool result. Mobile/watch render options as buttons plus an answer field. When the question was resolved through a synchronous approval, `ask_user`'s return carries an approval audit trailer — `[approval_id: ...; answered_by: ...; answered_at: ...; status: ...]` — so an agent transcribing the human's decision (e.g. interactive waiver collection in the security-audit presets) can cite the governed approval record instead of asserting one. `answered_by` is resolved to the approver's email/username (raw id only as fallback); the metadata is scoped to the current `require_approval` call (cleared on entry, consumed once) so a stale approval can never be misattributed to a later question, and runs without an approval record keep the legacy return format unchanged.
 
 **Approval window and parked executions.** How long a human has is a
@@ -102,16 +104,21 @@ account cap (`account.meta_data["approval_window_max_seconds"]`, which may only
 tighten the 30 day deployment ceiling), and the resulting `expires_at` follows
 it.
 
-A window measured in days cannot be waited out in a container. When a gated
-call is still undecided after `settings.approval_park_after_seconds` (90
-seconds), the tool returns a structured `parked_for_human` result and the
-execution is **parked**: `park_request_id` is written on the row, the
-orchestrator's monitor sees it, captures the evidence pack, workspace snapshot
-and CLI session, stops the executor and sets the non-terminal status
-`WAITING_FOR_HUMAN` with no `end_time`. A parked run holds no container, no
-runner and no worker, and the flow's `timeout_seconds` budget is paused
-(`parked_compute_seconds` records the agent time already spent, and the resumed
-run gets the remainder).
+A window measured in days cannot be waited out in a container. When
+`should_park` is already true at request creation (the window is longer than
+`settings.approval_park_after_seconds`, 90 seconds), the execution is parked
+immediately: `park_request_id` is written before the tool result is returned,
+the orchestrator releases the container and sets `WAITING_FOR_HUMAN`, and the
+tool call returns a `parked_for_human` result telling the agent it will resume
+when the human answers. That park is a row write, so it stands even if the
+tool result never reaches the agent. Windows at or under the threshold keep
+the short in-process wait and only park if that wait elapses with the request
+still pending. A parked run holds no container, no runner and no worker, and
+the flow's `timeout_seconds` budget is paused (`parked_compute_seconds`
+records the agent time already spent, and the resumed run gets the remainder).
+An execution that ends failed, cancelled, or timed out cancels any approval
+requests it still holds as pending, with a reason, so the console does not
+show a question whose answer can no longer reach a run.
 
 The decision resumes it. Every resolution path funnels through
 `ApprovalService.update_approval_request`, which claims each parked execution

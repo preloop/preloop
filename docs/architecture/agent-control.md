@@ -61,7 +61,22 @@ migrated disposable PostgreSQL database (UTC), then run that file with pytest.
 *   **Related Implemented Surfaces:** Browser, mobile, and console clients can use account-scoped realtime topics over WebSocket. Runtime sessions, managed-agent records, model-gateway usage, approval events, and operator lifecycle actions already share account-scoped event routing.
 *   **Scaffolded Today:** `account_realtime` defines normalized topics such as `runtime_sessions`, `managed_agents`, `gateway_activity`, `budget_health`, and `audit`; the WebSocket manager can filter broadcasts by account and topic; frontend runtime-session and managed-agent views subscribe to those topics. Mobile/watch clients have native voice UI scaffolds that can create operator text turns, but the end-to-end user experience still depends on runtime adapters and production hardening.
 *   **Runtime Plugins (shipping):** Standalone open-source runtime plugins live in `runtime-plugins/` — `@preloop-ai/openclaw-plugin` (npm, TypeScript) and `preloop-hermes-plugin` (PyPI, Python) — and implement the `preloop.agent_control.v1` protocol: they read `preloop.control.control_ws_url`, connect with the durable runtime bearer token, own reconnect/backoff behavior, keep the WebSocket open, send heartbeat/status events, advertise capabilities, receive `send_message` command envelopes, acknowledge delivery, map operator messages into their own interactive runtime, and gate native tool calls through Preloop approvals (fail-closed by default). `preloop agents install-plugin <agent>` delegates installation to the runtime marketplace; `PUBLISHING.md` covers lockstep versioning. Existing enrollment can rewrite MCP and model traffic even when the runtime plugin is absent, but Agent Control is not enabled until that plugin is running inside the agent process.
+*   **Desktop capability:** Hermes and OpenClaw read `$PRELOOP_DESKTOP_FILE` or `~/.preloop/desktop.json` and add two keys to the presence `capabilities` object. A parsed file whose `vnc.host` is exactly `127.0.0.1` sends `desktop: "vnc"` and `desktop_display` (the manifest `display`, typically `:99`); every other case, including a missing file or a missing key from another plugin, sends `desktop: "none"`. The VNC password file and the rest of the manifest (host, port, auth, browser) stay on the machine. The backend stores that envelope with the agent's presence and exposes `desktop` (`"vnc"`, `"rdp"`, or `"none"`) and `desktop_display` on the managed-agent API. Brokered viewing and RDP detection are not part of this signal.
 *   **Claude Code Sidecar (prototype):** Claude Code has no in-process plugin API for message injection, so `@preloop-ai/claude-plugin` (`runtime-plugins/claude-preloop`) runs as a standalone sidecar daemon implementing the same `preloop.agent_control.v1` protocol. It reads `~/.claude/preloop-control.json` (its own file; `settings.json` stays reserved for Claude Code), drives sidecar-owned sessions through the Claude Agent SDK (streaming input for `send_message`, `resume` for persisted sessions, `interrupt()`), and reports presence/telemetry for interactive terminal sessions by tailing `~/.claude/projects/**/*.jsonl` (summaries only, no transcript upload). Interactive TUI sessions are observe-and-approve, not steerable mid-turn; targeting one resumes it headlessly. Tool approvals remain on the PreToolUse permission hook installed by `preloop agents onboard --approvals`; owned sessions load filesystem setting sources so the same hook fires there, and stopping the sidecar never ungoverns anything.
+*   **Codex CLI Sidecar (prototype):** Codex CLI likewise has no in-process plugin API for message injection, so `@preloop-ai/codex-plugin` (`runtime-plugins/codex-preloop`, bin `preloop-codex-plugin`) runs as a standalone sidecar implementing `preloop.agent_control.v1` with `runtime: "codex"`. It reads `~/.codex/preloop-control.json` (its own file; `config.toml` and `auth.json` stay reserved for Codex). Owned threads are driven through `@openai/codex-sdk`: `start_new_session` calls `startThread` in `cwd` or `workspace_root`, a follow-up turn on an owned thread calls `thread.run`, an unknown `target_session_id` calls `resumeThread`, and `interrupt` aborts the in-flight run with an `AbortController` and answers `command_result` with a stopped marker (`status: "stopped"`). Presence for interactive sessions comes from tailing `~/.codex/sessions/**/*.jsonl` (summaries only). Advertised capabilities match the Claude sidecar except `worktree`. Tool approvals stay on the hook installed at `~/.codex/hooks.json` by `preloop agents onboard "Codex CLI" --approvals`. The sidecar does not set `approvalPolicy` to `never`, does not rewrite `config.toml` or `auth.json`, and stopping it never ungoverns anything (fail-closed). `codex_sandbox_mode` defaults to `workspace-write`; `danger-full-access` is refused unless `codex_allow_full_access` is also set.
+
+### Runtime support
+
+| Kind | Channel | New session | Notes |
+| --- | --- | --- | --- |
+| `hermes` | in-process plugin | yes | PyPI `preloop-hermes-plugin` |
+| `openclaw` | in-process plugin | yes | npm `@preloop-ai/openclaw-plugin` |
+| `claude_code` | sidecar | yes | `@preloop-ai/claude-plugin`, `~/.claude/preloop-control.json` |
+| `opencode` | in-process plugin | yes | `@preloop-ai/opencode-plugin` |
+| `pi` | harness plugin | no | text on an already-open session only |
+| `deepseek` | harness plugin | no | text on an already-open session only |
+| `codex` | sidecar | yes | `@preloop-ai/codex-plugin`, `~/.codex/preloop-control.json` |
+
 *   **Target Protocol:** A managed agent opens a durable WebSocket using its runtime credential, sends runtime principal/session metadata, subscribes to account and agent-specific command topics, publishes heartbeat/status updates, and acknowledges command delivery. Server-side commands should be persisted and audited before delivery so reconnecting agents can recover missed instructions.
 *   **Session Prompt Semantics:** Operator text sent through Agent Control is an auditable user/operator turn for the selected runtime session. It is not a hidden system prompt, policy override, or privileged tool instruction. Runtime adapters should inject it as the next user-facing instruction in the agent's normal conversation model, preserve the current session context when possible, record the originating surface in metadata, and continue routing any resulting tool calls or model calls through the MCP firewall, model gateway, and approval policies.
 *   **In-Session Question Delivery:** When the `ask_user` or `request_approval` builtin raises a pending approval and the asking session's runtime has a live Agent Control connection, `preloop.services.ask_user_inband` also delivers the question into that session as an audited `send_message` turn (persisted in `agent_control_command`, logged as `agent_control_message` activity with `kind=preloop_question_notice`). The in-session turn is a notice with token-free deep links (`/console/approval/<id>` web, `preloop://approve/<id>` mobile) — never an answer channel: anything returned over the control WebSocket is agent output and is not accepted as the human's answer. Answers enter only through the governed approval endpoints, so the single approval record and its quorum/first-answer-wins semantics are preserved across surfaces.
@@ -107,6 +122,68 @@ string as one audited `send_message` with `start_new_session=true`,
 | `trigger_event_source` | trigger payload |
 | `repository`, `ref` | trigger payload when present |
 | `timeout_seconds` | the flow's timeout budget |
+| `workspace` | checkout contract below. No credentials. |
+
+`workspace.mode` is also a prompt placeholder (`{{workspace.mode}}`).
+Ephemeral container runs render `ephemeral`. Persistent runs render
+`persistent_checkout` or `clone_less`.
+
+### Workspace
+
+When `git_clone_config.enabled` is true and the trigger or clone config
+names a repository, `workspace` is:
+
+| Key | Meaning |
+| --- | --- |
+| `mode` | `persistent_checkout` |
+| `repository_url` | credential-free clone URL |
+| `repository_slug` | `owner/repo` path under the sidecar `workspace_root` |
+| `default_branch` | repository default branch |
+| `ref` | branch the sidecar falls back to |
+| `fetch_ref` | pull or merge request ref to fetch first, when present |
+| `sha` | commit to check out detached, when the trigger has one |
+| `pr_number` | pull request or merge request number, when present |
+
+Clone depth and submodules are not part of this contract. The container
+clone path does not take them from `GitCloneConfig` either. A config with
+more than one repository stays `clone_less`: one workspace object cannot
+name every checkout the container would make.
+
+`repository_url` never contains a password. An `ssh://git@host/...` URL
+keeps the `git` user. Other schemes are dropped and the run is
+`clone_less` when no safe URL remains. A repository whose name cannot be
+a safe checkout directory name (unsafe or missing `repository_slug`) also
+stays `clone_less`: a persistent checkout is a directory named by the slug.
+
+When clone is disabled, or no repository can be resolved, `workspace` is
+`{mode: "clone_less"}`. The review reads the diff from the tracker.
+
+The Claude sidecar (`runtime-plugins/claude-preloop`) handles
+`persistent_checkout` as follows. The Codex sidecar implements the same
+contract separately.
+
+* Ensure `<workspace_root>/<repository_slug>` exists. Clone once, then
+  fetch on that same run and on later runs. Fetch tries `fetch_ref`, then
+  `sha`, then `ref`. The commit is checked out detached.
+* `spawn_worktree` creates a worktree after that checkout and runs the
+  turn there.
+* Git operations on one repository directory are serialized in-process.
+  Eviction takes the same lock and skips a directory whose turn is still
+  running.
+* A dirty tree fails the command with `command_error`. The sidecar does
+  not `reset --hard` or `clean` it. A persistent turn that leaves
+  uncommitted edits with `spawn_worktree: false` fails the next run on
+  that repository; use a worktree or commit/clean before the next turn.
+  Ownership is `preloop.managedcheckout` in the repository's git config,
+  so a restart still recognises a tree the sidecar checked out.
+* `ssh://git@host/...` is a valid clone URL. A password in the URL is
+  refused. `protocol.ext.allow` and `protocol.file.allow` are `never`.
+* The resolved path is `metadata.workspace_path` on `command_result`
+  (the ack handler does not store a payload) and on an
+  `event/session_activity`.
+* `workspace_repositories_max` (default 20) evicts the least recently
+  used clean checkout. Dirty directories are kept.
+* `workspace_fetch_timeout_ms` (default 120000) bounds fetch and clone.
 
 The envelope shape is the same one runtime plugins already accept (`text`,
 `metadata`, `input_mode`, `session_mode`, `start_new_session`, optional
@@ -162,12 +239,9 @@ operator endpoint uses the same
 
 ### Not covered yet
 
-* Workspace / clone contract on the persistent host (no `git_clone_config`
-  checkout, no `cwd`/`workspace_root` requirement).
-* Preset support matrix (PR-review and other presets still assume an
-  ephemeral clone).
-* Expanding the Agent Control kind allow-list (for example Codex). That is a
-  separate change.
+* The Codex sidecar implementing this same persistent workspace contract.
+  Codex is already on the Agent Control allow-list, and CLI onboarding writes
+  `~/.codex/preloop-control.json`.
 
 ## Managed CLI/Desktop Agent Enrollment
 *   **Discovery Entry Point:** `preloop agents discover` can stay read-only (`--json`, `--no-onboard-prompt`) or hand off interactively into managed enrollment, with `--yes` available for auto-onboarding.

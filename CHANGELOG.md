@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The execution page Report tab reads one evidence-pack member at a time
+  (`GET /api/v1/flows/executions/{id}/evidence/members`) and shows the report,
+  findings and register. A verdict or findings summary on the run appears in
+  the header strip and links to that tab. Members above 8 MiB stay on the
+  full pack download.
+
+- The console Settings > Records page shows audit chain status and
+  verification, signing keys, retention, legal holds, and signed period
+  exports. The audit timeline links to that page and marks a row sealed only
+  when the row already carries a chain sequence. A flow execution shows its
+  evidence pack. Approvals and runtime sessions can place or release a legal
+  hold.
+
+- `python -m preloop.cra measure` prints the platform's NTIA minimum-elements
+  measurement for one or more CycloneDX or SPDX JSON files. SBOM Verify and
+  Release Security Audit copy `passed` and `missing` from that object.
+  Persisted SBOM and release audits carry the same object as
+  `minimum_elements_measured` (on `sbom_audit` for a release audit).
+
+- Plain console API keys can opt into a runtime session by sending
+  `X-Preloop-Session-Id` on a gateway request. Vendor session headers and
+  body-level ids still require a runtime principal, and a request with no
+  valid header records usage without creating a session. Refs #912.
+- `FLOW_EVIDENCE_LOG_PLAINTEXT` (default true) keeps today's Kubernetes
+  behavior: without a direct-upload token, `result.json`, the evidence pack,
+  and the workspace snapshot are still written to the pod log as base64.
+  Set it false, and use direct upload, when those bytes must not be in pod
+  logs. If plaintext is off and an execution has no upload token, the
+  wrapper fails closed: no artifact bytes, and an evidence receipt of
+  `failed` / `plaintext_disabled`. Encrypted log transport remains a
+  separate decision in #268.
+
 - `preloop agents install-runtime --desktop` installs a loopback-only headless
   desktop (Xvfb on `:99`, x11vnc on `127.0.0.1:5900`, Chromium) and exports
   `DISPLAY=:99`. `POST /api/v1/agent-deployments` accepts `desktop` and reports
@@ -17,8 +49,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is passed only to `x11vnc -storepasswd` (briefly visible to other local
   users; VNC DES keeps the first 8 characters) and is not written elsewhere.
 
+### Changed
+
+- At persist, a `minimum_elements.passed: true` claim is replaced when the
+  delivered SBOM bytes are missing elements, and the agent's claim is kept
+  on `verdict_corrected`. The verdict floor then moves the label to `fail`.
+  An agent who already failed minimum elements keeps that claim. When
+  `counts_by_severity` is the only contract failure, it is recomputed from
+  the findings list and recorded per key. A run is never made less severe.
+
+- One-year usage summaries aggregate session and model totals before joining
+  session, agent, flow, and principal labels, and hash the daily series by
+  materialized day bucket. Per-user windows use
+  `ix_api_usage_account_principal_id_ts`. Replay exclusion, retry handling, and
+  the breakdown limit are unchanged. Refs #914.
+
 ### Fixed
 
+- A workspace checkpoint that exceeds the storage cap logs
+  `PRELOOP_CHECKPOINT skipped checkpoint_oversized` and lets the run finish.
+  The last completed checkpoint stays the resume point. Other checkpoint
+  errors still block publication.
+- A gated tool call whose approval window is longer than
+  `approval_park_after_seconds` parks the execution when the request is
+  created, instead of polling in process for that long first. The park is
+  stored before the tool result is returned, so a harness that drops the
+  call still leaves a run waiting for the human. A failed, cancelled, or
+  timed out execution cancels approval requests it still holds as pending.
+- Native host execution profiles reject `publication_mode: isolated` before
+  execution. A stored publication snapshot is no longer stripped from the
+  host lease, and a missing snapshot still fails with the existing policy
+  error. Container isolated publication is unchanged.
+- Legacy publication now appends the current execution and head SHA to an
+  existing pull request or merge request, keeping earlier records and human
+  prose. A malformed, oversized, or rejected provider update leaves the
+  description unchanged and is not reported as a successful publication.
+  Isolated GitLab publication is still unsupported.
+- Release SBOMs carry a per-component supplier derived from local package
+  metadata, and the release SBOM job fails when the platform
+  minimum-elements measurement does not pass. The backend runtime image
+  drops pip, setuptools and wheel after install. The frontend lockfile
+  pins the `cookies` dev dependency to 0.9.2. OpenVEX files ship with the
+  SBOM artifact.
 - Harness images pin Node and install Pi and DeepSeek from lockfiles, so
   Scorecard no longer reports floating image or npm dependencies. Empty
   `except` handlers that intentionally ignore an optional driver or an

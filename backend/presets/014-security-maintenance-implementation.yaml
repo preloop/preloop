@@ -1,4 +1,5 @@
 slug: security-maintenance-implementation
+supports_persistent: false
 name: Security Maintenance Implementation
 description: >-
   Conservative implementation overlay for opted-in supported-release

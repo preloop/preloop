@@ -370,14 +370,29 @@ Path(out_path).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf
 
 
 def _existing_pr_failure_update_shell(
-    *, kind: str, api_url: str, authorization: str, branch: str
+    *,
+    kind: str,
+    api_url: str,
+    authorization: str,
+    branch: str,
+    execution_link: str = "",
 ) -> str:
-    """Refresh only the failure disclosure when branch lookup finds an open PR."""
+    """Refresh failure disclosure and upsert provenance on an open PR.
+
+    A lookup that does not identify exactly one PR/MR, an invalid number, or an
+    unmergeable notice aborts without writing. A provenance parse or size
+    failure skips only the owned region; an already-merged failure disclosure
+    is still posted (exit 2). A non-2xx provider response sets
+    ``PRELOOP_PROVENANCE_FAILED`` so the caller does not claim success.
+    """
     script = (
         inspect.getsource(pr_metadata)
         + r"""
 import sys
-lookup_path, payload_path, update_path, kind, branch = sys.argv[1:]
+lookup_path, payload_path, update_path, kind, branch = sys.argv[1:6]
+execution_link = sys.argv[6] if len(sys.argv) > 6 else ""
+head_sha = sys.argv[7] if len(sys.argv) > 7 else ""
+update_required = False
 try:
     with open(lookup_path, "rb") as stream:
         raw = stream.read(MAX_ARTIFACT_BYTES + 1)
@@ -386,61 +401,128 @@ try:
     candidates = json.loads(raw)
     if not isinstance(candidates, list):
         raise ValueError("lookup response is not a list")
-    with open(payload_path, "rb") as stream:
-        payload_raw = stream.read(MAX_ARTIFACT_BYTES + 1)
-    if len(payload_raw) > MAX_ARTIFACT_BYTES:
-        raise ValueError("payload too large")
-    payload = json.loads(payload_raw)
     field = "description" if kind == "gitlab" else "body"
-    notices = re.findall(
-        r"<!-- preloop:failure:([0-9a-f-]{36}):start -->.*?<!-- preloop:failure:\1:end -->",
-        payload[field], re.DOTALL,
-    )
-    if not notices:
-        sys.exit(0)
+    payload = {}
+    try:
+        with open(payload_path, "rb") as stream:
+            payload_raw = stream.read(MAX_ARTIFACT_BYTES + 1)
+        if len(payload_raw) > MAX_ARTIFACT_BYTES:
+            raise ValueError("payload too large")
+        payload = json.loads(payload_raw)
+    except (OSError, ValueError, UnicodeDecodeError, RecursionError):
+        payload = {}
+    notices = []
+    if isinstance(payload, dict) and isinstance(payload.get(field), str):
+        notices = re.findall(
+            r"<!-- preloop:failure:([0-9a-f-]{36}):start -->.*?<!-- preloop:failure:\1:end -->",
+            payload[field], re.DOTALL,
+        )
     candidates = [item for item in candidates if isinstance(item, dict) and (
         item.get("source_branch") if kind == "gitlab" else (item.get("head") or {}).get("ref")
     ) == branch]
+    if execution_link and candidates:
+        update_required = True
     if len(candidates) != 1:
         raise ValueError("lookup did not identify one source branch")
     existing = candidates[0]
     number = existing.get("iid" if kind == "gitlab" else "number")
     if type(number) is not int or number <= 0:
         raise ValueError("invalid PR number")
-    body = existing.get(field) or ""
-    if not isinstance(body, str):
+    original = existing.get(field) or ""
+    if not isinstance(original, str):
         raise ValueError("invalid existing description")
+    body = original
+    provenance_failed = False
     for execution_id in notices:
         start = f"<!-- preloop:failure:{execution_id}:start -->"
         end = f"<!-- preloop:failure:{execution_id}:end -->"
         notice = payload[field].split(start, 1)[1].split(end, 1)[0]
         body = merge_failure_notice(body, start + notice + end)
-    Path(update_path).write_text(json.dumps({field: body}), encoding="utf-8")
-    print(number)
+    if execution_link and head_sha:
+        public_url, separator, current_id = execution_link.rpartition(
+            "/console/flows/executions/"
+        )
+        if not separator or not public_url:
+            raise ValueError("Execution link is not a console execution URL")
+        try:
+            body = append_provenance(
+                body, PublicationRecord(current_id, head_sha), public_url
+            )
+        except ValueError as exc:
+            print("PRELOOP_PR_METADATA_WARNING: " + str(exc), file=sys.stderr)
+            provenance_failed = True
+    if body != original:
+        Path(update_path).write_text(json.dumps({field: body}), encoding="utf-8")
+        print(number)
+    if provenance_failed:
+        sys.exit(2)
+    if body == original:
+        sys.exit(0)
+except SystemExit:
+    raise
 except (OSError, ValueError, KeyError, TypeError, RecursionError):
-    print("PRELOOP_PR_METADATA_WARNING: could not refresh existing failure disclosure", file=sys.stderr)
+    print("PRELOOP_PR_METADATA_WARNING: could not refresh existing pull request body", file=sys.stderr)
+    if update_required:
+        sys.exit(3)
 """
     )
     update_path = f"{EVIDENCE_DIR_PATH}/pr-failure-update.json"
     method = "PUT" if kind == "gitlab" else "PATCH"
+    provenance_args = ""
+    if execution_link:
+        provenance_args = f' {shlex.quote(execution_link)} "$(git rev-parse HEAD)"'
     return f"""
-      python3 - {PR_LOOKUP_FILE} {PR_PAYLOAD_FILE} {update_path} {kind} {shlex.quote(branch)} > {update_path}.number <<'PRELOOP_FAILURE_UPDATE'
+      PRELOOP_PROVENANCE_FAILED=
+      py_status=0
+      python3 - {PR_LOOKUP_FILE} {PR_PAYLOAD_FILE} {update_path} {kind} {shlex.quote(branch)}{provenance_args} > {update_path}.number <<'PRELOOP_FAILURE_UPDATE'
 {script}
 PRELOOP_FAILURE_UPDATE
-      PRELOOP_UPDATE_NUMBER=$(cat {update_path}.number)
-      if [ -n "$PRELOOP_UPDATE_NUMBER" ] && [ -s {update_path} ]; then
-        curl -fsS -o /dev/null -X {method} \
-          -H "{authorization}" \
-          -H 'Content-Type: application/json' \
-          --data-binary @{update_path} \
-          "{api_url}/$PRELOOP_UPDATE_NUMBER" \
-          || echo "PRELOOP_PR_METADATA_WARNING: failed to update existing failure disclosure"
+      py_status=$?
+      if [ "$py_status" -ne 0 ]; then
+        PRELOOP_PROVENANCE_FAILED=1
+      fi
+      PRELOOP_UPDATE_NUMBER=$(cat {update_path}.number 2>/dev/null || true)
+      # Exit 2 means provenance was skipped after the failure disclosure was
+      # merged. Still post that body. Any other failure leaves it unchanged.
+      if {{ [ "$py_status" -eq 0 ] || [ "$py_status" -eq 2 ]; }} && [ -n "$PRELOOP_UPDATE_NUMBER" ] && [ -s {update_path} ]; then
+        UPDATE_HTTP=$(curl -sS -o /dev/null -w "%{{http_code}}" -X {method} \\
+          -H "{authorization}" \\
+          -H 'Content-Type: application/json' \\
+          --data-binary @{update_path} \\
+          "{api_url}/$PRELOOP_UPDATE_NUMBER" || echo "000")
+        case "$UPDATE_HTTP" in
+          2??) PRELOOP_BODY_UPDATED=1 ;;
+          *)
+            echo "PRELOOP_PR_METADATA_WARNING: failed to update existing pull request body" >&2
+            PRELOOP_PROVENANCE_FAILED=1
+            ;;
+        esac
       fi
 """
 
 
+def provenance_failure_exit_shell() -> str:
+    """Non-zero exit for the plain push path when a body update failed.
+
+    Capture shells only set ``PRELOOP_PROVENANCE_FAILED``. A bare ``exit``
+    inside them also kills the report-publication wrapper, which must stay
+    at status zero and print one marker. Call this after the capture shell
+    on the plain push path only.
+    """
+    return """
+if [ -n "${PRELOOP_PROVENANCE_FAILED:-}" ]; then
+  exit 1
+fi
+"""
+
+
 def build_github_pr_capture_shell(
-    *, token_ref: str, owner: str, repo: str, branch: str
+    *,
+    token_ref: str,
+    owner: str,
+    repo: str,
+    branch: str,
+    execution_link: str = "",
 ) -> str:
     """Shell that turns the create-PR response into one recognizable line.
 
@@ -461,9 +543,11 @@ def build_github_pr_capture_shell(
         "https://api.github.com/repos/{owner}/{repo}/pulls?state=open&head={owner}:{branch}" \\
         || echo "PR lookup by head branch failed"
       PR_URL=$({grep_pr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
-      {_existing_pr_failure_update_shell(kind="github", api_url=f"https://api.github.com/repos/{owner}/{repo}/pulls", authorization=f"Authorization: token {token_ref}", branch=branch)}
+      {_existing_pr_failure_update_shell(kind="github", api_url=f"https://api.github.com/repos/{owner}/{repo}/pulls", authorization=f"Authorization: token {token_ref}", branch=branch, execution_link=execution_link)}
     fi
-    if [ -n "$PR_URL" ]; then
+    if [ -n "$PRELOOP_PROVENANCE_FAILED" ] && [ -z "${{PRELOOP_BODY_UPDATED:-}}" ]; then
+      echo "PRELOOP_PR_METADATA_WARNING: existing pull request body was left unchanged" >&2
+    elif [ -n "$PR_URL" ]; then
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$PR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"github\\"}}"
     else
       echo "No pull request URL could be resolved for branch {branch}"
@@ -472,7 +556,12 @@ def build_github_pr_capture_shell(
 
 
 def build_gitlab_mr_capture_shell(
-    *, token_ref: str, gitlab_host: str, encoded_path: str, branch: str
+    *,
+    token_ref: str,
+    gitlab_host: str,
+    encoded_path: str,
+    branch: str,
+    execution_link: str = "",
 ) -> str:
     """GitLab counterpart of :func:`build_github_pr_capture_shell`."""
 
@@ -490,9 +579,11 @@ def build_gitlab_mr_capture_shell(
         "https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests?state=opened&source_branch={branch}" \\
         || echo "MR lookup by source branch failed"
       MR_URL=$({grep_mr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
-      {_existing_pr_failure_update_shell(kind="gitlab", api_url=f"https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests", authorization=f"PRIVATE-TOKEN: {token_ref}", branch=branch)}
+      {_existing_pr_failure_update_shell(kind="gitlab", api_url=f"https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests", authorization=f"PRIVATE-TOKEN: {token_ref}", branch=branch, execution_link=execution_link)}
     fi
-    if [ -n "$MR_URL" ]; then
+    if [ -n "$PRELOOP_PROVENANCE_FAILED" ] && [ -z "${{PRELOOP_BODY_UPDATED:-}}" ]; then
+      echo "PRELOOP_PR_METADATA_WARNING: existing pull request body was left unchanged" >&2
+    elif [ -n "$MR_URL" ]; then
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$MR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"gitlab\\"}}"
     else
       echo "No merge request URL could be resolved for branch {branch}"
@@ -707,11 +798,12 @@ K8S_TERMINAL_LOG_TAIL_LINES = _WORST_CASE_EMISSION_LINES + 2000
 # emission wrapper prints starts with this prefix, so operator-facing log
 # consumers can filter the (potentially large, base64) blocks statelessly.
 # Grammar:
-#   PRELOOP_ARTIFACT_BEGIN <channel> <status> [<size_bytes>]
+#   PRELOOP_ARTIFACT_BEGIN <channel> <status> [<size_bytes_or_reason>]
 #   PRELOOP_ARTIFACT_B64 <base64-chunk>          (0..n lines)
 #   PRELOOP_ARTIFACT_END <channel>
-# where <channel> is "result" or "evidence" and <status> is one of
-# present | absent | too_large | error | uploaded.
+# where <channel> is "result", "evidence", or "workspace" and <status> is
+# one of present | absent | too_large | error | uploaded | unavailable |
+# skipped. A non-numeric fourth token is a reason (plaintext_disabled).
 ARTIFACT_STREAM_LINE_PREFIX = "PRELOOP_ARTIFACT_"
 
 # Environment variable carrying the original (unwrapped) agent script when the
@@ -809,7 +901,9 @@ async def _sleep_before_job_create_retry(seconds: float) -> None:
 #
 # Direct upload (PRELOOP_EVIDENCE_PUT_TOKEN): the wrapper never prints
 # evidence or result.json bytes. Markers report uploaded/absent/error only.
-# The Kubernetes log channel remains the legacy path when the token is unset.
+# The Kubernetes log channel remains the legacy path when the token is unset
+# and PRELOOP_EVIDENCE_LOG_PLAINTEXT is not 0. When plaintext is 0 and the
+# token is absent, the wrapper prints unavailable/skipped markers and no bytes.
 K8S_ARTIFACT_WRAPPER_SCRIPT = f"""
 _preloop_emit_artifacts() {{
     if [ -n "${{PRELOOP_EVIDENCE_PUT_TOKEN:-}}" ]; then
@@ -843,6 +937,15 @@ _preloop_emit_artifacts() {{
             echo "PRELOOP_ARTIFACT_BEGIN result absent"
             echo "PRELOOP_ARTIFACT_END result"
         fi
+        return
+    fi
+    if [ "${{PRELOOP_EVIDENCE_LOG_PLAINTEXT:-1}}" = "0" ]; then
+        echo "PRELOOP_ARTIFACT_BEGIN result unavailable plaintext_disabled"
+        echo "PRELOOP_ARTIFACT_END result"
+        echo "PRELOOP_ARTIFACT_BEGIN evidence unavailable plaintext_disabled"
+        echo "PRELOOP_ARTIFACT_END evidence"
+        echo "PRELOOP_ARTIFACT_BEGIN workspace skipped plaintext_disabled"
+        echo "PRELOOP_ARTIFACT_END workspace"
         return
     fi
     if [ -f {RESULT_ARTIFACT_PATH} ]; then
@@ -1144,6 +1247,9 @@ class ContainerAgentExecutor(AgentExecutor):
                 "PRELOOP_EVIDENCE_PUT_TOKEN"
             )
         )
+        # PRELOOP_EVIDENCE_LOG_PLAINTEXT is applied with the token in
+        # _apply_git_credential_env (1 when the log channel is allowed, 0
+        # when it is refused).
         if self.environment_profile and not self.use_kubernetes:
             await self._prepare_environment_services(execution_context)
 
@@ -2453,7 +2559,9 @@ class ContainerAgentExecutor(AgentExecutor):
         Returns ``None`` when no BEGIN marker for ``channel`` exists (wrapper
         not applied, or logs rotated away), otherwise a dict with:
         ``status``: present | absent | too_large | error | truncated | corrupt
+            | unavailable | skipped | uploaded
         ``size``: declared byte size when the marker carried one
+        ``reason``: non-numeric fourth token (for example plaintext_disabled)
         ``data``: decoded payload bytes when status == "present"
         """
         begin_prefix = f"{ARTIFACT_STREAM_LINE_PREFIX}BEGIN {channel}"
@@ -2469,14 +2577,15 @@ class ContainerAgentExecutor(AgentExecutor):
             return None
 
         marker_parts = lines[begin_idx].strip().split()
-        # ["PRELOOP_ARTIFACT_BEGIN", channel, status, size?]
+        # ["PRELOOP_ARTIFACT_BEGIN", channel, status, size_or_reason?]
         status = marker_parts[2] if len(marker_parts) > 2 else "error"
         size: Optional[int] = None
+        reason: Optional[str] = None
         if len(marker_parts) > 3:
             try:
                 size = int(marker_parts[3])
             except ValueError:
-                size = None
+                reason = marker_parts[3]
 
         chunks: list[str] = []
         terminated = False
@@ -2488,14 +2597,40 @@ class ContainerAgentExecutor(AgentExecutor):
             if stripped.startswith(b64_prefix):
                 chunks.append(stripped[len(b64_prefix) :])
         if not terminated:
-            return {"status": "truncated", "size": size, "data": None}
+            return {
+                "status": "truncated",
+                "size": size,
+                "reason": reason,
+                "data": None,
+            }
         if status != "present":
-            return {"status": status, "size": size, "data": None}
+            return {"status": status, "size": size, "reason": reason, "data": None}
         try:
             data = base64.b64decode("".join(chunks), validate=True)
         except (binascii.Error, ValueError):
-            return {"status": "corrupt", "size": size, "data": None}
-        return {"status": "present", "size": size, "data": data}
+            return {"status": "corrupt", "size": size, "reason": reason, "data": None}
+        return {"status": "present", "size": size, "reason": reason, "data": data}
+
+    def _evidence_log_plaintext_enabled(self) -> bool:
+        """Whether this process may decode artifact bytes from pod logs.
+
+        Direct upload never consults this. The default keeps the legacy
+        channel. ``False`` refuses it even when a log line claims ``present``.
+        """
+        return bool(getattr(settings, "flow_evidence_log_plaintext", True))
+
+    def _plaintext_log_refused(self) -> bool:
+        """True when artifact bytes must not be taken from the pod log."""
+        if self._direct_evidence:
+            return False
+        return not self._evidence_log_plaintext_enabled()
+
+    @staticmethod
+    def _marker_plaintext_disabled(stream: Optional[Dict[str, Any]]) -> bool:
+        """True when a channel marker names the plaintext_disabled reason."""
+        if not stream:
+            return False
+        return stream.get("reason") == "plaintext_disabled"
 
     async def _get_kubernetes_terminal_logs(self, job_name: str) -> list[str]:
         """Read the tail of a finished Job's pod log once and cache it.
@@ -2551,6 +2686,9 @@ class ContainerAgentExecutor(AgentExecutor):
                 f"No result artifact emission found in logs of Job {job_name}"
             )
             return None
+        if self._marker_plaintext_disabled(stream) or self._plaintext_log_refused():
+            # Same outcome as a missing result.json: no success, no payload.
+            return None
         status = stream["status"]
         if status == "absent":
             return None
@@ -2601,12 +2739,16 @@ class ContainerAgentExecutor(AgentExecutor):
         """Capture the evidence pack (``/workspace/evidence``) as tar.gz bytes.
 
         Docker legacy: fetches the directory through the archive API and
-        re-packs it as tar.gz. Docker direct upload: the EXIT trap already
-        PUT the pack; logs carry ``PRELOOP_EVIDENCE committed|failed|absent``
-        and this getter returns no bytes so the orchestrator does not store
-        a second copy. Kubernetes: decodes the base64 emission from the pod
-        log stream (see ``K8S_ARTIFACT_WRAPPER_SCRIPT``) unless direct upload
-        is configured, in which case logs carry no evidence payload.
+        re-packs it as tar.gz. That copy does not read the log channel, so
+        ``FLOW_EVIDENCE_LOG_PLAINTEXT`` does not change it. Docker direct
+        upload: the EXIT trap already PUT the pack; logs carry
+        ``PRELOOP_EVIDENCE committed|failed|absent`` and this getter returns
+        no bytes so the orchestrator does not store a second copy. Kubernetes:
+        decodes the base64 emission from the pod log stream (see
+        ``K8S_ARTIFACT_WRAPPER_SCRIPT``) unless direct upload is configured
+        or plaintext logging is off. In those cases logs carry no evidence
+        payload. Plaintext off without a token sets
+        ``evidence_transport_error`` to ``plaintext_disabled``.
         """
         if self.use_kubernetes:
             return await self._get_kubernetes_evidence_archive(session_reference)
@@ -2622,6 +2764,9 @@ class ContainerAgentExecutor(AgentExecutor):
             )
             return None
         stream = self._extract_artifact_stream(lines, "evidence")
+        if self._marker_plaintext_disabled(stream) or self._plaintext_log_refused():
+            self.evidence_transport_error = "plaintext_disabled"
+            return None
         if stream is None or stream["status"] == "absent":
             return None
         if stream["status"] == "error":
@@ -2893,6 +3038,15 @@ class ContainerAgentExecutor(AgentExecutor):
             )
             return None
         stream = self._extract_artifact_stream(lines, "workspace")
+        if stream is not None and (
+            self._marker_plaintext_disabled(stream)
+            or not self._evidence_log_plaintext_enabled()
+        ):
+            self.logger.info(
+                f"Workspace snapshot from Job {job_name} skipped "
+                "(plaintext log channel disabled)"
+            )
+            return None
         if stream is None or stream["status"] == "absent":
             self.logger.info(
                 f"No workspace snapshot emitted by Job {job_name} "
@@ -3597,6 +3751,10 @@ class ContainerAgentExecutor(AgentExecutor):
                 raise ValueError("Write API tokens cannot enter an isolated agent")
         env.update(execution_context.get("checkpoint_env") or {})
         env.update(execution_context.get("evidence_env") or {})
+        if self.use_kubernetes:
+            env["PRELOOP_EVIDENCE_LOG_PLAINTEXT"] = (
+                "1" if self._evidence_log_plaintext_enabled() else "0"
+            )
         # Workspace seeds travel in the environment, not in the launch
         # command: the command is one execve string capped at MAX_ARG_STRLEN
         # (128 KiB) and shared with the rendered prompt. See
@@ -4878,6 +5036,7 @@ true
                     owner=owner,
                     repo=repo,
                     branch=safe_target,
+                    execution_link=execution_link,
                 )
             )
 
@@ -4919,6 +5078,7 @@ true
                 gitlab_host=gitlab_host,
                 encoded_path=encoded_path,
                 branch=safe_target,
+                execution_link=execution_link,
             )
         )
 
@@ -5510,6 +5670,7 @@ true
                     )
                     if pr_create_cmd:
                         repo_post_commands.append(pr_create_cmd)
+                        repo_post_commands.append(provenance_failure_exit_shell())
 
                 repo_post_commands.extend(
                     [

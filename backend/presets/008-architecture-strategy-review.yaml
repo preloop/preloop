@@ -1,4 +1,5 @@
 slug: architecture-strategy-review
+supports_persistent: false
 name: Architecture and Strategy Conformance Review
 description: >-
   Full-repository review of declared intent versus observed structure.

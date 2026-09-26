@@ -34,11 +34,16 @@ pre-existing source-keyed behavior.
 
 Precedence, highest first:
 
-1. ``X-Preloop-Session-Id`` — explicit, ours, always wins (back-compat).
+1. ``X-Preloop-Session-Id`` — explicit, ours, always wins (back-compat). On
+   a plain API key it is also the *only* signal that opts the request into a
+   runtime session at all: the vendor and body-level signals below are gated
+   on the credential's principal type, which a plain key does not carry.
 2. Vendor session header, gated on the principal type (this module).
 3. Body-level conversation id — ``prompt_cache_key`` (OpenAI) /
    ``metadata.user_id`` (Anthropic); applied later, in the gateway service.
-4. Nothing: source keying, bounded by the inactivity closer.
+4. Nothing: source keying, bounded by the inactivity closer. For a plain API
+   key with no explicit header this is the historical answer, and it now means
+   no runtime session row is created.
 
 Parent sessions
 ---------------
