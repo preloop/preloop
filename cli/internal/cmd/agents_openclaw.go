@@ -2510,10 +2510,9 @@ func isClaudeCodeOAuthAccessToken(token string) bool {
 }
 
 // isOAuthCredentialType reports whether a managed-model credential type is a
-// provider OAuth bundle (e.g. "oauth_anthropic_claude_code",
-// "oauth_openai_codex"). These tokens rotate and expire, so re-onboarding
-// must always re-seed them rather than treating an existing same-type
-// credential as still valid.
+// provider OAuth bundle (for example "oauth_anthropic_claude_code" or
+// "oauth_openai_codex"). These tokens rotate. A live same-type secret stays
+// one lineage; a secret whose status is error can be refreshed in place.
 func isOAuthCredentialType(credentialType string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(credentialType)), "oauth_")
 }
@@ -2576,7 +2575,103 @@ func serverHasReusableGatewayCredential(
 		return false
 	}
 	target := findReusableManagedGatewayAIModel(existing, upstream)
-	return target != nil && target.HasAPIKey
+	if target == nil || !target.HasAPIKey {
+		return false
+	}
+	// A Codex enrollment that already holds a live same-type secret must not
+	// upload another copy. A secret in error is not reusable: the sync path
+	// uploads the local bundle onto that same secret instead.
+	if isCodexCLIAgent(agent) && !codexServerSecretIsReusable(target, upstream) {
+		return false
+	}
+	return true
+}
+
+// oauthCredentialStatusIsError reports whether the credential secret behind a
+// model row is in the error state (refresh failed, grant rejected, and so on).
+func oauthCredentialStatusIsError(model *aiModelResponse) bool {
+	if model == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(model.CredentialsStatus), "error")
+}
+
+// codexServerSecretIsReusable reports whether a stored Codex credential can
+// back gateway routing without a fresh upload. It must be a live secret, and
+// when the upstream names an OAuth type the stored type has to match.
+func codexServerSecretIsReusable(
+	target *aiModelResponse,
+	upstream *managedGatewayUpstream,
+) bool {
+	if target == nil || oauthCredentialStatusIsError(target) {
+		return false
+	}
+	if upstream == nil || !isOAuthCredentialType(upstream.CredentialType) {
+		return true
+	}
+	return strings.TrimSpace(target.CredentialType) == strings.TrimSpace(upstream.CredentialType)
+}
+
+// codexKeepsLiveOAuthSecret reports whether this Codex row already holds a
+// same-type OAuth secret that is not in error. A later onboard attaches that
+// lineage instead of uploading another copy of the laptop bundle.
+func codexKeepsLiveOAuthSecret(
+	agent AgentConfig,
+	target *aiModelResponse,
+	upstream *managedGatewayUpstream,
+) bool {
+	if !isCodexCLIAgent(agent) || target == nil || upstream == nil {
+		return false
+	}
+	if !target.HasAPIKey || strings.TrimSpace(target.CredentialsSecretID) == "" {
+		return false
+	}
+	wantType := strings.TrimSpace(upstream.CredentialType)
+	if !isOAuthCredentialType(wantType) ||
+		strings.TrimSpace(target.CredentialType) != wantType {
+		return false
+	}
+	return !oauthCredentialStatusIsError(target)
+}
+
+// repairCodexOAuthSecretInPlace uploads the local bundle onto an existing
+// Codex OAuth secret whose status is error. The PUT hits the row that already
+// owns the secret, so the backend updates that secret in place instead of
+// minting a second lineage.
+func repairCodexOAuthSecretInPlace(
+	client *api.Client,
+	agent AgentConfig,
+	owner *aiModelResponse,
+	upstream *managedGatewayUpstream,
+) error {
+	if client == nil || !isCodexCLIAgent(agent) || owner == nil || upstream == nil {
+		return nil
+	}
+	if !oauthCredentialStatusIsError(owner) {
+		return nil
+	}
+	if strings.TrimSpace(owner.ID) == "" ||
+		strings.TrimSpace(owner.CredentialsSecretID) == "" {
+		return nil
+	}
+	if len(upstream.CredentialPayload) == 0 ||
+		!isOAuthCredentialType(upstream.CredentialType) ||
+		oauthCredentialPayloadExpired(upstream.CredentialPayload) {
+		return nil
+	}
+	update := map[string]interface{}{
+		"credential_type":    upstream.CredentialType,
+		"credential_payload": upstream.CredentialPayload,
+	}
+	var updated aiModelResponse
+	if err := client.Put("/api/v1/ai-models/"+owner.ID, update, &updated); err != nil {
+		return fmt.Errorf(
+			"failed to refresh OAuth credential on AI model %q: %w",
+			owner.Name,
+			err,
+		)
+	}
+	return nil
 }
 
 // serverGatewayCredentialReuseNote is the onboarding note emitted when full
@@ -6155,16 +6250,16 @@ func parseOAuthSiblingTime(value interface{}) time.Time {
 	return time.Time{}
 }
 
-func applySharedClaudeCodeOAuthSecret(sibling *aiModelResponse) string {
+// applySharedOAuthSecret returns the sibling secret id to attach. It does
+// not copy token material onto that secret. An access token can still be
+// inside its window after the gateway has consumed the single-use refresh
+// token, and writing the cached laptop bundle back onto a live secret
+// bricks every sibling (invalid_grant). A secret whose status is error is
+// repaired by repairCodexOAuthSecretInPlace before this id is attached.
+func applySharedOAuthSecret(sibling *aiModelResponse) string {
 	if sibling == nil {
 		return ""
 	}
-	// Attach the sibling's live lineage. Never overwrite it from the local
-	// bundle: an access token can still be inside its window after the
-	// gateway has already consumed the single-use refresh token. Putting
-	// that cached bundle back onto the shared secret bricks every sibling
-	// (invalid_grant). Recovery of a dead lineage goes through the
-	// target-already-has-a-credential re-seed path, not this attach path.
 	return strings.TrimSpace(sibling.CredentialsSecretID)
 }
 
@@ -6267,6 +6362,10 @@ func syncManagedGatewayAIModel(
 		// metadata timestamps on a same-type secret) participates: row-edit
 		// updated_at on a credentialless or wrong-type target must never
 		// block sibling attachment or re-seeding.
+		//
+		// Codex CLI does not re-upload a laptop bundle onto a live same-type
+		// secret. A secret whose status is error is updated in place, on the
+		// row that already owns it, before any sibling is attached to it.
 		sharedSibling := findManagedOAuthCredentialSibling(
 			existing,
 			managedAgent,
@@ -6280,7 +6379,7 @@ func syncManagedGatewayAIModel(
 			if !targetLiveness.IsZero() && targetLiveness.After(oauthSiblingLiveness(sharedSibling)) {
 				targetHoldsLiveLineage = true
 			} else {
-				sharedSecret = applySharedClaudeCodeOAuthSecret(sharedSibling)
+				sharedSecret = applySharedOAuthSecret(sharedSibling)
 			}
 		}
 		sameSecret := sharedSecret != "" &&
@@ -6289,8 +6388,17 @@ func syncManagedGatewayAIModel(
 			// Keep this row's own live secret. Do not attach a staler
 			// sibling and do not re-seed from a local bundle.
 		} else if sharedSecret != "" && !sameSecret {
+			if err := repairCodexOAuthSecretInPlace(
+				client,
+				agent,
+				sharedSibling,
+				upstream,
+			); err != nil {
+				return nil, nil, err
+			}
 			update["credentials_secret_id"] = sharedSecret
-		} else if len(upstream.CredentialPayload) > 0 &&
+		} else if !codexKeepsLiveOAuthSecret(agent, target, upstream) &&
+			len(upstream.CredentialPayload) > 0 &&
 			(!target.HasAPIKey ||
 				strings.TrimSpace(target.CredentialType) != strings.TrimSpace(upstream.CredentialType) ||
 				(isOAuthCredentialType(upstream.CredentialType) &&
@@ -6368,8 +6476,16 @@ func syncManagedGatewayAIModel(
 		upstream.CredentialType,
 		"",
 	); sharedSibling != nil {
-		sharedSecret := applySharedClaudeCodeOAuthSecret(sharedSibling)
+		sharedSecret := applySharedOAuthSecret(sharedSibling)
 		if sharedSecret != "" {
+			if err := repairCodexOAuthSecretInPlace(
+				client,
+				agent,
+				sharedSibling,
+				upstream,
+			); err != nil {
+				return nil, nil, err
+			}
 			create.CredentialsSecretID = sharedSecret
 			create.APIKey = ""
 			create.CredentialType = ""
