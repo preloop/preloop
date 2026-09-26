@@ -884,7 +884,12 @@ async def test_explicit_cold_source_reserves_once_then_requires_own_checkpoint(
                 db, *crud_flow_feedback.claim_due(db, now=later)[0], now=later
             )
             next_turn = db.get(models.FlowExecution, thread.active_execution_id)
+            assert next_turn is not None
             assert next_turn.id != repair.id
+            # A later repair keeps the publisher as resume_root.
+            assert next_turn.trigger_event_details["_resume"]["resume_root"] == str(
+                source_id
+            )
             # Prior repair never stored a native_session artifact: cold handoff.
             assert resolve_native_checkpoint(
                 db,
@@ -1539,7 +1544,7 @@ async def test_native_repair_resolves_encrypted_workspace_and_selected_session(
             )
         # Artifact bound to a different execution still fails closed.
         native_row.ciphertext = b"restored"
-        native_row.execution_id = uuid.uuid4()
+        native_row.execution_id = repair.id
         db.commit()
         with pytest.raises(ValueError, match="native checkpoint unavailable"):
             resolve_native_checkpoint(

@@ -1538,8 +1538,7 @@ export class FlowExecutionsView extends AuthedElement {
       const href = router.urlForPath(`/console/flows/executions/${resumeOf}`);
       return html`<div class="resume-line" data-testid="resume-line">
         Resumption of
-        <a href=${href} data-testid="resume-of-link"
-          >${resumeOf.slice(0, 8)}</a
+        <a href=${href} data-testid="resume-of-link">${resumeOf.slice(0, 8)}</a
         >${chain}
       </div>`;
     }

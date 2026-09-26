@@ -3,6 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { AnsiUp } from 'ansi_up';
 import DOMPurify from 'dompurify';
+import { router } from '../../router';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 
 const ansiConverter = new AnsiUp();
@@ -3218,11 +3219,12 @@ ${execution.resolved_input_prompt}</pre>
         ? html` · ${formatTokenCount(totals.total_tokens)} ·
           ${formatEstimatedCost(totals.estimated_cost)}`
         : '';
+    const href = resumeOf
+      ? router.urlForPath(`/console/flows/executions/${resumeOf}`)
+      : '';
     const body = resumeOf
       ? html`Resumption of
-          <a
-            href=${`/console/flows/executions/${resumeOf}`}
-            data-testid="resume-of-link"
+          <a href=${href} data-testid="resume-of-link"
             >${resumeOf.slice(0, 8)}</a
           >${chain}`
       : html`Chain total${chain}`;

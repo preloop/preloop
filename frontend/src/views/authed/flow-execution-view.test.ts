@@ -311,8 +311,7 @@ describe('FlowExecutionView', () => {
               resume_of: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
               resume_totals: { total_tokens: 1400, estimated_cost: 0.14 },
               trigger_subject: 'preloop/preloop #78 · Pull Request Updated',
-              trigger_subject_url:
-                'https://github.com/preloop/preloop/pull/78',
+              trigger_subject_url: 'https://github.com/preloop/preloop/pull/78',
               trigger_event_details: {
                 source: 'github',
                 type: 'implementation_feedback',

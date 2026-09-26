@@ -886,6 +886,14 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 with_expression(
                     FlowExecution.trigger_subject_url, subject["url"].astext
                 ),
+                # Same as the list projection: ExecutionTreeNode inherits
+                # resume_of, and an unpopulated query expression cannot be read.
+                with_expression(
+                    FlowExecution.resume_of,
+                    FlowExecution.trigger_event_details["_resume"][
+                        "resume_root"
+                    ].astext,
+                ),
                 joinedload(FlowExecution.flow).load_only(Flow.id, Flow.name),
             )
             .join(Flow)

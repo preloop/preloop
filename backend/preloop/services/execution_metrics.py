@@ -312,7 +312,9 @@ def _resume_root_of(execution: Any) -> uuid.UUID | None:
             return uuid.UUID(str(raw))
         except (TypeError, ValueError):
             pass
-    details = getattr(execution, "trigger_event_details", None)
+    # Instance dict only. getattr would lazy-load the deferred JSONB on
+    # lightweight list rows whose projected resume_of is null.
+    details = execution.__dict__.get("trigger_event_details")
     if not isinstance(details, dict):
         return None
     resume = details.get("_resume")
@@ -369,7 +371,7 @@ def project_resume_lineage(
         .where(
             models.Flow.account_id == account_id,
             or_(
-                cast(models.FlowExecution.id, String).in_(root_texts),
+                models.FlowExecution.id.in_(list(roots)),
                 resume_root_col.in_(root_texts),
             ),
         )
