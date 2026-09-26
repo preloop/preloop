@@ -4157,8 +4157,9 @@ class OpenAIGatewayService:
                 status_code=status_code,
                 message=(
                     "OpenAI Codex OAuth credentials could not be refreshed. "
-                    "Run `codex login` on the agent host and rerun onboarding "
-                    "to reconnect the model gateway."
+                    'Run `preloop agents sync-credentials "Codex CLI"` to '
+                    "push the local ChatGPT login, or run `codex login` on "
+                    "the agent host and rerun onboarding."
                 ),
                 code=exc.code,
             ) from exc

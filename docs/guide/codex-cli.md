@@ -37,3 +37,12 @@ control file. It is the command launchd and systemd start.
 Offboard removes `~/.codex/preloop-control.json` and the sidecar service.
 `~/.codex/config.toml` is restored from the onboarding backup and is not
 rewritten by Agent Control.
+
+Codex refreshes its ChatGPT login on its own, even when model traffic goes
+through Preloop. That login uses a single-use refresh token, so the copy on
+the laptop and the copy Preloop stored at onboarding can invalidate each
+other. The Codex permission hook compares `~/.codex/auth.json` (and the macOS
+Keychain entry Codex prefers) with a stamp in the local enrollment state, and
+pushes the local bundle when it is newer. A failed push is logged and does
+not change the permission decision. When the hook is not installed, run
+`preloop agents sync-credentials "Codex CLI"`.
