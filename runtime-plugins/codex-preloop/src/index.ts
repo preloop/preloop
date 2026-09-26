@@ -37,6 +37,11 @@ import {
 } from "./sessions.js";
 import { SessionActivity, TranscriptObserver } from "./observer.js";
 import { LauncherBridge, OwnershipMode } from "./mode.js";
+import {
+  WorkspaceError,
+  WorkspaceManager,
+  WorkspaceSpec,
+} from "./workspace.js";
 
 export {
   ControlConfig,
@@ -57,6 +62,8 @@ export { TranscriptObserver, summarizeRolloutRecords } from "./observer.js";
 export type { SessionActivity } from "./observer.js";
 export { LauncherBridge, defaultSocketPath } from "./mode.js";
 export type { OwnershipMode, IpcMessage } from "./mode.js";
+export { WorkspaceManager } from "./workspace.js";
+export type { WorkspaceSpec } from "./workspace.js";
 
 export type OperatorCommand = {
   message_id?: string;
@@ -75,6 +82,7 @@ export type OperatorCommand = {
     session_mode?: string;
     start_new_session?: boolean;
     cwd?: string;
+    spawn_worktree?: boolean;
   };
 };
 
@@ -107,6 +115,8 @@ export class PreloopCodexSidecar {
   private socket?: WebSocket;
   private sessions?: SessionManager;
   private observer?: TranscriptObserver;
+  private workspaces?: WorkspaceManager;
+  private readonly workspaceByMessage = new Map<string, string>();
   private launcher: LauncherBridge;
   private stopped = false;
   private reconnectAttempts = 0;
@@ -120,8 +130,10 @@ export class PreloopCodexSidecar {
     private readonly configPath?: string,
     private readonly clientFactory: CodexClientFactory = sdkCodexClientFactory,
     socketPath?: string,
+    workspaces?: WorkspaceManager,
   ) {
     this.launcher = new LauncherBridge(socketPath);
+    this.workspaces = workspaces;
   }
 
   setLogger(logger: (message: string) => void): void {
@@ -331,7 +343,17 @@ export class PreloopCodexSidecar {
     }
     try {
       const result = await this.dispatch(command);
-      const payload = commandResultPayload(command.message_id, result);
+      const workspacePath = command.message_id
+        ? this.workspaceByMessage.get(command.message_id)
+        : undefined;
+      if (command.message_id) {
+        this.workspaceByMessage.delete(command.message_id);
+      }
+      const payload = commandResultPayload(
+        command.message_id,
+        result,
+        workspacePath,
+      );
       this.rememberOutcome(command.message_id, {
         name: "command_result",
         payload,
@@ -342,7 +364,23 @@ export class PreloopCodexSidecar {
         message_id: command.message_id,
         payload,
       });
+      if (workspacePath) {
+        this.sendOn(socket, {
+          type: "event",
+          name: "session_activity",
+          message_id: randomUUID(),
+          payload: {
+            workspace_path: workspacePath,
+            cwd: workspacePath,
+            last_event_at: new Date().toISOString(),
+            runtime: this.runtime,
+          },
+        });
+      }
     } catch (error) {
+      if (command.message_id) {
+        this.workspaceByMessage.delete(command.message_id);
+      }
       const payload = {
         command_id: command.message_id,
         status: "failed",
@@ -400,20 +438,53 @@ export class PreloopCodexSidecar {
     if (!text.trim()) {
       throw new Error("send_message requires non-empty text");
     }
-    const cwd =
+    const messageId = command.message_id;
+    let workspacePath: string | undefined;
+    const workspace = payload.metadata?.["workspace"];
+    const spawnWorktree = Boolean(
+      payload.spawn_worktree ?? payload.metadata?.["spawn_worktree"],
+    );
+    let cwd =
       typeof payload.cwd === "string"
         ? payload.cwd
         : typeof payload.metadata?.["cwd"] === "string"
           ? String(payload.metadata["cwd"])
           : undefined;
-    return this.sessions.sendMessage({
-      text,
-      targetSessionId,
-      resumeSessionId,
-      metadata: payload.metadata,
-      cwd,
-      startNewSession: payload.start_new_session === true,
-    });
+    if (workspace && typeof workspace === "object") {
+      const spec = workspace as WorkspaceSpec;
+      if (spec.mode === "persistent_checkout") {
+        const config = this.verify();
+        this.workspaces ??= new WorkspaceManager(config);
+        cwd = await this.workspaces.prepare(spec, spawnWorktree);
+        workspacePath = cwd;
+        if (messageId) {
+          this.workspaceByMessage.set(messageId, cwd);
+        }
+      }
+    }
+    if (spawnWorktree && workspacePath === undefined) {
+      throw new WorkspaceError(
+        "the Codex sidecar does not create git worktrees",
+      );
+    }
+    const preparedCheckout = workspacePath !== undefined;
+    if (preparedCheckout && cwd) {
+      this.workspaces?.hold(cwd);
+    }
+    try {
+      return await this.sessions.sendMessage({
+        text,
+        targetSessionId,
+        resumeSessionId,
+        metadata: payload.metadata,
+        cwd,
+        startNewSession: payload.start_new_session === true,
+      });
+    } finally {
+      if (preparedCheckout && cwd) {
+        this.workspaces?.release(cwd);
+      }
+    }
   }
 
   currentMode(): OwnershipMode {
@@ -550,6 +621,7 @@ export class PreloopCodexSidecar {
 function commandResultPayload(
   messageId: string | undefined,
   result: unknown,
+  workspacePath?: string,
 ): Record<string, unknown> {
   if (isTurnOutcome(result)) {
     const payload: Record<string, unknown> = {
@@ -559,17 +631,28 @@ function commandResultPayload(
       reply_text: result.reply_text,
       session_id: result.session_id,
     };
+    const metadata: Record<string, unknown> = {};
     if (result.usage) {
-      payload.metadata = { usage: result.usage };
+      metadata.usage = result.usage;
+    }
+    if (workspacePath) {
+      metadata.workspace_path = workspacePath;
+    }
+    if (Object.keys(metadata).length > 0) {
+      payload.metadata = metadata;
     }
     return payload;
   }
-  return {
+  const payload: Record<string, unknown> = {
     command_id: messageId,
     status: "completed",
     result,
     reply_text: typeof result === "string" ? result : "",
   };
+  if (workspacePath) {
+    payload.metadata = { workspace_path: workspacePath };
+  }
+  return payload;
 }
 
 function isTurnOutcome(result: unknown): result is TurnOutcome {
