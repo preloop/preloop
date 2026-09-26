@@ -88,6 +88,7 @@ from preloop.services.prompt_resolvers import (
     ProjectResolver,
     AccountResolver,
     ExecutionResolver,
+    FlowResolver,
 )
 from preloop.services.prompt_resolvers.execution import resume_rebase_conflict_hint
 from preloop.services.flow_execution_logger import FlowExecutionLogger
@@ -1490,6 +1491,8 @@ class FlowExecutionOrchestrator:
             resolver_registry.register(AccountResolver())
         if not resolver_registry.get("execution"):
             resolver_registry.register(ExecutionResolver())
+        if not resolver_registry.get("flow"):
+            resolver_registry.register(FlowResolver())
         if not resolver_registry.get("workspace"):
             from preloop.services.prompt_resolvers.workspace import WorkspaceResolver
 

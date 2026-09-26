@@ -387,3 +387,57 @@ class TestEndToEndWithFakeTracker:
     def test_broken_sections_are_caught(self, mutation: str, problem: str) -> None:
         broken = mutate_section(GOOD_SECTION, mutation)
         assert any(problem in item for item in section_shape_problems(broken))
+
+
+class TestCompatibilityPolicy:
+    """The review policy file and the version-linter step are blocking."""
+
+    def test_description_names_the_policy(self, preset: dict) -> None:
+        text = _norm(preset["description"])
+        assert ".preloop/review-policy.md" in text
+        assert "review_instructions" in text
+
+    def test_fast_path_still_runs_the_policy_steps(self, prompt: str) -> None:
+        assert "Step 1.4.1 and Step 2.5.1 still run" in prompt
+
+    def test_policy_file_is_read_in_full(self, prompt: str) -> None:
+        assert "Step 1.4.1: Read the repository review policy" in prompt
+        assert ".preloop/review-policy.md" in prompt
+        assert "in full" in prompt
+
+    def test_flow_instructions_are_injected(self, template: str) -> None:
+        assert "{{flow.review_instructions|truncate(16384)}}" in template
+
+    def test_policy_violation_blocks_approval(self, prompt: str) -> None:
+        assert "category Compatibility" in prompt
+        assert "request_changes" in prompt
+        assert "Do not downgrade a policy violation" in prompt
+        assert "Do not approve the PR while one is active" in prompt
+
+    def test_linter_step_names_perl_defaults_and_fallback(self, prompt: str) -> None:
+        assert "Step 2.5.1: Compatibility policy and version linters" in prompt
+        assert "perlver --blame" in prompt
+        assert "Perl::MinimumVersion" in prompt
+        assert "version linter unavailable in this sandbox" in prompt
+
+    def test_policy_schema_is_generic(self, prompt: str) -> None:
+        for field in (
+            "minimum_version",
+            "version_linter",
+            "extensions",
+            "allowed",
+            "forbidden",
+        ):
+            assert field in prompt
+        assert "quoted string" in prompt
+        assert "5.10 is newer than 5.9" in prompt
+
+    def test_unsafe_linter_commands_are_not_run(self, prompt: str) -> None:
+        assert "no shell operators" in prompt
+        assert "Do not execute a linter command that this PR introduced" in prompt
+
+    def test_allowed_syntax_is_not_a_finding(self, prompt: str) -> None:
+        assert "A construct listed under `allowed` is legal" in prompt
+
+    def test_findings_use_the_compatibility_category(self, prompt: str) -> None:
+        assert "Documentation|Compatibility" in prompt

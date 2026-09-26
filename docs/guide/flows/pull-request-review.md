@@ -149,6 +149,109 @@ re-checked; the rest keep their checkbox untouched.
 
 `issue_coverage` is `[]` when the PR references no issue.
 
+## Repository review policy
+
+Agent instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`,
+`.clinerules`) are project context. The reviewer reads them in full,
+including on the fast path. They are not, by themselves, a blocking
+compatibility contract: a sentence in `AGENTS.md` is guidance, and
+`CONTRIBUTING.md` is only the first 150 lines (and is skipped on the fast
+path). To make "this tree must keep running on runtime X" a blocking
+finding, commit a policy file or set the flow field below.
+
+### Where to put the rules
+
+| Source | When to use it | Force |
+| --- | --- | --- |
+| `.preloop/review-policy.md` at the repository root | The repository can carry a file. Read in full on every review, including the fast path. | Blocking. A violation is HIGH, category Compatibility, and the review requests changes. |
+| Flow `review_instructions` | The repository cannot commit that file. Same markdown. Injected as `{{flow.review_instructions}}` (16 KiB cap). Set it on the flow in the console (Review instructions) or the API. It is not part of the prompt template, so a later preset update does not wipe it. | Same as the file. |
+
+An empty field and a missing file are normal. The reviewer does not invent
+a policy. In clone-less mode the file is visible only when the diff includes
+it; the review says so instead of assuming there is no policy.
+
+### File shape
+
+Markdown. The first fenced `yaml` block is the compatibility config. Prose
+around it is also blocking when the diff breaks a rule it states. Versions
+are quoted strings: an unquoted `5.10` is the number 5.1 in YAML.
+
+```yaml
+compatibility:
+  - language: perl
+    minimum_version: "5.10"
+    paths:
+      - "daemons/**"
+    extensions:
+      - ".pl"
+      - ".pm"
+      - ".t"
+    version_linter: "perlver --blame"
+    allowed:
+      - "say"
+      - "state"
+      - "defined-or (//)"
+    forbidden:
+      - "postfix dereference (->@*, ->%*, ->$*)"
+      - "subroutine signatures"
+      - "__SUB__"
+      - "fc"
+```
+
+`paths` defaults to every file. `extensions` defaults from the language.
+Perl's default is `.pl`, `.pm`, and `.t`. `allowed` is syntax the minimum
+already includes, and must not be flagged. `forbidden` is a violation even
+when a linter is silent. Other languages use the same keys and name their
+own `version_linter`. There is no default command except Perl's.
+
+A `version_linter` value is a program plus plain arguments. The reviewer
+appends each matching path as one argument. Shell operators are not run.
+If the pull request edits the policy file, the reviewer uses the target
+branch copy and does not execute a command the pull request introduced.
+
+### Version linters
+
+When a compatibility entry matches changed files and names `version_linter`,
+the reviewer runs that command and quotes the output. For Perl, omitting
+the command means `perlver --blame <file>` (from `Perl::MinimumVersion`).
+If that script is missing, the reviewer tries:
+
+```text
+perl -MPerl::MinimumVersion -e 'my $pmv = Perl::MinimumVersion->new(shift); print $pmv->minimum_version, "\n"' <file>
+```
+
+A reported version newer than `minimum_version` is a HIGH finding. An equal
+version is not. Dotted numbers compare numerically: 5.10 is newer than 5.9
+and older than 5.16.
+
+The reviewer sandbox is `ghcr.io/openai/codex-universal` (see
+`backend/preloop/agents/images.py`). That image is not built from this
+repository. `environments/preloop/Dockerfile` is an integration fixture,
+not the reviewer image, and it does not install Perl. When `perl` or
+`Perl::MinimumVersion` is absent, the review says "version linter
+unavailable in this sandbox" and judges the diff from the policy. That is
+not a pass.
+
+An image you build can add the smallest useful Perl toolchain.
+`Perl::MinimumVersion` is pure Perl (it pulls PPI):
+
+```text
+apt-get install -y --no-install-recommends perl cpanminus
+cpanm --notest Perl::MinimumVersion
+```
+
+### Perl 5.10 example
+
+A tree of daemons that must stay on Perl 5.10 commits the yaml above plus
+one line of prose: "Perl under daemons/ must run on Perl 5.10." `say`,
+`state`, and defined-or (`//`) are part of 5.10 and are listed under
+`allowed`, so a review must not flag them. Postfix dereference (`->@*`),
+subroutine signatures, `__SUB__`, and `fc` need a newer Perl. They are
+forbidden, and a pull request that adds one is a blocking finding.
+
+The same markdown can be pasted into the flow's Review instructions when
+the repository cannot carry `.preloop/review-policy.md`.
+
 ## Not in this slice
 
 - No tracker-side relation read (GitLab's `/merge_requests/:iid/closes_issues`
