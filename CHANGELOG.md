@@ -66,6 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Claude family autoregister verifies an unknown `claude-*` identifier
+  against Anthropic's models endpoint before creating a catalog row
+  (`model_gateway_claude_family_autoregister_verify_upstream`, default on). A
+  404 no longer becomes a permanent model bound to the agent; an inconclusive
+  probe still registers as before and is marked `unverified`. Refs #950.
 - A workspace checkpoint that exceeds the storage cap logs
   `PRELOOP_CHECKPOINT skipped checkpoint_oversized` and lets the run finish.
   The last completed checkpoint stays the resume point. Other checkpoint

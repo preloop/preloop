@@ -37,6 +37,7 @@ from typing import (
 )
 from urllib import error as urllib_error
 from urllib import request as urllib_request
+from urllib.parse import quote as urllib_quote
 
 import httpx
 import litellm
@@ -347,6 +348,90 @@ def _close_openai_passthrough_http_client() -> None:
 
 atexit.register(_close_anthropic_passthrough_http_client)
 atexit.register(_close_openai_passthrough_http_client)
+
+
+# Claude family autoregister upstream verification (issue #950). Lazy
+# registration must not turn a typo, a guessed snapshot date or a probe into a
+# permanent catalog row. Before minting a sibling, ask Anthropic whether it
+# actually serves the identifier, authenticated with the template model's
+# subscription-OAuth token. The result is cached in process so the extra call
+# is paid once per TTL per (credential, identifier): a positive answer for a
+# day, a negative (404) answer for ten minutes, and an inconclusive answer not
+# at all so an Anthropic outage is retried on the next request.
+_ANTHROPIC_MODEL_VERIFY_TIMEOUT_SECONDS = 10.0
+_CLAUDE_FAMILY_VERIFY_POSITIVE_TTL_SECONDS = 24 * 60 * 60
+_CLAUDE_FAMILY_VERIFY_NEGATIVE_TTL_SECONDS = 10 * 60
+_CLAUDE_FAMILY_VERIFY_CACHE_MAX_ENTRIES = 512
+_CLAUDE_FAMILY_VERIFY_CACHE: Dict[Tuple[str, str], Tuple[str, float]] = {}
+_CLAUDE_FAMILY_VERIFY_CACHE_LOCK = threading.Lock()
+
+
+def _claude_family_verification_cache_get(key: Tuple[str, str]) -> Optional[str]:
+    """Return a live cached outcome for ``key``, evicting an expired entry."""
+    now = time.monotonic()
+    with _CLAUDE_FAMILY_VERIFY_CACHE_LOCK:
+        entry = _CLAUDE_FAMILY_VERIFY_CACHE.get(key)
+        if entry is None:
+            return None
+        outcome, expires_at = entry
+        if expires_at <= now:
+            _CLAUDE_FAMILY_VERIFY_CACHE.pop(key, None)
+            return None
+        return outcome
+
+
+def _claude_family_verification_cache_put(key: Tuple[str, str], outcome: str) -> None:
+    """Remember a verification outcome, evicting the oldest key when full."""
+    ttl = (
+        _CLAUDE_FAMILY_VERIFY_POSITIVE_TTL_SECONDS
+        if outcome == "verified"
+        else _CLAUDE_FAMILY_VERIFY_NEGATIVE_TTL_SECONDS
+    )
+    expires_at = time.monotonic() + ttl
+    with _CLAUDE_FAMILY_VERIFY_CACHE_LOCK:
+        _CLAUDE_FAMILY_VERIFY_CACHE[key] = (outcome, expires_at)
+        while (
+            len(_CLAUDE_FAMILY_VERIFY_CACHE)
+            > _CLAUDE_FAMILY_VERIFY_CACHE_MAX_ENTRIES
+        ):
+            oldest = next(iter(_CLAUDE_FAMILY_VERIFY_CACHE))
+            if oldest == key:
+                break
+            _CLAUDE_FAMILY_VERIFY_CACHE.pop(oldest, None)
+
+
+def _probe_anthropic_model_identifier(*, identifier: str, access_token: str) -> str:
+    """Ask Anthropic whether a subscription serves ``identifier``.
+
+    Sends only the OAuth credential and the identifier in the URL: no client
+    request body, and the token is never logged.
+
+    Returns:
+        ``"verified"`` when the models endpoint answers 200, ``"rejected"``
+        when it answers 404, and ``"unknown"`` for any other status or a
+        transport error. Never raises.
+    """
+    url = (
+        f"{ANTHROPIC_OAUTH_PASSTHROUGH_BASE_URL}/v1/models/"
+        f"{urllib_quote(identifier, safe='')}"
+    )
+    try:
+        response = httpx.get(
+            url,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "anthropic-version": ANTHROPIC_DEFAULT_API_VERSION,
+                "anthropic-beta": ANTHROPIC_OAUTH_BETA_FLAG,
+            },
+            timeout=_ANTHROPIC_MODEL_VERIFY_TIMEOUT_SECONDS,
+        )
+    except httpx.HTTPError:
+        return "unknown"
+    if response.status_code == 200:
+        return "verified"
+    if response.status_code == 404:
+        return "rejected"
+    return "unknown"
 
 
 def _emit_account_event_nonblocking(event: Dict[str, Any]) -> None:
@@ -3808,7 +3893,12 @@ class OpenAIGatewayService:
 
         Only the registry check is relaxed. Budget preflight, subject-scoped
         ``allowed_models``, attribution, and usage accounting run unchanged on
-        the returned model.
+        the returned model. Before the row is written, the identifier is
+        optionally verified against Anthropic's models endpoint with the
+        template's OAuth token
+        (``model_gateway_claude_family_autoregister_verify_upstream``); a 404
+        blocks registration so a typo or a guessed snapshot date cannot become
+        a permanent catalog row.
 
         Args:
             requested_model: The client's requested model string.
@@ -3819,8 +3909,9 @@ class OpenAIGatewayService:
         Returns:
             The newly registered model, or ``None`` when preconditions fail
             (feature disabled, non-Anthropic protocol, non-claude identifier,
-            or no subscription-OAuth template model to share credentials
-            with) — the caller then raises its usual 404.
+            no subscription-OAuth template model to share credentials with,
+            or Anthropic rejects the identifier) — the caller then raises its
+            usual 404.
         """
         if not settings.model_gateway_claude_family_autoregister_enabled:
             return None
@@ -3851,6 +3942,21 @@ class OpenAIGatewayService:
         if template is None:
             return None
 
+        verification_outcome: Optional[str] = None
+        if settings.model_gateway_claude_family_autoregister_verify_upstream:
+            verification = self._verify_claude_family_model_upstream(
+                identifier=base_requested,
+                template=template,
+            )
+            if verification == "rejected":
+                # Anthropic answers 404 for this id: never mint a permanent
+                # catalog row. The caller raises its usual 404, and the
+                # negative answer is cached so a retry does not re-probe.
+                return None
+            verification_outcome = (
+                "verified" if verification == "verified" else "unverified"
+            )
+
         return self._autoregister_subscription_oauth_sibling(
             identifier=base_requested,
             alias=f"anthropic/{base_requested}",
@@ -3864,7 +3970,77 @@ class OpenAIGatewayService:
                 "Code subscription-OAuth request."
             ),
             log_label="Claude family",
+            verification_outcome=verification_outcome,
         )
+
+    def _verify_claude_family_model_upstream(
+        self, *, identifier: str, template: models.AIModel
+    ) -> str:
+        """Classify an unknown ``claude-*`` id against Anthropic's models API.
+
+        The template model's credential secret is the same secret the new
+        sibling will share, so probing with it authenticates exactly as the
+        request would. The result is cached in process: a positive answer for
+        a day, a rejection for ten minutes, and an inconclusive answer not at
+        all.
+
+        Args:
+            identifier: The bare (unprefixed) ``claude-*`` identifier.
+            template: An authorized subscription-OAuth model whose credential
+                secret the new sibling will share.
+
+        Returns:
+            ``"verified"`` (upstream 200), ``"rejected"`` (upstream 404), or
+            ``"unknown"`` (any other status, transport error, or unusable
+            credential). Only ``"rejected"`` blocks registration; the other
+            two preserve the pre-verification behaviour.
+        """
+        secret_id = template.credentials_secret_id
+        cache_key = (
+            str(secret_id) if secret_id is not None else "",
+            identifier,
+        )
+        cached = _claude_family_verification_cache_get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            resolved = get_secret_service().resolve_ai_model_credentials(
+                template,
+                db=self.db,
+                allow_refresh=True,
+            )
+        except Exception:  # noqa: BLE001 - a probe must never fail the request
+            logger.warning(
+                "Claude family upstream verification could not resolve "
+                "credentials for %s; registering without verification",
+                identifier,
+                exc_info=True,
+            )
+            return "unknown"
+        if (
+            resolved is None
+            or resolved.credential_type != ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE
+            or not resolved.value
+        ):
+            logger.warning(
+                "Claude family upstream verification has no usable OAuth "
+                "credential for %s; registering without verification",
+                identifier,
+            )
+            return "unknown"
+        outcome = _probe_anthropic_model_identifier(
+            identifier=identifier,
+            access_token=str(resolved.value),
+        )
+        if outcome in {"verified", "rejected"}:
+            _claude_family_verification_cache_put(cache_key, outcome)
+        else:
+            logger.warning(
+                "Claude family upstream verification was inconclusive for %s; "
+                "registering without verification",
+                identifier,
+            )
+        return outcome
 
     @staticmethod
     def _codex_autoregister_identifier(model_ref: str) -> Optional[str]:
@@ -3993,6 +4169,7 @@ class OpenAIGatewayService:
         name_prefix: str,
         description: str,
         log_label: str,
+        verification_outcome: Optional[str] = None,
     ) -> Optional[models.AIModel]:
         """Create a sibling models.AIModel + agent binding under a savepoint.
 
@@ -4002,6 +4179,12 @@ class OpenAIGatewayService:
         nested transaction (commit=False keeps the CRUD layer from committing
         the outer transaction mid-savepoint) and the final commit happens
         only after the savepoint released cleanly.
+
+        ``verification_outcome`` records whether Anthropic was asked about the
+        identifier and what it answered (``"verified"`` or ``"unverified"``
+        for an inconclusive probe); ``None`` means verification was disabled.
+        The value is written to ``meta_data.upstream_verification`` so an
+        operator can tell a verified row from a fallback later.
         """
         managed_agent_id = resolve_managed_agent_id_for_context(
             self.db, self.auth_context
@@ -4060,6 +4243,25 @@ class OpenAIGatewayService:
             if isinstance(template_meta.get("gateway"), dict)
             else {}
         )
+        created_meta: Dict[str, Any] = {
+            "gateway": {
+                "enabled": True,
+                "url": template_gateway.get("url"),
+                "provider_adapter": template_gateway.get(
+                    "provider_adapter", "preloop"
+                ),
+                "model_alias": alias,
+            },
+            "managed_by": managed_by,
+            "source_agent": source_agent,
+            "managed_agent_id": managed_agent_id,
+            "autoregistered_from_ai_model_id": str(template.id),
+        }
+        if verification_outcome is not None:
+            # Audit/catalog marker: "verified" means Anthropic answered 200 for
+            # this id; "unverified" means the probe was inconclusive (other
+            # status or transport error) and the row was registered as before.
+            created_meta["upstream_verification"] = verification_outcome
         try:
             with self.db.begin_nested():
                 created = crud_ai_model.create_with_account(
@@ -4071,20 +4273,7 @@ class OpenAIGatewayService:
                         "model_identifier": identifier,
                         "api_endpoint": template.api_endpoint,
                         "credentials_secret_id": template.credentials_secret_id,
-                        "meta_data": {
-                            "gateway": {
-                                "enabled": True,
-                                "url": template_gateway.get("url"),
-                                "provider_adapter": template_gateway.get(
-                                    "provider_adapter", "preloop"
-                                ),
-                                "model_alias": alias,
-                            },
-                            "managed_by": managed_by,
-                            "source_agent": source_agent,
-                            "managed_agent_id": managed_agent_id,
-                            "autoregistered_from_ai_model_id": str(template.id),
-                        },
+                        "meta_data": created_meta,
                     },
                     account_id=account_id,
                     commit=False,
