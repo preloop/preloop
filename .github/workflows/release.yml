@@ -257,8 +257,6 @@ jobs:
           subject-path: 'sbom/*.cdx.json'
 
       - name: Attach OpenVEX to the SBOM artifact
-        # Every security/vex/*.openvex.json, the CLI document and the
-        # frontend document included.
         run: cp security/vex/*.openvex.json sbom/
 
       - name: Upload SBOMs
