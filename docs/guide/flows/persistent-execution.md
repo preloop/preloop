@@ -69,6 +69,6 @@ assume an ephemeral checkout, do not.
 
 ## What this does not do yet
 
-Persistent mode does not forward git credentials, and it does not add
-Codex to the Agent Control allow-list. The Codex sidecar is a separate
-contract that should follow the same `workspace` metadata.
+Persistent mode does not forward git credentials. The Claude sidecar and
+the Codex sidecar both implement this workspace checkout contract. Codex
+is already on the Agent Control allow-list.

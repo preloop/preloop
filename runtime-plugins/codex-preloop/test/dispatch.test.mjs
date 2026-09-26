@@ -1,5 +1,8 @@
 // Sidecar command dispatch against a fake Codex client. No websocket.
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 
 import {
@@ -8,6 +11,7 @@ import {
   resolveResumeSessionId,
   resolveTargetSessionId,
 } from "../dist/index.js";
+import { WorkspaceManager } from "../dist/workspace.js";
 
 const baseConfig = {
   enabled: true,
@@ -258,6 +262,168 @@ test("resolveResumeSessionId prefers session_source_id when present", () => {
 test("controlAuthHeaders uses Authorization Bearer, not a query token", () => {
   assert.equal(controlAuthHeaders("agt_secret").Authorization, "Bearer agt_secret");
 });
+
+test("persistent_checkout runs in the prepared checkout and reports workspace_path", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "preloop-codex-ws-"));
+  const state = { texts: [], runs: 0, starts: [], resumes: [] };
+  const gitState = { dirty: new Set() };
+  const manager = new WorkspaceManager(
+    { workspace_root: root },
+    fakeGit(gitState),
+  );
+  const sidecar = new PreloopCodexSidecar(
+    undefined,
+    makeEchoFactory(state),
+    undefined,
+    manager,
+  );
+  sidecar.configure({ ...baseConfig, workspace_root: root });
+  const socket = fakeSocket();
+  const checkout = path.join(root, "example", "repo");
+  await sidecar.handleFrame(
+    socket,
+    JSON.stringify({
+      type: "command",
+      name: "send_message",
+      message_id: "ws-1",
+      payload: {
+        text: "review the change",
+        start_new_session: true,
+        metadata: {
+          workspace: {
+            mode: "persistent_checkout",
+            repository_url: "https://github.com/example/repo.git",
+            repository_slug: "example/repo",
+            default_branch: "main",
+            ref: "feature",
+            sha: "a".repeat(40),
+          },
+        },
+      },
+    }),
+  );
+  assert.equal(state.starts.length, 1);
+  assert.equal(state.starts[0].options.workingDirectory, checkout);
+  assert.equal(socket.sent.length, 2);
+  assert.equal(socket.sent[0].name, "command_result");
+  assert.equal(socket.sent[0].payload.metadata.workspace_path, checkout);
+  assert.deepEqual(socket.sent[0].payload.metadata.usage, {
+    input_tokens: 2,
+    output_tokens: 4,
+  });
+  assert.equal(socket.sent[1].type, "event");
+  assert.equal(socket.sent[1].name, "session_activity");
+  assert.equal(socket.sent[1].payload.workspace_path, checkout);
+  assert.equal(socket.sent[1].payload.cwd, checkout);
+  assert.equal(socket.sent[1].payload.runtime, "codex");
+  sidecar.stop();
+});
+
+test("clone_less keeps workingDirectory on workspace_root", async () => {
+  const { sidecar, state } = makeSidecar();
+  const socket = fakeSocket();
+  await sidecar.handleFrame(
+    socket,
+    JSON.stringify({
+      type: "command",
+      name: "send_message",
+      message_id: "ws-clone-less",
+      payload: {
+        text: "review the diff",
+        start_new_session: true,
+        metadata: { workspace: { mode: "clone_less" } },
+      },
+    }),
+  );
+  assert.equal(state.starts.length, 1);
+  assert.equal(state.starts[0].options.workingDirectory, "/tmp/workspace");
+  assert.equal(socket.sent.length, 1);
+  assert.equal(socket.sent[0].name, "command_result");
+  assert.equal(socket.sent[0].payload.metadata.workspace_path, undefined);
+  sidecar.stop();
+});
+
+test("a dirty persistent checkout fails as command_error and does not start a thread", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "preloop-codex-ws-"));
+  const checkout = path.join(root, "example", "repo");
+  await fs.mkdir(path.join(checkout, ".git"), { recursive: true });
+  const state = { texts: [], runs: 0, starts: [], resumes: [] };
+  const manager = new WorkspaceManager(
+    { workspace_root: root },
+    fakeGit({ dirty: new Set([checkout]) }),
+  );
+  const sidecar = new PreloopCodexSidecar(
+    undefined,
+    makeEchoFactory(state),
+    undefined,
+    manager,
+  );
+  sidecar.configure({ ...baseConfig, workspace_root: root });
+  const socket = fakeSocket();
+  await sidecar.handleFrame(
+    socket,
+    JSON.stringify({
+      type: "command",
+      name: "send_message",
+      message_id: "ws-dirty",
+      payload: {
+        text: "review the change",
+        start_new_session: true,
+        metadata: {
+          workspace: {
+            mode: "persistent_checkout",
+            repository_url: "https://github.com/example/repo.git",
+            repository_slug: "example/repo",
+            default_branch: "main",
+            sha: "a".repeat(40),
+          },
+        },
+      },
+    }),
+  );
+  assert.equal(socket.sent.length, 1);
+  assert.equal(socket.sent[0].name, "command_error");
+  assert.match(socket.sent[0].payload.error, /uncommitted changes/);
+  assert.equal(state.starts.length, 0);
+  sidecar.stop();
+});
+
+function fakeGit(state) {
+  return async (args, options) => {
+    const command = gitSubcommand(args);
+    if (command === "clone") {
+      const dest = path.resolve(options.cwd ?? "", args[args.length - 1]);
+      await fs.mkdir(path.join(dest, ".git"), { recursive: true });
+      return { stdout: "", stderr: "", code: 0 };
+    }
+    if (command === "status") {
+      const dirty = state.dirty.has(options.cwd);
+      return { stdout: dirty ? " M README.md\n" : "", stderr: "", code: 0 };
+    }
+    if (command === "config" && args.includes("--get")) {
+      return { stdout: "", stderr: "", code: 1 };
+    }
+    return { stdout: "", stderr: "", code: 0 };
+  };
+}
+
+function gitSubcommand(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "-c" || arg === "-C") {
+      index += 1;
+      continue;
+    }
+    if (arg === "--") {
+      break;
+    }
+    if (arg.startsWith("-")) {
+      continue;
+    }
+    return arg;
+  }
+  return args[0];
+}
 
 function fakeSocket({ open = true } = {}) {
   const sent = [];
