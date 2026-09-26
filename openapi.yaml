@@ -16357,6 +16357,21 @@ components:
           description: Tokens this execution's gateway traffic consumed, split by
             direction and cache participation. Null when the run has no attributable
             gateway usage, which is not the same as zero.
+        resume_of:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Resume Of
+          description: Publishing execution this repair resumes. Null when the row
+            is not a review/CI resumption. Distinct from parent_execution_id (delegation).
+        resume_totals:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutionResumeTotals'
+          - type: 'null'
+          description: Summed total_tokens and estimated_cost for the publishing execution
+            and every repair that points at it. Null when the execution is not part
+            of a multi-turn resume chain.
         id:
           type: string
           format: uuid
@@ -18223,6 +18238,21 @@ components:
         approvals are stored. A parked run holds no container and no runner: this
 
         is a governance object, not a spinner.'
+    ExecutionResumeTotals:
+      properties:
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          description: Summed tokens across the resume chain
+          default: 0
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          description: Summed estimated cost across the resume chain
+          default: 0.0
+      type: object
+      title: ExecutionResumeTotals
+      description: Combined tokens and cost for a publishing execution and its repairs.
     ExecutionRunner:
       properties:
         kind:
@@ -18315,6 +18345,21 @@ components:
           description: Tokens this execution's gateway traffic consumed, split by
             direction and cache participation. Null when the run has no attributable
             gateway usage, which is not the same as zero.
+        resume_of:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Resume Of
+          description: Publishing execution this repair resumes. Null when the row
+            is not a review/CI resumption. Distinct from parent_execution_id (delegation).
+        resume_totals:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutionResumeTotals'
+          - type: 'null'
+          description: Summed total_tokens and estimated_cost for the publishing execution
+            and every repair that points at it. Null when the execution is not part
+            of a multi-turn resume chain.
         id:
           type: string
           format: uuid
@@ -18800,6 +18845,21 @@ components:
           description: Tokens this execution's gateway traffic consumed, split by
             direction and cache participation. Null when the run has no attributable
             gateway usage, which is not the same as zero.
+        resume_of:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Resume Of
+          description: Publishing execution this repair resumes. Null when the row
+            is not a review/CI resumption. Distinct from parent_execution_id (delegation).
+        resume_totals:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutionResumeTotals'
+          - type: 'null'
+          description: Summed total_tokens and estimated_cost for the publishing execution
+            and every repair that points at it. Null when the execution is not part
+            of a multi-turn resume chain.
         id:
           type: string
           format: uuid
@@ -18977,6 +19037,21 @@ components:
           description: Tokens this execution's gateway traffic consumed, split by
             direction and cache participation. Null when the run has no attributable
             gateway usage, which is not the same as zero.
+        resume_of:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Resume Of
+          description: Publishing execution this repair resumes. Null when the row
+            is not a review/CI resumption. Distinct from parent_execution_id (delegation).
+        resume_totals:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutionResumeTotals'
+          - type: 'null'
+          description: Summed total_tokens and estimated_cost for the publishing execution
+            and every repair that points at it. Null when the execution is not part
+            of a multi-turn resume chain.
         flow_id:
           type: string
           format: uuid

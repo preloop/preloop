@@ -304,6 +304,96 @@ def project_execution_totals(db: Session, executions: List[Any]) -> None:
             set_committed_value(execution, "total_tokens", token_usage["total_tokens"])
 
 
+def _resume_root_of(execution: Any) -> uuid.UUID | None:
+    """Publishing execution id this row resumes, if any."""
+    raw = getattr(execution, "resume_of", None)
+    if raw:
+        try:
+            return uuid.UUID(str(raw))
+        except (TypeError, ValueError):
+            pass
+    # Instance dict only. getattr would lazy-load the deferred JSONB on
+    # lightweight list rows whose projected resume_of is null.
+    details = execution.__dict__.get("trigger_event_details")
+    if not isinstance(details, dict):
+        return None
+    resume = details.get("_resume")
+    if not isinstance(resume, dict):
+        return None
+    root = resume.get("resume_root")
+    if not root:
+        return None
+    try:
+        return uuid.UUID(str(root))
+    except (TypeError, ValueError):
+        return None
+
+
+def project_resume_lineage(
+    db: Session, executions: List[Any], *, account_id: uuid.UUID
+) -> None:
+    """Attach ``resume_of`` and chain ``resume_totals`` for list/detail rows.
+
+    One grouped query covers every chain root touched by the page: the
+    publishing execution plus every repair whose ``_resume.resume_root``
+    points at it. Singleton chains leave ``resume_totals`` unset so the
+    console does not invent a second figure for an ordinary run.
+    """
+    if not executions:
+        return
+    from sqlalchemy import String, cast, or_, select
+
+    roots: set[uuid.UUID] = set()
+    for execution in executions:
+        resume_of = _resume_root_of(execution)
+        if resume_of is not None:
+            execution.resume_of = resume_of
+            roots.add(resume_of)
+        else:
+            roots.add(
+                execution.id
+                if isinstance(execution.id, uuid.UUID)
+                else uuid.UUID(str(execution.id))
+            )
+    root_texts = [str(root) for root in roots]
+    resume_root_col = models.FlowExecution.trigger_event_details["_resume"][
+        "resume_root"
+    ].astext
+    chain_key = func.coalesce(resume_root_col, cast(models.FlowExecution.id, String))
+    rows = db.execute(
+        select(
+            chain_key.label("chain_root"),
+            func.coalesce(func.sum(models.FlowExecution.total_tokens), 0),
+            func.coalesce(func.sum(models.FlowExecution.estimated_cost), 0),
+            func.count(models.FlowExecution.id),
+        )
+        .join(models.Flow, models.Flow.id == models.FlowExecution.flow_id)
+        .where(
+            models.Flow.account_id == account_id,
+            or_(
+                models.FlowExecution.id.in_(list(roots)),
+                resume_root_col.in_(root_texts),
+            ),
+        )
+        .group_by(chain_key)
+    ).all()
+    by_root: Dict[str, Dict[str, Any]] = {}
+    for chain_root, tokens, cost, members in rows:
+        if int(members or 0) < 2:
+            continue
+        by_root[str(chain_root)] = {
+            "total_tokens": int(tokens or 0),
+            "estimated_cost": float(cost or 0),
+        }
+    for execution in executions:
+        resume_of = getattr(execution, "resume_of", None)
+        chain_id = str(resume_of) if resume_of else str(execution.id)
+        totals = by_root.get(chain_id)
+        if totals is None:
+            continue
+        execution.resume_totals = totals
+
+
 class ExecutionMetricsService:
     """Calculate metrics for flow executions including token usage and costs."""
 

@@ -823,6 +823,7 @@ async def test_explicit_cold_source_reserves_once_then_requires_own_checkpoint(
             assert repair is not None
             assert len(repair.trigger_event_details["_feedback"]["items"]) == 1
             resume = repair.trigger_event_details["_resume"]
+            assert resume["resume_root"] == str(source_id)
             assert "cli_session" not in resume
             resolved = resolve_native_checkpoint(
                 db,
@@ -883,24 +884,29 @@ async def test_explicit_cold_source_reserves_once_then_requires_own_checkpoint(
                 db, *crud_flow_feedback.claim_due(db, now=later)[0], now=later
             )
             next_turn = db.get(models.FlowExecution, thread.active_execution_id)
+            assert next_turn is not None
             assert next_turn.id != repair.id
-            with pytest.raises(ValueError, match="native checkpoint missing"):
-                resolve_native_checkpoint(
-                    db,
-                    account_id=thread.account_id,
-                    flow_id=thread.flow_id,
-                    execution_id=next_turn.id,
-                    resume=next_turn.trigger_event_details["_resume"],
-                )
+            # A later repair keeps the publisher as resume_root.
+            assert next_turn.trigger_event_details["_resume"]["resume_root"] == str(
+                source_id
+            )
+            # Prior repair never stored a native_session artifact: cold handoff.
+            assert resolve_native_checkpoint(
+                db,
+                account_id=thread.account_id,
+                flow_id=thread.flow_id,
+                execution_id=next_turn.id,
+                resume=next_turn.trigger_event_details["_resume"],
+            ) == {"cold_handoff_authorized": True}
 
 
 def test_first_repair_without_a_session_uses_the_published_branch(
     database: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Uploads being off must not fail the first repair of a session-less publisher.
+    """Uploads off: a session id alone is not recoverable; use published branch.
 
     reserve() increments turns before the worker resolves, so that repair sees
-    turns == 1. A later turn still fails closed.
+    turns == 1. Later turns without an uploaded artifact also cold-handoff.
     """
     from preloop.config import settings
     from preloop.services.flow_feedback import resolve_native_checkpoint
@@ -939,25 +945,23 @@ def test_first_repair_without_a_session_uses_the_published_branch(
             "session_id": str(uuid.uuid4()),
         }
         db.commit()
-        with pytest.raises(ValueError, match="checkpoint uploads disabled"):
-            resolve_native_checkpoint(
-                db,
-                account_id=thread.account_id,
-                flow_id=thread.flow_id,
-                execution_id=repair.id,
-                resume=resume,
-            )
+        assert resolve_native_checkpoint(
+            db,
+            account_id=thread.account_id,
+            flow_id=thread.flow_id,
+            execution_id=repair.id,
+            resume=resume,
+        ) == {"cold_handoff_authorized": True}
         prior.cli_session = None
         thread.turns = 2
         db.commit()
-        with pytest.raises(ValueError, match="checkpoint uploads disabled"):
-            resolve_native_checkpoint(
-                db,
-                account_id=thread.account_id,
-                flow_id=thread.flow_id,
-                execution_id=repair.id,
-                resume=resume,
-            )
+        assert resolve_native_checkpoint(
+            db,
+            account_id=thread.account_id,
+            flow_id=thread.flow_id,
+            execution_id=repair.id,
+            resume=resume,
+        ) == {"cold_handoff_authorized": True}
         failed = models.FlowExecution(
             id=uuid.uuid4(),
             flow_id=thread.flow_id,
@@ -990,14 +994,13 @@ def test_first_repair_without_a_session_uses_the_published_branch(
             "session_id": str(uuid.uuid4()),
         }
         db.commit()
-        with pytest.raises(ValueError, match="checkpoint uploads disabled"):
-            resolve_native_checkpoint(
-                db,
-                account_id=thread.account_id,
-                flow_id=thread.flow_id,
-                execution_id=repair.id,
-                resume=failed_resume,
-            )
+        assert resolve_native_checkpoint(
+            db,
+            account_id=thread.account_id,
+            flow_id=thread.flow_id,
+            execution_id=repair.id,
+            resume=failed_resume,
+        ) == {"cold_handoff_authorized": True}
 
 
 @pytest.mark.asyncio
@@ -1519,7 +1522,19 @@ async def test_native_repair_resolves_encrypted_workspace_and_selected_session(
         source.cli_session = saved_session
         db.commit()
         monkeypatch.setattr(settings, "flow_artifact_direct_upload", False)
-        with pytest.raises(ValueError, match="checkpoint uploads disabled"):
+        # Uploads off: even a stored artifact reference is not recoverable here.
+        assert resolve_native_checkpoint(
+            db,
+            account_id=thread.account_id,
+            flow_id=thread.flow_id,
+            execution_id=repair.id,
+            resume=resume,
+        ) == {"cold_handoff_authorized": True}
+        monkeypatch.setattr(settings, "flow_artifact_direct_upload", True)
+        native_row = db.get(models.FlowArtifact, native_ref.artifact_id)
+        native_row.ciphertext = None
+        db.commit()
+        with pytest.raises(ValueError, match="native checkpoint unavailable"):
             resolve_native_checkpoint(
                 db,
                 account_id=thread.account_id,
@@ -1527,9 +1542,9 @@ async def test_native_repair_resolves_encrypted_workspace_and_selected_session(
                 execution_id=repair.id,
                 resume=resume,
             )
-        monkeypatch.setattr(settings, "flow_artifact_direct_upload", True)
-        native_row = db.get(models.FlowArtifact, native_ref.artifact_id)
-        native_row.ciphertext = None
+        # Artifact bound to a different execution still fails closed.
+        native_row.ciphertext = b"restored"
+        native_row.execution_id = repair.id
         db.commit()
         with pytest.raises(ValueError, match="native checkpoint unavailable"):
             resolve_native_checkpoint(

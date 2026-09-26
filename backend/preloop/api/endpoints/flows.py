@@ -22,7 +22,10 @@ from preloop.models.db.session import get_db_session as get_db
 from preloop.api.auth import get_current_active_user
 from preloop.models.models.user import User
 from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
-from preloop.services.execution_metrics import project_execution_totals
+from preloop.services.execution_metrics import (
+    project_execution_totals,
+    project_resume_lineage,
+)
 from preloop.services.kill_switch import FlowHaltActiveError
 from preloop.services.issue_triage_controller import TriageControllerError
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
@@ -605,6 +608,7 @@ def read_flow_executions(
     # Tool calls and cost from the same aggregation the execution page shows,
     # so a row and the page it opens never state different numbers.
     project_execution_totals(db, executions)
+    project_resume_lineage(db, executions, account_id=current_user.account_id)
 
     return executions
 
@@ -993,6 +997,7 @@ def read_flow_execution(
     # Same for tool calls and cost: the page hydrates its strip from this row
     # before /metrics answers, and the number must not change under the user.
     project_execution_totals(db, [execution])
+    project_resume_lineage(db, [execution], account_id=current_user.account_id)
     _project_execution_park(db, execution)
 
     return execution

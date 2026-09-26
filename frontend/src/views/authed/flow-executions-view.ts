@@ -99,6 +99,19 @@ interface FlowExecution {
   token_usage?: GatewayTokenUsage | null;
   estimated_cost?: number | null;
   /**
+   * Publishing execution this repair resumes. Absent on a first publication.
+   * Distinct from parent_execution_id (delegation tree).
+   */
+  resume_of?: string | null;
+  /**
+   * Summed tokens and cost for the publishing execution plus every repair
+   * that points at it. Absent when the row is not part of a multi-turn chain.
+   */
+  resume_totals?: {
+    total_tokens: number;
+    estimated_cost: number;
+  } | null;
+  /**
    * Short human-readable description of what triggered this execution, e.g.
    * 'preloop/preloop #78 · Pull Request Updated · 5167595c'. Computed when the
    * execution is created; absent on executions that predate subjects.
@@ -241,6 +254,19 @@ export class FlowExecutionsView extends AuthedElement {
         align-items: center;
         flex-wrap: wrap;
         gap: 4px 8px;
+      }
+      .resume-line {
+        flex-basis: 100%;
+        font-size: var(--console-text-meta);
+        color: var(--console-meta-color);
+        line-height: 1.3;
+      }
+      .resume-line a {
+        color: var(--sl-color-primary-600);
+        text-decoration: none;
+      }
+      .resume-line a:hover {
+        text-decoration: underline;
       }
       /* One of the page's two ambient animations: the dot that says a run is
          still going. The chip beside it stays a soft tint. */
@@ -1490,8 +1516,35 @@ export class FlowExecutionsView extends AuthedElement {
              is the difference between a provider hiccup and a flow that never
              confirms it finished. -->
         ${renderFailureCategoryChip(exec.failure_category)}
+        ${this.renderResumeLine(exec)}
       </div>
     `;
+  }
+
+  /**
+   * Review/CI repair label: not a delegation child. Link the publishing
+   * execution and state the chain total when the server rolled one up.
+   */
+  private renderResumeLine(exec: FlowExecution) {
+    const resumeOf = exec.resume_of;
+    const totals = exec.resume_totals;
+    if (!resumeOf && !totals) return nothing;
+    const chain =
+      totals != null
+        ? html` · ${formatTokenCount(totals.total_tokens)} ·
+          ${formatEstimatedCost(totals.estimated_cost)}`
+        : nothing;
+    if (resumeOf) {
+      const href = router.urlForPath(`/console/flows/executions/${resumeOf}`);
+      return html`<div class="resume-line" data-testid="resume-line">
+        Resumption of
+        <a href=${href} data-testid="resume-of-link">${resumeOf.slice(0, 8)}</a
+        >${chain}
+      </div>`;
+    }
+    return html`<div class="resume-line" data-testid="resume-line">
+      Chain total${chain}
+    </div>`;
   }
 
   /**
