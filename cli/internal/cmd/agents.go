@@ -754,6 +754,14 @@ type localEnrollmentState struct {
 	RestoredAt          *time.Time             `json:"restored_at,omitempty"`
 	DiscoveredConfig    map[string]interface{} `json:"discovered_config,omitempty"`
 	ManagedConfig       map[string]interface{} `json:"managed_config,omitempty"`
+	// CodexOAuthSyncedLastRefresh is the auth.json or Keychain last_refresh
+	// value last pushed for this enrollment. The Codex permission hook
+	// compares the local ChatGPT login against it.
+	CodexOAuthSyncedLastRefresh string `json:"codex_oauth_synced_last_refresh,omitempty"`
+	// CodexOAuthSyncedAuthMtimeNS is the auth.json mtime in Unix nanoseconds
+	// at that push. The no-change path stats the file and reads this state
+	// once, then skips the network.
+	CodexOAuthSyncedAuthMtimeNS int64 `json:"codex_oauth_synced_auth_mtime_ns,omitempty"`
 }
 
 type managedMCPAdapter interface {
@@ -1711,6 +1719,8 @@ func runAgentsStatus(cmd *cobra.Command, args []string) error {
 			if summary == "" {
 				summary = m.ModelIdentifier
 			}
+		} else {
+			summary = annotateCodexOAuth401Summary(agent, m.CredentialType, summary)
 		}
 		fmt.Printf("Model: %s\n", m.Name)
 		fmt.Printf("Model status: %s\n", mStatus)
@@ -1952,14 +1962,21 @@ func runAgentsValidate(cmd *cobra.Command, args []string) error {
 		"error",
 	} {
 		if value, ok := result[key]; ok {
-			fmt.Printf("  %s: %s\n", key, formatManagedValidationValue(key, value))
+			shown := value
+			if text, ok := value.(string); ok && (key == "model_summary" || key == "error") {
+				shown = annotateCodexOAuth401Summary(agent, openaiCodexOAuthCredentialType, text)
+			}
+			fmt.Printf("  %s: %s\n", key, formatManagedValidationValue(key, shown))
 		}
 	}
 	if ms, ok := result["model_status"].(string); ok && ms != "" {
 		fmt.Printf("Model status: %s\n", ms)
 	}
 	if sum, ok := result["model_summary"].(string); ok && sum != "" {
-		fmt.Printf("Model summary: %s\n", sum)
+		fmt.Printf(
+			"Model summary: %s\n",
+			annotateCodexOAuth401Summary(agent, openaiCodexOAuthCredentialType, sum),
+		)
 	}
 	fmt.Printf("  onboarding_mode: %s\n", onboardingStateLabel(onboardingStateFromValidation(result)))
 	fmt.Printf("  routing: %s\n", onboardingStateNote(onboardingStateFromValidation(result)))
