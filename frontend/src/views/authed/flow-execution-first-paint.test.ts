@@ -335,6 +335,43 @@ describe('FlowExecutionView first paint', () => {
       .not.exist;
   });
 
+  it('says so when even the full read stops short of the run', async () => {
+    // More calls than the server returns in one read: both reads report more.
+    gatewayResponse = (url) => ({
+      logs: url.includes('tail=')
+        ? [call(2, 3000, 0.3)]
+        : [call(1, 3000, 0.3), call(2, 3000, 0.3)],
+      source: 'database',
+      has_more: true,
+    });
+    const element = await mount();
+    await paint(element);
+    releaseAll();
+    await waitUntil(() => (element as any).gatewayEventsLoaded);
+    await element.updateComplete;
+
+    (
+      root(element).querySelector(
+        '[data-testid="load-earlier-calls"]'
+      ) as HTMLElement
+    ).click();
+    await waitUntil(
+      () => root(element).querySelectorAll('.timeline-gateway').length === 2,
+      'The earlier model calls did not load'
+    );
+    await element.updateComplete;
+
+    const notice = root(element).querySelector(
+      '[data-testid="timeline-truncated"]'
+    );
+    expect(notice).to.exist;
+    expect(notice!.textContent).to.contain('the most one read returns');
+    expect(notice!.textContent).to.contain('cover the whole run');
+    expect(root(element).querySelector('[data-testid="load-earlier-calls"]')).to
+      .not.exist;
+    expect((element as any).totalTokens).to.equal(9000);
+  });
+
   it('drops a gateway response that lands after navigating away', async () => {
     const element = await mount();
     await paint(element);

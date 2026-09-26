@@ -1635,11 +1635,13 @@ export class FlowExecutionView extends LitElement {
       // Every metadata read feeds only model-call consumers (timeline cards,
       // the strip, the model list, the error line), so it asks for model
       // calls alone. The transcript's full read stays as it always was.
+      const modelCallsOnly = metadataOnly;
+      const tail = bounded ? INITIAL_GATEWAY_EVENTS_TAIL : undefined;
       const response = await getFlowExecutionGatewayEvents(
         executionId,
-        bounded ? INITIAL_GATEWAY_EVENTS_TAIL : undefined,
+        tail,
         metadataOnly,
-        metadataOnly
+        modelCallsOnly
       );
       if (!current()) return;
       this.gatewayEvents = response.logs || [];
@@ -2819,7 +2821,12 @@ export class FlowExecutionView extends LitElement {
                   <span>
                     Showing the latest
                     ${this.gatewayEvents.filter(isModelGatewayCall).length}
-                    model calls.
+                    model
+                    calls${
+                      this.gatewayEventsBounded
+                        ? '.'
+                        : ', the most one read returns. The summary totals still cover the whole run.'
+                    }
                   </span>
                   ${
                     this.gatewayEventsBounded

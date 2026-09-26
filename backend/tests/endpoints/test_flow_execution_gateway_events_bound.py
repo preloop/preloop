@@ -161,3 +161,23 @@ def test_detail_row_carries_the_flow_name(client, db_session, test_user):
     body = client.get(f"/api/v1/flows/executions/{execution.id}").json()
 
     assert body["flow_name"] == "Nightly triage"
+
+
+def test_model_call_read_has_a_matching_index(db_session):
+    """An index leads with the model-calls-only read's filter columns.
+
+    The read filters ``execution_id`` and ``log_type`` and orders by
+    ``timestamp``; single-column indexes make Postgres walk every row of a
+    run to find its calls.
+    """
+    from sqlalchemy import text
+
+    definition = db_session.execute(
+        text(
+            "SELECT indexdef FROM pg_indexes "
+            "WHERE tablename = 'flow_execution_log' "
+            "AND indexname = 'ix_flow_execution_log_execution_type_ts'"
+        )
+    ).scalar_one()
+
+    assert '(execution_id, log_type, "timestamp")' in definition
