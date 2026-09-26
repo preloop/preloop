@@ -3919,6 +3919,20 @@ func resolveCodexOAuthCredential() (*codexOAuthCredential, string) {
 }
 
 func readCodexKeychainOAuthCredential() (*codexOAuthCredential, string) {
+	credential, _ := readCodexKeychainOAuthBundle()
+	if credential == nil {
+		return nil, ""
+	}
+	account := computeCodexKeychainAccount(resolveCodexHomePath())
+	return credential, fmt.Sprintf(
+		"Resolved Codex ChatGPT OAuth credentials from OS Keychain (service: \"Codex Auth\", account: %s).",
+		account,
+	)
+}
+
+// readCodexKeychainOAuthBundle is the single macOS Keychain read for Codex
+// ChatGPT OAuth. The second result is the blob's last_refresh marker.
+func readCodexKeychainOAuthBundle() (*codexOAuthCredential, string) {
 	account := computeCodexKeychainAccount(resolveCodexHomePath())
 	secret, err := keyring.Get("Codex Auth", account)
 	if err != nil || strings.TrimSpace(secret) == "" {
@@ -3931,10 +3945,7 @@ func readCodexKeychainOAuthCredential() (*codexOAuthCredential, string) {
 	if credential == nil {
 		return nil, ""
 	}
-	return credential, fmt.Sprintf(
-		"Resolved Codex ChatGPT OAuth credentials from OS Keychain (service: \"Codex Auth\", account: %s).",
-		account,
-	)
+	return credential, codexOAuthLastRefreshFromJSON([]byte(secret))
 }
 
 func readCodexFileOAuthCredential() (*codexOAuthCredential, string) {
