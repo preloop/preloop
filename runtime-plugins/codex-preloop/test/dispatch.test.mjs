@@ -343,6 +343,81 @@ test("clone_less keeps workingDirectory on workspace_root", async () => {
   sidecar.stop();
 });
 
+test("spawn_worktree on a persistent checkout is command_error and does not run git", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "preloop-codex-ws-"));
+  const state = { texts: [], runs: 0, starts: [], resumes: [] };
+  const gitState = { dirty: new Set(), calls: 0 };
+  const manager = new WorkspaceManager(
+    { workspace_root: root },
+    async (args, options) => {
+      gitState.calls += 1;
+      return fakeGit(gitState)(args, options);
+    },
+  );
+  const sidecar = new PreloopCodexSidecar(
+    undefined,
+    makeEchoFactory(state),
+    undefined,
+    manager,
+  );
+  sidecar.configure({ ...baseConfig, workspace_root: root });
+  const socket = fakeSocket();
+  await sidecar.handleFrame(
+    socket,
+    JSON.stringify({
+      type: "command",
+      name: "send_message",
+      message_id: "ws-worktree",
+      payload: {
+        text: "review the change",
+        start_new_session: true,
+        spawn_worktree: true,
+        metadata: {
+          workspace: {
+            mode: "persistent_checkout",
+            repository_url: "https://github.com/example/repo.git",
+            repository_slug: "example/repo",
+            default_branch: "main",
+            sha: "a".repeat(40),
+          },
+        },
+      },
+    }),
+  );
+  assert.equal(socket.sent.length, 1);
+  assert.equal(socket.sent[0].name, "command_error");
+  assert.match(socket.sent[0].payload.error, /does not create git worktrees/);
+  assert.equal(state.starts.length, 0);
+  assert.equal(gitState.calls, 0);
+  sidecar.stop();
+});
+
+test("spawn_worktree without a persistent checkout is command_error", async () => {
+  const { sidecar, state } = makeSidecar();
+  const socket = fakeSocket();
+  await sidecar.handleFrame(
+    socket,
+    JSON.stringify({
+      type: "command",
+      name: "send_message",
+      message_id: "ws-worktree-clone-less",
+      payload: {
+        text: "review the diff",
+        start_new_session: true,
+        metadata: {
+          workspace: { mode: "clone_less" },
+          spawn_worktree: true,
+        },
+      },
+    }),
+  );
+  assert.equal(socket.sent.length, 1);
+  assert.equal(socket.sent[0].name, "command_error");
+  assert.match(socket.sent[0].payload.error, /does not create git worktrees/);
+  assert.equal(state.starts.length, 0);
+  sidecar.stop();
+});
+
 test("a dirty persistent checkout fails as command_error and does not start a thread", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "preloop-codex-ws-"));
   const checkout = path.join(root, "example", "repo");

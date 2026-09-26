@@ -116,10 +116,15 @@ thread with `workingDirectory` set to that checkout. `clone_less` and a
 missing `workspace` keep the `cwd` / `workspace_root` behaviour. A
 password in the clone URL is refused. `ssh://git@host/...` is allowed.
 A dirty tree fails the command instead of being reset. This sidecar does
-not create a git worktree, so a persistent turn that leaves uncommitted
-edits fails the next run on that repository; commit or clean before the
-next turn. The sidecar records `preloop.managedcheckout` in git config
-so a later process still knows the tree is its own. The resolved path is
+not create a git worktree. `spawn_worktree: true` fails the command
+before git runs. A persistent turn that leaves uncommitted edits fails
+the next run on that repository; commit or clean before the next turn.
+A second `persistent_checkout` for the same repository while a turn is
+still running can check out another commit in that directory. That
+matches the Claude sidecar. This sidecar has no worktree, so wait for
+the turn to finish. The sidecar records `preloop.managedcheckout` in
+git config so a later process still knows the tree is its own. The
+resolved path is
 `metadata.workspace_path` on `command_result` and on
 `event/session_activity`.
 

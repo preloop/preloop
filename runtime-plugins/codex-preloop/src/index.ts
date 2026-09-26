@@ -37,7 +37,11 @@ import {
 } from "./sessions.js";
 import { SessionActivity, TranscriptObserver } from "./observer.js";
 import { LauncherBridge, OwnershipMode } from "./mode.js";
-import { WorkspaceManager, WorkspaceSpec } from "./workspace.js";
+import {
+  WorkspaceError,
+  WorkspaceManager,
+  WorkspaceSpec,
+} from "./workspace.js";
 
 export {
   ControlConfig,
@@ -78,6 +82,7 @@ export type OperatorCommand = {
     session_mode?: string;
     start_new_session?: boolean;
     cwd?: string;
+    spawn_worktree?: boolean;
   };
 };
 
@@ -436,6 +441,9 @@ export class PreloopCodexSidecar {
     const messageId = command.message_id;
     let workspacePath: string | undefined;
     const workspace = payload.metadata?.["workspace"];
+    const spawnWorktree = Boolean(
+      payload.spawn_worktree ?? payload.metadata?.["spawn_worktree"],
+    );
     let cwd =
       typeof payload.cwd === "string"
         ? payload.cwd
@@ -447,12 +455,17 @@ export class PreloopCodexSidecar {
       if (spec.mode === "persistent_checkout") {
         const config = this.verify();
         this.workspaces ??= new WorkspaceManager(config);
-        cwd = await this.workspaces.prepare(spec);
+        cwd = await this.workspaces.prepare(spec, spawnWorktree);
         workspacePath = cwd;
         if (messageId) {
           this.workspaceByMessage.set(messageId, cwd);
         }
       }
+    }
+    if (spawnWorktree && workspacePath === undefined) {
+      throw new WorkspaceError(
+        "the Codex sidecar does not create git worktrees",
+      );
     }
     const preparedCheckout = workspacePath !== undefined;
     if (preparedCheckout && cwd) {

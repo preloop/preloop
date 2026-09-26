@@ -224,6 +224,11 @@ export class WorkspaceManager {
         `repository_slug ${slug} escapes workspace_root`,
       );
     }
+    // The Claude sidecar creates a worktree after checkout. This sidecar
+    // refuses before clone or fetch so a rejected request does not touch git.
+    if (spawnWorktree) {
+      await this.worktree(repoDir);
+    }
     this.preparing.add(repoDir);
     try {
       const cwd = await this.exclusive(repoDir, () =>

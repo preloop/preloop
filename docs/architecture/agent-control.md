@@ -170,7 +170,13 @@ as follows.
   `workspace_root`).
 * `spawn_worktree` on the Claude sidecar creates a worktree after that
   checkout and runs the turn there. The Codex sidecar does not create git
-  worktrees.
+  worktrees. A `spawn_worktree` request fails with `command_error` before
+  git runs.
+* A second `persistent_checkout` for the same repository while a turn is
+  still running can check out another commit in that directory. Eviction
+  skips the in-use directory, but checkout does not. That matches the
+  Claude sidecar, which can isolate the turn with `spawn_worktree`. The
+  Codex sidecar cannot, so wait for the turn to finish.
 * Git operations on one repository directory are serialized in-process.
   Eviction takes the same lock and skips a directory whose turn is still
   running.
