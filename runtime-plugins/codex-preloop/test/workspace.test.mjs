@@ -313,12 +313,21 @@ test("eviction does not delete a checkout that starts preparing during isDirty",
 test("spawn_worktree is refused before git runs", async () => {
   const root = await tempRoot();
   const state = { calls: [], dirty: new Set(), destructive: [], maxInFlight: 0 };
-  const manager = new WorkspaceManager({ workspace_root: root }, makeGit(state));
+  let worktrees = 0;
+  const manager = new WorkspaceManager(
+    { workspace_root: root },
+    makeGit(state),
+    async () => {
+      worktrees += 1;
+      return path.join(root, "unused-worktree");
+    },
+  );
   await assert.rejects(
     () => manager.prepare(spec("example/repo"), true),
     /does not create git worktrees/,
   );
   assert.equal(state.calls.length, 0);
+  assert.equal(worktrees, 0);
 });
 
 test("concurrent prepares on different repositories do not deadlock", async () => {

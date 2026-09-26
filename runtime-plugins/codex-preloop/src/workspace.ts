@@ -226,8 +226,10 @@ export class WorkspaceManager {
     }
     // The Claude sidecar creates a worktree after checkout. This sidecar
     // refuses before clone or fetch so a rejected request does not touch git.
+    // Call the refusal directly: an injected worktree callback must not run
+    // here and again after checkout.
     if (spawnWorktree) {
-      await this.worktree(repoDir);
+      await refuseGitWorktree(repoDir);
     }
     this.preparing.add(repoDir);
     try {
