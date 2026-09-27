@@ -304,8 +304,7 @@ def _gateway():
     return SimpleNamespace(
         db=MagicMock(),
         auth_context=SimpleNamespace(
-            account_id=ACCOUNT,
-            user=SimpleNamespace(account_id=ACCOUNT, id=USER),
+            account_id=ACCOUNT, user=SimpleNamespace(account_id=ACCOUNT, id=USER)
         ),
         _openai_stream_error_event=lambda exc, _err: f"data: {exc.message}\n\n",
         _sse_done=lambda: "data: [DONE]\n\n",
