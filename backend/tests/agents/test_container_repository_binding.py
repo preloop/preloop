@@ -35,20 +35,42 @@ def test_bound_run_uses_only_the_host_tracker_credential() -> None:
     ):
         assert executor._resolve_repository_token(
             {"tracker_id": "github-tracker"}, context
-        ) == ("host-token", "github")
+        ) == ("host-token", "github", None)
         # A missing host credential is missing: never the Jira token.
         context["git_credentials_map"].pop("github-tracker")
         assert executor._resolve_repository_token(
             {"tracker_id": "github-tracker"}, context
-        ) == (None, None)
+        ) == (None, None, None)
+
+
+def test_bound_run_passes_the_bitbucket_git_username() -> None:
+    """A Jira run bound to Bitbucket gets the host's username for git auth."""
+    executor = _executor()
+    context = _context(repository_binding={"repository": "team/app"})
+    context["git_credentials_map"]["bitbucket-tracker"] = {
+        "token": "bb-token",
+        "tracker_type": "bitbucket",
+        "username": "bb-user",
+    }
+    with patch.object(
+        executor,
+        "_get_token_from_project",
+        side_effect=AssertionError("trigger project lookup forbidden"),
+    ):
+        assert executor._resolve_repository_token(
+            {"tracker_id": "bitbucket-tracker"}, context
+        ) == ("bb-token", "bitbucket", "bb-user")
 
 
 def test_unbound_run_still_falls_back_to_the_trigger_tracker() -> None:
     """A code-host trigger keeps its existing fallback to its own tracker."""
     executor = _executor()
     context = _context(trigger_tracker_id="github-tracker")
-    token, tracker_type = executor._resolve_repository_token({}, context)
-    assert (token, tracker_type) == ("host-token", "github")
+    assert executor._resolve_repository_token({}, context) == (
+        "host-token",
+        "github",
+        None,
+    )
 
 
 @pytest.mark.parametrize(

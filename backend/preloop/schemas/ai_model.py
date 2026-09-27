@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
@@ -11,6 +11,122 @@ from preloop.schemas.gateway_usage import (
     GatewayUsageByDay,
     GatewayUsageBySession,
 )
+
+OPENAI_CODEX_OAUTH_TYPE = "oauth_openai_codex"
+ANTHROPIC_CLAUDE_CODE_OAUTH_TYPE = "oauth_anthropic_claude_code"
+
+# Keys the credential resolver reads for each subscription-OAuth type. Codex
+# needs the ChatGPT account id on every upstream call, and the server refreshes
+# its single-use token, so refresh and expiry are mandatory. Claude Code also
+# supports long-lived access-only tokens, which the resolver never refreshes.
+_OAUTH_REQUIRED_PAYLOAD_KEYS: Dict[str, Tuple[str, ...]] = {
+    OPENAI_CODEX_OAUTH_TYPE: ("access", "refresh", "account_id", "expires"),
+    ANTHROPIC_CLAUDE_CODE_OAUTH_TYPE: ("access",),
+}
+_OAUTH_OPTIONAL_PAYLOAD_KEYS: Dict[str, Tuple[str, ...]] = {
+    OPENAI_CODEX_OAUTH_TYPE: (),
+    ANTHROPIC_CLAUDE_CODE_OAUTH_TYPE: ("refresh", "expires"),
+}
+# Key names used by the provider tools' own auth files, mapped to the name
+# Preloop stores. Sending these is the most common mistake.
+_OAUTH_PAYLOAD_KEY_ALIASES: Dict[str, str] = {
+    "access_token": "access",
+    "refresh_token": "refresh",
+    "expires_at": "expires",
+}
+# 10**12 ms is 2001-09-09. Any smaller positive expiry is almost certainly
+# epoch seconds, which the resolver would read as an already-expired token.
+_MIN_EPOCH_MILLIS = 10**12
+# 10**14 ms is the year 5138. A larger value is epoch micro- or nanoseconds,
+# which the resolver would read as a far-future expiry and never refresh.
+_MAX_EPOCH_MILLIS = 10**14
+
+CREDENTIAL_PAYLOAD_DESCRIPTION = (
+    "Inline credential payload for non-API-key auth, stored encrypted. "
+    "Validated per credential_type at write time; an invalid payload returns "
+    "422 and nothing is stored. For 'oauth_openai_codex' send "
+    "{access, refresh, account_id, expires}: access, refresh and account_id "
+    "are non-empty strings and expires is the access-token expiry as an "
+    "integer in epoch milliseconds. For 'oauth_anthropic_claude_code' send "
+    "{access} plus optional refresh (non-empty string) and expires (epoch "
+    "milliseconds). The key names from the tools' own auth files "
+    "(access_token, refresh_token, expires_at) are rejected. This is the "
+    "same shape POST /ai-models/{model_id}/credentials/export returns."
+)
+
+
+def _oauth_payload_value_error(key: str, value: Any) -> Optional[str]:
+    """Return a validation message for one OAuth payload value, or None.
+
+    Args:
+        key: Canonical payload key being checked.
+        value: The value the caller sent for ``key``.
+
+    Returns:
+        A short message naming the key and the problem, or None when valid.
+    """
+    if key == "expires":
+        if isinstance(value, bool) or not isinstance(value, int):
+            return "expires must be an integer (epoch milliseconds)"
+        if value <= 0:
+            return "expires must be a positive integer (epoch milliseconds)"
+        if value < _MIN_EPOCH_MILLIS:
+            return (
+                "expires looks like epoch seconds; send epoch milliseconds "
+                "(seconds * 1000)"
+            )
+        if value > _MAX_EPOCH_MILLIS:
+            return (
+                "expires is too large for epoch milliseconds (microseconds or "
+                "nanoseconds?)"
+            )
+        return None
+    if not isinstance(value, str) or not value.strip():
+        return f"{key} must be a non-empty string"
+    return None
+
+
+def validate_credential_payload(
+    credential_type: Optional[str], credential_payload: Optional[Dict]
+) -> None:
+    """Check an inline credential payload against its credential type.
+
+    Only the subscription-OAuth types have a fixed shape. Other types are
+    accepted unchanged. Extra keys that are not known aliases are ignored.
+
+    Args:
+        credential_type: The ``credential_type`` sent with the payload.
+        credential_payload: The ``credential_payload`` dict sent by the caller.
+
+    Raises:
+        ValueError: If required keys are missing, a value has the wrong type,
+            or a known alias is used instead of the canonical key. The message
+            lists every problem found.
+    """
+    if credential_type not in _OAUTH_REQUIRED_PAYLOAD_KEYS:
+        return
+    payload = credential_payload or {}
+    required = _OAUTH_REQUIRED_PAYLOAD_KEYS[credential_type]
+    optional = _OAUTH_OPTIONAL_PAYLOAD_KEYS[credential_type]
+    problems: List[str] = []
+
+    missing = [key for key in required if key not in payload]
+    if missing:
+        problems.append("missing keys: " + ", ".join(missing))
+    for alias, expected in _OAUTH_PAYLOAD_KEY_ALIASES.items():
+        if alias in payload:
+            problems.append(f"unexpected key '{alias}': use '{expected}'")
+    for key in (*required, *optional):
+        if key not in payload:
+            continue
+        message = _oauth_payload_value_error(key, payload[key])
+        if message:
+            problems.append(message)
+
+    if problems:
+        raise ValueError(
+            f"invalid credential_payload for {credential_type}: " + "; ".join(problems)
+        )
 
 
 class AIModelBase(BaseModel):
@@ -37,11 +153,7 @@ class AIModelBase(BaseModel):
         ),
     )
     credential_payload: Optional[Dict] = Field(
-        None,
-        description=(
-            "Optional inline credential payload for non-API-key auth, stored "
-            "encrypted when provided"
-        ),
+        None, description=CREDENTIAL_PAYLOAD_DESCRIPTION
     )
     credentials_backend_type: Optional[str] = Field(
         None,
@@ -116,6 +228,8 @@ class AIModelCreate(AIModelBase):
             raise ValueError(
                 "credentials_backend_type and credentials_external_ref are required together"
             )
+        if has_inline_payload:
+            validate_credential_payload(self.credential_type, self.credential_payload)
         return self
 
 
@@ -130,7 +244,9 @@ class AIModelUpdate(BaseModel):
     api_endpoint: Optional[str] = None
     api_key: Optional[str] = None
     credential_type: Optional[str] = None
-    credential_payload: Optional[Dict] = None
+    credential_payload: Optional[Dict] = Field(
+        None, description=CREDENTIAL_PAYLOAD_DESCRIPTION
+    )
     credentials_backend_type: Optional[str] = None
     credentials_external_ref: Optional[str] = None
     credentials_meta_data: Optional[Dict] = None
@@ -183,6 +299,8 @@ class AIModelUpdate(BaseModel):
             raise ValueError(
                 "credentials_backend_type and credentials_external_ref are required together"
             )
+        if has_inline_payload:
+            validate_credential_payload(self.credential_type, self.credential_payload)
         return self
 
 

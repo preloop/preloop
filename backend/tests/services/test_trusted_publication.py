@@ -407,6 +407,24 @@ def provider_row(provider: str, body: str) -> dict[str, Any]:
             },
             "base": {"ref": "main"},
         }
+    if provider == "bitbucket":
+        return {
+            "id": 5,
+            "links": {
+                "html": {
+                    "href": "https://bitbucket.org/example/project/pull-requests/5"
+                }
+            },
+            "description": body,
+            "source": {
+                "branch": {"name": "preloop/issue-1"},
+                "repository": {"full_name": "example/project"},
+            },
+            "destination": {
+                "branch": {"name": "main"},
+                "repository": {"full_name": "example/project"},
+            },
+        }
     return {
         "iid": 5,
         "web_url": "https://gitlab.example.com/example/project/-/merge_requests/5",
@@ -418,16 +436,19 @@ def provider_row(provider: str, body: str) -> dict[str, Any]:
     }
 
 
+PROVIDER_URLS = {
+    "github": "https://github.com/example/project.git",
+    "gitlab": "https://gitlab.example.com/example/project.git",
+    "bitbucket": "https://bitbucket.org/example/project.git",
+}
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider", ["github", "gitlab"])
+@pytest.mark.parametrize("provider", ["github", "gitlab", "bitbucket"])
 async def test_provider_create_retry_metadata_update_preserves_human_edits(
     provider: str,
 ) -> None:
-    url = (
-        "https://github.com/example/project.git"
-        if provider == "github"
-        else "https://gitlab.example.com/example/project.git"
-    )
+    url = PROVIDER_URLS[provider]
     contract = binding(provider=provider, repository_url=url)
     calls: list[httpx.Request] = []
     row: dict[str, Any] | None = None
@@ -437,14 +458,21 @@ async def test_provider_create_retry_metadata_update_preserves_human_edits(
         nonlocal row
         calls.append(request)
         if request.method == "GET":
-            return httpx.Response(200, json=[row] if row else [])
+            rows = [row] if row else []
+            if provider == "bitbucket":
+                return httpx.Response(200, json={"values": rows})
+            return httpx.Response(200, json=rows)
         payload = json.loads(request.content)
         if request.method == "POST":
             assert payload["title"] == "Fix résumé"
-            assert (
-                payload["head" if provider == "github" else "source_branch"]
-                == contract.branch
-            )
+            if provider == "bitbucket":
+                assert payload["source"]["branch"]["name"] == contract.branch
+                assert payload["destination"]["branch"]["name"] == contract.base
+            else:
+                assert (
+                    payload["head" if provider == "github" else "source_branch"]
+                    == contract.branch
+                )
             row = provider_row(provider, payload[field])
             return httpx.Response(201, json=row)
         assert list(payload) == [field]
@@ -515,3 +543,34 @@ def test_repository_template_reader_rejects_symlink_escape(tmp_path: Path) -> No
     (repository / "template.md").symlink_to(outside)
     with pytest.raises(ValueError, match="missing or outside"):
         repository_template(repository, provider="github", configured="template.md")
+
+
+def test_bitbucket_binding_requires_bitbucket_host() -> None:
+    bound = binding(
+        provider="bitbucket",
+        repository_url="https://bitbucket.org/example/project.git",
+    )
+    assert bound.project_path == "example/project"
+    with pytest.raises(PublicationError, match="bitbucket.org"):
+        binding(
+            provider="bitbucket",
+            repository_url="https://github.com/example/project.git",
+        )
+
+
+def test_lease_git_username_matches_host(tmp_path: Path) -> None:
+    """Bitbucket pushes authenticate as ``x-token-auth``, GitHub leases as
+    ``x-access-token``; the Basic header carries the pair."""
+    import base64
+
+    directory = tmp_path / "pub"
+    directory.mkdir()
+    repo = CleanGitRepository(directory)
+    output = repo.run(
+        "config", "-l", lease=lease("https://bitbucket.org/example/project.git")
+    )
+    bitbucket_header = base64.b64encode(b"x-token-auth:test-write-secret").decode()
+    assert f"Authorization: Basic {bitbucket_header}" in output
+    output = repo.run("config", "-l", lease=lease())
+    github_header = base64.b64encode(b"x-access-token:test-write-secret").decode()
+    assert f"Authorization: Basic {github_header}" in output

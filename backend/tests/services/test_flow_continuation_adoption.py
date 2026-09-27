@@ -565,3 +565,90 @@ def test_selected_pr_url_is_canonical_before_preview_and_adoption(
     ):
         service.adopt_continuation(account, row.id, request)
     assert bind.call_args.kwargs["pr_url"] == publication["pr_url"]
+
+
+@pytest.mark.asyncio
+async def test_bitbucket_read_publication_matches_repository_uuid() -> None:
+    """The Bitbucket read validates both sides against the bound repo UUID."""
+    repo_uuid = "22222222-2222-2222-2222-222222222222"
+    pr = {
+        "state": "OPEN",
+        "source": {
+            "branch": {"name": "feat/x"},
+            "commit": {"hash": "head"},
+            "repository": {"uuid": "{" + repo_uuid + "}", "full_name": "ws/repo"},
+        },
+        "destination": {
+            "branch": {"name": "main"},
+            "repository": {"uuid": "{" + repo_uuid + "}", "full_name": "ws/repo"},
+        },
+        "links": {"html": {"href": "https://bitbucket.org/ws/repo/pull-requests/7"}},
+    }
+    raw = SimpleNamespace(
+        _request=AsyncMock(return_value=SimpleNamespace(json=lambda: pr))
+    )
+    source = {
+        "provider": "bitbucket",
+        "repository_id": f"ws/{repo_uuid}",
+        "number": "7",
+        "tracker_id": uuid4(),
+        "tracker_key": "k",
+        "tracker_options": {},
+        "policy": {},
+    }
+    with (
+        patch.object(service, "create_tracker_client", AsyncMock(return_value=raw)),
+        patch.object(
+            service.FeedbackProvider,
+            "read",
+            AsyncMock(return_value=FeedbackState("head")),
+        ),
+    ):
+        result = await service._read_publication(source)
+    assert result["open"] is True
+    assert result["same_repository"] is True
+    assert result["branch"] == "feat/x"
+    assert result["pr_url"] == "https://bitbucket.org/ws/repo/pull-requests/7"
+    path = raw._request.await_args_list[0].args[1]
+    assert path == "repositories/ws/%7B" + repo_uuid + "%7D/pullrequests/7"
+
+
+@pytest.mark.asyncio
+async def test_bitbucket_read_publication_rejects_fork_source() -> None:
+    """A PR whose source lives in another repository is not the publication."""
+    repo_uuid = "22222222-2222-2222-2222-222222222222"
+    pr = {
+        "state": "OPEN",
+        "source": {
+            "branch": {"name": "feat/x"},
+            "commit": {"hash": "head"},
+            "repository": {"uuid": "{99999999-9999-9999-9999-999999999999}"},
+        },
+        "destination": {
+            "branch": {"name": "main"},
+            "repository": {"uuid": "{" + repo_uuid + "}"},
+        },
+        "links": {"html": {"href": "https://bitbucket.org/ws/repo/pull-requests/7"}},
+    }
+    raw = SimpleNamespace(
+        _request=AsyncMock(return_value=SimpleNamespace(json=lambda: pr))
+    )
+    source = {
+        "provider": "bitbucket",
+        "repository_id": f"ws/{repo_uuid}",
+        "number": "7",
+        "tracker_id": uuid4(),
+        "tracker_key": "k",
+        "tracker_options": {},
+        "policy": {},
+    }
+    with (
+        patch.object(service, "create_tracker_client", AsyncMock(return_value=raw)),
+        patch.object(
+            service.FeedbackProvider,
+            "read",
+            AsyncMock(return_value=FeedbackState("head")),
+        ),
+    ):
+        result = await service._read_publication(source)
+    assert result["same_repository"] is False

@@ -50,10 +50,9 @@ tokens, and when Preloop's copy is newer it writes that bundle back into the
 same place Codex reads it. When both copies changed since the last sync, the
 one with the later `last_refresh` wins and replaces the other. A pull only
 happens when the local login and Preloop's copy name the same ChatGPT
-account. A failed push
-or pull is logged once, leaves the local login and the stamp as they were,
-and does not change the permission decision. A host with no local login
-never gets one written back. When the hook is not installed, run
+account. A failed push or pull is logged once, leaves the local login and the
+stamp as they were, and does not change the permission decision. A host with
+no local login never gets one written back. When the hook is not installed, run
 `preloop agents sync-credentials "Codex CLI"`; it reconciles in both
 directions and prints which one ran.
 
@@ -61,3 +60,24 @@ For headless hosts, a single holder is still the recommendation: import the
 login into Preloop, delete the local `auth.json`, and keep
 `requires_openai_auth = false` (the default) on the Preloop model provider in
 `~/.codex/config.toml`, so only Preloop refreshes the grant.
+
+To push a Codex login through the API yourself, send `PUT /api/v1/ai-models/{id}`
+with `credential_type: "oauth_openai_codex"` and a `credential_payload` in
+Preloop's shape, not the key names from `auth.json`:
+
+```json
+{
+  "access": "<access token>",
+  "refresh": "<refresh token>",
+  "account_id": "<ChatGPT account id>",
+  "expires": 1893456000000
+}
+```
+
+`access`, `refresh`, and `account_id` must be non-empty strings. `expires` is
+the access-token expiry as an integer in epoch milliseconds. The server checks
+the payload when you write it and answers 422 with the missing or invalid keys,
+without storing anything. `access_token`, `refresh_token`, and `expires_at` are
+rejected with a hint that names the expected key, and an `expires` in epoch
+seconds or microseconds is rejected too. This is the same shape
+`POST /api/v1/ai-models/{id}/credentials/export` returns.

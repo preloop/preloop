@@ -2288,6 +2288,14 @@ class TestSuccessConfirmationChannels:
             "status": "skipped",
             "reason": "no SBOM seeds reachable",
         }
+        # The platform derives the VEX-closed tally and the limitations at
+        # persist and stamps this run's values on the drift block.
+        expected["vuln_scan"] = {**expected["vuln_scan"], "closed_by_vex": 0}
+        expected["drift"] = {
+            **expected["drift"],
+            "closed_by_vex": {"previous": None, "current": 0},
+            "limitations": {"previous": None, "current": []},
+        }
         assert result["status"] == "SUCCEEDED"
         assert result["result"] == expected
 

@@ -96,6 +96,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Copilot surface, whether MCP tool calls are governed, whether model
   calls are metered, whether hooks record a session, and whether spend
   is gateway usage or the premium-request import.
+- Private runners on Windows and macOS run host execution profiles (Cursor,
+  Copilot CLI) end to end. The runner finds `cursor-agent` and `copilot`
+  through per-OS locations (`%APPDATA%\npm`, `%USERPROFILE%\.copilot`,
+  Homebrew and npm global paths), unwraps npm `.cmd` shims to `node.exe` so
+  prompts never pass through `cmd.exe`, enforces Windows command-line limits
+  with named errors, and kills the whole process tree on halt (`taskkill
+  /T`). `preloop runner enable` installs a logon scheduled task on Windows
+  and a launchd agent on macOS, both running as the user with output in
+  `~/.preloop/runner.log`; `install`/`uninstall` are accepted aliases. Host
+  jobs now start from an allowlisted environment (system baseline, the
+  harness's own variables, plus profile `pass_env` names) instead of the
+  operator's full environment, `workspace_root` is optional (defaulting to
+  `~/.preloop/host-workspaces`), and Copilot hook entries use `powershell`
+  on Windows. See `docs/guide/runners/quickstart-windows.md` and
+  `quickstart-macos.md`.
 
 - Semantic search settings on the Sessions page: a card to opt the account in
   to embedding its session content, name the model and endpoint, choose
@@ -192,6 +207,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Release security audit verdicts: pass means: minimum elements passed, gate
+  passed, no open (non-VEX-closed) findings, no failed cross-checks, no
+  gap/partial register items. A finding closed by a valid VEX statement
+  (`not_affected` with a recognised justification, or `fixed`, plus a
+  statement id) stays in the findings ledger and the evidence pack, is counted
+  in `vuln_scan.closed_by_vex`, and no longer holds a clean audit at
+  `pass_with_findings`. A cross-check skipped because its input was not
+  delivered names that input in `missing_input` and is listed in
+  `limitations[]` instead of holding the verdict; a check that ran and failed
+  still holds it. `gap` and `partial` register items hold it, `declared` items
+  do not. The platform derives `closed_by_vex` and `limitations` at persist,
+  stamps them on `drift`, and recomputes the overall verdict with a recorded
+  correction in either direction: down by one step at most, and never away
+  from `fail` when the gate, SBOM validity or minimum elements failed.
+
 - API keys whose scopes are all `mcp:*` (flow execution, runtime session and
   managed agent credentials) are limited to MCP and the runtime routes that
   check their own credentials. Other REST routes answer 403 with
@@ -238,6 +268,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the breakdown limit are unchanged. Refs #914.
 
 ### Fixed
+
+- `POST` and `PUT /api/v1/ai-models` check `credential_payload` against
+  `credential_type` when it is written. A Codex subscription payload needs
+  `access`, `refresh`, `account_id` and `expires` (integer epoch
+  milliseconds); a Claude Code payload needs `access`, with optional
+  `refresh` and `expires`. A payload that breaks this now gets 422 listing
+  the missing or invalid keys, and nothing is stored. Before, it got 200, the
+  model showed as active, and the first completion failed with "credentials
+  are incomplete". `access_token`, `refresh_token` and `expires_at` get a
+  hint naming the expected key. The CLI converts an expiry given in seconds
+  to milliseconds before pushing (#1026).
 
 - Bedrock models saved with the `aws` provider alias no longer send the stored
   AWS credential JSON as an API key; they unpack it like `bedrock` models.
