@@ -124,6 +124,7 @@ from .cli_client import CRUDCliClient, crud_cli_client
 from .event import CRUDEvent, crud_event
 from .visitor import CRUDVisitor, crud_visitor
 from .identity_link import CRUDIdentityLink, crud_identity_link
+from .policy_notice_hit import CRUDPolicyNoticeHit, crud_policy_notice_hit
 from .account_milestone import CRUDAccountMilestone, crud_account_milestone
 from .attention_dismissal import (
     CRUDAttentionDismissal,
@@ -369,6 +370,8 @@ __all__ = [
     "crud_visitor",
     "CRUDIdentityLink",
     "crud_identity_link",
+    "CRUDPolicyNoticeHit",
+    "crud_policy_notice_hit",
     "CRUDAccountMilestone",
     "crud_account_milestone",
     "CRUDAttentionDismissal",

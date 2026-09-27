@@ -171,7 +171,9 @@ def test_streamed_reasoning_cannot_escape_policy(
 ) -> None:
     gateway = SimpleNamespace(
         db=MagicMock(),
-        auth_context=SimpleNamespace(user=SimpleNamespace(account_id="acct", id="u")),
+        auth_context=SimpleNamespace(
+            account_id="acct", user=SimpleNamespace(account_id="acct", id="u")
+        ),
         _openai_stream_error_event=lambda exc, _err: f"data: {exc.code}\n\n",
         _sse_done=lambda: "data: [DONE]\n\n",
     )

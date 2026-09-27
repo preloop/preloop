@@ -238,6 +238,7 @@ def test_gateway_request_recording_survives_activity_touch_timeout():
     user = SimpleNamespace(id=user_id, account_id=account_id)
     api_key = SimpleNamespace(
         id=api_key_id,
+        account_id=account_id,
         name="Agent key",
         context_data={
             "runtime_session_id": str(runtime_session_id),
@@ -362,6 +363,7 @@ def test_runtime_session_resolution_rolls_back_after_timeout(
     user = SimpleNamespace(id=uuid4(), account_id=account_id)
     api_key = SimpleNamespace(
         id=uuid4(),
+        account_id=account_id,
         name="Agent key",
         context_data={
             "runtime_principal": {
