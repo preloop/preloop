@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -120,6 +119,7 @@ echo '{"type":"result","session_id":"ses-test"}'
 		Argv:          []string{"--print", "--output-format", "stream-json", "--mode=ask"},
 		WorkspaceRoot: root,
 		ModelMap:      map[string]string{"composer-2.5": "composer-local"},
+		PassEnv:       []string{"PRELOOP_HOST_EXEC_PROBE"},
 	}})
 	execID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 	cmd, binary, timeout, err := newHostExecJobCmd(map[string]any{
@@ -215,6 +215,7 @@ wait
 		Executable:     "cursor-agent",
 		WorkspaceRoot:  root,
 		TimeoutSeconds: 1,
+		PassEnv:        []string{"PRELOOP_HOST_EXEC_PROBE"},
 	}})
 	cmd, _, timeout, err := newHostExecJobCmd(map[string]any{
 		"agent_type": "cursor", "completion_protocol": "host_exec",
@@ -267,6 +268,7 @@ exit 2
 		Executable:    "cursor-agent",
 		Argv:          []string{"--mode=ask"},
 		WorkspaceRoot: root,
+		PassEnv:       []string{"PRELOOP_HOST_EXEC_PROBE"},
 	}})
 
 	oldDocker := runnerHasDocker
@@ -403,10 +405,6 @@ func TestNewHostExecJobCmdRejectsUnenforceableModel(t *testing.T) {
 		"model_identifier":  "composer-2.5",
 	})
 	want := "not in the local model_map"
-	if runtime.GOOS == "windows" {
-		// Windows rejects native profiles before checking their model map.
-		want = "host execution requires Unix process-group ownership"
-	}
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("err = %v; want %q", err, want)
 	}

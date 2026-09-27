@@ -221,7 +221,7 @@ async def test_prepare_after_failed_repair_uses_current_gate_and_original_branch
         ),
         patch(
             "preloop.services.isolated_publication.crud_tracker.get_by_id_and_account",
-            return_value=SimpleNamespace(id="tracker"),
+            return_value=SimpleNamespace(id="tracker", tracker_type="github"),
         ),
         patch("preloop.services.isolated_publication.validate_publication_tracker"),
         patch(

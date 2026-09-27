@@ -107,6 +107,13 @@ describe('PreloopFlowForm event filters section', () => {
     expect(source).to.include('Mergeable state');
   });
 
+  it('renders Bitbucket-specific state filter with its own vocabulary', () => {
+    expect(source).to.include('Filter by Bitbucket pull request state');
+    expect(source).to.include('Declined');
+    expect(source).to.include('Superseded');
+    expect(source).to.include('changeRequestNoun(tracker.tracker_type)');
+  });
+
   it('renders filter semantics help alert', () => {
     expect(source).to.include('How filters work:');
     expect(source).to.include('ALL conditions must');
@@ -137,6 +144,11 @@ const GITLAB_TRACKER = {
   id: 'tracker-gitlab',
   name: 'GitLab',
   tracker_type: 'gitlab',
+};
+const BITBUCKET_TRACKER = {
+  id: 'tracker-bitbucket',
+  name: 'Bitbucket',
+  tracker_type: 'bitbucket',
 };
 const JIRA_TRACKER = {
   id: 'tracker-jira',
@@ -181,7 +193,12 @@ describe('PreloopFlowForm event filters behaviour', () => {
       const target = String(url);
       if (target.includes('/api/v1/trackers')) {
         return new Response(
-          JSON.stringify([GITHUB_TRACKER, GITLAB_TRACKER, JIRA_TRACKER])
+          JSON.stringify([
+            GITHUB_TRACKER,
+            GITLAB_TRACKER,
+            BITBUCKET_TRACKER,
+            JIRA_TRACKER,
+          ])
         );
       }
       if (target.includes('/api/v1/organizations')) {
@@ -300,6 +317,48 @@ describe('PreloopFlowForm event filters behaviour', () => {
     const payload = await submit(element);
     expect(payload.trigger_event_source).to.equal(GITLAB_TRACKER.id);
     expect(payload.trigger_config).to.equal(null);
+  });
+
+  it('shows Bitbucket vocabulary and pull request states for a Bitbucket tracker', async () => {
+    const element = await mount({
+      ...trackerFlow({ state: 'declined' }),
+      trigger_event_source: BITBUCKET_TRACKER.id,
+      trigger_organization_id: undefined,
+    });
+    (element as any).filtersExpanded = true;
+    await element.updateComplete;
+
+    const reviewer = filterInput(element, 'Reviewer (username)');
+    expect(reviewer).to.not.equal(null);
+    expect(reviewer.getAttribute('help-text')).to.include('request changes');
+    expect(filterInput(element, 'Requested reviewer (username)')).to.equal(
+      null
+    );
+
+    const state = element.shadowRoot!.querySelector(
+      'sl-select[label="Pull request state"]'
+    ) as any;
+    expect(state).to.not.equal(null);
+    expect(state.value).to.equal('declined');
+    const options = Array.from(state.querySelectorAll('sl-option')).map(
+      (option: any) => option.value
+    );
+    expect(options).to.deep.equal([
+      '',
+      'open',
+      'merged',
+      'declined',
+      'superseded',
+    ]);
+    expect(
+      element.shadowRoot!.querySelector('sl-select[label="Mergeable state"]')
+    ).to.equal(null);
+    expect(element.shadowRoot!.textContent!.replace(/\s+/g, ' ')).to.include(
+      'Only when the pull request is merged'
+    );
+
+    const payload = await submit(element);
+    expect(payload.trigger_config).to.deep.equal({ state: 'declined' });
   });
 
   it('keeps filters when the same tracker is re-selected', async () => {

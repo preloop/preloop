@@ -114,3 +114,26 @@ async def test_gitlab_branch_exists_raises_when_it_cannot_tell():
     )
     with pytest.raises(TrackerResponseError):
         await tracker.branch_exists(BRANCH)
+
+
+@pytest.mark.asyncio
+async def test_github_uniform_source_branch_lookup():
+    tracker = _github()
+    request = AsyncMock(return_value=([], {}))
+    with patch.object(tracker, "_request_with_headers", request):
+        await tracker.list_open_pull_requests_by_source_branch(BRANCH)
+    params = request.await_args.kwargs["params"]
+    assert params["head"] == f"acme:{BRANCH}"
+    assert params["state"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_gitlab_uniform_source_branch_lookup():
+    project = MagicMock()
+    project.mergerequests.list.return_value = []
+    tracker = _gitlab(project)
+    listing = await tracker.list_open_pull_requests_by_source_branch(BRANCH)
+    kwargs = project.mergerequests.list.call_args.kwargs
+    assert kwargs["source_branch"] == BRANCH
+    assert kwargs["state"] == "opened"
+    assert listing == {"items": [], "has_more": False}

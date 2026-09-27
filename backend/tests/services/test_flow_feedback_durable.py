@@ -1972,3 +1972,79 @@ async def test_explicit_adoption_of_cancelled_source_can_start_first_repair(
             assert thread.state == "stopped"
             assert thread.stop_reason == "execution_cancelled"
             dispatch.assert_awaited_once()
+
+
+def test_feedback_types_include_bitbucket_review_events() -> None:
+    from preloop.services.flow_feedback import FEEDBACK_TYPES
+
+    assert {
+        "pull_request_approved",
+        "pull_request_unapproved",
+        "pull_request_changes_requested",
+        "pull_request_changes_request_removed",
+    } <= FEEDBACK_TYPES
+
+
+def test_ingest_bitbucket_event_targets_thread_by_repository_identity() -> None:
+    db = MagicMock()
+    event = {
+        "type": "comment_created",
+        "source": "bitbucket",
+        "account_id": str(uuid.uuid4()),
+        "tracker_id": str(uuid.uuid4()),
+        "payload": {
+            "repository": {
+                "full_name": "ws/repo",
+                "uuid": "{22222222-2222-2222-2222-222222222222}",
+            },
+            # Bitbucket pull request payloads carry the number as ``id``.
+            "pullrequest": {"id": 7},
+        },
+    }
+    with patch("preloop.services.flow_feedback.crud_flow_feedback.find") as find:
+        find.return_value = []
+        assert ingest_feedback(db, event) is False
+        assert find.call_args.kwargs["repository_id"] == (
+            "ws/22222222-2222-2222-2222-222222222222"
+        )
+        assert find.call_args.kwargs["pr_number"] == "7"
+
+
+def test_register_thread_binds_bitbucket_pr() -> None:
+    from preloop.services.flow_feedback import register_thread
+
+    flow = SimpleNamespace(
+        id=uuid.uuid4(),
+        account_id=uuid.uuid4(),
+        trigger_event_source="webhook",
+        agent_config={"feedback": {"enabled": True, "debounce_seconds": 0}},
+    )
+    execution = SimpleNamespace(
+        id=uuid.uuid4(),
+        flow_id=flow.id,
+        trigger_event_details={
+            "source": "bitbucket",
+            "tracker_id": str(uuid.uuid4()),
+            "_session_thread_id": str(uuid.uuid4()),
+            "payload": {
+                "repository": {
+                    "full_name": "ws/repo",
+                    "uuid": "{22222222-2222-2222-2222-222222222222}",
+                }
+            },
+        },
+    )
+    with (
+        patch("preloop.services.flow_feedback.crud_flow.get", return_value=flow),
+        patch("preloop.services.flow_feedback.crud_flow_feedback.register") as register,
+    ):
+        register_thread(
+            MagicMock(),
+            execution,
+            "https://bitbucket.org/ws/repo/pull-requests/7",
+            "feat/x",
+        )
+        values = register.call_args.kwargs["values"]
+        assert values["repository_id"] == "ws/22222222-2222-2222-2222-222222222222"
+        assert values["pr_number"] == "7"
+        assert values["provider"] == "bitbucket"
