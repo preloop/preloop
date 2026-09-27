@@ -21597,6 +21597,14 @@ components:
           type: array
           title: Repositories
           description: List of repositories to clone
+        repository_bindings:
+          items:
+            $ref: '#/components/schemas/RepositoryBinding-Input'
+          type: array
+          title: Repository Bindings
+          description: Code-host repositories for flows triggered by an issue-only
+            tracker (Jira). Used only when repositories is empty and the trigger is
+            Jira; overrides the Jira project's default binding
         git_user_name:
           anyOf:
           - type: string
@@ -21723,6 +21731,14 @@ components:
           type: array
           title: Repositories
           description: List of repositories to clone
+        repository_bindings:
+          items:
+            $ref: '#/components/schemas/RepositoryBinding-Output'
+          type: array
+          title: Repository Bindings
+          description: Code-host repositories for flows triggered by an issue-only
+            tracker (Jira). Used only when repositories is empty and the trigger is
+            Jira; overrides the Jira project's default binding
         git_user_name:
           anyOf:
           - type: string
@@ -26277,6 +26293,97 @@ components:
         ``extra=''forbid''``: a misspelled key here is a document that silently
 
         lands somewhere else, or not at all.'
+    RepositoryBinding-Input:
+      properties:
+        tracker_id:
+          type: string
+          format: uuid
+          title: Tracker Id
+          description: Code-host tracker that hosts the repository and supplies the
+            clone and push credential
+        repository:
+          type: string
+          maxLength: 255
+          minLength: 3
+          title: Repository
+          description: 'Repository path on the code host: owner/name, group/subgroup/name,
+            or workspace/repo'
+        base_branch:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Base Branch
+          description: Branch to check out and open the pull request against. When
+            unset, the flow's source_branch is used
+        default:
+          type: boolean
+          title: Default
+          description: Use this entry when the binding lists several repositories
+          default: false
+      type: object
+      required:
+      - tracker_id
+      - repository
+      title: RepositoryBinding
+      description: 'A code-host repository that an issue-only tracker''s flows work
+        on.
+
+
+        A Jira project has no git repository of its own. A binding names the
+
+        repository on a code-host tracker the account already has (GitHub,
+
+        GitLab, or any tracker whose client sets ``hosts_repositories``). The
+
+        clone and push credential comes from that tracker, never from the
+
+        issue tracker''s token.'
+    RepositoryBinding-Output:
+      properties:
+        tracker_id:
+          type: string
+          title: Tracker Id
+          description: Code-host tracker that hosts the repository and supplies the
+            clone and push credential
+        repository:
+          type: string
+          maxLength: 255
+          minLength: 3
+          title: Repository
+          description: 'Repository path on the code host: owner/name, group/subgroup/name,
+            or workspace/repo'
+        base_branch:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Base Branch
+          description: Branch to check out and open the pull request against. When
+            unset, the flow's source_branch is used
+        default:
+          type: boolean
+          title: Default
+          description: Use this entry when the binding lists several repositories
+          default: false
+      type: object
+      required:
+      - tracker_id
+      - repository
+      title: RepositoryBinding
+      description: 'A code-host repository that an issue-only tracker''s flows work
+        on.
+
+
+        A Jira project has no git repository of its own. A binding names the
+
+        repository on a code-host tracker the account already has (GitHub,
+
+        GitLab, or any tracker whose client sets ``hosts_repositories``). The
+
+        clone and push credential comes from that tracker, never from the
+
+        issue tracker''s token.'
     RepriceRequest:
       properties:
         start_date:

@@ -60,6 +60,7 @@ class GitLabTracker(BaseTracker):
     """GitLab tracker implementation using python-gitlab."""
 
     tracker_type: str = "gitlab"
+    hosts_repositories: bool = True
 
     def __init__(
         self,

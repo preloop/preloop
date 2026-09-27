@@ -61,6 +61,49 @@ def matching_event_types(event_type: str) -> Tuple[str, ...]:
     return (event_type, *extra)
 
 
+# Types a Jira ``jira:issue_updated`` delivery can normalize to.
+_JIRA_UPDATE_TYPES = frozenset(
+    {"issue_updated", "issue_labeled", "issue_unlabeled", "issue_status_changed"}
+)
+
+
+def secondary_event_types(
+    source: Optional[str], event_type: Optional[str], payload: Optional[dict]
+) -> Tuple[str, ...]:
+    """Extra event types a single delivery should also start flows for.
+
+    Jira folds every edit into one ``jira:issue_updated`` webhook, which
+    normalizes to a single type (added label, then status change, then
+    removed label, then ``issue_updated``). Flows subscribed to the other
+    deltas the same edit carries must still see it, and flows subscribed to
+    ``issue_updated`` keep firing on every edit, as they did before label
+    and status changes had their own types.
+
+    Args:
+        source: Event source (tracker type).
+        event_type: Normalized event type.
+        payload: Enriched payload (raw payload merged with filter fields).
+
+    Returns:
+        Additional normalized event types, possibly empty.
+    """
+    if (source or "").lower() != "jira" or not isinstance(payload, dict):
+        return ()
+    if event_type not in _JIRA_UPDATE_TYPES:
+        return ()
+    extras: List[str] = []
+    carried = (
+        ("issue_labeled", payload.get("added_labels")),
+        ("issue_status_changed", payload.get("status_to")),
+        ("issue_unlabeled", payload.get("removed_labels")),
+        ("issue_updated", True),
+    )
+    for extra_type, present in carried:
+        if present and extra_type != event_type:
+            extras.append(extra_type)
+    return tuple(extras)
+
+
 def gitlab_label_delta(payload: Optional[dict]) -> Tuple[List[str], List[str]]:
     """Return (added, removed) label titles from a GitLab issue/MR webhook.
 
@@ -96,6 +139,72 @@ def gitlab_label_delta(payload: Optional[dict]) -> Tuple[List[str], List[str]]:
     previous = _titles(labels_change.get("previous"))
     current = _titles(labels_change.get("current"))
     return sorted(current - previous), sorted(previous - current)
+
+
+def _jira_changelog_items(payload: Optional[dict]) -> List[Dict[str, Any]]:
+    """Return the changelog items of a Jira ``jira:issue_updated`` webhook.
+
+    Jira includes ``changelog.items`` only on issue updates. Each item names
+    the ``field`` that changed plus ``fromString`` / ``toString`` renderings.
+    """
+    if not isinstance(payload, dict):
+        return []
+    changelog = payload.get("changelog")
+    if not isinstance(changelog, dict):
+        return []
+    items = changelog.get("items")
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def jira_label_delta(payload: Optional[dict]) -> Tuple[List[str], List[str]]:
+    """Return (added, removed) labels from a Jira issue update changelog.
+
+    Jira reports a label edit as one changelog item with ``field`` set to
+    ``labels`` and the full before/after label sets as space-separated
+    strings (Jira labels cannot contain spaces). As with
+    ``gitlab_label_delta``, both deltas are always returned and
+    ``normalize_event_type`` gives additions precedence.
+
+    Args:
+        payload: Raw Jira webhook payload.
+
+    Returns:
+        Sorted added labels and sorted removed labels.
+    """
+    previous: set[str] = set()
+    current: set[str] = set()
+    found = False
+    for item in _jira_changelog_items(payload):
+        if str(item.get("field") or "").lower() != "labels":
+            continue
+        found = True
+        previous.update((item.get("fromString") or "").split())
+        current.update((item.get("toString") or "").split())
+    if not found:
+        return [], []
+    return sorted(current - previous), sorted(previous - current)
+
+
+def jira_status_change(payload: Optional[dict]) -> Optional[Tuple[str, str]]:
+    """Return the (from, to) status names of a Jira workflow transition.
+
+    Args:
+        payload: Raw Jira webhook payload.
+
+    Returns:
+        The previous and new status names, or None when the update did not
+        change the status.
+    """
+    for item in _jira_changelog_items(payload):
+        if str(item.get("field") or "").lower() != "status":
+            continue
+        from_status = str(item.get("fromString") or "")
+        to_status = str(item.get("toString") or "")
+        if from_status != to_status and to_status:
+            return from_status, to_status
+    return None
 
 
 # Mapping of GitLab webhook events to normalized event types
@@ -167,6 +276,7 @@ EVENT_TYPE_LABELS: Dict[str, str] = {
     "issue_deleted": "Issue Deleted",
     "issue_labeled": "Issue Labeled",
     "issue_unlabeled": "Issue Unlabeled",
+    "issue_status_changed": "Issue Status Changed",
     "issue_assigned": "Issue Assigned",
     "issue_unassigned": "Issue Unassigned",
     "pull_request_opened": "Pull Request Opened",
@@ -346,8 +456,25 @@ def normalize_event_type(
         return normalized or raw_event_type
 
     elif tracker_type_lower == "jira":
-        # Jira events - already normalized in webhook
-        return JIRA_EVENT_MAP.get(raw_event_type, raw_event_type)
+        normalized = JIRA_EVENT_MAP.get(raw_event_type, raw_event_type)
+        if normalized == "issue_updated" and payload:
+            # Jira sends every edit as jira:issue_updated; the changelog says
+            # what changed. One edit can add labels, remove labels and move
+            # the status at once, but only one event type is emitted. Added
+            # wins, as for GitLab above: a label added in the same edit as a
+            # transition is issue_labeled. A transition beats a removal, and
+            # an edit touching neither stays issue_updated. All deltas still
+            # land in filter_fields (added_labels, removed_labels,
+            # status_from, status_to), and secondary_event_types() lets
+            # issue_status_changed flows see the transition of a mixed edit.
+            added, removed = jira_label_delta(payload)
+            if added:
+                normalized = "issue_labeled"
+            elif jira_status_change(payload):
+                normalized = "issue_status_changed"
+            elif removed:
+                normalized = "issue_unlabeled"
+        return normalized
 
     elif tracker_type_lower == "bitbucket":
         return BITBUCKET_EVENT_MAP.get(raw_event_type, raw_event_type)
@@ -944,6 +1071,16 @@ def extract_filter_fields(
         issue_type = fields.get("issuetype")
         if issue_type:
             filter_fields["issue_type"] = issue_type.get("name")
+
+        # Changelog deltas (jira:issue_updated only)
+        added_labels, removed_labels = jira_label_delta(payload)
+        if added_labels:
+            filter_fields["added_labels"] = added_labels
+        if removed_labels:
+            filter_fields["removed_labels"] = removed_labels
+        status_change = jira_status_change(payload)
+        if status_change:
+            filter_fields["status_from"], filter_fields["status_to"] = status_change
 
         # User who triggered the event
         filter_fields["event_user"] = user.get("displayName") or user.get("accountId")
