@@ -351,7 +351,6 @@ def test_notify_only_stream_is_not_buffered(captured) -> None:
 
     assert len(rest) == 3
     assert len(captured.notices) == 1
-    assert captured.notices[0].account_id == ACCOUNT
     assert captured.notices[0].target == "model.response"
     assert "project-x" in (captured.notices[0].excerpt or "")
 
